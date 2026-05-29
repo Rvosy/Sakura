@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.agent import AgentResult, AgentRuntime, create_builtin_tool_registry
 from app.api_client import OpenAICompatibleClient
 from app.character_loader import (
     DEFAULT_CHARACTER_ID,
@@ -28,7 +29,7 @@ from app.character_loader import (
     load_character_system_prompt,
 )
 from app.chat_history import ChatHistoryStore
-from app.chat_reply import ChatReply, ChatSegment
+from app.chat_reply import ChatSegment
 from app.chat_worker import ChatWorker
 from app.env_config import load_env_file, save_env_values
 from app.history_window import HistoryWindow
@@ -66,6 +67,12 @@ class PetWindow(QWidget):
         self.portrait_path = character_profile.default_portrait_path
         self.api_client = api_client
         self.system_prompt = load_character_system_prompt(character_profile)
+        self.agent_runtime = AgentRuntime(
+            api_client=api_client,
+            system_prompt=self.system_prompt,
+            reply_tones=character_profile.reply_tones,
+            tools=create_builtin_tool_registry(base_dir),
+        )
         self.tts_provider = tts_provider
         self.retired_tts_providers: list[TTSProvider] = []
         self.history_store = self._create_history_store(character_profile)
@@ -416,10 +423,8 @@ class PetWindow(QWidget):
 
         self.thread = QThread(self)
         self.worker = ChatWorker(
-            self.api_client,
-            self.system_prompt,
+            self.agent_runtime,
             next_messages,
-            self.character_profile.reply_tones,
         )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
@@ -431,7 +436,8 @@ class PetWindow(QWidget):
         self.thread.start()
 
     @Slot(object)
-    def _handle_reply(self, reply: ChatReply) -> None:
+    def _handle_reply(self, result: AgentResult) -> None:
+        reply = result.reply
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_history("assistant", reply.text, reply.translation)
         self._show_reply_segments(reply.segments)
@@ -721,6 +727,7 @@ class PetWindow(QWidget):
         self.character_profile = profile
         self.portrait_path = profile.default_portrait_path
         self.system_prompt = load_character_system_prompt(profile)
+        self.agent_runtime.update_character(self.system_prompt, profile.reply_tones)
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
         self.input_edit.setPlaceholderText(f"{profile.display_name}に話しかける...")

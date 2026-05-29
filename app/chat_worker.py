@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from app.api_client import OpenAICompatibleClient
-from app.chat_reply import ChatReply
+from app.agent import AgentResult, AgentRuntime
 
 
 class ChatWorker(QObject):
@@ -12,26 +11,18 @@ class ChatWorker(QObject):
 
     def __init__(
         self,
-        api_client: OpenAICompatibleClient,
-        system_prompt: str,
+        agent_runtime: AgentRuntime,
         messages: list[dict[str, str]],
-        reply_tones: list[str] | None = None,
     ) -> None:
         super().__init__()
-        self.api_client = api_client
-        self.system_prompt = system_prompt
+        self.agent_runtime = agent_runtime
         self.messages = messages
-        self.reply_tones = reply_tones or []
 
     @Slot()
     def run(self) -> None:
         try:
-            reply: ChatReply = self.api_client.chat(
-                self.system_prompt,
-                self.messages,
-                self.reply_tones,
-            )
+            result: AgentResult = self.agent_runtime.handle_user_message(self.messages)
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
             return
-        self.finished.emit(reply)
+        self.finished.emit(result)

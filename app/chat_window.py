@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -11,8 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.agent import AgentResult, AgentRuntime, create_builtin_tool_registry
 from app.api_client import OpenAICompatibleClient
-from app.chat_reply import ChatReply
 from app.chat_worker import ChatWorker
 from app.tts import TTSProvider
 
@@ -25,10 +27,17 @@ class ChatWindow(QWidget):
         api_client: OpenAICompatibleClient,
         system_prompt: str,
         tts_provider: TTSProvider,
+        base_dir: Path | None = None,
     ) -> None:
         super().__init__()
+        base_dir = base_dir or Path(__file__).resolve().parents[1]
         self.api_client = api_client
         self.system_prompt = system_prompt
+        self.agent_runtime = AgentRuntime(
+            api_client=api_client,
+            system_prompt=system_prompt,
+            tools=create_builtin_tool_registry(base_dir),
+        )
         self.tts_provider = tts_provider
         self.messages: list[dict[str, str]] = []
         self.thread: QThread | None = None
@@ -107,7 +116,7 @@ class ChatWindow(QWidget):
         self._set_busy(True)
 
         self.thread = QThread(self)
-        self.worker = ChatWorker(self.api_client, self.system_prompt, next_messages)
+        self.worker = ChatWorker(self.agent_runtime, next_messages)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._handle_reply)
@@ -118,7 +127,8 @@ class ChatWindow(QWidget):
         self.thread.start()
 
     @Slot(object)
-    def _handle_reply(self, reply: ChatReply) -> None:
+    def _handle_reply(self, result: AgentResult) -> None:
+        reply = result.reply
         reply_text = reply.text
         self.messages.append({"role": "assistant", "content": reply_text})
         self._append_message("桜", reply_text)

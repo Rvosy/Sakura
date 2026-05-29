@@ -111,12 +111,7 @@ class OpenAICompatibleClient:
 
     def test_connection(self) -> str:
         """发送一次最小聊天请求，验证 Base URL、API Key 和模型是否可用。"""
-        if not self.settings.api_key:
-            raise ApiConfigError("缺少 API_KEY。请在设置中填写 API Key。")
-        if not self.settings.base_url:
-            raise ApiConfigError("缺少 BASE_URL。")
-        if not self.settings.model:
-            raise ApiConfigError("缺少 MODEL。")
+        self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
 
         payload = {
             "model": self.settings.model,
@@ -144,24 +139,34 @@ class OpenAICompatibleClient:
         messages: list[dict[str, str]],
         reply_tones: list[str] | None = None,
     ) -> ChatReply:
-        if not self.settings.api_key:
-            raise ApiConfigError("缺少 API_KEY。请在 .env 中配置 API_KEY、BASE_URL、MODEL。")
-        if not self.settings.base_url:
-            raise ApiConfigError("缺少 BASE_URL。")
-        if not self.settings.model:
-            raise ApiConfigError("缺少 MODEL。")
-
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones)
+        content = self.complete_raw(
+            f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
+            messages,
+            temperature=0.8,
+        )
+
+        return parse_chat_reply(content)
+
+    def complete_raw(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.8,
+    ) -> str:
+        """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
+        self._ensure_chat_config("缺少 API_KEY。请在 .env 中配置 API_KEY、BASE_URL、MODEL。")
+
         payload = {
             "model": self.settings.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
+                    "content": system_prompt.strip(),
                 },
                 *messages,
             ],
-            "temperature": 0.8,
+            "temperature": temperature,
         }
         data = self._post_chat_completions(payload)
 
@@ -170,7 +175,15 @@ class OpenAICompatibleClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise ApiRequestError(f"API 返回格式无法解析：{json.dumps(data, ensure_ascii=False)}") from exc
 
-        return parse_chat_reply(str(content).strip())
+        return str(content).strip()
+
+    def _ensure_chat_config(self, api_key_message: str) -> None:
+        if not self.settings.api_key:
+            raise ApiConfigError(api_key_message)
+        if not self.settings.base_url:
+            raise ApiConfigError("缺少 BASE_URL。")
+        if not self.settings.model:
+            raise ApiConfigError("缺少 MODEL。")
 
     def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
         """调用 OpenAI 兼容的 chat/completions 接口并返回 JSON 数据。"""
