@@ -25,6 +25,14 @@ class MemoryUpdate:
 
 
 @dataclass(frozen=True)
+class AgentEvent:
+    """运行时主动事件，例如提醒到期。"""
+
+    type: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Agent Runtime 的统一输出，供 UI 根据回复、动作和记忆更新分别处理。"""
 

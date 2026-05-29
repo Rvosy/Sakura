@@ -16,4 +16,5 @@ env/
 data/chat_history.jsonl
 data/chat_history/sakura.jsonl
 data/memory.json
+data/reminders.json
 task.md

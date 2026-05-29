@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.agent.actions import AgentAction, AgentResult, MemoryUpdate
+from app.agent.actions import AgentAction, AgentEvent, AgentResult, MemoryUpdate
 from app.agent.memory import MemoryStore
 from app.agent.tool_registry import ToolExecutionResult, ToolRegistry
 from app.api_client import OpenAICompatibleClient
@@ -63,18 +63,22 @@ class AgentRuntime:
                 )
             )
 
-        final_reply = self.api_client.chat(
-            self._build_final_reply_prompt(),
-            [
-                *messages,
-                {"role": "assistant", "content": first_content},
-                {
-                    "role": "user",
-                    "content": _format_tool_results_for_model(execution_results),
-                },
-            ],
-            self.reply_tones,
-        )
+        try:
+            final_reply = self.api_client.chat(
+                self._build_final_reply_prompt(),
+                [
+                    *messages,
+                    {"role": "assistant", "content": first_content},
+                    {
+                        "role": "user",
+                        "content": _format_tool_results_for_model(execution_results),
+                    },
+                ],
+                self.reply_tones,
+            )
+        except Exception as exc:
+            print(f"[AgentRuntime] 工具结果总结失败，使用本地兜底回复：{exc}")
+            final_reply = _build_fallback_tool_reply(execution_results)
         return AgentResult(
             reply=final_reply,
             actions=[
@@ -85,6 +89,33 @@ class AgentRuntime:
                 for result in execution_results
             ],
             memory_updates=_extract_memory_updates(execution_results),
+        )
+
+    def handle_event(self, event: AgentEvent) -> AgentResult:
+        if event.type != "reminder_due":
+            return AgentResult(reply=parse_chat_reply("未対応のイベントだよ。"))
+
+        reply = self.api_client.chat(
+            self._build_event_reply_prompt(),
+            [
+                {
+                    "role": "user",
+                    "content": _format_event_for_model(event),
+                }
+            ],
+            self.reply_tones,
+        )
+        return AgentResult(
+            reply=reply,
+            actions=[
+                AgentAction(
+                    type="event",
+                    payload={
+                        "event_type": event.type,
+                        "event_payload": event.payload,
+                    },
+                )
+            ],
         )
 
     def _build_tool_planning_prompt(self) -> str:
@@ -137,6 +168,23 @@ class AgentRuntime:
 
 你会收到上一轮工具调用结果。请基于这些结果给用户最终回复。
 不要再次请求工具，不要提及内部 JSON、工具协议或实现细节。
+""".strip()
+
+    def _build_event_reply_prompt(self) -> str:
+        tones = "、".join(tone for tone in self.reply_tones if tone.strip()) or "中性"
+        return f"""
+{self.system_prompt.strip()}
+
+你正在处理 Sakura 桌宠的主动事件。请用角色语气自然提醒用户。
+你必须只返回 JSON，不要使用 Markdown 代码块，不要输出额外解释。
+JSON 格式如下：
+{{"segments":[{{"ja":"日文原文","zh":"中文译文","tone":"提醒"}}]}}
+
+要求：
+- tone 只能从这些类别中选择：{tones}。
+- ja 中只写夜乃桜要说出口的日文原文，必须是日语，适合直接交给日语 TTS 朗读。
+- zh 中只写 ja 对应的自然中文译文，必须是中文。
+- 不要提及内部事件类型、JSON 或工具实现。
 """.strip()
 
     def _memory_summary(self) -> str:
@@ -194,6 +242,88 @@ def _format_tool_results_for_model(results: list[ToolExecutionResult]) -> str:
         "工具执行结果如下，请据此给用户最终回复：\n"
         + json.dumps(
             [result.to_dict() for result in results],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _build_fallback_tool_reply(results: list[ToolExecutionResult]) -> ChatReply:
+    if not results:
+        return parse_chat_reply("ツール結果の確認に失敗したよ。")
+
+    succeeded = [result for result in results if result.success]
+    failed = [result for result in results if not result.success]
+    if succeeded and not failed:
+        summary = _summarize_tool_results(succeeded)
+        return parse_chat_reply(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ja": f"処理は終わったよ。{summary}",
+                            "zh": f"已经处理好了。{summary}",
+                            "tone": "提醒",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    error_text = "；".join(
+        f"{result.tool_name}: {result.error or '执行失败'}"
+        for result in failed
+    )
+    return parse_chat_reply(
+        json.dumps(
+            {
+                "segments": [
+                    {
+                        "ja": "処理中に問題が起きたみたい。設定かネットワークを確認して。",
+                        "zh": f"工具执行时出了点问题：{error_text}",
+                        "tone": "困惑",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def _summarize_tool_results(results: list[ToolExecutionResult]) -> str:
+    parts: list[str] = []
+    for result in results:
+        if isinstance(result.content, dict):
+            if isinstance(result.content.get("reminder"), dict):
+                reminder = result.content["reminder"]
+                text = reminder.get("text", "")
+                trigger_at = reminder.get("trigger_at", "")
+                parts.append(f"提醒「{text}」已设置在 {trigger_at}。")
+            elif isinstance(result.content.get("task"), dict):
+                task = result.content["task"]
+                parts.append(f"待办「{task.get('text', '')}」已更新。")
+            elif isinstance(result.content.get("pending_update"), dict):
+                update = result.content["pending_update"]
+                parts.append(f"候选记忆「{update.get('content', '')}」已记录，等待确认。")
+            elif isinstance(result.content.get("memory"), dict):
+                memory = result.content["memory"]
+                parts.append(f"记忆「{memory.get('content', '')}」已确认。")
+            else:
+                parts.append(f"{result.tool_name} 已完成。")
+        else:
+            parts.append(f"{result.tool_name} 已完成。")
+    return " ".join(part for part in parts if part).strip()
+
+
+def _format_event_for_model(event: AgentEvent) -> str:
+    return (
+        "主动事件如下，请生成要直接说给用户听的提醒：\n"
+        + json.dumps(
+            {
+                "type": event.type,
+                "payload": event.payload,
+            },
             ensure_ascii=False,
             indent=2,
         )

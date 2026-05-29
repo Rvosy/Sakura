@@ -19,7 +19,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.agent import AgentResult, AgentRuntime, MemoryStore, create_builtin_tool_registry
+from app.agent import (
+    AgentEvent,
+    AgentResult,
+    AgentRuntime,
+    MemoryStore,
+    ReminderStore,
+    create_builtin_tool_registry,
+)
 from app.api_client import OpenAICompatibleClient
 from app.character_loader import (
     DEFAULT_CHARACTER_ID,
@@ -29,7 +36,7 @@ from app.character_loader import (
     load_character_system_prompt,
 )
 from app.chat_history import ChatHistoryStore
-from app.chat_reply import ChatSegment
+from app.chat_reply import ChatReply, ChatSegment
 from app.chat_worker import ChatWorker
 from app.env_config import load_env_file, save_env_values
 from app.history_window import HistoryWindow
@@ -45,6 +52,7 @@ from app.tts import (
 
 SPEECH_TYPING_INTERVAL_MS = 35
 REPLY_SEGMENT_PAUSE_MS = 100
+REMINDER_CHECK_INTERVAL_MS = 30_000
 SUBTITLE_LANGUAGE_KEY = "SUBTITLE_LANGUAGE"
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
@@ -68,11 +76,12 @@ class PetWindow(QWidget):
         self.api_client = api_client
         self.system_prompt = load_character_system_prompt(character_profile)
         self.memory_store = MemoryStore(base_dir / "data" / "memory.json")
+        self.reminder_store = ReminderStore(base_dir / "data" / "reminders.json")
         self.agent_runtime = AgentRuntime(
             api_client=api_client,
             system_prompt=self.system_prompt,
             reply_tones=character_profile.reply_tones,
-            tools=create_builtin_tool_registry(base_dir, self.memory_store),
+            tools=create_builtin_tool_registry(base_dir, self.memory_store, self.reminder_store),
             memory=self.memory_store,
         )
         self.tts_provider = tts_provider
@@ -99,6 +108,10 @@ class PetWindow(QWidget):
         self.speech_timer = QTimer(self)
         self.speech_timer.setInterval(SPEECH_TYPING_INTERVAL_MS)
         self.speech_timer.timeout.connect(self._show_next_speech_char)
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.setInterval(REMINDER_CHECK_INTERVAL_MS)
+        self.reminder_timer.timeout.connect(self._check_due_reminders)
+        self.reminder_timer.start()
 
         self.setWindowTitle(character_profile.display_name)
         self.setWindowFlags(
@@ -625,6 +638,54 @@ class PetWindow(QWidget):
             self.history_store.append(role, content, translation)
         except OSError as exc:
             print(f"[History] 写入失败：{exc}")
+
+    @Slot()
+    def _check_due_reminders(self) -> None:
+        if self.thread is not None:
+            return
+        try:
+            due_reminders = self.reminder_store.due_reminders()
+        except ValueError as exc:
+            print(f"[Reminder] 读取失败：{exc}")
+            return
+        if not due_reminders:
+            return
+
+        reminder = due_reminders[0]
+        reminder_id = str(reminder.get("id", ""))
+        reminder_text = str(reminder.get("text", ""))
+        reminder_trigger_at = str(reminder.get("trigger_at", ""))
+        try:
+            result = self.agent_runtime.handle_event(
+                AgentEvent(
+                    type="reminder_due",
+                    payload={
+                        "id": reminder_id,
+                        "text": reminder_text,
+                        "trigger_at": reminder_trigger_at,
+                    },
+                )
+            )
+        except Exception as exc:
+            print(f"[Reminder] 生成提醒失败：{exc}")
+            result = AgentResult(
+                reply=ChatReply(
+                    [
+                        ChatSegment(
+                            text=f"時間だよ。{reminder_text}",
+                            tone="提醒",
+                            translation=f"到时间了：{reminder_text}",
+                        )
+                    ]
+                )
+            )
+
+        try:
+            self.reminder_store.mark_completed(reminder_id)
+        except ValueError as exc:
+            print(f"[Reminder] 标记完成失败：{exc}")
+            return
+        self._show_reply_segments(result.reply.segments)
 
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:
         self.reply_sequence_id += 1

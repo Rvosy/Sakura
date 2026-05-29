@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import ssl
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -11,6 +14,9 @@ from typing import Any
 from app.chat_reply import ChatReply, parse_chat_reply
 from app.env_config import load_env_file, save_env_values
 
+
+MAX_API_RETRY_ATTEMPTS = 3
+API_RETRY_DELAY_SECONDS = 0.8
 
 SEGMENTED_REPLY_INSTRUCTION_TEMPLATE = """
 你必须只返回 JSON，不要使用 Markdown 代码块，不要输出额外解释。
@@ -198,19 +204,7 @@ class OpenAICompatibleClient:
             },
         )
 
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=self.settings.timeout_seconds,
-            ) as response:
-                response_body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            raise ApiRequestError(f"API HTTP {exc.code}: {error_body}") from exc
-        except urllib.error.URLError as exc:
-            raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
-        except TimeoutError as exc:
-            raise ApiRequestError("API 请求超时。") from exc
+        response_body = self._send_with_retries(request)
 
         try:
             data: dict[str, Any] = json.loads(response_body)
@@ -218,6 +212,38 @@ class OpenAICompatibleClient:
             raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
 
         return data
+
+    def _send_with_retries(self, request: urllib.request.Request) -> str:
+        last_error: BaseException | None = None
+        for attempt in range(1, MAX_API_RETRY_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=self.settings.timeout_seconds,
+                ) as response:
+                    return response.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_API_RETRY_ATTEMPTS:
+                    raise ApiRequestError(f"API HTTP {exc.code}: {error_body}") from exc
+                last_error = exc
+            except urllib.error.URLError as exc:
+                if attempt == MAX_API_RETRY_ATTEMPTS:
+                    raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
+                last_error = exc
+            except TimeoutError as exc:
+                if attempt == MAX_API_RETRY_ATTEMPTS:
+                    raise ApiRequestError("API 请求超时。") from exc
+                last_error = exc
+            except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
+                if attempt == MAX_API_RETRY_ATTEMPTS:
+                    raise ApiRequestError(f"API 连接中断：{exc}") from exc
+                last_error = exc
+
+            print(f"[API] 请求失败，准备重试 {attempt}/{MAX_API_RETRY_ATTEMPTS}：{last_error}")
+            time.sleep(API_RETRY_DELAY_SECONDS * attempt)
+
+        raise ApiRequestError("API 请求失败。")
 
 
 def _build_segmented_reply_instruction(reply_tones: list[str] | None) -> str:

@@ -7,12 +7,18 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.memory import MemoryStore
+from app.agent.reminders import ReminderStore
 from app.agent.tool_registry import Tool, ToolRegistry
 
 
-def create_builtin_tool_registry(base_dir: Path, memory: MemoryStore | None = None) -> ToolRegistry:
+def create_builtin_tool_registry(
+    base_dir: Path,
+    memory: MemoryStore | None = None,
+    reminders: ReminderStore | None = None,
+) -> ToolRegistry:
     store = TodoStore(base_dir / "data" / "tasks.json")
     memory = memory or MemoryStore(base_dir / "data" / "memory.json")
+    reminders = reminders or ReminderStore(base_dir / "data" / "reminders.json")
     return ToolRegistry(
         [
             Tool(
@@ -50,6 +56,44 @@ def create_builtin_tool_registry(base_dir: Path, memory: MemoryStore | None = No
                     "required": ["id"],
                 },
                 handler=store.complete_todo,
+            ),
+            Tool(
+                name="add_reminder",
+                description="创建一次性提醒。trigger_at 必须是本地时区 ISO 时间；repeat 第一版只支持 null 或省略。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "提醒内容。"},
+                        "trigger_at": {
+                            "type": "string",
+                            "description": "提醒时间，本地时区 ISO 字符串。",
+                        },
+                        "repeat": {
+                            "type": ["null"],
+                            "description": "第一版只支持 null。",
+                        },
+                    },
+                    "required": ["text", "trigger_at"],
+                },
+                handler=reminders.add_reminder,
+            ),
+            Tool(
+                name="list_reminders",
+                description="列出未完成且未取消的一次性提醒。",
+                parameters={},
+                handler=reminders.list_reminders,
+            ),
+            Tool(
+                name="cancel_reminder",
+                description="按 id 取消一条未完成提醒。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "提醒 id。"},
+                    },
+                    "required": ["id"],
+                },
+                handler=reminders.cancel_reminder,
             ),
             Tool(
                 name="search_memory",
