@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThread, Slot
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QAction, QCursor, QFont, QFontDatabase, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +24,9 @@ from app.chat_worker import ChatWorker
 from app.tts import TTSProvider
 
 
+SPEECH_TYPING_INTERVAL_MS = 35
+
+
 class PetWindow(QWidget):
     def __init__(
         self,
@@ -42,6 +45,11 @@ class PetWindow(QWidget):
         self.worker: ChatWorker | None = None
         self.drag_offset: QPoint | None = None
         self.stage_size = (860, 640)
+        self.speech_text = ""
+        self.speech_index = 0
+        self.speech_timer = QTimer(self)
+        self.speech_timer.setInterval(SPEECH_TYPING_INTERVAL_MS)
+        self.speech_timer.timeout.connect(self._show_next_speech_char)
 
         self.setWindowTitle("夜乃桜")
         self.setWindowFlags(
@@ -360,7 +368,23 @@ class PetWindow(QWidget):
     @Slot(str)
     def set_speech(self, text: str) -> None:
         cleaned = " ".join(text.split())
-        self.speech_label.setText(cleaned)
+        self.speech_timer.stop()
+        self.speech_text = cleaned
+        self.speech_index = 0
+        self.speech_label.clear()
+        if self.speech_text:
+            self.speech_timer.start()
+
+    @Slot()
+    def _show_next_speech_char(self) -> None:
+        if self.speech_index >= len(self.speech_text):
+            self.speech_timer.stop()
+            return
+
+        self.speech_index += 1
+        self.speech_label.setText(self.speech_text[: self.speech_index])
+        if self.speech_index >= len(self.speech_text):
+            self.speech_timer.stop()
 
     def toggle_visible(self) -> None:
         if self.isVisible():

@@ -179,7 +179,7 @@ class GPTSoVITSTTSProvider(QObject):
             "ref_audio_path": str(reference.ref_audio_path),
             "prompt_text": reference.ref_text,
             "prompt_lang": reference.ref_lang,
-            "text_split_method": "cut5",
+            "text_split_method": "cut1",
             "batch_size": 1,
             "media_type": "wav",
             "streaming_mode": False,
