@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -17,16 +17,31 @@ from app.chat_reply import DEFAULT_TONE
 from app.env_config import load_env_file, save_env_values
 
 
+FinishedCallback = Callable[[], None]
+
+
 class TTSProvider(Protocol):
-    def speak(self, text: str, tone: str | None = None) -> None:
+    def speak(
+        self,
+        text: str,
+        tone: str | None = None,
+        on_finished: FinishedCallback | None = None,
+    ) -> None:
         """播放或提交一段待朗读文本。"""
 
 
 class NullTTSProvider:
-    def speak(self, text: str, tone: str | None = None) -> None:
+    def speak(
+        self,
+        text: str,
+        tone: str | None = None,
+        on_finished: FinishedCallback | None = None,
+    ) -> None:
         # GPT-SoVITS 接入前保留调用点，避免聊天流程以后再改。
         _ = text
         _ = tone
+        if on_finished is not None:
+            on_finished()
 
 
 class TTSConfigError(RuntimeError):
@@ -149,17 +164,19 @@ class GPTSoVITSTTSSettings:
 
 
 class GPTSoVITSTTSProvider(QObject):
-    _audio_ready = Signal(str)
+    _audio_ready = Signal(str, object)
     _failed = Signal(str)
+    _finished = Signal(object)
 
     def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
         super().__init__()
         settings.validate()
         self.settings = settings
-        self._pending_audio: list[Path] = []
+        self._pending_audio: list[tuple[Path, FinishedCallback | None]] = []
         self._current_audio: Path | None = None
+        self._current_finished: FinishedCallback | None = None
         self._request_lock = threading.Lock()
-        self._pending_requests: list[tuple[str, str | None]] = []
+        self._pending_requests: list[tuple[str, str | None, FinishedCallback | None]] = []
         self._request_running = False
         self._tone_indices: dict[str, int] = {}
 
@@ -170,30 +187,42 @@ class GPTSoVITSTTSProvider(QObject):
         self._player.errorOccurred.connect(self._handle_player_error)
         self._audio_ready.connect(self._enqueue_audio)
         self._failed.connect(self._log_error)
+        self._finished.connect(self._run_finished_callback)
 
-    def speak(self, text: str, tone: str | None = None) -> None:
+    def speak(
+        self,
+        text: str,
+        tone: str | None = None,
+        on_finished: FinishedCallback | None = None,
+    ) -> None:
         text = text.strip()
         if not text:
+            self._finished.emit(on_finished)
             return
         with self._request_lock:
-            self._pending_requests.append((text, tone))
+            self._pending_requests.append((text, tone, on_finished))
         self._start_next_request()
 
     def _start_next_request(self) -> None:
         with self._request_lock:
             if self._request_running or not self._pending_requests:
                 return
-            text, tone = self._pending_requests.pop(0)
+            text, tone, on_finished = self._pending_requests.pop(0)
             self._request_running = True
 
         thread = threading.Thread(
             target=self._request_audio,
-            args=(text, tone),
+            args=(text, tone, on_finished),
             daemon=True,
         )
         thread.start()
 
-    def _request_audio(self, text: str, tone: str | None) -> None:
+    def _request_audio(
+        self,
+        text: str,
+        tone: str | None,
+        on_finished: FinishedCallback | None,
+    ) -> None:
         reference = self._select_reference(tone)
         payload = {
             "text": text,
@@ -207,7 +236,7 @@ class GPTSoVITSTTSProvider(QObject):
             "streaming_mode": False,
             "top_k": 15,
             "top_p": 1,
-            "temperature": 1, 
+            "temperature": 1,
             "repetition_penalty": 1.2,
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -227,17 +256,17 @@ class GPTSoVITSTTSProvider(QObject):
                     audio_data = response.read()
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
-                self._failed.emit(f"GPT-SoVITS HTTP {exc.code}: {error_body}")
+                self._fail_request(f"GPT-SoVITS HTTP {exc.code}: {error_body}", on_finished)
                 return
             except urllib.error.URLError as exc:
-                self._failed.emit(f"GPT-SoVITS 请求失败：{exc.reason}")
+                self._fail_request(f"GPT-SoVITS 请求失败：{exc.reason}", on_finished)
                 return
             except TimeoutError:
-                self._failed.emit("GPT-SoVITS 请求超时。")
+                self._fail_request("GPT-SoVITS 请求超时。", on_finished)
                 return
 
             if not audio_data:
-                self._failed.emit("GPT-SoVITS 返回了空音频。")
+                self._fail_request("GPT-SoVITS 返回了空音频。", on_finished)
                 return
 
             with tempfile.NamedTemporaryFile(
@@ -247,7 +276,7 @@ class GPTSoVITSTTSProvider(QObject):
             ) as audio_file:
                 audio_file.write(audio_data)
                 audio_path = audio_file.name
-            self._audio_ready.emit(audio_path)
+            self._audio_ready.emit(audio_path, on_finished)
         finally:
             with self._request_lock:
                 self._request_running = False
@@ -270,43 +299,71 @@ class GPTSoVITSTTSProvider(QObject):
         self._tone_indices[tone_key] = index + 1
         return references[index]
 
-    @Slot(str)
-    def _enqueue_audio(self, audio_path: str) -> None:
-        self._pending_audio.append(Path(audio_path))
+    @Slot(str, object)
+    def _enqueue_audio(
+        self,
+        audio_path: str,
+        on_finished: FinishedCallback | None,
+    ) -> None:
+        self._pending_audio.append((Path(audio_path), on_finished))
         if self._current_audio is None:
             self._play_next()
 
     @Slot(QMediaPlayer.MediaStatus)
     def _handle_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._cleanup_current_audio()
+            self._finish_current_audio()
             self._play_next()
 
     @Slot(QMediaPlayer.Error, str)
     def _handle_player_error(self, _error: QMediaPlayer.Error, error_text: str) -> None:
         self._log_error(f"音频播放失败：{error_text}")
-        self._cleanup_current_audio()
+        self._finish_current_audio()
         self._play_next()
 
     @Slot(str)
     def _log_error(self, message: str) -> None:
         print(f"[TTS] {message}")
 
+    @Slot(object)
+    def _run_finished_callback(self, on_finished: FinishedCallback | None) -> None:
+        if on_finished is None:
+            return
+        try:
+            on_finished()
+        except Exception as exc:  # noqa: BLE001
+            self._log_error(f"TTS 完成回调执行失败：{exc}")
+
+    def _fail_request(
+        self,
+        message: str,
+        on_finished: FinishedCallback | None,
+    ) -> None:
+        self._failed.emit(message)
+        self._finished.emit(on_finished)
+
     def _play_next(self) -> None:
         if not self._pending_audio:
             return
-        self._current_audio = self._pending_audio.pop(0)
+        self._current_audio, self._current_finished = self._pending_audio.pop(0)
         self._player.setSource(QUrl.fromLocalFile(str(self._current_audio)))
         self._player.play()
 
+    def _finish_current_audio(self) -> None:
+        on_finished = self._current_finished
+        self._cleanup_current_audio()
+        self._finished.emit(on_finished)
+
     def _cleanup_current_audio(self) -> None:
         if self._current_audio is None:
+            self._current_finished = None
             return
         try:
             self._current_audio.unlink(missing_ok=True)
         except OSError as exc:
             self._log_error(f"临时音频清理失败：{exc}")
         self._current_audio = None
+        self._current_finished = None
 
 
 def create_tts_provider(base_dir: Path) -> TTSProvider:

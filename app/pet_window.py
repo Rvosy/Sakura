@@ -35,7 +35,8 @@ from app.tts import (
 
 
 SPEECH_TYPING_INTERVAL_MS = 35
-REPLY_SEGMENT_PAUSE_MS = 2000
+SPEECH_START_DELAY_MS = 500
+REPLY_SEGMENT_PAUSE_MS = 900
 
 
 class PetWindow(QWidget):
@@ -66,6 +67,10 @@ class PetWindow(QWidget):
         self.speech_index = 0
         self.pending_reply_segments: list[ChatSegment] = []
         self.reply_sequence_id = 0
+        self.current_segment_sequence_id: int | None = None
+        self.current_segment_speech_done = False
+        self.current_segment_tts_done = True
+        self.reply_advance_scheduled = False
         self.speech_timer = QTimer(self)
         self.speech_timer.setInterval(SPEECH_TYPING_INTERVAL_MS)
         self.speech_timer.timeout.connect(self._show_next_speech_char)
@@ -352,6 +357,7 @@ class PetWindow(QWidget):
         self.input_edit.clear()
         self.reply_sequence_id += 1
         self.pending_reply_segments = []
+        self._reset_current_segment_progress()
         self.set_speech("......")
         next_messages = [*self.messages, {"role": "user", "content": text}]
         self.messages = next_messages
@@ -380,6 +386,7 @@ class PetWindow(QWidget):
         if self.messages and self.messages[-1]["role"] == "user":
             self.messages.pop()
         self._record_history("error", message)
+        self._reset_current_segment_progress()
         self.set_speech("……通信に失敗した。設定を確認して。")
         QMessageBox.warning(self, "请求失败", message)
 
@@ -418,12 +425,8 @@ class PetWindow(QWidget):
         self.speech_label.setText(self.speech_text[: self.speech_index])
         if self.speech_index >= len(self.speech_text):
             self.speech_timer.stop()
-            if self.pending_reply_segments:
-                sequence_id = self.reply_sequence_id
-                QTimer.singleShot(
-                    REPLY_SEGMENT_PAUSE_MS,
-                    lambda: self._show_next_reply_segment(sequence_id),
-                )
+            if self.current_segment_sequence_id is not None:
+                self._mark_segment_speech_done(self.current_segment_sequence_id)
 
     def toggle_visible(self) -> None:
         if self.isVisible():
@@ -471,6 +474,9 @@ class PetWindow(QWidget):
         self.api_client.update_settings(dialog.result_api_settings)
         self.retired_tts_providers.append(self.tts_provider)
         self.tts_provider = new_tts_provider
+        self.reply_sequence_id += 1
+        self.pending_reply_segments = []
+        self._reset_current_segment_progress()
         QMessageBox.information(self, "保存成功", "设置已保存，后续聊天和朗读将使用新配置。")
 
     def _create_tts_provider_from_settings(
@@ -506,6 +512,7 @@ class PetWindow(QWidget):
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:
         self.reply_sequence_id += 1
         self.pending_reply_segments = [segment for segment in segments if segment.text.strip()]
+        self._reset_current_segment_progress()
         self._show_next_reply_segment(self.reply_sequence_id)
 
     def _show_next_reply_segment(self, sequence_id: int) -> None:
@@ -513,8 +520,59 @@ class PetWindow(QWidget):
             return
 
         segment = self.pending_reply_segments.pop(0)
-        self.set_speech(segment.text)
-        self.tts_provider.speak(segment.text, segment.tone)
+        self.current_segment_sequence_id = sequence_id
+        self.current_segment_speech_done = False
+        self.current_segment_tts_done = False
+        self.reply_advance_scheduled = False
+        self.tts_provider.speak(
+            segment.text,
+            segment.tone,
+            on_finished=lambda: self._mark_segment_tts_done(sequence_id),
+        )
+        QTimer.singleShot(
+            SPEECH_START_DELAY_MS,
+            lambda: self._start_segment_speech(sequence_id, segment.text),
+        )
+
+    def _start_segment_speech(self, sequence_id: int, text: str) -> None:
+        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+            return
+        self.set_speech(text)
+
+    def _mark_segment_speech_done(self, sequence_id: int) -> None:
+        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+            return
+        self.current_segment_speech_done = True
+        self._schedule_next_reply_segment_if_ready(sequence_id)
+
+    def _mark_segment_tts_done(self, sequence_id: int) -> None:
+        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+            return
+        self.current_segment_tts_done = True
+        self._schedule_next_reply_segment_if_ready(sequence_id)
+
+    def _schedule_next_reply_segment_if_ready(self, sequence_id: int) -> None:
+        if (
+            sequence_id != self.reply_sequence_id
+            or sequence_id != self.current_segment_sequence_id
+            or self.reply_advance_scheduled
+            or not self.current_segment_speech_done
+            or not self.current_segment_tts_done
+            or not self.pending_reply_segments
+        ):
+            return
+
+        self.reply_advance_scheduled = True
+        QTimer.singleShot(
+            REPLY_SEGMENT_PAUSE_MS,
+            lambda: self._show_next_reply_segment(sequence_id),
+        )
+
+    def _reset_current_segment_progress(self) -> None:
+        self.current_segment_sequence_id = None
+        self.current_segment_speech_done = False
+        self.current_segment_tts_done = True
+        self.reply_advance_scheduled = False
 
 
 def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:
