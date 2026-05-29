@@ -6,6 +6,7 @@ from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QAction, QCursor, QFont, QFontDatabase, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -19,8 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import OpenAICompatibleClient
+from app.api_settings_dialog import ApiSettingsDialog
+from app.chat_history import ChatHistoryStore
 from app.chat_reply import ChatReply
 from app.chat_worker import ChatWorker
+from app.history_window import HistoryWindow
 from app.tts import TTSProvider
 
 
@@ -30,16 +34,21 @@ SPEECH_TYPING_INTERVAL_MS = 35
 class PetWindow(QWidget):
     def __init__(
         self,
+        base_dir: Path,
         portrait_path: Path,
         api_client: OpenAICompatibleClient,
         system_prompt: str,
         tts_provider: TTSProvider,
     ) -> None:
         super().__init__()
+        self.base_dir = base_dir
+        self.env_path = base_dir / ".env"
         self.portrait_path = portrait_path
         self.api_client = api_client
         self.system_prompt = system_prompt
         self.tts_provider = tts_provider
+        self.history_store = ChatHistoryStore(base_dir / "data" / "chat_history.jsonl")
+        self.history_window: HistoryWindow | None = None
         self.messages: list[dict[str, str]] = []
         self.thread: QThread | None = None
         self.worker: ChatWorker | None = None
@@ -291,6 +300,16 @@ class PetWindow(QWidget):
 
         menu.addSeparator()
 
+        history_action = QAction("历史记录", self)
+        history_action.triggered.connect(self.show_history)
+        menu.addAction(history_action)
+
+        api_settings_action = QAction("API 设置", self)
+        api_settings_action.triggered.connect(self.show_api_settings)
+        menu.addAction(api_settings_action)
+
+        menu.addSeparator()
+
         quit_action = QAction("退出", self)
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(quit_action)
@@ -324,6 +343,7 @@ class PetWindow(QWidget):
         self.set_speech("......")
         next_messages = [*self.messages, {"role": "user", "content": text}]
         self.messages = next_messages
+        self._record_history("user", text)
         self._set_busy(True)
 
         self.thread = QThread(self)
@@ -340,6 +360,7 @@ class PetWindow(QWidget):
     @Slot(object)
     def _handle_reply(self, reply: ChatReply) -> None:
         self.messages.append({"role": "assistant", "content": reply.text})
+        self._record_history("assistant", reply.text)
         self.set_speech(reply.text)
         self.tts_provider.speak(reply.text, reply.tone)
 
@@ -347,6 +368,7 @@ class PetWindow(QWidget):
     def _handle_error(self, message: str) -> None:
         if self.messages and self.messages[-1]["role"] == "user":
             self.messages.pop()
+        self._record_history("error", message)
         self.set_speech("……通信に失敗した。設定を確認して。")
         QMessageBox.warning(self, "请求失败", message)
 
@@ -392,6 +414,36 @@ class PetWindow(QWidget):
         else:
             self.show()
             self.raise_()
+
+    @Slot()
+    def show_history(self) -> None:
+        if self.history_window is None:
+            self.history_window = HistoryWindow(self.history_store, self)
+        self.history_window.refresh()
+        self.history_window.show()
+        self.history_window.raise_()
+        self.history_window.activateWindow()
+
+    @Slot()
+    def show_api_settings(self) -> None:
+        dialog = ApiSettingsDialog(self.api_client.settings, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_settings is None:
+            return
+
+        try:
+            dialog.result_settings.save(self.env_path)
+        except OSError as exc:
+            QMessageBox.critical(self, "保存失败", f"无法保存 API 设置：{exc}")
+            return
+
+        self.api_client.update_settings(dialog.result_settings)
+        QMessageBox.information(self, "保存成功", "API 设置已保存，后续聊天将使用新配置。")
+
+    def _record_history(self, role: str, content: str) -> None:
+        try:
+            self.history_store.append(role, content)
+        except OSError as exc:
+            print(f"[History] 写入失败：{exc}")
 
 
 def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:

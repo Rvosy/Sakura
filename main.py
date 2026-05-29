@@ -27,6 +27,7 @@ def main() -> int:
     tts_provider = _create_tts_provider(BASE_DIR)
 
     pet_window = PetWindow(
+        base_dir=BASE_DIR,
         portrait_path=PORTRAIT_PATH,
         api_client=api_client,
         system_prompt=system_prompt,

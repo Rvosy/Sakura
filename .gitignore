@@ -13,3 +13,4 @@ env/
 .ruff_cache/
 
 *.log
+data/chat_history.jsonl
