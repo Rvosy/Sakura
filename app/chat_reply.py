@@ -12,6 +12,13 @@ DEFAULT_TONE = "中性"
 class ChatSegment:
     text: str
     tone: str = DEFAULT_TONE
+    translation: str = ""
+
+    def display_text(self, subtitle_language: str) -> str:
+        """按字幕语言返回气泡显示文本；缺少译文时回退日文原文。"""
+        if subtitle_language == "zh" and self.translation.strip():
+            return self.translation.strip()
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -57,12 +64,12 @@ def _parse_segments(data: dict[str, Any]) -> list[ChatSegment]:
     reply = data.get("reply")
     if isinstance(reply, str) and reply.strip():
         tone = data.get("tone")
-        return [ChatSegment(reply.strip(), _clean_tone(tone))]
+        return [ChatSegment(reply.strip(), _clean_tone(tone), _clean_translation(data.get("translation")))]
 
     text = data.get("text")
     if isinstance(text, str) and text.strip():
         tone = data.get("tone")
-        return [ChatSegment(text.strip(), _clean_tone(tone))]
+        return [ChatSegment(text.strip(), _clean_tone(tone), _clean_translation(data.get("translation")))]
 
     return []
 
@@ -77,13 +84,23 @@ def _parse_segment(item: Any) -> ChatSegment | None:
     text = item.get("text")
     if not isinstance(text, str) or not text.strip():
         return None
-    return ChatSegment(text.strip(), _clean_tone(item.get("tone")))
+    return ChatSegment(
+        text.strip(),
+        _clean_tone(item.get("tone")),
+        _clean_translation(item.get("translation")),
+    )
 
 
 def _clean_tone(value: Any) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return DEFAULT_TONE
+
+
+def _clean_translation(value: Any) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
 
 
 def _try_load_json(content: str) -> Any | None:

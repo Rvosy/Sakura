@@ -15,7 +15,7 @@ from app.env_config import load_env_file, save_env_values
 SEGMENTED_REPLY_INSTRUCTION = """
 你必须只返回 JSON，不要使用 Markdown 代码块，不要输出额外解释。
 JSON 格式如下：
-{"segments":[{"text":"回复片段","tone":"中性"}]}
+{"segments":[{"text":"日文原文","translation":"中文译文","tone":"中性"}]}
 
 分段规则：
 - 尽量输出 2-4 段文本，每段是一条可以单独显示的完整小消息，不要把一句话机械切碎。
@@ -23,7 +23,9 @@ JSON 格式如下：
 - 如果用户只问很简单的问题，可以只输出 1-2 段。
 - 需要对每段文本的语气进行标注，语气标签放在 tone 字段中。
 - tone 只能从这些类别中选择：开心、中性、温柔、甜蜜、害羞。
-- text 中只写角色要说的话，不要写语气标签。
+- text 中只写夜乃桜要说出口的日文原文，适合直接交给日语 TTS 朗读。
+- translation 中只写对应的自然中文译文，不要添加解释、括号动作、语气标签或额外内容。
+- text 和 translation 必须一一对应；不要为了翻译改变 text 的角色语气或内容。
 """
 
 

@@ -23,6 +23,7 @@ from app.api_client import OpenAICompatibleClient
 from app.chat_history import ChatHistoryStore
 from app.chat_reply import ChatReply, ChatSegment
 from app.chat_worker import ChatWorker
+from app.env_config import load_env_file, save_env_values
 from app.history_window import HistoryWindow
 from app.settings_dialog import SettingsDialog
 from app.tts import (
@@ -35,8 +36,10 @@ from app.tts import (
 
 
 SPEECH_TYPING_INTERVAL_MS = 35
-SPEECH_START_DELAY_MS = 500
-REPLY_SEGMENT_PAUSE_MS = 900
+REPLY_SEGMENT_PAUSE_MS = 500
+SUBTITLE_LANGUAGE_KEY = "SUBTITLE_LANGUAGE"
+SUBTITLE_LANGUAGE_JA = "ja"
+SUBTITLE_LANGUAGE_ZH = "zh"
 
 
 class PetWindow(QWidget):
@@ -57,6 +60,7 @@ class PetWindow(QWidget):
         self.tts_provider = tts_provider
         self.retired_tts_providers: list[TTSProvider] = []
         self.history_store = ChatHistoryStore(base_dir / "data" / "chat_history.jsonl")
+        self.subtitle_language = self._load_subtitle_language()
         self.history_window: HistoryWindow | None = None
         self.messages: list[dict[str, str]] = []
         self.thread: QThread | None = None
@@ -66,7 +70,9 @@ class PetWindow(QWidget):
         self.speech_text = ""
         self.speech_index = 0
         self.pending_reply_segments: list[ChatSegment] = []
+        self.current_segment: ChatSegment | None = None
         self.reply_sequence_id = 0
+        self.reply_advance_token = 0
         self.current_segment_sequence_id: int | None = None
         self.current_segment_speech_done = False
         self.current_segment_tts_done = True
@@ -269,14 +275,19 @@ class PetWindow(QWidget):
 
     def _apply_fonts(self) -> None:
         text_font = _rounded_japanese_font(11, QFont.Weight.Normal)
-        speech_font = _rounded_japanese_font(15, QFont.Weight.Medium)
         name_font = _rounded_japanese_font(10, QFont.Weight.Bold)
         button_font = _rounded_japanese_font(11, QFont.Weight.ExtraBold)
 
         self.name_label.setFont(name_font)
-        self.speech_label.setFont(speech_font)
+        self._apply_speech_font()
         self.input_edit.setFont(text_font)
         self.send_button.setFont(button_font)
+
+    def _apply_speech_font(self) -> None:
+        if self.subtitle_language == SUBTITLE_LANGUAGE_ZH:
+            self.speech_label.setFont(_rounded_chinese_font(15, QFont.Weight.Medium))
+            return
+        self.speech_label.setFont(_rounded_japanese_font(15, QFont.Weight.Medium))
 
     def _layout_stage(self) -> None:
         width = self.width()
@@ -312,6 +323,14 @@ class PetWindow(QWidget):
         toggle_action = QAction("隐藏/显示立绘", self)
         toggle_action.triggered.connect(self.toggle_visible)
         menu.addAction(toggle_action)
+
+        menu.addSeparator()
+
+        subtitle_action = QAction("显示中文字幕", self)
+        subtitle_action.setCheckable(True)
+        subtitle_action.setChecked(self.subtitle_language == SUBTITLE_LANGUAGE_ZH)
+        subtitle_action.triggered.connect(self._toggle_chinese_subtitles)
+        menu.addAction(subtitle_action)
 
         menu.addSeparator()
 
@@ -479,6 +498,25 @@ class PetWindow(QWidget):
         self._reset_current_segment_progress()
         QMessageBox.information(self, "保存成功", "设置已保存，后续聊天和朗读将使用新配置。")
 
+    @Slot(bool)
+    def _toggle_chinese_subtitles(self, checked: bool) -> None:
+        next_language = SUBTITLE_LANGUAGE_ZH if checked else SUBTITLE_LANGUAGE_JA
+        if next_language == self.subtitle_language:
+            return
+
+        previous_language = self.subtitle_language
+        self.subtitle_language = next_language
+        try:
+            save_env_values(self.env_path, {SUBTITLE_LANGUAGE_KEY: next_language})
+        except OSError as exc:
+            self.subtitle_language = previous_language
+            self._apply_speech_font()
+            QMessageBox.warning(self, "保存失败", f"无法保存字幕设置：{exc}")
+            return
+
+        self._apply_speech_font()
+        self._restart_current_segment_speech()
+
     def _create_tts_provider_from_settings(
         self,
         settings: GPTSoVITSTTSSettings,
@@ -520,6 +558,7 @@ class PetWindow(QWidget):
             return
 
         segment = self.pending_reply_segments.pop(0)
+        self.current_segment = segment
         self.current_segment_sequence_id = sequence_id
         self.current_segment_speech_done = False
         self.current_segment_tts_done = False
@@ -528,16 +567,17 @@ class PetWindow(QWidget):
             segment.text,
             segment.tone,
             on_finished=lambda: self._mark_segment_tts_done(sequence_id),
-        )
-        QTimer.singleShot(
-            SPEECH_START_DELAY_MS,
-            lambda: self._start_segment_speech(sequence_id, segment.text),
+            on_started=lambda: self._start_segment_speech(sequence_id),
         )
 
-    def _start_segment_speech(self, sequence_id: int, text: str) -> None:
-        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+    def _start_segment_speech(self, sequence_id: int) -> None:
+        if (
+            sequence_id != self.reply_sequence_id
+            or sequence_id != self.current_segment_sequence_id
+            or self.current_segment is None
+        ):
             return
-        self.set_speech(text)
+        self.set_speech(self.current_segment.display_text(self.subtitle_language))
 
     def _mark_segment_speech_done(self, sequence_id: int) -> None:
         if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
@@ -563,16 +603,45 @@ class PetWindow(QWidget):
             return
 
         self.reply_advance_scheduled = True
+        self.reply_advance_token += 1
+        reply_advance_token = self.reply_advance_token
         QTimer.singleShot(
             REPLY_SEGMENT_PAUSE_MS,
-            lambda: self._show_next_reply_segment(sequence_id),
+            lambda: self._show_scheduled_next_reply_segment(sequence_id, reply_advance_token),
         )
 
+    def _show_scheduled_next_reply_segment(self, sequence_id: int, reply_advance_token: int) -> None:
+        if reply_advance_token != self.reply_advance_token:
+            return
+        self._show_next_reply_segment(sequence_id)
+
     def _reset_current_segment_progress(self) -> None:
+        self.current_segment = None
+        self.reply_advance_token += 1
         self.current_segment_sequence_id = None
         self.current_segment_speech_done = False
         self.current_segment_tts_done = True
         self.reply_advance_scheduled = False
+
+    def _restart_current_segment_speech(self) -> None:
+        if self.current_segment_sequence_id is None or self.current_segment is None:
+            return
+
+        self.reply_advance_token += 1
+        self.current_segment_speech_done = False
+        self.reply_advance_scheduled = False
+        self.set_speech(self.current_segment.display_text(self.subtitle_language))
+
+    def _load_subtitle_language(self) -> str:
+        try:
+            values = load_env_file(self.env_path)
+        except OSError:
+            return SUBTITLE_LANGUAGE_JA
+
+        language = values.get(SUBTITLE_LANGUAGE_KEY, SUBTITLE_LANGUAGE_JA).strip().lower()
+        if language == SUBTITLE_LANGUAGE_ZH:
+            return SUBTITLE_LANGUAGE_ZH
+        return SUBTITLE_LANGUAGE_JA
 
 
 def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:
@@ -583,6 +652,22 @@ def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:
         "Yu Gothic",
         "MS PGothic",
         "Microsoft YaHei UI",
+        "Segoe UI",
+    ])
+    font = QFont(family)
+    font.setPointSize(point_size)
+    font.setWeight(weight)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    return font
+
+
+def _rounded_chinese_font(point_size: int, weight: QFont.Weight) -> QFont:
+    family = _choose_font_family([
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+        "SimHei",
         "Segoe UI",
     ])
     font = QFont(family)
