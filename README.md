@@ -1,148 +1,174 @@
-[English](README.md) | [中文](README.zh.md)
+[中文](README.md) | [English](README.en.md)
 
 # Sakura Desktop Pet
 
-A PySide6 desktop companion that keeps a character on your screen, chats through an OpenAI-compatible API, and optionally speaks through GPT-SoVITS.
+一个停在桌面上的角色 Agent：她能聊天、换表情、朗读、记住你允许她记住的事，也能在确认后使用工具帮你处理轻量任务。
 
 ![Sakura desktop pet preview](_pet_style_preview.png)
 
-## Why This Exists
+## 为什么做它
 
-Most AI chat interfaces are still windows with text inside them. They can answer, but they do not feel present. If you want a character that stays on the desktop, reacts with expressions, speaks in a consistent voice, and keeps a readable history, you usually have to wire those pieces together yourself.
+普通 AI 聊天窗口像一块会回答问题的文本框。Sakura 想做的是另一种体验：角色一直在桌面上，能用自己的语气说话，用立绘表达情绪，在需要时查时间、记提醒、读网页，或者按你的许可看一眼当前屏幕。
 
-Sakura Desktop Pet puts those pieces behind one character package. The app loads a character card, portrait set, reply tones, voice references, API settings, and chat history, then presents them as a frameless always-on-top desktop pet.
+所以它现在不只是「桌宠 + 聊天」。核心已经变成一个桌面陪伴型 Agent：模型先判断是否需要工具，必要时调用内置工具或 MCP 工具，再把结果组织成适合桌宠播放的分段回复。每段回复都带日文原文、中文字幕和语气标签，UI 用同一份结构同步字幕、表情和可选 TTS。
 
-The core idea is simple: the model should not just return a paragraph. It returns short spoken segments, each with Japanese text, Chinese subtitle text, and a tone label. The UI can then synchronize subtitles, expression changes, and optional TTS playback around the same reply structure.
+## 这是什么
 
-## What It Is
+Sakura Desktop Pet 是一个 Python / PySide6 桌面应用。入口是 `main.py`，运行时从 `.env` 读取配置，扫描 `characters/<character_id>/character.json` 角色包，并创建无边框、置顶、可拖拽的桌宠窗口。
 
-Sakura Desktop Pet is a Python desktop app built with PySide6. It starts from `main.py`, loads configuration from `.env`, scans `characters/<character_id>/character.json`, and creates a floating pet window.
+当前内置角色是 `夜乃桜`。角色包可以定义：
 
-It currently focuses on one bundled character, `夜乃桜`, but the runtime is character-package driven. A character package can define:
+- 人格卡和初始台词
+- 默认立绘与按语气切换的表情立绘
+- GPT-SoVITS 模型路径、语气参考音频和语言配置
+- 允许模型使用的回复语气集合
 
-- persona prompt and initial message
-- default and tone-specific portraits
-- GPT-SoVITS model paths and tone reference audio
-- the set of reply tones the model is allowed to use
+## 关键能力
 
-## Key Features
+- **角色包驱动。** `CharacterRegistry` 扫描 `characters/*/character.json`，校验角色卡、立绘和语音参考资源。新增角色主要是新增一个角色目录，而不是改主程序。
 
-- **Character package runtime.** `app.character_loader.CharacterRegistry` scans `characters/*/character.json`, validates required files, and lets the settings dialog switch the active character without changing code.
+- **分段双语回复。** 模型必须返回 JSON 片段，每段包含 `ja`、`zh` 和 `tone`。角色可以用日语朗读，同时在气泡中切换日文或中文字幕。
 
-- **Segmented bilingual replies.** `app.api_client.OpenAICompatibleClient.chat()` asks the model for strict JSON segments containing `ja`, `zh`, and `tone`, so the pet can speak Japanese while showing either Japanese or Chinese subtitles.
+- **语气联动表情和语音。** `PetWindow` 根据每段 `tone` 切换立绘，并把日文文本交给 TTS Provider。启用 GPT-SoVITS 时，会按角色包配置切换权重并选择对应语气参考音频。
 
-- **Tone-driven expressions.** `app.pet_window.PetWindow` maps each reply segment's tone to a portrait through `CharacterProfile.portrait_for_tone()`, then swaps the visible portrait as the reply advances.
+- **Agent 工具循环。** `AgentRuntime` 会先让模型规划是否需要工具，再执行待办、提醒、笔记、记忆、浏览器、屏幕观察等工具，最后基于工具结果生成桌宠回复。
 
-- **Optional GPT-SoVITS voice.** `app.tts.GPTSoVITSTTSProvider` sends each segment to a local GPT-SoVITS API, switches character weights when configured, selects tone reference audio, and plays generated WAV files through Qt Multimedia.
+- **按需屏幕观察。** 当用户问题需要当前画面，且隐私开关与模型视觉开关都开启时，Sakura 会截取光标所在屏幕，以 OpenAI 兼容的 `image_url` 消息发送给模型；截图不会写入聊天历史。
 
-- **Desktop-first controls.** The pet is frameless, draggable, always on top, and controlled through a tray menu with visibility, subtitle language, history, settings, and quit actions.
+- **受控浏览器。** Sakura 可以打开一个由应用托管的浏览器窗口，读取页面文本和链接、滚动页面、点击 CSS selector，并把结果交给模型总结。会改变外部状态的动作需要确认。
 
-- **Local chat history.** `app.chat_history.ChatHistoryStore` stores JSONL history per character under `data/chat_history/<character_id>.jsonl`, skipping malformed records instead of failing the whole history view.
+- **长期记忆、提醒和本地数据。** 待办、提醒、笔记、长期记忆都保存到 `data/` 下。长期记忆采用候选确认机制：只有用户明确要求记住并确认后，才会写入正式记忆。
 
-## With and Without Sakura
+- **MCP 扩展。** `data/config/mcp.yaml` 可注册 stdio 或 SSE MCP Server，外部工具会带名称前缀挂入 Sakura 的工具注册表，并按风险级别决定是否需要确认。
 
-| Without Sakura | With Sakura |
+## 使用前后有什么不同
+
+| 不用 Sakura | 使用 Sakura |
 |---|---|
-| Chat happens in a normal text window | The character stays as a desktop pet |
-| Replies are plain text blobs | Replies are short display and speech segments |
-| Translation is a separate step | Japanese text and Chinese subtitle are produced together |
-| Expressions are manual or absent | Tone labels drive portrait changes |
-| TTS uses one fixed prompt | Tone references can vary per reply tone |
-| Settings require editing files only | API, character, and TTS settings are available in the UI |
-| History can be lost between sessions | Per-character JSONL history is saved locally |
+| 聊天发生在普通文本窗口里 | 角色作为桌宠停留在屏幕上 |
+| 回复是一整段纯文本 | 回复拆成适合显示、朗读和表情切换的小段 |
+| 表情和语音通常互不联动 | 语气标签同时驱动立绘和 TTS 参考音频 |
+| 工具调用要靠你手动切换应用 | 模型可在对话中规划并调用内置工具 |
+| 看屏幕容易变成长期保存截图 | 截图只按需附加到当前轮消息，历史只保留标记 |
+| 外部能力要写死在代码里 | MCP Server 可通过 YAML 配置接入 |
+| 长期记忆容易被模型静默写入 | 候选记忆需要用户明确确认 |
 
-## How It Works
+## 工作原理
 
-### Startup Path
+### 启动流程
 
-When you run `python main.py`, the app:
+运行 `python main.py` 后，应用会：
 
-1. Creates a `QApplication`.
-2. Loads API settings from `.env` through `ApiSettings.load()`.
-3. Scans character packages with `CharacterRegistry`.
-4. Loads the current character and system prompt.
-5. Creates either a GPT-SoVITS provider or a silent fallback provider.
-6. Shows `PetWindow`.
+1. 创建 `QApplication`。
+2. 通过 `ApiSettings.load()` 从 `.env` 加载 API 配置。
+3. 使用 `CharacterRegistry` 扫描角色包。
+4. 加载当前角色的人格卡和可用语气。
+5. 创建内置工具注册表、记忆库、提醒库、受控浏览器桥接器和可选 MCP 工具。
+6. 创建 GPT-SoVITS Provider 或静音 Provider。
+7. 显示 `PetWindow`。
 
 ```mermaid
 flowchart LR
-    A["main.py"] --> B[".env settings"]
+    A["main.py"] --> B[".env"]
     A --> C["CharacterRegistry"]
     C --> D["characters/sakura/character.json"]
     A --> E["OpenAICompatibleClient"]
-    A --> F["TTSProvider"]
-    E --> G["PetWindow"]
-    F --> G
-    D --> G
+    A --> F["AgentRuntime"]
+    F --> G["ToolRegistry"]
+    G --> H["内置工具 / MCP 工具"]
+    A --> I["TTSProvider"]
+    D --> J["PetWindow"]
+    E --> F
+    F --> J
+    I --> J
 ```
 
-### Chat Flow
+### 对话和工具调用
 
-`PetWindow.send_message()` records the user message, disables the input, and starts `ChatWorker` in a `QThread`. The worker calls the OpenAI-compatible `/chat/completions` endpoint through the standard library `urllib` stack.
+`PetWindow.send_message()` 会把用户输入加入最近上下文，并在 `QThread` 中启动 `ChatWorker`。Worker 调用 `AgentRuntime.handle_user_message()`：
 
-The system prompt is extended with a reply contract:
+1. 模型先返回工具规划 JSON：`reply` + `tool_calls`。
+2. 如果没有工具调用，直接解析为桌宠回复。
+3. 如果有工具调用，`ToolRegistry` 判断是直接执行还是等待用户确认。
+4. 工具结果会被截断、脱敏后交回模型。
+5. 模型生成最终分段回复，UI 再逐段播放字幕、表情和语音。
 
-```json
-{"segments":[{"ja":"日文原文","zh":"中文译文","tone":"中性"}]}
-```
+单轮最多执行 `3` 个工具调用，工具结果默认最多保留约 `6000` 字符给模型，避免上下文失控。
 
-`app.chat_reply.parse_chat_reply()` parses that structure. If the model returns plain text or malformed JSON, it falls back to a single neutral segment so the UI can still show a reply.
+### 屏幕观察
 
-### Display, Subtitle, and Voice Sync
+屏幕观察是双开关设计：
 
-Each reply segment moves through the same sequence:
+- 设置窗口的「允许按需屏幕观察」控制应用是否允许截图。
+- 右键菜单的「启用模型视觉」控制当前会话是否把截图能力暴露给模型。
 
-1. Preload the portrait for its tone.
-2. Ask the TTS provider to speak the Japanese text.
-3. Switch the portrait when playback starts.
-4. Type the selected subtitle language into the speech bubble.
-5. Advance only after both speech display and TTS playback have finished.
+只有两个开关都开启，且模型确实请求 `observe_screen` 时，Sakura 才会截取光标所在屏幕。截图会缩放到最长边 `1280`，以 JPEG data URL 附加到当前轮请求；聊天历史只记录一条「已附加当前屏幕截图」标记。
 
-If TTS is disabled, `NullTTSProvider` immediately triggers the same callbacks. That keeps the chat flow identical with or without voice enabled.
+### 工具和权限
 
-### GPT-SoVITS Integration
+内置工具包括：
 
-The bundled TTS service lives under `tts/`. Sakura expects a local GPT-SoVITS API compatible with:
-
-- `POST /tts`
-- `GET /set_gpt_weights`
-- `GET /set_sovits_weights`
-
-When a character package provides voice model paths, the provider switches weights once, then generates WAV audio for each segment. Tone references are loaded from the character package's `voice/refs/ref.txt`.
-
-### Design Choices
-
-| Choice | Why |
+| 工具类型 | 能力 |
 |---|---|
-| OpenAI-compatible API instead of one SDK | Works with OpenAI and compatible providers through `BASE_URL`, `API_KEY`, and `MODEL` |
-| Character packages instead of hard-coded assets | New characters can be added by adding files under `characters/<id>/` |
-| JSONL chat history | One bad line does not corrupt the entire history |
-| Worker thread for chat requests | The Qt UI stays responsive while the network request is running |
-| Silent TTS fallback | Chat remains usable even when GPT-SoVITS is not installed or disabled |
+| 时间 | 获取本机当前时间和时区 |
+| 待办 | 新增、列出、完成待办 |
+| 提醒 | 新增、列出、取消一次性提醒；到期后主动触发桌宠提醒 |
+| 笔记 | 读取和写入 `data/notes/` 下的文本笔记 |
+| 记忆 | 搜索、提出候选记忆、确认记忆、忘记记忆 |
+| 网页 | 打开外部 URL，或使用 Sakura 受控浏览器读网页、滚动、点击、取状态 |
+| 本地文件夹 | 打开已存在的本地文件夹 |
+| 屏幕观察 | 按需捕获当前屏幕并交给视觉模型 |
 
-## Quick Start
+会改变桌面、浏览器或外部状态的工具默认需要确认。右键菜单里的「自由访问权限」可以让普通确认工具直接执行，但高风险或破坏性工具仍会保留确认。
 
-**Prerequisites:** Python 3.10+ is recommended. On Windows, use PowerShell commands below.
+### MCP 扩展
+
+如果存在 `data/config/mcp.yaml`，Sakura 会尝试读取 MCP 配置并注册外部工具。配置文件不存在时，MCP 会静默关闭，不影响主流程。
+
+示例：
+
+```yaml
+enabled: true
+default_call_timeout: 30
+servers:
+  browser:
+    transport: stdio
+    command: python
+    args: ["path/to/server.py"]
+    name_prefix: browser__
+    risk: medium
+```
+
+支持的 transport：
+
+- `stdio`
+- `sse`
+
+`risk: low` 默认不需要确认；`medium` 和 `high` 默认需要确认，也可以用 `requires_confirmation` 显式覆盖。
+
+## 快速开始
+
+**前置要求：** 推荐 Python 3.10+。Windows 下可以直接使用下面的 PowerShell 命令。
 
 ```powershell
-# 1. Create and activate a virtual environment
+# 1. 创建并激活虚拟环境
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# 2. Install the desktop app dependency
+# 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. Create local configuration
+# 3. 创建本地配置
 Copy-Item config.example.env .env
 
-# 4. Edit .env and set at least API_KEY
+# 4. 编辑 .env，至少填入 API_KEY
 notepad .env
 
-# 5. Start the desktop pet
+# 5. 启动桌宠
 python main.py
 ```
 
-At minimum, `.env` needs:
+`.env` 至少需要：
 
 ```env
 BASE_URL=https://api.openai.com/v1
@@ -152,73 +178,88 @@ CURRENT_CHARACTER_ID=sakura
 TTS_ENABLED=false
 ```
 
-You should see the `夜乃桜` desktop pet near the bottom-right of the screen. Right-click the pet or tray icon to open settings, history, subtitle language, and quit actions.
+启动后，你应该能在屏幕右下附近看到 `夜乃桜`。右键桌宠或托盘图标可以打开设置、历史记录、字幕语言、隐私开关、模型视觉开关、自由访问权限和退出菜单。
 
-## Optional Voice Setup
+## 可选语音配置
 
-Voice is disabled by default. To enable GPT-SoVITS playback:
+语音默认关闭。当前仓库提供 GPT-SoVITS 客户端接入和 Sakura 角色的语音资源配置，但不内置 GPT-SoVITS 服务端运行目录。你需要先自行启动一个兼容以下接口的本地 GPT-SoVITS API：
 
-```powershell
-# Install TTS dependencies
-pip install -r tts\requirements.txt
+- `POST /tts`
+- `GET /set_gpt_weights`
+- `GET /set_sovits_weights`
 
-# Start the local GPT-SoVITS API
-Set-Location tts
-python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
-```
-
-Then set these values in `.env` or in the settings dialog:
+然后在 `.env` 或设置窗口中启用：
 
 ```env
 TTS_ENABLED=true
 GPT_SOVITS_API_URL=http://127.0.0.1:9880/tts
 GPT_SOVITS_REF_LANG=ja
 GPT_SOVITS_TEXT_LANG=ja
+GPT_SOVITS_TIMEOUT_SECONDS=60
 ```
 
-The Sakura character package already points to its configured GPT and SoVITS model paths through `characters/sakura/character.json`.
+内置 Sakura 角色包已经在 `characters/sakura/character.json` 中配置了 GPT / SoVITS 模型路径和语气参考表。
 
-## Project Map
+## 配置项
+
+| 配置项 | 作用 | 默认值 |
+|---|---|---|
+| `BASE_URL` | OpenAI 兼容 API 地址 | `https://api.openai.com/v1` |
+| `API_KEY` | 聊天请求使用的 API Key | 空 |
+| `MODEL` | 聊天模型名称 | `gpt-4.1-mini` |
+| `API_TIMEOUT_SECONDS` | 聊天请求超时时间 | `60` |
+| `SUBTITLE_LANGUAGE` | 气泡显示 `ja` 或 `zh` | `ja` |
+| `SCREEN_OBSERVATION_ENABLED` | 是否允许按需屏幕观察 | `true` |
+| `SAKURA_DEBUG` | 是否输出调试日志 | `false` |
+| `SAKURA_DEBUG_BODY` | 是否在调试日志中输出完整正文 | `false` |
+| `CURRENT_CHARACTER_ID` | 当前角色包 id | `sakura` |
+| `TTS_ENABLED` | 是否启用 GPT-SoVITS 语音 | `false` |
+| `GPT_SOVITS_API_URL` | 本地 TTS 接口地址 | `http://127.0.0.1:9880/tts` |
+| `GPT_SOVITS_REF_LANG` | 参考音频语言 | `ja` |
+| `GPT_SOVITS_TEXT_LANG` | 发送给 TTS 的文本语言 | `ja` |
+| `GPT_SOVITS_TIMEOUT_SECONDS` | TTS 请求超时时间 | `60` |
+
+## 项目结构
 
 ```text
 .
-├── main.py                         # Application entry point
-├── config.example.env              # Example runtime configuration
+├── main.py                         # 应用入口
+├── config.example.env              # 示例运行配置
 ├── app/
-│   ├── pet_window.py               # Floating pet UI, tray menu, subtitles, expression flow
-│   ├── api_client.py               # OpenAI-compatible chat/completions client
-│   ├── chat_reply.py               # Segmented reply parser and fallback logic
-│   ├── character_loader.py         # Character package scanning and validation
-│   ├── tts.py                      # GPT-SoVITS provider and silent fallback
-│   ├── settings_dialog.py          # Character, API, and TTS settings UI
-│   └── chat_history.py             # Per-character JSONL history
+│   ├── pet_window.py               # 桌宠窗口、托盘菜单、字幕、表情和工具确认
+│   ├── api_client.py               # OpenAI 兼容 chat/completions 客户端
+│   ├── chat_worker.py              # Qt 后台线程 Worker
+│   ├── chat_reply.py               # 分段回复解析与兜底
+│   ├── character_loader.py         # 角色包扫描和校验
+│   ├── screen_observation.py       # 按需屏幕截图与多模态消息构造
+│   ├── browser_controller.py       # Sakura 受控浏览器窗口
+│   ├── settings_dialog.py          # 角色、API、TTS、隐私设置
+│   ├── tts.py                      # GPT-SoVITS Provider 与静音 Provider
+│   └── agent/
+│       ├── runtime.py              # Agent 规划、工具调用和最终回复
+│       ├── builtin_tools.py        # 内置工具注册
+│       ├── tool_registry.py        # 工具权限、确认和执行
+│       ├── memory.py               # 长期记忆与候选记忆
+│       ├── reminders.py            # 一次性提醒
+│       └── mcp/                    # MCP 配置、连接和工具桥接
 ├── characters/
 │   └── sakura/
-│       ├── character.json          # Character manifest
-│       ├── card.md                 # System prompt / character card
-│       ├── portraits/              # Tone-specific portraits
-│       └── voice/                  # GPT-SoVITS models and reference audio
-├── data/
-│   └── chat_history/               # Local chat history
-└── tts/                            # Bundled GPT-SoVITS API runtime
+│       ├── character.json          # 角色清单
+│       ├── card.md                 # 人格卡 / 系统提示词
+│       ├── portraits/              # 语气立绘
+│       └── voice/                  # 模型路径配置和参考音频
+├── data/                           # 本地历史、记忆、提醒、待办、笔记和 MCP 配置
+└── tests/                          # pytest 测试
 ```
 
-## Configuration Reference
+## 测试
 
-| Key | Purpose | Default |
-|---|---|---|
-| `BASE_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` |
-| `API_KEY` | API key for chat requests | empty |
-| `MODEL` | Chat model name | `gpt-4.1-mini` |
-| `API_TIMEOUT_SECONDS` | Chat request timeout | `60` |
-| `SUBTITLE_LANGUAGE` | `ja` or `zh` speech bubble text | `ja` |
-| `CURRENT_CHARACTER_ID` | Active character package id | `sakura` |
-| `TTS_ENABLED` | Enable GPT-SoVITS voice | `false` |
-| `GPT_SOVITS_API_URL` | Local TTS endpoint | `http://127.0.0.1:9880/tts` |
-| `GPT_SOVITS_REF_LANG` | Reference audio language | `ja` |
-| `GPT_SOVITS_TEXT_LANG` | Text language sent to TTS | `ja` |
-| `GPT_SOVITS_TIMEOUT_SECONDS` | TTS request timeout | `60` |
+```powershell
+python -m pytest
+```
 
-## License
+测试覆盖了 API 客户端、Agent 核心链路、聊天 Worker、调试日志、桌宠窗口和 TTS 相关行为。
 
-No root license file is included yet. Check third-party components under `tts/` for their own license files before redistributing model or runtime assets.
+## 许可证
+
+仓库根目录目前没有提供 `LICENSE` 文件。重新分发角色资源、模型权重或第三方运行时前，请分别确认对应文件的授权。
