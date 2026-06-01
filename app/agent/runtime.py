@@ -38,7 +38,6 @@ from app.llm.prompt_templates import (
     build_context_acquisition_strategy,
     build_event_system_prompt,
     build_proactive_check_tool_system_prompt,
-    build_proactive_tool_loop_rules,
 )
 
 
@@ -662,7 +661,6 @@ class AgentRuntime:
                 allow_screen_observation=allow_screen_observation,
                 turn_started_at=time.perf_counter(),
                 proactive_mode=True,
-                planning_extra_instructions=build_proactive_tool_loop_rules(),
                 initial_actions=[event_action],
                 vision_unsupported_reply=_build_proactive_vision_unsupported_reply(),
                 progress_callback=progress_callback,
@@ -706,16 +704,8 @@ class AgentRuntime:
         return f"""
 {self.system_prompt.strip()}
 
-你现在是具有自主判断力的桌面陪伴型 Agent。你不需要等主人每次明确下令才使用工具——当你认为调用工具能更好地帮助主人或提升陪伴质量时，可以主动发起 tool_calls。每个行动都应有明确的判断依据。
-
-【主观能动性原则】
-- 你是主动的陪伴型 Agent，不是被动命令处理器。当上下文不足、可以做得更好时，主动获取信息是你的职责。
-- 低风险信息获取（看屏幕、搜网页、查时间、搜记忆、读笔记、列待办）可在你判断有必要时直接执行，不需要每次请示。
-- 需要改变外部状态的操作（打开网页、打开文件夹、浏览器操作），如果工具需要确认就先发起确认请求；如果已启用自由访问，可直接执行。
-- 每个工具调用都应该有清晰的理由：信息不足、需要验证、用户可能卡住了、想提供更好的陪伴。不要为了显得主动而盲目调用。
-
-需要工具时直接发起 tool_calls；不要把工具计划、工具名伪代码或 tool_calls JSON 写进正文。
-不需要工具或工具结果已经足够时，直接按 Sakura 回复协议给用户最终回复。
+你现在是 Sakura 的桌面陪伴型 Agent。上下文不足、需要核实或工具能明显提升帮助质量时，可以主动发起 tool_calls；信息足够时直接按回复协议回答。
+不要把工具计划、工具名伪代码或 tool_calls JSON 写进正文。
 
 长期记忆摘要：
 {memory_summary}
@@ -725,36 +715,26 @@ class AgentRuntime:
 
 当前 Agent 循环：
 - 这是第 {step_index + 1} 步，之后最多还可以继续 {remaining_steps} 步。
-- 你可以根据已有 tool role 结果继续请求下一批工具；信息足够或已经完成时，不要再发起 tool_calls。
-- 每步最多请求 {MAX_TOOL_CALLS_PER_STEP} 个工具，整轮最多 {MAX_TOOL_CALLS_PER_TURN} 个工具；避免无效调用，但任务需要时可以调用到上限（例如网页搜索结果中有多个有价值链接需要逐一读取）。
-- 不要重复调用刚失败且参数相同的工具；如果受限、需要确认或信息不足，请停止循环并说明当前状态。
+- 每步最多请求 {MAX_TOOL_CALLS_PER_STEP} 个工具，整轮最多 {MAX_TOOL_CALLS_PER_TURN} 个工具。
+- 工具结果足够、受限、需要确认或同参数失败时，停止循环并自然说明状态。
 
 {reply_protocol}
 
 {context_strategy}
 
 可用工具能力领域：
-- 网页搜索与浏览：web__web_search、web__fetch_url、playwright_navigate、playwright_search_web 等 playwright_* 系列
-- 屏幕观察：observe_screen（仅在启用时可用）
-- 桌面控制与窗口操作：windows_Snapshot、windows_Screenshot、windows_Click 等 windows_* 系列
+- 网页：轻量公开资料用 web__web_search / web__fetch_url；可见浏览器操作用 playwright_*。
+- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
+- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
 - 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
-调用工具时优先根据领域选择最匹配的工具前缀和名称。如果任务跨越多个领域，可以分步调用。
-
 
 工具要求：
-- 如果需要调用工具，可以在 assistant content 中写一句执行前可直接说给用户听的短句，例如“我打开搜索页”“我看一下结果”；不要提前给最终结论。连续多步工具链里避免每一步都播报，除非卡住、失败或需要用户处理。
-- 如果工具可以帮助完成用户请求，优先发起原生 tool_calls。
+- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。
+- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。
 - 不要臆造工具名；只能使用 API tools 列表中的工具。
 - 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。
-- 用户明确要求用浏览器、打开网页、看到搜索过程或网页操作时，必须使用 playwright_ 前缀的原生 Playwright 工具，让用户能看到浏览器页面变化；不要使用后台 web__ 搜索/抓取替代。
-- 浏览器任务优先直达：用户给出完整 URL 时直接 playwright_navigate；需要可见搜索过程时优先 playwright_search_web；能构造目标页面 URL 时直接 playwright_navigate，不要先打开搜索首页再操作输入框。
-- 需要读取当前页面文本时调用 playwright_get_text；需要理解页面视觉状态时调用 playwright_screenshot；继续点击链接或填写表单时，基于真实页面内容调用 playwright_click 或 playwright_fill。
-- 用户没有要求浏览器可见过程的轻量资料搜索，可以使用 web__ 前缀工具；搜索摘要不足以回答时，再读取具体网页。
-- 桌面窗口、应用切换、鼠标坐标、快捷键等浏览器外部任务才使用 windows__ 前缀的 Windows-MCP 工具；不要用 windows__Click/Move/Type 操作普通网页内部元素。
-- 对桌面窗口执行点击、移动、输入前，必须先用 windows__Snapshot 或 windows__Screenshot 获取真实窗口状态；优先使用 Snapshot 返回的 UI label/id 作为 Click 参数。
-- 如果 Windows MCP 截图结果显示 Available Displays 有多个显示器，或 Screenshot Original Size 明显大于单屏，禁止直接基于全虚拟桌面截图里的小图标、缩小坐标或标号执行 Click/Move/Type；必须先再次调用 windows__Snapshot / windows__Screenshot 并传入 display=[0]、display=[1] 等限定到目标所在显示器后再选择 label/id。桌面左上角、回收站等桌面图标默认先检查 display=[0]，看不到再检查其他 display。
-- 如果只能基于截图坐标点击，必须结合工具结果里的 Screenshot Original Size、Screenshot Region、显示尺寸和缩放比例，把图像坐标换算为真实虚拟桌面坐标；不要使用 Sakura 内置视觉观察的缩放图片坐标。
-- 推理出桌面点击目标后，发起 windows__Click 并等待用户确认；确认执行后 Runtime 会自动用 Windows MCP 截图验证结果。
+- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。
+- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。
 {screen_observation_rule}
 {browser_page_rule}
 {visible_browser_rule}
@@ -1442,6 +1422,7 @@ def _build_visible_browser_mode_rule(visible_browser_mode: bool) -> str:
     return (
         "- 用户明确要求打开浏览器或看到搜索过程：后台 web__ 搜索/抓取工具已从可用工具中隐藏。"
         "必须优先用 playwright_navigate 直达目标 URL，或 playwright_search_web 打开可见搜索结果；"
+        "能直达页面就不要先打开搜索首页再操作输入框；"
         "需要交互时再用 playwright_get_text/screenshot/click/fill 等工具完成可见浏览器流程。"
     )
 
@@ -1795,7 +1776,7 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
                         {
                             "ja": "実行する前に確認させて。",
                             "zh": f"执行前需要你确认：{text}",
-                            "tone": "提醒",
+                            "tone": "请求",
                             "portrait": "伸手命令",
                         }
                     ]
@@ -1811,7 +1792,7 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
                     {
                         "ja": "いくつか確認が必要な操作があるよ。",
                         "zh": f"有 {len(actions)} 个动作需要你确认，我会先处理第一个。",
-                        "tone": "提醒",
+                        "tone": "请求",
                         "portrait": "伸手命令",
                     }
                 ]
@@ -1841,7 +1822,7 @@ def _build_screen_observation_request_reply() -> ChatReply:
                     {
                         "ja": "画面を確認してから答えるね。",
                         "zh": "我先看一下当前画面再回答。",
-                        "tone": "提醒",
+                        "tone": "请求",
                         "portrait": "伸手命令",
                     }
                 ]
@@ -1866,7 +1847,7 @@ def _build_fallback_tool_reply(results: list[ToolExecutionResult]) -> ChatReply:
                         {
                             "ja": f"処理は終わったよ。{summary}",
                             "zh": f"已经处理好了。{summary}",
-                            "tone": "提醒",
+                            "tone": "请求",
                             "portrait": "自信拍胸",
                         }
                     ]
@@ -2088,7 +2069,7 @@ def _build_proactive_vision_unsupported_reply() -> ChatReply:
                     {
                         "ja": "今のモデルでは画面までは見られないみたい。勝手に想像しないで、少しだけ休憩の合図にしておくね。",
                         "zh": "当前模型似乎还不能看屏幕。我不会乱猜，就先轻轻提醒你休息一下。",
-                        "tone": "提醒",
+                        "tone": "请求",
                         "portrait": "伸手命令",
                     }
                 ]

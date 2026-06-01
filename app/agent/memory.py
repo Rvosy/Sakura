@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -61,6 +62,9 @@ class MemoryStore:
     _loading: bool = field(default=False, init=False, repr=False)
     _loading_started_at: float = field(default=0.0, init=False, repr=False)
     _load_error: str = field(default="", init=False, repr=False)
+    _reloading: bool = field(default=False, init=False, repr=False)
+    _reload_error: str = field(default="", init=False, repr=False)
+    _reload_generation: int = field(default=0, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -77,6 +81,8 @@ class MemoryStore:
     def set_api_settings(self, api_settings: "ApiSettings") -> None:
         """API 设置变更后重置 mem0，下次使用新配置重新初始化。"""
 
+        if self.api_settings == api_settings:
+            return
         self.api_settings = api_settings
         self.reset_runtime()
 
@@ -86,13 +92,89 @@ class MemoryStore:
             self._loading = False
             self._loading_started_at = 0.0
             self._load_error = ""
+            self._reloading = False
+            self._reload_error = ""
+            self._reload_generation += 1
 
-    def build_mem0_config(self) -> dict[str, Any]:
+    def is_ready(self) -> bool:
+        """返回长期记忆运行时是否已经可直接使用。"""
+
+        with self._lock:
+            return self._memory is not None
+
+    def preload(self, *, wait: bool = False) -> None:
+        """提前启动 mem0 加载，避免首次打开设置或聊天时才初始化。"""
+
+        if wait:
+            self._get_memory(wait=True)
+            return
+        with self._lock:
+            if self._memory is not None or self._loading:
+                return
+            if self._load_error:
+                self._load_error = ""
+            self._start_loading_locked()
+
+    def reload_api_settings(self, api_settings: "ApiSettings", *, wait: bool = False) -> None:
+        """后台使用新 API 配置重建 mem0，成功前保留旧实例继续服务。"""
+
+        with self._lock:
+            if self.api_settings == api_settings and self._memory is not None and not self._reload_error:
+                return
+            self.api_settings = api_settings
+            self._reload_generation += 1
+            generation = self._reload_generation
+            self._reload_error = ""
+
+        if wait:
+            try:
+                memory = self._create_memory_client(api_settings)
+            except Exception as exc:
+                logger.exception("mem0 后台重载失败")
+                with self._lock:
+                    if generation == self._reload_generation:
+                        self._reload_error = str(exc)
+                return
+            with self._lock:
+                if generation == self._reload_generation:
+                    self._memory = memory
+                    self._load_error = ""
+                    self._loading = False
+                    self._reloading = False
+            return
+
+        with self._lock:
+            self._reloading = True
+
+        def reload() -> None:
+            try:
+                memory = self._create_memory_client(api_settings)
+            except Exception as exc:
+                logger.exception("mem0 后台重载失败")
+                with self._lock:
+                    if generation == self._reload_generation:
+                        self._reload_error = str(exc)
+                        self._reloading = False
+                return
+            with self._lock:
+                if generation != self._reload_generation:
+                    return
+                self._memory = memory
+                self._load_error = ""
+                self._reload_error = ""
+                self._loading = False
+                self._reloading = False
+
+        thread = threading.Thread(target=reload, name="sakura-mem0-reloader", daemon=True)
+        thread.start()
+
+    def build_mem0_config(self, api_settings: "ApiSettings | None" = None) -> dict[str, Any]:
         """生成 mem0 配置：本地 Qdrant + Sakura 当前 OpenAI-compatible LLM。"""
 
         memory_dir = self.base_dir / "data" / "memory"
         qdrant_path = memory_dir / "qdrant"
         qdrant_path.mkdir(parents=True, exist_ok=True)
+        settings = self.api_settings if api_settings is None else api_settings
 
         llm_config: dict[str, Any] = {
             "provider": "openai",
@@ -102,12 +184,12 @@ class MemoryStore:
                 "max_tokens": 2000,
             },
         }
-        if self.api_settings is not None:
-            llm_config["config"]["model"] = self.api_settings.model or "gpt-4.1-mini"
-            if self.api_settings.api_key:
-                llm_config["config"]["api_key"] = self.api_settings.api_key
-            if self.api_settings.base_url:
-                llm_config["config"]["openai_base_url"] = self.api_settings.base_url.rstrip("/")
+        if settings is not None:
+            llm_config["config"]["model"] = settings.model or "gpt-4.1-mini"
+            if settings.api_key:
+                llm_config["config"]["api_key"] = settings.api_key
+            if settings.base_url:
+                llm_config["config"]["openai_base_url"] = settings.base_url.rstrip("/")
 
         return {
             "vector_store": {
@@ -125,6 +207,7 @@ class MemoryStore:
                 "config": {
                     "model": DEFAULT_EMBEDDING_MODEL,
                     "embedding_dims": DEFAULT_EMBEDDING_DIMS,
+                    "model_kwargs": _local_embedding_model_kwargs(DEFAULT_EMBEDDING_MODEL),
                 },
             },
             "history_db_path": str(memory_dir / "mem0_history.db"),
@@ -265,28 +348,34 @@ class MemoryStore:
         self._loading = True
         self._loading_started_at = time.time()
         self._load_error = ""
+        generation = self._reload_generation
+        api_settings = self.api_settings
 
         def load() -> None:
             try:
-                mem = self._create_memory_client()
+                mem = self._create_memory_client(api_settings)
             except Exception as exc:
                 logger.exception("mem0 初始化失败")
                 with self._lock:
-                    self._load_error = str(exc)
-                    self._loading = False
+                    if generation == self._reload_generation:
+                        self._load_error = str(exc)
+                        self._loading = False
                 return
             with self._lock:
+                if generation != self._reload_generation or self.api_settings != api_settings:
+                    self._loading = False
+                    return
                 self._memory = mem
                 self._loading = False
 
         thread = threading.Thread(target=load, name="sakura-mem0-loader", daemon=True)
         thread.start()
 
-    def _create_memory_client(self) -> Any:
+    def _create_memory_client(self, api_settings: "ApiSettings | None" = None) -> Any:
         install_mem0_vendor()
         from mem0 import Memory
 
-        return Memory.from_config(self.build_mem0_config())
+        return Memory.from_config(self.build_mem0_config(api_settings))
 
     def _loading_response(self) -> dict[str, Any]:
         elapsed = int(time.time() - self._loading_started_at) if self._loading_started_at else 0
@@ -312,6 +401,29 @@ def _resolve_base_dir(base_dir: Path | None) -> Path:
 def _normalize_scope_id(scope_id: str | None) -> str:
     text = (scope_id or "").strip()
     return text if text and not any(ch.isspace() for ch in text) else DEFAULT_MEMORY_SCOPE
+
+
+def _local_embedding_model_kwargs(model_name: str) -> dict[str, Any]:
+    """本地已有 HuggingFace 缓存时禁止联网探测，避免设置页反复卡顿。"""
+
+    cache_root = (
+        os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        or os.environ.get("TRANSFORMERS_CACHE")
+    )
+    cache_candidates: list[Path] = []
+    if cache_root:
+        cache_path = Path(cache_root)
+        cache_candidates.extend([cache_path, cache_path / "hub"])
+    default_hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    cache_candidates.append(default_hf_home / "hub")
+
+    model_cache_name = "models--" + model_name.replace("/", "--")
+    for root in cache_candidates:
+        snapshot_dir = root / model_cache_name / "snapshots"
+        if snapshot_dir.exists() and any(snapshot_dir.iterdir()):
+            return {"local_files_only": True}
+    return {}
 
 
 def _normalize_memory_results(raw: Any) -> list[dict[str, Any]]:

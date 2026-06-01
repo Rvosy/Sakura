@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus
+
+from plugins.playwright_browser.config_model import default_config_path, load_config
 
 
 T = TypeVar("T")
@@ -17,10 +20,17 @@ _bg_executor: ThreadPoolExecutor | None = None
 _browser_thread_id: int | None = None
 _use_bg_thread = True
 _launch_lock = threading.Lock()
+_plugin_root = Path(__file__).resolve().parent
+
+
+def set_plugin_root(plugin_root: str | Path) -> None:
+    """设置插件根目录，浏览器启动时会从这里读取持久化配置。"""
+    global _plugin_root
+    _plugin_root = Path(plugin_root)
 
 
 def navigate(url: str) -> dict[str, str]:
-    """打开指定网页，使用系统已安装的 Edge。"""
+    """打开指定网页，浏览器类型由插件配置决定。"""
 
     def task() -> dict[str, str]:
         page = _ensure_browser()
@@ -41,7 +51,7 @@ def get_text(selector: str = "body") -> str:
 
 
 def search_web(query: str, limit: int = 5) -> str:
-    """用可见 Edge 打开 DuckDuckGo HTML 搜索页并整理结果。"""
+    """用 Playwright 打开 DuckDuckGo HTML 搜索页并整理结果。"""
 
     def task() -> str:
         page = _ensure_browser()
@@ -169,10 +179,23 @@ def _ensure_browser() -> Any:
     from playwright.sync_api import sync_playwright
 
     _playwright = _playwright or sync_playwright().start()
-    _browser = _browser or _playwright.chromium.launch(channel="msedge", headless=False)
+    if _browser is None:
+        cfg = load_config(default_config_path(_plugin_root))
+        cfg.clamp()
+        _browser = _launch_configured_browser(_playwright, cfg.browser_type, cfg.headless)
     _context = _context or _browser.new_context()
     _page = _context.new_page()
     return _page
+
+
+def _launch_configured_browser(playwright: Any, browser_type: str, headless: bool) -> Any:
+    if browser_type in {"msedge", "chrome"}:
+        return playwright.chromium.launch(channel=browser_type, headless=headless)
+    if browser_type == "firefox":
+        return playwright.firefox.launch(headless=headless)
+    if browser_type == "webkit":
+        return playwright.webkit.launch(headless=headless)
+    return playwright.chromium.launch(headless=headless)
 
 
 def _shutdown_browser_objects() -> None:

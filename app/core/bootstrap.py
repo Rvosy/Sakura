@@ -78,6 +78,7 @@ def build_app_context(base_dir: Path) -> AppContext:
         api_settings=settings,
         scope_id=character_profile.id,
     )
+    memory_store.preload(wait=False)
     reminder_store = ReminderStore(base_dir / "data" / "reminders.json")
     tool_registry = create_builtin_tool_registry(
         base_dir,

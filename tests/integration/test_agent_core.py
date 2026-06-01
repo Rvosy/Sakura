@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 import uuid
 
 import pytest
@@ -331,6 +332,115 @@ def test_memory_store_builds_local_mem0_config() -> None:
     assert config["llm"]["config"]["api_key"] == "test-key"
     assert config["llm"]["config"]["openai_base_url"] == "https://api.example.com/v1"
     assert config["embedder"]["provider"] == "huggingface"
+
+
+def test_memory_store_reuses_runtime_when_api_settings_unchanged() -> None:
+    settings = ApiSettings(
+        base_url="https://api.example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    store = MemoryStore(base_dir=_runtime_root_path("memory_same_settings"), api_settings=settings)
+    sentinel = object()
+    store._memory = sentinel
+
+    store.set_api_settings(settings)
+
+    assert store._memory is sentinel
+
+
+def test_memory_store_preload_only_creates_runtime_once() -> None:
+    class CountingMemoryStore(MemoryStore):
+        def __init__(self) -> None:
+            super().__init__(base_dir=_runtime_root_path("memory_preload_once"))
+            self.create_count = 0
+
+        def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+            self.create_count += 1
+            return FakeMem0()
+
+    store = CountingMemoryStore()
+
+    store.preload(wait=True)
+    store.preload(wait=True)
+
+    assert store.create_count == 1
+    assert store.is_ready()
+
+
+def test_memory_store_reload_keeps_old_runtime_until_new_runtime_is_ready() -> None:
+    old_settings = ApiSettings("https://old.example.com/v1", "old-key", "old-model")
+    new_settings = ApiSettings("https://new.example.com/v1", "new-key", "new-model")
+    ready_to_finish = threading.Event()
+    reloaded = threading.Event()
+
+    class BlockingReloadMemoryStore(MemoryStore):
+        def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+            ready_to_finish.wait(timeout=2)
+            reloaded.set()
+            return {"settings": api_settings}
+
+    store = BlockingReloadMemoryStore(
+        base_dir=_runtime_root_path("memory_reload_keeps_old"),
+        api_settings=old_settings,
+    )
+    old_runtime = {"settings": old_settings}
+    store._memory = old_runtime
+
+    store.reload_api_settings(new_settings, wait=False)
+
+    assert store._memory is old_runtime
+    ready_to_finish.set()
+    assert reloaded.wait(timeout=2)
+    for _ in range(20):
+        if store._memory is not old_runtime:
+            break
+        time.sleep(0.05)
+    assert store._memory == {"settings": new_settings}
+
+
+def test_memory_store_reload_failure_keeps_old_runtime() -> None:
+    old_settings = ApiSettings("https://old.example.com/v1", "old-key", "old-model")
+    new_settings = ApiSettings("https://new.example.com/v1", "new-key", "new-model")
+
+    class FailingReloadMemoryStore(MemoryStore):
+        def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+            raise RuntimeError("boom")
+
+    store = FailingReloadMemoryStore(
+        base_dir=_runtime_root_path("memory_reload_failure"),
+        api_settings=old_settings,
+    )
+    old_runtime = {"settings": old_settings}
+    store._memory = old_runtime
+
+    store.reload_api_settings(new_settings, wait=True)
+
+    assert store._memory is old_runtime
+    assert store._reload_error == "boom"
+
+
+def test_memory_store_uses_local_embedding_cache_when_available(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    root = _runtime_root_path("memory_local_embedding_cache")
+    cache_root = root / "hf"
+    snapshot = (
+        cache_root
+        / "hub"
+        / "models--sentence-transformers--all-MiniLM-L6-v2"
+        / "snapshots"
+        / "revision"
+    )
+    snapshot.mkdir(parents=True)
+    monkeypatch.setenv("HF_HOME", str(cache_root))
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_CACHE", raising=False)
+
+    store = MemoryStore(base_dir=root)
+
+    config = store.build_mem0_config()
+
+    assert config["embedder"]["config"]["model_kwargs"] == {"local_files_only": True}
 
 
 def test_memory_store_create_update_search_and_delete() -> None:
@@ -2023,7 +2133,7 @@ def test_autonomous_screen_observation_can_request_screen_without_explicit_user_
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return (
-                '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"提醒"}]},'
+                '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"请求"}]},'
                 '"tool_calls":[{"name":"observe_screen","arguments":{},"reason":"需要当前画面"}]}'
             )
 
@@ -2233,7 +2343,7 @@ def test_hidden_screen_observation_call_returns_failure_without_action() -> None
     class HiddenScreenRequestClient:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             return (
-                '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"提醒"}]},'
+                '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"请求"}]},'
                 '"tool_calls":[{"name":"observe_screen","arguments":{},"reason":"需要当前画面"}]}'
             )
 
@@ -2373,7 +2483,7 @@ def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
     assert prompt.count("分段规则：") == 1
     assert "低打扰主动搭话" in prompt
     assert "屏幕画面和近期对话充分时，可以展开到 2-4 段" in prompt
-    assert "主动搭话时不要固定使用“提醒”语气" in prompt
+    assert "主动搭话时不要固定使用同一种语气" in prompt
     assert "先阅读 recent_conversation" in prompt
     assert "把 screen_contexts/visual_contexts 和 recent_conversation 交叉对照" in prompt
     assert "只有画面确实为空、黑屏、桌面无内容" in prompt
@@ -2389,7 +2499,7 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
             self.prompts.append(system_prompt)
             self.messages.append(messages)
             return (
-                '{"reply":{"segments":[{"ja":"少し休もう。","zh":"稍微休息一下吧。","tone":"提醒"}]},'
+                '{"reply":{"segments":[{"ja":"少し休もう。","zh":"稍微休息一下吧。","tone":"请求"}]},'
                 '"tool_calls":[]}'
             )
 
@@ -2435,7 +2545,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
             self.prompts.append(system_prompt)
             self.messages.append(messages)
             return (
-                '{"reply":{"segments":[{"ja":"画面は見たよ。","zh":"我看过画面了。","tone":"提醒"}]},'
+                '{"reply":{"segments":[{"ja":"画面は見たよ。","zh":"我看过画面了。","tone":"请求"}]},'
                 '"tool_calls":[]}'
             )
 
@@ -2471,7 +2581,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
     assert "自然评论、提问或轻提醒" in client.prompts[0]
     assert "不要编造看不清" in client.prompts[0]
     assert "不要再请求 observe_screen" in client.prompts[0]
-    assert "主动搭话时不要固定使用“提醒”语气" in client.prompts[0]
+    assert "主动搭话时不要固定使用同一种语气" in client.prompts[0]
     assert "自然搭话" in content[0]["text"]
 
 

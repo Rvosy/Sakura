@@ -134,7 +134,7 @@ def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> N
 
 def test_segmented_reply_instruction_requests_portrait_field() -> None:
     instruction = _build_segmented_reply_instruction(
-        ["中性", "提醒"],
+        ["中性", "请求"],
         ["站立待机", "伸手命令"],
     )
 

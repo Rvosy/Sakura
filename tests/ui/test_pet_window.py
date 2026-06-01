@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
+from app.config.settings_service import DebugLogSettings
 from app.llm.api_client import ApiSettings
 from app.llm.chat_reply import ChatSegment
 from app.portrait_utils import portrait_kind_key, should_crossfade_portrait
@@ -311,6 +312,198 @@ def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
     assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
     dialog.deleteLater()
     app.processEvents()
+
+
+def test_settings_dialog_does_not_load_memory_on_open() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.list_calls = 0
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            self.list_calls += 1
+            return []
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+
+    assert memory_store.list_calls == 0
+    assert dialog.memory_table.item(0, 0).text() == "点击“刷新”加载长期记忆。"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+    tts_settings = _minimal_tts_settings()
+    calls: dict[str, int] = {"save_api": 0, "update_api": 0, "reload_memory": 0}
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return tts_settings
+
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            calls["save_api"] += 1
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = api_settings
+
+        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
+            calls["update_api"] += 1
+
+    class MemoryStoreStub:
+        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            calls["reload_memory"] += 1
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.result_api_settings = api_settings
+            self.result_tts_settings = tts_settings
+            self.result_character_id = "sakura"
+            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
+            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
+            self.result_debug_log_settings = DebugLogSettings()
+            self.result_portrait_scale_percent = 100
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return pet_window_module.QDialog.DialogCode.Accepted
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        MemoryStoreStub(),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+
+    window.show_settings()
+
+    assert calls == {"save_api": 0, "update_api": 0, "reload_memory": 0}
+
+
+def test_show_settings_reloads_memory_in_background_when_api_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    old_settings = ApiSettings("https://old.example.com/v1", "old-key", "old-model")
+    new_settings = ApiSettings("https://new.example.com/v1", "new-key", "new-model")
+    tts_settings = _minimal_tts_settings()
+    calls: dict[str, object] = {"save_api": 0, "updated": None, "reloaded": None, "wait": None}
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return tts_settings
+
+        def save_api_settings(self, settings):  # type: ignore[no-untyped-def]
+            calls["save_api"] = int(calls["save_api"]) + 1
+            calls["saved"] = settings
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = old_settings
+
+        def update_settings(self, settings):  # type: ignore[no-untyped-def]
+            calls["updated"] = settings
+            self.settings = settings
+
+    class MemoryStoreStub:
+        def reload_api_settings(self, settings, *, wait=False):  # type: ignore[no-untyped-def]
+            calls["reloaded"] = settings
+            calls["wait"] = wait
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.result_api_settings = new_settings
+            self.result_tts_settings = tts_settings
+            self.result_character_id = "sakura"
+            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
+            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
+            self.result_debug_log_settings = DebugLogSettings()
+            self.result_portrait_scale_percent = 100
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return pet_window_module.QDialog.DialogCode.Accepted
+
+    messages: list[str] = []
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        MemoryStoreStub(),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(
+        pet_window_module.QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: messages.append(str(_args[2])),
+    )
+
+    window.show_settings()
+
+    assert calls["save_api"] == 1
+    assert calls["saved"] == new_settings
+    assert calls["updated"] == new_settings
+    assert calls["reloaded"] == new_settings
+    assert calls["wait"] is False
+    assert "长期记忆系统正在后台刷新 API 配置" in messages[-1]
 
 
 def test_settings_dialog_returns_portrait_scale_percent() -> None:
@@ -1393,6 +1586,61 @@ def _minimal_tts_settings() -> GPTSoVITSTTSSettings:
     )
 
 
+def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    class CharacterProfileStub:
+        id = "sakura"
+        display_name = "Sakura"
+
+    class CharacterRegistryStub:
+        def get(self, character_id: str):  # type: ignore[no-untyped-def]
+            assert character_id == "sakura"
+            return CharacterProfileStub()
+
+    class PluginManagerStub:
+        tools_tabs = []
+
+    class VoicePlaybackControllerStub:
+        def set_provider(self, _provider):  # type: ignore[no-untyped-def]
+            pass
+
+    class MinimalSettingsWindow:
+        show_settings = pet_window_cls.show_settings
+
+        def _create_tts_provider_from_settings(self, _settings):  # type: ignore[no-untyped-def]
+            return object()
+
+        def _apply_portrait_scale_percent(self, percent: int) -> None:
+            self.portrait_scale_percent = percent
+
+        def _sync_proactive_care_timer(self) -> None:
+            pass
+
+        def _apply_character(self, profile):  # type: ignore[no-untyped-def]
+            self.character_profile = profile
+
+        def _save_system_config_values(self, section, values):  # type: ignore[no-untyped-def]
+            self.settings_service.save_system_values(section, values)
+
+    window = MinimalSettingsWindow()
+    window.settings_service = settings_service
+    window.api_client = api_client
+    window.base_dir = Path(".")
+    window.character_registry = CharacterRegistryStub()
+    window.character_profile = CharacterProfileStub()
+    window.proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
+    window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
+    window.debug_log_settings = DebugLogSettings()
+    window.memory_store = memory_store
+    window.plugin_manager = PluginManagerStub()
+    window.portrait_scale_percent = 100
+    window.retired_tts_providers = []
+    window.tts_provider = object()
+    window.voice_playback_controller = VoicePlaybackControllerStub()
+    return window
+
+
 def test_reply_segments_queue_while_current_segment_is_active() -> None:
     class DummyTTS:
         def __init__(self) -> None:
@@ -1426,7 +1674,7 @@ def test_reply_segments_queue_while_current_segment_is_active() -> None:
     )
 
     first = ChatSegment("先找到了", "中性", "先找到了")
-    second = ChatSegment("执行前确认", "提醒", "执行前确认")
+    second = ChatSegment("执行前确认", "请求", "执行前确认")
 
     controller.show_segments([first])
     assert controller.current_segment == first

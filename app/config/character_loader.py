@@ -9,7 +9,7 @@ from app.llm.prompt_templates import with_desktop_pet_context
 
 
 DEFAULT_CHARACTER_ID = "sakura"
-DEFAULT_TONES = ["开心", "中性", "温柔", "甜蜜", "害羞"]
+DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
 FALLBACK_SYSTEM_PROMPT = """你是夜乃桜，一个冷静、克制、可靠的桌宠陪伴人格。
 用户需要中文解释、开发或调试时，可以使用中文。"""
 

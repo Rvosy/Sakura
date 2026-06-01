@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from app.agent.actions import AgentEvent, AgentResult
+from app.agent.runtime import AgentRuntime
+from app.llm.chat_reply import parse_chat_reply
 from app.llm.prompt_templates import (
     build_event_system_prompt,
     build_proactive_check_tool_system_prompt,
@@ -8,8 +13,8 @@ from app.llm.prompt_templates import (
 )
 
 
-def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
-    prompt = build_proactive_check_tool_system_prompt(
+def _build_proactive_tool_prompt() -> str:
+    return build_proactive_check_tool_system_prompt(
         "角色设定",
         ["中性"],
         ["站立待机"],
@@ -20,6 +25,10 @@ def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
         max_tool_calls_per_step=3,
         max_tool_calls_per_turn=6,
     )
+
+
+def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
+    prompt = _build_proactive_tool_prompt()
 
     assert "【主动感知后台 Web 搜索规则】" in prompt
     assert "web__web_search" in prompt
@@ -50,17 +59,7 @@ def test_proactive_check_tool_prompt_places_web_rules_before_loop_limits() -> No
 
 
 def test_proactive_check_tool_prompt_requires_history_and_image_fusion() -> None:
-    prompt = build_proactive_check_tool_system_prompt(
-        "角色设定",
-        ["中性"],
-        ["站立待机"],
-        memory_summary="无",
-        current_time="2026-06-01T12:00:00+08:00",
-        step_index=0,
-        remaining_steps=2,
-        max_tool_calls_per_step=3,
-        max_tool_calls_per_turn=6,
-    )
+    prompt = _build_proactive_tool_prompt()
 
     assert "recent_conversation 当作最近完整对话历史" in prompt
     assert "用户和 Sakura 的最近对话" in prompt
@@ -100,3 +99,72 @@ def test_segmented_reply_instruction_can_omit_translation_rules() -> None:
     assert "ja 中绝对不要有任何非日语内容" not in instruction
     assert "ja 和 zh 必须一一对应" not in instruction
     assert "tone 只能从这些类别中选择：中性" in instruction
+
+
+def test_prompt_lengths_stay_compact() -> None:
+    proactive_tool_prompt = _build_proactive_tool_prompt()
+    proactive_event_prompt = build_event_system_prompt(
+        "角色设定",
+        ["中性"],
+        ["站立待机"],
+        event_type="proactive_check",
+    )
+    reminder_prompt = build_event_system_prompt(
+        "角色设定",
+        ["中性"],
+        ["站立待机"],
+        event_type="reminder_due",
+    )
+
+    assert len(proactive_tool_prompt) < 3600
+    assert len(proactive_event_prompt) < 2200
+    assert len(reminder_prompt) < 700
+
+
+def test_agent_tool_prompt_length_stays_compact() -> None:
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.system_prompt = "角色设定"
+    runtime.reply_tones = ["中性"]
+    runtime.reply_portraits = ["站立待机"]
+    runtime.memory = SimpleNamespace(summary=lambda: "无")
+
+    prompt = AgentRuntime._build_tool_system_prompt(
+        runtime,
+        allow_screen_observation=True,
+        step_index=0,
+        remaining_steps=3,
+    )
+
+    assert len(prompt) < 2800
+    assert prompt.count("主动感知核心规则") == 0
+
+
+def test_proactive_event_does_not_pass_duplicate_loop_rules(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_tool_loop(self: AgentRuntime, messages: list[dict], **kwargs: object) -> AgentResult:
+        _ = self, messages
+        captured.update(kwargs)
+        return AgentResult(
+            reply=parse_chat_reply(
+                '{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性","portrait":"站立待机"}]}'
+            ),
+            actions=[],
+        )
+
+    monkeypatch.setattr(AgentRuntime, "_run_tool_loop", fake_run_tool_loop)
+    runtime = AgentRuntime.__new__(AgentRuntime)
+
+    runtime.handle_event(
+        AgentEvent(
+            type="proactive_check",
+            payload={
+                "screen_context_allowed": True,
+                "recent_conversation": "用户和 Sakura 的最近对话",
+                "visual_contexts": [],
+            },
+        )
+    )
+
+    assert captured["proactive_mode"] is True
+    assert "planning_extra_instructions" not in captured

@@ -501,12 +501,19 @@ class SettingsDialog(QDialog):
         layout.addLayout(button_layout)
         tab.setLayout(layout)
 
-        self._refresh_memory_table()
+        self._show_memory_placeholder("点击“刷新”加载长期记忆。")
         self._clear_memory_editor()
         return tab
 
     def _refresh_memory_table(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
+            return
+        is_ready = getattr(self.memory_store, "is_ready", None)
+        if callable(is_ready) and not is_ready():
+            preload = getattr(self.memory_store, "preload", None)
+            if callable(preload):
+                preload(wait=False)
+            self._show_memory_placeholder("长期记忆系统正在初始化。")
             return
         keyword = self.memory_search_edit.text().strip()
         try:
@@ -533,6 +540,18 @@ class SettingsDialog(QDialog):
                 if column == 1:
                     item.setData(Qt.ItemDataRole.UserRole, str(memory.get("id", "")))
                 self.memory_table.setItem(row, column, item)
+        self.memory_table.resizeColumnsToContents()
+
+    def _show_memory_placeholder(self, text: str) -> None:
+        if not hasattr(self, "memory_table"):
+            return
+        self._visible_memories = []
+        self.memory_table.setRowCount(1)
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self.memory_table.setItem(0, 0, item)
+        self.memory_table.setItem(0, 1, QTableWidgetItem(""))
+        self.memory_table.setItem(0, 2, QTableWidgetItem(""))
         self.memory_table.resizeColumnsToContents()
 
     def _handle_memory_selection(self) -> None:

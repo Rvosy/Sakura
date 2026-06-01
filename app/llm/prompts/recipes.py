@@ -80,7 +80,7 @@ def build_event_reply_protocol(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
     *,
-    example_tone: str = "提醒",
+    example_tone: str = "请求",
     segment_rules: str = "",
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
@@ -140,7 +140,8 @@ def build_proactive_check_tool_system_prompt(
                 None,
                 "\n\n".join(
                     [
-                        "你现在正在处理【主动屏幕检查事件】。这不是用户直接发来的请求，而是系统定时触发的低打扰搭话。",
+                        "你现在正在处理【主动检查事件 / 主动屏幕检查事件】。这不是用户直接发来的请求，而是系统定时触发的低打扰搭话。",
+                        "请用角色语气自然搭话、提问或提醒用户。",
                         "请把 screen_contexts/visual_contexts 当作当前画面，把 recent_conversation 当作最近完整对话历史；必须结合两者判断用户正在延续什么任务、发生了什么变化、哪些话题已经聊过，再自然接话。",
                     ]
                 ),
@@ -222,7 +223,7 @@ def build_event_system_prompt(
                     build_event_reply_protocol(
                         reply_tones,
                         reply_portraits,
-                        example_tone="提醒",
+                        example_tone="请求",
                     ),
                 ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),

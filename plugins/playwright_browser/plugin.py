@@ -29,13 +29,14 @@ class PlaywrightBrowserPlugin(PluginBase):
         plugin_root: Path,
         host: PluginHostContext,
     ) -> None:
-        _ = plugin_root, host
+        _ = host
+        browser.set_plugin_root(plugin_root)
         _register_tools()
         register.register_tools_tab(
             ToolsTabContribution(
                 tab_id="playwright_browser",
                 title="Playwright 浏览器",
-                build=_build_tools_tab,
+                build=lambda parent=None: _build_tools_tab(plugin_root, parent),
                 order=40.0,
             )
         )
@@ -47,58 +48,62 @@ class PlaywrightBrowserPlugin(PluginBase):
 def _register_tools() -> None:
     tool(
         name="playwright_navigate",
-        description="使用系统 Microsoft Edge 打开网页 URL，并返回当前页面标题。",
+        description="使用 Playwright 浏览器打开网页 URL，并返回当前页面标题。",
         group="browser",
         risk="medium",
         requires_confirmation=True,
     )(browser.navigate)
     tool(
         name="playwright_get_text",
-        description="读取当前 Edge 页面文本。selector 默认 body。",
+        description="读取当前 Playwright 页面文本。selector 默认 body。",
         group="browser",
         risk="low",
         requires_confirmation=False,
     )(browser.get_text)
     tool(
         name="playwright_search_web",
-        description="使用系统 Microsoft Edge 执行网页搜索，并返回结构化搜索结果。",
+        description="使用 Playwright 浏览器执行网页搜索，并返回结构化搜索结果。",
         group="browser",
         risk="medium",
         requires_confirmation=True,
     )(browser.search_web)
     tool(
         name="playwright_screenshot",
-        description="截取当前 Edge 页面截图，返回 data URL。",
+        description="截取当前 Playwright 页面截图，返回 data URL。",
         group="browser",
         risk="medium",
         requires_confirmation=False,
     )(browser.screenshot)
     tool(
         name="playwright_click",
-        description="点击当前 Edge 页面中的 CSS selector。",
+        description="点击当前 Playwright 页面中的 CSS selector。",
         group="browser",
         risk="medium",
         requires_confirmation=True,
     )(browser.click)
     tool(
         name="playwright_fill",
-        description="向当前 Edge 页面中的 CSS selector 输入文本。",
+        description="向当前 Playwright 页面中的 CSS selector 输入文本。",
         group="browser",
         risk="medium",
         requires_confirmation=True,
     )(browser.fill)
     tool(
         name="playwright_evaluate",
-        description="在当前 Edge 页面执行 JavaScript 代码。",
+        description="在当前 Playwright 页面执行 JavaScript 代码。",
         group="browser",
         risk="high",
         requires_confirmation=True,
     )(browser.evaluate)
 
 
-def _build_tools_tab(_parent: Any = None) -> Any:
+def _build_tools_tab(plugin_root: Path, parent: Any = None) -> Any:
     try:
-        from PySide6.QtWidgets import QLabel
+        from plugins.playwright_browser.settings_tab import PlaywrightBrowserSettingsTab
     except Exception:
-        return None
-    return QLabel("Playwright 浏览器使用系统 Microsoft Edge。")
+        try:
+            from PySide6.QtWidgets import QLabel
+        except Exception:
+            return None
+        return QLabel("Playwright 浏览器设置加载失败。")
+    return PlaywrightBrowserSettingsTab(plugin_root, parent)

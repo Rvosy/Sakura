@@ -1589,7 +1589,7 @@ class PetWindow(QWidget):
                     [
                         ChatSegment(
                             text=f"時間だよ。{reminder_text}",
-                            tone="提醒",
+                            tone="请求",
                             translation=f"到时间了：{reminder_text}",
                             portrait="伸手命令",
                         )
@@ -1603,7 +1603,7 @@ class PetWindow(QWidget):
                     [
                         ChatSegment(
                             text="少し休んでもいいんじゃない？無理しすぎないでよね。",
-                            tone="提醒",
+                            tone="请求",
                             translation="稍微休息一下也可以吧？别太勉强自己。",
                             portrait="伸手命令",
                         )
@@ -1942,8 +1942,10 @@ class PetWindow(QWidget):
         if new_tts_provider is None:
             return
 
+        api_changed = dialog.result_api_settings != self.api_client.settings
         try:
-            self.settings_service.save_api_settings(dialog.result_api_settings)
+            if api_changed:
+                self.settings_service.save_api_settings(dialog.result_api_settings)
             self.settings_service.save_tts_settings(dialog.result_tts_settings)
             self.settings_service.save_current_character_id(
                 self.character_registry,
@@ -1962,8 +1964,9 @@ class PetWindow(QWidget):
             QMessageBox.critical(self, "保存失败", f"无法保存设置：{exc}")
             return
 
-        self.api_client.update_settings(dialog.result_api_settings)
-        self.memory_store.set_api_settings(dialog.result_api_settings)
+        if api_changed:
+            self.api_client.update_settings(dialog.result_api_settings)
+            self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
         self._apply_portrait_scale_percent(dialog.result_portrait_scale_percent)
         self.proactive_care_settings = dialog.result_proactive_care_settings
         mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
@@ -1977,6 +1980,8 @@ class PetWindow(QWidget):
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
+        if api_changed:
+            message += "\n\n长期记忆系统正在后台刷新 API 配置。"
         if mcp_restart_required:
             message += "\n\nWindows MCP 开关需要重启 Sakura 后才会生效。"
         QMessageBox.information(self, "保存成功", message)
@@ -2272,7 +2277,7 @@ def _build_screen_observation_disabled_result() -> AgentResult:
             [
                 ChatSegment(
                     text="画面を見る設定がオフになっているよ。設定で許可してから、もう一度試して。",
-                    tone="提醒",
+                    tone="请求",
                     translation="获取屏幕信息现在是关闭的。请在设置里允许后再试。",
                     portrait="伸手命令",
                 )
