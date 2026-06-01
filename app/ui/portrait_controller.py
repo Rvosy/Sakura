@@ -24,6 +24,21 @@ from app.portrait_utils import should_crossfade_portrait
 PORTRAIT_TRANSITION_MS = 300
 # 两张立绘同时叠加淡入淡出的比例：1.0 为完全同步交叉，0.0 为先淡出再淡入。
 PORTRAIT_CROSSFADE_OVERLAP = 0.8
+PORTRAIT_BASE_MAX_WIDTH = 560
+PORTRAIT_BASE_MAX_HEIGHT = 570
+PORTRAIT_SCALE_MIN_PERCENT = 50
+PORTRAIT_SCALE_MAX_PERCENT = 150
+PORTRAIT_SCALE_DEFAULT_PERCENT = 100
+
+
+def normalize_portrait_scale_percent(value: object) -> int:
+    """把配置里的立绘缩放百分比规整到允许范围。"""
+
+    try:
+        percent = int(str(value).strip())
+    except (TypeError, ValueError):
+        return PORTRAIT_SCALE_DEFAULT_PERCENT
+    return max(PORTRAIT_SCALE_MIN_PERCENT, min(PORTRAIT_SCALE_MAX_PERCENT, percent))
 
 
 class PortraitController(QObject):
@@ -42,6 +57,7 @@ class PortraitController(QObject):
         relayout: Callable[[], None],
         raise_foreground: Callable[[], None],
         on_portrait_changed: Callable[[QPixmap], None],
+        portrait_scale_percent: int = PORTRAIT_SCALE_DEFAULT_PERCENT,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -52,6 +68,7 @@ class PortraitController(QObject):
         self.main_opacity_effect = main_opacity_effect
         self.transition_opacity_effect = transition_opacity_effect
         self.stage_size = stage_size
+        self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
         self._relayout = relayout
         self._raise_foreground = raise_foreground
         self._on_portrait_changed = on_portrait_changed
@@ -71,6 +88,12 @@ class PortraitController(QObject):
         self._apply_pixmap_to_label(self.main_label, self.pixmap)
         self.parent_widget.resize(*self.stage_size)
         self._relayout()
+
+    def set_stage_size(self, stage_size: tuple[int, int]) -> None:
+        self.stage_size = stage_size
+
+    def set_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
+        self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
 
     def set_profile(self, profile: CharacterProfile) -> QPixmap:
         self.profile = profile
@@ -117,9 +140,12 @@ class PortraitController(QObject):
         return pixmap
 
     def _apply_pixmap_to_label(self, label: QLabel, pixmap: QPixmap) -> None:
+        scale = self.portrait_scale_percent / 100
+        target_width = round(PORTRAIT_BASE_MAX_WIDTH * scale)
+        target_height = round(PORTRAIT_BASE_MAX_HEIGHT * scale)
         scaled = pixmap.scaled(
-            560,
-            570,
+            target_width,
+            target_height,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )

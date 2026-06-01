@@ -78,6 +78,10 @@ from app.screen_observation import (
     capture_screen_observation,
 )
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.portrait_controller import (
+    PORTRAIT_SCALE_DEFAULT_PERCENT,
+    normalize_portrait_scale_percent,
+)
 from app.voice.tts import (
     GPTSoVITSTTSProvider,
     GPTSoVITSTTSSettings,
@@ -122,6 +126,8 @@ REPLY_HISTORY_PANEL_HEIGHT = 70
 REPLY_HISTORY_BUTTON_SIZE = 30
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
+DEFAULT_STAGE_WIDTH = 860
+DEFAULT_STAGE_HEIGHT = 640
 
 
 class PetWindow(QWidget):
@@ -172,7 +178,8 @@ class PetWindow(QWidget):
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
         self.drag_offset: QPoint | None = None
-        self.stage_size = (860, 640)
+        self.portrait_scale_percent = self._load_portrait_scale_percent()
+        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
@@ -261,6 +268,7 @@ class PetWindow(QWidget):
             relayout=self._layout_stage,
             raise_foreground=self._raise_foreground_controls,
             on_portrait_changed=self._update_tray_icon_pixmap,
+            portrait_scale_percent=self.portrait_scale_percent,
             parent=self,
         )
 
@@ -1909,7 +1917,8 @@ class PetWindow(QWidget):
             self.debug_log_settings,
             self.memory_store,
             self.plugin_manager.tools_tabs,
-            self,
+            parent=self,
+            portrait_scale_percent=self.portrait_scale_percent,
         )
         if (
             dialog.exec() != QDialog.DialogCode.Accepted
@@ -1919,6 +1928,7 @@ class PetWindow(QWidget):
             or dialog.result_proactive_care_settings is None
             or dialog.result_mcp_settings is None
             or dialog.result_debug_log_settings is None
+            or dialog.result_portrait_scale_percent is None
         ):
             return
 
@@ -1944,11 +1954,16 @@ class PetWindow(QWidget):
             )
             self.settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings)
             self.settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
+            self._save_system_config_values(
+                "ui",
+                {"portrait_scale_percent": dialog.result_portrait_scale_percent},
+            )
         except OSError as exc:
             QMessageBox.critical(self, "保存失败", f"无法保存设置：{exc}")
             return
 
         self.api_client.update_settings(dialog.result_api_settings)
+        self._apply_portrait_scale_percent(dialog.result_portrait_scale_percent)
         self.proactive_care_settings = dialog.result_proactive_care_settings
         mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
         self.mcp_settings = dialog.result_mcp_settings
@@ -2164,6 +2179,12 @@ class PetWindow(QWidget):
             return SUBTITLE_LANGUAGE_ZH
         return SUBTITLE_LANGUAGE_JA
 
+    def _load_portrait_scale_percent(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return normalize_portrait_scale_percent(
+            system_values.get("portrait_scale_percent", PORTRAIT_SCALE_DEFAULT_PERCENT)
+        )
+
     def _load_screen_observation_enabled(self) -> bool:
         system_values = self._load_system_config_values("screen_observation")
         if "enabled" in system_values:
@@ -2190,6 +2211,13 @@ class PetWindow(QWidget):
         values: dict[str, Any],
     ) -> None:
         self.settings_service.save_system_values(section, values)
+
+    def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
+        self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
+        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self.portrait_controller.set_stage_size(self.stage_size)
+        self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
+        self.portrait_controller.apply_current()
 
     def _apply_character(self, profile: CharacterProfile) -> None:
         previous_character_id = self.character_profile.id
@@ -2462,6 +2490,14 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _stage_size_for_portrait_scale_percent(portrait_scale_percent: int) -> tuple[int, int]:
+    scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+    return (
+        DEFAULT_STAGE_WIDTH,
+        max(DEFAULT_STAGE_HEIGHT, round(DEFAULT_STAGE_HEIGHT * scale)),
+    )
 
 
 def _configure_reply_history_panel(panel: QFrame) -> None:

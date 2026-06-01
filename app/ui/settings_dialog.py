@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSlider,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -31,6 +32,12 @@ from app.agent.mcp import MCPRuntimeSettings
 from app.config.settings_service import DebugLogSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.ui.portrait_controller import (
+    PORTRAIT_SCALE_DEFAULT_PERCENT,
+    PORTRAIT_SCALE_MAX_PERCENT,
+    PORTRAIT_SCALE_MIN_PERCENT,
+    normalize_portrait_scale_percent,
+)
 from app.proactive_care import (
     PROACTIVE_MAX_COOLDOWN_MINUTES,
     PROACTIVE_MAX_CHECK_INTERVAL_MINUTES,
@@ -79,17 +86,20 @@ class SettingsDialog(QDialog):
         memory_store: MemoryStore | None = None,
         tools_tab_contributions: list[ToolsTabContribution] | None = None,
         parent=None,  # type: ignore[no-untyped-def]
+        portrait_scale_percent: int = PORTRAIT_SCALE_DEFAULT_PERCENT,
     ) -> None:
         super().__init__(parent)
         self.base_dir = base_dir
         self.tts_settings = tts_settings
         self.character_registry = character_registry
         self.current_character = current_character
+        self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
         self.memory_store = memory_store
         self._visible_memories: list[dict[str, object]] = []
         self.result_api_settings: ApiSettings | None = None
         self.result_tts_settings: GPTSoVITSTTSSettings | None = None
         self.result_character_id: str | None = None
+        self.result_portrait_scale_percent: int | None = None
         self.result_proactive_care_settings: ProactiveCareSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
         self.result_debug_log_settings: DebugLogSettings | None = None
@@ -234,8 +244,42 @@ class SettingsDialog(QDialog):
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("当前角色", self.character_combo)
+        form_layout.addRow("立绘大小", self._build_portrait_scale_control(tab))
         tab.setLayout(form_layout)
         return tab
+
+    def _build_portrait_scale_control(self, parent: QWidget) -> QWidget:
+        container = QWidget(parent)
+        self.portrait_scale_slider = QSlider(Qt.Orientation.Horizontal, container)
+        self.portrait_scale_slider.setRange(
+            PORTRAIT_SCALE_MIN_PERCENT,
+            PORTRAIT_SCALE_MAX_PERCENT,
+        )
+        self.portrait_scale_slider.setSingleStep(5)
+        self.portrait_scale_slider.setPageStep(10)
+        self.portrait_scale_slider.setTickInterval(25)
+        self.portrait_scale_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.portrait_scale_slider.setValue(self.portrait_scale_percent)
+
+        self.portrait_scale_spin = QSpinBox(container)
+        self.portrait_scale_spin.setRange(
+            PORTRAIT_SCALE_MIN_PERCENT,
+            PORTRAIT_SCALE_MAX_PERCENT,
+        )
+        self.portrait_scale_spin.setSingleStep(5)
+        self.portrait_scale_spin.setSuffix("%")
+        self.portrait_scale_spin.setValue(self.portrait_scale_percent)
+
+        self.portrait_scale_slider.valueChanged.connect(self.portrait_scale_spin.setValue)
+        self.portrait_scale_spin.valueChanged.connect(self.portrait_scale_slider.setValue)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.portrait_scale_slider, 1)
+        layout.addWidget(self.portrait_scale_spin)
+        container.setLayout(layout)
+        return container
 
     def _build_api_tab(self, settings: ApiSettings) -> QWidget:
         tab = QWidget(self)
@@ -620,6 +664,7 @@ class SettingsDialog(QDialog):
         self.result_api_settings = api_settings
         self.result_tts_settings = tts_settings
         self.result_character_id = self._selected_character_id()
+        self.result_portrait_scale_percent = self._selected_portrait_scale_percent()
         self.result_proactive_care_settings = ProactiveCareSettings(
             enabled=self.proactive_screen_context_enabled_check.isChecked(),
             screen_context_enabled=self.proactive_screen_context_enabled_check.isChecked(),
@@ -761,6 +806,11 @@ class SettingsDialog(QDialog):
         if character_id is None or self.character_registry is None:
             return self.current_character
         return self.character_registry.get(character_id)
+
+    def _selected_portrait_scale_percent(self) -> int:
+        if hasattr(self, "portrait_scale_spin"):
+            return normalize_portrait_scale_percent(self.portrait_scale_spin.value())
+        return self.portrait_scale_percent
 
 
 def _is_http_url(url: str) -> bool:

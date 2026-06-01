@@ -138,6 +138,100 @@ def test_reply_history_controls_use_capsule_sizing() -> None:
     app.processEvents()
 
 
+def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    qtgui = pytest.importorskip("PySide6.QtGui")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    if not all(
+        hasattr(qtwidgets, name)
+        for name in ("QApplication", "QGraphicsOpacityEffect", "QLabel", "QWidget")
+    ):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.config.character_loader import CharacterProfile
+    from app.ui.portrait_controller import PortraitController
+
+    QApplication = qtwidgets.QApplication
+    QGraphicsOpacityEffect = qtwidgets.QGraphicsOpacityEffect
+    QLabel = qtwidgets.QLabel
+    QWidget = qtwidgets.QWidget
+    QPixmap = qtgui.QPixmap
+    Qt = qtcore.Qt
+    app = QApplication.instance() or QApplication([])
+
+    tmp_path = (
+        Path(__file__).resolve().parents[2]
+        / "__pycache__"
+        / "test_runtime"
+        / "portrait_scale"
+        / uuid.uuid4().hex
+    )
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    portrait_path = tmp_path / "portrait.png"
+    source = QPixmap(1000, 1000)
+    source.fill(Qt.GlobalColor.white)
+    assert source.save(str(portrait_path))
+
+    profile = CharacterProfile(
+        id="demo",
+        display_name="Demo",
+        package_dir=tmp_path,
+        card_path=tmp_path / "card.md",
+        initial_message="hello",
+        default_portrait_path=portrait_path,
+    )
+    host = QWidget()
+    main_label = QLabel(host)
+    transition_label = QLabel(host)
+    controller = PortraitController(
+        profile=profile,
+        parent_widget=host,
+        main_label=main_label,
+        transition_label=transition_label,
+        main_opacity_effect=QGraphicsOpacityEffect(main_label),
+        transition_opacity_effect=QGraphicsOpacityEffect(transition_label),
+        stage_size=(860, 640),
+        relayout=lambda: None,
+        raise_foreground=lambda: None,
+        on_portrait_changed=lambda _pixmap: None,
+    )
+
+    expected_sizes = {
+        50: (280, 280),
+        100: (560, 560),
+        150: (840, 840),
+    }
+    for percent, expected_size in expected_sizes.items():
+        controller.set_portrait_scale_percent(percent)
+        controller.apply_current()
+        scaled = main_label.pixmap()
+        assert scaled is not None
+        assert (scaled.width(), scaled.height()) == expected_size
+
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _load_portrait_scale_percent = PetWindow._load_portrait_scale_percent
+
+        def __init__(self, values):  # type: ignore[no-untyped-def]
+            self.values = values
+
+        def _load_system_config_values(self, section: str):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            return self.values
+
+    assert MinimalWindow({})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({"portrait_scale_percent": 20})._load_portrait_scale_percent() == 50
+    assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 150
+
+
 def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabled() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -215,6 +309,60 @@ def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
     dialog.accept()
 
     assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_returns_portrait_scale_percent() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.config.character_loader import CharacterProfile
+    from app.ui.settings_dialog import SettingsDialog
+
+    class CharacterRegistryStub:
+        def __init__(self, profile: CharacterProfile) -> None:
+            self.profile = profile
+
+        def all(self) -> list[CharacterProfile]:
+            return [self.profile]
+
+        def get(self, character_id: str) -> CharacterProfile:
+            assert character_id == self.profile.id
+            return self.profile
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    profile = CharacterProfile(
+        id="sakura",
+        display_name="夜乃桜",
+        package_dir=Path("."),
+        card_path=Path("card.md"),
+        initial_message="hello",
+        default_portrait_path=Path("portrait.png"),
+    )
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        character_registry=CharacterRegistryStub(profile),  # type: ignore[arg-type]
+        current_character=profile,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        portrait_scale_percent=100,
+    )
+
+    dialog.portrait_scale_spin.setValue(125)
+    dialog.accept()
+
+    assert dialog.result_portrait_scale_percent == 125
+    assert dialog.portrait_scale_slider.value() == 125
     dialog.deleteLater()
     app.processEvents()
 
