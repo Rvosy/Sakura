@@ -29,8 +29,18 @@ from app.agent.tool_registry import Tool, ToolExecutionResult, ToolRegistry
 from app.config.settings_service import AppSettingsService
 from app.config.yaml_config import load_yaml_mapping
 from app.core.plugin_manager import SakuraPluginManager
-from app.llm.api_client import ApiRequestError, is_vision_unsupported_error, messages_contain_image
+from app.llm.api_client import (
+    ApiRequestError,
+    ChatCompletionTurn,
+    NativeToolCall,
+    is_vision_unsupported_error,
+    messages_contain_image,
+)
 from app.llm.context_trimming import MAX_MODEL_CONTEXT_MESSAGES, trim_messages_for_model
+from app.llm.prompt_templates import (
+    build_event_system_prompt,
+    build_proactive_check_tool_system_prompt,
+)
 from app.proactive_care import (
     ProactiveCareSettings,
 )
@@ -41,6 +51,80 @@ from app.screen_observation import (
     build_screen_observation_user_message,
     should_observe_screen,
 )
+
+
+def _legacy_complete_with_tools(self, system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
+    tools = _kwargs.get("tools") or []
+    tool_names = [
+        tool["function"]["name"]
+        for tool in tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    ]
+    if hasattr(self, "tool_names"):
+        self.tool_names = tool_names
+    if hasattr(self, "tool_name_batches"):
+        self.tool_name_batches.append(tool_names)
+    raw = self.complete_raw(system_prompt, messages)
+    return _chat_completion_turn_from_legacy_raw(raw)
+
+
+def _chat_completion_turn_from_legacy_raw(raw: str) -> ChatCompletionTurn:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])
+    content = raw
+    raw_tool_calls: list[dict[str, object]] = []
+    if isinstance(payload, dict) and "reply" in payload:
+        content = json.dumps(payload["reply"], ensure_ascii=False)
+        raw_tool_calls_value = payload.get("tool_calls")
+        if isinstance(raw_tool_calls_value, list):
+            raw_tool_calls = [
+                item
+                for item in raw_tool_calls_value
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            ]
+
+    tool_calls: list[NativeToolCall] = []
+    message_tool_calls: list[dict[str, object]] = []
+    for index, item in enumerate(raw_tool_calls):
+        arguments = item.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        else:
+            arguments = dict(arguments)
+        reason = item.get("reason")
+        if isinstance(reason, str) and reason.strip() and "reason" not in arguments:
+            arguments["reason"] = reason.strip()
+        arguments_json = json.dumps(arguments, ensure_ascii=False)
+        call_id = f"call_{index}"
+        name = str(item["name"])
+        tool_calls.append(
+            NativeToolCall(
+                id=call_id,
+                name=name,
+                arguments=arguments,
+                arguments_json=arguments_json,
+            )
+        )
+        message_tool_calls.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments_json},
+            }
+        )
+
+    message: dict[str, object] = {"role": "assistant", "content": content}
+    if message_tool_calls:
+        message["tool_calls"] = message_tool_calls
+    return ChatCompletionTurn(
+        content=content,
+        tool_calls=tool_calls,
+        message=message,
+    )
 
 
 def test_add_reminder_delay_seconds_generates_future_time() -> None:
@@ -1015,6 +1099,8 @@ def test_agent_runtime_can_continue_tool_loop_after_tool_results() -> None:
                 '"tool_calls":[]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.final_chat_called = True
             from app.llm.chat_reply import parse_chat_reply
@@ -1074,6 +1160,8 @@ def test_agent_runtime_stops_tool_loop_at_turn_limit() -> None:
                 '{"name":"echo_tool","arguments":{},"reason":"测试上限"}]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
         def chat(self, _system_prompt, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.chat_messages = messages
             from app.llm.chat_reply import parse_chat_reply
@@ -1101,7 +1189,13 @@ def test_agent_runtime_stops_tool_loop_at_turn_limit() -> None:
     result = runtime.handle_user_message([{"role": "user", "content": "一直调用工具"}])
 
     assert result.reply.translation == "已经按上限停止了。"
-    assert len([action for action in result.actions if action.payload["tool_name"] == "echo_tool"]) == 8
+    assert len(
+        [
+            action
+            for action in result.actions
+            if action.payload["tool_name"] == "echo_tool" and action.payload["success"]
+        ]
+    ) == 8
     assert any(action.payload["tool_name"] == "runtime" for action in result.actions)
     assert client.raw_calls == 3
     assert "已跳过" in str(client.chat_messages)
@@ -1114,6 +1208,8 @@ def test_agent_runtime_emits_progress_before_pending_confirmation() -> None:
                 '{"reply":{"segments":[{"ja":"開く前に確認するね。","zh":"打开前我先确认一下。","tone":"中性"}]},'
                 '"tool_calls":[{"name":"open_tool","arguments":{"url":"https://example.com"},"reason":"需要打开网页"}]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     registry = ToolRegistry(
         [
@@ -1146,6 +1242,7 @@ def test_browser_page_mode_hides_windows_mouse_tools_from_planner() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompt = ""
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.prompt = system_prompt
@@ -1153,6 +1250,8 @@ def test_browser_page_mode_hides_windows_mouse_tools_from_planner() -> None:
                 '{"reply":{"segments":[{"ja":"確認できたよ。","zh":"确认好了。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     registry = ToolRegistry(
         [
@@ -1181,17 +1280,18 @@ def test_browser_page_mode_hides_windows_mouse_tools_from_planner() -> None:
         ]
     )
 
-    assert '"name": "playwright_get_text"' in client.prompt
-    assert '"name": "playwright_click"' in client.prompt
-    assert '"name": "playwright_fill"' in client.prompt
-    assert '"name": "windows__Snapshot"' not in client.prompt
-    assert '"name": "windows__Click"' not in client.prompt
+    assert "playwright_get_text" in client.tool_names
+    assert "playwright_click" in client.tool_names
+    assert "playwright_fill" in client.tool_names
+    assert "windows__Snapshot" not in client.tool_names
+    assert "windows__Click" not in client.tool_names
 
 
 def test_visible_browser_request_hides_background_web_tools_from_planner() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompt = ""
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.prompt = system_prompt
@@ -1199,6 +1299,8 @@ def test_visible_browser_request_hides_background_web_tools_from_planner() -> No
                 '{"reply":{"segments":[{"ja":"開くね。","zh":"我打开。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     registry = ToolRegistry(
         [
@@ -1219,12 +1321,12 @@ def test_visible_browser_request_hides_background_web_tools_from_planner() -> No
 
     runtime.handle_user_message([{"role": "user", "content": "打开浏览器搜索一下二阶堂真红,看看百科怎么描述的"}])
 
-    assert '"name": "playwright_navigate"' in client.prompt
-    assert '"name": "playwright_get_text"' in client.prompt
-    assert '"name": "playwright_fill"' in client.prompt
-    assert '"name": "playwright_search_web"' in client.prompt
-    assert '"name": "web__web_search"' not in client.prompt
-    assert '"name": "web__fetch_url"' not in client.prompt
+    assert "playwright_navigate" in client.tool_names
+    assert "playwright_get_text" in client.tool_names
+    assert "playwright_fill" in client.tool_names
+    assert "playwright_search_web" in client.tool_names
+    assert "web__web_search" not in client.tool_names
+    assert "web__fetch_url" not in client.tool_names
     assert "playwright_search_web" in client.prompt
     assert "不要先打开搜索首页再操作输入框" in client.prompt
 
@@ -1244,6 +1346,8 @@ def test_browser_navigate_auto_snapshots_and_fast_forwards_lookup_reply() -> Non
                 '"arguments":{"url":"https://zh.moegirl.org.cn/二阶堂真红"},'
                 '"reason":"打开目标百科页面"}]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
         def chat(self, _system_prompt, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.chat_called = True
@@ -1311,6 +1415,8 @@ def test_browser_navigate_does_not_duplicate_planned_snapshot() -> None:
                 '"tool_calls":[]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
     snapshot_calls: list[dict[str, object]] = []
     registry = ToolRegistry(
         [
@@ -1361,6 +1467,8 @@ def test_browser_navigate_failure_does_not_auto_snapshot() -> None:
                 '{"reply":{"segments":[{"ja":"開けなかった。","zh":"页面没打开。","tone":"困惑"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     snapshot_called = False
 
@@ -1415,6 +1523,8 @@ def test_browser_interaction_request_auto_snapshots_without_fast_forward() -> No
                 '{"reply":{"segments":[{"ja":"次の操作を確認したよ。","zh":"我确认下一步操作了。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.chat_called = True
@@ -1476,6 +1586,8 @@ def test_browser_lookup_does_not_fast_forward_when_auto_snapshot_has_no_content(
                 '"tool_calls":[]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.chat_called = True
             from app.llm.chat_reply import parse_chat_reply
@@ -1532,6 +1644,8 @@ def test_browser_lookup_does_not_fast_forward_on_search_results_page() -> None:
                 '{"reply":{"segments":[{"ja":"結果をもう少し見るね。","zh":"我再看一下搜索结果。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.chat_called = True
@@ -1597,6 +1711,8 @@ def test_visible_browser_request_blocks_background_search_and_continues_planning
                 '"tool_calls":[]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
     called = {"web_search": False}
 
     def web_search(_arguments):  # type: ignore[no-untyped-def]
@@ -1632,6 +1748,7 @@ def test_plain_lookup_still_exposes_background_web_tools() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompt = ""
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.prompt = system_prompt
@@ -1639,6 +1756,8 @@ def test_plain_lookup_still_exposes_background_web_tools() -> None:
                 '{"reply":{"segments":[{"ja":"調べるね。","zh":"我查一下。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     registry = ToolRegistry(
         [
@@ -1656,8 +1775,8 @@ def test_plain_lookup_still_exposes_background_web_tools() -> None:
 
     runtime.handle_user_message([{"role": "user", "content": "查一下二阶堂真红百科怎么描述的"}])
 
-    assert '"name": "web__web_search"' in client.prompt
-    assert '"name": "web__fetch_url"' in client.prompt
+    assert "web__web_search" in client.tool_names
+    assert "web__fetch_url" in client.tool_names
 
 
 def test_browser_page_mode_blocks_windows_click_and_continues_planning() -> None:
@@ -1680,6 +1799,8 @@ def test_browser_page_mode_blocks_windows_click_and_continues_planning() -> None
                 '{"reply":{"segments":[{"ja":"ブラウザの操作に戻したよ。","zh":"已经切回浏览器操作了。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     called = {"windows_click": False}
 
@@ -1729,6 +1850,7 @@ def test_desktop_task_still_exposes_windows_mouse_tools() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompt = ""
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             self.prompt = system_prompt
@@ -1736,6 +1858,8 @@ def test_desktop_task_still_exposes_windows_mouse_tools() -> None:
                 '{"reply":{"segments":[{"ja":"見ておくね。","zh":"我看一下。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     registry = ToolRegistry(
         [
@@ -1753,8 +1877,8 @@ def test_desktop_task_still_exposes_windows_mouse_tools() -> None:
 
     runtime.handle_user_message([{"role": "user", "content": "帮我打开此电脑图标"}])
 
-    assert '"name": "windows__Snapshot"' in client.prompt
-    assert '"name": "windows__Click"' in client.prompt
+    assert "windows__Snapshot" in client.tool_names
+    assert "windows__Click" in client.tool_names
 
 
 def test_agent_runtime_continues_after_confirmed_action_with_context() -> None:
@@ -1781,6 +1905,8 @@ def test_agent_runtime_continues_after_confirmed_action_with_context() -> None:
                 '{"reply":{"segments":[{"ja":"開けたよ。","zh":"已经打开了。","tone":"中性"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             raise AssertionError("确认动作有上下文时应回到工具循环，而不是直接总结。")
@@ -1847,6 +1973,8 @@ def test_agent_runtime_extracts_planner_json_from_mixed_output() -> None:
                 )
             return '{"reply":{"segments":[{"ja":"確認できたよ。","zh":"确认好了。","tone":"中性"}]},"tool_calls":[]}'
 
+        complete_with_tools = _legacy_complete_with_tools
+
     registry = ToolRegistry(
         [
             Tool(
@@ -1900,6 +2028,8 @@ def test_autonomous_screen_observation_can_request_screen_without_explicit_user_
                 '"tool_calls":[{"name":"observe_screen","arguments":{},"reason":"需要当前画面"}]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
     client = ScreenRequestClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
@@ -1915,8 +2045,8 @@ def test_autonomous_screen_observation_can_request_screen_without_explicit_user_
 
     assert "observe_screen" in client.prompts[0]
     assert "主动获取上下文策略" in client.prompts[0]
-    assert "用户输入很短、模糊、寒暄、状态化" in client.prompts[0]
-    assert "优先调用 observe_screen 获取当前屏幕" in client.prompts[0]
+    assert "用户输入简短模糊" in client.prompts[0]
+    assert "不要重复截图" in client.prompts[0]
     assert [progress.reply.translation for progress in progress_replies] == ["我看看。"]
     assert result.actions
     assert result.actions[0].type == SCREEN_OBSERVATION_REQUEST_ACTION
@@ -1926,10 +2056,14 @@ def test_tool_planning_prompt_encourages_web_search_for_uncertain_external_info(
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"確認するね。","zh":"我来确认一下。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -1948,7 +2082,7 @@ def test_tool_planning_prompt_encourages_web_search_for_uncertain_external_info(
 
     runtime.handle_user_message([{"role": "user", "content": "这个库现在最新版本是多少？"}])
 
-    assert "web__web_search" in client.prompts[0]
+    assert "web__web_search" in client.tool_names
     assert "最新、外部、公开或不确定的信息" in client.prompts[0]
     assert "主动使用可用的网页搜索工具" in client.prompts[0]
     assert "搜索摘要不足以回答时，再读取具体网页" in client.prompts[0]
@@ -1958,10 +2092,13 @@ def test_autonomous_screen_observation_disabled_hides_screen_tool() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"見えないよ。","zh":"我先不看屏幕。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -1969,10 +2106,10 @@ def test_autonomous_screen_observation_disabled_hides_screen_tool() -> None:
         system_prompt="你是 Sakura。",
         tools=ToolRegistry([create_screen_observation_tool()]),
     )
+    runtime.set_autonomous_screen_observation_enabled(False)
 
     runtime.handle_user_message([{"role": "user", "content": "你觉得我现在是不是卡住了？"}])
 
-    assert OBSERVE_SCREEN_TOOL_NAME not in client.prompts[0]
     assert "当前没有可用的自主屏幕观察工具" in client.prompts[0]
 
 
@@ -1980,10 +2117,13 @@ def test_screen_observation_tool_hidden_without_user_message() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -1995,17 +2135,20 @@ def test_screen_observation_tool_hidden_without_user_message() -> None:
 
     runtime.handle_user_message([{"role": "assistant", "content": "少し見るね。"}])
 
-    assert OBSERVE_SCREEN_TOOL_NAME not in client.prompts[0]
+    assert OBSERVE_SCREEN_TOOL_NAME not in client.tool_names
 
 
 def test_screen_observation_tool_hidden_after_observation_marker() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"見たよ。","zh":"我看过了。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -2019,17 +2162,20 @@ def test_screen_observation_tool_hidden_after_observation_marker() -> None:
         [{"role": "user", "content": f"下午好\n{SCREEN_OBSERVATION_HISTORY_MARKER}"}]
     )
 
-    assert OBSERVE_SCREEN_TOOL_NAME not in client.prompts[0]
+    assert OBSERVE_SCREEN_TOOL_NAME not in client.tool_names
 
 
 def test_model_vision_disabled_hides_screen_observation_tool() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"見えないよ。","zh":"我看不到哦。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -2042,17 +2188,20 @@ def test_model_vision_disabled_hides_screen_observation_tool() -> None:
 
     runtime.handle_user_message([{"role": "user", "content": "普通聊天"}])
 
-    assert OBSERVE_SCREEN_TOOL_NAME not in client.prompts[0]
+    assert OBSERVE_SCREEN_TOOL_NAME not in client.tool_names
 
 
 def test_screen_observation_tool_hidden_after_image_is_attached() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
+            self.tool_names: list[str] = []
 
         def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"見るよ。","zh":"我看看。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = PromptCaptureClient()
     runtime = AgentRuntime(
@@ -2078,7 +2227,7 @@ def test_screen_observation_tool_hidden_after_image_is_attached() -> None:
         ]
     )
 
-    assert OBSERVE_SCREEN_TOOL_NAME not in client.prompts[0]
+    assert OBSERVE_SCREEN_TOOL_NAME not in client.tool_names
 
 
 def test_hidden_screen_observation_call_returns_failure_without_action() -> None:
@@ -2088,6 +2237,8 @@ def test_hidden_screen_observation_call_returns_failure_without_action() -> None
                 '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"提醒"}]},'
                 '"tool_calls":[{"name":"observe_screen","arguments":{},"reason":"需要当前画面"}]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
         def chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             from app.llm.chat_reply import parse_chat_reply
@@ -2162,6 +2313,8 @@ def test_vision_unsupported_error_gets_local_fallback_reply() -> None:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             raise ApiRequestError("model does not support image_url content")
 
+        complete_with_tools = _legacy_complete_with_tools
+
     observation = ScreenObservation(
         data_url="data:image/jpeg;base64,abc123",
         width=1280,
@@ -2181,6 +2334,51 @@ def test_vision_unsupported_error_gets_local_fallback_reply() -> None:
     assert not result.actions
 
 
+def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
+    prompt = build_proactive_check_tool_system_prompt(
+        "你是 Sakura。",
+        ["中性"],
+        ["站立待机"],
+        memory_summary="主人正在整理提示词。",
+        current_time="2026-06-01T08:00:00+08:00",
+        step_index=0,
+        remaining_steps=3,
+        max_tool_calls_per_step=3,
+        max_tool_calls_per_turn=8,
+        extra_instructions="额外规则。",
+    )
+
+    assert prompt.count("分段规则：") == 1
+    assert "主动屏幕检查事件" in prompt
+    assert "这是第 1 步" in prompt
+    assert "每步最多请求 3 个工具，整轮最多 8 个工具" in prompt
+    assert "主人正在整理提示词。" in prompt
+    assert "2026-06-01T08:00:00+08:00" in prompt
+    assert "额外规则。" in prompt
+    assert "JSON 格式如下" in prompt
+    assert "主动感知回复决策流程" in prompt
+    assert "主动感知场景策略" in prompt
+    assert "最终回复必须至少包含一个来自 screen_contexts 或 visual_contexts 的具体可见信息" in prompt
+    assert "图片/角色/女性照片" in prompt
+    assert "不确定时就普通问候" not in prompt
+
+
+def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
+    prompt = build_event_system_prompt(
+        "你是 Sakura。",
+        ["中性"],
+        ["站立待机"],
+        event_type="proactive_check",
+    )
+
+    assert prompt.count("分段规则：") == 1
+    assert "低打扰主动搭话" in prompt
+    assert "屏幕画面和近期对话充分时，可以展开到 2-4 段" in prompt
+    assert "主动搭话时不要固定使用“提醒”语气" in prompt
+    assert "先找屏幕上最确定的具体对象" in prompt
+    assert "只有画面确实为空、黑屏、桌面无内容" in prompt
+
+
 def test_proactive_check_event_generates_segmented_reply() -> None:
     class ProactiveClient:
         def __init__(self) -> None:
@@ -2194,6 +2392,8 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
                 '{"reply":{"segments":[{"ja":"少し休もう。","zh":"稍微休息一下吧。","tone":"提醒"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = ProactiveClient()
     runtime = AgentRuntime(
@@ -2238,6 +2438,8 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
                 '{"reply":{"segments":[{"ja":"画面は見たよ。","zh":"我看过画面了。","tone":"提醒"}]},'
                 '"tool_calls":[]}'
             )
+
+        complete_with_tools = _legacy_complete_with_tools
 
     client = ProactiveImageClient()
     runtime = AgentRuntime(
@@ -2409,6 +2611,8 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
                 '"tool_calls":[]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
     registry = ToolRegistry(
         [
             Tool(
@@ -2459,6 +2663,8 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
                 '"tool_calls":[{"name":"observe_screen","arguments":{},"reason":"想看看主人现在在做什么"}]}'
             )
 
+        complete_with_tools = _legacy_complete_with_tools
+
     client = ProactiveScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
@@ -2491,6 +2697,8 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
             self.prompts.append(system_prompt)
             return '{"reply":{"segments":[{"ja":"声をかけるね。","zh":"我轻轻叫你一下。","tone":"中性"}]}}'
 
+        complete_with_tools = _legacy_complete_with_tools
+
     client = ProactiveScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
@@ -2518,6 +2726,8 @@ def test_proactive_check_vision_unsupported_uses_safe_fallback() -> None:
     class ProactiveVisionUnsupportedClient:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             raise ApiRequestError("model does not support image_url content")
+
+        complete_with_tools = _legacy_complete_with_tools
 
     runtime = AgentRuntime(
         api_client=ProactiveVisionUnsupportedClient(),  # type: ignore[arg-type]

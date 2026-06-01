@@ -7,6 +7,7 @@ from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, Pend
 from app.debug_log import debug_log, summarize_messages
 from app.storage.visual_observation import (
     VisualObservationJob,
+    VisualObservationRecord,
     VisualObservationStore,
     summarize_visual_observation,
 )
@@ -70,7 +71,18 @@ class ChatPipeline:
         visual_observation_jobs: list[VisualObservationJob] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> AgentResult:
-        self._record_visual_observations("EventWorker", visual_observation_jobs or [])
+        visual_records = self._record_visual_observations("EventWorker", visual_observation_jobs or [])
+        if visual_records:
+            event = AgentEvent(
+                type=event.type,
+                payload={
+                    **event.payload,
+                    "visual_contexts": [
+                        _visual_record_to_event_context(record)
+                        for record in visual_records
+                    ],
+                },
+            )
         debug_log(
             "EventWorker",
             "开始处理主动事件",
@@ -88,11 +100,13 @@ class ChatPipeline:
         self,
         log_scope: str,
         visual_observation_jobs: list[VisualObservationJob],
-    ) -> None:
+    ) -> list[VisualObservationRecord]:
         if self.visual_observation_store is None or not visual_observation_jobs:
-            return
+            return []
+        records: list[VisualObservationRecord] = []
         for job in visual_observation_jobs:
             record = summarize_visual_observation(self.agent_runtime.api_client, job)
+            records.append(record)
             self.visual_observation_store.append(record)
             debug_log(
                 log_scope,
@@ -105,3 +119,19 @@ class ChatPipeline:
                     "sensitive_redacted": record.sensitive_redacted,
                 },
             )
+        return records
+
+
+def _visual_record_to_event_context(record: VisualObservationRecord) -> dict[str, Any]:
+    return {
+        "visual_id": record.id,
+        "source": record.source,
+        "created_at": record.created_at,
+        "screen_name": record.screen_name,
+        "summary": record.summary,
+        "visible_texts": record.visible_texts[:12],
+        "uncertain_texts": record.uncertain_texts[:6],
+        "notable_elements": record.notable_elements[:10],
+        "confidence": record.confidence,
+        "sensitive_redacted": record.sensitive_redacted,
+    }
