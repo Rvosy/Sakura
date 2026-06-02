@@ -1,5 +1,9 @@
 @echo off
 chcp 65001 > nul
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..") do set "PRJ_ROOT=%%~fI"
+set "SAKURA_PRJ_ROOT=%PRJ_ROOT%"
+
 echo ========================================
 echo   Sakura 依赖安装
 echo ========================================
@@ -8,13 +12,13 @@ echo.
 REM ============================================================
 REM 检测 Python：优先使用 runtime/python.exe，其次系统 Python
 REM ============================================================
-if exist "..\runtime\python.exe" (
-    set "PYTHON_EXE=%~dp0..\runtime\python.exe"
+if exist "%PRJ_ROOT%\runtime\python.exe" (
+    set "PYTHON_EXE=%PRJ_ROOT%\runtime\python.exe"
     echo [OK] 找到 runtime\python.exe
 ) else (
     echo [提示] 未找到内置 Python，尝试查找系统 Python...
     where python > nul 2>&1
-    if %errorlevel% neq 0 (
+    if errorlevel 1 (
         echo [错误] 未检测到 Python，请安装 Python 或下载完整 release 包
         echo         https://www.python.org/downloads/
         pause
@@ -27,12 +31,9 @@ if exist "..\runtime\python.exe" (
 REM ============================================================
 REM 检测非 ASCII 路径（PySide6 在非英文路径下会崩溃）
 REM ============================================================
-pushd %~dp0..
-set "PRJ_ROOT=%cd%"
-popd
-powershell -Command "if ('%PRJ_ROOT%' -match '[^\x20-\x7E]') { Write-Host '[错误] 项目路径包含非英文字符，PySide6 无法正常启动'; Write-Host '       请将项目移动到纯英文路径，如 D:\sakura'; Write-Host '       当前路径: %PRJ_ROOT%'; exit 1 } else { exit 0 }" > nul 2>&1
-if %errorlevel% neq 0 (
-    powershell -Command "Write-Host '[错误] 项目路径包含非英文字符，PySide6 无法正常启动'; Write-Host '       请将项目移动到纯英文路径，如 D:\sakura'; Write-Host '       当前路径: %PRJ_ROOT%'"
+powershell -NoProfile -Command "$path = $env:SAKURA_PRJ_ROOT; if ($path -match '[^\x20-\x7E]') { exit 1 } else { exit 0 }" > nul 2>&1
+if errorlevel 1 (
+    powershell -NoProfile -Command "$path = $env:SAKURA_PRJ_ROOT; Write-Host '[错误] 项目路径包含非英文字符，PySide6 无法正常启动'; Write-Host '       请将项目移动到纯英文路径，如 D:\sakura'; Write-Host ('       当前路径: ' + $path)"
     pause
     exit /b 1
 )
@@ -40,7 +41,7 @@ if %errorlevel% neq 0 (
 REM ============================================================
 REM 检测 requirements.txt
 REM ============================================================
-if not exist "..\requirements.txt" (
+if not exist "%PRJ_ROOT%\requirements.txt" (
     echo [错误] 未找到 requirements.txt
     pause
     exit /b 1
@@ -53,12 +54,12 @@ echo.
 echo [1/2] 安装 Python 依赖...
 echo.
 
-%PYTHON_EXE% -m pip install -r ..\requirements.txt ^
+"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" ^
     -i https://mirrors.aliyun.com/pypi/simple ^
     --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple ^
     --extra-index-url https://pypi.org/simple
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
     echo [错误] 依赖安装失败，请检查网络连接后重试
     pause
@@ -67,8 +68,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [2/2] 验证关键依赖...
-%PYTHON_EXE% -c "import PySide6; import playwright; print('[OK] PySide6 + Playwright 就绪')"
-if %errorlevel% neq 0 (
+"%PYTHON_EXE%" -c "import PySide6; import playwright; print('[OK] PySide6 + Playwright 就绪')"
+if errorlevel 1 (
     echo [警告] 部分依赖验证失败，但安装过程已完成，请检查上方输出
 )
 
