@@ -25,7 +25,7 @@ class ToolPermissionPolicy:
     3. 哪些工具因高风险必须始终确认
     """
 
-    free_access_enabled: bool = False
+    free_access_enabled: bool = True
 
     # ---- 高风险标记 (free_access 也不能跳过) ----
 

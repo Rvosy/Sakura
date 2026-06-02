@@ -4,7 +4,7 @@ from app.core.debug_log import debug_body_enabled, debug_enabled, debug_log, san
 
 
 def test_debug_log_disabled_by_default(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("app.debug_log._load_debug_values", lambda: {})
+    monkeypatch.setattr("app.core.debug_log._load_debug_values", lambda: {})
 
     debug_log("Test", "不会输出", {"content": "正文"})
 
@@ -12,7 +12,7 @@ def test_debug_log_disabled_by_default(monkeypatch, capsys) -> None:  # type: ig
 
 
 def test_debug_log_outputs_summary_when_enabled(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("app.debug_log._load_debug_values", lambda: {"enabled": True})
+    monkeypatch.setattr("app.core.debug_log._load_debug_values", lambda: {"enabled": True})
 
     debug_log("API", "请求开始", {"model": "demo", "content": "你好"})
 
@@ -24,7 +24,7 @@ def test_debug_log_outputs_summary_when_enabled(monkeypatch, capsys) -> None:  #
 
 def test_debug_body_disabled_keeps_only_body_summary(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
-        "app.debug_log._load_debug_values",
+        "app.core.debug_log._load_debug_values",
         lambda: {"enabled": True, "body_enabled": False},
     )
 
@@ -37,7 +37,7 @@ def test_debug_body_disabled_keeps_only_body_summary(monkeypatch) -> None:  # ty
 
 def test_debug_body_enabled_allows_full_short_body(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
-        "app.debug_log._load_debug_values",
+        "app.core.debug_log._load_debug_values",
         lambda: {"enabled": True, "body_enabled": True},
     )
 
