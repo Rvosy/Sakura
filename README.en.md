@@ -47,7 +47,7 @@ sdk/             # Shinsekai compat layer (deprecated, use app/plugins/)
 plugins/         # Local plugins
 data/config/     # YAML configuration files
 tests/           # pytest tests
-docs/            # Documentation (ARCHITECTURE.md, MIGRATION.md, etc.)
+docs/            # Documentation (ARCHITECTURE.md, etc.)
 ```
 
 ## Configuration
@@ -62,8 +62,6 @@ All config in YAML under `data/config/`:
 | `system_config.yaml: ui.subtitle_language` | Subtitle lang (`ja`/`zh`) | `ja` |
 | `system_config.yaml: proactive_care.enabled` | Proactive care | `false` |
 | `system_config.yaml: debug.enabled` | Debug logging | `false` |
-
-> Migrating from old `.env`? See [MIGRATION.md](docs/MIGRATION.md).
 
 ## Testing
 
