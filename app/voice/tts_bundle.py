@@ -83,7 +83,8 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
 )
 GPT_SOVITS_BUNDLES = (GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
 TTS_BUNDLES = (GENIE_TTS, GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
-MIN_GPT_SOVITS_VRAM_GB = 8.0
+MIN_GPT_SOVITS_VRAM_GB = 6.0
+_GPT_SOVITS_VRAM_TOLERANCE_GB = 0.25
 
 
 def format_platform_summary() -> str:
@@ -137,6 +138,17 @@ def format_gpu_summary(gpus: list[GPUInfo]) -> str:
     return "\n".join(f"#{i} NVIDIA | {gpu.name} | {gpu.vram_gb} GB" for i, gpu in enumerate(gpus, start=1))
 
 
+def format_bundle_size(entry: TTSBundleEntry) -> str:
+    gb = entry.size / 1_000_000_000
+    if gb >= 1:
+        return f"约 {gb:.1f} GB"
+    return f"约 {entry.size / 1_000_000:.0f} MB"
+
+
+def format_bundle_label(entry: TTSBundleEntry) -> str:
+    return f"{entry.label}（{format_bundle_size(entry)}）"
+
+
 def recommend_gpt_sovits_bundle(gpus: list[GPUInfo] | None = None) -> TTSBundleEntry:
     gpus = list_nvidia_gpus() if gpus is None else gpus
     if any(_is_rtx_50_series(gpu.name) for gpu in gpus):
@@ -146,7 +158,7 @@ def recommend_gpt_sovits_bundle(gpus: list[GPUInfo] | None = None) -> TTSBundleE
 
 def recommend_tts_bundle(gpus: list[GPUInfo] | None = None) -> TTSBundleEntry:
     gpus = list_nvidia_gpus() if gpus is None else gpus
-    capable_nvidia = [gpu for gpu in gpus if gpu.vram_gb >= MIN_GPT_SOVITS_VRAM_GB]
+    capable_nvidia = [gpu for gpu in gpus if _has_gpt_sovits_vram(gpu)]
     if not capable_nvidia:
         return GENIE_TTS
     if any(_is_rtx_50_series(gpu.name) for gpu in capable_nvidia):
@@ -184,12 +196,55 @@ def download_and_extract_bundle(
     error = extract(archive, installed_dir)
     if error is not None:
         raise RuntimeError(f"解压 TTS 整合包失败：{error}")
+    _emit_status(on_status, "cleanup")
+    _cleanup_archive(archive)
     _emit_progress(on_progress, 100)
     return _resolve_extracted_root(installed_dir)
 
 
+def cleanup_stale_download_archives(base_dir: Path) -> list[Path]:
+    """清理旧版本解压成功后遗留在下载目录里的整合包压缩包。"""
+    bundle_base = base_dir / "data" / "tts_bundles"
+    downloads_dir = bundle_base / "downloads"
+    installed_base = bundle_base / "installed"
+    if not downloads_dir.is_dir():
+        return []
+
+    cleaned: list[Path] = []
+    for entry in TTS_BUNDLES:
+        archive = downloads_dir / entry.filename
+        installed_dir = installed_base / entry.key
+        if not archive.is_file() or not _is_installed_bundle_ready(installed_dir):
+            continue
+        _cleanup_archive(archive)
+        cleaned.append(archive)
+    return cleaned
+
+
 def _is_rtx_50_series(name: str) -> bool:
     return bool(re.search(r"\bRTX\s*50[0-9]{2}\b", name, re.IGNORECASE))
+
+
+def _has_gpt_sovits_vram(gpu: GPUInfo) -> bool:
+    # nvidia-smi 常把 6GB / 8GB 显卡报成 5.9x / 7.9x GB，这里保留误差余量避免误判成 CPU 包。
+    return gpu.vram_gb + _GPT_SOVITS_VRAM_TOLERANCE_GB >= MIN_GPT_SOVITS_VRAM_GB
+
+
+def _cleanup_archive(archive: Path) -> None:
+    try:
+        archive.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"TTS 整合包已解压，但清理下载压缩包失败：{exc}") from exc
+
+
+def _is_installed_bundle_ready(installed_dir: Path) -> bool:
+    if not installed_dir.is_dir():
+        return False
+    try:
+        root = _resolve_extracted_root(installed_dir)
+    except OSError:
+        return False
+    return (root / "runtime" / "python.exe").is_file()
 
 
 def _emit_progress(callback: ProgressCallback | None, value: int) -> None:

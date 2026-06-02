@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.voice import tts_bundle
-from app.voice.tts_bundle import GPUInfo, TTSBundleEntry, download_and_extract_bundle
+from app.voice.tts_bundle import GPUInfo, TTSBundleEntry, cleanup_stale_download_archives, download_and_extract_bundle
 
 
 class FakeResponse:
@@ -57,11 +57,11 @@ def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
     )
 
     archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
-    assert archive.read_bytes() == payload
+    assert not archive.exists()
     assert not archive.with_name(f"{archive.name}.part").exists()
     assert work_dir == (root / "data" / "tts_bundles" / "installed" / entry.key).resolve()
     assert (work_dir / "api_v2.py").exists()
-    assert statuses == ["verify", "download", "extract"]
+    assert statuses == ["verify", "download", "extract", "cleanup"]
     assert progress[-1] == 100
 
 
@@ -92,7 +92,8 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
     )
 
     assert work_dir == (root / "data" / "tts_bundles" / "installed" / entry.key).resolve()
-    assert statuses == ["verify", "extract"]
+    assert not archive.exists()
+    assert statuses == ["verify", "extract", "cleanup"]
     assert 10 in progress
     assert progress[-1] == 100
 
@@ -137,16 +138,67 @@ def test_tts_bundle_reports_extract_failure() -> None:
             urlopen=fake_urlopen,
             extractor=lambda *_args: "boom",
         )
+    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    assert archive.read_bytes() == payload
+
+
+def test_tts_bundle_cleans_legacy_archive_when_bundle_is_installed() -> None:
+    root = _runtime_root("cleanup_legacy_archive")
+    entry = tts_bundle.GPT_SOVITS_STANDARD
+    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b"legacy-archive")
+    runtime_python = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS"
+        / "runtime"
+        / "python.exe"
+    )
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+
+    cleaned = cleanup_stale_download_archives(root)
+
+    assert cleaned == [archive]
+    assert not archive.exists()
+
+
+def test_tts_bundle_legacy_cleanup_preserves_uninstalled_and_unknown_archives() -> None:
+    root = _runtime_root("cleanup_preserve_archives")
+    entry = tts_bundle.GENIE_TTS
+    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    unknown_archive = archive.parent / "unknown.7z"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b"not-installed")
+    unknown_archive.write_bytes(b"unknown")
+    (root / "data" / "tts_bundles" / "installed" / entry.key).mkdir(parents=True, exist_ok=True)
+
+    cleaned = cleanup_stale_download_archives(root)
+
+    assert cleaned == []
+    assert archive.exists()
+    assert unknown_archive.exists()
 
 
 def test_tts_bundle_recommends_genie_for_cpu_or_small_gpu() -> None:
     assert tts_bundle.recommend_tts_bundle([]).key == "genie_tts_server"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1060", 6.0)]).key == "genie_tts_server"
+    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1050 Ti", 4.0)]).key == "genie_tts_server"
 
 
 def test_tts_bundle_recommends_gptsovits_for_capable_nvidia() -> None:
+    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1060", 6.0)]).key == "gpt_sovits_v2pro"
+    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1060", 5.96)]).key == "gpt_sovits_v2pro"
     assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]).key == "gpt_sovits_v2pro"
     assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 5080", 16.0)]).key == "gpt_sovits_nvidia50"
+    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 5060", 7.96)]).key == "gpt_sovits_nvidia50"
+
+
+def test_tts_bundle_label_includes_approx_size() -> None:
+    assert tts_bundle.format_bundle_label(tts_bundle.GPT_SOVITS_NVIDIA50).endswith("（约 8.8 GB）")
 
 
 def test_extract_archive_prefers_py7zz(monkeypatch: pytest.MonkeyPatch) -> None:

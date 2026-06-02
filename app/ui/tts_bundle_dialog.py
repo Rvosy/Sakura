@@ -18,7 +18,9 @@ from PySide6.QtWidgets import (
 from app.voice.tts_bundle import (
     TTS_BUNDLES,
     TTSBundleEntry,
+    cleanup_stale_download_archives,
     download_and_extract_bundle,
+    format_bundle_label,
     format_gpu_summary,
     format_platform_summary,
     list_nvidia_gpus,
@@ -60,6 +62,7 @@ class TTSBundleDownloadDialog(QDialog):
         self._thread: TTSBundleDownloadThread | None = None
         self.setWindowTitle("下载 TTS 整合包")
         self.setMinimumWidth(520)
+        self._cleanup_legacy_archives()
 
         gpus = list_nvidia_gpus()
         recommended = recommend_tts_bundle(gpus)
@@ -68,12 +71,12 @@ class TTSBundleDownloadDialog(QDialog):
         self.platform_label.setWordWrap(True)
         self.gpu_label = QLabel(f"显卡检测：\n{format_gpu_summary(gpus)}", self)
         self.gpu_label.setWordWrap(True)
-        self.recommend_label = QLabel(f"推荐下载：{recommended.label}", self)
+        self.recommend_label = QLabel(f"推荐下载：{format_bundle_label(recommended)}", self)
         self.recommend_label.setWordWrap(True)
 
         self.bundle_combo = QComboBox(self)
         for entry in TTS_BUNDLES:
-            self.bundle_combo.addItem(entry.label, entry.key)
+            self.bundle_combo.addItem(format_bundle_label(entry), entry.key)
             if entry.key == recommended.key:
                 self.bundle_combo.setCurrentIndex(self.bundle_combo.count() - 1)
 
@@ -137,6 +140,7 @@ class TTSBundleDownloadDialog(QDialog):
             "verify": "正在校验本地压缩包...",
             "download": "正在下载整合包...",
             "extract": "正在解压整合包...",
+            "cleanup": "正在清理下载压缩包...",
         }.get(status, status)
         self.status_label.setText(text)
 
@@ -158,6 +162,12 @@ class TTSBundleDownloadDialog(QDialog):
     @Slot()
     def _clear_thread(self) -> None:
         self._thread = None
+
+    def _cleanup_legacy_archives(self) -> None:
+        try:
+            cleanup_stale_download_archives(self.base_dir)
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "清理旧压缩包失败", str(exc))
 
     def reject(self) -> None:
         if self._thread is not None and self._thread.isRunning():
