@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from app.agent.memory import MemoryStore
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_UNAVAILABLE_TEXT
+from app.core.debug_log import debug_log
 from app.config.character_archive import (
     CharacterArchiveError,
     export_character_archive,
@@ -136,7 +137,10 @@ class TTSTestWorker(QObject):
             if provider is not None:
                 close = getattr(provider, "close", None)
                 if callable(close):
-                    close()
+                    try:
+                        close()
+                    except Exception as exc:  # noqa: BLE001
+                        debug_log("TTS", "TTS 检测完成后关闭 Provider 失败", {"error": str(exc)})
             self.finished.emit()
 
 

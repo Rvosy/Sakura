@@ -3554,6 +3554,33 @@ def test_tts_test_worker_closes_provider_after_success(monkeypatch) -> None:  # 
     assert closed == [True]
 
 
+def test_tts_test_worker_emits_finished_when_provider_close_fails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtCore")
+    import app.ui.settings_dialog as settings_dialog
+
+    events: list[str] = []
+
+    class FakeProvider:
+        def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
+            self.settings = settings
+
+        def ensure_ready(self) -> tuple[bool, str]:
+            return True, "ok"
+
+        def close(self) -> None:
+            raise RuntimeError("关闭失败")
+
+    monkeypatch.setattr(settings_dialog, "GPTSoVITSTTSProvider", FakeProvider)
+
+    worker = settings_dialog.TTSTestWorker(_minimal_tts_settings())
+    worker.succeeded.connect(lambda *_args: events.append("succeeded"))
+    worker.finished.connect(lambda: events.append("finished"))
+    worker.run()
+
+    assert events == ["succeeded", "finished"]
+
+
 def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
