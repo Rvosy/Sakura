@@ -66,8 +66,10 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     host = QWidget()
     host.subtitle_language = SUBTITLE_LANGUAGE_ZH
     host.free_access_enabled = True
+    host.always_on_top_enabled = False
     host._toggle_chinese_subtitles = lambda _checked: None
     host._toggle_free_access = lambda _checked: None
+    host._toggle_always_on_top = lambda _checked: None
     host.show_history = lambda: None
     host.show_settings = lambda: None
 
@@ -82,11 +84,52 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     assert "自由访问权限" not in texts
     assert "显示中文字幕" in checkable_texts
     assert "完整访问权限" in checkable_texts
-    assert len(checkable_texts) == 2
+    assert "保持置顶" in checkable_texts
+    assert len(checkable_texts) == 3
 
     menu.deleteLater()
     host.deleteLater()
     app.processEvents()
+
+
+def test_pet_window_context_menu_opens_on_right_release_not_press() -> None:
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    from app.ui.pet_window import PetWindow
+
+    class MouseEventStub:
+        def __init__(self) -> None:
+            self.accepted = False
+
+        def button(self):  # type: ignore[no-untyped-def]
+            return qtcore.Qt.MouseButton.RightButton
+
+        def position(self):  # type: ignore[no-untyped-def]
+            return qtcore.QPointF(12, 24)
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    class MinimalWindow:
+        _handle_mouse_press = PetWindow._handle_mouse_press
+        _handle_mouse_release = PetWindow._handle_mouse_release
+
+        def __init__(self) -> None:
+            self.context_menu_positions: list[object] = []
+
+        def _show_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
+            self.context_menu_positions.append(position)
+
+    window = MinimalWindow()
+    press_event = MouseEventStub()
+    release_event = MouseEventStub()
+
+    assert window._handle_mouse_press(press_event) is True
+    assert press_event.accepted
+    assert window.context_menu_positions == []
+
+    assert window._handle_mouse_release(release_event) is True
+    assert release_event.accepted
+    assert window.context_menu_positions == [release_event.position().toPoint()]
 
 
 def test_reply_history_controls_use_capsule_sizing() -> None:
@@ -268,6 +311,25 @@ def test_pet_window_loads_normalized_subtitle_display_speed() -> None:
             "reply_segment_pause_ms": 4000,
         }
     )._load_subtitle_display_speed() == (200, 3000)
+
+
+def test_pet_window_loads_always_on_top_disabled_by_default() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _load_always_on_top_enabled = PetWindow._load_always_on_top_enabled
+
+        def __init__(self, values):  # type: ignore[no-untyped-def]
+            self.values = values
+
+        def _load_system_config_values(self, section: str):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            return self.values
+
+    assert MinimalWindow({})._load_always_on_top_enabled() is False
+    assert MinimalWindow({"always_on_top_enabled": "invalid"})._load_always_on_top_enabled() is False
+    assert MinimalWindow({"always_on_top_enabled": True})._load_always_on_top_enabled() is True
+    assert MinimalWindow({"always_on_top_enabled": "on"})._load_always_on_top_enabled() is True
 
 
 def test_pet_window_defaults_autonomous_screen_observation_to_enabled() -> None:
@@ -3001,6 +3063,44 @@ def test_reply_history_review_text_refreshes_when_subtitle_language_changes(monk
     assert window.subtitle_controller.subtitle_languages == [SUBTITLE_LANGUAGE_ZH]
     assert window.subtitle_controller.shown_immediately == ["译文"]
     assert not window.subtitle_controller.restarted
+
+
+def test_pet_window_toggle_always_on_top_saves_and_applies() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _toggle_always_on_top = PetWindow._toggle_always_on_top
+
+        def __init__(self) -> None:
+            self.always_on_top_enabled = False
+            self.saved_values: list[tuple[str, dict[str, bool]]] = []
+            self.apply_count = 0
+            self.raise_count = 0
+
+        def _save_system_config_values(self, section: str, values: dict[str, bool]) -> None:
+            self.saved_values.append((section, values))
+
+        def _apply_window_flags(self) -> None:
+            self.apply_count += 1
+
+        def raise_(self) -> None:
+            self.raise_count += 1
+
+    window = MinimalWindow()
+
+    window._toggle_always_on_top(True)
+
+    assert window.always_on_top_enabled is True
+    assert window.saved_values == [("ui", {"always_on_top_enabled": True})]
+    assert window.apply_count == 1
+    assert window.raise_count == 1
+
+    window._toggle_always_on_top(False)
+
+    assert window.always_on_top_enabled is False
+    assert window.saved_values[-1] == ("ui", {"always_on_top_enabled": False})
+    assert window.apply_count == 2
+    assert window.raise_count == 1
 
 
 def test_screen_observation_followup_uses_last_user_message_after_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -11,9 +11,11 @@ def build_pet_tray_menu(
     *,
     chinese_subtitles_checked: bool,
     free_access_checked: bool,
+    always_on_top_checked: bool,
     on_hide: Callable[[], None],
     on_toggle_chinese_subtitles: Callable[[bool], None],
     on_toggle_free_access: Callable[[bool], None],
+    on_toggle_always_on_top: Callable[[bool], None],
     on_show_history: Callable[[], None],
     on_show_settings: Callable[[], None],
     interactions_enabled: bool = True,
@@ -41,6 +43,13 @@ def build_pet_tray_menu(
     free_access_action.setEnabled(interactions_enabled)
     free_access_action.triggered.connect(on_toggle_free_access)
     menu.addAction(free_access_action)
+
+    always_on_top_action = QAction("保持置顶", parent)
+    always_on_top_action.setCheckable(True)
+    always_on_top_action.setChecked(always_on_top_checked)
+    always_on_top_action.setEnabled(interactions_enabled)
+    always_on_top_action.triggered.connect(on_toggle_always_on_top)
+    menu.addAction(always_on_top_action)
 
     menu.addSeparator()
 

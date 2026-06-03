@@ -190,6 +190,7 @@ class PetWindow(QWidget):
         )
         self.free_access_enabled = self._load_free_access_enabled()
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
+        self.always_on_top_enabled = self._load_always_on_top_enabled()
         self.history_window: HistoryWindow | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
@@ -261,29 +262,22 @@ class PetWindow(QWidget):
                 "reply_segment_pause_ms": self.reply_segment_pause_ms,
                 "proactive_care": self.proactive_care_settings,
                 "auto_memory": self.memory_curation_settings,
+                "always_on_top_enabled": self.always_on_top_enabled,
             },
         )
 
         self.setWindowTitle(self.character_profile.display_name)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self._apply_window_flags()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.label.customContextMenuRequested.connect(self._show_context_menu)
         self.portrait_opacity_effect = QGraphicsOpacityEffect(self.label)
         self.portrait_opacity_effect.setOpacity(1.0)
         self.label.setGraphicsEffect(self.portrait_opacity_effect)
 
         self.portrait_transition_label = QLabel(self)
         self.portrait_transition_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.portrait_transition_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.portrait_transition_label.customContextMenuRequested.connect(self._show_context_menu)
         self.portrait_transition_label.hide()
         self.portrait_transition_opacity_effect = QGraphicsOpacityEffect(self.portrait_transition_label)
         self.portrait_transition_opacity_effect.setOpacity(0.0)
@@ -305,8 +299,6 @@ class PetWindow(QWidget):
 
         self.bubble = QFrame(self)
         self.bubble.setObjectName("speechBubble")
-        self.bubble.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.bubble.customContextMenuRequested.connect(self._show_context_menu)
 
         self.name_label = QLabel(self.character_profile.display_name, self.bubble)
         self.name_label.setObjectName("speakerName")
@@ -556,7 +548,6 @@ class PetWindow(QWidget):
             event.accept()
             return True
         if event.button() == Qt.MouseButton.RightButton:
-            self._show_context_menu(event.position().toPoint())
             event.accept()
             return True
         return False
@@ -571,6 +562,10 @@ class PetWindow(QWidget):
     def _handle_mouse_release(self, event: QMouseEvent) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_offset = None
+            event.accept()
+            return True
+        if event.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(event.position().toPoint())
             event.accept()
             return True
         return False
@@ -782,10 +777,12 @@ class PetWindow(QWidget):
             self,
             chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
             free_access_checked=self.free_access_enabled,
+            always_on_top_checked=self.always_on_top_enabled,
             interactions_enabled=not getattr(self, "startup_initializing", False),
             on_hide=self.hide,
             on_toggle_chinese_subtitles=self._toggle_chinese_subtitles,
             on_toggle_free_access=self._toggle_free_access,
+            on_toggle_always_on_top=self._toggle_always_on_top,
             on_show_history=self.show_history,
             on_show_settings=self.show_settings,
         )
@@ -2413,6 +2410,25 @@ class PetWindow(QWidget):
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
 
+    @Slot(bool)
+    def _toggle_always_on_top(self, checked: bool) -> None:
+        if checked == self.always_on_top_enabled:
+            return
+        previous_enabled = self.always_on_top_enabled
+        self.always_on_top_enabled = checked
+        try:
+            self._save_system_config_values("ui", {"always_on_top_enabled": checked})
+        except OSError as exc:
+            self.always_on_top_enabled = previous_enabled
+            QMessageBox.warning(self, "保存失败", f"无法保存置顶设置：{exc}")
+            return
+
+        self._apply_window_flags()
+        if checked:
+            self.raise_()
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setContextMenu(self._build_menu())
+
     def _create_tts_provider_from_settings(
         self,
         settings: GPTSoVITSTTSSettings,
@@ -2605,6 +2621,13 @@ class PetWindow(QWidget):
             return _parse_bool(system_values.get("free_access_enabled"), default=True)
         return False
 
+    def _load_always_on_top_enabled(self) -> bool:
+        """从 system_config.yaml 加载主窗口置顶设置，默认不置顶。"""
+        system_values = self._load_system_config_values("ui")
+        if "always_on_top_enabled" in system_values:
+            return _parse_bool(system_values.get("always_on_top_enabled"), default=False)
+        return False
+
     def _load_system_config_values(self, section: str) -> dict[str, Any]:
         return self.settings_service.load_system_values(section)
 
@@ -2614,6 +2637,18 @@ class PetWindow(QWidget):
         values: dict[str, Any],
     ) -> None:
         self.settings_service.save_system_values(section, values)
+
+    def _window_flags(self) -> Qt.WindowType:
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        if self.always_on_top_enabled:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        return flags
+
+    def _apply_window_flags(self) -> None:
+        was_visible = self.isVisible()
+        self.setWindowFlags(self._window_flags())
+        if was_visible:
+            self.show()
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
