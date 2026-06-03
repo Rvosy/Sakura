@@ -124,6 +124,8 @@ class AppSettingsService:
         default_api_url = DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
         api_url = str(provider_data.get("api_url", default_api_url)).strip()
         work_dir = _optional_path(provider_data.get("work_dir"), self.base_dir)
+        python_path = _optional_path(provider_data.get("python_path"), self.base_dir)
+        tts_config_path = _optional_path(provider_data.get("tts_config_path"), self.base_dir)
         ref_lang = str(provider_data.get("ref_lang", gpt_sovits.get("ref_lang", "zh"))).strip()
         text_lang = str(provider_data.get("text_lang", gpt_sovits.get("text_lang", "zh"))).strip()
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
@@ -152,6 +154,8 @@ class AppSettingsService:
                 timeout_seconds=timeout_seconds,
                 provider=provider,
                 work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
                 onnx_model_dir=onnx_model_dir,
                 validate_enabled=validate_enabled,
             )
@@ -166,6 +170,8 @@ class AppSettingsService:
                 ref_text="",
                 provider=provider,
                 work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
                 character_name="sakura",
                 onnx_model_dir=onnx_model_dir,
                 ref_lang=ref_lang,
@@ -201,6 +207,8 @@ class AppSettingsService:
             tts_data["gpt_sovits"] = {
                 "api_url": settings.api_url.strip(),
                 "work_dir": _path_for_config(settings.work_dir, self.base_dir),
+                "python_path": _path_for_config(settings.python_path, self.base_dir),
+                "tts_config_path": _path_for_config(settings.tts_config_path, self.base_dir),
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),

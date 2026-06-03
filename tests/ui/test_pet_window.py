@@ -551,10 +551,19 @@ def test_settings_dialog_exposes_tts_bundle_controls() -> None:
     )
 
     labels = [label.text() for label in dialog.findChildren(qtwidgets.QLabel)]
+    custom_index = dialog.tts_provider_combo.findData("custom-gpt-sovits")
 
     assert any("TTS 工作目录" in text for text in labels)
     assert any("TTS 提供器" in text for text in labels)
+    assert any("TTS Python" in text for text in labels)
+    assert any("推理配置" in text for text in labels)
+    assert custom_index >= 0
+    assert "macOS/Linux" in dialog.tts_provider_combo.itemText(custom_index)
     assert dialog.tts_bundle_download_button.text() == "一键下载 TTS 整合包"
+    dialog.tts_provider_combo.setCurrentIndex(custom_index)
+    app.processEvents()
+    assert not dialog.tts_python_path_edit.isReadOnly()
+    assert not dialog.tts_config_path_edit.isReadOnly()
     dialog.deleteLater()
     app.processEvents()
 
@@ -669,6 +678,87 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     assert dialog.result_tts_settings.provider == "genie-tts"
     assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
     assert dialog.result_tts_settings.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_macos_ui")
+    work_dir = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_macos" / "GPT-SoVITS"
+    python_path = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / "gpt_sovits_macos"
+        / "miniforge3"
+        / "envs"
+        / "gpt-sovits310"
+        / "bin"
+        / "python"
+    )
+    tts_config_path = work_dir / "GPT_SoVITS" / "configs" / "tts_infer_sakura_macos.yaml"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    python_path.parent.mkdir(parents=True, exist_ok=True)
+    python_path.write_text("fake", encoding="utf-8")
+    tts_config_path.parent.mkdir(parents=True, exist_ok=True)
+    tts_config_path.write_text("custom: {}", encoding="utf-8")
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.downloaded_work_dir = work_dir
+            self.downloaded_provider = "custom-gpt-sovits"
+            self.downloaded_python_path = python_path
+            self.downloaded_tts_config_path = tts_config_path
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return settings_dialog_module.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    dialog._download_gpt_sovits_bundle()
+
+    assert dialog.tts_enabled_check.isChecked()
+    assert dialog.tts_provider_combo.currentData() == "custom-gpt-sovits"
+    assert dialog.tts_work_dir_edit.text() == str(work_dir)
+    assert dialog.tts_python_path_edit.text() == str(python_path)
+    assert dialog.tts_config_path_edit.text() == str(tts_config_path)
+    monkeypatch.setattr(
+        dialog,
+        "_start_tts_settings_test",
+        lambda _settings, accept_values: dialog._complete_accept(accept_values),
+    )
+
+    dialog.accept()
+
+    assert dialog.result_tts_settings is not None
+    assert dialog.result_tts_settings.provider == "custom-gpt-sovits"
+    assert dialog.result_tts_settings.work_dir == work_dir
+    assert dialog.result_tts_settings.python_path == python_path
+    assert dialog.result_tts_settings.tts_config_path == tts_config_path
     dialog.deleteLater()
     app.processEvents()
 

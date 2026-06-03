@@ -543,7 +543,7 @@ class SettingsDialog(QDialog):
         self.tts_provider_combo = QComboBox(tab)
         self.tts_provider_combo.addItem("GPT-SoVITS 整合包（GPU）", TTS_PROVIDER_GPT_SOVITS)
         self.tts_provider_combo.addItem("Genie TTS 整合包（CPU）", TTS_PROVIDER_GENIE)
-        self.tts_provider_combo.addItem("自定义外部 GPT-SoVITS", TTS_PROVIDER_CUSTOM_GPT_SOVITS)
+        self.tts_provider_combo.addItem("自定义 GPT-SoVITS（macOS/Linux）", TTS_PROVIDER_CUSTOM_GPT_SOVITS)
         provider_index = self.tts_provider_combo.findData(settings.provider)
         self.tts_provider_combo.setCurrentIndex(provider_index if provider_index >= 0 else 0)
 
@@ -551,7 +551,14 @@ class SettingsDialog(QDialog):
         self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(settings.provider))
         self.tts_work_dir_edit = QLineEdit(str(settings.work_dir or ""), tab)
         self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
+        self.tts_python_path_edit = QLineEdit(str(settings.python_path or ""), tab)
+        self.tts_python_path_edit.setPlaceholderText("macOS/Linux Python，例如 /path/to/miniforge3/envs/gpt-sovits/bin/python")
+        self.tts_config_path_edit = QLineEdit(str(settings.tts_config_path or ""), tab)
+        self.tts_config_path_edit.setPlaceholderText("可选：GPT-SoVITS tts_infer.yaml")
         self.tts_bundle_download_button = QPushButton("一键下载 TTS 整合包", tab)
+        self.tts_bundle_download_button.setToolTip(
+            "Windows 可一键下载内置整合包；macOS/Linux 请使用自定义 GPT-SoVITS 接入源码版运行环境。"
+        )
         self.tts_bundle_download_button.clicked.connect(self._download_gpt_sovits_bundle)
         self.tts_provider_combo.currentIndexChanged.connect(lambda _index: self._sync_tts_provider_controls(apply_defaults=True))
 
@@ -570,6 +577,8 @@ class SettingsDialog(QDialog):
         form_layout.addRow("TTS 提供器", self.tts_provider_combo)
         form_layout.addRow("API URL", self.tts_api_url_edit)
         form_layout.addRow("TTS 工作目录", self.tts_work_dir_edit)
+        form_layout.addRow("TTS Python", self.tts_python_path_edit)
+        form_layout.addRow("推理配置", self.tts_config_path_edit)
         form_layout.addRow("", self.tts_bundle_download_button)
         form_layout.addRow("参考语言", self.ref_lang_edit)
         form_layout.addRow("文本语言", self.text_lang_edit)
@@ -1701,10 +1710,20 @@ class SettingsDialog(QDialog):
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.downloaded_work_dir is None:
             return
         provider = getattr(dialog, "downloaded_provider", None) or TTS_PROVIDER_GPT_SOVITS
+        python_path = getattr(dialog, "downloaded_python_path", None)
+        tts_config_path = getattr(dialog, "downloaded_tts_config_path", None)
         provider_index = self.tts_provider_combo.findData(provider)
         if provider_index >= 0:
             self.tts_provider_combo.setCurrentIndex(provider_index)
         self.tts_work_dir_edit.setText(str(dialog.downloaded_work_dir))
+        if python_path is not None:
+            self.tts_python_path_edit.setText(str(python_path))
+        else:
+            self.tts_python_path_edit.clear()
+        if tts_config_path is not None:
+            self.tts_config_path_edit.setText(str(tts_config_path))
+        else:
+            self.tts_config_path_edit.clear()
         self.tts_api_url_edit.setText(_default_tts_api_url(provider))
         self.tts_enabled_check.setChecked(True)
         self._sync_tts_provider_controls()
@@ -1716,16 +1735,20 @@ class SettingsDialog(QDialog):
         if provider == TTS_PROVIDER_GENIE:
             self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/genie_tts_server/Genie-TTS Server")
         elif provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS:
-            self.tts_work_dir_edit.setPlaceholderText("外部 GPT-SoVITS 工作目录，可留空")
+            self.tts_work_dir_edit.setPlaceholderText("外部 GPT-SoVITS 源码目录，可留空")
         else:
             self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
         bundled = _is_bundled_tts_provider(provider)
         self.tts_api_url_edit.setReadOnly(bundled)
         self.tts_work_dir_edit.setReadOnly(bundled)
+        self.tts_python_path_edit.setReadOnly(bundled or provider == TTS_PROVIDER_GENIE)
+        self.tts_config_path_edit.setReadOnly(bundled or provider == TTS_PROVIDER_GENIE)
         if bundled and apply_defaults:
             self.tts_api_url_edit.setText(_default_tts_api_url(provider))
             work_dir = default_provider_bundle_work_dir(provider, self.base_dir)
             self.tts_work_dir_edit.setText(str(work_dir or ""))
+            self.tts_python_path_edit.clear()
+            self.tts_config_path_edit.clear()
         elif provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS and apply_defaults:
             work_dir = _optional_path(self.tts_work_dir_edit.text(), self.base_dir)
             if work_dir is not None and is_provider_bundle_work_dir(work_dir, self.base_dir):
@@ -1857,6 +1880,8 @@ class SettingsDialog(QDialog):
         provider = str(self.tts_provider_combo.currentData() or TTS_PROVIDER_GPT_SOVITS)
         api_url = self.tts_api_url_edit.text().strip()
         work_dir = _optional_path(self.tts_work_dir_edit.text(), self.base_dir)
+        python_path = _optional_path(self.tts_python_path_edit.text(), self.base_dir)
+        tts_config_path = _optional_path(self.tts_config_path_edit.text(), self.base_dir)
         ref_lang = self.ref_lang_edit.text().strip()
         text_lang = self.text_lang_edit.text().strip()
 
@@ -1875,6 +1900,8 @@ class SettingsDialog(QDialog):
                 timeout_seconds=self.tts_timeout_spin.value(),
                 provider=provider,
                 work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
                 onnx_model_dir=_default_genie_onnx_dir(self.base_dir, selected_profile) if provider == TTS_PROVIDER_GENIE else None,
                 validate_enabled=False,
             )
@@ -1889,6 +1916,8 @@ class SettingsDialog(QDialog):
                 gpt_model_path=self.tts_settings.gpt_model_path,
                 sovits_model_path=self.tts_settings.sovits_model_path,
                 work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
                 character_name=self.tts_settings.character_name or "sakura",
                 onnx_model_dir=(
                     self.tts_settings.onnx_model_dir or _default_genie_onnx_dir(self.base_dir, selected_profile)

@@ -26,6 +26,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
+from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
 
 
 TTSCallback = Callable[[], None]
@@ -230,6 +231,8 @@ class GPTSoVITSTTSSettings:
     gpt_model_path: Path | None = None
     sovits_model_path: Path | None = None
     work_dir: Path | None = None
+    python_path: Path | None = None
+    tts_config_path: Path | None = None
     character_name: str = ""
     onnx_model_dir: Path | None = None
     ref_lang: str = "ja"
@@ -248,6 +251,8 @@ class GPTSoVITSTTSSettings:
         timeout_seconds: int,
         provider: str = TTS_PROVIDER_GPT_SOVITS,
         work_dir: Path | None = None,
+        python_path: Path | None = None,
+        tts_config_path: Path | None = None,
         onnx_model_dir: Path | None = None,
         validate_enabled: bool = True,
     ) -> "GPTSoVITSTTSSettings":
@@ -264,6 +269,8 @@ class GPTSoVITSTTSSettings:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
                 work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
                 character_name=character_profile.display_name or character_profile.id,
                 onnx_model_dir=onnx_model_dir,
             )
@@ -287,6 +294,8 @@ class GPTSoVITSTTSSettings:
             gpt_model_path=voice.gpt_model_path,
             sovits_model_path=voice.sovits_model_path,
             work_dir=work_dir,
+            python_path=python_path,
+            tts_config_path=tts_config_path,
             character_name=character_profile.display_name or character_profile.id,
             onnx_model_dir=onnx_model_dir,
             ref_lang=ref_lang,
@@ -303,6 +312,10 @@ class GPTSoVITSTTSSettings:
             raise TTSConfigError("缺少 TTS API URL。")
         if self.provider not in _SUPPORTED_TTS_PROVIDERS:
             raise TTSConfigError(f"不支持的 TTS Provider：{self.provider}")
+        if self.python_path is not None and not self.python_path.exists():
+            raise TTSConfigError(f"TTS Python 不存在：{self.python_path}")
+        if self.tts_config_path is not None and not self.tts_config_path.exists():
+            raise TTSConfigError(f"GPT-SoVITS 推理配置不存在：{self.tts_config_path}")
         if self.gpt_model_path is not None and not self.gpt_model_path.exists():
             raise TTSConfigError(f"GPT 模型不存在：{self.gpt_model_path}")
         if self.sovits_model_path is not None and not self.sovits_model_path.exists():
@@ -780,13 +793,21 @@ class GPTSoVITSTTSProvider(QObject):
         if work_dir is None:
             return False
         work_dir = work_dir.resolve()
-        python_exe = work_dir / "runtime" / "python.exe"
+        runtime_dir = work_dir / "runtime"
+        python_exe = self.settings.python_path
+        if python_exe is not None:
+            python_exe = python_exe.resolve()
+        else:
+            python_exe = find_usable_runtime_python(runtime_dir)
         api_script = work_dir / "api_v2.py"
         if not work_dir.is_dir():
             fail_callback(f"GPT-SoVITS 工作目录不存在：{work_dir}")
             return False
+        if python_exe is None:
+            fail_callback(f"GPT-SoVITS 运行时不可用：{format_runtime_python_issue(runtime_dir)}")
+            return False
         if not python_exe.is_file():
-            fail_callback(f"GPT-SoVITS 运行时不存在：{python_exe}")
+            fail_callback(f"GPT-SoVITS Python 不存在：{python_exe}")
             return False
         if not api_script.is_file():
             fail_callback(f"GPT-SoVITS 启动脚本不存在：{api_script}")
@@ -809,7 +830,10 @@ class GPTSoVITSTTSProvider(QObject):
                 log_file.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] 启动 GPT-SoVITS：{work_dir}\n")
                 log_file.flush()
                 kwargs["stdout"] = log_file
-                self._server_process = subprocess.Popen([str(python_exe), str(api_script)], **kwargs)
+                self._server_process = subprocess.Popen(
+                    _build_gpt_sovits_start_command(python_exe, api_script, self.settings),
+                    **kwargs,
+                )
         except OSError as exc:
             debug_log("TTS", "本地 GPT-SoVITS 服务启动失败", {"work_dir": str(work_dir), "error": str(exc)})
             fail_callback(f"GPT-SoVITS 服务启动失败：{exc}")
@@ -1382,12 +1406,13 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         if work_dir is None:
             return False
         work_dir = work_dir.resolve()
-        python_exe = work_dir / "runtime" / "python.exe"
+        runtime_dir = work_dir / "runtime"
+        python_exe = find_usable_runtime_python(runtime_dir)
         if not work_dir.is_dir():
             fail_callback(f"Genie TTS 工作目录不存在：{work_dir}")
             return False
-        if not python_exe.is_file():
-            fail_callback(f"Genie TTS 运行时不存在：{python_exe}")
+        if python_exe is None:
+            fail_callback(f"Genie TTS 运行时不可用：{format_runtime_python_issue(runtime_dir)}")
             return False
 
         if self._server_process is not None and self._server_process.poll() is None:
@@ -1516,9 +1541,10 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         if converter_script is None:
             fail_callback(f"Genie TTS 工作目录缺少 convert.py/convery.py：{self.settings.work_dir}")
             return False
-        python_exe = converter_script.parent / "runtime" / "python.exe"
-        if not python_exe.is_file():
-            fail_callback(f"Genie TTS 转换运行时不存在：{python_exe}")
+        runtime_dir = converter_script.parent / "runtime"
+        python_exe = find_usable_runtime_python(runtime_dir)
+        if python_exe is None:
+            fail_callback(f"Genie TTS 转换运行时不可用：{format_runtime_python_issue(runtime_dir)}")
             return False
 
         onnx_dir.mkdir(parents=True, exist_ok=True)
@@ -1667,7 +1693,8 @@ def _command_line_matches_local_tts(
         return False
 
     normalized_command = _normalize_process_text(command_line)
-    python_exe = _normalize_process_text(str(work_dir.resolve() / "runtime" / "python.exe"))
+    configured_python = settings.python_path.resolve() if settings.python_path is not None else None
+    python_exe = _normalize_process_text(str(configured_python or work_dir.resolve() / "runtime" / "python.exe"))
     if python_exe not in normalized_command:
         return False
 
@@ -1766,6 +1793,28 @@ def _build_genie_start_command(python_exe: Path, host: str, port: int) -> list[s
         f"genie_tts.start_server(host={start_host!r}, port={int(port)}, workers=1)\n"
     )
     return [str(python_exe), "-c", start_code]
+
+
+def _build_gpt_sovits_start_command(
+    python_exe: Path,
+    api_script: Path,
+    settings: GPTSoVITSTTSSettings,
+) -> list[str]:
+    cmd = [str(python_exe), str(api_script)]
+    if settings.tts_config_path is not None:
+        cmd.extend(["-c", str(settings.tts_config_path)])
+
+    parsed_url = urlparse(settings.api_url)
+    if parsed_url.hostname:
+        host = "127.0.0.1" if parsed_url.hostname == "localhost" else parsed_url.hostname
+        cmd.extend(["-a", host])
+    try:
+        port = parsed_url.port
+    except ValueError:
+        port = None
+    if port is not None:
+        cmd.extend(["-p", str(port)])
+    return cmd
 
 
 def _probe_tcp_port(host: str, port: int, timeout: int) -> bool:

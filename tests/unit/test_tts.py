@@ -75,6 +75,7 @@ from app.voice.tts import (
     GPTSoVITSTTSProvider,
     GPTSoVITSTTSSettings,
     TTSPreparedAudio,
+    _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
     _load_tone_references,
     _resolve_request_text_lang,
@@ -287,7 +288,9 @@ def test_tts_provider_adopts_existing_local_process_on_init(monkeypatch) -> None
 def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("gptsovits_start") / "gpt-sovits"
     (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.write_text("fake", encoding="utf-8")
+    runtime_python.chmod(0o755)
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
     monkeypatch.chdir(work_dir.parent)
     provider = types.SimpleNamespace()
@@ -328,8 +331,40 @@ def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch)
     assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
     assert messages == []
     assert len(popen_calls) == 1
-    assert popen_calls[0] == [str(work_dir / "runtime" / "python.exe"), str(work_dir / "api_v2.py")]
+    assert popen_calls[0] == [
+        str(work_dir / "runtime" / "python.exe"),
+        str(work_dir / "api_v2.py"),
+        "-a",
+        "127.0.0.1",
+        "-p",
+        "9880",
+    ]
     assert (work_dir.parent / "data" / "logs" / "gpt-sovits-service.log").is_file()
+
+
+def test_gptsovits_start_command_uses_custom_python_and_tts_config() -> None:
+    root = _runtime_root("gptsovits_custom_python")
+    work_dir = root / "GPT-SoVITS"
+    python_path = root / "miniforge3" / "envs" / "gpt-sovits" / "bin" / "python"
+    api_script = work_dir / "api_v2.py"
+    tts_config_path = work_dir / "GPT_SoVITS" / "configs" / "tts_infer_sakura.yaml"
+    settings = _minimal_tts_settings(
+        work_dir=work_dir,
+        api_url="http://localhost:9880/tts",
+        python_path=python_path,
+        tts_config_path=tts_config_path,
+    )
+
+    assert _build_gpt_sovits_start_command(python_path, api_script, settings) == [
+        str(python_path),
+        str(api_script),
+        "-c",
+        str(tts_config_path),
+        "-a",
+        "127.0.0.1",
+        "-p",
+        "9880",
+    ]
 
 
 def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -347,8 +382,33 @@ def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  
     monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
 
     assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
-    assert "运行时不存在" in messages[0]
-    assert "python.exe" in messages[0]
+    assert "运行时不可用" in messages[0]
+    assert "未找到当前系统可执行的 Python 运行时" in messages[0]
+
+
+def test_tts_service_probe_reports_incompatible_windows_runtime_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    work_dir = _runtime_root("gptsovits_incompatible_runtime") / "gpt-sovits"
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_bytes(b"MZ\x00\x00")
+    runtime_python.chmod(0o755)
+    (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
+    provider = types.SimpleNamespace()
+    provider.settings = _minimal_tts_settings(work_dir=work_dir)
+    provider._service_checked = False
+    provider._server_process = None
+    messages: list[str] = []
+
+    def fake_create_connection(*_args: object, **_kwargs: object) -> object:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("app.voice.tts.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.runtime_compat.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
+
+    assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert "检测到 Windows Python 运行时" in messages[0]
+    assert "当前系统是 macOS" in messages[0]
 
 
 def test_gptsovits_ensure_ready_returns_success_after_service_and_weights(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -407,7 +467,9 @@ def test_gptsovits_ensure_ready_returns_weight_failure(monkeypatch) -> None:  # 
 def test_genie_service_probe_starts_local_server_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("genie_start") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.write_text("fake", encoding="utf-8")
+    runtime_python.chmod(0o755)
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
     provider._service_checked = False
@@ -499,7 +561,9 @@ def test_genie_ensure_ready_returns_reference_failure(monkeypatch) -> None:  # t
 def test_genie_service_probe_moves_to_fallback_port_when_9880_is_gptsovits(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("genie_fallback_port") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.write_text("fake", encoding="utf-8")
+    runtime_python.chmod(0o755)
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9880/")
     provider._service_checked = False
@@ -934,6 +998,8 @@ def _minimal_tts_settings(
     *,
     provider: str = "gpt-sovits",
     api_url: str = "http://127.0.0.1:9880/tts",
+    python_path: Path | None = None,
+    tts_config_path: Path | None = None,
 ) -> GPTSoVITSTTSSettings:
     root = _runtime_root("minimal_tts")
     ref_audio_path = root / "voice" / "refs" / "tone_refs" / "neutral.wav"
@@ -952,6 +1018,8 @@ def _minimal_tts_settings(
         ref_text_path=ref_text_path,
         ref_text="テスト",
         work_dir=work_dir,
+        python_path=python_path,
+        tts_config_path=tts_config_path,
         character_name="夜乃桜",
         onnx_model_dir=Path("data/tts_bundles/onnx/sakura") if provider == "genie-tts" else None,
         ref_lang="ja",
