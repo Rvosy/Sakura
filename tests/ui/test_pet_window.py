@@ -486,7 +486,7 @@ def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabl
     app.processEvents()
 
 
-def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
+def test_settings_dialog_marks_windows_mcp_as_unavailable() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -507,18 +507,20 @@ def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
         base_dir=root,
         **_settings_dialog_character_kwargs(root),
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
     )
 
     labels = [label.text() for label in dialog.findChildren(qtwidgets.QLabel)]
 
     assert not dialog.windows_mcp_enabled_check.isChecked()
+    assert not dialog.windows_mcp_enabled_check.isEnabled()
+    assert any("待测试，未开放" in text for text in labels)
     assert any("重启 Sakura" in text for text in labels)
 
     dialog.windows_mcp_enabled_check.setChecked(True)
     dialog.accept()
 
-    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
+    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=False)
     dialog.deleteLater()
     app.processEvents()
 

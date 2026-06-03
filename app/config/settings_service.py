@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.agent.mcp.settings import MCPRuntimeSettings
+from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.llm.api_client import ApiSettings
@@ -209,17 +209,20 @@ class AppSettingsService:
 
     def load_mcp_runtime_settings(self) -> MCPRuntimeSettings:
         mcp = self._system_section("mcp")
-        return MCPRuntimeSettings(
-            windows_enabled=_bool_value(
-                mcp.get("windows_enabled"),
-                False,
+        return normalize_mcp_runtime_settings(
+            MCPRuntimeSettings(
+                windows_enabled=_bool_value(
+                    mcp.get("windows_enabled"),
+                    False,
+                )
             )
         )
 
     def save_mcp_runtime_settings(self, settings: MCPRuntimeSettings) -> None:
+        normalized_settings = normalize_mcp_runtime_settings(settings)
         self.save_system_values(
             "mcp",
-            {"windows_enabled": bool(settings.windows_enabled)},
+            {"windows_enabled": bool(normalized_settings.windows_enabled)},
         )
 
     def load_debug_log_settings(self) -> DebugLogSettings:
