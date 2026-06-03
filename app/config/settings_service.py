@@ -124,8 +124,8 @@ class AppSettingsService:
         default_api_url = DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
         api_url = str(provider_data.get("api_url", default_api_url)).strip()
         work_dir = _optional_path(provider_data.get("work_dir"), self.base_dir)
-        ref_lang = str(provider_data.get("ref_lang", gpt_sovits.get("ref_lang", "ja"))).strip()
-        text_lang = str(provider_data.get("text_lang", gpt_sovits.get("text_lang", "ja"))).strip()
+        ref_lang = str(provider_data.get("ref_lang", gpt_sovits.get("ref_lang", "zh"))).strip()
+        text_lang = str(provider_data.get("text_lang", gpt_sovits.get("text_lang", "zh"))).strip()
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
         onnx_model_dir = _optional_path(genie_tts.get("onnx_model_dir"), self.base_dir)
         if character_profile is not None:
