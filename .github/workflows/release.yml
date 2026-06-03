@@ -179,8 +179,17 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
-          cp scripts/install.command install.command
-          cp scripts/start.command start.command
+          cat > install.command <<'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$SCRIPT_DIR/scripts/install.sh"
+          EOF
+          cat > start.command <<'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$SCRIPT_DIR/scripts/start.sh"
+          EOF
+          chmod +x install.command start.command
           rm -f install.bat start.bat
 
       - name: Tidy Windows bundle layout
