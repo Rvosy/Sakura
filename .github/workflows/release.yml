@@ -91,12 +91,8 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64.zip
-            runtime_artifact: sakura-runtime-windows-x64.zip
+            runtime_artifact: runtime-windows-x64.zip
             embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
-          - os: macos-latest
-            platform: macos-arm64
-            artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64.zip
-            runtime_artifact: sakura-runtime-macos-arm64.zip
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
