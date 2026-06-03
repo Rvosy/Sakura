@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.chat_pipeline import ChatPipeline
 from app.core.debug_log import debug_log
-from app.orchestration import ConversationCoordinator
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
@@ -26,7 +25,6 @@ class ChatWorker(QObject):
         messages: list[dict[str, Any]] | None = None,
         confirmed_action: PendingToolAction | None = None,
         cancelled_action: PendingToolAction | None = None,
-        conversation_coordinator: ConversationCoordinator | None = None,
         visual_observation_store: VisualObservationStore | None = None,
         visual_observation_jobs: list[VisualObservationJob] | None = None,
     ) -> None:
@@ -35,12 +33,10 @@ class ChatWorker(QObject):
         self.messages = messages or []
         self.confirmed_action = confirmed_action
         self.cancelled_action = cancelled_action
-        self.conversation_coordinator = conversation_coordinator
         self.visual_observation_store = visual_observation_store
         self.visual_observation_jobs = visual_observation_jobs or []
         self.pipeline = ChatPipeline(
             agent_runtime,
-            conversation_coordinator=conversation_coordinator,
             visual_observation_store=visual_observation_store,
         )
 
@@ -101,15 +97,9 @@ class EventWorker(QObject):
     failed = Signal(str)
     progress = Signal(object)
 
-    def __init__(
-        self,
-        agent_runtime: AgentRuntime,
-        event: AgentEvent,
-        conversation_coordinator: ConversationCoordinator | None = None,
-    ) -> None:
+    def __init__(self, agent_runtime: AgentRuntime, event: AgentEvent) -> None:
         super().__init__()
         self.agent_runtime = agent_runtime
-        self.conversation_coordinator = conversation_coordinator
         # 避免覆盖 QObject.event() 虚函数名；PySide 在 moveToThread 时会访问该方法。
         self.agent_event = event
         self.visual_observation_store: VisualObservationStore | None = None
@@ -121,7 +111,6 @@ class EventWorker(QObject):
         try:
             pipeline = ChatPipeline(
                 self.agent_runtime,
-                conversation_coordinator=self.conversation_coordinator,
                 visual_observation_store=self.visual_observation_store,
             )
             result = pipeline.run_event(

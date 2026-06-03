@@ -29,7 +29,6 @@ from app.voice.tts import (
 )
 from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import SakuraPluginManager
-from app.orchestration import create_conversation_coordinator
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -145,7 +144,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         tools=tool_registry,
         memory=memory_store,
     )
-    conversation_coordinator = create_conversation_coordinator(agent_runtime)
     history_store = _create_history_store(base_dir, character_profile)
     visual_observation_store = _create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
@@ -180,7 +178,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             api_client=api_client,
             tool_registry=tool_registry,
             agent_runtime=agent_runtime,
-            conversation_coordinator=conversation_coordinator,
         ),
         storage=StorageServices(
             memory_store=memory_store,
@@ -294,7 +291,6 @@ def build_app_context(base_dir: Path, startup_state: StartupState | None = None)
             api_client=context.api_client,
             tool_registry=deferred.tool_registry,
             agent_runtime=context.agent_runtime,
-            conversation_coordinator=context.conversation_coordinator,
         ),
         storage=context.storage,
         features=FeatureServices(

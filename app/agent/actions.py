@@ -165,14 +165,3 @@ class AgentResult:
     reply: ChatReply
     actions: list[AgentAction] = field(default_factory=list)
     _debug: dict[str, Any] | None = field(default=None)
-
-
-@dataclass(frozen=True)
-class AgentTaskResult:
-    """AgentCore 的中立任务输出，不承担角色表达职责。"""
-
-    status: str
-    summary: str
-    actions: list[AgentAction] = field(default_factory=list)
-    facts: list[str] = field(default_factory=list)
-    raw_reply: ChatReply | None = None

@@ -36,7 +36,6 @@ from app.core.debug_log import debug_log
 from app.core.extensions import ExtensionRegistry
 from app.core.plugin_manager import SakuraPluginManager
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.orchestration import create_conversation_coordinator
 from app.storage.chat_history import ChatHistoryStore
 from app.storage.visual_observation import VisualObservationStore
 from app.voice.tts import TTSProvider
@@ -194,13 +193,10 @@ class AppBuilder:
             tools=self._tool_registry,
             memory=self._memory_store,
         )
-        conversation_coordinator = create_conversation_coordinator(agent_runtime)
-
         core = CoreServices(
             api_client=self._api_client,
             tool_registry=self._tool_registry,
             agent_runtime=agent_runtime,
-            conversation_coordinator=conversation_coordinator,
         )
 
         storage = StorageServices(

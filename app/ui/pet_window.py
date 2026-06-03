@@ -165,7 +165,6 @@ class PetWindow(QWidget):
         self.mcp_tool_provider = context.mcp_tool_provider
         self.plugin_manager = context.plugin_manager
         self.agent_runtime = context.agent_runtime
-        self.conversation_coordinator = context.conversation_coordinator
         self.tts_provider = context.tts_provider
         self.retired_tts_providers: list[TTSProvider] = []
         self.history_store = context.history_store
@@ -1086,7 +1085,6 @@ class PetWindow(QWidget):
         self.worker = ChatWorker(
             self.agent_runtime,
             request_messages,
-            conversation_coordinator=self.conversation_coordinator,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
         )
@@ -1628,7 +1626,6 @@ class PetWindow(QWidget):
         self.worker = EventWorker(
             self.agent_runtime,
             event,
-            conversation_coordinator=self.conversation_coordinator,
         )
         self.worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         self.worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])

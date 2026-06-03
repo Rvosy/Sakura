@@ -15,7 +15,6 @@ from app.agent.proactive_care import ProactiveCareSettings
 from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import SakuraPluginManager
-from app.orchestration import ConversationCoordinator
 
 
 @dataclass(frozen=True)
@@ -25,7 +24,6 @@ class CoreServices:
     api_client: OpenAICompatibleClient
     tool_registry: ToolRegistry
     agent_runtime: AgentRuntime
-    conversation_coordinator: ConversationCoordinator | None = None
 
 
 @dataclass(frozen=True)
@@ -81,10 +79,6 @@ class AppContext:
     @property
     def agent_runtime(self) -> AgentRuntime:
         return self.core.agent_runtime
-
-    @property
-    def conversation_coordinator(self) -> ConversationCoordinator | None:
-        return self.core.conversation_coordinator
 
     @property
     def memory_store(self) -> MemoryStore:
