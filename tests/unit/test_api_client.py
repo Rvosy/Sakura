@@ -46,6 +46,30 @@ def test_build_chat_payload_drops_unsupported_params() -> None:
     assert payload["messages"][0] == {"role": "system", "content": "system"}
 
 
+def test_build_chat_payload_adds_json_keyword_for_json_object_response() -> None:
+    payload = _build_chat_completion_payload(
+        model="gpt-compatible",
+        system_prompt="只返回对象，不要解释。",
+        messages=[{"role": "user", "content": "提取字段"}],
+        temperature=0.8,
+        chat_params={"response_format": {"type": "json_object"}},
+    )
+
+    assert "json" in payload["messages"][0]["content"].lower()
+
+
+def test_build_chat_payload_keeps_existing_json_keyword() -> None:
+    payload = _build_chat_completion_payload(
+        model="gpt-compatible",
+        system_prompt="Return a JSON object only.",
+        messages=[{"role": "user", "content": "提取字段"}],
+        temperature=0.8,
+        chat_params={"response_format": {"type": "json_object"}},
+    )
+
+    assert payload["messages"][0]["content"] == "Return a JSON object only."
+
+
 def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(
@@ -73,6 +97,93 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
     assert captured["temperature"] == 0.1
     assert captured["max_tokens"] == 8
     assert "unsupported_internal_flag" not in captured
+
+
+def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, Any]] = []
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="compatible-model",
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if "temperature" in payload:
+            raise ApiRequestError("Unsupported value: temperature only supports the default value")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    assert client.complete_raw(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        temperature=0.8,
+    ) == "OK"
+
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+
+
+def test_complete_raw_remembers_temperature_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, Any]] = []
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="compatible-model",
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if "temperature" in payload:
+            raise ApiRequestError("temperature does not support non-default values")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    client.complete_raw("system", [{"role": "user", "content": "hello"}], temperature=0.8)
+    client.complete_raw("system", [{"role": "user", "content": "again"}], temperature=0.8)
+
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+    assert "temperature" not in calls[2]
+
+
+def test_update_settings_clears_cached_unsupported_params(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, Any]] = []
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="old-model",
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            raise ApiRequestError("temperature only supports the default value")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    client.complete_raw("system", [{"role": "user", "content": "hello"}], temperature=0.8)
+    client.update_settings(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="new-model",
+        )
+    )
+    client.complete_raw("system", [{"role": "user", "content": "again"}], temperature=0.8)
+
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+    assert "temperature" in calls[2]
 
 
 def test_complete_raw_requests_structured_json_by_default_for_chat(monkeypatch) -> None:  # type: ignore[no-untyped-def]
