@@ -76,10 +76,21 @@ verify_sha256() {
     fi
 }
 
+conda_usable() {
+    [ -x "$MINIFORGE_DIR/bin/conda" ] || return 1
+    [ -f "$MINIFORGE_DIR/etc/profile.d/conda.sh" ] || return 1
+    "$MINIFORGE_DIR/bin/conda" --version >/dev/null 2>&1 || return 1
+}
+
 mkdir -p "$INSTALL_ROOT" "$DOWNLOADS_DIR"
 
 progress prepare 5
-if [ ! -x "$MINIFORGE_DIR/bin/conda" ]; then
+if [ -d "$MINIFORGE_DIR" ] && ! conda_usable; then
+    echo "Existing Miniforge runtime is unusable, reinstalling: $MINIFORGE_DIR"
+    rm -rf "$MINIFORGE_DIR"
+fi
+
+if ! conda_usable; then
     INSTALLER="$DOWNLOADS_DIR/$MINIFORGE_FILENAME"
     if [ -f "$INSTALLER" ] && ! verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"; then
         rm -f "$INSTALLER"
@@ -91,6 +102,11 @@ if [ ! -x "$MINIFORGE_DIR/bin/conda" ]; then
     verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"
     progress install 20
     bash "$INSTALLER" -b -p "$MINIFORGE_DIR"
+fi
+
+if ! conda_usable; then
+    echo "Miniforge runtime is still unusable after installation: $MINIFORGE_DIR"
+    exit 1
 fi
 
 # shellcheck source=/dev/null
