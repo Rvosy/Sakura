@@ -1,3 +1,5 @@
+.vscode/
+
 .env
 
 __pycache__/
@@ -31,6 +33,7 @@ data/visual_observations/
 data/notes/
 data/tts_bundles/
 data/logs/
+tts/
 data/config/api.yaml
 data/config/characters.yaml
 data/config/system_config.yaml

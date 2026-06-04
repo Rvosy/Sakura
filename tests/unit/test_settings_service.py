@@ -73,18 +73,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
             ref_audio_path=root / "ref.wav",
             ref_text_path=root / "ref.txt",
             ref_text="hello",
-            work_dir=root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro",
-            python_path=root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro" / "runtime" / "bin" / "python",
-            tts_config_path=(
-                root
-                / "data"
-                / "tts_bundles"
-                / "installed"
-                / "gpt_sovits_v2pro"
-                / "GPT_SoVITS"
-                / "configs"
-                / "tts_infer.yaml"
-            ),
+            work_dir=root / "tts" / "gpt",
             ref_lang="ja",
             text_lang="ja",
             timeout_seconds=22,
@@ -109,15 +98,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
 
     assert api["llm"]["model"] == "demo-model"
     assert api["tts"]["provider"] == "gpt-sovits"
-    assert api["tts"]["gpt_sovits"]["work_dir"] == "data/tts_bundles/installed/gpt_sovits_v2pro"
-    assert (
-        api["tts"]["gpt_sovits"]["python_path"]
-        == "data/tts_bundles/installed/gpt_sovits_v2pro/runtime/bin/python"
-    )
-    assert (
-        api["tts"]["gpt_sovits"]["tts_config_path"]
-        == "data/tts_bundles/installed/gpt_sovits_v2pro/GPT_SoVITS/configs/tts_infer.yaml"
-    )
+    assert api["tts"]["gpt_sovits"]["work_dir"] == "tts/gpt"
     assert api["tts"]["gpt_sovits"]["timeout_seconds"] == 22
     assert characters["current_character_id"] == "nanami"
     assert system["mcp"]["windows_enabled"] is False
@@ -177,7 +158,7 @@ def test_settings_service_saves_and_loads_genie_tts_settings() -> None:
         ref_audio_path=root / "ref.wav",
         ref_text_path=root / "ref.txt",
         ref_text="hello",
-        work_dir=root / "data" / "tts_bundles" / "installed" / "genie_tts_server",
+        work_dir=root / "tts" / "cpu",
         character_name="夜乃桜",
         onnx_model_dir=root / "data" / "tts_bundles" / "onnx" / "sakura",
         ref_lang="ja",
@@ -191,10 +172,10 @@ def test_settings_service_saves_and_loads_genie_tts_settings() -> None:
 
     assert saved["tts"]["provider"] == "genie-tts"
     assert saved["tts"]["genie_tts"]["api_url"] == "http://127.0.0.1:9881/"
-    assert saved["tts"]["genie_tts"]["work_dir"] == "data/tts_bundles/installed/genie_tts_server"
+    assert saved["tts"]["genie_tts"]["work_dir"] == "tts/cpu"
     assert saved["tts"]["genie_tts"]["onnx_model_dir"] == "data/tts_bundles/onnx/sakura"
     assert loaded.provider == "genie-tts"
-    assert loaded.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
+    assert loaded.work_dir == root / "tts" / "cpu"
     assert loaded.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
     assert loaded.timeout_seconds == 33
 

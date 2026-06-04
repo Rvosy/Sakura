@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout
 
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
+from app.core.debug_log import debug_log
 from app.config.character_loader import CharacterConfigError
 from app.config.settings_service import AppSettingsService
 from app.agent.mcp import MCPRuntimeSettings
@@ -21,6 +23,13 @@ from app.ui.subtitle_controller import (
     normalize_subtitle_display_speed,
 )
 from app.voice.tts import TTSConfigError
+from app.voice.tts_bundle import (
+    TTSBundleMigration,
+    TTSBundleMigrationProgress,
+    find_pending_bundle_migrations,
+    migrate_bundle_to_short_path,
+    normalize_bundle_work_dir,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,6 +62,106 @@ class DeferredStartupWorker(QObject):
             tts_provider.moveToThread(application.thread())
 
 
+class TTSBundleMigrationWorker(QObject):
+    current_item = Signal(str)
+    progress = Signal(object)
+    finished = Signal(object)
+
+    def __init__(self, migrations: list[TTSBundleMigration]) -> None:
+        super().__init__()
+        self.migrations = migrations
+
+    @Slot()
+    def run(self) -> None:
+        errors: list[str] = []
+        for migration in self.migrations:
+            self.current_item.emit(f"正在迁移：{migration.entry.label}")
+            try:
+                migrate_bundle_to_short_path(migration, on_progress=self.progress.emit)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{migration.entry.label}：{exc}")
+        self.finished.emit(errors)
+
+
+class TTSBundleMigrationDialog(QDialog):
+    """启动阶段 TTS 整合包迁移进度窗口。"""
+
+    def __init__(self, base_dir: Path, parent: PetWindow) -> None:
+        super().__init__(parent)
+        self.base_dir = base_dir
+        self.pet_window = parent
+        self._finish_pending = False
+        self._finish_errors: list[str] = []
+        self.setWindowTitle("正在迁移 TTS 整合包")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        description = QLabel(
+            "新版本修复了 Windows 下可能出现的路径过长问题。\n\n"
+            "现在需要迁移旧版本的 TTS 数据，Sakura 正在努力搬运中，"
+            "可能需要一些时间，请耐心等待喵 ฅ•ω•ฅ",
+            self,
+        )
+        description.setWordWrap(True)
+        self.current_label = QLabel("正在准备迁移...", self)
+        self.current_label.setWordWrap(True)
+        self.progress_label = QLabel("0%（0/0 个文件）", self)
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.confirm_button = QPushButton("迁移中...", self)
+        self.confirm_button.setEnabled(False)
+        self.confirm_button.clicked.connect(self._confirm_migration_finished)
+
+        layout = QVBoxLayout()
+        layout.addWidget(description)
+        layout.addWidget(self.current_label)
+        layout.addWidget(self.progress_label)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.confirm_button)
+        self.setLayout(layout)
+
+    @Slot(str)
+    def set_current_item(self, text: str) -> None:
+        self.current_label.setText(text)
+
+    @Slot(object)
+    def set_progress(self, progress: TTSBundleMigrationProgress) -> None:
+        total_files = max(0, int(progress.total_files))
+        completed_files = max(0, int(progress.completed_files))
+        percent = int(completed_files * 100 / total_files) if total_files else 0
+        self.progress_bar.setValue(max(0, min(100, percent)))
+        self.progress_label.setText(f"{percent}%（{completed_files}/{total_files} 个文件）")
+
+    @Slot(object)
+    def finish_migration(self, errors: list[str]) -> None:
+        if self._finish_pending:
+            return
+        self._finish_pending = True
+        self._finish_errors = list(errors)
+        if errors:
+            self.current_label.setText("迁移失败，点击继续启动。")
+            self.confirm_button.setText("继续启动")
+        else:
+            self.current_label.setText("迁移完成，点击确定继续启动。")
+            self.progress_bar.setValue(100)
+            if self.progress_label.text().startswith("0%"):
+                self.progress_label.setText("100%（迁移完成）")
+            self.confirm_button.setText("确定")
+        self.confirm_button.setEnabled(True)
+        self.confirm_button.setDefault(True)
+        self.confirm_button.setFocus()
+
+    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        event.ignore()
+
+    @Slot()
+    def _confirm_migration_finished(self) -> None:
+        if not self._finish_pending:
+            return
+        _finish_tts_migration(self.base_dir, self.pet_window, self, self._finish_errors)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Sakura Desktop Pet")
@@ -79,7 +188,7 @@ def main() -> int:
     pet_window = PetWindow(context)
     app.aboutToQuit.connect(pet_window.close_external_tools)
     pet_window.show()
-    QTimer.singleShot(0, lambda: _start_deferred_startup(BASE_DIR, pet_window))
+    QTimer.singleShot(0, lambda: _start_tts_migration_or_deferred(BASE_DIR, pet_window))
 
     return app.exec()
 
@@ -164,6 +273,87 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         },
     )
     return build_initial_app_context(base_dir)
+
+
+def _start_tts_migration_or_deferred(base_dir: Path, pet_window: PetWindow) -> None:
+    migrations = _pending_startup_tts_migrations(base_dir)
+    if not migrations:
+        _start_deferred_startup(base_dir, pet_window)
+        return
+
+    dialog = TTSBundleMigrationDialog(base_dir, pet_window)
+    thread = QThread(pet_window)
+    worker = TTSBundleMigrationWorker(migrations)
+    worker.moveToThread(thread)
+    pet_window.tts_migration_dialog = dialog
+    pet_window.tts_migration_thread = thread
+    pet_window.tts_migration_worker = worker
+
+    thread.started.connect(worker.run)
+    worker.current_item.connect(dialog.set_current_item)
+    worker.progress.connect(dialog.set_progress)
+    worker.finished.connect(dialog.finish_migration)
+    worker.finished.connect(thread.quit)
+    thread.finished.connect(worker.deleteLater)
+    thread.finished.connect(thread.deleteLater)
+    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_thread", None))
+    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_worker", None))
+
+    dialog.show()
+    thread.start()
+
+
+def _pending_startup_tts_migrations(base_dir: Path) -> list[TTSBundleMigration]:
+    settings_service = AppSettingsService(base_dir=base_dir)
+    settings = settings_service.load_tts_settings(validate_enabled=False)
+    provider_migrations = find_pending_bundle_migrations(base_dir, settings.provider)
+    all_migrations = find_pending_bundle_migrations(base_dir)
+    migrations = _dedupe_tts_migrations([*provider_migrations, *all_migrations])
+    debug_log(
+        "TTS",
+        "启动检测 TTS 整合包迁移",
+        {
+            "provider": settings.provider,
+            "enabled": settings.enabled,
+            "pending": [migration.entry.key for migration in migrations],
+        },
+    )
+    return migrations
+
+
+def _dedupe_tts_migrations(migrations: list[TTSBundleMigration]) -> list[TTSBundleMigration]:
+    deduped: list[TTSBundleMigration] = []
+    seen: set[str] = set()
+    for migration in migrations:
+        if migration.entry.key in seen:
+            continue
+        seen.add(migration.entry.key)
+        deduped.append(migration)
+    return deduped
+
+
+def _finish_tts_migration(base_dir: Path, pet_window: PetWindow, dialog: QDialog, errors: list[str]) -> None:
+    dialog.accept()
+    setattr(pet_window, "tts_migration_dialog", None)
+    _normalize_migrated_tts_config(base_dir)
+    if errors:
+        QMessageBox.warning(
+            pet_window,
+            "TTS 整合包迁移失败",
+            "迁移失败，Sakura 会继续使用旧目录启动。旧模型文件不会被删除，"
+            "下次启动会继续迁移。\n\n"
+            + "\n".join(errors),
+        )
+    _start_deferred_startup(base_dir, pet_window)
+
+
+def _normalize_migrated_tts_config(base_dir: Path) -> None:
+    settings_service = AppSettingsService(base_dir=base_dir)
+    settings = settings_service.load_tts_settings(validate_enabled=False)
+    normalized_work_dir = normalize_bundle_work_dir(settings.work_dir, base_dir)
+    if normalized_work_dir == settings.work_dir:
+        return
+    settings_service.save_tts_settings(replace(settings, work_dir=normalized_work_dir))
 
 
 def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:

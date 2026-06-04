@@ -5,6 +5,7 @@ import sys
 import types
 import urllib.error
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 if importlib.util.find_spec("PySide6") is None:
@@ -365,6 +366,51 @@ def test_gptsovits_start_command_uses_custom_python_and_tts_config() -> None:
         "-p",
         "9880",
     ]
+
+
+def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    work_dir = _runtime_root("gptsovits_slow_start") / "gpt-sovits"
+    (work_dir / "runtime").mkdir(parents=True)
+    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
+    monkeypatch.chdir(work_dir.parent)
+    provider = types.SimpleNamespace()
+    provider.settings = replace(_minimal_tts_settings(work_dir=work_dir), timeout_seconds=55)
+    provider._service_checked = False
+    provider._server_process = None
+    messages: list[str] = []
+    elapsed = 0.0
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class FakeProcess:
+        pid = 1234
+
+        def poll(self) -> None:
+            return None
+
+    def fake_create_connection(*_args: object, **_kwargs: object) -> FakeConnection:
+        if elapsed < 31:
+            raise OSError("connection refused")
+        return FakeConnection()
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr("app.voice.tts.time.monotonic", lambda: elapsed)
+    monkeypatch.setattr("app.voice.tts.time.sleep", fake_sleep)
+
+    assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert messages == []
+    assert elapsed >= 31
 
 
 def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]

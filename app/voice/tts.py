@@ -40,6 +40,7 @@ TTS_PROVIDER_CUSTOM_GPT_SOVITS = "custom-gpt-sovits"
 TTS_PROVIDER_GENIE = "genie-tts"
 DEFAULT_GPT_SOVITS_API_URL = "http://127.0.0.1:9880/tts"
 DEFAULT_GENIE_TTS_API_URL = "http://127.0.0.1:9881/"
+_LOCAL_SERVICE_STARTUP_TIMEOUT_MAX = 180
 _SUPPORTED_TTS_PROVIDERS = {
     TTS_PROVIDER_GPT_SOVITS,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,
@@ -714,7 +715,8 @@ class GPTSoVITSTTSProvider(QObject):
         if not GPTSoVITSTTSProvider._start_local_service(self, fail_callback):
             return False
 
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, 30))
+        # 大模型首次加载可能超过 30 秒，按用户配置等待，避免刚加载完成就被杀掉。
+        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
         while time.monotonic() < deadline:
             exit_code = self._server_process.poll() if self._server_process is not None else None
             if exit_code is not None:
@@ -1380,7 +1382,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         if not GenieTTSProvider._start_local_service(self, fail_callback, host, port):
             return False
 
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, 30))
+        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
         while time.monotonic() < deadline:
             if self._server_process is not None and self._server_process.poll() is not None:
                 fail_callback(f"Genie TTS 本地服务进程已退出，退出码：{self._server_process.poll()}")

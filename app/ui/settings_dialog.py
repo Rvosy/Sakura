@@ -550,7 +550,7 @@ class SettingsDialog(QDialog):
         self.tts_api_url_edit = QLineEdit(settings.api_url, tab)
         self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(settings.provider))
         self.tts_work_dir_edit = QLineEdit(str(settings.work_dir or ""), tab)
-        self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
+        self.tts_work_dir_edit.setPlaceholderText("tts/g50")
         self.tts_python_path_edit = QLineEdit(str(settings.python_path or ""), tab)
         self.tts_python_path_edit.setPlaceholderText("macOS/Linux Python，例如 /path/to/miniforge3/envs/gpt-sovits/bin/python")
         self.tts_config_path_edit = QLineEdit(str(settings.tts_config_path or ""), tab)
@@ -1733,11 +1733,11 @@ class SettingsDialog(QDialog):
         provider = str(self.tts_provider_combo.currentData() or TTS_PROVIDER_GPT_SOVITS)
         self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(provider))
         if provider == TTS_PROVIDER_GENIE:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/genie_tts_server/Genie-TTS Server")
+            self.tts_work_dir_edit.setPlaceholderText("tts/cpu")
         elif provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS:
             self.tts_work_dir_edit.setPlaceholderText("外部 GPT-SoVITS 源码目录，可留空")
         else:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
+            self.tts_work_dir_edit.setPlaceholderText("tts/g50")
         bundled = _is_bundled_tts_provider(provider)
         self.tts_api_url_edit.setReadOnly(bundled)
         self.tts_work_dir_edit.setReadOnly(bundled)

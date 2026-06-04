@@ -15,7 +15,10 @@ from app.voice.tts_bundle import (
     cleanup_stale_download_archives,
     default_provider_bundle_work_dir,
     download_and_extract_bundle,
+    find_pending_bundle_migrations,
     install_tts_bundle,
+    migrate_bundle_to_short_path,
+    normalize_bundle_work_dir,
 )
 
 
@@ -64,10 +67,10 @@ def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
         extractor=fake_extract,
     )
 
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    archive = root / "tts" / "_dl" / entry.filename
     assert not archive.exists()
     assert not archive.with_name(f"{archive.name}.part").exists()
-    assert work_dir == (root / "data" / "tts_bundles" / "installed" / entry.key).resolve()
+    assert work_dir == (root / "tts" / entry.key).resolve()
     assert (work_dir / "api_v2.py").exists()
     assert statuses == ["verify", "download", "extract", "cleanup"]
     assert progress[-1] == 100
@@ -77,7 +80,7 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
     root = _runtime_root("bundle_cached_verify")
     payload = b"sakura-cached-tts-bundle" * 64
     entry = _entry(payload)
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    archive = root / "tts" / "_dl" / entry.filename
     archive.parent.mkdir(parents=True, exist_ok=True)
     archive.write_bytes(payload)
     progress: list[int] = []
@@ -99,7 +102,7 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
         extractor=fake_extract,
     )
 
-    assert work_dir == (root / "data" / "tts_bundles" / "installed" / entry.key).resolve()
+    assert work_dir == (root / "tts" / entry.key).resolve()
     assert not archive.exists()
     assert statuses == ["verify", "extract", "cleanup"]
     assert 10 in progress
@@ -125,7 +128,7 @@ def test_tts_bundle_download_removes_part_on_verification_failure() -> None:
     with pytest.raises(RuntimeError, match="文件大小不匹配"):
         download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=lambda *_args: None)
 
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    archive = root / "tts" / "_dl" / entry.filename
     assert not archive.exists()
     assert not archive.with_name(f"{archive.name}.part").exists()
 
@@ -146,8 +149,30 @@ def test_tts_bundle_reports_extract_failure() -> None:
             urlopen=fake_urlopen,
             extractor=lambda *_args: "boom",
         )
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
+    archive = root / "tts" / "_dl" / entry.filename
     assert archive.read_bytes() == payload
+
+
+def test_tts_bundle_flattens_single_extracted_root() -> None:
+    root = _runtime_root("bundle_flatten_root")
+    payload = b"valid-archive"
+    entry = _entry(payload)
+
+    def fake_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
+        assert timeout == 600
+        return FakeResponse(payload)
+
+    def fake_extract(_archive: Path, out_dir: Path) -> str | None:
+        runtime_python = out_dir / "GPT-SoVITS" / "runtime" / "python.exe"
+        runtime_python.parent.mkdir(parents=True)
+        runtime_python.write_text("fake", encoding="utf-8")
+        return None
+
+    work_dir = download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=fake_extract)
+
+    assert work_dir == (root / "tts" / entry.key).resolve()
+    assert (work_dir / "runtime" / "python.exe").is_file()
+    assert not (work_dir / "GPT-SoVITS").exists()
 
 
 def test_tts_bundle_cleans_legacy_archive_when_bundle_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,6 +234,232 @@ def test_tts_bundle_default_provider_work_dir_uses_installed_root(monkeypatch: p
     runtime_python.write_text("fake", encoding="utf-8")
 
     assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
+
+
+def test_tts_bundle_default_provider_prefers_short_installed_root() -> None:
+    root = _runtime_root("default_provider_short_work_dir")
+    work_dir = root / "tts" / "g50"
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+
+    assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
+
+
+def test_tts_bundle_detects_and_migrates_legacy_install() -> None:
+    root = _runtime_root("migrate_legacy_install")
+    entry = tts_bundle.GPT_SOVITS_NVIDIA50
+    legacy_work_dir = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS-v2pro-20250604-nvidia50"
+    )
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+
+    migrations = find_pending_bundle_migrations(root, "gpt-sovits")
+
+    assert len(migrations) == 1
+    assert migrations[0].source_dir == legacy_work_dir.resolve()
+    assert migrations[0].target_dir == root / "tts" / "g50"
+
+    migrated = migrate_bundle_to_short_path(migrations[0])
+
+    assert migrated == (root / "tts" / "g50").resolve()
+    assert (migrated / "runtime" / "python.exe").is_file()
+    assert not legacy_work_dir.exists()
+
+
+def test_tts_bundle_migration_copies_with_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _runtime_root("migrate_copy_progress")
+    entry = tts_bundle.GPT_SOVITS_NVIDIA50
+    legacy_work_dir = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS-v2pro-20250604-nvidia50"
+    )
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    model_file = legacy_work_dir / "models" / "demo.bin"
+    runtime_python.parent.mkdir(parents=True)
+    model_file.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+    model_file.write_bytes(b"model")
+    migration = find_pending_bundle_migrations(root, "gpt-sovits")[0]
+    progress: list[tts_bundle.TTSBundleMigrationProgress] = []
+    monkeypatch.setattr(tts_bundle, "_try_fast_migration_rename", lambda _migration: False)
+
+    migrated = migrate_bundle_to_short_path(migration, on_progress=progress.append)
+
+    assert migrated == (root / "tts" / "g50").resolve()
+    assert (migrated / "runtime" / "python.exe").read_text(encoding="utf-8") == "fake"
+    assert (migrated / "models" / "demo.bin").read_bytes() == b"model"
+    assert progress
+    assert progress[-1].completed_files == progress[-1].total_files == 2
+    assert progress[-1].copied_bytes == progress[-1].total_bytes
+    assert not (migrated / ".sakura_migration.json").exists()
+    assert not legacy_work_dir.exists()
+
+
+def test_tts_bundle_migration_resumes_existing_staging_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _runtime_root("migrate_resume_staging")
+    entry = tts_bundle.GENIE_TTS
+    legacy_work_dir = root / "data" / "tts_bundles" / "installed" / entry.key / "Genie-TTS Server"
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    voice_file = legacy_work_dir / "voices" / "demo.dat"
+    runtime_python.parent.mkdir(parents=True)
+    voice_file.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+    voice_file.write_text("voice", encoding="utf-8")
+    migration = find_pending_bundle_migrations(root, "genie-tts")[0]
+    staging_runtime = root / "tts" / ".migrating" / entry.key / "runtime" / "python.exe"
+    staging_runtime.parent.mkdir(parents=True)
+    staging_runtime.write_text("fake", encoding="utf-8")
+    original_copy = tts_bundle._copy_file_resumable
+    copied: list[str] = []
+
+    def record_copy(source: Path, target: Path) -> None:
+        copied.append(source.relative_to(legacy_work_dir).as_posix())
+        original_copy(source, target)
+
+    monkeypatch.setattr(tts_bundle, "_try_fast_migration_rename", lambda _migration: False)
+    monkeypatch.setattr(tts_bundle, "_copy_file_resumable", record_copy)
+
+    migrated = migrate_bundle_to_short_path(migration)
+
+    assert migrated == (root / "tts" / "cpu").resolve()
+    assert copied == ["voices/demo.dat"]
+    assert (migrated / "runtime" / "python.exe").read_text(encoding="utf-8") == "fake"
+    assert (migrated / "voices" / "demo.dat").read_text(encoding="utf-8") == "voice"
+    assert not (root / "tts" / ".migrating" / entry.key).exists()
+
+
+def test_tts_bundle_migration_cleans_empty_legacy_dirs_but_keeps_onnx() -> None:
+    root = _runtime_root("migrate_cleanup_legacy_keep_onnx")
+    entry = tts_bundle.GENIE_TTS
+    legacy_work_dir = root / "data" / "tts_bundles" / "installed" / entry.key / "Genie-TTS Server"
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+    downloads_dir = root / "data" / "tts_bundles" / "downloads"
+    downloads_dir.mkdir(parents=True)
+    onnx_file = root / "data" / "tts_bundles" / "onnx" / "sakura" / "model.onnx"
+    onnx_file.parent.mkdir(parents=True)
+    onnx_file.write_bytes(b"onnx")
+    migration = find_pending_bundle_migrations(root, "genie-tts")[0]
+
+    migrated = migrate_bundle_to_short_path(migration)
+
+    assert migrated == (root / "tts" / "cpu").resolve()
+    assert not (root / "data" / "tts_bundles" / "installed").exists()
+    assert not downloads_dir.exists()
+    assert onnx_file.read_bytes() == b"onnx"
+    assert (root / "data" / "tts_bundles").exists()
+
+
+def test_tts_bundle_migration_skips_existing_short_dir() -> None:
+    root = _runtime_root("migrate_skip_short")
+    entry = tts_bundle.GPT_SOVITS_STANDARD
+    short_runtime = root / "tts" / "gpt" / "runtime" / "python.exe"
+    legacy_runtime = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS-v2pro-20250604"
+        / "runtime"
+        / "python.exe"
+    )
+    short_runtime.parent.mkdir(parents=True)
+    short_runtime.write_text("short", encoding="utf-8")
+    legacy_runtime.parent.mkdir(parents=True)
+    legacy_runtime.write_text("legacy", encoding="utf-8")
+
+    migrations = find_pending_bundle_migrations(root, "gpt-sovits")
+
+    assert migrations == []
+    assert short_runtime.read_text(encoding="utf-8") == "short"
+    assert legacy_runtime.read_text(encoding="utf-8") == "legacy"
+
+
+def test_tts_bundle_migration_replaces_invalid_short_dir() -> None:
+    root = _runtime_root("migrate_invalid_short_target")
+    entry = tts_bundle.GPT_SOVITS_NVIDIA50
+    invalid_marker = root / "tts" / "g50" / "broken.txt"
+    invalid_marker.parent.mkdir(parents=True)
+    invalid_marker.write_text("broken", encoding="utf-8")
+    legacy_work_dir = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS-v2pro-20250604-nvidia50"
+    )
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("legacy", encoding="utf-8")
+
+    migrations = find_pending_bundle_migrations(root, "gpt-sovits")
+
+    assert len(migrations) == 1
+    assert migrations[0].target_dir == root / "tts" / "g50"
+
+    migrated = migrate_bundle_to_short_path(migrations[0])
+
+    assert migrated == (root / "tts" / "g50").resolve()
+    assert (migrated / "runtime" / "python.exe").read_text(encoding="utf-8") == "legacy"
+    assert not (migrated / "broken.txt").exists()
+    assert not legacy_work_dir.exists()
+
+
+def test_tts_bundle_migration_failure_preserves_legacy_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _runtime_root("migrate_failure_preserves_legacy")
+    entry = tts_bundle.GENIE_TTS
+    legacy_work_dir = root / "data" / "tts_bundles" / "installed" / entry.key / "Genie-TTS Server"
+    runtime_python = legacy_work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+    migration = find_pending_bundle_migrations(root, "genie-tts")[0]
+
+    def fail_copy(_source: Path, _target: Path) -> None:
+        raise OSError("locked")
+
+    monkeypatch.setattr(tts_bundle, "_try_fast_migration_rename", lambda _migration: False)
+    monkeypatch.setattr(tts_bundle, "_copy_file_resumable", fail_copy)
+
+    with pytest.raises(OSError, match="locked"):
+        migrate_bundle_to_short_path(migration)
+
+    assert runtime_python.is_file()
+    assert not (root / "tts" / "cpu").exists()
+    assert (root / "tts" / ".migrating" / entry.key / ".sakura_migration.json").is_file()
+
+
+def test_tts_bundle_normalizes_legacy_config_path_after_migration() -> None:
+    root = _runtime_root("normalize_legacy_after_migration")
+    entry = tts_bundle.GPT_SOVITS_STANDARD
+    legacy_work_dir = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / entry.key
+        / "GPT-SoVITS-v2pro-20250604"
+    )
+    short_work_dir = root / "tts" / "gpt"
+    runtime_python = short_work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+
+    assert normalize_bundle_work_dir(legacy_work_dir, root) == short_work_dir.resolve()
 
 
 def test_tts_bundle_recommends_genie_for_cpu_or_small_gpu(monkeypatch: pytest.MonkeyPatch) -> None:

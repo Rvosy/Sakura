@@ -582,7 +582,7 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
 
     class DialogStub:
         def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+            self.downloaded_work_dir = root / "tts" / "gpt"
 
         def exec(self):  # type: ignore[no-untyped-def]
             return settings_dialog_module.QDialog.DialogCode.Accepted
@@ -608,7 +608,7 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
 
     assert dialog.tts_enabled_check.isChecked()
     assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
-    assert dialog.tts_work_dir_edit.text().endswith("gpt_sovits_v2pro")
+    assert dialog.tts_work_dir_edit.text().endswith(("tts\\gpt", "tts/gpt"))
     monkeypatch.setattr(
         dialog,
         "_start_tts_settings_test",
@@ -618,7 +618,7 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
     dialog.accept()
 
     assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert dialog.result_tts_settings.work_dir == root / "tts" / "gpt"
     dialog.deleteLater()
     app.processEvents()
 
@@ -637,7 +637,7 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
 
     class DialogStub:
         def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
+            self.downloaded_work_dir = root / "tts" / "cpu"
             self.downloaded_provider = "genie-tts"
 
         def exec(self):  # type: ignore[no-untyped-def]
@@ -665,7 +665,7 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     assert dialog.tts_enabled_check.isChecked()
     assert dialog.tts_provider_combo.currentData() == "genie-tts"
     assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9881/"
-    assert dialog.tts_work_dir_edit.text().endswith("genie_tts_server")
+    assert dialog.tts_work_dir_edit.text().endswith(("tts\\cpu", "tts/cpu"))
     monkeypatch.setattr(
         dialog,
         "_start_tts_settings_test",
@@ -676,7 +676,7 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
 
     assert dialog.result_tts_settings is not None
     assert dialog.result_tts_settings.provider == "genie-tts"
-    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
+    assert dialog.result_tts_settings.work_dir == root / "tts" / "cpu"
     assert dialog.result_tts_settings.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
     dialog.deleteLater()
     app.processEvents()
@@ -2204,6 +2204,159 @@ def test_main_detects_missing_character_packages() -> None:
     character_dir.mkdir()
     (character_dir / "character.json").write_text("{}", encoding="utf-8")
     assert not sakura_main._character_packages_missing(root)
+
+
+def test_main_detects_legacy_tts_migration_even_when_tts_disabled() -> None:
+    import main as sakura_main
+
+    root = _ui_runtime_root("disabled_tts_migration")
+    api_config = root / "data" / "config" / "api.yaml"
+    api_config.parent.mkdir(parents=True)
+    api_config.write_text(
+        """
+tts:
+  provider: none
+  enabled: false
+  gpt_sovits:
+    api_url: http://127.0.0.1:9880/tts
+    work_dir: data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50
+    ref_lang: ja
+    text_lang: ja
+""".lstrip(),
+        encoding="utf-8",
+    )
+    runtime_python = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / "gpt_sovits_nvidia50"
+        / "GPT-SoVITS-v2pro-20250604-nvidia50"
+        / "runtime"
+        / "python.exe"
+    )
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("fake", encoding="utf-8")
+
+    migrations = sakura_main._pending_startup_tts_migrations(root)
+
+    assert len(migrations) == 1
+    assert migrations[0].target_dir == root / "tts" / "g50"
+
+
+def test_main_detects_other_legacy_tts_bundle_when_current_provider_is_migrated() -> None:
+    import main as sakura_main
+
+    root = _ui_runtime_root("multi_tts_migration")
+    api_config = root / "data" / "config" / "api.yaml"
+    api_config.parent.mkdir(parents=True)
+    api_config.write_text(
+        """
+tts:
+  provider: gpt-sovits
+  enabled: true
+  gpt_sovits:
+    api_url: http://127.0.0.1:9880/tts
+    work_dir: tts/g50
+    ref_lang: ja
+    text_lang: ja
+""".lstrip(),
+        encoding="utf-8",
+    )
+    gpt_runtime = root / "tts" / "g50" / "runtime" / "python.exe"
+    gpt_runtime.parent.mkdir(parents=True)
+    gpt_runtime.write_text("gpt", encoding="utf-8")
+    genie_runtime = (
+        root
+        / "data"
+        / "tts_bundles"
+        / "installed"
+        / "genie_tts_server"
+        / "Genie-TTS Server"
+        / "runtime"
+        / "python.exe"
+    )
+    genie_runtime.parent.mkdir(parents=True)
+    genie_runtime.write_text("genie", encoding="utf-8")
+
+    migrations = sakura_main._pending_startup_tts_migrations(root)
+
+    assert [migration.entry.key for migration in migrations] == ["genie_tts_server"]
+    assert migrations[0].target_dir == root / "tts" / "cpu"
+
+
+def test_tts_migration_dialog_shows_concise_copy_and_progress() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import main as sakura_main
+    from app.voice import tts_bundle
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    QProgressBar = qtwidgets.QProgressBar
+    QWidget = qtwidgets.QWidget
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    root = _ui_runtime_root("tts_migration_dialog")
+    dialog = sakura_main.TTSBundleMigrationDialog(root, parent)  # type: ignore[arg-type]
+    progress = tts_bundle.TTSBundleMigrationProgress(
+        entry=tts_bundle.GPT_SOVITS_NVIDIA50,
+        current_file="runtime/python.exe",
+        completed_files=3,
+        total_files=6,
+        copied_bytes=30,
+        total_bytes=60,
+    )
+
+    dialog.set_current_item("正在迁移：GPT-SoVITS v2pro NVIDIA 50 系整合包")
+    dialog.set_progress(progress)
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    bars = dialog.findChildren(QProgressBar)
+
+    assert any("新版本修复了 Windows 下可能出现的路径过长问题。" in text for text in labels)
+    assert any("Sakura 正在努力搬运中" in text for text in labels)
+    assert any("正在迁移：GPT-SoVITS v2pro NVIDIA 50 系整合包" in text for text in labels)
+    assert any("50%（3/6 个文件）" in text for text in labels)
+    assert bars and bars[0].value() == 50
+    dialog.deleteLater()
+    parent.deleteLater()
+    app.processEvents()
+
+
+def test_tts_migration_dialog_marks_fast_migration_done() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QPushButton", "QWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import main as sakura_main
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    QProgressBar = qtwidgets.QProgressBar
+    QPushButton = qtwidgets.QPushButton
+    QWidget = qtwidgets.QWidget
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    root = _ui_runtime_root("tts_fast_migration_dialog")
+    dialog = sakura_main.TTSBundleMigrationDialog(root, parent)  # type: ignore[arg-type]
+
+    dialog.finish_migration([])
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    bars = dialog.findChildren(QProgressBar)
+    buttons = dialog.findChildren(QPushButton)
+
+    assert any("迁移完成，点击确定继续启动" in text for text in labels)
+    assert any("100%（迁移完成）" in text for text in labels)
+    assert bars and bars[0].value() == 100
+    assert buttons and buttons[0].isEnabled()
+    assert buttons[0].text() == "确定"
+    dialog.deleteLater()
+    parent.deleteLater()
+    app.processEvents()
 
 
 def test_main_first_run_settings_saves_imported_character_and_builds_context(monkeypatch) -> None:  # type: ignore[no-untyped-def]
