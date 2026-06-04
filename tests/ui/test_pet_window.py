@@ -3704,7 +3704,7 @@ def test_pet_window_apply_window_flags_syncs_native_topmost_state() -> None:
         def show(self) -> None:
             self.show_count += 1
 
-        def _sync_native_topmost_state(self) -> None:
+        def _schedule_native_topmost_sync(self) -> None:
             self.sync_count += 1
 
     window = MinimalWindow()
@@ -3738,7 +3738,7 @@ def test_pet_window_apply_window_flags_does_not_sync_native_state_before_visible
         def show(self) -> None:
             self.show_count += 1
 
-        def _sync_native_topmost_state(self) -> None:
+        def _schedule_native_topmost_sync(self) -> None:
             self.sync_count += 1
 
     window = MinimalWindow()
@@ -3747,6 +3747,29 @@ def test_pet_window_apply_window_flags_does_not_sync_native_state_before_visible
 
     assert window.show_count == 0
     assert window.sync_count == 0
+
+
+def test_pet_window_schedules_native_topmost_sync_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+    monkeypatch.setattr(pet_window_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda _delay, callback: events.append("timer") or callback(),
+    )
+
+    class MinimalWindow:
+        _schedule_native_topmost_sync = PetWindow._schedule_native_topmost_sync
+
+        def _sync_native_topmost_state(self) -> None:
+            events.append("sync")
+
+    MinimalWindow()._schedule_native_topmost_sync()
+
+    assert events == ["timer", "sync"]
 
 
 def test_pet_window_context_menu_resyncs_topmost_after_menu_closes() -> None:
@@ -3776,6 +3799,62 @@ def test_pet_window_context_menu_resyncs_topmost_after_menu_closes() -> None:
     window._show_context_menu(object())  # type: ignore[arg-type]
 
     assert window.events == ["exec", "sync"]
+
+
+def test_pet_window_syncs_macos_native_topmost_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(pet_window_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        pet_window_module,
+        "_set_macos_window_topmost",
+        lambda window_id, enabled: calls.append((window_id, enabled)),
+    )
+
+    class MinimalWindow:
+        _sync_native_topmost_state = PetWindow._sync_native_topmost_state
+
+        always_on_top_enabled = True
+
+        def isVisible(self) -> bool:
+            return True
+
+        def winId(self) -> int:
+            return 123
+
+    MinimalWindow()._sync_native_topmost_state()
+
+    assert calls == [(123, True)]
+
+
+def test_pet_window_skips_macos_native_topmost_sync_when_hidden(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(pet_window_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        pet_window_module,
+        "_set_macos_window_topmost",
+        lambda window_id, enabled: calls.append((window_id, enabled)),
+    )
+
+    class MinimalWindow:
+        _sync_native_topmost_state = PetWindow._sync_native_topmost_state
+
+        always_on_top_enabled = True
+
+        def isVisible(self) -> bool:
+            return False
+
+        def winId(self) -> int:
+            return 123
+
+    MinimalWindow()._sync_native_topmost_state()
+
+    assert calls == []
 
 
 def test_screen_observation_followup_uses_last_user_message_after_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]

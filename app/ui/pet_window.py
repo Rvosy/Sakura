@@ -471,6 +471,18 @@ class PetWindow(QWidget):
         super().resizeEvent(event)
         self._layout_stage()
 
+    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().showEvent(event)
+        self._schedule_native_topmost_sync()
+
+    def changeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().changeEvent(event)
+        if event.type() in {
+            QEvent.Type.ActivationChange,
+            QEvent.Type.WindowStateChange,
+        }:
+            self._schedule_native_topmost_sync()
+
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         if watched is self.input_edit:
             if event.type() == QEvent.Type.KeyPress:
@@ -2669,25 +2681,37 @@ class PetWindow(QWidget):
         self.setWindowFlags(self._window_flags())
         if was_visible:
             self.show()
-            self._sync_native_topmost_state()
+            self._schedule_native_topmost_sync()
+
+    def _schedule_native_topmost_sync(self) -> None:
+        if sys.platform not in {"win32", "darwin"}:
+            return
+        QTimer.singleShot(0, self._sync_native_topmost_state)
 
     def _sync_native_topmost_state(self) -> None:
-        if sys.platform != "win32" or not self.isVisible():
+        if not self.isVisible():
             return
-        try:
-            import ctypes
+        if sys.platform == "win32":
+            try:
+                import ctypes
 
-            hwnd = int(self.winId())
-            hwnd_topmost = -1
-            hwnd_notopmost = -2
-            swp_no_size = 0x0001
-            swp_no_move = 0x0002
-            swp_no_activate = 0x0010
-            insert_after = hwnd_topmost if self.always_on_top_enabled else hwnd_notopmost
-            flags = swp_no_size | swp_no_move | swp_no_activate
-            ctypes.windll.user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags)
-        except Exception as exc:  # noqa: BLE001
-            debug_log("PetWindow", "同步原生置顶状态失败", {"error": str(exc)})
+                hwnd = int(self.winId())
+                hwnd_topmost = -1
+                hwnd_notopmost = -2
+                swp_no_size = 0x0001
+                swp_no_move = 0x0002
+                swp_no_activate = 0x0010
+                insert_after = hwnd_topmost if self.always_on_top_enabled else hwnd_notopmost
+                flags = swp_no_size | swp_no_move | swp_no_activate
+                ctypes.windll.user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags)
+            except Exception as exc:  # noqa: BLE001
+                debug_log("PetWindow", "同步原生置顶状态失败", {"error": str(exc)})
+            return
+        if sys.platform == "darwin":
+            try:
+                _set_macos_window_topmost(int(self.winId()), self.always_on_top_enabled)
+            except Exception as exc:  # noqa: BLE001
+                debug_log("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
@@ -3025,3 +3049,79 @@ def _configure_reply_history_button(button: QToolButton, *, text: str, tooltip: 
     button.setText(text)
     button.setFixedSize(REPLY_HISTORY_BUTTON_SIZE, REPLY_HISTORY_BUTTON_SIZE)
     button.setToolTip(tooltip)
+
+
+
+def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
+    """同步 macOS NSWindow 层级，确保置顶窗口能跟随当前 Space。"""
+
+    import ctypes
+    import ctypes.util
+
+    objc = ctypes.CDLL(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
+    sel_register_name = objc.sel_registerName
+    sel_register_name.argtypes = [ctypes.c_char_p]
+    sel_register_name.restype = ctypes.c_void_p
+
+    def selector(name: bytes) -> int:
+        return int(sel_register_name(name))
+
+    def message(restype: object, *argtypes: object) -> object:
+        return ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *argtypes)(
+            ("objc_msgSend", objc)
+        )
+
+    send_bool = message(ctypes.c_bool, ctypes.c_void_p)
+    send_ptr = message(ctypes.c_void_p)
+    send_level = message(None, ctypes.c_long)
+    send_hides_on_deactivate = message(None, ctypes.c_bool)
+    send_ulong = message(ctypes.c_ulong)
+    send_collection = message(None, ctypes.c_ulong)
+
+    obj = ctypes.c_void_p(window_id)
+    sel_window = selector(b"window")
+    sel_responds_to_selector = selector(b"respondsToSelector:")
+    if send_bool(obj, ctypes.c_void_p(sel_responds_to_selector), ctypes.c_void_p(sel_window)):
+        ns_window = send_ptr(obj, ctypes.c_void_p(sel_window))
+        if not ns_window:
+            return
+    else:
+        ns_window = window_id
+
+    ns_window_ptr = ctypes.c_void_p(int(ns_window))
+    ns_window_collection_behavior_can_join_all_spaces = 1 << 0
+    ns_window_collection_behavior_move_to_active_space = 1 << 1
+    ns_window_collection_behavior_full_screen_auxiliary = 1 << 8
+    ns_floating_window_level = 3
+    ns_modal_panel_window_level = 8
+
+    level = ns_modal_panel_window_level if enabled else ns_floating_window_level
+    send_level(ns_window_ptr, ctypes.c_void_p(selector(b"setLevel:")), level)
+
+    sel_set_hides_on_deactivate = selector(b"setHidesOnDeactivate:")
+    if send_bool(
+        ns_window_ptr,
+        ctypes.c_void_p(sel_responds_to_selector),
+        ctypes.c_void_p(sel_set_hides_on_deactivate),
+    ):
+        send_hides_on_deactivate(
+            ns_window_ptr,
+            ctypes.c_void_p(sel_set_hides_on_deactivate),
+            not enabled,
+        )
+
+    collection_behavior = int(send_ulong(ns_window_ptr, ctypes.c_void_p(selector(b"collectionBehavior"))))
+    if enabled:
+        collection_behavior |= (
+            ns_window_collection_behavior_can_join_all_spaces
+            | ns_window_collection_behavior_full_screen_auxiliary
+        )
+        collection_behavior &= ~ns_window_collection_behavior_move_to_active_space
+    else:
+        collection_behavior &= ~ns_window_collection_behavior_can_join_all_spaces
+        collection_behavior |= ns_window_collection_behavior_move_to_active_space
+    send_collection(
+        ns_window_ptr,
+        ctypes.c_void_p(selector(b"setCollectionBehavior:")),
+        collection_behavior,
+    )
