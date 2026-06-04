@@ -1077,6 +1077,6 @@ def _runtime_root(name: str) -> Path:
     return root
 
 
-def _write_fake_runtime_python(path: Path) -> None:
-    path.write_text("fake", encoding="utf-8")
+def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
+    path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
