@@ -7,11 +7,17 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from app.config.defaults import (
+    DEFAULT_DEBUG_BODY_ENABLED,
+    DEFAULT_DEBUG_ENABLED,
+    DEFAULT_DEBUG_FILE_ENABLED,
+)
 
 
 DEBUG_KEY = "SAKURA_DEBUG"
 DEBUG_BODY_KEY = "SAKURA_DEBUG_BODY"
 DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
+FILE_LOG_SCHEMA_VERSION = 1
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _SENSITIVE_KEY_MARKERS = ("api_key", "authorization", "token", "secret", "password")
 _BODY_KEY_MARKERS = (
@@ -47,17 +53,17 @@ _file_logger_signature: tuple[str, int, int] | None = None
 
 def debug_enabled() -> bool:
     """判断是否开启终端调试日志。"""
-    return _read_bool(DEBUG_KEY, default=False)
+    return _read_bool(DEBUG_KEY, default=DEFAULT_DEBUG_ENABLED)
 
 
 def debug_body_enabled() -> bool:
     """判断调试日志是否允许输出完整正文。"""
-    return debug_enabled() and _read_bool(DEBUG_BODY_KEY, default=False)
+    return debug_enabled() and _read_bool(DEBUG_BODY_KEY, default=DEFAULT_DEBUG_BODY_ENABLED)
 
 
 def debug_file_enabled() -> bool:
     """判断是否开启文件运行日志。"""
-    return _read_bool(DEBUG_FILE_KEY, default=False)
+    return _read_bool(DEBUG_FILE_KEY, default=DEFAULT_DEBUG_FILE_ENABLED)
 
 
 def debug_log(category: str, message: str, data: Any | None = None) -> None:
@@ -505,6 +511,7 @@ def _write_file_log(
     data: Any | None,
 ) -> None:
     record: dict[str, Any] = {
+        "schema_version": FILE_LOG_SCHEMA_VERSION,
         "timestamp": timestamp,
         "category": category,
         "message": message,

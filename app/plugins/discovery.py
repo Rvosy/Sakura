@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from app.core.debug_log import debug_log
 from app.plugins.models import PluginSpec
 
 
@@ -69,15 +70,33 @@ class PluginDiscovery:
         for manifest_path in sorted(plugins_dir.glob("*/plugin.yaml")):
             raw = _load_yaml(manifest_path)
             if not isinstance(raw, dict):
+                if raw is not None:
+                    debug_log(
+                        "PluginDiscovery",
+                        "插件清单格式无效，已跳过",
+                        {"path": manifest_path, "type": type(raw).__name__},
+                    )
                 continue
             spec = _spec_from_manifest(raw, manifest_path.parent)
             if spec is not None:
                 specs.append(spec)
+            else:
+                debug_log(
+                    "PluginDiscovery",
+                    "插件清单缺少必要字段，已跳过",
+                    {"path": manifest_path},
+                )
         return specs
 
     def _load_config_specs(self) -> tuple[dict[str, PluginSpec], list[PluginSpec]]:
         raw = _load_yaml(self._config_path)
         if not isinstance(raw, list):
+            if raw is not None:
+                debug_log(
+                    "PluginDiscovery",
+                    "插件配置格式无效，已忽略",
+                    {"path": self._config_path, "type": type(raw).__name__},
+                )
             return {}, []
         overrides: dict[str, PluginSpec] = {}
         legacy_specs: list[PluginSpec] = []
@@ -204,7 +223,15 @@ def save_plugin_enabled_overrides(
 def _load_yaml(path: Path) -> Any:
     if not path.is_file():
         return None
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        debug_log(
+            "PluginDiscovery",
+            "插件 YAML 读取失败，已忽略",
+            {"path": path, "error": str(exc)},
+        )
+        return None
 
 
 def _string_value(value: Any) -> str:

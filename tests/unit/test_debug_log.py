@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from app.core.debug_log import (
+    FILE_LOG_SCHEMA_VERSION,
     _close_file_logger_for_tests,
     debug_body_enabled,
     debug_enabled,
+    debug_file_enabled,
     debug_log,
     sanitize_debug_data,
 )
@@ -21,12 +23,21 @@ def close_file_logger_after_test():  # type: ignore[no-untyped-def]
     _close_file_logger_for_tests()
 
 
-def test_debug_log_disabled_by_default(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+def test_debug_log_writes_file_but_not_terminal_by_default(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    log_path = _runtime_log_path("file_enabled_by_default")
+    monkeypatch.setattr("app.core.debug_log._FILE_LOG_PATH", log_path)
     monkeypatch.setattr("app.core.debug_log._load_debug_values", lambda: {})
 
-    debug_log("Test", "不会输出", {"content": "正文"})
+    debug_log("Test", "默认写入文件", {"content": "正文"})
 
     assert capsys.readouterr().out == ""
+    assert debug_enabled() is False
+    assert debug_file_enabled() is True
+    record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["schema_version"] == FILE_LOG_SCHEMA_VERSION
+    assert record["category"] == "Test"
+    assert record["message"] == "默认写入文件"
+    _close_file_logger_for_tests()
 
 
 def test_debug_log_outputs_summary_when_enabled(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -63,6 +74,7 @@ def test_file_log_writes_when_terminal_log_disabled(monkeypatch, capsys) -> None
     record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
     encoded = json.dumps(record, ensure_ascii=False)
 
+    assert record["schema_version"] == FILE_LOG_SCHEMA_VERSION
     assert record["category"] == "API"
     assert record["message"] == "准备发送聊天补全请求"
     assert "<redacted>" in encoded

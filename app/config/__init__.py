@@ -1,7 +1,7 @@
 from app.config.models import ApiSettings, DebugLogSettings
 from app.config.defaults import (
     DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_SUBTITLE_LANGUAGE,
-    DEFAULT_CHARACTER_ID, DEFAULT_DEBUG_ENABLED,
+    DEFAULT_CHARACTER_ID, DEFAULT_DEBUG_ENABLED, DEFAULT_DEBUG_FILE_ENABLED,
 )
 # 重量级导入延迟加载，避免无 yaml/PySide6 时整个包不可用
 # from app.config.settings_service import AppSettingsService
@@ -12,5 +12,5 @@ from app.config.defaults import (
 __all__ = [
     "ApiSettings", "DebugLogSettings",
     "DEFAULT_BASE_URL", "DEFAULT_MODEL", "DEFAULT_SUBTITLE_LANGUAGE",
-    "DEFAULT_CHARACTER_ID", "DEFAULT_DEBUG_ENABLED",
+    "DEFAULT_CHARACTER_ID", "DEFAULT_DEBUG_ENABLED", "DEFAULT_DEBUG_FILE_ENABLED",
 ]

@@ -6,6 +6,12 @@ from typing import Any
 
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
+from app.config.defaults import (
+    DEFAULT_DEBUG_BODY_ENABLED,
+    DEFAULT_DEBUG_ENABLED,
+    DEFAULT_DEBUG_FILE_ENABLED,
+)
+from app.config.models import DebugLogSettings
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
@@ -29,15 +35,6 @@ from app.voice.tts import (
 API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
-
-
-@dataclass(frozen=True)
-class DebugLogSettings:
-    """调试日志配置。"""
-
-    enabled: bool = False
-    body_enabled: bool = False
-    file_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -237,9 +234,9 @@ class AppSettingsService:
     def load_debug_log_settings(self) -> DebugLogSettings:
         debug = self._system_section("debug")
         return DebugLogSettings(
-            enabled=_bool_value(debug.get("enabled"), False),
-            body_enabled=_bool_value(debug.get("body_enabled"), False),
-            file_enabled=_bool_value(debug.get("file_enabled"), False),
+            enabled=_bool_value(debug.get("enabled"), DEFAULT_DEBUG_ENABLED),
+            body_enabled=_bool_value(debug.get("body_enabled"), DEFAULT_DEBUG_BODY_ENABLED),
+            file_enabled=_bool_value(debug.get("file_enabled"), DEFAULT_DEBUG_FILE_ENABLED),
         )
 
     def save_debug_log_settings(self, settings: DebugLogSettings) -> None:

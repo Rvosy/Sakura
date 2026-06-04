@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.config.defaults import (
+    DEFAULT_BASE_URL,
+    DEFAULT_DEBUG_BODY_ENABLED,
+    DEFAULT_DEBUG_ENABLED,
+    DEFAULT_DEBUG_FILE_ENABLED,
+    DEFAULT_MODEL,
+)
+
 
 # ---- API 配置 ----
 
@@ -17,9 +25,9 @@ from dataclasses import dataclass
 class ApiSettings:
     """LLM API 连接配置。"""
 
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = DEFAULT_BASE_URL
     api_key: str = ""
-    model: str = "gpt-4.1-mini"
+    model: str = DEFAULT_MODEL
     timeout_seconds: int = 60
 
 
@@ -29,9 +37,9 @@ class ApiSettings:
 class DebugLogSettings:
     """调试日志配置。"""
 
-    enabled: bool = False
-    body_enabled: bool = False
-    file_enabled: bool = False
+    enabled: bool = DEFAULT_DEBUG_ENABLED
+    body_enabled: bool = DEFAULT_DEBUG_BODY_ENABLED
+    file_enabled: bool = DEFAULT_DEBUG_FILE_ENABLED
 
 
 # ---- TTS 配置 (存根，实际实现在 app/voice/tts.py) ----

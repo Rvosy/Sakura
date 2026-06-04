@@ -344,5 +344,15 @@ def _migrate_legacy_history(base_dir: Path, profile: CharacterProfile, history_p
     try:
         history_path.parent.mkdir(parents=True, exist_ok=True)
         history_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+        debug_log(
+            "History",
+            "旧历史迁移完成",
+            {"legacy_path": legacy_path, "history_path": history_path},
+        )
     except OSError as exc:
         print(f"[History] 旧历史迁移失败：{exc}")
+        debug_log(
+            "History",
+            "旧历史迁移失败",
+            {"legacy_path": legacy_path, "history_path": history_path, "error": str(exc)},
+        )

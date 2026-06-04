@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,7 @@ class TestDebugLogSettings:
         s = DebugLogSettings()
         assert s.enabled is False
         assert s.body_enabled is False
-        assert s.file_enabled is False
+        assert s.file_enabled is True
 
     def test_enabled(self) -> None:
         s = DebugLogSettings(enabled=True)
@@ -106,33 +107,37 @@ class TestMigration:
     """.env → YAML 迁移"""
 
     def test_migrate_basic(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            config_dir = base / "data" / "config"
-            config_dir.mkdir(parents=True)
+        base = _runtime_root("migrate_basic")
+        config_dir = base / "data" / "config"
+        config_dir.mkdir(parents=True)
 
-            # 创建 .env
-            env_path = base / ".env"
-            env_path.write_text("BASE_URL=https://custom.api\nAPI_KEY=sk-migrated\n")
+        # 创建 .env
+        env_path = base / ".env"
+        env_path.write_text("BASE_URL=https://custom.api\nAPI_KEY=sk-migrated\n")
 
-            api_yaml = config_dir / "api.yaml"
-            api_yaml.write_text("llm:\n  base_url: https://default.api\n")
+        api_yaml = config_dir / "api.yaml"
+        api_yaml.write_text("llm:\n  base_url: https://default.api\n")
 
-            system_yaml = config_dir / "system_config.yaml"
-            system_yaml.write_text("ui:\n  subtitle_language: ja\n")
+        system_yaml = config_dir / "system_config.yaml"
+        system_yaml.write_text("ui:\n  subtitle_language: ja\n")
 
-            result = migrate_env_to_yaml(env_path, api_yaml, system_yaml)
-            assert "BASE_URL" in result["migrated"]
-            assert "API_KEY" in result["migrated"]
+        result = migrate_env_to_yaml(env_path, api_yaml, system_yaml)
+        assert "BASE_URL" in result["migrated"]
+        assert "API_KEY" in result["migrated"]
 
     def test_migrate_missing_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            config_dir = base / "data" / "config"
-            config_dir.mkdir(parents=True)
-            api_yaml = config_dir / "api.yaml"
-            api_yaml.write_text("llm: {}\n")
-            system_yaml = config_dir / "system_config.yaml"
-            system_yaml.write_text("{}\n")
-            result = migrate_env_to_yaml(base / "missing.env", api_yaml, system_yaml)
-            assert result["errors"]
+        base = _runtime_root("migrate_missing_env")
+        config_dir = base / "data" / "config"
+        config_dir.mkdir(parents=True)
+        api_yaml = config_dir / "api.yaml"
+        api_yaml.write_text("llm: {}\n")
+        system_yaml = config_dir / "system_config.yaml"
+        system_yaml.write_text("{}\n")
+        result = migrate_env_to_yaml(base / "missing.env", api_yaml, system_yaml)
+        assert result["errors"]
+
+
+def _runtime_root(name: str) -> Path:
+    root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / "config" / name / uuid.uuid4().hex
+    root.mkdir(parents=True, exist_ok=True)
+    return root

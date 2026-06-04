@@ -232,6 +232,16 @@ def test_settings_service_loads_debug_file_disabled_by_default() -> None:
 
     settings = service.load_debug_log_settings()
 
+    assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=True)
+
+
+def test_settings_service_respects_explicit_debug_file_disabled() -> None:
+    root = _runtime_root("yaml_debug_file_explicit_false")
+    service = AppSettingsService(root)
+    service.save_system_values("debug", {"enabled": True, "body_enabled": False, "file_enabled": False})
+
+    settings = service.load_debug_log_settings()
+
     assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=False)
 
 
