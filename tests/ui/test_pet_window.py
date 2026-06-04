@@ -800,7 +800,7 @@ def test_settings_dialog_skips_tts_test_when_tts_disabled(monkeypatch) -> None: 
     app.processEvents()
 
 
-def test_settings_dialog_enabled_tts_saves_after_successful_test(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_dialog_enabled_tts_skips_test_when_character_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -824,17 +824,63 @@ def test_settings_dialog_enabled_tts_saves_after_successful_test(monkeypatch) ->
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
     )
     dialog.tts_enabled_check.setChecked(True)
+    monkeypatch.setattr(
+        dialog,
+        "_start_tts_settings_test",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("角色未变时不应检测 TTS")),
+    )
+
+    dialog.accept()
+
+    assert dialog.result_tts_settings is not None
+    assert dialog.result_tts_settings.enabled
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_enabled_tts_tests_when_character_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.config.character_loader import CharacterRegistry
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("tts_save_character_changed")
+    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
+    _build_settings_dialog_character(root, "nanami", "Nanami")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        character_registry=CharacterRegistry(root),
+        current_character=current_profile,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    dialog.tts_enabled_check.setChecked(True)
+    nanami_index = dialog.character_combo.findData("nanami")
+    assert nanami_index >= 0
+    dialog.character_combo.setCurrentIndex(nanami_index)
     calls: list[str] = []
 
     def fake_start_tts_test(settings, accept_values):  # type: ignore[no-untyped-def]
-        calls.append(settings.api_url)
+        calls.append(settings.character_name)
         dialog._complete_accept(accept_values)
 
     monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
 
     dialog.accept()
 
-    assert calls == ["http://127.0.0.1:9880/tts"]
+    assert calls == ["Nanami"]
+    assert dialog.result_character_id == "nanami"
     assert dialog.result_tts_settings is not None
     assert dialog.result_tts_settings.enabled
     dialog.deleteLater()
@@ -848,11 +894,14 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     import app.ui.settings_dialog as settings_dialog_module
+    from app.config.character_loader import CharacterRegistry
     from app.ui.settings_dialog import SettingsDialog
 
     QApplication = qtwidgets.QApplication
     app = QApplication.instance() or QApplication([])
     root = _ui_runtime_root("tts_save_failure")
+    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
+    _build_settings_dialog_character(root, "nanami", "Nanami")
     dialog = SettingsDialog(
         api_settings=ApiSettings(
             base_url="https://api.example.com/v1",
@@ -861,11 +910,15 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
         ),
         tts_settings=_minimal_tts_settings(),
         base_dir=root,
-        **_settings_dialog_character_kwargs(root),
+        character_registry=CharacterRegistry(root),
+        current_character=current_profile,
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
     )
     dialog.tts_enabled_check.setChecked(True)
+    nanami_index = dialog.character_combo.findData("nanami")
+    assert nanami_index >= 0
+    dialog.character_combo.setCurrentIndex(nanami_index)
     warnings: list[str] = []
     monkeypatch.setattr(
         settings_dialog_module.QMessageBox,
@@ -885,6 +938,188 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
     assert not dialog.tts_enabled_check.isChecked()
     assert dialog.result_tts_settings is not None
     assert not dialog.result_tts_settings.enabled
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_skips_api_test_when_api_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("api_save_unchanged")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    monkeypatch.setattr(
+        dialog,
+        "_start_api_settings_test",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("API 未变时不应自动测试")),
+    )
+
+    dialog.accept()
+
+    assert dialog.result_api_settings is not None
+    assert dialog.result_api_settings.model == "test-model"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_tests_api_when_api_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("api_save_changed")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    dialog.model_edit.setText("new-model")
+    calls: list[str] = []
+
+    def fake_start_api_test(settings, accept_values=None):  # type: ignore[no-untyped-def]
+        calls.append(settings.model)
+        assert accept_values is not None
+        dialog._continue_accept_after_api_test(accept_values)
+
+    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
+
+    dialog.accept()
+
+    assert calls == ["new-model"]
+    assert dialog.result_api_settings is not None
+    assert dialog.result_api_settings.model == "new-model"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("api_save_failure")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    dialog.model_edit.setText("bad-model")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        settings_dialog_module.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    def fake_start_api_test(_settings, accept_values=None):  # type: ignore[no-untyped-def]
+        dialog._pending_api_accept_values = accept_values
+        dialog._handle_api_test_failed("模型不可用")
+
+    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
+
+    dialog.accept()
+
+    assert warnings and "模型不可用" in warnings[0]
+    assert dialog.result_api_settings is None
+    assert dialog.result_tts_settings is None
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_api_success_continues_to_tts_test(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.config.character_loader import CharacterRegistry
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("api_success_then_tts")
+    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
+    _build_settings_dialog_character(root, "nanami", "Nanami")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        character_registry=CharacterRegistry(root),
+        current_character=current_profile,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    dialog.model_edit.setText("new-model")
+    dialog.tts_enabled_check.setChecked(True)
+    nanami_index = dialog.character_combo.findData("nanami")
+    assert nanami_index >= 0
+    dialog.character_combo.setCurrentIndex(nanami_index)
+    calls: list[str] = []
+
+    def fake_start_api_test(_settings, accept_values=None):  # type: ignore[no-untyped-def]
+        calls.append("api")
+        assert accept_values is not None
+        dialog._continue_accept_after_api_test(accept_values)
+
+    def fake_start_tts_test(_settings, accept_values):  # type: ignore[no-untyped-def]
+        calls.append("tts")
+        dialog._complete_accept(accept_values)
+
+    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
+    monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
+
+    dialog.accept()
+
+    assert calls == ["api", "tts"]
+    assert dialog.result_api_settings is not None
+    assert dialog.result_api_settings.model == "new-model"
+    assert dialog.result_character_id == "nanami"
     dialog.deleteLater()
     app.processEvents()
 
@@ -4104,7 +4339,7 @@ def _minimal_tts_settings() -> GPTSoVITSTTSSettings:
     )
 
 
-def test_tts_test_worker_closes_provider_after_success(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tts_test_worker_keeps_provider_after_success(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     import app.ui.settings_dialog as settings_dialog
@@ -4126,10 +4361,10 @@ def test_tts_test_worker_closes_provider_after_success(monkeypatch) -> None:  # 
     worker = settings_dialog.TTSTestWorker(_minimal_tts_settings())
     worker.run()
 
-    assert closed == [True]
+    assert closed == []
 
 
-def test_tts_test_worker_emits_finished_when_provider_close_fails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tts_test_worker_closes_provider_after_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     import app.ui.settings_dialog as settings_dialog
@@ -4141,19 +4376,19 @@ def test_tts_test_worker_emits_finished_when_provider_close_fails(monkeypatch) -
             self.settings = settings
 
         def ensure_ready(self) -> tuple[bool, str]:
-            return True, "ok"
+            return False, "启动失败"
 
         def close(self) -> None:
-            raise RuntimeError("关闭失败")
+            events.append("closed")
 
     monkeypatch.setattr(settings_dialog, "GPTSoVITSTTSProvider", FakeProvider)
 
     worker = settings_dialog.TTSTestWorker(_minimal_tts_settings())
-    worker.succeeded.connect(lambda *_args: events.append("succeeded"))
+    worker.failed.connect(lambda _message: events.append("failed"))
     worker.finished.connect(lambda: events.append("finished"))
     worker.run()
 
-    assert events == ["succeeded", "finished"]
+    assert events == ["failed", "closed", "finished"]
 
 
 def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]

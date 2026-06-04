@@ -138,6 +138,7 @@ class TTSTestWorker(QObject):
     @Slot()
     def run(self) -> None:
         provider = None
+        should_close_provider = True
         try:
             provider = (
                 GenieTTSProvider(self.settings)
@@ -146,19 +147,20 @@ class TTSTestWorker(QObject):
             )
             ok, message = provider.ensure_ready()
             if ok:
+                should_close_provider = False
                 self.succeeded.emit(provider.settings, message)
             else:
                 self.failed.emit(message)
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
         finally:
-            if provider is not None:
+            if should_close_provider and provider is not None:
                 close = getattr(provider, "close", None)
                 if callable(close):
                     try:
                         close()
                     except Exception as exc:  # noqa: BLE001
-                        debug_log("TTS", "TTS 检测完成后关闭 Provider 失败", {"error": str(exc)})
+                        debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
             self.finished.emit()
 
 
@@ -274,6 +276,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.base_dir = base_dir
         self.tts_settings = tts_settings
+        self._initial_api_settings = api_settings
+        self._initial_character_id = current_character.id if current_character is not None else None
         self.theme_settings = (theme_settings or DEFAULT_THEME_SETTINGS).normalized()
         self.character_registry = character_registry
         self.current_character = current_character
@@ -306,6 +310,7 @@ class SettingsDialog(QDialog):
         self._api_test_worker: ApiConnectionTestWorker | None = None
         self._tts_test_thread: QThread | None = None
         self._tts_test_worker: TTSTestWorker | None = None
+        self._pending_api_accept_values: dict[str, object] | None = None
         self._pending_accept_values: dict[str, object] | None = None
         self._save_button_text: str | None = None
         self._memory_list_thread: QThread | None = None
@@ -1456,12 +1461,34 @@ class SettingsDialog(QDialog):
         accept_values = self._collect_accept_values()
         if accept_values is None:
             return
-        tts_settings = accept_values["tts_settings"]
-        if isinstance(tts_settings, GPTSoVITSTTSSettings) and tts_settings.enabled:
-            self._start_tts_settings_test(tts_settings, accept_values)
+        api_settings = accept_values["api_settings"]
+        if isinstance(api_settings, ApiSettings) and self._should_test_api_on_accept(api_settings):
+            self._start_api_settings_test(api_settings, accept_values)
             return
 
+        self._continue_accept_after_api_test(accept_values)
+
+    def _continue_accept_after_api_test(self, accept_values: dict[str, object]) -> None:
+        tts_settings = accept_values["tts_settings"]
+        if self._should_test_tts_on_accept(tts_settings, accept_values["character_id"]):
+            self._start_tts_settings_test(tts_settings, accept_values)
+            return
         self._complete_accept(accept_values)
+
+    def _should_test_api_on_accept(self, api_settings: ApiSettings) -> bool:
+        return api_settings != self._initial_api_settings
+
+    def _should_test_tts_on_accept(
+        self,
+        tts_settings: object,
+        character_id: object,
+    ) -> bool:
+        return (
+            isinstance(tts_settings, GPTSoVITSTTSSettings)
+            and tts_settings.enabled
+            and isinstance(character_id, str)
+            and character_id != self._initial_character_id
+        )
 
     def _collect_accept_values(self) -> dict[str, object] | None:
         api_settings = self._validated_api_settings()
@@ -1592,9 +1619,18 @@ class SettingsDialog(QDialog):
         if settings is None or self._api_test_thread is not None:
             return
 
-        self.api_test_button.setEnabled(False)
-        self.api_test_button.setText("测试中...")
+        self._start_api_settings_test(settings)
 
+    def _start_api_settings_test(
+        self,
+        settings: ApiSettings,
+        accept_values: dict[str, object] | None = None,
+    ) -> None:
+        if self._api_test_thread is not None:
+            return
+
+        self._pending_api_accept_values = dict(accept_values) if accept_values is not None else None
+        self._set_api_test_busy(True)
         thread = QThread()
         worker = ApiConnectionTestWorker(settings)
         worker.moveToThread(thread)
@@ -1612,18 +1648,44 @@ class SettingsDialog(QDialog):
 
     @Slot(str)
     def _handle_api_test_success(self, message: str) -> None:
+        accept_values = self._pending_api_accept_values
+        if accept_values is not None:
+            self._continue_accept_after_api_test(accept_values)
+            return
         QMessageBox.information(self, "测试成功", f"API 连接成功，模型返回：{message}")
 
     @Slot(str)
     def _handle_api_test_failed(self, message: str) -> None:
+        if self._pending_api_accept_values is not None:
+            QMessageBox.warning(self, "API 检测失败", f"{message}\n\n设置尚未保存，请修正 API 配置后再保存。")
+            return
         QMessageBox.warning(self, "测试失败", message)
 
     @Slot()
     def _reset_api_test_state(self) -> None:
-        self.api_test_button.setEnabled(True)
-        self.api_test_button.setText("测试 API")
         self._api_test_thread = None
         self._api_test_worker = None
+        self._pending_api_accept_values = None
+        self._set_api_test_busy(False)
+
+    def _set_api_test_busy(self, busy: bool) -> None:
+        self.api_test_button.setEnabled(not busy)
+        self.api_test_button.setText("测试中..." if busy else "测试 API")
+        if not hasattr(self, "button_box"):
+            return
+        save_button = self.button_box.button(QDialogButtonBox.StandardButton.Save)
+        if save_button is None:
+            return
+        if busy:
+            if self._save_button_text is None:
+                self._save_button_text = save_button.text()
+            save_button.setText("测试 API...")
+        elif self._tts_test_thread is not None:
+            return
+        elif self._save_button_text is not None:
+            save_button.setText(self._save_button_text)
+            self._save_button_text = None
+        save_button.setEnabled(not busy)
 
     def _start_tts_settings_test(
         self,
