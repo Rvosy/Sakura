@@ -34,32 +34,61 @@ require_command() {
 
 require_command curl
 require_command git
+require_command shasum
 
 INSTALL_PARENT="$(dirname "$INSTALL_ROOT")"
 mkdir -p "$INSTALL_PARENT"
 INSTALL_ROOT="$(cd "$INSTALL_PARENT" && pwd)/$(basename "$INSTALL_ROOT")"
 DOWNLOADS_DIR="${SAKURA_TTS_DOWNLOADS_DIR:-$INSTALL_ROOT/downloads}"
 MINIFORGE_DIR="$INSTALL_ROOT/miniforge3"
-ENV_NAME="${GPT_SOVITS_ENV_NAME:-gpt-sovits310}"
+ENV_NAME="gpt-sovits310"
 ENV_DIR="$MINIFORGE_DIR/envs/$ENV_NAME"
 ENV_PYTHON="$ENV_DIR/bin/python"
 GPT_DIR="$INSTALL_ROOT/GPT-SoVITS"
 GPT_REPO="${GPT_SOVITS_REPO:-https://github.com/RVC-Boss/GPT-SoVITS.git}"
 GPT_REF="${GPT_SOVITS_REF:-08d627c3338173c3229286d8787060d6559fe0f8}"
 MODEL_SOURCE="${GPT_SOVITS_MODEL_SOURCE:-ModelScope}"
-DEVICE="${GPT_SOVITS_DEVICE:-MPS}"
+INSTALL_DEVICE="${GPT_SOVITS_INSTALL_DEVICE:-${GPT_SOVITS_DEVICE:-MPS}}"
+INFER_DEVICE="${GPT_SOVITS_INFER_DEVICE:-cpu}"
 CONFIG_PATH="$GPT_DIR/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
+MINIFORGE_VERSION="26.3.2-3"
+MINIFORGE_FILENAME="Miniforge3-$MINIFORGE_VERSION-MacOSX-$ARCH.sh"
+MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME"
+case "$ARCH" in
+arm64)
+    MINIFORGE_SHA256="59168f1e24d0a4ad9932021170809fca836cd240e183eeeb331d5bcfc0098168"
+    ;;
+x86_64)
+    MINIFORGE_SHA256="39273e4c89a0a1af4538010615d44ae8f44e1af41007e02def593d20f316b003"
+    ;;
+esac
+
+verify_sha256() {
+    local file="$1"
+    local expected="$2"
+    local actual
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+    if [ "$actual" != "$expected" ]; then
+        echo "SHA256 mismatch for $file"
+        echo "expected: $expected"
+        echo "actual:   $actual"
+        return 1
+    fi
+}
 
 mkdir -p "$INSTALL_ROOT" "$DOWNLOADS_DIR"
 
 progress prepare 5
 if [ ! -x "$MINIFORGE_DIR/bin/conda" ]; then
-    INSTALLER="$DOWNLOADS_DIR/Miniforge3-MacOSX-$ARCH.sh"
+    INSTALLER="$DOWNLOADS_DIR/$MINIFORGE_FILENAME"
+    if [ -f "$INSTALLER" ] && ! verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"; then
+        rm -f "$INSTALLER"
+    fi
     if [ ! -f "$INSTALLER" ]; then
         progress download 10
-        curl -fL -o "$INSTALLER" \
-            "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-$ARCH.sh"
+        curl -fL -o "$INSTALLER" "$MINIFORGE_URL"
     fi
+    verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"
     progress install 20
     bash "$INSTALLER" -b -p "$MINIFORGE_DIR"
 fi
@@ -93,10 +122,10 @@ fi
 
 progress install 65
 cd "$GPT_DIR"
-WORKFLOW=false bash install.sh --device "$DEVICE" --source "$MODEL_SOURCE"
+WORKFLOW=false bash install.sh --device "$INSTALL_DEVICE" --source "$MODEL_SOURCE"
 
 progress configure 92
-SAKURA_TTS_CONFIG_PATH="$CONFIG_PATH" "$ENV_PYTHON" - <<'PY'
+SAKURA_TTS_CONFIG_PATH="$CONFIG_PATH" SAKURA_TTS_INFER_DEVICE="$INFER_DEVICE" "$ENV_PYTHON" - <<'PY'
 from __future__ import annotations
 
 import os
@@ -110,7 +139,7 @@ data = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
 preferred = dict(data.get("v2ProPlus") or data.get("v2") or {})
 custom = dict(data.get("custom") or {})
 custom.update(preferred)
-custom["device"] = "cpu"
+custom["device"] = os.environ.get("SAKURA_TTS_INFER_DEVICE", "cpu").strip().lower() or "cpu"
 custom["is_half"] = False
 data["custom"] = custom
 config_path.write_text(

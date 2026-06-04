@@ -283,7 +283,7 @@ tts:
     timeout_seconds: 60
 ```
 
-Windows 用户可以在设置窗口的 TTS 页点击“一键下载 TTS 整合包”安装当前内置的 Windows 整合包。macOS 用户会看到“GPT-SoVITS macOS 源码安装包”，点击后会在 `data/tts_bundles/installed/gpt_sovits_macos/` 下自动安装 Miniforge、创建 Python 3.10 环境、拉取 GPT-SoVITS 源码并生成 macOS 可用的推理配置。这个 macOS 安装项只负责 GPT-SoVITS 源码、Python 环境和官方预训练基础模型；Sakura 等角色声线权重仍来自角色包的 `voice/models/`，由 `character.json` 读取后在启动 TTS 时切换。下载窗口会按当前系统过滤整合包；Windows 不会展示 macOS 安装项，macOS 也不会展示只包含 Windows 运行时的整合包。
+Windows 用户可以在设置窗口的 TTS 页点击“一键下载 TTS 整合包”安装当前内置的 Windows 整合包。macOS 用户会看到“GPT-SoVITS macOS 源码安装包”，点击后会在 `data/tts_bundles/installed/gpt_sovits_macos/` 下自动安装 Miniforge、创建 Python 3.10 环境、拉取 GPT-SoVITS 源码并生成 macOS 可用的推理配置。脚本会下载固定版本的 Miniforge 并校验 SHA256；GPT-SoVITS 官方安装脚本默认按 MPS 依赖安装，推理配置默认使用 CPU 与关闭半精度以保持兼容，可通过 `GPT_SOVITS_INSTALL_DEVICE` 和 `GPT_SOVITS_INFER_DEVICE` 覆盖。这个 macOS 安装项只负责 GPT-SoVITS 源码、Python 环境和官方预训练基础模型；Sakura 等角色声线权重仍来自角色包的 `voice/models/`，由 `character.json` 读取后在启动 TTS 时切换。下载窗口会按当前系统过滤整合包；Windows 不会展示 macOS 安装项，macOS 也不会展示只包含 Windows 运行时的整合包。
 
 设置页新增的 `TTS Python` 和 `推理配置` 字段只用于自定义或 macOS 源码版 GPT-SoVITS；Windows 内置整合包无需填写。
 

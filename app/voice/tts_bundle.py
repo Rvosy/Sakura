@@ -5,6 +5,7 @@ import importlib
 import os
 import platform
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -401,57 +402,119 @@ def _run_script_bundle_installer(
         raise RuntimeError(f"{entry.label} 缺少安装脚本。")
 
     script = _resolve_installer_script(entry.installer_script, base_dir)
-    installed_dir = base_dir / "data" / "tts_bundles" / "installed" / entry.key
-    downloads_dir = base_dir / "data" / "tts_bundles" / "downloads"
-    installed_dir.mkdir(parents=True, exist_ok=True)
+    bundle_base = base_dir / "data" / "tts_bundles"
+    installed_dir = bundle_base / "installed" / entry.key
+    install_tmp_dir = bundle_base / "tmp" / entry.key
+    downloads_dir = bundle_base / "downloads"
+    if install_tmp_dir.exists():
+        shutil.rmtree(install_tmp_dir, ignore_errors=True)
+    install_tmp_dir.mkdir(parents=True, exist_ok=True)
     downloads_dir.mkdir(parents=True, exist_ok=True)
 
     _emit_status(on_status, "install")
     _emit_progress(on_progress, 0)
     env = os.environ.copy()
-    env["SAKURA_TTS_INSTALL_DIR"] = str(installed_dir)
+    env["SAKURA_TTS_INSTALL_DIR"] = str(install_tmp_dir)
     env["SAKURA_TTS_DOWNLOADS_DIR"] = str(downloads_dir)
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    cmd = ["bash", str(script), str(installed_dir)]
-    process = subprocess.Popen(
-        cmd,
-        cwd=str(base_dir),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    tail: list[str] = []
-    assert process.stdout is not None
-    try:
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if line:
-                tail.append(line)
-                tail = tail[-20:]
-                _handle_installer_progress_line(line, on_progress=on_progress, on_status=on_status)
-            if check_cancel is not None:
-                try:
-                    check_cancel()
-                except Exception:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                    raise
-    finally:
-        process.stdout.close()
-    return_code = process.wait()
-    if return_code != 0:
-        detail = "\n".join(tail) or f"exit {return_code}"
-        raise RuntimeError(f"{entry.label} 安装失败：\n{detail}"[:2000])
+    cmd = ["bash", str(script), str(install_tmp_dir)]
+    popen_kwargs: dict[str, Any] = {
+        "args": cmd,
+        "cwd": str(base_dir),
+        "env": env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = _WIN_NO_WINDOW
+    else:
+        popen_kwargs["start_new_session"] = True
 
-    result = _build_script_install_result(entry, installed_dir)
-    _emit_status(on_status, "cleanup")
-    _emit_progress(on_progress, 100)
-    return result
+    process: subprocess.Popen[str] | None = None
+    tail: list[str] = []
+    try:
+        process = subprocess.Popen(**popen_kwargs)
+        assert process.stdout is not None
+        try:
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if line:
+                    tail.append(line)
+                    tail = tail[-20:]
+                    _handle_installer_progress_line(line, on_progress=on_progress, on_status=on_status)
+                if check_cancel is not None:
+                    check_cancel()
+        except Exception:
+            _terminate_process_tree(process)
+            raise
+        finally:
+            process.stdout.close()
+
+        return_code = process.wait()
+        if return_code != 0:
+            detail = "\n".join(tail) or f"exit {return_code}"
+            raise RuntimeError(f"{entry.label} 安装失败：\n{detail}"[:2000])
+
+        _build_script_install_result(entry, install_tmp_dir)
+        _replace_installed_bundle_dir(install_tmp_dir, installed_dir)
+        result = _build_script_install_result(entry, installed_dir)
+        _emit_status(on_status, "cleanup")
+        _emit_progress(on_progress, 100)
+        return result
+    except Exception:
+        if process is not None:
+            _terminate_process_tree(process)
+        shutil.rmtree(install_tmp_dir, ignore_errors=True)
+        raise
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if sys.platform == "win32":
+        process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.terminate()
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if sys.platform == "win32":
+        process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+    process.wait()
+
+
+def _replace_installed_bundle_dir(source_dir: Path, target_dir: Path) -> None:
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_dir = target_dir.with_name(f".{target_dir.name}.previous")
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    had_previous = target_dir.exists()
+    if had_previous:
+        target_dir.rename(backup_dir)
+    try:
+        shutil.move(str(source_dir), str(target_dir))
+    except Exception:
+        if had_previous and backup_dir.exists() and not target_dir.exists():
+            backup_dir.rename(target_dir)
+        raise
+    if had_previous:
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _resolve_installer_script(relative_script: str, base_dir: Path) -> Path:
