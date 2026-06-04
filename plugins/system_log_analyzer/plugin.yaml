@@ -1,0 +1,9 @@
+api_version: 1
+id: system_log_analyzer
+name: Sakura 运行日志分析
+description: 读取并分析 Sakura 文件运行日志，帮助定位最近的错误、失败和超时记录。
+version: 1.0.0
+entry: plugin:SystemLogAnalyzerPlugin
+enabled: true
+priority: 50
+required: false

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import uuid
 
@@ -32,6 +33,13 @@ from app.plugins.models import (
     ToolsTabContribution,
 )
 from app.plugins.discovery import save_plugin_enabled_overrides
+from plugins.system_log_analyzer.plugin import (
+    analyze_runtime_logs,
+    read_runtime_logs,
+    SystemLogAnalyzerPlugin,
+)
+from sdk import PluginCapabilityRegistry, PluginContext
+from sdk.types import PluginManifestView
 
 
 class TestPluginSpec:
@@ -290,6 +298,103 @@ class TestPluginManager:
         assert result.manifest is not None
 
 
+class TestSystemLogAnalyzerPlugin:
+    """Sakura 运行日志分析插件。"""
+
+    def test_registers_runtime_log_tools(self) -> None:
+        root = _runtime_root("system_log_analyzer_register")
+        registry = PluginCapabilityRegistry()
+        context = PluginContext(
+            base_dir=root,
+            plugin_root=root / "plugins" / "system_log_analyzer",
+            data_dir=root / "data" / "plugins" / "system_log_analyzer",
+            manifest=PluginManifestView(
+                plugin_id="system_log_analyzer",
+                name="Sakura 运行日志分析",
+                version="1.0.0",
+            ),
+        )
+
+        SystemLogAnalyzerPlugin().initialize(registry, context)
+
+        names = {tool.name for tool in registry.tools}
+        assert names == {"sakura_runtime_log_read", "sakura_runtime_log_analyze"}
+        assert all(tool.requires_confirmation for tool in registry.tools)
+        assert all(tool.risk == "medium" for tool in registry.tools)
+
+    def test_read_runtime_logs_filters_and_counts_malformed_lines(self) -> None:
+        root = _runtime_root("system_log_analyzer_read")
+        log_dir = root / "data" / "logs"
+        _write_runtime_log(
+            log_dir,
+            [
+                {"schema_version": 1, "timestamp": "2026-01-01T00:00:00+08:00", "category": "API", "message": "请求开始"},
+                {"schema_version": 1, "timestamp": "2026-01-01T00:00:01+08:00", "category": "TTS", "message": "服务探测成功"},
+                "not-json",
+                {
+                    "schema_version": 1,
+                    "timestamp": "2026-01-01T00:00:02+08:00",
+                    "category": "API",
+                    "message": "请求失败",
+                    "data": {"error": "timeout"},
+                },
+            ],
+        )
+
+        result = read_runtime_logs(
+            log_dir,
+            {"limit": 2, "category": "API", "contains": "失败", "include_data": True},
+        )
+
+        assert result["returned"] == 1
+        assert result["malformed_count"] == 1
+        assert result["records"][0]["message"] == "请求失败"
+        assert result["records"][0]["data"] == {"error": "timeout"}
+
+    def test_read_runtime_logs_reads_rotated_backups(self) -> None:
+        root = _runtime_root("system_log_analyzer_rotate")
+        log_dir = root / "data" / "logs"
+        _write_runtime_log(
+            log_dir,
+            [{"timestamp": "2026-01-01T00:00:00+08:00", "category": "Old", "message": "旧日志"}],
+            suffix=".1",
+        )
+
+        result = read_runtime_logs(log_dir, {"limit": 10})
+
+        assert result["returned"] == 1
+        assert result["records"][0]["category"] == "Old"
+
+    def test_analyze_runtime_logs_summarizes_issues(self) -> None:
+        root = _runtime_root("system_log_analyzer_analyze")
+        log_dir = root / "data" / "logs"
+        _write_runtime_log(
+            log_dir,
+            [
+                {"schema_version": 1, "timestamp": "2026-01-01T00:00:00+08:00", "category": "API", "message": "请求开始"},
+                {"schema_version": 1, "timestamp": "2026-01-01T00:00:01+08:00", "category": "TTS", "message": "服务超时"},
+                {"schema_version": 1, "timestamp": "2026-01-01T00:00:02+08:00", "category": "API", "message": "请求失败"},
+            ],
+        )
+
+        result = analyze_runtime_logs(log_dir, {"limit": 10})
+
+        assert result["analyzed"] == 3
+        assert result["categories"] == {"API": 2, "TTS": 1}
+        assert result["issue_count"] == 2
+        assert [item["message"] for item in result["recent_issues"]] == ["请求失败", "服务超时"]
+
+    def test_analyze_runtime_logs_handles_missing_log_dir(self) -> None:
+        root = _runtime_root("system_log_analyzer_missing")
+
+        result = analyze_runtime_logs(root / "data" / "logs", {"limit": 10})
+
+        assert result["analyzed"] == 0
+        assert result["matched"] == 0
+        assert result["malformed_count"] == 0
+        assert result["recent_issues"] == []
+
+
 class TestContributionTypes:
     """贡献点数据模型"""
 
@@ -438,3 +543,14 @@ class DemoPlugin(PluginBase):
 '''.strip(),
         encoding="utf-8",
     )
+
+
+def _write_runtime_log(log_dir: Path, entries: list[dict[str, object] | str], *, suffix: str = "") -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"sakura-runtime.log{suffix}"
+    lines = [
+        item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+        for item in entries
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
