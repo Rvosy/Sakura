@@ -10,6 +10,7 @@ __pycache__/
 .venv/
 venv/
 runtime/
+/tts/
 env/
 node_modules/
 characters/

@@ -31,6 +31,7 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tool_choice",
 }
 
+
 class ApiConfigError(RuntimeError):
     """API 配置缺失或格式错误。"""
 
@@ -69,10 +70,12 @@ class ChatCompletionTurn:
 class OpenAICompatibleClient:
     def __init__(self, settings: ApiSettings) -> None:
         self.settings = settings
+        self._unsupported_chat_params: set[str] = set()
 
     def update_settings(self, settings: ApiSettings) -> None:
         """运行时更新 API 配置，供设置界面保存后立即生效。"""
         self.settings = settings
+        self._unsupported_chat_params.clear()
 
     def test_connection(self) -> str:
         """发送一次最小聊天请求，验证 Base URL、API Key 和模型是否可用。"""
@@ -86,10 +89,10 @@ class OpenAICompatibleClient:
                     "content": "Reply with only OK.",
                 },
             ],
-            "temperature": 0,
             "max_tokens": 8,
+            "temperature": 0,
         }
-        data = self._post_chat_completions_with_response_format_fallback(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -157,7 +160,7 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_response_format_fallback(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -211,7 +214,7 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_response_format_fallback(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
 
         try:
             raw_message = data["choices"][0]["message"]
@@ -240,23 +243,36 @@ class OpenAICompatibleClient:
             message=normalized_message,
         )
 
-    def _post_chat_completions_with_response_format_fallback(
+    def _post_chat_completions_with_compatibility_fallbacks(
         self,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        try:
-            return self._post_chat_completions(payload)
-        except ApiRequestError as exc:
-            if "response_format" not in payload or not _is_response_format_unsupported_error(exc):
+        fallback_payload = dict(payload)
+        for param in self._unsupported_chat_params:
+            fallback_payload.pop(param, None)
+        while True:
+            try:
+                return self._post_chat_completions(fallback_payload)
+            except ApiRequestError as exc:
+                if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
+                    self._unsupported_chat_params.add("response_format")
+                    fallback_payload.pop("response_format", None)
+                    debug_log(
+                        "API",
+                        "结构化 response_format 不受支持，已回退普通请求",
+                        {"error": str(exc)},
+                    )
+                    continue
+                if "temperature" in fallback_payload and _is_temperature_unsupported_error(exc):
+                    self._unsupported_chat_params.add("temperature")
+                    fallback_payload.pop("temperature", None)
+                    debug_log(
+                        "API",
+                        "模型不支持自定义 temperature，已回退默认温度",
+                        {"error": str(exc)},
+                    )
+                    continue
                 raise
-            fallback_payload = dict(payload)
-            fallback_payload.pop("response_format", None)
-            debug_log(
-                "API",
-                "结构化 response_format 不受支持，已回退普通请求",
-                {"error": str(exc)},
-            )
-            return self._post_chat_completions(fallback_payload)
 
     def _ensure_chat_config(self, api_key_message: str) -> None:
         if not self.settings.api_key:
@@ -414,9 +430,10 @@ def _build_chat_completion_payload(
             },
             *messages,
         ],
-        "temperature": temperature,
     }
+    payload["temperature"] = temperature
     payload.update(_filter_supported_chat_params(chat_params or {}))
+    _ensure_json_keyword_for_json_object_response(payload)
     return payload
 
 
@@ -432,9 +449,58 @@ def _filter_supported_chat_params(params: dict[str, Any]) -> dict[str, Any]:
     return filtered
 
 
+def _ensure_json_keyword_for_json_object_response(payload: dict[str, Any]) -> None:
+    """json_object 模式下，部分兼容网关要求请求消息显式包含英文 json。"""
+    response_format = payload.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_object":
+        return
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or _messages_contain_json_keyword(messages):
+        return
+    system_message = messages[0] if messages else None
+    if not isinstance(system_message, dict) or system_message.get("role") != "system":
+        return
+    content = system_message.get("content")
+    if isinstance(content, str):
+        system_message["content"] = f"{content}\n\n请只输出 JSON（json）对象。"
+
+
+def _messages_contain_json_keyword(messages: list[Any]) -> bool:
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if _value_contains_json_keyword(message.get("content")):
+            return True
+    return False
+
+
+def _value_contains_json_keyword(value: Any) -> bool:
+    if isinstance(value, str):
+        return "json" in value.lower()
+    if isinstance(value, list):
+        return any(_value_contains_json_keyword(item) for item in value)
+    if isinstance(value, dict):
+        return any(_value_contains_json_keyword(item) for item in value.values())
+    return False
+
+
 def _is_response_format_unsupported_error(exc: ApiRequestError) -> bool:
     text = str(exc).lower()
     return "response_format" in text or "json_object" in text or "json schema" in text
+
+
+def _is_temperature_unsupported_error(exc: ApiRequestError) -> bool:
+    text = str(exc).lower()
+    if "temperature" not in text:
+        return False
+    markers = (
+        "unsupported",
+        "not support",
+        "does not support",
+        "only the default",
+        "default value",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _parse_native_tool_calls(raw_tool_calls: Any) -> list[NativeToolCall]:
