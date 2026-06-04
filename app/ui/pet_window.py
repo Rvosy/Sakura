@@ -18,11 +18,13 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
+    QColor,
     QCursor,
     QFont,
     QIcon,
     QKeyEvent,
     QMouseEvent,
+    QPainter,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -218,6 +220,7 @@ class PetWindow(QWidget):
         self.pending_screen_observation_event_reminder_id: str | None = None
         self.pending_visual_observation_jobs: list[VisualObservationJob] = []
         self.pending_event_visual_observation_jobs: list[VisualObservationJob] = []
+        self.hidden_to_tray = False
         self.screen_observation_followup_in_progress = False
         self.active_reminder_id: str | None = None
         self.active_reminder_text = ""
@@ -466,6 +469,8 @@ class PetWindow(QWidget):
         application = QApplication.instance()
         if application is not None:
             application.aboutToQuit.connect(self.close_external_tools)
+            if sys.platform == "darwin":
+                application.installEventFilter(self)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -473,7 +478,12 @@ class PetWindow(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
+        self._refresh_tray_menu()
         self._schedule_native_topmost_sync()
+
+    def hideEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().hideEvent(event)
+        self._refresh_tray_menu()
 
     def changeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().changeEvent(event)
@@ -484,6 +494,11 @@ class PetWindow(QWidget):
             self._schedule_native_topmost_sync()
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        application = QApplication.instance()
+        if application is not None and watched is application:
+            if event.type() == QEvent.Type.ApplicationActivate:
+                self._handle_application_activated()
+            return super().eventFilter(watched, event)
         if watched is self.input_edit:
             if event.type() == QEvent.Type.KeyPress:
                 self._log_input_key_event(event)
@@ -496,7 +511,13 @@ class PetWindow(QWidget):
                 self._clear_manual_screen_observation()
                 return True
             return super().eventFilter(watched, event)
-        if isinstance(event, QMouseEvent):
+        if watched in {
+            self.label,
+            self.portrait_transition_label,
+            self.bubble,
+            self.name_label,
+            self.speech_label,
+        } and isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
                 return self._handle_mouse_press(event)
             if event.type() == QEvent.Type.MouseMove:
@@ -724,8 +745,9 @@ class PetWindow(QWidget):
         self.input_bar.raise_()
 
     def _update_tray_icon_pixmap(self, pixmap: QPixmap) -> None:
+        _ = pixmap
         if hasattr(self, "tray_icon"):
-            self.tray_icon.setIcon(QIcon(pixmap) if not pixmap.isNull() else QIcon())
+            self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
     def _apply_fonts(self) -> None:
         text_font = _rounded_chinese_font(13, QFont.Weight.Bold)
@@ -779,8 +801,7 @@ class PetWindow(QWidget):
         self.input_backdrop.update()
 
     def _create_tray_icon(self) -> None:
-        pixmap = self.portrait_controller.pixmap
-        icon = QIcon(pixmap) if not pixmap.isNull() else QIcon()
+        icon = _build_status_tray_icon(self.theme_settings.primary_color)
         self.tray_icon = QSystemTrayIcon(icon, self)
         self.tray_icon.setToolTip(self.character_profile.display_name)
         self.tray_icon.setContextMenu(self._build_menu())
@@ -794,13 +815,22 @@ class PetWindow(QWidget):
             free_access_checked=self.free_access_enabled,
             always_on_top_checked=self.always_on_top_enabled,
             interactions_enabled=not getattr(self, "startup_initializing", False),
-            on_hide=self.hide,
+            window_visible=self.isVisible(),
+            on_hide=self._hide_to_tray,
+            on_show=self._show_from_tray,
             on_toggle_chinese_subtitles=self._toggle_chinese_subtitles,
             on_toggle_free_access=self._toggle_free_access,
             on_toggle_always_on_top=self._toggle_always_on_top,
             on_show_history=self.show_history,
             on_show_settings=self.show_settings,
         )
+
+    def _refresh_tray_menu(self) -> None:
+        if hasattr(self, "tray_icon"):
+            old_menu = self.tray_icon.contextMenu()
+            self.tray_icon.setContextMenu(self._build_menu())
+            if old_menu is not None:
+                old_menu.deleteLater()
 
     def _show_context_menu(self, position: QPoint) -> None:
         _ = position
@@ -2187,10 +2217,27 @@ class PetWindow(QWidget):
 
     def toggle_visible(self) -> None:
         if self.isVisible():
-            self.hide()
+            self._hide_to_tray()
         else:
-            self.show()
-            self.raise_()
+            self._show_from_tray()
+
+    @Slot()
+    def _hide_to_tray(self) -> None:
+        self.hidden_to_tray = True
+        self.hide()
+        self._refresh_tray_menu()
+
+    @Slot()
+    def _show_from_tray(self) -> None:
+        self.hidden_to_tray = False
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._refresh_tray_menu()
+
+    def _handle_application_activated(self) -> None:
+        if getattr(self, "hidden_to_tray", False):
+            QTimer.singleShot(0, self._show_from_tray)
 
     @Slot()
     def show_history(self) -> None:
@@ -2745,6 +2792,8 @@ class PetWindow(QWidget):
         self.setStyleSheet(pet_window_stylesheet(self.theme_settings))
         if self.history_window is not None:
             self.history_window.set_theme_settings(self.theme_settings)
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
     def _apply_character(self, profile: CharacterProfile) -> None:
         previous_character_id = self.character_profile.id
@@ -2755,10 +2804,10 @@ class PetWindow(QWidget):
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
         self.input_edit.setPlaceholderText(f"和{profile.display_name}说点什么...")
-        portrait_pixmap = self.portrait_controller.set_profile(profile)
+        self.portrait_controller.set_profile(profile)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setToolTip(profile.display_name)
-            self.tray_icon.setIcon(QIcon(portrait_pixmap) if not portrait_pixmap.isNull() else QIcon())
+            self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
         self.history_store = self._create_history_store(profile)
         self.visual_observation_store = self._create_visual_observation_store(profile)
@@ -3050,6 +3099,26 @@ def _configure_reply_history_button(button: QToolButton, *, text: str, tooltip: 
     button.setFixedSize(REPLY_HISTORY_BUTTON_SIZE, REPLY_HISTORY_BUTTON_SIZE)
     button.setToolTip(tooltip)
 
+
+def _build_status_tray_icon(color_text: str) -> QIcon:
+    color = QColor(color_text)
+    if not color.isValid():
+        color = QColor(DEFAULT_THEME_SETTINGS.primary_color)
+
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawEllipse(3, 3, 26, 26)
+    painter.setPen(QColor("#ffffff"))
+    painter.setFont(_rounded_chinese_font(18, QFont.Weight.ExtraBold))
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "S")
+    painter.end()
+
+    return QIcon(pixmap)
 
 
 def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:

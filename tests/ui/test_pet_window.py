@@ -68,11 +68,15 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     host.subtitle_language = SUBTITLE_LANGUAGE_ZH
     host.free_access_enabled = True
     host.always_on_top_enabled = False
+    host._hide_to_tray = lambda: None
+    host._show_from_tray = lambda: None
     host._toggle_chinese_subtitles = lambda _checked: None
     host._toggle_free_access = lambda _checked: None
     host._toggle_always_on_top = lambda _checked: None
     host.show_history = lambda: None
     host.show_settings = lambda: None
+    host.show()
+    app.processEvents()
 
     menu = PetWindow._build_menu(host)  # type: ignore[arg-type]
     actions = [action for action in menu.actions() if not action.isSeparator()]
@@ -91,6 +95,145 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     menu.deleteLater()
     host.deleteLater()
     app.processEvents()
+
+
+def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.pet_window import PetWindow, SUBTITLE_LANGUAGE_ZH
+
+    QApplication = qtwidgets.QApplication
+    QWidget = qtwidgets.QWidget
+    app = QApplication.instance() or QApplication([])
+    host = QWidget()
+    host.subtitle_language = SUBTITLE_LANGUAGE_ZH
+    host.free_access_enabled = True
+    host.always_on_top_enabled = False
+    host._hide_to_tray = lambda: None
+    host._show_from_tray = lambda: None
+    host._toggle_chinese_subtitles = lambda _checked: None
+    host._toggle_free_access = lambda _checked: None
+    host._toggle_always_on_top = lambda _checked: None
+    host.show_history = lambda: None
+    host.show_settings = lambda: None
+
+    menu = PetWindow._build_menu(host)  # type: ignore[arg-type]
+    actions = [action for action in menu.actions() if not action.isSeparator()]
+
+    assert actions[0].text() == "显示桌宠"
+
+    menu.deleteLater()
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_pet_window_status_tray_icon_is_not_empty() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.pet_window import _build_status_tray_icon
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+
+    icon = _build_status_tray_icon("#d55b91")
+
+    assert not icon.isNull()
+    app.processEvents()
+
+
+def test_pet_window_hide_and_show_to_tray_tracks_hidden_state() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _hide_to_tray = PetWindow._hide_to_tray
+        _show_from_tray = PetWindow._show_from_tray
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = False
+            self.events: list[str] = []
+
+        def hide(self) -> None:
+            self.events.append("hide")
+
+        def show(self) -> None:
+            self.events.append("show")
+
+        def raise_(self) -> None:
+            self.events.append("raise")
+
+        def activateWindow(self) -> None:
+            self.events.append("activate")
+
+        def _refresh_tray_menu(self) -> None:
+            self.events.append("refresh")
+
+    window = MinimalWindow()
+
+    window._hide_to_tray()
+    assert window.hidden_to_tray is True
+    assert window.events == ["hide", "refresh"]
+
+    window._show_from_tray()
+    assert window.hidden_to_tray is False
+    assert window.events == ["hide", "refresh", "show", "raise", "activate", "refresh"]
+
+
+def test_pet_window_application_activation_restores_when_hidden_to_tray(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: events.append(f"timer:{delay}") or callback(),
+    )
+
+    class MinimalWindow:
+        _handle_application_activated = PetWindow._handle_application_activated
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = True
+
+        def _show_from_tray(self) -> None:
+            self.hidden_to_tray = False
+            events.append("show")
+
+    window = MinimalWindow()
+
+    window._handle_application_activated()
+
+    assert window.hidden_to_tray is False
+    assert events == ["timer:0", "show"]
+
+
+def test_pet_window_application_activation_ignores_visible_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda _delay, _callback: events.append("timer"),
+    )
+
+    class MinimalWindow:
+        _handle_application_activated = PetWindow._handle_application_activated
+        hidden_to_tray = False
+
+        def _show_from_tray(self) -> None:
+            events.append("show")
+
+    MinimalWindow()._handle_application_activated()
+
+    assert events == []
 
 
 def test_pet_window_context_menu_opens_on_right_release_not_press() -> None:

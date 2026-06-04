@@ -13,20 +13,22 @@ def build_pet_tray_menu(
     free_access_checked: bool,
     always_on_top_checked: bool,
     on_hide: Callable[[], None],
+    on_show: Callable[[], None],
     on_toggle_chinese_subtitles: Callable[[bool], None],
     on_toggle_free_access: Callable[[bool], None],
     on_toggle_always_on_top: Callable[[bool], None],
     on_show_history: Callable[[], None],
     on_show_settings: Callable[[], None],
+    window_visible: bool = True,
     interactions_enabled: bool = True,
 ) -> QMenu:
     """构建桌宠托盘和右键菜单。"""
 
     menu = QMenu(parent)
 
-    hide_action = QAction("隐藏至托盘", parent)
-    hide_action.triggered.connect(on_hide)
-    menu.addAction(hide_action)
+    visibility_action = QAction("隐藏至托盘" if window_visible else "显示桌宠", parent)
+    visibility_action.triggered.connect(on_hide if window_visible else on_show)
+    menu.addAction(visibility_action)
 
     menu.addSeparator()
 
