@@ -378,6 +378,7 @@ def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypa
     provider._service_checked = False
     provider._server_process = None
     messages: list[str] = []
+    debug_messages: list[tuple[str, object]] = []
     elapsed = 0.0
 
     class FakeConnection:
@@ -406,10 +407,21 @@ def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypa
     monkeypatch.setattr("app.voice.tts.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
     monkeypatch.setattr("app.voice.tts.time.monotonic", lambda: elapsed)
     monkeypatch.setattr("app.voice.tts.time.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "app.voice.tts.debug_log",
+        lambda _category, message, data=None: debug_messages.append((message, data)),
+    )
 
     assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
     assert messages == []
     assert elapsed >= 31
+    log_messages = [message for message, _data in debug_messages]
+    assert "本地 GPT-SoVITS 服务尚未就绪，继续等待" in log_messages
+    assert "服务不可用" not in log_messages
+    assert any(
+        isinstance(data, dict) and data.get("purpose") == "startup_wait"
+        for _message, data in debug_messages
+    )
 
 
 def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]

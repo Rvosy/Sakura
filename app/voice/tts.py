@@ -702,7 +702,8 @@ class GPTSoVITSTTSProvider(QObject):
             return False
 
         timeout = min(self.settings.timeout_seconds, 3)
-        if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout):
+        probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             GPTSoVITSTTSProvider._adopt_existing_local_service(self, host, port)
             self._service_checked = True
             debug_log("TTS", "服务探测成功", {"api_url": self.settings.api_url})
@@ -726,7 +727,7 @@ class GPTSoVITSTTSProvider(QObject):
                     f"请查看启动日志：{log_path}"
                 )
                 return False
-            if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout):
+            if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait"):
                 self._service_checked = True
                 debug_log(
                     "TTS",
@@ -773,20 +774,31 @@ class GPTSoVITSTTSProvider(QObject):
             return
         self._adopt_existing_local_service(host, port)
 
-    def _probe_service_port(self, host: str, port: int, timeout: int) -> bool:
+    def _probe_service_port(self, host: str, port: int, timeout: int, *, purpose: str = "availability_check") -> bool:
+        service_name = _tts_service_display_name(self.settings.provider)
+        payload = {
+            "api_url": self.settings.api_url,
+            "host": host,
+            "port": port,
+            "purpose": purpose,
+        }
         try:
             debug_log(
                 "TTS",
-                "探测 GPT-SoVITS 端口",
-                {"api_url": self.settings.api_url, "host": host, "port": port},
+                f"探测 {service_name} 端口",
+                payload,
             )
             with socket.create_connection((host, port), timeout=timeout):
                 pass
         except TimeoutError:
-            debug_log("TTS", "服务探测超时", {"api_url": self.settings.api_url})
+            debug_log("TTS", _probe_failure_message(service_name, purpose, timeout=True), payload)
             return False
         except OSError as exc:
-            debug_log("TTS", "服务不可用", {"reason": str(exc), "api_url": self.settings.api_url})
+            debug_log(
+                "TTS",
+                _probe_failure_message(service_name, purpose, timeout=False),
+                {**payload, "reason": str(exc)},
+            )
             return False
         return True
 
@@ -1345,7 +1357,8 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             return False
 
         timeout = min(self.settings.timeout_seconds, 3)
-        if GenieTTSProvider._probe_service_port(self, host, port, timeout):
+        probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        if GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             if GenieTTSProvider._probe_genie_api(self, timeout):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
@@ -1367,7 +1380,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 {"old_api_url": old_api_url, "api_url": self.settings.api_url},
             )
             if (
-                GenieTTSProvider._probe_service_port(self, host, port, timeout)
+                GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose)
                 and GenieTTSProvider._probe_genie_api(self, timeout)
             ):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
@@ -1388,7 +1401,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 fail_callback(f"Genie TTS 本地服务进程已退出，退出码：{self._server_process.poll()}")
                 return False
             if (
-                GenieTTSProvider._probe_service_port(self, host, port, timeout)
+                GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait")
                 and GenieTTSProvider._probe_genie_api(self, timeout)
             ):
                 self._service_checked = True
@@ -1882,6 +1895,21 @@ def _can_bind_local_port(host: str, port: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _tts_service_display_name(provider: str) -> str:
+    normalized = _normalize_tts_provider(provider)
+    if normalized == TTS_PROVIDER_GENIE:
+        return "Genie TTS"
+    return "GPT-SoVITS"
+
+
+def _probe_failure_message(service_name: str, purpose: str, *, timeout: bool) -> str:
+    if purpose == "startup_wait":
+        return f"本地 {service_name} 服务尚未就绪，继续等待"
+    if purpose == "pre_start_check":
+        return f"{service_name} 服务当前未响应，准备尝试启动本地服务"
+    return "服务探测超时" if timeout else "服务不可用"
 
 
 def _local_tts_service_log_path(provider: str) -> Path:
