@@ -222,7 +222,7 @@ def test_tts_service_probe_does_not_start_process_when_port_is_ready(monkeypatch
 def test_genie_service_probe_adopts_existing_local_process_when_port_is_ready(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("genie_adopt") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(work_dir / "runtime" / "python.exe")
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
     provider._service_checked = False
@@ -290,8 +290,7 @@ def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch)
     work_dir = _runtime_root("gptsovits_start") / "gpt-sovits"
     (work_dir / "runtime").mkdir(parents=True)
     runtime_python = work_dir / "runtime" / "python.exe"
-    runtime_python.write_text("fake", encoding="utf-8")
-    runtime_python.chmod(0o755)
+    _write_fake_runtime_python(runtime_python)
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
     monkeypatch.chdir(work_dir.parent)
     provider = types.SimpleNamespace()
@@ -371,7 +370,7 @@ def test_gptsovits_start_command_uses_custom_python_and_tts_config() -> None:
 def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("gptsovits_slow_start") / "gpt-sovits"
     (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(work_dir / "runtime" / "python.exe")
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
     monkeypatch.chdir(work_dir.parent)
     provider = types.SimpleNamespace()
@@ -514,8 +513,7 @@ def test_genie_service_probe_starts_local_server_when_port_is_down(monkeypatch) 
     work_dir = _runtime_root("genie_start") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
     runtime_python = work_dir / "runtime" / "python.exe"
-    runtime_python.write_text("fake", encoding="utf-8")
-    runtime_python.chmod(0o755)
+    _write_fake_runtime_python(runtime_python)
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
     provider._service_checked = False
@@ -608,8 +606,7 @@ def test_genie_service_probe_moves_to_fallback_port_when_9880_is_gptsovits(monke
     work_dir = _runtime_root("genie_fallback_port") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
     runtime_python = work_dir / "runtime" / "python.exe"
-    runtime_python.write_text("fake", encoding="utf-8")
-    runtime_python.chmod(0o755)
+    _write_fake_runtime_python(runtime_python)
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9880/")
     provider._service_checked = False
@@ -1078,3 +1075,8 @@ def _runtime_root(name: str) -> Path:
     root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _write_fake_runtime_python(path: Path) -> None:
+    path.write_text("fake", encoding="utf-8")
+    path.chmod(0o755)

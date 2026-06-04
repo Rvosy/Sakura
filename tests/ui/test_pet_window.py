@@ -1032,6 +1032,11 @@ def _ui_runtime_root(name: str) -> Path:
     return root
 
 
+def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
 def test_settings_dialog_allows_import_without_existing_character_registry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -2236,7 +2241,7 @@ tts:
         / "python.exe"
     )
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     migrations = sakura_main._pending_startup_tts_migrations(root)
 
@@ -2265,7 +2270,7 @@ tts:
     )
     gpt_runtime = root / "tts" / "g50" / "runtime" / "python.exe"
     gpt_runtime.parent.mkdir(parents=True)
-    gpt_runtime.write_text("gpt", encoding="utf-8")
+    _write_fake_runtime_python(gpt_runtime, "gpt")
     genie_runtime = (
         root
         / "data"
@@ -2277,7 +2282,7 @@ tts:
         / "python.exe"
     )
     genie_runtime.parent.mkdir(parents=True)
-    genie_runtime.write_text("genie", encoding="utf-8")
+    _write_fake_runtime_python(genie_runtime, "genie")
 
     migrations = sakura_main._pending_startup_tts_migrations(root)
 

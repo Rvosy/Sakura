@@ -165,7 +165,7 @@ def test_tts_bundle_flattens_single_extracted_root() -> None:
     def fake_extract(_archive: Path, out_dir: Path) -> str | None:
         runtime_python = out_dir / "GPT-SoVITS" / "runtime" / "python.exe"
         runtime_python.parent.mkdir(parents=True)
-        runtime_python.write_text("fake", encoding="utf-8")
+        _write_fake_runtime_python(runtime_python)
         return None
 
     work_dir = download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=fake_extract)
@@ -193,7 +193,7 @@ def test_tts_bundle_cleans_legacy_archive_when_bundle_is_installed(monkeypatch: 
         / "python.exe"
     )
     runtime_python.parent.mkdir(parents=True, exist_ok=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     cleaned = cleanup_stale_download_archives(root)
 
@@ -231,17 +231,18 @@ def test_tts_bundle_default_provider_work_dir_uses_installed_root(monkeypatch: p
     )
     runtime_python = work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
 
 
-def test_tts_bundle_default_provider_prefers_short_installed_root() -> None:
+def test_tts_bundle_default_provider_prefers_short_installed_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
     root = _runtime_root("default_provider_short_work_dir")
     work_dir = root / "tts" / "g50"
     runtime_python = work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
 
@@ -259,7 +260,7 @@ def test_tts_bundle_detects_and_migrates_legacy_install() -> None:
     )
     runtime_python = legacy_work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     migrations = find_pending_bundle_migrations(root, "gpt-sovits")
 
@@ -289,7 +290,7 @@ def test_tts_bundle_migration_copies_with_progress(monkeypatch: pytest.MonkeyPat
     model_file = legacy_work_dir / "models" / "demo.bin"
     runtime_python.parent.mkdir(parents=True)
     model_file.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
     model_file.write_bytes(b"model")
     migration = find_pending_bundle_migrations(root, "gpt-sovits")[0]
     progress: list[tts_bundle.TTSBundleMigrationProgress] = []
@@ -315,12 +316,12 @@ def test_tts_bundle_migration_resumes_existing_staging_file(monkeypatch: pytest.
     voice_file = legacy_work_dir / "voices" / "demo.dat"
     runtime_python.parent.mkdir(parents=True)
     voice_file.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
     voice_file.write_text("voice", encoding="utf-8")
     migration = find_pending_bundle_migrations(root, "genie-tts")[0]
     staging_runtime = root / "tts" / ".migrating" / entry.key / "runtime" / "python.exe"
     staging_runtime.parent.mkdir(parents=True)
-    staging_runtime.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(staging_runtime)
     original_copy = tts_bundle._copy_file_resumable
     copied: list[str] = []
 
@@ -346,7 +347,7 @@ def test_tts_bundle_migration_cleans_empty_legacy_dirs_but_keeps_onnx() -> None:
     legacy_work_dir = root / "data" / "tts_bundles" / "installed" / entry.key / "Genie-TTS Server"
     runtime_python = legacy_work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
     downloads_dir = root / "data" / "tts_bundles" / "downloads"
     downloads_dir.mkdir(parents=True)
     onnx_file = root / "data" / "tts_bundles" / "onnx" / "sakura" / "model.onnx"
@@ -378,9 +379,9 @@ def test_tts_bundle_migration_skips_existing_short_dir() -> None:
         / "python.exe"
     )
     short_runtime.parent.mkdir(parents=True)
-    short_runtime.write_text("short", encoding="utf-8")
+    _write_fake_runtime_python(short_runtime, "short")
     legacy_runtime.parent.mkdir(parents=True)
-    legacy_runtime.write_text("legacy", encoding="utf-8")
+    _write_fake_runtime_python(legacy_runtime, "legacy")
 
     migrations = find_pending_bundle_migrations(root, "gpt-sovits")
 
@@ -405,7 +406,7 @@ def test_tts_bundle_migration_replaces_invalid_short_dir() -> None:
     )
     runtime_python = legacy_work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("legacy", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python, "legacy")
 
     migrations = find_pending_bundle_migrations(root, "gpt-sovits")
 
@@ -426,7 +427,7 @@ def test_tts_bundle_migration_failure_preserves_legacy_install(monkeypatch: pyte
     legacy_work_dir = root / "data" / "tts_bundles" / "installed" / entry.key / "Genie-TTS Server"
     runtime_python = legacy_work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
     migration = find_pending_bundle_migrations(root, "genie-tts")[0]
 
     def fail_copy(_source: Path, _target: Path) -> None:
@@ -457,7 +458,7 @@ def test_tts_bundle_normalizes_legacy_config_path_after_migration() -> None:
     short_work_dir = root / "tts" / "gpt"
     runtime_python = short_work_dir / "runtime" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_text("fake", encoding="utf-8")
+    _write_fake_runtime_python(runtime_python)
 
     assert normalize_bundle_work_dir(legacy_work_dir, root) == short_work_dir.resolve()
 
@@ -744,3 +745,8 @@ def _runtime_root(name: str) -> Path:
     root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
