@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QWheelEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -257,6 +257,13 @@ class CharacterArchiveExportWorker(QObject):
             self.succeeded.emit(str(self.output_path))
         finally:
             self.finished.emit()
+
+
+class NoWheelComboBox(QComboBox):
+    """忽略滚轮，避免滚动设置页时误切换选项。"""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        event.ignore()
 
 
 class SettingsDialog(QDialog):
@@ -617,7 +624,7 @@ class SettingsDialog(QDialog):
         self.tts_enabled_check = QCheckBox("启用 TTS 语音", tab)
         self.tts_enabled_check.setChecked(settings.enabled)
 
-        self.tts_provider_combo = QComboBox(tab)
+        self.tts_provider_combo = NoWheelComboBox(tab)
         self.tts_provider_combo.addItem("GPT-SoVITS 整合包（GPU）", TTS_PROVIDER_GPT_SOVITS)
         self.tts_provider_combo.addItem("Genie TTS 整合包（CPU）", TTS_PROVIDER_GENIE)
         self.tts_provider_combo.addItem("自定义 GPT-SoVITS（macOS/Linux）", TTS_PROVIDER_CUSTOM_GPT_SOVITS)

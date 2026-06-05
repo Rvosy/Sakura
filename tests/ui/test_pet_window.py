@@ -785,6 +785,37 @@ def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
     app.processEvents()
 
 
+def test_tts_provider_combo_ignores_mouse_wheel() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import NoWheelComboBox
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    combo = NoWheelComboBox()
+    combo.addItem("A")
+    combo.addItem("B")
+    combo.setCurrentIndex(0)
+
+    class WheelEventStub:
+        ignored = False
+
+        def ignore(self) -> None:
+            self.ignored = True
+
+    event = WheelEventStub()
+    combo.wheelEvent(event)  # type: ignore[arg-type]
+
+    assert event.ignored
+    assert combo.currentIndex() == 0
+
+    combo.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_adds_plugin_settings_panel() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
