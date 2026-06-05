@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sys
+import ctypes
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout
 
 from app.core.app_context import AppContext
@@ -33,6 +35,59 @@ from app.voice.tts_bundle import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def _configure_windows_high_dpi() -> None:
+    """在 QApplication 创建前配置 Windows 混合 DPI 行为。"""
+
+    if sys.platform != "win32":
+        return
+
+    awareness = _set_windows_process_dpi_awareness()
+    try:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
+    except Exception as exc:  # noqa: BLE001
+        debug_log("Startup", "配置 Qt HighDPI 舍入策略失败", {"error": str(exc)})
+    debug_log("Startup", "Windows HighDPI 配置完成", {"awareness": awareness})
+
+
+def _set_windows_process_dpi_awareness() -> str:
+    """优先启用 Per-Monitor V2，失败时降级到旧版 DPI 感知模式。"""
+
+    errors: list[str] = []
+    try:
+        set_context = ctypes.windll.user32.SetProcessDpiAwarenessContext
+        set_context.argtypes = [ctypes.c_void_p]
+        set_context.restype = ctypes.c_bool
+        if set_context(ctypes.c_void_p(-4)):
+            return "per_monitor_v2"
+        errors.append("SetProcessDpiAwarenessContext")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"SetProcessDpiAwarenessContext: {exc}")
+
+    try:
+        set_awareness = ctypes.windll.shcore.SetProcessDpiAwareness
+        set_awareness.argtypes = [ctypes.c_int]
+        set_awareness.restype = ctypes.c_long
+        if set_awareness(2) == 0:
+            return "per_monitor"
+        errors.append("SetProcessDpiAwareness")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"SetProcessDpiAwareness: {exc}")
+
+    try:
+        set_system_aware = ctypes.windll.user32.SetProcessDPIAware
+        set_system_aware.restype = ctypes.c_bool
+        if set_system_aware():
+            return "system"
+        errors.append("SetProcessDPIAware")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"SetProcessDPIAware: {exc}")
+
+    debug_log("Startup", "Windows DPI 感知配置未生效", {"errors": errors})
+    return "unchanged"
 
 
 class DeferredStartupWorker(QObject):
@@ -163,6 +218,7 @@ class TTSBundleMigrationDialog(QDialog):
 
 
 def main() -> int:
+    _configure_windows_high_dpi()
     app = QApplication(sys.argv)
     app.setApplicationName("Sakura Desktop Pet")
     app.setQuitOnLastWindowClosed(False)

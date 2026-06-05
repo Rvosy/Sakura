@@ -344,7 +344,7 @@ class PetWindow(QWidget):
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
         self.pending_history_clear_after_curation = False
-        self.drag_offset: QPoint | None = None
+        self.drag_anchor: QPoint | None = None
         self.portrait_scale_percent = self._load_portrait_scale_percent()
         (
             self.subtitle_typing_interval_ms,
@@ -638,6 +638,11 @@ class PetWindow(QWidget):
         }:
             self._schedule_native_topmost_sync()
 
+    def event(self, event) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.ScreenChangeInternal:
+            self._schedule_screen_change_relayout()
+        return super().event(event)
+
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         application = QApplication.instance()
         if application is not None and watched is application:
@@ -664,7 +669,7 @@ class PetWindow(QWidget):
             self.speech_label,
         } and isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
-                return self._handle_mouse_press(event)
+                return self._handle_mouse_press(event, watched)
             if event.type() == QEvent.Type.MouseMove:
                 return self._handle_mouse_move(event)
             if event.type() == QEvent.Type.MouseButtonRelease:
@@ -723,9 +728,9 @@ class PetWindow(QWidget):
     def close_plugins(self) -> None:
         self.plugin_manager.shutdown_all()
 
-    def _handle_mouse_press(self, event: QMouseEvent) -> bool:
+    def _handle_mouse_press(self, event: QMouseEvent, source_widget: QWidget | None = None) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.drag_anchor = self._drag_anchor_from_event(event, source_widget)
             event.accept()
             return True
         if event.button() == Qt.MouseButton.RightButton:
@@ -734,15 +739,15 @@ class PetWindow(QWidget):
         return False
 
     def _handle_mouse_move(self, event: QMouseEvent) -> bool:
-        if event.buttons() & Qt.MouseButton.LeftButton and self.drag_offset is not None:
-            self.move(event.globalPosition().toPoint() - self.drag_offset)
+        if event.buttons() & Qt.MouseButton.LeftButton and self.drag_anchor is not None:
+            self.move(event.globalPosition().toPoint() - self.drag_anchor)
             event.accept()
             return True
         return False
 
     def _handle_mouse_release(self, event: QMouseEvent) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_offset = None
+            self.drag_anchor = None
             event.accept()
             return True
         if event.button() == Qt.MouseButton.RightButton:
@@ -750,6 +755,28 @@ class PetWindow(QWidget):
             event.accept()
             return True
         return False
+
+    def _drag_anchor_from_event(
+        self,
+        event: QMouseEvent,
+        source_widget: QWidget | None = None,
+    ) -> QPoint:
+        position = event.position().toPoint()
+        if source_widget is None or source_widget is self:
+            return position
+
+        map_to = getattr(source_widget, "mapTo", None)
+        if callable(map_to):
+            return map_to(self, position)
+        return position
+
+    def _schedule_screen_change_relayout(self) -> None:
+        QTimer.singleShot(0, self._restore_geometry_after_screen_change)
+
+    def _restore_geometry_after_screen_change(self) -> None:
+        self.resize(*self.stage_size)
+        self._layout_stage()
+        self._schedule_native_topmost_sync()
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
         self.portrait_controller.apply_for_segment(segment)

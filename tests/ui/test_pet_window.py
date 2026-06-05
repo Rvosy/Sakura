@@ -367,6 +367,180 @@ def test_pet_window_context_menu_opens_on_right_release_not_press() -> None:
     assert window.context_menu_positions == [release_event.position().toPoint()]
 
 
+def test_pet_window_drag_uses_window_local_anchor_not_frame_geometry() -> None:
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    from app.ui.pet_window import PetWindow
+
+    class MouseEventStub:
+        def __init__(
+            self,
+            *,
+            position: tuple[int, int],
+            global_position: tuple[int, int],
+            button=None,  # type: ignore[no-untyped-def]
+            buttons=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.accepted = False
+            self._position = qtcore.QPointF(*position)
+            self._global_position = qtcore.QPointF(*global_position)
+            self._button = button or qtcore.Qt.MouseButton.LeftButton
+            self._buttons = buttons or qtcore.Qt.MouseButton.LeftButton
+
+        def button(self):  # type: ignore[no-untyped-def]
+            return self._button
+
+        def buttons(self):  # type: ignore[no-untyped-def]
+            return self._buttons
+
+        def position(self):  # type: ignore[no-untyped-def]
+            return self._position
+
+        def globalPosition(self):  # type: ignore[no-untyped-def]
+            return self._global_position
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    class MinimalWindow:
+        _handle_mouse_press = PetWindow._handle_mouse_press
+        _handle_mouse_move = PetWindow._handle_mouse_move
+        _handle_mouse_release = PetWindow._handle_mouse_release
+        _drag_anchor_from_event = PetWindow._drag_anchor_from_event
+
+        def __init__(self) -> None:
+            self.drag_anchor = None
+            self.move_positions: list[object] = []
+
+        def frameGeometry(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("拖拽不应依赖 frameGeometry")
+
+        def move(self, position) -> None:  # type: ignore[no-untyped-def]
+            self.move_positions.append(position)
+
+    window = MinimalWindow()
+    press_event = MouseEventStub(position=(40, 60), global_position=(240, 160))
+    move_event = MouseEventStub(position=(45, 65), global_position=(300, 220))
+    release_event = MouseEventStub(position=(45, 65), global_position=(300, 220))
+
+    assert window._handle_mouse_press(press_event) is True
+    assert window.drag_anchor == qtcore.QPoint(40, 60)
+    assert press_event.accepted
+
+    assert window._handle_mouse_move(move_event) is True
+    assert window.move_positions == [qtcore.QPoint(260, 160)]
+    assert move_event.accepted
+
+    assert window._handle_mouse_release(release_event) is True
+    assert window.drag_anchor is None
+    assert release_event.accepted
+
+
+def test_pet_window_drag_maps_child_widget_anchor_to_window_coordinates() -> None:
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    from app.ui.pet_window import PetWindow
+
+    class MouseEventStub:
+        accepted = False
+
+        def __init__(self, position: tuple[int, int], global_position: tuple[int, int]) -> None:
+            self._position = qtcore.QPointF(*position)
+            self._global_position = qtcore.QPointF(*global_position)
+
+        def button(self):  # type: ignore[no-untyped-def]
+            return qtcore.Qt.MouseButton.LeftButton
+
+        def buttons(self):  # type: ignore[no-untyped-def]
+            return qtcore.Qt.MouseButton.LeftButton
+
+        def position(self):  # type: ignore[no-untyped-def]
+            return self._position
+
+        def globalPosition(self):  # type: ignore[no-untyped-def]
+            return self._global_position
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    class ChildWidgetStub:
+        def mapTo(self, _window, position):  # type: ignore[no-untyped-def]
+            return position + qtcore.QPoint(100, 80)
+
+    class MinimalWindow:
+        _handle_mouse_press = PetWindow._handle_mouse_press
+        _handle_mouse_move = PetWindow._handle_mouse_move
+        _drag_anchor_from_event = PetWindow._drag_anchor_from_event
+
+        def __init__(self) -> None:
+            self.drag_anchor = None
+            self.move_positions: list[object] = []
+
+        def move(self, position) -> None:  # type: ignore[no-untyped-def]
+            self.move_positions.append(position)
+
+    window = MinimalWindow()
+    child = ChildWidgetStub()
+    press_event = MouseEventStub(position=(10, 15), global_position=(300, 200))
+    move_event = MouseEventStub(position=(15, 20), global_position=(350, 260))
+
+    assert window._handle_mouse_press(press_event, child) is True
+    assert window.drag_anchor == qtcore.QPoint(110, 95)
+
+    assert window._handle_mouse_move(move_event) is True
+    assert window.move_positions == [qtcore.QPoint(240, 165)]
+
+
+def test_pet_window_screen_change_restores_stage_geometry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtcore.QEvent.Type, "ScreenChangeInternal"):
+        pytest.skip("当前 Qt 版本不提供 ScreenChangeInternal。")
+    if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    QApplication = qtwidgets.QApplication
+    QWidget = qtwidgets.QWidget
+    app = QApplication.instance() or QApplication([])
+    scheduled_callbacks: list[tuple[int, object]] = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled_callbacks.append((delay, callback)),
+    )
+
+    class MinimalScreenChangeWindow(PetWindow):
+        def __init__(self) -> None:
+            QWidget.__init__(self)
+            self.stage_size = (321, 234)
+            self.layout_count = 0
+            self.topmost_sync_count = 0
+
+        def _layout_stage(self) -> None:
+            self.layout_count += 1
+
+        def _schedule_native_topmost_sync(self) -> None:
+            self.topmost_sync_count += 1
+
+    window = MinimalScreenChangeWindow()
+    window.resize(111, 222)
+    window.layout_count = 0
+
+    window.event(qtcore.QEvent(qtcore.QEvent.Type.ScreenChangeInternal))
+    assert len(scheduled_callbacks) == 1
+    assert scheduled_callbacks[0][0] == 0
+
+    scheduled_callbacks[0][1]()
+
+    assert window.size() == qtcore.QSize(321, 234)
+    assert window.layout_count >= 1
+    assert window.topmost_sync_count == 1
+
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_reply_history_controls_use_capsule_sizing() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
