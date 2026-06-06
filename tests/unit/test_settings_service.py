@@ -8,7 +8,7 @@ from app.agent.mcp.settings import MCPRuntimeSettings
 from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import AppSettingsService, DebugLogSettings
 from app.config.yaml_config import load_yaml_mapping
-from app.llm.api_client import ApiSettings
+from app.llm.api_client import ApiSettings, LLMGenerationProfile, LLMGenerationSettings
 from app.agent.proactive_care import ProactiveCareSettings
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
@@ -107,6 +107,96 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True
     assert system["proactive_care"]["check_interval_minutes"] == 5
+
+
+def test_settings_service_loads_generation_settings_for_current_model() -> None:
+    root = _runtime_root("yaml_api_generation")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+llm:
+  base_url: https://yaml.example/v1
+  api_key: yaml-key
+  model: yaml-model
+  generation_by_model:
+    - base_url: https://yaml.example/v1
+      model: yaml-model
+      settings:
+        temperature: 0.35
+        top_p: 0.9
+        max_tokens: 48
+    - base_url: https://yaml.example/v1
+      model: other-model
+      settings:
+        temperature: 1.2
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    settings = service.load_api_settings()
+
+    assert settings.generation == LLMGenerationSettings(
+        temperature=0.35,
+        top_p=0.9,
+        max_tokens=48,
+    )
+    assert settings.generation_profiles == (
+        LLMGenerationProfile(
+            base_url="https://yaml.example/v1",
+            model="yaml-model",
+            settings=LLMGenerationSettings(
+                temperature=0.35,
+                top_p=0.9,
+                max_tokens=48,
+            ),
+        ),
+        LLMGenerationProfile(
+            base_url="https://yaml.example/v1",
+            model="other-model",
+            settings=LLMGenerationSettings(temperature=1.2),
+        ),
+    )
+
+
+def test_settings_service_saves_and_removes_generation_profiles() -> None:
+    root = _runtime_root("yaml_api_generation_save")
+    service = AppSettingsService(root)
+
+    service.save_api_settings(
+        ApiSettings(
+            base_url="https://api.example/v1",
+            api_key="secret",
+            model="demo-model",
+            generation=LLMGenerationSettings(
+                temperature=0.4,
+                top_p=0.8,
+            ),
+        )
+    )
+
+    saved = load_yaml_mapping(service.api_config_path)
+    assert saved["llm"]["generation_by_model"] == [
+        {
+            "base_url": "https://api.example/v1",
+            "model": "demo-model",
+            "settings": {
+                "temperature": 0.4,
+                "top_p": 0.8,
+            },
+        }
+    ]
+
+    service.save_api_settings(
+        ApiSettings(
+            base_url="https://api.example/v1",
+            api_key="secret",
+            model="demo-model",
+        )
+    )
+
+    saved = load_yaml_mapping(service.api_config_path)
+    assert "generation_by_model" not in saved["llm"]
 
 
 def test_settings_service_loads_tts_work_dir_and_keeps_legacy_blank() -> None:

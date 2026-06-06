@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QCompleter,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QColorDialog,
     QFileDialog,
     QFormLayout,
@@ -53,8 +54,12 @@ from app.config.character_archive import (
 from app.config.settings_service import DebugLogSettings
 from app.llm.api_client import (
     ApiSettings,
+    LLMGenerationProfile,
+    LLMGenerationSettings,
     OpenAICompatibleClient,
     STRUCTURED_JSON_RESPONSE_FORMAT,
+    default_llm_generation_settings,
+    llm_generation_profile_key,
 )
 from app.llm.prompts.recipes import build_theme_color_system_prompt
 from app.plugins.discovery import PluginDiscovery, save_plugin_enabled_overrides
@@ -117,6 +122,7 @@ from sdk.types import SettingsPanelContribution, ToolsTabContribution
 
 MEMORY_READING_TEXT = "正在读取长期记忆..."
 MEMORY_DEPENDENCY_LOADING_TEXT = "长期记忆系统正在初始化，首次启动会从 HuggingFace 镜像下载本地嵌入模型，请稍等。"
+GENERATION_ADVANCED_TITLE = "高级选项（除非你知道你正在做什么，否则建议你不要更改下面的选项）"
 
 
 class ApiConnectionTestWorker(QObject):
@@ -370,6 +376,12 @@ class SettingsDialog(QDialog):
         self.base_dir = base_dir
         self.tts_settings = tts_settings
         self._initial_api_settings = api_settings
+        self._generation_settings_by_key = _generation_settings_by_key(api_settings)
+        self._active_generation_profile_key = llm_generation_profile_key(
+            api_settings.base_url,
+            api_settings.model,
+        )
+        self._syncing_generation_controls = False
         self._initial_tts_settings = tts_settings
         self._initial_character_id = current_character.id if current_character is not None else None
         self.theme_settings = _theme_settings_for_character(
@@ -737,6 +749,21 @@ class SettingsDialog(QDialog):
         api_actions_layout.addWidget(self.api_model_probe_button)
         api_actions_layout.addWidget(self.api_test_button)
 
+        initial_generation_settings = self._generation_settings_by_key.get(
+            self._active_generation_profile_key,
+            settings.generation,
+        )
+        self.generation_settings_group = self._build_generation_settings_group(
+            tab,
+            initial_generation_settings,
+        )
+        self.model_edit.currentTextChanged.connect(
+            lambda _text: self._handle_generation_profile_key_changed(load_default_for_new=True)
+        )
+        self.base_url_edit.textChanged.connect(
+            lambda _text: self._handle_generation_profile_key_changed(load_default_for_new=False)
+        )
+
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
@@ -745,8 +772,102 @@ class SettingsDialog(QDialog):
         form_layout.addRow("模型", self.model_edit)
         form_layout.addRow("超时", self.api_timeout_spin)
         form_layout.addRow("", api_actions)
+        form_layout.addRow("", self.generation_settings_group)
         tab.setLayout(form_layout)
         return tab
+
+    def _build_generation_settings_group(
+        self,
+        parent: QWidget,
+        settings: LLMGenerationSettings,
+    ) -> QGroupBox:
+        group = QGroupBox(GENERATION_ADVANCED_TITLE, parent)
+
+        self.generation_temperature_spin = QDoubleSpinBox(group)
+        self.generation_temperature_spin.setRange(0.0, 2.0)
+        self.generation_temperature_spin.setDecimals(2)
+        self.generation_temperature_spin.setSingleStep(0.1)
+
+        (
+            self.generation_top_p_enabled_check,
+            self.generation_top_p_spin,
+            top_p_control,
+        ) = self._build_optional_double_control(group, minimum=0.0, maximum=1.0, single_step=0.05)
+        (
+            self.generation_presence_penalty_enabled_check,
+            self.generation_presence_penalty_spin,
+            presence_penalty_control,
+        ) = self._build_optional_double_control(group, minimum=-2.0, maximum=2.0, single_step=0.1)
+        (
+            self.generation_frequency_penalty_enabled_check,
+            self.generation_frequency_penalty_spin,
+            frequency_penalty_control,
+        ) = self._build_optional_double_control(group, minimum=-2.0, maximum=2.0, single_step=0.1)
+        (
+            self.generation_max_tokens_enabled_check,
+            self.generation_max_tokens_spin,
+            max_tokens_control,
+        ) = self._build_optional_int_control(group)
+        (
+            self.generation_max_completion_tokens_enabled_check,
+            self.generation_max_completion_tokens_spin,
+            max_completion_tokens_control,
+        ) = self._build_optional_int_control(group)
+
+        self.generation_reset_button = QPushButton("恢复当前模型默认值", group)
+        self.generation_reset_button.clicked.connect(self._reset_generation_settings)
+
+        layout = QFormLayout(group)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(10)
+        layout.addRow("Temperature", self.generation_temperature_spin)
+        layout.addRow("Top P", top_p_control)
+        layout.addRow("最大输出 Token", max_tokens_control)
+        layout.addRow("最大完成 Token", max_completion_tokens_control)
+        layout.addRow("Presence Penalty", presence_penalty_control)
+        layout.addRow("Frequency Penalty", frequency_penalty_control)
+        layout.addRow("", self.generation_reset_button)
+
+        self._set_generation_controls(settings)
+        return group
+
+    def _build_optional_double_control(
+        self,
+        parent: QWidget,
+        *,
+        minimum: float,
+        maximum: float,
+        single_step: float,
+    ) -> tuple[QCheckBox, QDoubleSpinBox, QWidget]:
+        enabled_check = QCheckBox("启用", parent)
+        spin = QDoubleSpinBox(parent)
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(2)
+        spin.setSingleStep(single_step)
+        enabled_check.toggled.connect(spin.setEnabled)
+
+        container = QWidget(parent)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(enabled_check)
+        layout.addWidget(spin, 1)
+        return enabled_check, spin, container
+
+    def _build_optional_int_control(self, parent: QWidget) -> tuple[QCheckBox, QSpinBox, QWidget]:
+        enabled_check = QCheckBox("启用", parent)
+        spin = QSpinBox(parent)
+        spin.setRange(1, 200000)
+        spin.setSingleStep(128)
+        enabled_check.toggled.connect(spin.setEnabled)
+
+        container = QWidget(parent)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(enabled_check)
+        layout.addWidget(spin, 1)
+        return enabled_check, spin, container
 
     def _build_tts_tab(self, settings: GPTSoVITSTTSSettings) -> QWidget:
         tab = QWidget(self)
@@ -1779,6 +1900,151 @@ class SettingsDialog(QDialog):
         self._apply_theme_stylesheet(theme)
         self._sync_theme_ai_controls()
 
+    def _current_generation_profile_key(self) -> str:
+        return llm_generation_profile_key(
+            self.base_url_edit.text(),
+            self.model_edit.text(),
+        )
+
+    def _store_current_generation_controls(self) -> None:
+        if self._syncing_generation_controls:
+            return
+        key = self._active_generation_profile_key
+        base_url, model = _generation_profile_key_parts(key)
+        if not base_url or not model:
+            return
+        settings = self._selected_generation_settings()
+        if settings == default_llm_generation_settings():
+            self._generation_settings_by_key.pop(key, None)
+        else:
+            self._generation_settings_by_key[key] = settings
+
+    def _handle_generation_profile_key_changed(self, *, load_default_for_new: bool) -> None:
+        if self._syncing_generation_controls:
+            return
+        next_key = self._current_generation_profile_key()
+        if next_key == self._active_generation_profile_key:
+            return
+
+        self._store_current_generation_controls()
+        self._active_generation_profile_key = next_key
+        saved_settings = self._generation_settings_by_key.get(next_key)
+        if saved_settings is not None:
+            self._set_generation_controls(saved_settings)
+        elif load_default_for_new:
+            self._set_generation_controls(default_llm_generation_settings())
+
+    def _selected_generation_settings(self) -> LLMGenerationSettings:
+        return LLMGenerationSettings(
+            temperature=self.generation_temperature_spin.value(),
+            top_p=(
+                self.generation_top_p_spin.value()
+                if self.generation_top_p_enabled_check.isChecked()
+                else None
+            ),
+            max_tokens=(
+                self.generation_max_tokens_spin.value()
+                if self.generation_max_tokens_enabled_check.isChecked()
+                else None
+            ),
+            max_completion_tokens=(
+                self.generation_max_completion_tokens_spin.value()
+                if self.generation_max_completion_tokens_enabled_check.isChecked()
+                else None
+            ),
+            presence_penalty=(
+                self.generation_presence_penalty_spin.value()
+                if self.generation_presence_penalty_enabled_check.isChecked()
+                else None
+            ),
+            frequency_penalty=(
+                self.generation_frequency_penalty_spin.value()
+                if self.generation_frequency_penalty_enabled_check.isChecked()
+                else None
+            ),
+        ).normalized()
+
+    def _set_generation_controls(self, settings: LLMGenerationSettings) -> None:
+        generation_settings = settings.normalized()
+        self._syncing_generation_controls = True
+        try:
+            self.generation_temperature_spin.setValue(generation_settings.temperature)
+            self._set_optional_double_generation_control(
+                self.generation_top_p_enabled_check,
+                self.generation_top_p_spin,
+                generation_settings.top_p,
+                1.0,
+            )
+            self._set_optional_int_generation_control(
+                self.generation_max_tokens_enabled_check,
+                self.generation_max_tokens_spin,
+                generation_settings.max_tokens,
+                1024,
+            )
+            self._set_optional_int_generation_control(
+                self.generation_max_completion_tokens_enabled_check,
+                self.generation_max_completion_tokens_spin,
+                generation_settings.max_completion_tokens,
+                1024,
+            )
+            self._set_optional_double_generation_control(
+                self.generation_presence_penalty_enabled_check,
+                self.generation_presence_penalty_spin,
+                generation_settings.presence_penalty,
+                0.0,
+            )
+            self._set_optional_double_generation_control(
+                self.generation_frequency_penalty_enabled_check,
+                self.generation_frequency_penalty_spin,
+                generation_settings.frequency_penalty,
+                0.0,
+            )
+        finally:
+            self._syncing_generation_controls = False
+
+    def _generation_profiles_for_api_settings(
+        self,
+        base_url: str,
+        model: str,
+        generation_settings: LLMGenerationSettings,
+    ) -> tuple[LLMGenerationProfile, ...]:
+        by_key = dict(self._generation_settings_by_key)
+        current_key = llm_generation_profile_key(base_url, model)
+        if generation_settings == default_llm_generation_settings():
+            by_key.pop(current_key, None)
+        else:
+            by_key[current_key] = generation_settings
+        return _generation_profiles_from_keyed_settings(by_key)
+
+    @Slot()
+    def _reset_generation_settings(self) -> None:
+        self._set_generation_controls(default_llm_generation_settings())
+        self._generation_settings_by_key.pop(self._active_generation_profile_key, None)
+
+    @staticmethod
+    def _set_optional_double_generation_control(
+        enabled_check: QCheckBox,
+        spin: QDoubleSpinBox,
+        value: float | None,
+        default_value: float,
+    ) -> None:
+        enabled = value is not None
+        enabled_check.setChecked(enabled)
+        spin.setEnabled(enabled)
+        spin.setValue(value if value is not None else default_value)
+
+    @staticmethod
+    def _set_optional_int_generation_control(
+        enabled_check: QCheckBox,
+        spin: QSpinBox,
+        value: int | None,
+        default_value: int,
+    ) -> None:
+        enabled = value is not None
+        enabled_check.setChecked(enabled)
+        spin.setEnabled(enabled)
+        spin.setValue(value if value is not None else default_value)
+
     @Slot()
     def _reset_theme_colors(self) -> None:
         profile = self._selected_character_profile()
@@ -1914,7 +2180,7 @@ class SettingsDialog(QDialog):
         self._complete_accept(accept_values)
 
     def _should_test_api_on_accept(self, api_settings: ApiSettings) -> bool:
-        return api_settings != self._initial_api_settings
+        return _api_connection_settings_changed(self._initial_api_settings, api_settings)
 
     def _should_test_tts_on_accept(
         self,
@@ -2185,6 +2451,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "探测失败", "模型列表为空，请检查服务是否暴露 /models 接口。")
             return
         self.model_edit.set_model_names(model_names)
+        self._handle_generation_profile_key_changed(load_default_for_new=True)
         QMessageBox.information(self, "探测成功", f"已发现 {len(model_names)} 个模型。")
 
     @Slot(str)
@@ -2569,11 +2836,19 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "配置无效", "模型不能为空。")
             return None
 
+        self._store_current_generation_controls()
+        generation = self._selected_generation_settings()
         return ApiSettings(
             base_url=base_url,
             api_key=api_key,
             model=model,
             timeout_seconds=self.api_timeout_spin.value(),
+            generation=generation,
+            generation_profiles=self._generation_profiles_for_api_settings(
+                base_url,
+                model,
+                generation,
+            ),
         )
 
     def _validated_api_model_probe_settings(self) -> ApiSettings | None:
@@ -2719,6 +2994,62 @@ class SettingsDialog(QDialog):
         self._sync_character_archive_controls()
         self._sync_theme_ai_controls()
         self._sync_voice_import_controls()
+
+
+def _api_connection_settings_changed(old: ApiSettings, new: ApiSettings) -> bool:
+    return (
+        old.base_url.strip().rstrip("/") != new.base_url.strip().rstrip("/")
+        or old.api_key != new.api_key
+        or old.model.strip() != new.model.strip()
+        or old.timeout_seconds != new.timeout_seconds
+    )
+
+
+def _generation_settings_by_key(api_settings: ApiSettings) -> dict[str, LLMGenerationSettings]:
+    by_key: dict[str, LLMGenerationSettings] = {}
+    default_settings = default_llm_generation_settings()
+    for profile in api_settings.generation_profiles:
+        normalized = profile.normalized()
+        if not normalized.base_url or not normalized.model:
+            continue
+        if normalized.settings == default_settings:
+            continue
+        by_key[llm_generation_profile_key(normalized.base_url, normalized.model)] = normalized.settings
+
+    current_generation = api_settings.generation.normalized()
+    current_key = llm_generation_profile_key(api_settings.base_url, api_settings.model)
+    if current_generation != default_settings:
+        by_key[current_key] = current_generation
+    return by_key
+
+
+def _generation_profiles_from_keyed_settings(
+    settings_by_key: dict[str, LLMGenerationSettings],
+) -> tuple[LLMGenerationProfile, ...]:
+    profiles: list[LLMGenerationProfile] = []
+    default_settings = default_llm_generation_settings()
+    for key in sorted(settings_by_key):
+        base_url, model = _generation_profile_key_parts(key)
+        if not base_url or not model:
+            continue
+        settings = settings_by_key[key].normalized()
+        if settings == default_settings:
+            continue
+        profiles.append(
+            LLMGenerationProfile(
+                base_url=base_url,
+                model=model,
+                settings=settings,
+            )
+        )
+    return tuple(profiles)
+
+
+def _generation_profile_key_parts(key: str) -> tuple[str, str]:
+    base_url, separator, model = key.partition("::")
+    if not separator:
+        return "", ""
+    return base_url.strip().rstrip("/"), model.strip()
 
 
 def _is_http_url(url: str) -> bool:

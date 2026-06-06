@@ -7,7 +7,13 @@ from typing import Any
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.llm.api_client import ApiSettings
+from app.llm.api_client import (
+    ApiSettings,
+    LLMGenerationProfile,
+    LLMGenerationSettings,
+    default_llm_generation_settings,
+    llm_generation_profile_key,
+)
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
 from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -64,25 +70,44 @@ class AppSettingsService:
 
     def load_api_settings(self) -> ApiSettings:
         data = self._api_section("llm")
+        base_url = str(data.get("base_url", "https://api.openai.com/v1")).strip().rstrip("/")
+        model = str(data.get("model", "gpt-4.1-mini")).strip()
+        generation_profiles = _generation_profiles_from_config(data.get("generation_by_model"))
         timeout_seconds = _int_value(
             data.get("timeout_seconds"),
             60,
         )
         return ApiSettings(
-            base_url=str(data.get("base_url", "https://api.openai.com/v1")).strip().rstrip("/"),
+            base_url=base_url,
             api_key=str(data.get("api_key", "")).strip(),
-            model=str(data.get("model", "gpt-4.1-mini")).strip(),
+            model=model,
             timeout_seconds=timeout_seconds,
+            generation=_generation_for_model(base_url, model, generation_profiles),
+            generation_profiles=generation_profiles,
         )
 
     def save_api_settings(self, settings: ApiSettings) -> None:
         data = load_yaml_mapping(self.api_config_path)
-        data["llm"] = {
+        llm_data = _mapping(data.get("llm"))
+        profiles = _upsert_generation_profile(
+            settings.generation_profiles,
+            LLMGenerationProfile(
+                base_url=settings.base_url,
+                model=settings.model,
+                settings=settings.generation,
+            ),
+        )
+        llm_data.update({
             "base_url": settings.base_url.strip().rstrip("/"),
             "api_key": settings.api_key.strip(),
             "model": settings.model.strip(),
             "timeout_seconds": int(settings.timeout_seconds),
-        }
+        })
+        if profiles:
+            llm_data["generation_by_model"] = _generation_profiles_to_config(profiles)
+        else:
+            llm_data.pop("generation_by_model", None)
+        data["llm"] = llm_data
         save_yaml_mapping(self.api_config_path, data)
 
     def load_tts_settings(
@@ -354,6 +379,137 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _generation_profiles_from_config(value: Any) -> tuple[LLMGenerationProfile, ...]:
+    profiles: list[LLMGenerationProfile] = []
+    if isinstance(value, list):
+        for item in value:
+            data = _mapping(item)
+            base_url = str(data.get("base_url", "")).strip().rstrip("/")
+            model = str(data.get("model", "")).strip()
+            if not base_url or not model:
+                continue
+            profiles.append(
+                LLMGenerationProfile(
+                    base_url=base_url,
+                    model=model,
+                    settings=_generation_settings_from_mapping(data.get("settings")),
+                ).normalized()
+            )
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            base_url, separator, model = str(key).partition("::")
+            if not separator:
+                continue
+            base_url = base_url.strip().rstrip("/")
+            model = model.strip()
+            if not base_url or not model:
+                continue
+            profiles.append(
+                LLMGenerationProfile(
+                    base_url=base_url,
+                    model=model,
+                    settings=_generation_settings_from_mapping(item),
+                ).normalized()
+            )
+    return tuple(_deduplicate_generation_profiles(profiles))
+
+
+def _generation_profiles_to_config(profiles: tuple[LLMGenerationProfile, ...]) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for profile in profiles:
+        normalized = profile.normalized()
+        if _is_default_generation_settings(normalized.settings):
+            continue
+        items.append(
+            {
+                "base_url": normalized.base_url,
+                "model": normalized.model,
+                "settings": _generation_settings_to_mapping(normalized.settings),
+            }
+        )
+    return items
+
+
+def _generation_for_model(
+    base_url: str,
+    model: str,
+    profiles: tuple[LLMGenerationProfile, ...],
+) -> LLMGenerationSettings:
+    key = llm_generation_profile_key(base_url, model)
+    for profile in profiles:
+        if llm_generation_profile_key(profile.base_url, profile.model) == key:
+            return profile.settings.normalized()
+    return default_llm_generation_settings()
+
+
+def _upsert_generation_profile(
+    profiles: tuple[LLMGenerationProfile, ...],
+    current_profile: LLMGenerationProfile,
+) -> tuple[LLMGenerationProfile, ...]:
+    normalized_current = current_profile.normalized()
+    current_key = llm_generation_profile_key(
+        normalized_current.base_url,
+        normalized_current.model,
+    )
+    kept = [
+        profile.normalized()
+        for profile in profiles
+        if llm_generation_profile_key(profile.base_url, profile.model) != current_key
+    ]
+    if (
+        normalized_current.base_url
+        and normalized_current.model
+        and not _is_default_generation_settings(normalized_current.settings)
+    ):
+        kept.append(normalized_current)
+    return tuple(_deduplicate_generation_profiles(kept))
+
+
+def _deduplicate_generation_profiles(
+    profiles: list[LLMGenerationProfile],
+) -> list[LLMGenerationProfile]:
+    by_key: dict[str, LLMGenerationProfile] = {}
+    for profile in profiles:
+        key = llm_generation_profile_key(profile.base_url, profile.model)
+        by_key[key] = profile
+    return list(by_key.values())
+
+
+def _generation_settings_from_mapping(value: Any) -> LLMGenerationSettings:
+    data = _mapping(value)
+    return LLMGenerationSettings(
+        temperature=_float_value(
+            data.get("temperature"),
+            default_llm_generation_settings().temperature,
+        ),
+        top_p=_optional_float_value(data.get("top_p")),
+        max_tokens=_optional_int_value(data.get("max_tokens")),
+        max_completion_tokens=_optional_int_value(data.get("max_completion_tokens")),
+        presence_penalty=_optional_float_value(data.get("presence_penalty")),
+        frequency_penalty=_optional_float_value(data.get("frequency_penalty")),
+    ).normalized()
+
+
+def _generation_settings_to_mapping(settings: LLMGenerationSettings) -> dict[str, object]:
+    normalized = settings.normalized()
+    data: dict[str, object] = {"temperature": normalized.temperature}
+    if normalized.top_p is not None:
+        data["top_p"] = normalized.top_p
+    if normalized.max_tokens is not None:
+        data["max_tokens"] = normalized.max_tokens
+    if normalized.max_completion_tokens is not None:
+        data["max_completion_tokens"] = normalized.max_completion_tokens
+    if normalized.presence_penalty is not None:
+        data["presence_penalty"] = normalized.presence_penalty
+    if normalized.frequency_penalty is not None:
+        data["frequency_penalty"] = normalized.frequency_penalty
+    return data
+
+
+def _is_default_generation_settings(settings: LLMGenerationSettings) -> bool:
+    return settings.normalized() == default_llm_generation_settings()
+
+
 def _optional_path(value: Any, base_dir: Path) -> Path | None:
     if value is None:
         return None
@@ -380,6 +536,32 @@ def _int_value(value: Any, default: int) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _optional_int_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_float_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _bool_value(value: Any, default: bool) -> bool:

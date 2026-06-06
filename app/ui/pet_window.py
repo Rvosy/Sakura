@@ -69,6 +69,7 @@ from app.config.character_loader import (
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
+from app.llm.api_client import ApiSettings
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
@@ -2660,6 +2661,10 @@ class PetWindow(QWidget):
             return
 
         api_changed = dialog.result_api_settings != self.api_client.settings
+        api_connection_changed = _api_connection_settings_changed(
+            self.api_client.settings,
+            dialog.result_api_settings,
+        )
         theme_write_mode = getattr(dialog, "result_theme_write_mode", "unchanged")
         should_write_character_theme = _should_write_character_theme(theme_write_mode, selected_profile)
         try:
@@ -2700,6 +2705,7 @@ class PetWindow(QWidget):
 
         if api_changed:
             self.api_client.update_settings(dialog.result_api_settings)
+        if api_connection_changed:
             self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
         self._apply_portrait_scale_percent(dialog.result_portrait_scale_percent)
         self._apply_subtitle_display_speed(
@@ -2733,7 +2739,7 @@ class PetWindow(QWidget):
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
-        if api_changed:
+        if api_connection_changed:
             message += "\n\n长期记忆系统正在后台刷新 API 配置。"
         if mcp_restart_required:
             message += "\n\nWindows MCP 开关需要重启 Sakura 后才会生效。"
@@ -3447,6 +3453,15 @@ def _build_status_tray_icon(color_text: str) -> QIcon:
 
 def _should_write_character_theme(theme_write_mode: object, profile: CharacterProfile) -> bool:
     return theme_write_mode in {"manual", "ai"}
+
+
+def _api_connection_settings_changed(old: ApiSettings, new: ApiSettings) -> bool:
+    return (
+        old.base_url.strip().rstrip("/") != new.base_url.strip().rstrip("/")
+        or old.api_key != new.api_key
+        or old.model.strip() != new.model.strip()
+        or old.timeout_seconds != new.timeout_seconds
+    )
 
 
 def _theme_settings_for_character(

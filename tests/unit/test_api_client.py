@@ -6,6 +6,7 @@ from app.llm.api_client import (
     ApiConfigError,
     ApiRequestError,
     ApiSettings,
+    LLMGenerationSettings,
     OpenAICompatibleClient,
     _build_segmented_reply_instruction,
     _build_chat_completion_payload,
@@ -100,6 +101,59 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
     assert "unsupported_internal_flag" not in captured
 
 
+def test_complete_raw_uses_configured_generation_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+            generation=LLMGenerationSettings(
+                temperature=0.35,
+                top_p=0.9,
+                max_tokens=48,
+                presence_penalty=0.2,
+            ),
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    assert client.complete_raw("system", [{"role": "user", "content": "hello"}]) == "OK"
+
+    assert captured["temperature"] == 0.35
+    assert captured["top_p"] == 0.9
+    assert captured["max_tokens"] == 48
+    assert captured["presence_penalty"] == 0.2
+    assert "frequency_penalty" not in captured
+
+
+def test_complete_raw_explicit_temperature_overrides_generation_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+            generation=LLMGenerationSettings(temperature=0.35),
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    client.complete_raw("system", [{"role": "user", "content": "hello"}], temperature=0.1)
+
+    assert captured["temperature"] == 0.1
+
+
 def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[dict[str, Any]] = []
     client = OpenAICompatibleClient(
@@ -126,6 +180,32 @@ def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypa
 
     assert "temperature" in calls[0]
     assert "temperature" not in calls[1]
+
+
+def test_complete_raw_retries_without_unsupported_generation_param(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, Any]] = []
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="compatible-model",
+            generation=LLMGenerationSettings(top_p=0.7),
+        )
+    )
+
+    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if "top_p" in payload:
+            raise ApiRequestError("top_p is unsupported by this model")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    assert client.complete_raw("system", [{"role": "user", "content": "hello"}]) == "OK"
+
+    assert "top_p" in calls[0]
+    assert "top_p" not in calls[1]
+    assert calls[1]["temperature"] == 0.8
 
 
 def test_complete_raw_remembers_temperature_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]

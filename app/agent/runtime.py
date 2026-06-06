@@ -249,7 +249,6 @@ class AgentRuntime:
                     working_messages,
                     tools=tool_defs,
                     tool_choice="auto",
-                    temperature=0.8,
                     structured_response=True,
                 )
             except ApiRequestError as exc:

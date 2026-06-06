@@ -6,7 +6,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.llm.chat_reply import ChatReply, parse_chat_reply
@@ -18,6 +18,7 @@ MAX_API_RETRY_ATTEMPTS = 3
 API_RETRY_DELAY_SECONDS = 0.8
 STRUCTURED_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 ChatMessage = dict[str, Any]
+DEFAULT_LLM_TEMPERATURE = 0.8
 SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "temperature",
     "top_p",
@@ -30,6 +31,14 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tools",
     "tool_choice",
 }
+USER_CONFIGURABLE_CHAT_COMPLETION_PARAMS = (
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "max_completion_tokens",
+    "presence_penalty",
+    "frequency_penalty",
+)
 
 
 class ApiConfigError(RuntimeError):
@@ -41,11 +50,74 @@ class ApiRequestError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class LLMGenerationSettings:
+    """用户可配置的 Chat Completions 生成参数。"""
+
+    temperature: float = DEFAULT_LLM_TEMPERATURE
+    top_p: float | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+
+    def normalized(self) -> "LLMGenerationSettings":
+        return LLMGenerationSettings(
+            temperature=_clamp_float(self.temperature, 0.0, 2.0, DEFAULT_LLM_TEMPERATURE),
+            top_p=_optional_clamp_float(self.top_p, 0.0, 1.0),
+            max_tokens=_optional_positive_int(self.max_tokens),
+            max_completion_tokens=_optional_positive_int(self.max_completion_tokens),
+            presence_penalty=_optional_clamp_float(self.presence_penalty, -2.0, 2.0),
+            frequency_penalty=_optional_clamp_float(self.frequency_penalty, -2.0, 2.0),
+        )
+
+    def to_chat_params(self) -> dict[str, Any]:
+        settings = self.normalized()
+        params: dict[str, Any] = {"temperature": settings.temperature}
+        if settings.top_p is not None:
+            params["top_p"] = settings.top_p
+        if settings.max_tokens is not None:
+            params["max_tokens"] = settings.max_tokens
+        if settings.max_completion_tokens is not None:
+            params["max_completion_tokens"] = settings.max_completion_tokens
+        if settings.presence_penalty is not None:
+            params["presence_penalty"] = settings.presence_penalty
+        if settings.frequency_penalty is not None:
+            params["frequency_penalty"] = settings.frequency_penalty
+        return params
+
+
+@dataclass(frozen=True)
+class LLMGenerationProfile:
+    """某个 API 服务和模型对应的一组生成参数覆盖。"""
+
+    base_url: str
+    model: str
+    settings: LLMGenerationSettings = field(default_factory=LLMGenerationSettings)
+
+    def normalized(self) -> "LLMGenerationProfile":
+        return LLMGenerationProfile(
+            base_url=self.base_url.strip().rstrip("/"),
+            model=self.model.strip(),
+            settings=self.settings.normalized(),
+        )
+
+
+@dataclass(frozen=True)
 class ApiSettings:
     base_url: str
     api_key: str
     model: str
     timeout_seconds: int = 60
+    generation: LLMGenerationSettings = field(default_factory=LLMGenerationSettings)
+    generation_profiles: tuple[LLMGenerationProfile, ...] = ()
+
+
+def llm_generation_profile_key(base_url: str, model: str) -> str:
+    return f"{base_url.strip().rstrip('/')}::{model.strip()}"
+
+
+def default_llm_generation_settings() -> LLMGenerationSettings:
+    return LLMGenerationSettings()
 
 
 @dataclass(frozen=True)
@@ -140,7 +212,6 @@ class OpenAICompatibleClient:
         content = self.complete_raw(
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
             messages,
-            temperature=0.8,
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
         )
 
@@ -161,7 +232,7 @@ class OpenAICompatibleClient:
         self,
         system_prompt: str,
         messages: list[ChatMessage],
-        temperature: float = 0.8,
+        temperature: float | None = None,
         **chat_params: Any,
     ) -> str:
         """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
@@ -171,9 +242,11 @@ class OpenAICompatibleClient:
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=messages,
+            generation_settings=self.settings.generation,
             temperature=temperature,
             chat_params=chat_params,
         )
+        request_temperature = payload.get("temperature")
         debug_log(
             "API",
             "准备发送聊天补全请求",
@@ -181,7 +254,7 @@ class OpenAICompatibleClient:
                 "base_url": self.settings.base_url,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
-                "temperature": temperature,
+                "temperature": request_temperature,
                 "message_count": len(payload["messages"]),
                 "has_image": messages_contain_image(payload["messages"]),
                 "messages": summarize_messages(payload["messages"]),
@@ -208,7 +281,7 @@ class OpenAICompatibleClient:
         *,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
-        temperature: float = 0.8,
+        temperature: float | None = None,
         structured_response: bool = False,
         **chat_params: Any,
     ) -> ChatCompletionTurn:
@@ -224,9 +297,11 @@ class OpenAICompatibleClient:
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=messages,
+            generation_settings=self.settings.generation,
             temperature=temperature,
             chat_params=chat_params,
         )
+        request_temperature = payload.get("temperature")
         debug_log(
             "API",
             "准备发送原生工具聊天补全请求",
@@ -234,7 +309,7 @@ class OpenAICompatibleClient:
                 "base_url": self.settings.base_url,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
-                "temperature": temperature,
+                "temperature": request_temperature,
                 "message_count": len(payload["messages"]),
                 "tool_count": len(tools or []),
                 "has_image": messages_contain_image(payload["messages"]),
@@ -291,13 +366,14 @@ class OpenAICompatibleClient:
                         {"error": str(exc)},
                     )
                     continue
-                if "temperature" in fallback_payload and _is_temperature_unsupported_error(exc):
-                    self._unsupported_chat_params.add("temperature")
-                    fallback_payload.pop("temperature", None)
+                unsupported_param = _unsupported_configurable_chat_param(exc, fallback_payload)
+                if unsupported_param is not None:
+                    self._unsupported_chat_params.add(unsupported_param)
+                    fallback_payload.pop(unsupported_param, None)
                     debug_log(
                         "API",
-                        "模型不支持自定义 temperature，已回退默认温度",
-                        {"error": str(exc)},
+                        "模型不支持自定义生成参数，已回退默认请求",
+                        {"param": unsupported_param, "error": str(exc)},
                     )
                     continue
                 raise
@@ -467,7 +543,8 @@ def _build_chat_completion_payload(
     model: str,
     system_prompt: str,
     messages: list[ChatMessage],
-    temperature: float,
+    generation_settings: LLMGenerationSettings | None = None,
+    temperature: float | None = None,
     chat_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 OpenAI 兼容请求体，并丢弃已知非标准参数。"""
@@ -481,7 +558,9 @@ def _build_chat_completion_payload(
             *messages,
         ],
     }
-    payload["temperature"] = temperature
+    payload.update((generation_settings or default_llm_generation_settings()).to_chat_params())
+    if temperature is not None:
+        payload["temperature"] = temperature
     payload.update(_filter_supported_chat_params(chat_params or {}))
     _ensure_json_keyword_for_json_object_response(payload)
     return payload
@@ -497,6 +576,34 @@ def _filter_supported_chat_params(params: dict[str, Any]) -> dict[str, Any]:
             continue
         filtered[key] = value
     return filtered
+
+
+def _clamp_float(value: Any, minimum: float, maximum: float, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+def _optional_clamp_float(value: Any, minimum: float, maximum: float) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(parsed, maximum))
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _ensure_json_keyword_for_json_object_response(payload: dict[str, Any]) -> None:
@@ -539,9 +646,19 @@ def _is_response_format_unsupported_error(exc: ApiRequestError) -> bool:
     return "response_format" in text or "json_object" in text or "json schema" in text
 
 
-def _is_temperature_unsupported_error(exc: ApiRequestError) -> bool:
+def _unsupported_configurable_chat_param(
+    exc: ApiRequestError,
+    payload: dict[str, Any],
+) -> str | None:
+    for param in USER_CONFIGURABLE_CHAT_COMPLETION_PARAMS:
+        if param in payload and _is_chat_param_unsupported_error(exc, param):
+            return param
+    return None
+
+
+def _is_chat_param_unsupported_error(exc: ApiRequestError, param: str) -> bool:
     text = str(exc).lower()
-    if "temperature" not in text:
+    if param.lower() not in text:
         return False
     markers = (
         "unsupported",

@@ -14,7 +14,7 @@ import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
 from app.config.settings_service import DebugLogSettings
-from app.llm.api_client import ApiSettings
+from app.llm.api_client import ApiSettings, LLMGenerationProfile, LLMGenerationSettings
 from app.llm.chat_reply import ChatSegment
 from app.ui.portrait_utils import portrait_kind_key, should_crossfade_portrait
 from app.ui.theme import (
@@ -1907,6 +1907,98 @@ def test_settings_dialog_tests_api_when_api_changes(monkeypatch) -> None:  # typ
     app.processEvents()
 
 
+def test_settings_dialog_generation_advanced_title_and_reset(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import GENERATION_ADVANCED_TITLE
+
+    dialog, app = _build_api_settings_dialog("api_generation_reset")
+    monkeypatch.setattr(
+        dialog,
+        "_start_api_settings_test",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("仅修改高级参数不应自动测试 API")),
+    )
+
+    assert dialog.generation_settings_group.title() == GENERATION_ADVANCED_TITLE
+    assert "除非你知道你正在做什么，否则建议你不要更改下面的选项" in GENERATION_ADVANCED_TITLE
+
+    dialog.generation_temperature_spin.setValue(0.42)
+    dialog.generation_top_p_enabled_check.setChecked(True)
+    dialog.generation_top_p_spin.setValue(0.7)
+    dialog._reset_generation_settings()
+    dialog.accept()
+
+    assert dialog.result_api_settings is not None
+    assert dialog.result_api_settings.generation == LLMGenerationSettings()
+    assert dialog.result_api_settings.generation_profiles == ()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_keeps_generation_settings_per_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("api_generation_per_model", model="model-a")
+    monkeypatch.setattr(
+        dialog,
+        "_start_api_settings_test",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("仅修改高级参数不应自动测试 API")),
+    )
+
+    dialog.generation_temperature_spin.setValue(0.35)
+    dialog.generation_top_p_enabled_check.setChecked(True)
+    dialog.generation_top_p_spin.setValue(0.9)
+
+    dialog.model_edit.setText("model-b")
+
+    assert dialog.generation_temperature_spin.value() == 0.8
+    assert not dialog.generation_top_p_enabled_check.isChecked()
+
+    dialog.generation_temperature_spin.setValue(1.1)
+    dialog.generation_max_tokens_enabled_check.setChecked(True)
+    dialog.generation_max_tokens_spin.setValue(256)
+
+    dialog.model_edit.setText("model-a")
+
+    assert dialog.generation_temperature_spin.value() == 0.35
+    assert dialog.generation_top_p_enabled_check.isChecked()
+    assert dialog.generation_top_p_spin.value() == 0.9
+
+    dialog.accept()
+
+    assert dialog.result_api_settings is not None
+    assert dialog.result_api_settings.generation == LLMGenerationSettings(
+        temperature=0.35,
+        top_p=0.9,
+    )
+    assert dialog.result_api_settings.generation_profiles == (
+        LLMGenerationProfile(
+            base_url="https://api.example.com/v1",
+            model="model-a",
+            settings=LLMGenerationSettings(
+                temperature=0.35,
+                top_p=0.9,
+            ),
+        ),
+        LLMGenerationProfile(
+            base_url="https://api.example.com/v1",
+            model="model-b",
+            settings=LLMGenerationSettings(
+                temperature=1.1,
+                max_tokens=256,
+            ),
+        ),
+    )
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_model_combo_saves_manual_input(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -3340,6 +3432,104 @@ def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -
     window.show_settings()
 
     assert calls == {"save_api": 0, "update_api": 0, "reload_memory": 0}
+
+
+def test_show_settings_applies_generation_change_without_reloading_memory(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    old_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+    new_settings = ApiSettings(
+        "https://api.example.com/v1",
+        "test-key",
+        "test-model",
+        generation=LLMGenerationSettings(temperature=0.4),
+        generation_profiles=(
+            LLMGenerationProfile(
+                base_url="https://api.example.com/v1",
+                model="test-model",
+                settings=LLMGenerationSettings(temperature=0.4),
+            ),
+        ),
+    )
+    tts_settings = _minimal_tts_settings()
+    calls: dict[str, object] = {
+        "save_api": 0,
+        "updated": None,
+        "reload_memory": 0,
+    }
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return tts_settings
+
+        def save_api_settings(self, settings):  # type: ignore[no-untyped-def]
+            calls["save_api"] = int(calls["save_api"]) + 1
+            calls["saved"] = settings
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = old_settings
+
+        def update_settings(self, settings):  # type: ignore[no-untyped-def]
+            calls["updated"] = settings
+            self.settings = settings
+
+    class MemoryStoreStub:
+        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            calls["reload_memory"] = int(calls["reload_memory"]) + 1
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.result_api_settings = new_settings
+            self.result_tts_settings = tts_settings
+            self.result_character_id = "sakura"
+            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
+            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
+            self.result_debug_log_settings = DebugLogSettings()
+            self.result_portrait_scale_percent = 100
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return pet_window_module.QDialog.DialogCode.Accepted
+
+    messages: list[str] = []
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        MemoryStoreStub(),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_information",
+        lambda _parent, _title, text, **_kwargs: messages.append(str(text)),
+    )
+
+    window.show_settings()
+
+    assert calls["save_api"] == 1
+    assert calls["saved"] == new_settings
+    assert calls["updated"] == new_settings
+    assert calls["reload_memory"] == 0
+    assert "长期记忆系统正在后台刷新 API 配置" not in messages[-1]
 
 
 def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
