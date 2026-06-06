@@ -739,6 +739,24 @@ def test_stage_size_shrinks_with_portrait_scale_below_default_height() -> None:
         assert width == 860
 
 
+def test_pet_window_defaults_subtitle_language_to_chinese() -> None:
+    from app.ui.pet_window import PetWindow, SUBTITLE_LANGUAGE_JA, SUBTITLE_LANGUAGE_ZH
+
+    class MinimalWindow:
+        _load_subtitle_language = PetWindow._load_subtitle_language
+
+        def __init__(self, values):  # type: ignore[no-untyped-def]
+            self.values = values
+
+        def _load_system_config_values(self, section: str):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            return self.values
+
+    assert MinimalWindow({})._load_subtitle_language() == SUBTITLE_LANGUAGE_ZH
+    assert MinimalWindow({"subtitle_language": "ja"})._load_subtitle_language() == SUBTITLE_LANGUAGE_JA
+    assert MinimalWindow({"subtitle_language": "invalid"})._load_subtitle_language() == SUBTITLE_LANGUAGE_ZH
+
+
 def test_pet_window_loads_normalized_subtitle_display_speed() -> None:
     from app.ui.pet_window import PetWindow
 
@@ -790,6 +808,25 @@ def test_pet_window_loads_always_on_top_disabled_by_default() -> None:
     assert MinimalWindow({"always_on_top_enabled": "invalid"})._load_always_on_top_enabled() is False
     assert MinimalWindow({"always_on_top_enabled": True})._load_always_on_top_enabled() is True
     assert MinimalWindow({"always_on_top_enabled": "on"})._load_always_on_top_enabled() is True
+
+
+def test_pet_window_defaults_free_access_to_enabled() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _load_free_access_enabled = PetWindow._load_free_access_enabled
+
+        def __init__(self, values):  # type: ignore[no-untyped-def]
+            self.values = values
+
+        def _load_system_config_values(self, section: str):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            return self.values
+
+    assert MinimalWindow({})._load_free_access_enabled() is True
+    assert MinimalWindow({"free_access_enabled": False})._load_free_access_enabled() is False
+    assert MinimalWindow({"free_access_enabled": "off"})._load_free_access_enabled() is False
+    assert MinimalWindow({"free_access_enabled": "invalid"})._load_free_access_enabled() is True
 
 
 def test_pet_window_defaults_autonomous_screen_observation_to_enabled() -> None:
@@ -2847,7 +2884,7 @@ def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
         memory_store=memory_store,  # type: ignore[arg-type]
     )
 
-    expected = "长期记忆系统正在初始化，首次启动会从 HuggingFace 镜像下载本地嵌入模型，请稍等。"
+    expected = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
     assert dialog.memory_status_label.text() == expected
     assert dialog.memory_table.item(0, 1).text() == expected
     assert _process_events_until(app, lambda: memory_store.list_calls == 1)
@@ -3815,7 +3852,7 @@ def test_history_clear_reports_when_memory_store_is_not_ready(monkeypatch) -> No
             self.history_store = HistoryStoreStub()
             self.memory_store = MemoryStoreStub()
             self.history_window = HistoryWindowStub()
-            self.memory_status_last_message = "长期记忆系统正在初始化，首次启动会从 HuggingFace 镜像下载本地嵌入模型，请稍等。"
+            self.memory_status_last_message = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
             self.start_calls = 0
 
         def _start_memory_curation(self, *_args, **_kwargs) -> None:
@@ -3832,7 +3869,7 @@ def test_history_clear_reports_when_memory_store_is_not_ready(monkeypatch) -> No
 
     assert window.start_calls == 0
     assert window.history_window.busy_calls == [False]
-    assert messages == [("记忆初始化中", "长期记忆系统正在初始化，首次启动会从 HuggingFace 镜像下载本地嵌入模型，请稍等。")]
+    assert messages == [("记忆初始化中", "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。")]
 
 
 def test_history_clear_resets_mem0_curation_cache_before_start() -> None:  # type: ignore[no-untyped-def]
