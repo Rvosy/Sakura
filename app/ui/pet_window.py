@@ -51,6 +51,7 @@ from app.agent import (
     AgentResult,
     PendingToolAction,
 )
+from app.agent.builtin_tools import get_current_time
 from app.agent.memory_curator import (
     MemoryCurationResult,
 )
@@ -139,6 +140,7 @@ MEMORY_STATUS_STARTUP_DELAY_MS = 1_000
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
 MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。"
+REOPEN_CONTEXT_PROMPT_PREFIX = "系统事件：用户刚刚重新打开了 Sakura 桌宠。"
 _UI_ASSETS_DIR = Path(__file__).with_name("assets")
 _SCREENSHOT_ICON_PATH = _UI_ASSETS_DIR / "screenshot-select.svg"
 _SCREENSHOT_ATTACHED_ICON_PATH = _UI_ASSETS_DIR / "screenshot-attached.svg"
@@ -158,6 +160,38 @@ DEFAULT_STAGE_HEIGHT = 640
 # 立绘缩放时碰撞箱高度下限：底部 UI 区（气泡 128 + 输入框 52 + 间距 94 = 274px）
 # 加上立绘顶部约 146px 可见区，合计 ~420px。
 MIN_STAGE_HEIGHT = 420
+
+
+def _build_reopen_context_message(time_info: dict[str, str]) -> dict[str, str]:
+    datetime_text = str(time_info.get("datetime") or "").strip()
+    timezone = str(time_info.get("timezone") or "").strip()
+    local_time = datetime_text
+    if timezone:
+        local_time = f"{datetime_text}（{timezone}）"
+    content = (
+        f"{REOPEN_CONTEXT_PROMPT_PREFIX}\n"
+        f"本地时间：{local_time}。\n"
+        "这表示用户此前曾隐藏或离开桌宠，现在又回到对话。"
+        "回复时请自然地意识到用户是重新打开应用后继续交流，"
+        "不要表现得像一直无缝在线，也不要直接复述这条系统事件。"
+    )
+    return {"role": "system", "content": content}
+
+
+def _current_time_from_builtin_tool(tool_registry: Any) -> dict[str, str]:
+    execute = getattr(tool_registry, "execute", None)
+    if callable(execute):
+        result = execute("get_current_time", {})
+        if getattr(result, "success", False):
+            content = getattr(result, "content", None)
+            if isinstance(content, dict):
+                datetime_text = str(content.get("datetime") or "").strip()
+                if datetime_text:
+                    return {
+                        "datetime": datetime_text,
+                        "timezone": str(content.get("timezone") or "").strip(),
+                    }
+    return get_current_time()
 
 
 def _message_box_theme(parent: QWidget | None, theme_settings: ThemeSettings | None) -> ThemeSettings:
@@ -357,6 +391,7 @@ class PetWindow(QWidget):
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
         self.pending_screen_observation_event_reminder_id: str | None = None
+        self.pending_reopen_context_message: dict[str, Any] | None = None
         self.pending_visual_observation_jobs: list[VisualObservationJob] = []
         self.pending_event_visual_observation_jobs: list[VisualObservationJob] = []
         self.plugin_chat_ui_widget_instances: list[QWidget] = []
@@ -1255,6 +1290,12 @@ class PetWindow(QWidget):
         else:
             request_user_message: dict[str, Any] = {"role": "user", "content": text}
             recorded_user_text = text
+
+        consume_reopen_context = getattr(self, "_consume_pending_reopen_context_message", None)
+        if callable(consume_reopen_context):
+            reopen_context_message = consume_reopen_context()
+            if reopen_context_message is not None:
+                self.messages.append(reopen_context_message)
 
         request_messages = _add_visual_context_to_messages(
             [*self.messages, request_user_message],
@@ -2487,10 +2528,37 @@ class PetWindow(QWidget):
     @Slot()
     def _show_from_tray(self) -> None:
         self.hidden_to_tray = False
+        queue_reopen_context = getattr(self, "_queue_reopen_context_prompt", None)
+        if callable(queue_reopen_context):
+            queue_reopen_context()
         self.show()
         self.raise_()
         self.activateWindow()
         self._refresh_tray_menu()
+
+    def _queue_reopen_context_prompt(self) -> None:
+        if getattr(self, "startup_initializing", False):
+            return
+        self.pending_reopen_context_message = _build_reopen_context_message(
+            _current_time_from_builtin_tool(getattr(self, "tool_registry", None))
+        )
+        debug_log(
+            "PetWindow",
+            "已排队重新打开上下文提示",
+            self.pending_reopen_context_message,
+        )
+
+    def _consume_pending_reopen_context_message(self) -> dict[str, Any] | None:
+        message = getattr(self, "pending_reopen_context_message", None)
+        self.pending_reopen_context_message = None
+        if not isinstance(message, dict):
+            return None
+        if message.get("role") != "system":
+            return None
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None
+        return message
 
     def _handle_application_activated(self) -> None:
         if getattr(self, "hidden_to_tray", False):

@@ -275,6 +275,56 @@ def test_pet_window_hide_and_show_to_tray_tracks_hidden_state() -> None:
     assert window.events == ["hide", "refresh", "show", "raise", "activate", "refresh"]
 
 
+def test_pet_window_show_from_tray_queues_reopen_context_prompt() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class ToolResult:
+        success = True
+        content = {"datetime": "2026-06-06T12:34:56+08:00", "timezone": "CST"}
+
+    class ToolRegistryStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def execute(self, name: str, arguments: dict[str, object]) -> ToolResult:
+            self.calls.append((name, arguments))
+            return ToolResult()
+
+    class MinimalWindow:
+        _show_from_tray = PetWindow._show_from_tray
+        _queue_reopen_context_prompt = PetWindow._queue_reopen_context_prompt
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = True
+            self.startup_initializing = False
+            self.tool_registry = ToolRegistryStub()
+            self.pending_reopen_context_message = None
+            self.events: list[str] = []
+
+        def show(self) -> None:
+            self.events.append("show")
+
+        def raise_(self) -> None:
+            self.events.append("raise")
+
+        def activateWindow(self) -> None:
+            self.events.append("activate")
+
+        def _refresh_tray_menu(self) -> None:
+            self.events.append("refresh")
+
+    window = MinimalWindow()
+
+    window._show_from_tray()
+
+    assert window.hidden_to_tray is False
+    assert window.events == ["show", "raise", "activate", "refresh"]
+    assert window.tool_registry.calls == [("get_current_time", {})]
+    assert window.pending_reopen_context_message["role"] == "system"
+    assert "用户刚刚重新打开了 Sakura 桌宠" in window.pending_reopen_context_message["content"]
+    assert "2026-06-06T12:34:56+08:00" in window.pending_reopen_context_message["content"]
+
+
 def test_pet_window_application_activation_restores_when_hidden_to_tray(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
@@ -4887,6 +4937,39 @@ def test_send_message_clears_pending_proactive_screenshot_batch(monkeypatch) -> 
     assert minimal_window.proactive_screen_context_batch_started_at is None
     assert minimal_window.last_proactive_screen_context_at is None
     assert minimal_window.proactive_screen_context_dropped_count == 0
+
+
+def test_send_message_injects_reopen_context_before_user_message() -> None:
+    from app.ui.pet_window import PetWindow
+
+    window, requests, history = _build_minimal_manual_screenshot_window("继续刚才的话题")
+    window.pending_manual_screen_observation = None
+    reopen_message = {
+        "role": "system",
+        "content": "系统事件：用户刚刚重新打开了 Sakura 桌宠。",
+    }
+    window.pending_reopen_context_message = reopen_message
+    window._consume_pending_reopen_context_message = (
+        PetWindow._consume_pending_reopen_context_message.__get__(
+            window,
+            type(window),
+        )
+    )
+
+    window.send_message("test")
+
+    assert requests == [
+        [
+            reopen_message,
+            {"role": "user", "content": "继续刚才的话题"},
+        ]
+    ]
+    assert window.messages == [
+        reopen_message,
+        {"role": "user", "content": "继续刚才的话题"},
+    ]
+    assert window.pending_reopen_context_message is None
+    assert history == [("user", "继续刚才的话题")]
 
 
 class _DummyTextInput:
