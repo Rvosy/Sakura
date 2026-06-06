@@ -195,14 +195,23 @@ def test_memory_status_does_not_use_tray_balloon(monkeypatch) -> None:  # type: 
     )
     window = type("WindowStub", (), {})()
     window.memory_status_message_active = False
+    window.memory_status_last_status = ""
     window.memory_status_last_message = ""
     window.memory_failure_dialog_last_message = ""
+    window.memory_failure_dialog_pending_message = ""
     window.startup_initializing = False
     window.active_interaction_id = None
     window.reply_history_review_active = False
     window.subtitle_controller = SubtitleControllerStub()
     window.tray_icon = TrayIconStub()
+    window.isVisible = lambda: True
     window._restore_memory_status_speech = lambda: None
+    window._should_defer_memory_failure_dialog = (
+        lambda: PetWindow._should_defer_memory_failure_dialog(window)
+    )
+    window._display_memory_failure_dialog = (
+        lambda message: PetWindow._display_memory_failure_dialog(window, message)
+    )
     window._show_memory_failure_dialog = lambda message: PetWindow._show_memory_failure_dialog(window, message)
 
     for status in ("loading", "reloading", "failed"):
@@ -217,6 +226,61 @@ def test_memory_status_does_not_use_tray_balloon(monkeypatch) -> None:  # type: 
     ]
     assert warnings == [("记忆模型下载失败", "failed message")]
     assert single_shots == [(pet_window_module.MEMORY_STATUS_DISPLAY_MS, window._restore_memory_status_speech)]
+
+
+def test_memory_failure_dialog_is_deferred_until_startup_window_is_visible(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SubtitleControllerStub:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def show_text_immediately(self, message: str) -> None:
+            self.messages.append(message)
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_warning",
+        lambda _parent, title, text, **_kwargs: warnings.append((title, text)),
+    )
+    window = type("WindowStub", (), {})()
+    window.memory_status_message_active = False
+    window.memory_status_last_status = ""
+    window.memory_status_last_message = ""
+    window.memory_failure_dialog_last_message = ""
+    window.memory_failure_dialog_pending_message = ""
+    window.startup_initializing = True
+    window.active_interaction_id = None
+    window.reply_history_review_active = False
+    window.subtitle_controller = SubtitleControllerStub()
+    visible = {"value": False}
+    window.isVisible = lambda: visible["value"]
+    window._should_defer_memory_failure_dialog = (
+        lambda: PetWindow._should_defer_memory_failure_dialog(window)
+    )
+    window._display_memory_failure_dialog = (
+        lambda message: PetWindow._display_memory_failure_dialog(window, message)
+    )
+    window._show_memory_failure_dialog = lambda message: PetWindow._show_memory_failure_dialog(window, message)
+    window._show_pending_memory_failure_dialog = (
+        lambda: PetWindow._show_pending_memory_failure_dialog(window)
+    )
+
+    PetWindow._show_memory_status_message(window, "failed", "download failed")
+
+    assert warnings == []
+    assert window.subtitle_controller.messages == []
+    assert window.memory_failure_dialog_pending_message == "download failed"
+
+    window.startup_initializing = False
+    visible["value"] = True
+    PetWindow._show_pending_memory_status_after_startup(window)
+
+    assert window.subtitle_controller.messages == ["download failed"]
+    assert warnings == [("记忆模型下载失败", "download failed")]
+    assert window.memory_failure_dialog_pending_message == ""
 
 
 def test_message_box_stylesheet_contains_configured_theme_colors() -> None:

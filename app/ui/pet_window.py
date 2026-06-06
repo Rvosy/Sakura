@@ -367,8 +367,10 @@ class PetWindow(QWidget):
         self.active_event_type = ""
         self.active_event: AgentEvent | None = None
         self.memory_status_message_active = False
+        self.memory_status_last_status = ""
         self.memory_status_last_message = ""
         self.memory_failure_dialog_last_message = ""
+        self.memory_failure_dialog_pending_message = ""
         self.last_user_activity_at = time.perf_counter()
         self.last_proactive_care_at: float | None = None
         self.last_proactive_screen_context_at: float | None = None
@@ -625,6 +627,8 @@ class PetWindow(QWidget):
         super().showEvent(event)
         self._refresh_tray_menu()
         self._schedule_native_topmost_sync()
+        if getattr(self, "memory_failure_dialog_pending_message", ""):
+            QTimer.singleShot(0, self._show_pending_memory_failure_dialog)
 
     def hideEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().hideEvent(event)
@@ -2408,6 +2412,7 @@ class PetWindow(QWidget):
 
     def _show_memory_status_message(self, status: str, message: str) -> None:
         self.memory_status_message_active = True
+        self.memory_status_last_status = status
         self.memory_status_last_message = message
         if status == "failed":
             self._show_memory_failure_dialog(message)
@@ -2421,6 +2426,23 @@ class PetWindow(QWidget):
     def _show_memory_failure_dialog(self, message: str) -> None:
         if getattr(self, "memory_failure_dialog_last_message", "") == message:
             return
+        if self._should_defer_memory_failure_dialog():
+            self.memory_failure_dialog_pending_message = message
+            return
+        self._display_memory_failure_dialog(message)
+
+    def _should_defer_memory_failure_dialog(self) -> bool:
+        if getattr(self, "startup_initializing", False):
+            return True
+        is_visible = getattr(self, "isVisible", None)
+        if callable(is_visible):
+            return not bool(is_visible())
+        return False
+
+    def _display_memory_failure_dialog(self, message: str) -> None:
+        if getattr(self, "memory_failure_dialog_last_message", "") == message:
+            return
+        self.memory_failure_dialog_pending_message = ""
         self.memory_failure_dialog_last_message = message
         show_themed_warning(self, "记忆模型下载失败", message)
 
@@ -2435,9 +2457,25 @@ class PetWindow(QWidget):
         ):
             return
         self.subtitle_controller.show_text_immediately(self.memory_status_last_message)
+        self._show_pending_memory_failure_dialog()
+
+    @Slot()
+    def _show_pending_memory_failure_dialog(self) -> None:
+        message = getattr(self, "memory_failure_dialog_pending_message", "")
+        if (
+            not message
+            or getattr(self, "startup_initializing", False)
+            or getattr(self, "memory_status_last_status", "") != "failed"
+        ):
+            return
+        if self._should_defer_memory_failure_dialog():
+            return
+        self._display_memory_failure_dialog(message)
 
     def _show_memory_ready_message(self, message: str) -> None:
         _ = message
+        self.memory_status_last_status = "ready"
+        self.memory_failure_dialog_pending_message = ""
         if not self.memory_status_message_active:
             return
         self.memory_status_message_active = False
