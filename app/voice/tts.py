@@ -748,6 +748,10 @@ class GPTSoVITSTTSProvider(QObject):
                 )
                 return False
             if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait"):
+                if not _probe_gpt_sovits_http(self.settings.api_url, timeout):
+                    # 端口通但 HTTP 层尚未就绪（模型仍在加载），继续等待
+                    time.sleep(0.5)
+                    continue
                 self._service_checked = True
                 debug_log(
                     "TTS",
@@ -2128,6 +2132,23 @@ def _probe_tcp_port(host: str, port: int, timeout: int) -> bool:
         with socket.create_connection((host, port), timeout=timeout):
             pass
     except (TimeoutError, OSError):
+        return False
+    return True
+
+
+def _probe_gpt_sovits_http(api_url: str, timeout: int) -> bool:
+    """探测 GPT-SoVITS HTTP 层是否就绪（TCP 通后 HTTP 可能仍在初始化）。"""
+    parsed = urlparse(api_url)
+    base_path = parsed.path.rsplit("/", 1)[0]
+    probe_url = urlunparse(parsed._replace(path=base_path or "/", query=""))
+    request = urllib.request.Request(url=probe_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            pass
+    except urllib.error.HTTPError:
+        # 任何 HTTP 状态码都说明服务 HTTP 层已就绪
+        pass
+    except (urllib.error.URLError, TimeoutError, OSError):
         return False
     return True
 
