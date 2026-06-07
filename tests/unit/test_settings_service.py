@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.agent.mcp.settings import MCPRuntimeSettings
 from app.config.character_loader import CharacterRegistry
-from app.config.settings_service import AppSettingsService, DebugLogSettings
+from app.config.settings_service import AppSettingsService, DebugLogSettings, StartupSettings
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.proactive_care import ProactiveCareSettings
@@ -83,6 +83,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
     service.save_mcp_runtime_settings(MCPRuntimeSettings(windows_enabled=True))
     service.save_debug_log_settings(DebugLogSettings(enabled=True, body_enabled=True, file_enabled=True))
+    service.save_startup_settings(StartupSettings(launch_at_login=True))
     service.save_proactive_care_settings(
         ProactiveCareSettings(
             enabled=True,
@@ -106,7 +107,21 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert system["debug"]["enabled"] is True
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True
+    assert system["startup"]["launch_at_login"] is True
     assert system["proactive_care"]["check_interval_minutes"] == 5
+
+
+def test_settings_service_loads_and_saves_startup_settings() -> None:
+    root = _runtime_root("yaml_startup")
+    service = AppSettingsService(root)
+
+    assert service.load_startup_settings() == StartupSettings(launch_at_login=False)
+
+    service.save_startup_settings(StartupSettings(launch_at_login=True))
+
+    assert service.load_startup_settings() == StartupSettings(launch_at_login=True)
+    system = load_yaml_mapping(service.system_config_path)
+    assert system["startup"]["launch_at_login"] is True
 
 
 def test_settings_service_loads_tts_work_dir_and_keeps_legacy_blank() -> None:

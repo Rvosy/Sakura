@@ -41,6 +41,13 @@ class DebugLogSettings:
 
 
 @dataclass(frozen=True)
+class StartupSettings:
+    """启动行为配置。"""
+
+    launch_at_login: bool = False
+
+
+@dataclass(frozen=True)
 class AppSettingsService:
     """集中管理运行配置；唯一持久化来源是 data/config/*.yaml。"""
 
@@ -254,6 +261,18 @@ class AppSettingsService:
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
             },
+        )
+
+    def load_startup_settings(self) -> StartupSettings:
+        startup = self._system_section("startup")
+        return StartupSettings(
+            launch_at_login=_bool_value(startup.get("launch_at_login"), False),
+        )
+
+    def save_startup_settings(self, settings: StartupSettings) -> None:
+        self.save_system_values(
+            "startup",
+            {"launch_at_login": bool(settings.launch_at_login)},
         )
 
     def load_theme_settings(self) -> ThemeSettings:
