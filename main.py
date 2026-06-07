@@ -6,8 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout
+from PySide6.QtGui import QGuiApplication, QPalette, QColor
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QStyleFactory
 
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
@@ -35,6 +35,23 @@ from app.voice.tts_bundle import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def _force_light_palette(app: QApplication) -> None:
+    """强制使用 Fusion 风格 + 亮色 palette，避免 Windows 暗色模式下系统控件文字与浅色背景冲突。"""
+    app.setStyle(QStyleFactory.create("Fusion"))
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#ffe8f1"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#9b4f72"))
+    app.setPalette(palette)
 
 
 def _configure_windows_high_dpi() -> None:
@@ -222,6 +239,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Sakura Desktop Pet")
     app.setQuitOnLastWindowClosed(False)
+    _force_light_palette(app)
 
     try:
         context = build_initial_app_context(BASE_DIR)
