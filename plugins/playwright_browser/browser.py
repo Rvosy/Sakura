@@ -51,17 +51,17 @@ def get_text(selector: str = "body") -> str:
 
 
 def search_web(query: str, limit: int = 5) -> str:
-    """用 Playwright 打开 DuckDuckGo HTML 搜索页并整理结果。"""
+    """用 Playwright 打开 Bing 搜索页并整理结果。"""
 
     def task() -> str:
         page = _ensure_browser()
-        page.goto(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}", wait_until="domcontentloaded")
+        page.goto(f"https://www.bing.com/search?q={quote_plus(query)}", wait_until="domcontentloaded")
         results: list[str] = []
-        for index, item in enumerate(page.query_selector_all(".result__body")[: max(1, limit)], start=1):
-            title = _inner_text(item, ".result__title")
-            snippet = _inner_text(item, ".result__snippet")
-            display_url = _inner_text(item, ".result__url")
-            link = item.query_selector(".result__a")
+        for index, item in enumerate(page.query_selector_all("li.b_algo")[: max(1, limit)], start=1):
+            title = _inner_text(item, "h2")
+            snippet = _inner_text(item, "p")
+            display_url = _inner_text(item, ".b_attribution cite")
+            link = item.query_selector("h2 a")
             href = link.get_attribute("href") if link is not None else ""
             parts = [f"{index}. {title}".strip()]
             if snippet:

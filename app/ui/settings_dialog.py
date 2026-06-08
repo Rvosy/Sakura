@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.memory import MemoryStore
-from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_UNAVAILABLE_TEXT
+from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
 from app.core.debug_log import debug_log
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -874,13 +874,12 @@ class SettingsDialog(QDialog):
         tools_tab_contributions: list[ToolsTabContribution],
     ) -> QWidget:
         tab = QWidget(self)
-        self.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（高级）", tab)
-        self.windows_mcp_enabled_check.setChecked(False)
-        self.windows_mcp_enabled_check.setEnabled(False)
-        self.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_UNAVAILABLE_TEXT)
+        self.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（实验性）", tab)
+        self.windows_mcp_enabled_check.setChecked(settings.windows_enabled)
+        self.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_EXPERIMENTAL_TEXT)
 
         restart_hint = QLabel(
-            f"{WINDOWS_MCP_UNAVAILABLE_TEXT}。保存后需要重启 Sakura 才会加载或卸载 Windows MCP 工具。",
+            f"{WINDOWS_MCP_EXPERIMENTAL_TEXT}。保存后需要重启 Sakura 才会加载或卸载 Windows MCP 工具。",
             tab,
         )
         restart_hint.setWordWrap(True)
@@ -1965,7 +1964,9 @@ class SettingsDialog(QDialog):
                 cooldown_minutes=self.proactive_cooldown_spin.value(),
                 screen_context_batch_limit=self.proactive_batch_limit_spin.value(),
             ),
-            "mcp_settings": MCPRuntimeSettings(windows_enabled=False),
+            "mcp_settings": MCPRuntimeSettings(
+                windows_enabled=self.windows_mcp_enabled_check.isChecked(),
+            ),
             "debug_log_settings": DebugLogSettings(
                 enabled=self.debug_log_enabled_check.isChecked(),
                 body_enabled=(

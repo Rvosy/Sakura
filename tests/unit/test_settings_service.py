@@ -102,7 +102,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert api["tts"]["gpt_sovits"]["work_dir"] == "tts/gpt"
     assert api["tts"]["gpt_sovits"]["timeout_seconds"] == 22
     assert characters["current_character_id"] == "nanami"
-    assert system["mcp"]["windows_enabled"] is False
+    assert system["mcp"]["windows_enabled"] is True
     assert system["debug"]["enabled"] is True
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True

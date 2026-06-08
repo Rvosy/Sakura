@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from app.llm.chat_reply import ChatReply, parse_chat_reply
 from app.core.debug_log import debug_log, summarize_messages
@@ -104,7 +105,8 @@ class OpenAICompatibleClient:
     def list_models(self) -> list[str]:
         """读取 OpenAI 兼容 /models 接口，返回可选择的模型 id 列表。"""
         self._ensure_model_list_config()
-        url = f"{self.settings.base_url}/models"
+        base_url = _normalize_openai_base_url(self.settings.base_url)
+        url = f"{base_url}/models"
         request = urllib.request.Request(
             url=url,
             method="GET",
@@ -117,6 +119,7 @@ class OpenAICompatibleClient:
             "准备检测模型列表",
             {
                 "url": url,
+                "configured_base_url": self.settings.base_url,
                 "timeout_seconds": self.settings.timeout_seconds,
             },
         )
@@ -178,7 +181,8 @@ class OpenAICompatibleClient:
             "API",
             "准备发送聊天补全请求",
             {
-                "base_url": self.settings.base_url,
+                "base_url": _normalize_openai_base_url(self.settings.base_url),
+                "configured_base_url": self.settings.base_url,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
                 "temperature": temperature,
@@ -231,7 +235,8 @@ class OpenAICompatibleClient:
             "API",
             "准备发送原生工具聊天补全请求",
             {
-                "base_url": self.settings.base_url,
+                "base_url": _normalize_openai_base_url(self.settings.base_url),
+                "configured_base_url": self.settings.base_url,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
                 "temperature": temperature,
@@ -319,7 +324,8 @@ class OpenAICompatibleClient:
     def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
         """调用 OpenAI 兼容的 chat/completions 接口并返回 JSON 数据。"""
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        url = f"{self.settings.base_url}/chat/completions"
+        base_url = _normalize_openai_base_url(self.settings.base_url)
+        url = f"{base_url}/chat/completions"
         request = urllib.request.Request(
             url=url,
             data=body,
@@ -335,6 +341,7 @@ class OpenAICompatibleClient:
             "HTTP 请求体已构建",
             {
                 "url": url,
+                "configured_base_url": self.settings.base_url,
                 "bytes": len(body),
                 "payload": payload,
             },
@@ -382,7 +389,7 @@ class OpenAICompatibleClient:
                     },
                 )
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_API_RETRY_ATTEMPTS:
-                    raise ApiRequestError(f"API HTTP {exc.code}: {error_body}") from exc
+                    raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
                 debug_log(
@@ -460,6 +467,45 @@ def _parse_model_ids(data: dict[str, Any]) -> list[str]:
         if isinstance(model_id, str) and model_id.strip():
             model_ids.add(model_id.strip())
     return sorted(model_ids, key=str.casefold)
+
+
+def _normalize_openai_base_url(base_url: str) -> str:
+    """把 Google AI Studio 原生地址规范到 OpenAI 兼容路径。"""
+
+    normalized = base_url.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.netloc.lower() != "generativelanguage.googleapis.com":
+        return normalized
+    parts = [part for part in parsed.path.split("/") if part]
+    if parts and parts[0] in {"v1", "v1beta"} and "openai" not in parts:
+        parts.append("openai")
+        return urlunparse(parsed._replace(path="/" + "/".join(parts))).rstrip("/")
+    return normalized
+
+
+def _format_api_http_error(status_code: int, error_body: str, url: str) -> str:
+    if _looks_like_google_ai_studio_auth_error(error_body, url):
+        return (
+            f"API HTTP {status_code}: Google AI Studio 认证失败。"
+            "请确认填写的是 AI Studio API Key，并使用 Google Generative Language 的 OpenAI 兼容接口；"
+            "Sakura 会把 https://generativelanguage.googleapis.com/v1beta 自动转换为 "
+            "https://generativelanguage.googleapis.com/v1beta/openai。"
+            f"\n原始响应：{error_body}"
+        )
+    return f"API HTTP {status_code}: {error_body}"
+
+
+def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() != "generativelanguage.googleapis.com":
+        return False
+    text = error_body.lower()
+    return (
+        "api_key_service_blocked" in text
+        or "unauthenticated" in text
+        or "invalid authentication credentials" in text
+        or "modelservice.listmodels" in text
+    )
 
 
 def _build_chat_completion_payload(

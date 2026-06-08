@@ -32,6 +32,8 @@ from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_
 TTSCallback = Callable[[], None]
 _AUDIO_CLEANUP_DELAY_MS = 200
 _AUDIO_CLEANUP_MAX_ATTEMPTS = 5
+_AUDIO_FINISH_FALLBACK_GRACE_MS = 1500
+_AUDIO_FINISH_FALLBACK_MIN_MS = 3000
 _LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
 _CJK_TEXT_LANGS = {"ja", "all_ja", "zh", "all_zh", "ko", "all_ko", "yue", "all_yue"}
 TTS_PROVIDER_NONE = "none"
@@ -369,6 +371,7 @@ class GPTSoVITSTTSProvider(QObject):
         self._service_checked = False
         self._server_process: _LocalProcessHandle | None = None
         self._playback_warmup_requested = False
+        self._playback_finish_token = 0
 
         self._audio_output: QAudioOutput | None = None
         self._player: QMediaPlayer | None = None
@@ -641,7 +644,10 @@ class GPTSoVITSTTSProvider(QObject):
                         "error_body": error_body,
                     },
                 )
-                self._fail_audio_request(tts_request, f"GPT-SoVITS HTTP {exc.code}: {error_body}")
+                self._fail_audio_request(
+                    tts_request,
+                    _format_gpt_sovits_http_error(exc.code, error_body),
+                )
                 return
             except urllib.error.URLError as exc:
                 debug_log("TTS", "GPT-SoVITS 请求失败", {"reason": str(exc.reason)})
@@ -836,6 +842,7 @@ class GPTSoVITSTTSProvider(QObject):
             log_path.parent.mkdir(parents=True, exist_ok=True)
             kwargs: dict[str, object] = {
                 "cwd": str(work_dir),
+                "env": _local_tts_subprocess_env(),
                 "stderr": subprocess.STDOUT,
             }
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -1048,6 +1055,15 @@ class GPTSoVITSTTSProvider(QObject):
         debug_log("TTS", "播放器播放状态变化", {"state": str(state)})
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self._emit_current_started()
+            return
+        if (
+            state == QMediaPlayer.PlaybackState.StoppedState
+            and self._current_audio is not None
+            and self._current_started_emitted
+        ):
+            debug_log("TTS", "播放器停止，按当前音频播放完成处理", {"audio_path": self._current_audio})
+            self._finish_current_audio()
+            self._play_next()
 
     @Slot(QMediaPlayer.Error, str)
     def _handle_player_error(self, _error: QMediaPlayer.Error, error_text: str) -> None:
@@ -1119,12 +1135,18 @@ class GPTSoVITSTTSProvider(QObject):
             _prepared_audio,
         ) = self._pending_audio.pop(0)
         self._current_started_emitted = False
+        self._playback_finish_token += 1
+        playback_finish_token = self._playback_finish_token
         debug_log("TTS", "开始播放音频", {"audio_path": self._current_audio})
         if self._player is None:
             self._fail_audio_playback("播放器初始化失败。")
             return
         self._player.setSource(QUrl.fromLocalFile(str(self._current_audio)))
         self._player.play()
+        self._schedule_current_audio_finish_fallback(
+            self._current_audio,
+            playback_finish_token,
+        )
 
     def _ensure_player(self) -> None:
         if self._player is not None:
@@ -1185,6 +1207,47 @@ class GPTSoVITSTTSProvider(QObject):
         self._current_started = None
         self._current_finished = None
         self._current_started_emitted = False
+
+    def _schedule_current_audio_finish_fallback(self, audio_path: Path, playback_finish_token: int) -> None:
+        duration_ms = _wav_duration_ms(audio_path)
+        if duration_ms is None:
+            debug_log("TTS", "无法读取音频时长，跳过播放完成兜底", {"audio_path": audio_path})
+            return
+        delay_ms = max(
+            _AUDIO_FINISH_FALLBACK_MIN_MS,
+            duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS,
+        )
+        debug_log(
+            "TTS",
+            "安排音频播放完成兜底",
+            {
+                "audio_path": audio_path,
+                "duration_ms": duration_ms,
+                "delay_ms": delay_ms,
+                "token": playback_finish_token,
+            },
+        )
+        QTimer.singleShot(
+            delay_ms,
+            lambda path=audio_path, token=playback_finish_token: self._finish_current_audio_if_stalled(
+                path,
+                token,
+            ),
+        )
+
+    def _finish_current_audio_if_stalled(self, audio_path: Path, playback_finish_token: int) -> None:
+        if playback_finish_token != self._playback_finish_token or self._current_audio != audio_path:
+            return
+        debug_log(
+            "TTS",
+            "音频播放完成事件未触发，使用时长兜底完成",
+            {
+                "audio_path": audio_path,
+                "token": playback_finish_token,
+            },
+        )
+        self._finish_current_audio()
+        self._play_next()
 
     def _schedule_audio_cleanup(self, audio_path: Path, attempt: int = 1) -> None:
         debug_log("TTS", "计划清理临时音频", {"audio_path": audio_path, "attempt": attempt})
@@ -1832,6 +1895,30 @@ def _build_gpt_sovits_start_command(
     return cmd
 
 
+def _local_tts_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _format_gpt_sovits_http_error(status_code: int, error_body: str) -> str:
+    if status_code == 400 and _looks_like_charmap_encode_error(error_body):
+        return (
+            "GPT-SoVITS HTTP 400: 本地 GPT-SoVITS 运行时编码不是 UTF-8，"
+            "中文或日文文本写入时触发 charmap 编码错误。"
+            "Sakura 启动本地服务时已启用 UTF-8 环境；如果仍然失败，"
+            "请关闭当前 GPT-SoVITS 服务后由 Sakura 重新启动，或手动以 UTF-8 环境重启服务。"
+            f"\n原始响应：{error_body}"
+        )
+    return f"GPT-SoVITS HTTP {status_code}: {error_body}"
+
+
+def _looks_like_charmap_encode_error(error_body: str) -> bool:
+    normalized = error_body.lower()
+    return "charmap" in normalized and "can't encode" in normalized
+
+
 def _probe_tcp_port(host: str, port: int, timeout: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -2093,6 +2180,18 @@ def _write_raw_float_or_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sampl
     if not pcm_bytes:
         return False
     return _write_raw_pcm_as_wav(pcm_bytes, output_path, sample_rate=sample_rate)
+
+
+def _wav_duration_ms(path: Path) -> int | None:
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            frame_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+    except (OSError, wave.Error):
+        return None
+    if frame_rate <= 0 or frame_count < 0:
+        return None
+    return max(1, int(frame_count * 1000 / frame_rate))
 
 
 def _is_valid_wav_file(path: Path) -> bool:

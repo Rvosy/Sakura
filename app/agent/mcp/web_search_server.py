@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+import base64
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from ipaddress import ip_address
@@ -194,14 +195,14 @@ def search_web(query: str, max_results: int = 5) -> dict[str, Any]:
     if not query:
         raise ValueError("query 不能为空。")
 
-    url = "https://lite.duckduckgo.com/lite/?" + urlencode({"q": query})
+    url = "https://www.bing.com/search?" + urlencode({"q": query})
     html_text = _read_url_text(url, max_bytes=512_000)
-    parser = DuckDuckGoLiteParser()
+    parser = BingSearchParser()
     parser.feed(html_text)
     results = _dedupe_results(parser.results)[:max_results]
     return {
         "query": query,
-        "source": "DuckDuckGo Lite",
+        "source": "Bing",
         "results": [
             {"title": item.title, "url": item.url, "snippet": item.snippet}
             for item in results
@@ -235,54 +236,66 @@ def fetch_url(url: str, max_chars: int = 6000) -> dict[str, Any]:
     }
 
 
-class DuckDuckGoLiteParser(HTMLParser):
+class BingSearchParser(HTMLParser):
+    """解析 Bing 搜索结果页中自然搜索结果的标题、链接和摘要。"""
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: list[SearchResult] = []
+        self._result_depth = 0
+        self._in_title_link = False
+        self._in_snippet = False
         self._active_href = ""
         self._active_text: list[str] = []
-        self._last_result_index: int | None = None
-        self._collect_snippet = False
         self._snippet_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_map = {key.lower(): value or "" for key, value in attrs}
-        if tag == "a":
+        classes = set(attrs_map.get("class", "").split())
+        if tag == "li" and "b_algo" in classes:
+            self._result_depth = 1
+            self._snippet_parts = []
+            return
+        if self._result_depth:
+            self._result_depth += 1
+        if self._result_depth and tag == "a":
             href = _normalize_result_href(attrs_map.get("href", ""))
             if href:
                 self._active_href = href
                 self._active_text = []
-        elif tag in {"td", "span"} and self._last_result_index is not None:
-            self._collect_snippet = True
+                self._in_title_link = True
+        elif self._result_depth and tag == "p":
+            self._in_snippet = True
             self._snippet_parts = []
 
     def handle_data(self, data: str) -> None:
-        if self._active_href:
+        if self._in_title_link and self._active_href:
             self._active_text.append(data)
-        elif self._collect_snippet:
+        elif self._in_snippet:
             self._snippet_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._active_href:
+        if tag == "a" and self._in_title_link:
             title = _normalize_space("".join(self._active_text))
             if title and _looks_like_result_url(self._active_href):
                 self.results.append(SearchResult(title=title, url=self._active_href))
-                self._last_result_index = len(self.results) - 1
             self._active_href = ""
             self._active_text = []
-        elif tag in {"td", "span"} and self._collect_snippet:
+            self._in_title_link = False
+        elif tag == "p" and self._in_snippet:
             snippet = _normalize_space("".join(self._snippet_parts))
-            if snippet and self._last_result_index is not None:
-                previous = self.results[self._last_result_index]
+            if snippet and self.results:
+                previous = self.results[-1]
                 if not previous.snippet and snippet != previous.title:
-                    self.results[self._last_result_index] = SearchResult(
+                    self.results[-1] = SearchResult(
                         title=previous.title,
                         url=previous.url,
                         snippet=snippet[:300],
                     )
-            self._collect_snippet = False
+            self._in_snippet = False
             self._snippet_parts = []
-
+        if self._result_depth:
+            self._result_depth -= 1
 
 class PageTextParser(HTMLParser):
     def __init__(self) -> None:
@@ -381,11 +394,12 @@ def _normalize_result_href(href: str) -> str:
     if href.startswith("//"):
         href = "https:" + href
     elif href.startswith("/"):
-        href = "https://duckduckgo.com" + href
+        href = "https://www.bing.com" + href
     parsed = urlparse(href)
-    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
-        target = parse_qs(parsed.query).get("uddg", [""])[0]
-        href = unquote(target)
+    if _is_bing_host(parsed.netloc) and parsed.path.startswith("/ck/"):
+        target = _decode_bing_redirect_target(parsed)
+        if target:
+            href = target
     return href
 
 
@@ -394,7 +408,28 @@ def _looks_like_result_url(url: str) -> bool:
     if parsed.scheme not in {"http", "https"}:
         return False
     host = parsed.netloc.lower()
-    return "duckduckgo.com" not in host
+    return not _is_bing_host(host)
+
+
+def _is_bing_host(host: str) -> bool:
+    normalized = host.lower()
+    return normalized == "bing.com" or normalized.endswith(".bing.com")
+
+
+def _decode_bing_redirect_target(parsed_url: Any) -> str:
+    raw_target = parse_qs(parsed_url.query).get("u", [""])[0]
+    if not raw_target:
+        return ""
+    raw_target = unquote(raw_target)
+    if raw_target.startswith(("http://", "https://")):
+        return raw_target
+    encoded = raw_target[2:] if raw_target.startswith("a1") else raw_target
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    return decoded if decoded.startswith(("http://", "https://")) else ""
 
 
 def _dedupe_results(results: list[SearchResult]) -> list[SearchResult]:

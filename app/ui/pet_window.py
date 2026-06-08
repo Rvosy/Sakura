@@ -335,6 +335,7 @@ class PetWindow(QWidget):
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self.always_on_top_enabled = self._load_always_on_top_enabled()
         self.history_window: HistoryWindow | None = None
+        self.settings_dialog: SettingsDialog | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
         self.worker: ChatWorker | EventWorker | None = None
@@ -2621,6 +2622,10 @@ class PetWindow(QWidget):
     def show_settings(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
+        active_dialog = getattr(self, "settings_dialog", None)
+        if active_dialog is not None:
+            self._activate_settings_dialog(active_dialog)
+            return
         try:
             tts_settings = self.settings_service.load_tts_settings(
                 validate_enabled=False,
@@ -2648,7 +2653,13 @@ class PetWindow(QWidget):
             reply_segment_pause_ms=self.reply_segment_pause_ms,
             theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        self.settings_dialog = dialog
+        try:
+            dialog_result = dialog.exec()
+        finally:
+            if getattr(self, "settings_dialog", None) is dialog:
+                self.settings_dialog = None
+        if dialog_result != QDialog.DialogCode.Accepted:
             return
         result_subtitle_typing_interval_ms = getattr(
             dialog,
@@ -2778,6 +2789,19 @@ class PetWindow(QWidget):
         if getattr(dialog, "result_plugin_config_changed", False):
             message += "\n\n插件启用状态需要重启 Sakura 后才会生效。"
         show_themed_information(self, "保存成功", message)
+
+    def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
+        """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
+
+        show = getattr(dialog, "show", None)
+        if callable(show):
+            show()
+        raise_window = getattr(dialog, "raise_", None)
+        if callable(raise_window):
+            raise_window()
+        activate_window = getattr(dialog, "activateWindow", None)
+        if callable(activate_window):
+            activate_window()
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:

@@ -5,6 +5,7 @@ import sys
 import types
 import urllib.error
 import uuid
+import wave
 from dataclasses import replace
 from pathlib import Path
 
@@ -78,7 +79,9 @@ from app.voice.tts import (
     TTSPreparedAudio,
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
+    _format_gpt_sovits_http_error,
     _load_tone_references,
+    _local_tts_subprocess_env,
     _resolve_request_text_lang,
     _write_genie_audio,
 )
@@ -790,6 +793,27 @@ def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None
     assert "bad weights" in messages[0]
 
 
+def test_local_tts_subprocess_env_forces_utf8(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp936")
+
+    env = _local_tts_subprocess_env()
+
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_gptsovits_charmap_http_error_gets_actionable_message() -> None:
+    message = _format_gpt_sovits_http_error(
+        400,
+        '{"message":"tts failed","Exception":"\'charmap\' codec can\'t encode characters"}',
+    )
+
+    assert "运行时编码不是 UTF-8" in message
+    assert "由 Sakura 重新启动" in message
+    assert "原始响应" in message
+
+
 def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.voice.tts as tts_module
 
@@ -853,6 +877,169 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
     provider._play_next()
 
     assert calls == ["timer", "audio", "player", "source", "play"]
+
+
+def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.voice.tts as tts_module
+
+    events: list[str] = []
+    sources: list[object] = []
+    cleaned: list[Path] = []
+
+    class SignalStub:
+        def connect(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class AudioOutputStub:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class MediaPlayerStub:
+        class MediaStatus:
+            EndOfMedia = object()
+
+        class PlaybackState:
+            PlayingState = object()
+            StoppedState = object()
+
+        class Error:
+            pass
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.mediaStatusChanged = SignalStub()
+            self.playbackStateChanged = SignalStub()
+            self.errorOccurred = SignalStub()
+
+        def setAudioOutput(self, _output: object) -> None:
+            pass
+
+        def setSource(self, source: object) -> None:
+            sources.append(source)
+
+        def play(self) -> None:
+            events.append("play")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
+    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._pending_audio.append(
+        (
+            Path("first.wav"),
+            lambda: events.append("first_started"),
+            lambda: events.append("first_finished"),
+            None,
+        )
+    )
+    provider._pending_audio.append(
+        (
+            Path("second.wav"),
+            lambda: events.append("second_started"),
+            lambda: events.append("second_finished"),
+            None,
+        )
+    )
+
+    provider._play_next()
+    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    provider._handle_playback_state(MediaPlayerStub.PlaybackState.StoppedState)
+
+    assert events == ["play", "first_started", "stop", "first_finished", "play"]
+    assert cleaned == [Path("first.wav")]
+    assert provider._current_audio == Path("second.wav")
+    assert len(sources) == 3
+
+
+def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.voice.tts as tts_module
+
+    events: list[str] = []
+    cleaned: list[Path] = []
+    timers: list[tuple[int, object]] = []
+    root = _runtime_root("playback_finish_fallback")
+    first_audio = root / "first.wav"
+    second_audio = root / "second.wav"
+    _write_silence_wav(first_audio, frame_count=1600, frame_rate=16000)
+    _write_silence_wav(second_audio, frame_count=1600, frame_rate=16000)
+
+    class TimerStub:
+        @staticmethod
+        def singleShot(delay_ms: int, callback: object) -> None:
+            timers.append((delay_ms, callback))
+
+    class SignalStub:
+        def connect(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class AudioOutputStub:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class MediaPlayerStub:
+        class MediaStatus:
+            EndOfMedia = object()
+
+        class PlaybackState:
+            PlayingState = object()
+            StoppedState = object()
+
+        class Error:
+            pass
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.mediaStatusChanged = SignalStub()
+            self.playbackStateChanged = SignalStub()
+            self.errorOccurred = SignalStub()
+
+        def setAudioOutput(self, _output: object) -> None:
+            pass
+
+        def setSource(self, _source: object) -> None:
+            pass
+
+        def play(self) -> None:
+            events.append("play")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
+    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._pending_audio.append(
+        (
+            first_audio,
+            lambda: events.append("first_started"),
+            lambda: events.append("first_finished"),
+            None,
+        )
+    )
+    provider._pending_audio.append(
+        (
+            second_audio,
+            lambda: events.append("second_started"),
+            lambda: events.append("second_finished"),
+            None,
+        )
+    )
+
+    provider._play_next()
+    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    assert timers[0][0] == 3000
+
+    timers[0][1]()
+
+    assert events == ["play", "first_started", "stop", "first_finished", "play"]
+    assert cleaned == [first_audio]
+    assert provider._current_audio == second_audio
+    assert len(timers) == 2
 
 
 def test_voice_playback_controller_falls_back_to_subtitle_callbacks_on_tts_error() -> None:
@@ -1092,3 +1279,12 @@ def _runtime_root(name: str) -> Path:
 def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _write_silence_wav(path: Path, *, frame_count: int, frame_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(frame_rate)
+        wav_file.writeframes(b"\x00\x00" * frame_count)

@@ -1323,7 +1323,7 @@ def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
     app.processEvents()
 
 
-def test_settings_dialog_marks_windows_mcp_as_unavailable() -> None:
+def test_settings_dialog_exposes_experimental_windows_mcp_restart_setting() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -1344,20 +1344,22 @@ def test_settings_dialog_marks_windows_mcp_as_unavailable() -> None:
         base_dir=root,
         **_settings_dialog_character_kwargs(root),
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
     )
 
     labels = [label.text() for label in dialog.findChildren(qtwidgets.QLabel)]
 
     assert not dialog.windows_mcp_enabled_check.isChecked()
-    assert not dialog.windows_mcp_enabled_check.isEnabled()
-    assert any("待测试，未开放" in text for text in labels)
+    assert dialog.windows_mcp_enabled_check.isEnabled()
+    assert "实验性" in dialog.windows_mcp_enabled_check.text()
+    assert "实验性功能" in dialog.windows_mcp_enabled_check.toolTip()
+    assert any("实验性功能" in text for text in labels)
     assert any("重启 Sakura" in text for text in labels)
 
     dialog.windows_mcp_enabled_check.setChecked(True)
     dialog.accept()
 
-    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=False)
+    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
     dialog.deleteLater()
     app.processEvents()
 
@@ -3441,6 +3443,57 @@ def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -
     window.show_settings()
 
     assert calls == {"save_api": 0, "update_api": 0, "reload_memory": 0}
+
+
+def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+    tts_settings = _minimal_tts_settings()
+    events: list[str] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            events.append("load_tts")
+            return tts_settings
+
+    class ApiClientStub:
+        settings = api_settings
+
+    class MemoryStoreStub:
+        pass
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("dialog_init")
+
+        def show(self) -> None:
+            events.append("show")
+
+        def raise_(self) -> None:
+            events.append("raise")
+
+        def activateWindow(self) -> None:
+            events.append("activate")
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            events.append("exec")
+            window.show_settings()
+            return pet_window_module.QDialog.DialogCode.Rejected
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        MemoryStoreStub(),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+
+    window.show_settings()
+
+    assert events == ["load_tts", "dialog_init", "exec", "show", "raise", "activate"]
+    assert getattr(window, "settings_dialog", None) is None
 
 
 def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -6268,6 +6321,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
 
     class MinimalSettingsWindow:
         show_settings = pet_window_cls.show_settings
+        _activate_settings_dialog = pet_window_cls._activate_settings_dialog
         _retire_tts_provider = pet_window_cls._retire_tts_provider
         _apply_subtitle_display_speed = pet_window_cls._apply_subtitle_display_speed
 
