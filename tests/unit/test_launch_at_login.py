@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import shlex
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,8 @@ def test_linux_autostart_desktop_file_is_written_and_removed(tmp_path: Path) -> 
     content = desktop_path.read_text(encoding="utf-8")
     assert "Type=Application" in content
     assert "Name=Sakura Desktop Pet" in content
-    assert f"Exec=/bin/bash {root / 'scripts' / 'start.sh'}" in content
+    quoted_start_script = shlex.quote(str(root / "scripts" / "start.sh"))
+    assert f"Exec=/bin/bash {quoted_start_script}" in content
     assert "X-GNOME-Autostart-enabled=true" in content
 
     set_launch_at_login_enabled(root, False, platform="linux", home_dir=home)
