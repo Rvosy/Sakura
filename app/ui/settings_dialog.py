@@ -41,6 +41,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.memory import MemoryStore
+from app.agent.memory_organizer import (
+    MemoryOrganizationPlan,
+    MemoryOrganizationResult,
+    MemoryOrganizer,
+)
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
 from app.core.debug_log import debug_log
 from app.config.character_archive import (
@@ -327,6 +332,137 @@ class MemoryListWorker(QObject):
             self.finished.emit()
 
 
+class MemoryOrganizationWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, settings: ApiSettings, memories: list[dict[str, object]]) -> None:
+        super().__init__()
+        self.settings = settings
+        self.memories = memories
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            plan = MemoryOrganizer(OpenAICompatibleClient(self.settings)).organize_memories(
+                self.memories
+            )
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(plan)
+        finally:
+            self.finished.emit()
+
+
+class MemoryOrganizationPreviewDialog(QDialog):
+    """长期记忆整理预览弹窗，用表格替代纯文本确认框。"""
+
+    def __init__(self, plan: MemoryOrganizationPlan, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.plan = plan
+        self.setWindowTitle("整理长期记忆")
+        self.setMinimumSize(760, 520)
+        self.resize(900, 620)
+
+        summary_label = QLabel(
+            (
+                f"已分析 {plan.source_count} 条长期记忆。"
+                f"将更新 {len(plan.updates)} 条，删除 {len(plan.deletes)} 条，保留 {len(plan.keeps)} 条。"
+            ),
+            self,
+        )
+        summary_label.setWordWrap(True)
+
+        hint_label = QLabel("确认后才会修改长期记忆。", self)
+        hint_label.setWordWrap(True)
+
+        tabs = QTabWidget(self)
+        tabs.addTab(
+            self._build_action_table(plan.updates, action_title="更新"),
+            f"更新 ({len(plan.updates)})",
+        )
+        tabs.addTab(
+            self._build_action_table(plan.deletes, action_title="删除"),
+            f"删除 ({len(plan.deletes)})",
+        )
+        tabs.addTab(
+            self._build_action_table(plan.keeps, action_title="保留"),
+            f"保留 ({len(plan.keeps)})",
+        )
+        if plan.warnings:
+            tabs.addTab(self._build_warning_panel(plan.warnings), f"注意 ({len(plan.warnings)})")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if ok_button is not None:
+            ok_button.setText("应用整理")
+        if cancel_button is not None:
+            cancel_button.setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(summary_label)
+        layout.addWidget(tabs, 1)
+        layout.addWidget(hint_label)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def _build_action_table(
+        self,
+        actions: tuple[object, ...],
+        *,
+        action_title: str,
+    ) -> QTableWidget:
+        table = QTableWidget(len(actions), 4, self)
+        table.setHorizontalHeaderLabels(["ID", "内容", "原因", "关联 ID"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setWordWrap(True)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        table.setColumnWidth(0, 120)
+        table.setColumnWidth(3, 120)
+
+        for row, action in enumerate(actions):
+            memory_id = str(getattr(action, "memory_id", ""))
+            content = str(getattr(action, "content", ""))
+            reason = str(getattr(action, "reason", ""))
+            related_ids = getattr(action, "related_ids", ())
+            related_text = ", ".join(str(item) for item in related_ids) if related_ids else ""
+            table.setItem(
+                row,
+                0,
+                _table_preview_item(_compact_memory_id(memory_id), tooltip=memory_id),
+            )
+            table.setItem(row, 1, _table_preview_item(content))
+            table.setItem(row, 2, _table_preview_item(reason or f"模型建议{action_title}。"))
+            table.setItem(row, 3, _table_preview_item(related_text))
+        table.resizeRowsToContents()
+        return table
+
+    def _build_warning_panel(self, warnings: tuple[str, ...]) -> QTextEdit:
+        editor = QTextEdit(self)
+        editor.setReadOnly(True)
+        editor.setPlainText("\n".join(f"- {warning}" for warning in warnings))
+        return editor
+
+
 class ThemeAiWorker(QObject):
     succeeded = Signal(object)
     failed = Signal(str)
@@ -517,6 +653,8 @@ class SettingsDialog(QDialog):
         self._save_button_text: str | None = None
         self._memory_list_thread: QThread | None = None
         self._memory_list_worker: MemoryListWorker | None = None
+        self._memory_organization_thread: QThread | None = None
+        self._memory_organization_worker: MemoryOrganizationWorker | None = None
         self._theme_ai_thread: QThread | None = None
         self._theme_ai_worker: ThemeAiWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
@@ -1410,6 +1548,10 @@ class SettingsDialog(QDialog):
 
         self.memory_refresh_button = QPushButton("刷新", tab)
         self.memory_refresh_button.clicked.connect(self._load_memory_entries)
+        self.memory_organize_button = QPushButton("整理记忆", tab)
+        self.memory_organize_button.setEnabled(False)
+        self.memory_organize_button.setToolTip("分析当前角色全部长期记忆，预览去重和冲突整理建议。")
+        self.memory_organize_button.clicked.connect(self._start_memory_organization)
         self.memory_status_label = QLabel(MEMORY_READING_TEXT, tab)
 
         self.memory_table = QTableWidget(0, 4, tab)
@@ -1461,6 +1603,7 @@ class SettingsDialog(QDialog):
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self.memory_search_edit, 1)
         filter_layout.addWidget(self.memory_refresh_button)
+        filter_layout.addWidget(self.memory_organize_button)
 
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.memory_status_label, 1)
@@ -1508,6 +1651,7 @@ class SettingsDialog(QDialog):
         loading_text = self._memory_loading_text()
         self.memory_status_label.setText(loading_text)
         self.memory_refresh_button.setEnabled(False)
+        self.memory_organize_button.setEnabled(False)
         self._show_memory_placeholder(loading_text)
 
         thread = QThread()
@@ -1559,12 +1703,159 @@ class SettingsDialog(QDialog):
 
     @Slot()
     def _reset_memory_list_worker(self) -> None:
-        self.memory_refresh_button.setEnabled(True)
         self._memory_list_thread = None
         self._memory_list_worker = None
+        self.memory_refresh_button.setEnabled(self._memory_organization_thread is None)
+        self._sync_memory_bulk_actions()
         if self._memory_reload_pending:
             self._memory_reload_pending = False
             self._load_memory_entries()
+
+    def _start_memory_organization(self) -> None:
+        if self.memory_store is None or not hasattr(self, "memory_table"):
+            return
+        if self._memory_organization_thread is not None:
+            return
+        if self._memory_list_thread is not None:
+            QMessageBox.information(self, "读取中", "长期记忆仍在读取，请稍后再整理。")
+            return
+        if not self._all_memories:
+            QMessageBox.information(self, "暂无记忆", "当前角色暂无可整理的长期记忆。")
+            return
+
+        api_settings = self._validated_api_settings()
+        if api_settings is None:
+            return
+
+        self.memory_status_label.setText(f"正在分析 {len(self._all_memories)} 条长期记忆...")
+        self._set_memory_controls_enabled(False)
+
+        thread = QThread()
+        worker = MemoryOrganizationWorker(api_settings, list(self._all_memories))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_memory_organization_success)
+        worker.failed.connect(self._handle_memory_organization_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_memory_organization_worker)
+
+        self._memory_organization_thread = thread
+        self._memory_organization_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_memory_organization_success(self, plan: object) -> None:
+        if not isinstance(plan, MemoryOrganizationPlan):
+            self.memory_status_label.setText("长期记忆整理结果格式无效。")
+            QMessageBox.warning(self, "整理失败", "长期记忆整理结果格式无效。")
+            return
+        if not plan.actions:
+            self.memory_status_label.setText("没有生成可应用的整理建议。")
+            QMessageBox.information(self, "整理完成", "没有生成可应用的整理建议。")
+            return
+        if not plan.has_changes():
+            message = _format_memory_organization_no_change_message(plan)
+            self.memory_status_label.setText(message.splitlines()[0])
+            QMessageBox.information(
+                self,
+                "整理完成",
+                message,
+            )
+            return
+
+        preview_dialog = MemoryOrganizationPreviewDialog(plan, self)
+        if preview_dialog.exec() != QDialog.DialogCode.Accepted:
+            self.memory_status_label.setText("已取消长期记忆整理。")
+            return
+
+        apply_result = self._apply_memory_organization_plan(plan)
+        self.memory_status_label.setText(_format_memory_organization_apply_result(apply_result))
+        self._clear_memory_selection()
+        self._load_memory_entries()
+        if apply_result.failed:
+            QMessageBox.warning(
+                self,
+                "整理完成",
+                _format_memory_organization_apply_result(apply_result),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "整理完成",
+                _format_memory_organization_apply_result(apply_result),
+            )
+
+    @Slot(str)
+    def _handle_memory_organization_failed(self, message: str) -> None:
+        self.memory_status_label.setText(f"整理失败：{message}")
+        QMessageBox.warning(self, "整理失败", message)
+
+    @Slot()
+    def _reset_memory_organization_worker(self) -> None:
+        self._memory_organization_thread = None
+        self._memory_organization_worker = None
+        if (
+            hasattr(self, "memory_status_label")
+            and self._memory_list_thread is None
+            and self.memory_status_label.text().startswith("正在分析")
+        ):
+            self.memory_status_label.setText(f"已加载 {len(self._all_memories)} 条记忆")
+        self._set_memory_controls_enabled(True)
+        self._sync_memory_bulk_actions()
+
+    def _apply_memory_organization_plan(
+        self,
+        plan: MemoryOrganizationPlan,
+    ) -> MemoryOrganizationResult:
+        if self.memory_store is None:
+            return MemoryOrganizationResult(failed=1, failures=("长期记忆系统不可用。",))
+
+        updated = 0
+        deleted = 0
+        failures: list[str] = []
+        for action in plan.actions:
+            try:
+                if action.action == "update":
+                    self.memory_store.update_memory(
+                        {
+                            "id": action.memory_id,
+                            "content": action.content,
+                            "source": "organization",
+                        },
+                        allow_sensitive=True,
+                    )
+                    updated += 1
+                elif action.action == "delete":
+                    self.memory_store.forget_memory({"id": action.memory_id})
+                    deleted += 1
+            except (RuntimeError, ValueError) as exc:
+                failures.append(f"{_compact_memory_id(action.memory_id)}：{exc}")
+        return MemoryOrganizationResult(
+            updated=updated,
+            deleted=deleted,
+            kept=len(plan.keeps),
+            failed=len(failures),
+            failures=tuple(failures),
+        )
+
+    def _set_memory_controls_enabled(self, enabled: bool) -> None:
+        if not hasattr(self, "memory_refresh_button"):
+            return
+        self.memory_refresh_button.setEnabled(enabled and self._memory_list_thread is None)
+        self.memory_organize_button.setEnabled(
+            enabled
+            and self._memory_list_thread is None
+            and self._memory_organization_thread is None
+            and bool(self._all_memories)
+        )
+        self.memory_new_button.setEnabled(enabled)
+        self.memory_save_button.setEnabled(enabled)
+        self.memory_search_edit.setEnabled(enabled)
+        self.memory_delete_button.setEnabled(enabled and bool(self._selected_memories()))
+        self.memory_clear_selection_button.setEnabled(enabled and bool(self._selected_memories()))
+        self.memory_select_all_check.setEnabled(enabled and bool(self._visible_memories))
 
     def _refresh_memory_table(self) -> None:
         if not hasattr(self, "memory_table"):
@@ -1833,6 +2124,7 @@ class SettingsDialog(QDialog):
             return
         selected_memories = self._selected_memories()
         selected_count = len(selected_memories)
+        busy = self._memory_organization_thread is not None
         visible_ids = {
             str(memory.get("id", ""))
             for memory in self._visible_memories
@@ -1841,12 +2133,17 @@ class SettingsDialog(QDialog):
         all_visible_selected = bool(visible_ids) and visible_ids.issubset(self._selected_memory_ids)
 
         self.memory_selection_label.setText(f"已选择 {selected_count} 条")
-        self.memory_select_all_check.setEnabled(bool(visible_ids))
+        self.memory_select_all_check.setEnabled(bool(visible_ids) and not busy)
         self.memory_select_all_check.blockSignals(True)
         self.memory_select_all_check.setChecked(all_visible_selected)
         self.memory_select_all_check.blockSignals(False)
-        self.memory_delete_button.setEnabled(selected_count > 0)
-        self.memory_clear_selection_button.setEnabled(selected_count > 0)
+        self.memory_delete_button.setEnabled(selected_count > 0 and not busy)
+        self.memory_clear_selection_button.setEnabled(selected_count > 0 and not busy)
+        self.memory_organize_button.setEnabled(
+            self._memory_list_thread is None
+            and not busy
+            and bool(self._all_memories)
+        )
 
         if self._memory_editor_mode != "new":
             self.memory_preview_label.setText("")
@@ -2183,6 +2480,9 @@ class SettingsDialog(QDialog):
         if self._theme_ai_thread is not None:
             QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再保存设置。")
             return
+        if self._memory_organization_thread is not None:
+            QMessageBox.information(self, "整理中", "长期记忆整理仍在进行，请等待完成后再保存设置。")
+            return
 
         accept_values = self._collect_accept_values()
         if accept_values is None:
@@ -2385,6 +2685,9 @@ class SettingsDialog(QDialog):
         if self._theme_ai_thread is not None:
             QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
             return
+        if self._memory_organization_thread is not None:
+            QMessageBox.information(self, "整理中", "长期记忆整理仍在进行，请等待完成后再关闭设置。")
+            return
         super().reject()
 
     def closeEvent(self, event):  # type: ignore[no-untyped-def]
@@ -2406,6 +2709,10 @@ class SettingsDialog(QDialog):
             return
         if self._theme_ai_thread is not None:
             QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._memory_organization_thread is not None:
+            QMessageBox.information(self, "整理中", "长期记忆整理仍在进行，请等待完成后再关闭设置。")
             event.ignore()
             return
         super().closeEvent(event)
@@ -3144,6 +3451,33 @@ def _compact_memory_id(memory_id: str) -> str:
     if len(memory_id) <= 16:
         return memory_id
     return f"{memory_id[:8]}...{memory_id[-4:]}"
+
+
+def _table_preview_item(text: str, *, tooltip: str | None = None) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setToolTip(tooltip if tooltip is not None else text)
+    return item
+
+
+def _format_memory_organization_no_change_message(plan: MemoryOrganizationPlan) -> str:
+    lines = [
+        f"已检查 {plan.source_count} 条长期记忆，暂未发现需要修改或删除的内容。",
+    ]
+    if plan.warnings:
+        lines.append("")
+        lines.append("部分分块未能完成结构化解析，相关记忆已默认保留：")
+        lines.extend(f"- {warning}" for warning in plan.warnings)
+    return "\n".join(lines)
+
+
+def _format_memory_organization_apply_result(result: MemoryOrganizationResult) -> str:
+    message = (
+        f"整理完成：更新 {result.updated} 条，删除 {result.deleted} 条，"
+        f"保留 {result.kept} 条，失败 {result.failed} 条。"
+    )
+    if not result.failures:
+        return message
+    return message + "\n" + "\n".join(result.failures)
 
 
 def _memory_row_background(row: int, checked: bool, theme: ThemeSettings) -> QBrush:

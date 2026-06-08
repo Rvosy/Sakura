@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.agent.memory_curator import (
     MemoryCurator,
     _entries_for_model,
 )
+from app.agent.memory_organizer import MemoryOrganizer, parse_memory_organization_plan
 from app.storage.chat_history import ChatHistoryEntry
 
 
@@ -106,6 +108,163 @@ def test_memory_curator_ignores_non_dialog_entries() -> None:
     assert result.processed_entries == 1
     assert result.created == 0
     assert fake.calls == []
+
+
+def test_memory_organization_plan_parses_standard_json() -> None:
+    raw = """
+    {
+      "actions": [
+        {
+          "action": "update",
+          "id": "memory-001",
+          "content": "主人喜欢精简、信息密度高的设置界面。",
+          "reason": "合并重复偏好",
+          "related_ids": ["memory-002"]
+        },
+        {
+          "action": "delete",
+          "id": "memory-002",
+          "content": "主人喜欢精简界面。",
+          "reason": "已并入 memory-001"
+        },
+        {
+          "action": "keep",
+          "id": "memory-003",
+          "content": "主人默认使用中文沟通。",
+          "reason": "独立有效事实"
+        }
+      ]
+    }
+    """
+
+    plan = parse_memory_organization_plan(
+        raw,
+        source_memories=[
+            {"id": "memory-001", "content": "主人喜欢精简设置界面。"},
+            {"id": "memory-002", "content": "主人喜欢精简界面。"},
+            {"id": "memory-003", "content": "主人默认使用中文沟通。"},
+        ],
+    )
+
+    assert len(plan.updates) == 1
+    assert len(plan.deletes) == 1
+    assert len(plan.keeps) == 1
+    assert plan.updates[0].memory_id == "memory-001"
+    assert plan.updates[0].related_ids == ("memory-002",)
+
+
+def test_memory_organization_plan_filters_invalid_actions() -> None:
+    raw = """
+    {
+      "actions": [
+        {"action": "merge", "id": "memory-001", "content": "无效动作"},
+        {"action": "update", "content": "缺少 ID"},
+        {"action": "update", "id": "unknown", "content": "未知 ID"},
+        {"action": "delete", "id": "memory-002", "content": ""},
+        {"action": "keep", "id": "memory-001", "content": "有效保留"}
+      ]
+    }
+    """
+
+    plan = parse_memory_organization_plan(
+        raw,
+        source_memories=[
+            {"id": "memory-001", "content": "有效保留"},
+            {"id": "memory-002", "content": ""},
+        ],
+    )
+
+    assert [action.memory_id for action in plan.actions] == ["memory-001"]
+    assert plan.keeps[0].content == "有效保留"
+
+
+def test_memory_organization_plan_parses_markdown_json_block() -> None:
+    raw = """```json
+    {"actions":[{"action":"delete","id":"memory-001","content":"重复记忆","reason":"重复"}]}
+    ```"""
+
+    plan = parse_memory_organization_plan(
+        raw,
+        source_memories=[{"id": "memory-001", "content": "重复记忆"}],
+    )
+
+    assert len(plan.deletes) == 1
+    assert plan.deletes[0].reason == "重复"
+
+
+def test_memory_organization_plan_parses_raw_action_list() -> None:
+    raw = """[
+      {"action":"keep","id":"memory-001","content":"主人默认使用中文沟通。","reason":"独立有效事实"}
+    ]"""
+
+    plan = parse_memory_organization_plan(
+        raw,
+        source_memories=[{"id": "memory-001", "content": "主人默认使用中文沟通。"}],
+    )
+
+    assert len(plan.keeps) == 1
+    assert plan.keeps[0].memory_id == "memory-001"
+
+
+def test_memory_organizer_chunks_long_memory_list() -> None:
+    memories = [
+        {"id": f"memory-{index:03d}", "content": f"分块记忆 {index:03d}"}
+        for index in range(25)
+    ]
+    api_client = ChunkEchoApiClient()
+
+    plan = MemoryOrganizer(api_client).organize_memories(memories)
+
+    assert len(api_client.calls) == 2
+    assert [len(call["memories"]) for call in api_client.calls] == [24, 1]
+    assert plan.source_count == 25
+    assert len(plan.keeps) == 25
+
+
+def test_memory_organizer_retries_plain_request_after_structured_parse_failure() -> None:
+    memories = [{"id": "memory-001", "content": "主人喜欢精简界面"}]
+    api_client = PlainRetryApiClient()
+
+    plan = MemoryOrganizer(api_client).organize_memories(memories)
+
+    assert len(api_client.calls) == 2
+    assert "response_format" in api_client.calls[0]["chat_params"]
+    assert "response_format" not in api_client.calls[1]["chat_params"]
+    assert len(plan.updates) == 1
+    assert plan.updates[0].content == "主人喜欢精简、信息密度高的界面。"
+
+
+def test_memory_organizer_treats_natural_no_change_response_as_keep() -> None:
+    memories = [
+        {"id": "memory-001", "content": "主人默认使用中文沟通"},
+        {"id": "memory-002", "content": "主人喜欢精简界面"},
+    ]
+    api_client = NaturalNoChangeApiClient()
+
+    plan = MemoryOrganizer(api_client).organize_memories(memories)
+
+    assert len(api_client.calls) == 1
+    assert plan.warnings == ()
+    assert len(plan.keeps) == 2
+    assert {action.memory_id for action in plan.keeps} == {"memory-001", "memory-002"}
+
+
+def test_memory_organizer_keeps_failed_chunk_and_continues() -> None:
+    memories = [
+        {"id": f"memory-{index:03d}", "content": f"分块记忆 {index:03d}"}
+        for index in range(25)
+    ]
+    api_client = OneBadChunkApiClient()
+
+    plan = MemoryOrganizer(api_client).organize_memories(memories)
+
+    assert len(api_client.calls) > 2
+    assert len(plan.warnings) == 4
+    assert all("返回格式无效" in warning for warning in plan.warnings)
+    assert len(plan.keeps) == 24
+    assert len(plan.updates) == 1
+    assert plan.updates[0].memory_id == "memory-024"
+    assert plan.updates[0].content == "分块记忆 024，已整理。"
 
 
 def test_memory_curation_state_waits_until_trigger_turns() -> None:
@@ -355,6 +514,111 @@ class FakeFallbackApiClient:
             }
         )
         return '{"memories":["用户妈妈的生日是6月4日。"]}'
+
+
+class ChunkEchoApiClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def complete_raw(self, _system_prompt, messages, temperature=0.8, **chat_params):  # type: ignore[no-untyped-def]
+        payload = _memory_organization_prompt_payload(messages)
+        memories = payload["memories"]
+        self.calls.append(
+            {
+                "chunk_index": payload["chunk_index"],
+                "chunk_count": payload["chunk_count"],
+                "memories": memories,
+                "temperature": temperature,
+                "chat_params": chat_params,
+            }
+        )
+        actions = [
+            {
+                "action": "keep",
+                "id": memory["id"],
+                "content": memory["content"],
+                "reason": "测试保留",
+            }
+            for memory in memories
+        ]
+        return json.dumps({"actions": actions}, ensure_ascii=False)
+
+
+class PlainRetryApiClient(ChunkEchoApiClient):
+    def complete_raw(self, _system_prompt, messages, temperature=0.8, **chat_params):  # type: ignore[no-untyped-def]
+        payload = _memory_organization_prompt_payload(messages)
+        memories = payload["memories"]
+        self.calls.append(
+            {
+                "chunk_index": payload["chunk_index"],
+                "chunk_count": payload["chunk_count"],
+                "memories": memories,
+                "temperature": temperature,
+                "chat_params": chat_params,
+            }
+        )
+        if "response_format" in chat_params:
+            return "这是自然语言，不是 JSON。"
+        return json.dumps(
+            {
+                "actions": [
+                    {
+                        "action": "update",
+                        "id": memories[0]["id"],
+                        "content": "主人喜欢精简、信息密度高的界面。",
+                        "reason": "普通请求重试后返回有效 JSON",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+
+class NaturalNoChangeApiClient(ChunkEchoApiClient):
+    def complete_raw(self, _system_prompt, messages, temperature=0.8, **chat_params):  # type: ignore[no-untyped-def]
+        payload = _memory_organization_prompt_payload(messages)
+        memories = payload["memories"]
+        self.calls.append(
+            {
+                "chunk_index": payload["chunk_index"],
+                "chunk_count": payload["chunk_count"],
+                "memories": memories,
+                "temperature": temperature,
+                "chat_params": chat_params,
+            }
+        )
+        return "未发现明显重复或冲突，建议全部保留。"
+
+
+class OneBadChunkApiClient(ChunkEchoApiClient):
+    def complete_raw(self, _system_prompt, messages, temperature=0.8, **chat_params):  # type: ignore[no-untyped-def]
+        payload = _memory_organization_prompt_payload(messages)
+        memories = payload["memories"]
+        self.calls.append(
+            {
+                "chunk_index": payload["chunk_index"],
+                "chunk_count": payload["chunk_count"],
+                "memories": memories,
+                "temperature": temperature,
+                "chat_params": chat_params,
+            }
+        )
+        if payload["chunk_index"] == 1:
+            return "这不是 JSON"
+        actions = [
+            {
+                "action": "update",
+                "id": memories[0]["id"],
+                "content": f"{memories[0]['content']}，已整理。",
+                "reason": "测试更新",
+            }
+        ]
+        return json.dumps({"actions": actions}, ensure_ascii=False)
+
+
+def _memory_organization_prompt_payload(messages) -> dict[str, object]:  # type: ignore[no-untyped-def]
+    content = str(messages[0]["content"])
+    return json.loads(content.split("\n\n", 1)[1])
 
 
 class FakeOpenAIClient:

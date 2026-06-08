@@ -19,6 +19,7 @@ _THREAD_ATTR_NAMES = (
     "_api_test_thread",
     "_tts_test_thread",
     "_memory_list_thread",
+    "_memory_organization_thread",
     "_character_export_thread",
 )
 

@@ -3808,6 +3808,320 @@ def test_settings_dialog_collapses_manual_memory_entry_after_save(monkeypatch) -
     app.processEvents()
 
 
+def test_settings_dialog_exposes_memory_organization_button() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            return [{"id": "memory-001", "content": "主人喜欢精简界面"}]
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
+    )
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+
+    assert dialog.memory_organize_button.text() == "整理记忆"
+    assert dialog.memory_organize_button.isEnabled()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_organizes_all_loaded_memories_after_preview_accept(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.agent.memory_organizer import MemoryOrganizationAction, MemoryOrganizationPlan
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.records = [
+                {"id": "memory-001", "content": "主人喜欢精简设置界面"},
+                {"id": "memory-002", "content": "主人喜欢精简界面"},
+                {"id": "memory-003", "content": "主人默认使用中文沟通"},
+            ]
+            self.updated: list[dict[str, object]] = []
+            self.deleted: list[str] = []
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            return [record for record in self.records if record["id"] not in self.deleted]
+
+        def update_memory(self, arguments, *, allow_sensitive=False):  # type: ignore[no-untyped-def]
+            self.updated.append({**arguments, "allow_sensitive": allow_sensitive})
+            for record in self.records:
+                if record["id"] == arguments["id"]:
+                    record["content"] = arguments["content"]
+            return {"memory": arguments}
+
+        def forget_memory(self, arguments):  # type: ignore[no-untyped-def]
+            self.deleted.append(arguments["id"])
+            return {"forgotten": {"id": arguments["id"]}}
+
+    plan = MemoryOrganizationPlan(
+        actions=(
+            MemoryOrganizationAction(
+                action="update",
+                memory_id="memory-001",
+                content="主人喜欢精简、信息密度高的设置界面。",
+                reason="合并重复偏好",
+                related_ids=("memory-002",),
+            ),
+            MemoryOrganizationAction(
+                action="delete",
+                memory_id="memory-002",
+                content="主人喜欢精简界面",
+                reason="已并入 memory-001",
+            ),
+            MemoryOrganizationAction(
+                action="keep",
+                memory_id="memory-003",
+                content="主人默认使用中文沟通",
+                reason="独立有效事实",
+            ),
+        ),
+        source_count=3,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeThread(qtcore.QObject):
+        started = qtcore.Signal()
+        finished = qtcore.Signal()
+
+        def start(self) -> None:
+            self.started.emit()
+
+        def quit(self) -> None:
+            self.finished.emit()
+
+    class SuccessWorker(qtcore.QObject):
+        succeeded = qtcore.Signal(object)
+        failed = qtcore.Signal(str)
+        finished = qtcore.Signal()
+
+        def __init__(self, _settings, memories) -> None:  # type: ignore[no-untyped-def]
+            super().__init__()
+            captured["memories"] = memories
+
+        def moveToThread(self, _thread) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def run(self) -> None:
+            self.succeeded.emit(plan)
+            self.finished.emit()
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+
+    dialog.memory_search_edit.setText("中文")
+    reload_calls: list[str] = []
+    dialog._load_memory_entries = lambda: reload_calls.append("reload")  # type: ignore[method-assign]
+    monkeypatch.setattr(settings_dialog_module, "QThread", FakeThread)
+    monkeypatch.setattr(settings_dialog_module, "MemoryOrganizationWorker", SuccessWorker)
+    class AcceptPreviewDialog:
+        def __init__(self, plan, parent=None) -> None:  # type: ignore[no-untyped-def]
+            captured["preview_plan"] = plan
+            captured["preview_parent"] = parent
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return qtwidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        settings_dialog_module,
+        "MemoryOrganizationPreviewDialog",
+        AcceptPreviewDialog,
+    )
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+
+    dialog._start_memory_organization()
+
+    assert [memory["id"] for memory in captured["memories"]] == [
+        "memory-001",
+        "memory-002",
+        "memory-003",
+    ]
+    assert captured["preview_plan"] is plan
+    assert captured["preview_parent"] is dialog
+    assert len(captured["preview_plan"].updates) == 1
+    assert len(captured["preview_plan"].deletes) == 1
+    assert len(captured["preview_plan"].keeps) == 1
+    assert memory_store.updated == [
+        {
+            "id": "memory-001",
+            "content": "主人喜欢精简、信息密度高的设置界面。",
+            "source": "organization",
+            "allow_sensitive": True,
+        }
+    ]
+    assert memory_store.deleted == ["memory-002"]
+    assert reload_calls == ["reload"]
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_memory_organization_cancel_does_not_modify(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.agent.memory_organizer import MemoryOrganizationAction, MemoryOrganizationPlan
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.updated: list[dict[str, object]] = []
+            self.deleted: list[str] = []
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            return [{"id": "memory-001", "content": "旧内容"}]
+
+        def update_memory(self, arguments, *, allow_sensitive=False):  # type: ignore[no-untyped-def]
+            self.updated.append(arguments)
+
+        def forget_memory(self, arguments):  # type: ignore[no-untyped-def]
+            self.deleted.append(arguments["id"])
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+    class RejectPreviewDialog:
+        def __init__(self, plan, parent=None) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            return qtwidgets.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(
+        settings_dialog_module,
+        "MemoryOrganizationPreviewDialog",
+        RejectPreviewDialog,
+    )
+
+    dialog._handle_memory_organization_success(
+        MemoryOrganizationPlan(
+            actions=(
+                MemoryOrganizationAction(
+                    action="update",
+                    memory_id="memory-001",
+                    content="新内容",
+                    reason="去重",
+                ),
+            ),
+            source_count=1,
+        )
+    )
+
+    assert memory_store.updated == []
+    assert memory_store.deleted == []
+    assert dialog.memory_status_label.text() == "已取消长期记忆整理。"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_memory_organization_failure_does_not_modify(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.updated: list[dict[str, object]] = []
+            self.deleted: list[str] = []
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            return [{"id": "memory-001", "content": "旧内容"}]
+
+        def update_memory(self, arguments, *, allow_sensitive=False):  # type: ignore[no-untyped-def]
+            self.updated.append(arguments)
+
+        def forget_memory(self, arguments):  # type: ignore[no-untyped-def]
+            self.deleted.append(arguments["id"])
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        settings_dialog_module.QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+
+    dialog._handle_memory_organization_failed("模型返回格式错误")
+
+    assert warnings == ["模型返回格式错误"]
+    assert memory_store.updated == []
+    assert memory_store.deleted == []
+    assert dialog.memory_status_label.text() == "整理失败：模型返回格式错误"
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
