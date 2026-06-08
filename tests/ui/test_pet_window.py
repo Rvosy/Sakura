@@ -1876,7 +1876,7 @@ def test_settings_dialog_disables_tts_when_selected_character_has_no_voice(monke
     app.processEvents()
 
 
-def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_dialog_tts_test_failure_keeps_enabled_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -1891,6 +1891,8 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
     root = _ui_runtime_root("tts_save_failure")
     current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
     _build_settings_dialog_character(root, "nanami", "Nanami")
+    work_dir = root / "tts" / "g50"
+    work_dir.mkdir(parents=True, exist_ok=True)
     dialog = SettingsDialog(
         api_settings=ApiSettings(
             base_url="https://api.example.com/v1",
@@ -1905,6 +1907,8 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
     )
     dialog.tts_enabled_check.setChecked(True)
+    dialog.tts_provider_combo.setCurrentIndex(dialog.tts_provider_combo.findData("gpt-sovits"))
+    dialog.tts_work_dir_edit.setText(str(work_dir))
     nanami_index = dialog.character_combo.findData("nanami")
     assert nanami_index >= 0
     dialog.character_combo.setCurrentIndex(nanami_index)
@@ -1924,9 +1928,12 @@ def test_settings_dialog_tts_test_failure_disables_tts_and_saves(monkeypatch) ->
     dialog.accept()
 
     assert warnings and "服务启动失败" in warnings[0]
-    assert not dialog.tts_enabled_check.isChecked()
+    assert "TTS 设置已保留" in warnings[0]
+    assert dialog.tts_enabled_check.isChecked()
     assert dialog.result_tts_settings is not None
-    assert not dialog.result_tts_settings.enabled
+    assert dialog.result_tts_settings.enabled
+    assert dialog.result_tts_settings.provider == "gpt-sovits"
+    assert dialog.result_tts_settings.work_dir == work_dir
     dialog.deleteLater()
     app.processEvents()
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -2270,10 +2269,9 @@ class SettingsDialog(QDialog):
         QMessageBox.warning(
             self,
             "TTS 检测失败",
-            f"{message}\n\n已自动关闭 TTS，并继续保存其他设置。",
+            f"{message}\n\nTTS 设置已保留并继续保存。若保存后仍无法发声，请重启本地 TTS 服务或确认工作目录有效。",
         )
-        self.tts_enabled_check.setChecked(False)
-        accept_values["tts_settings"] = replace(original_settings, enabled=False)
+        accept_values["tts_settings"] = original_settings
         self._complete_accept(accept_values)
 
     @Slot()
