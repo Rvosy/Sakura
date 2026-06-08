@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 from app.agent.mcp.web_search_server import (
-    DuckDuckGoLiteParser,
+    BingSearchParser,
+    search_web,
     _normalize_result_href,
     _validate_public_http_url,
     handle_message,
 )
 
 
-def test_duckduckgo_result_href_is_unwrapped() -> None:
-    href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs%3Fa%3D1"
+def test_bing_result_href_is_unwrapped() -> None:
+    href = (
+        "https://www.bing.com/ck/a?u="
+        "a1aHR0cHM6Ly9leGFtcGxlLmNvbS9kb2NzP2E9MQ"
+    )
 
     assert _normalize_result_href(href) == "https://example.com/docs?a=1"
 
 
-def test_duckduckgo_lite_parser_extracts_result() -> None:
-    parser = DuckDuckGoLiteParser()
+def test_bing_search_parser_extracts_result() -> None:
+    parser = BingSearchParser()
 
     parser.feed(
         """
         <html>
-          <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">Example</a>
-          <td>Example snippet</td>
+          <ol>
+            <li class="b_algo">
+              <h2><a href="https://example.com">Example</a></h2>
+              <div><p>Example snippet</p></div>
+            </li>
+          </ol>
         </html>
         """
     )
@@ -30,6 +38,30 @@ def test_duckduckgo_lite_parser_extracts_result() -> None:
     assert parser.results[0].title == "Example"
     assert parser.results[0].url == "https://example.com"
     assert parser.results[0].snippet == "Example snippet"
+
+
+def test_bing_search_uses_bing_source_and_dedupes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fake_read_url_text(url: str, max_bytes: int) -> str:
+        assert url.startswith("https://www.bing.com/search?")
+        assert max_bytes == 512_000
+        return """
+        <html>
+          <li class="b_algo"><h2><a href="https://example.com">One</a></h2><p>First</p></li>
+          <li class="b_algo"><h2><a href="https://example.com/">Dup</a></h2><p>Duplicate</p></li>
+          <li class="b_algo"><h2><a href="https://www.bing.com/search?q=ad">Bing</a></h2><p>Skip</p></li>
+          <li class="b_algo"><h2><a href="https://example.org">Two</a></h2><p>Second</p></li>
+        </html>
+        """
+
+    monkeypatch.setattr("app.agent.mcp.web_search_server._read_url_text", fake_read_url_text)
+
+    payload = search_web("sakura", max_results=5)
+
+    assert payload["source"] == "Bing"
+    assert [item["url"] for item in payload["results"]] == [
+        "https://example.com",
+        "https://example.org",
+    ]
 
 
 def test_fetch_url_blocks_local_network_addresses() -> None:

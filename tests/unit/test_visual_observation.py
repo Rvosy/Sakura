@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from app.agent.screen_observation import ScreenObservation
@@ -59,7 +60,7 @@ def test_visual_observation_store_redacts_sensitive_text_and_omits_images() -> N
         store.append(
             VisualObservationRecord(
                 id="vis_secret",
-                created_at="2026-05-31T12:00:00+08:00",
+                created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                 source="manual_screenshot",
                 user_text="密码: 123456",
                 screen_name="DISPLAY1",

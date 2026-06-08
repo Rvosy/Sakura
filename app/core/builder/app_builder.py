@@ -30,7 +30,7 @@ from app.config.character_loader import (
     CharacterRegistry,
     load_character_system_prompt,
 )
-from app.config.settings_service import AppSettingsService
+from app.config.settings_service import AppSettingsService, StartupSettings
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
 from app.core.debug_log import debug_log
 from app.core.extensions import ExtensionRegistry
@@ -211,6 +211,10 @@ class AppBuilder:
             self._settings_service.load_debug_log_settings()
             if self._settings_service else None
         )
+        startup_settings = (
+            self._settings_service.load_startup_settings()
+            if self._settings_service else StartupSettings()
+        )
 
         features = FeatureServices(
             settings_service=self._settings_service,
@@ -219,6 +223,7 @@ class AppBuilder:
             plugin_manager=self._plugin_manager,
             mcp_settings=self._mcp_settings or MCPRuntimeSettings(),
             debug_log_settings=debug_log_settings,
+            startup_settings=startup_settings,
             memory_curation_settings=(self._memory_curator.curation_settings if self._memory_curator else None),
             memory_curation_state=self._memory_curation_state or MemoryCurationState(),
             memory_curator=self._memory_curator,

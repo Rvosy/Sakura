@@ -42,8 +42,10 @@ class MCPToolProvider:
         self.bridge_factory = bridge_factory or MCPBridge
         self._bridges: list[MCPBridgeLike] = []
         self._tool_targets: dict[str, tuple[MCPBridgeLike, str]] = {}
+        self._closed = False
 
     def register_tools(self, registry: ToolRegistry) -> int:
+        self._closed = False
         if not self.config.enabled:
             debug_log("MCP", "MCP 配置未启用")
             return 0
@@ -118,6 +120,7 @@ class MCPToolProvider:
 
     def close(self) -> None:
         debug_log("MCP", "关闭 MCP Provider", {"bridges": len(self._bridges)})
+        self._closed = True
         for bridge in self._bridges:
             _close_quietly(bridge)
         self._bridges = []
@@ -125,7 +128,12 @@ class MCPToolProvider:
 
     def _make_handler(self, internal_name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
         def handler(arguments: dict[str, Any]) -> dict[str, Any]:
-            bridge, external_name = self._tool_targets[internal_name]
+            if self._closed:
+                return _closed_tool_result(internal_name)
+            target = self._tool_targets.get(internal_name)
+            if target is None:
+                return _closed_tool_result(internal_name)
+            bridge, external_name = target
             return bridge.call_tool(external_name, arguments)
 
         return handler
@@ -164,6 +172,15 @@ def _build_internal_tool_name(server: MCPServerConfig, external_name: str) -> st
 def _build_description(server: MCPServerConfig, tool_spec: MCPToolSpec) -> str:
     description = tool_spec.description.strip() or "MCP Server 提供的外部工具。"
     return f"[MCP:{server.name}] {description}"
+
+
+def _closed_tool_result(tool_name: str) -> dict[str, Any]:
+    message = f"MCP 工具 {tool_name} 所属连接已关闭，请重新打开设置或重启 Sakura 后再试。"
+    return {
+        "isError": True,
+        "content": [{"type": "text", "text": message}],
+        "error": message,
+    }
 
 
 def _resolve_runtime_tokens(config: MCPConfig, base_dir: Path) -> MCPConfig:

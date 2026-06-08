@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,13 @@ class DebugLogSettings:
     enabled: bool = False
     body_enabled: bool = False
     file_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class StartupSettings:
+    """启动行为配置。"""
+
+    launch_at_login: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,6 +124,7 @@ class AppSettingsService:
         character_profile: CharacterProfile | None = None,
     ) -> GPTSoVITSTTSSettings:
         data = self._api_section("tts")
+        playback_backend = str(data.get("playback_backend", "")).strip()
         gpt_sovits = _mapping(data.get("gpt_sovits"))
         genie_tts = _mapping(data.get("genie_tts"))
         provider = str(data.get("provider", "")).strip().lower()
@@ -188,6 +196,8 @@ class AppSettingsService:
                 onnx_model_dir=onnx_model_dir,
                 validate_enabled=validate_enabled,
             )
+            if playback_backend:
+                settings = replace(settings, playback_backend=playback_backend)
         else:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
                 onnx_model_dir = self.base_dir / "data" / "tts_bundles" / "onnx" / "default"
@@ -207,6 +217,8 @@ class AppSettingsService:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
             )
+            if playback_backend:
+                settings = replace(settings, playback_backend=playback_backend)
         if settings.enabled and validate_enabled:
             settings.validate()
         return settings
@@ -279,6 +291,18 @@ class AppSettingsService:
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
             },
+        )
+
+    def load_startup_settings(self) -> StartupSettings:
+        startup = self._system_section("startup")
+        return StartupSettings(
+            launch_at_login=_bool_value(startup.get("launch_at_login"), False),
+        )
+
+    def save_startup_settings(self, settings: StartupSettings) -> None:
+        self.save_system_values(
+            "startup",
+            {"launch_at_login": bool(settings.launch_at_login)},
         )
 
     def load_theme_settings(self) -> ThemeSettings:

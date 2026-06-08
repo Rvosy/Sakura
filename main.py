@@ -6,16 +6,21 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout
+from PySide6.QtGui import QGuiApplication, QPalette, QColor
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QStyleFactory
 
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
 from app.core.debug_log import debug_log
 from app.config.character_loader import CharacterConfigError
-from app.config.settings_service import AppSettingsService
+from app.config.settings_service import AppSettingsService, StartupSettings
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.proactive_care import ProactiveCareSettings
+from app.platforms.launch_at_login import (
+    LaunchAtLoginError,
+    ensure_launch_at_login_state,
+    set_launch_at_login_enabled,
+)
 from app.ui.pet_window import PetWindow
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.portrait_controller import PORTRAIT_SCALE_DEFAULT_PERCENT
@@ -35,6 +40,23 @@ from app.voice.tts_bundle import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def _force_light_palette(app: QApplication) -> None:
+    """强制使用 Fusion 风格 + 亮色 palette，避免 Windows 暗色模式下系统控件文字与浅色背景冲突。"""
+    app.setStyle(QStyleFactory.create("Fusion"))
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#ffe8f1"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#fff6fa"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#3d2b35"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#9b4f72"))
+    app.setPalette(palette)
 
 
 def _configure_windows_high_dpi() -> None:
@@ -222,6 +244,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Sakura Desktop Pet")
     app.setQuitOnLastWindowClosed(False)
+    _force_light_palette(app)
 
     try:
         context = build_initial_app_context(BASE_DIR)
@@ -241,6 +264,7 @@ def main() -> int:
         print(f"[Character] 配置无效：{exc}")
         return 1
 
+    _ensure_launch_at_login_state(BASE_DIR, context.settings_service)
     pet_window = PetWindow(context)
     app.aboutToQuit.connect(pet_window.close_external_tools)
     pet_window.show()
@@ -259,6 +283,17 @@ def _character_packages_missing(base_dir: Path) -> bool:
         return False
 
 
+def _ensure_launch_at_login_state(
+    base_dir: Path,
+    settings_service: AppSettingsService,
+) -> None:
+    try:
+        settings = settings_service.load_startup_settings()
+        ensure_launch_at_login_state(base_dir, settings.launch_at_login)
+    except (LaunchAtLoginError, OSError) as exc:
+        debug_log("Startup", "同步登录自启动状态失败", {"error": str(exc)})
+
+
 def _open_first_run_settings(base_dir: Path) -> AppContext | None:
     settings_service = AppSettingsService(base_dir=base_dir)
     api_settings = settings_service.load_api_settings()
@@ -266,6 +301,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         validate_enabled=False,
         character_profile=None,
     )
+    startup_settings = settings_service.load_startup_settings()
     dialog = SettingsDialog(
         api_settings=api_settings,
         tts_settings=tts_settings,
@@ -279,6 +315,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         subtitle_typing_interval_ms=SPEECH_TYPING_INTERVAL_MS,
         reply_segment_pause_ms=REPLY_SEGMENT_PAUSE_MS,
         theme_settings=settings_service.load_theme_settings(),
+        startup_settings=startup_settings,
     )
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
@@ -301,6 +338,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         or dialog.result_proactive_care_settings is None
         or dialog.result_mcp_settings is None
         or dialog.result_debug_log_settings is None
+        or dialog.result_startup_settings is None
         or dialog.result_portrait_scale_percent is None
         or result_theme_settings is None
         or dialog.character_registry is None
@@ -319,6 +357,9 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
     )
     settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings or MCPRuntimeSettings())
     settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
+    if dialog.result_startup_settings != startup_settings:
+        _apply_launch_at_login_settings(base_dir, dialog.result_startup_settings)
+        settings_service.save_startup_settings(dialog.result_startup_settings)
     settings_service.save_theme_settings(result_theme_settings)
     settings_service.save_system_values(
         "ui",
@@ -329,6 +370,13 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         },
     )
     return build_initial_app_context(base_dir)
+
+
+def _apply_launch_at_login_settings(base_dir: Path, settings: StartupSettings) -> None:
+    try:
+        set_launch_at_login_enabled(base_dir, settings.launch_at_login)
+    except (LaunchAtLoginError, OSError) as exc:
+        raise OSError(f"无法更新登录自启动：{exc}") from exc
 
 
 def _start_tts_migration_or_deferred(base_dir: Path, pet_window: PetWindow) -> None:

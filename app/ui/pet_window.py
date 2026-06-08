@@ -72,6 +72,11 @@ from app.llm.context_trimming import trim_messages_for_model
 from app.llm.api_client import ApiSettings
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
+from app.config.settings_service import StartupSettings
+from app.platforms.launch_at_login import (
+    LaunchAtLoginError,
+    set_launch_at_login_enabled,
+)
 from app.ui.history_window import HistoryWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
@@ -316,6 +321,7 @@ class PetWindow(QWidget):
         self.visual_observation_store = context.visual_observation_store
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
+        self.startup_settings = context.startup_settings
         self.theme_settings = _theme_settings_for_character(
             self.settings_service.load_theme_settings(),
             self.character_profile,
@@ -336,6 +342,7 @@ class PetWindow(QWidget):
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self.always_on_top_enabled = self._load_always_on_top_enabled()
         self.history_window: HistoryWindow | None = None
+        self.settings_dialog: SettingsDialog | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
         self.worker: ChatWorker | EventWorker | None = None
@@ -368,8 +375,10 @@ class PetWindow(QWidget):
         self.active_event_type = ""
         self.active_event: AgentEvent | None = None
         self.memory_status_message_active = False
+        self.memory_status_last_status = ""
         self.memory_status_last_message = ""
         self.memory_failure_dialog_last_message = ""
+        self.memory_failure_dialog_pending_message = ""
         self.last_user_activity_at = time.perf_counter()
         self.last_proactive_care_at: float | None = None
         self.last_proactive_screen_context_at: float | None = None
@@ -626,6 +635,8 @@ class PetWindow(QWidget):
         super().showEvent(event)
         self._refresh_tray_menu()
         self._schedule_native_topmost_sync()
+        if getattr(self, "memory_failure_dialog_pending_message", ""):
+            QTimer.singleShot(0, self._show_pending_memory_failure_dialog)
 
     def hideEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().hideEvent(event)
@@ -2409,6 +2420,7 @@ class PetWindow(QWidget):
 
     def _show_memory_status_message(self, status: str, message: str) -> None:
         self.memory_status_message_active = True
+        self.memory_status_last_status = status
         self.memory_status_last_message = message
         if status == "failed":
             self._show_memory_failure_dialog(message)
@@ -2422,6 +2434,23 @@ class PetWindow(QWidget):
     def _show_memory_failure_dialog(self, message: str) -> None:
         if getattr(self, "memory_failure_dialog_last_message", "") == message:
             return
+        if self._should_defer_memory_failure_dialog():
+            self.memory_failure_dialog_pending_message = message
+            return
+        self._display_memory_failure_dialog(message)
+
+    def _should_defer_memory_failure_dialog(self) -> bool:
+        if getattr(self, "startup_initializing", False):
+            return True
+        is_visible = getattr(self, "isVisible", None)
+        if callable(is_visible):
+            return not bool(is_visible())
+        return False
+
+    def _display_memory_failure_dialog(self, message: str) -> None:
+        if getattr(self, "memory_failure_dialog_last_message", "") == message:
+            return
+        self.memory_failure_dialog_pending_message = ""
         self.memory_failure_dialog_last_message = message
         show_themed_warning(self, "记忆模型下载失败", message)
 
@@ -2436,9 +2465,25 @@ class PetWindow(QWidget):
         ):
             return
         self.subtitle_controller.show_text_immediately(self.memory_status_last_message)
+        self._show_pending_memory_failure_dialog()
+
+    @Slot()
+    def _show_pending_memory_failure_dialog(self) -> None:
+        message = getattr(self, "memory_failure_dialog_pending_message", "")
+        if (
+            not message
+            or getattr(self, "startup_initializing", False)
+            or getattr(self, "memory_status_last_status", "") != "failed"
+        ):
+            return
+        if self._should_defer_memory_failure_dialog():
+            return
+        self._display_memory_failure_dialog(message)
 
     def _show_memory_ready_message(self, message: str) -> None:
         _ = message
+        self.memory_status_last_status = "ready"
+        self.memory_failure_dialog_pending_message = ""
         if not self.memory_status_message_active:
             return
         self.memory_status_message_active = False
@@ -2584,6 +2629,10 @@ class PetWindow(QWidget):
     def show_settings(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
+        active_dialog = getattr(self, "settings_dialog", None)
+        if active_dialog is not None:
+            self._activate_settings_dialog(active_dialog)
+            return
         try:
             tts_settings = self.settings_service.load_tts_settings(
                 validate_enabled=False,
@@ -2610,8 +2659,15 @@ class PetWindow(QWidget):
             subtitle_typing_interval_ms=self.subtitle_typing_interval_ms,
             reply_segment_pause_ms=self.reply_segment_pause_ms,
             theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
+            startup_settings=getattr(self, "startup_settings", StartupSettings()),
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        self.settings_dialog = dialog
+        try:
+            dialog_result = dialog.exec()
+        finally:
+            if getattr(self, "settings_dialog", None) is dialog:
+                self.settings_dialog = None
+        if dialog_result != QDialog.DialogCode.Accepted:
             return
         result_subtitle_typing_interval_ms = getattr(
             dialog,
@@ -2628,6 +2684,12 @@ class PetWindow(QWidget):
             "result_theme_settings",
             getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
         )
+        current_startup_settings = getattr(self, "startup_settings", StartupSettings())
+        result_startup_settings = getattr(
+            dialog,
+            "result_startup_settings",
+            current_startup_settings,
+        )
         if (
             dialog.result_api_settings is None
             or dialog.result_tts_settings is None
@@ -2635,6 +2697,8 @@ class PetWindow(QWidget):
             or dialog.result_proactive_care_settings is None
             or dialog.result_mcp_settings is None
             or dialog.result_debug_log_settings is None
+            or result_startup_settings is None
+            or not isinstance(result_startup_settings, StartupSettings)
             or dialog.result_portrait_scale_percent is None
             or result_theme_settings is None
             or result_subtitle_typing_interval_ms is None
@@ -2665,6 +2729,7 @@ class PetWindow(QWidget):
             self.api_client.settings,
             dialog.result_api_settings,
         )
+        startup_settings_changed = result_startup_settings != current_startup_settings
         theme_write_mode = getattr(dialog, "result_theme_write_mode", "unchanged")
         should_write_character_theme = _should_write_character_theme(theme_write_mode, selected_profile)
         try:
@@ -2689,6 +2754,9 @@ class PetWindow(QWidget):
             )
             self.settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings)
             self.settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
+            if startup_settings_changed:
+                self._apply_launch_at_login_settings(result_startup_settings)
+                self.settings_service.save_startup_settings(result_startup_settings)
             if result_theme_settings != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
                 self.settings_service.save_theme_settings(result_theme_settings)
             self._save_system_config_values(
@@ -2721,6 +2789,7 @@ class PetWindow(QWidget):
         mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
         self.mcp_settings = dialog.result_mcp_settings
         self.debug_log_settings = dialog.result_debug_log_settings
+        self.startup_settings = result_startup_settings
         self._sync_proactive_care_timer()
         disconnect_tts_error_signal = getattr(self, "_disconnect_tts_error_signal", None)
         if callable(disconnect_tts_error_signal):
@@ -2743,9 +2812,24 @@ class PetWindow(QWidget):
             message += "\n\n长期记忆系统正在后台刷新 API 配置。"
         if mcp_restart_required:
             message += "\n\nWindows MCP 开关需要重启 Sakura 后才会生效。"
+        if startup_settings_changed:
+            message += "\n\n登录自启动设置已更新。"
         if getattr(dialog, "result_plugin_config_changed", False):
             message += "\n\n插件启用状态需要重启 Sakura 后才会生效。"
         show_themed_information(self, "保存成功", message)
+
+    def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
+        """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
+
+        show = getattr(dialog, "show", None)
+        if callable(show):
+            show()
+        raise_window = getattr(dialog, "raise_", None)
+        if callable(raise_window):
+            raise_window()
+        activate_window = getattr(dialog, "activateWindow", None)
+        if callable(activate_window):
+            activate_window()
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:
@@ -3037,6 +3121,12 @@ class PetWindow(QWidget):
         values: dict[str, Any],
     ) -> None:
         self.settings_service.save_system_values(section, values)
+
+    def _apply_launch_at_login_settings(self, settings: StartupSettings) -> None:
+        try:
+            set_launch_at_login_enabled(self.base_dir, settings.launch_at_login)
+        except (LaunchAtLoginError, OSError) as exc:
+            raise OSError(f"无法更新登录自启动：{exc}") from exc
 
     def _window_flags(self) -> Qt.WindowType:
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool

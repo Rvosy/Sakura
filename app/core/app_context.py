@@ -6,7 +6,7 @@ from pathlib import Path
 from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry
 from app.agent.mcp import MCPRuntimeSettings, MCPToolProvider
 from app.agent.memory_curator import MemoryCurator, MemoryCurationSettings, MemoryCurationState
-from app.config.settings_service import AppSettingsService, DebugLogSettings
+from app.config.settings_service import AppSettingsService, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.storage.chat_history import ChatHistoryStore
@@ -46,6 +46,7 @@ class FeatureServices:
     plugin_manager: SakuraPluginManager
     mcp_settings: MCPRuntimeSettings
     debug_log_settings: DebugLogSettings
+    startup_settings: StartupSettings
     memory_curation_settings: MemoryCurationSettings
     memory_curation_state: MemoryCurationState
     memory_curator: MemoryCurator
@@ -115,6 +116,10 @@ class AppContext:
     @property
     def debug_log_settings(self) -> DebugLogSettings:
         return self.features.debug_log_settings
+
+    @property
+    def startup_settings(self) -> StartupSettings:
+        return self.features.startup_settings
 
     @property
     def memory_curation_settings(self) -> MemoryCurationSettings:

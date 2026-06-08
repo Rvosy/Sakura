@@ -147,6 +147,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     history_store = _create_history_store(base_dir, character_profile)
     visual_observation_store = _create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
+    startup_settings = settings_service.load_startup_settings()
     memory_curation_settings = settings_service.load_memory_curation_settings()
     memory_curation_state = MemoryCurationState(
         base_dir / "data" / "memory_curation_state.json"
@@ -192,6 +193,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             plugin_manager=plugin_manager,
             mcp_settings=mcp_settings,
             debug_log_settings=debug_log_settings,
+            startup_settings=startup_settings,
             memory_curation_settings=memory_curation_settings,
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
@@ -304,6 +306,7 @@ def build_app_context(base_dir: Path, startup_state: StartupState | None = None)
             plugin_manager=deferred.plugin_manager,
             mcp_settings=deferred.mcp_settings,
             debug_log_settings=context.debug_log_settings,
+            startup_settings=context.startup_settings,
             memory_curation_settings=context.memory_curation_settings,
             memory_curation_state=context.memory_curation_state,
             memory_curator=context.memory_curator,

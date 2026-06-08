@@ -7,8 +7,8 @@ from app.agent.mcp.config import MCPConfig
 
 
 WINDOWS_MCP_ENABLED_KEY = "WINDOWS_MCP_ENABLED"
-WINDOWS_MCP_AVAILABLE = False
-WINDOWS_MCP_UNAVAILABLE_TEXT = "待测试，未开放"
+WINDOWS_MCP_AVAILABLE = True
+WINDOWS_MCP_EXPERIMENTAL_TEXT = "实验性功能，供想要尝鲜的用户使用；可能不稳定，请谨慎开启"
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class MCPRuntimeSettings:
 
 
 def normalize_mcp_runtime_settings(settings: MCPRuntimeSettings) -> MCPRuntimeSettings:
-    """归一化 MCP 运行时开关，屏蔽当前未开放的能力。"""
+    """归一化 MCP 运行时开关，保留全局屏蔽能力的兜底。"""
 
     if WINDOWS_MCP_AVAILABLE:
         return settings

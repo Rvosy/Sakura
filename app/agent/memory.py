@@ -358,11 +358,18 @@ class MemoryStore:
             return self._failed_response(str(exc))
         if mem is None:
             return self._loading_response()
-        raw = (
-            mem.get_all(filters={"user_id": self.scope_id}, top_k=limit)
-            if not query
-            else mem.search(query, filters={"user_id": self.scope_id}, top_k=limit)
-        )
+        try:
+            raw = (
+                mem.get_all(filters={"user_id": self.scope_id}, top_k=limit)
+                if not query
+                else mem.search(query, filters={"user_id": self.scope_id}, top_k=limit)
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_closed_client_error(exc):
+                error = str(exc)
+                self._mark_runtime_failed(error)
+                return self._failed_response(error)
+            raise
         memories = _normalize_memory_results(raw)
         return {
             "agent_id": self.scope_id,
@@ -672,6 +679,14 @@ class MemoryStore:
             "memories": [],
         }
 
+    def _mark_runtime_failed(self, error: str) -> None:
+        with self._lock:
+            self._memory = None
+            self._loading = False
+            self._load_error = error
+            self._status = "failed"
+            self._status_message = f"长期记忆系统暂时不可用：{error}"
+
 
 def _resolve_base_dir(base_dir: Path | None) -> Path:
     if base_dir is None:
@@ -767,6 +782,10 @@ def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> st
         "请检查 HuggingFace 访问、网络或代理后重试；普通聊天仍可继续。"
         f"\n\n原始错误：{raw_message}"
     )
+
+
+def _is_closed_client_error(exc: Exception) -> bool:
+    return "client has been closed" in str(exc).lower()
 
 
 def _hub_snapshot_has_model_weights(snapshot_dir: Path) -> bool:

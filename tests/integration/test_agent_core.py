@@ -383,6 +383,22 @@ def test_memory_store_returns_failed_response_for_nonblocking_memory_tools() -> 
     assert "client has been closed" in result["error"]
 
 
+def test_memory_store_downgrades_closed_client_during_search() -> None:
+    class ClosedClientMemory:
+        def search(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+
+    store = MemoryStore(base_dir=_runtime_root_path("memory_closed_client_search"))
+    store._memory = ClosedClientMemory()
+
+    result = store.search_memory({"query": "偏好"})
+
+    assert result["status"] == "failed"
+    assert "普通聊天仍可继续" in result["message"]
+    assert "client has been closed" in result["error"]
+    assert store._memory is None
+
+
 def test_memory_store_reload_keeps_old_runtime_until_new_runtime_is_ready() -> None:
     old_settings = ApiSettings("https://old.example.com/v1", "old-key", "old-model")
     new_settings = ApiSettings("https://new.example.com/v1", "new-key", "new-model")
@@ -969,6 +985,24 @@ servers:
     provider.close()
 
 
+def test_mcp_provider_closed_tool_returns_failed_result() -> None:
+    root = _runtime_root_path("mcp_closed_tool")
+    registry = ToolRegistry()
+    provider = MCPToolProvider(
+        load_mcp_config(_write_mcp_config(root, "name_prefix: demo_")),
+        bridge_factory=_FakeMCPBridge,
+    )
+    provider.register_tools(registry)
+    tool = registry.get("demo_echo")
+    assert tool is not None
+
+    provider.close()
+    result = tool.handler({"message": "hello"})
+
+    assert result["isError"] is True
+    assert "连接已关闭" in result["error"]
+
+
 def test_mcp_provider_skips_disabled_server() -> None:
     root = _runtime_root_path("mcp_disabled_server")
     registry = ToolRegistry()
@@ -1005,18 +1039,18 @@ servers:
     )
 
     assert config.servers[0].name == "windows"
-    assert not config.servers[0].enabled
+    assert config.servers[0].enabled
 
 
-def test_settings_service_saves_and_loads_windows_mcp_as_disabled() -> None:
+def test_settings_service_saves_and_loads_experimental_windows_mcp() -> None:
     service = AppSettingsService(_runtime_root_path("mcp_runtime_save"))
 
     service.save_mcp_runtime_settings(MCPRuntimeSettings(windows_enabled=True))
 
-    assert not service.load_mcp_runtime_settings().windows_enabled
+    assert service.load_mcp_runtime_settings().windows_enabled
 
 
-def test_register_mcp_tools_skips_unavailable_windows_mcp() -> None:
+def test_register_mcp_tools_loads_experimental_windows_mcp_when_enabled() -> None:
     root = _runtime_root_path("mcp_register_windows_override")
     config_dir = root / "data" / "config"
     config_dir.mkdir(parents=True)
@@ -1041,8 +1075,9 @@ servers:
         runtime_settings=MCPRuntimeSettings(windows_enabled=True),
     )
 
-    assert provider is None
-    assert registry.get("windows__echo") is None
+    assert provider is not None
+    assert registry.get("windows__echo") is not None
+    provider.close()
 
 
 def test_mcp_provider_filters_tools_and_applies_tool_policies() -> None:
@@ -1185,24 +1220,26 @@ def test_playwright_search_web_returns_structured_results(monkeypatch: pytest.Mo
 
     class ResultEl:
         def query_selector(self, selector: str):  # type: ignore[no-untyped-def]
-            if selector == ".result__title":
+            if selector == "h2":
                 return TitleEl()
-            if selector == ".result__snippet":
+            if selector == "p":
                 return SnippetEl()
-            if selector == ".result__url":
+            if selector == ".b_attribution cite":
                 return DisplayUrlEl()
-            if selector == ".result__a":
+            if selector == "h2 a":
                 return LinkEl()
             return None
 
     class Page:
-        url = "https://html.duckduckgo.com/html/?q=%E4%BA%8C%E9%98%B6%E5%A0%82%E7%9C%9F%E7%BA%A2"
+        url = "https://www.bing.com/search?q=%E4%BA%8C%E9%98%B6%E5%A0%82%E7%9C%9F%E7%BA%A2"
+        navigated: list[str] = []
 
-        def goto(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        def goto(self, url, **_kwargs):  # type: ignore[no-untyped-def]
+            self.navigated.append(url)
             return None
 
         def query_selector_all(self, selector: str):  # type: ignore[no-untyped-def]
-            return [ResultEl()] if selector == ".result__body" else []
+            return [ResultEl()] if selector == "li.b_algo" else []
 
     from plugins.playwright_browser import browser
 
@@ -1210,10 +1247,12 @@ def test_playwright_search_web_returns_structured_results(monkeypatch: pytest.Mo
     monkeypatch.setattr(browser, "_bg_executor", None)
     monkeypatch.setattr(browser, "_browser_thread_id", None)
     monkeypatch.setattr(browser, "_use_bg_thread", True)
-    monkeypatch.setattr(browser, "_ensure_browser", lambda: Page())
+    page = Page()
+    monkeypatch.setattr(browser, "_ensure_browser", lambda: page)
 
     result = browser.search_web("二阶堂真红")
 
+    assert page.navigated == ["https://www.bing.com/search?q=%E4%BA%8C%E9%98%B6%E5%A0%82%E7%9C%9F%E7%BA%A2"]
     assert "萌娘百科 - 二阶堂真红" in result
     assert "二阶堂真红是《五彩斑斓的世界》系列角色。" in result
     assert "zh.moegirl.org.cn" in result
@@ -1239,13 +1278,13 @@ def test_playwright_search_web_registry_keeps_default_limit(monkeypatch: pytest.
 
     class ResultEl:
         def query_selector(self, selector: str):  # type: ignore[no-untyped-def]
-            if selector == ".result__title":
+            if selector == "h2":
                 return TitleEl()
-            if selector == ".result__snippet":
+            if selector == "p":
                 return SnippetEl()
-            if selector == ".result__url":
+            if selector == ".b_attribution cite":
                 return DisplayUrlEl()
-            if selector == ".result__a":
+            if selector == "h2 a":
                 return LinkEl()
             return None
 
@@ -1254,7 +1293,7 @@ def test_playwright_search_web_registry_keeps_default_limit(monkeypatch: pytest.
             return None
 
         def query_selector_all(self, selector: str):  # type: ignore[no-untyped-def]
-            return [ResultEl()] if selector == ".result__body" else []
+            return [ResultEl()] if selector == "li.b_algo" else []
 
     from plugins.playwright_browser import browser
 

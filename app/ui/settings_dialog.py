@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -42,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.memory import MemoryStore
-from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_UNAVAILABLE_TEXT
+from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
 from app.core.debug_log import debug_log
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -51,7 +50,11 @@ from app.config.character_archive import (
     import_character_archive,
     import_character_voice_archive,
 )
-from app.config.settings_service import DebugLogSettings
+from app.config.settings_service import DebugLogSettings, StartupSettings
+from app.platforms.launch_at_login import (
+    is_launch_at_login_supported,
+    launch_at_login_platform_text,
+)
 from app.llm.api_client import (
     ApiSettings,
     LLMGenerationProfile,
@@ -371,10 +374,12 @@ class SettingsDialog(QDialog):
         subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
         reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
         theme_settings: ThemeSettings | None = None,
+        startup_settings: StartupSettings | None = None,
     ) -> None:
         super().__init__(parent)
         self.base_dir = base_dir
         self.tts_settings = tts_settings
+        self.startup_settings = startup_settings or StartupSettings()
         self._initial_api_settings = api_settings
         self._generation_settings_by_key = _generation_settings_by_key(api_settings)
         self._active_generation_profile_key = llm_generation_profile_key(
@@ -420,6 +425,7 @@ class SettingsDialog(QDialog):
         self.result_proactive_care_settings: ProactiveCareSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
         self.result_debug_log_settings: DebugLogSettings | None = None
+        self.result_startup_settings: StartupSettings | None = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
@@ -493,7 +499,13 @@ class SettingsDialog(QDialog):
             ),
             "插件",
         )
-        tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
+        tabs.addTab(
+            self._build_system_tab(
+                debug_log_settings or DebugLogSettings(),
+                self.startup_settings,
+            ),
+            "系统",
+        )
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
 
@@ -995,13 +1007,12 @@ class SettingsDialog(QDialog):
         tools_tab_contributions: list[ToolsTabContribution],
     ) -> QWidget:
         tab = QWidget(self)
-        self.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（高级）", tab)
-        self.windows_mcp_enabled_check.setChecked(False)
-        self.windows_mcp_enabled_check.setEnabled(False)
-        self.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_UNAVAILABLE_TEXT)
+        self.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（实验性）", tab)
+        self.windows_mcp_enabled_check.setChecked(settings.windows_enabled)
+        self.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_EXPERIMENTAL_TEXT)
 
         restart_hint = QLabel(
-            f"{WINDOWS_MCP_UNAVAILABLE_TEXT}。保存后需要重启 Sakura 才会加载或卸载 Windows MCP 工具。",
+            f"{WINDOWS_MCP_EXPERIMENTAL_TEXT}。保存后需要重启 Sakura 才会加载或卸载 Windows MCP 工具。",
             tab,
         )
         restart_hint.setWordWrap(True)
@@ -1154,8 +1165,24 @@ class SettingsDialog(QDialog):
             )
         return selected
 
-    def _build_system_tab(self, debug_settings: DebugLogSettings) -> QWidget:
+    def _build_system_tab(
+        self,
+        debug_settings: DebugLogSettings,
+        startup_settings: StartupSettings,
+    ) -> QWidget:
         tab = QWidget(self)
+        self.launch_at_login_check = QCheckBox("登录时自动启动 Sakura", tab)
+        self.launch_at_login_check.setChecked(
+            startup_settings.launch_at_login and is_launch_at_login_supported()
+        )
+        if is_launch_at_login_supported():
+            self.launch_at_login_check.setToolTip(
+                f"保存后将更新 {launch_at_login_platform_text()} 登录启动项。"
+            )
+        else:
+            self.launch_at_login_check.setEnabled(False)
+            self.launch_at_login_check.setToolTip("当前平台暂不支持自动配置登录启动项。")
+
         self.debug_log_enabled_check = QCheckBox("输出终端调试日志", tab)
         self.debug_log_enabled_check.setChecked(debug_settings.enabled)
         self.debug_body_enabled_check = QCheckBox("输出完整请求/回复正文", tab)
@@ -1184,6 +1211,7 @@ class SettingsDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
+        form_layout.addRow("", self.launch_at_login_check)
         form_layout.addRow("", self.debug_log_enabled_check)
         form_layout.addRow("", self.debug_body_enabled_check)
         form_layout.addRow("", self.debug_file_enabled_check)
@@ -2216,6 +2244,7 @@ class SettingsDialog(QDialog):
             self.subtitle_typing_interval_spin.value(),
             self.reply_segment_pause_spin.value(),
         )
+        launch_at_login_supported = is_launch_at_login_supported()
         return {
             "api_settings": api_settings,
             "tts_settings": tts_settings,
@@ -2231,7 +2260,9 @@ class SettingsDialog(QDialog):
                 cooldown_minutes=self.proactive_cooldown_spin.value(),
                 screen_context_batch_limit=self.proactive_batch_limit_spin.value(),
             ),
-            "mcp_settings": MCPRuntimeSettings(windows_enabled=False),
+            "mcp_settings": MCPRuntimeSettings(
+                windows_enabled=self.windows_mcp_enabled_check.isChecked(),
+            ),
             "debug_log_settings": DebugLogSettings(
                 enabled=self.debug_log_enabled_check.isChecked(),
                 body_enabled=(
@@ -2239,6 +2270,13 @@ class SettingsDialog(QDialog):
                     and self.debug_body_enabled_check.isChecked()
                 ),
                 file_enabled=self.debug_file_enabled_check.isChecked(),
+            ),
+            "startup_settings": StartupSettings(
+                launch_at_login=(
+                    self.launch_at_login_check.isChecked()
+                    if launch_at_login_supported
+                    else self.startup_settings.launch_at_login
+                ),
             ),
         }
 
@@ -2253,6 +2291,7 @@ class SettingsDialog(QDialog):
         proactive_care_settings = values["proactive_care_settings"]
         mcp_settings = values["mcp_settings"]
         debug_log_settings = values["debug_log_settings"]
+        startup_settings = values["startup_settings"]
 
         if not isinstance(api_settings, ApiSettings):
             return
@@ -2274,6 +2313,8 @@ class SettingsDialog(QDialog):
             return
         if not isinstance(debug_log_settings, DebugLogSettings):
             return
+        if not isinstance(startup_settings, StartupSettings):
+            return
 
         try:
             plugin_config_changed = self._save_plugin_settings_if_needed()
@@ -2292,6 +2333,7 @@ class SettingsDialog(QDialog):
         self.result_proactive_care_settings = proactive_care_settings
         self.result_mcp_settings = mcp_settings
         self.result_debug_log_settings = debug_log_settings
+        self.result_startup_settings = startup_settings
         self.result_plugin_config_changed = plugin_config_changed
         super().accept()
 
@@ -2536,10 +2578,9 @@ class SettingsDialog(QDialog):
         QMessageBox.warning(
             self,
             "TTS 检测失败",
-            f"{message}\n\n已自动关闭 TTS，并继续保存其他设置。",
+            f"{message}\n\nTTS 设置已保留并继续保存。若保存后仍无法发声，请重启本地 TTS 服务或确认工作目录有效。",
         )
-        self.tts_enabled_check.setChecked(False)
-        accept_values["tts_settings"] = replace(original_settings, enabled=False)
+        accept_values["tts_settings"] = original_settings
         self._complete_accept(accept_values)
 
     @Slot()
