@@ -948,6 +948,54 @@ def test_stage_size_shrinks_with_portrait_scale_below_default_height() -> None:
         assert width == 860
 
 
+def test_control_panel_size_normalization() -> None:
+    from app.ui.pet_window import (
+        DEFAULT_BUBBLE_HEIGHT,
+        DEFAULT_CONTROL_PANEL_WIDTH,
+        MAX_BUBBLE_HEIGHT,
+        MAX_CONTROL_PANEL_WIDTH,
+        MIN_BUBBLE_HEIGHT,
+        MIN_CONTROL_PANEL_WIDTH,
+        _normalize_bubble_height,
+        _normalize_control_panel_width,
+    )
+
+    assert _normalize_control_panel_width("invalid") == DEFAULT_CONTROL_PANEL_WIDTH
+    assert _normalize_control_panel_width(1) == MIN_CONTROL_PANEL_WIDTH
+    assert _normalize_control_panel_width(9999) == MAX_CONTROL_PANEL_WIDTH
+    assert _normalize_control_panel_width(512) == 512
+
+    assert _normalize_bubble_height("invalid") == DEFAULT_BUBBLE_HEIGHT
+    assert _normalize_bubble_height(1) == MIN_BUBBLE_HEIGHT
+    assert _normalize_bubble_height(9999) == MAX_BUBBLE_HEIGHT
+    assert _normalize_bubble_height(180) == 180
+
+
+def test_stage_size_for_layout_wraps_portrait_and_control_panel() -> None:
+    from app.ui.pet_window import (
+        DEFAULT_BUBBLE_HEIGHT,
+        DEFAULT_CONTROL_PANEL_WIDTH,
+        _stage_size_for_layout,
+    )
+
+    default_width, default_height = _stage_size_for_layout(
+        100,
+        DEFAULT_CONTROL_PANEL_WIDTH,
+        DEFAULT_BUBBLE_HEIGHT,
+    )
+    assert default_width == DEFAULT_CONTROL_PANEL_WIDTH + 96
+    assert default_height == 640
+
+    wide_width, _ = _stage_size_for_layout(100, 860, DEFAULT_BUBBLE_HEIGHT)
+    assert wide_width == 956
+
+    portrait_width, _ = _stage_size_for_layout(150, DEFAULT_CONTROL_PANEL_WIDTH, DEFAULT_BUBBLE_HEIGHT)
+    assert portrait_width == 880
+
+    _, tall_height = _stage_size_for_layout(50, DEFAULT_CONTROL_PANEL_WIDTH, 260)
+    assert tall_height == 452
+
+
 def test_pet_window_defaults_subtitle_language_to_chinese() -> None:
     from app.ui.pet_window import PetWindow, SUBTITLE_LANGUAGE_JA, SUBTITLE_LANGUAGE_ZH
 

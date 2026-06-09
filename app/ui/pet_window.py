@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPixmap,
+    QRegion,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -104,6 +105,7 @@ from app.agent.screen_observation import (
 )
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.portrait_controller import (
+    PORTRAIT_BASE_MAX_WIDTH,
     PORTRAIT_SCALE_DEFAULT_PERCENT,
     normalize_portrait_scale_percent,
 )
@@ -171,6 +173,16 @@ REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
 DEFAULT_STAGE_WIDTH = 860
 DEFAULT_STAGE_HEIGHT = 640
+DEFAULT_CONTROL_PANEL_WIDTH = 640
+MIN_CONTROL_PANEL_WIDTH = 420
+MAX_CONTROL_PANEL_WIDTH = 860
+DEFAULT_BUBBLE_HEIGHT = 128
+MIN_BUBBLE_HEIGHT = 96
+MAX_BUBBLE_HEIGHT = 260
+INPUT_BAR_HEIGHT = 52
+CONTROL_PANEL_GAP = 10
+CONTROL_PANEL_BOTTOM_MARGIN = 84
+CONTROL_PANEL_RESIZE_MARGIN = 8
 # 立绘缩放时碰撞箱高度下限：底部 UI 区（气泡 128 + 输入框 52 + 间距 94 = 274px）
 # 加上立绘顶部约 146px 可见区，合计 ~420px。
 MIN_STAGE_HEIGHT = 420
@@ -365,11 +377,23 @@ class PetWindow(QWidget):
         self.pending_history_clear_after_curation = False
         self.drag_anchor: QPoint | None = None
         self.portrait_scale_percent = self._load_portrait_scale_percent()
+        self.control_panel_width = self._load_control_panel_width()
+        self.bubble_height = self._load_bubble_height()
+        self.control_resize_edges: frozenset[str] = frozenset()
+        self.control_resize_start_global: QPoint | None = None
+        self.control_resize_start_width = self.control_panel_width
+        self.control_resize_start_bubble_height = self.bubble_height
+        self.control_resize_start_global_rect: QRect | None = None
+        self.control_resize_dirty = False
         (
             self.subtitle_typing_interval_ms,
             self.reply_segment_pause_ms,
         ) = self._load_subtitle_display_speed()
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.control_panel_width,
+            self.bubble_height,
+        )
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
@@ -623,6 +647,7 @@ class PetWindow(QWidget):
             self.label,
             self.portrait_transition_label,
             self.bubble,
+            self.input_bar,
             self.name_label,
             self.speech_label,
         ):
@@ -692,13 +717,14 @@ class PetWindow(QWidget):
             self.label,
             self.portrait_transition_label,
             self.bubble,
+            self.input_bar,
             self.name_label,
             self.speech_label,
         } and isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
                 return self._handle_mouse_press(event, watched)
             if event.type() == QEvent.Type.MouseMove:
-                return self._handle_mouse_move(event)
+                return self._handle_mouse_move(event, watched)
             if event.type() == QEvent.Type.MouseButtonRelease:
                 return self._handle_mouse_release(event)
         return super().eventFilter(watched, event)
@@ -785,6 +811,22 @@ class PetWindow(QWidget):
 
     def _handle_mouse_press(self, event: QMouseEvent, source_widget: QWidget | None = None) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
+            event_position_in_window = getattr(self, "_event_position_in_window", None)
+            resize_edges_at = getattr(self, "_control_resize_edges_at", None)
+            resize_edges = frozenset()
+            if callable(event_position_in_window) and callable(resize_edges_at):
+                position = event_position_in_window(event, source_widget)
+                resize_edges = resize_edges_at(position)
+            if resize_edges:
+                self.control_resize_edges = resize_edges
+                self.control_resize_start_global = event.globalPosition().toPoint()
+                self.control_resize_start_width = self.control_panel_width
+                self.control_resize_start_bubble_height = self.bubble_height
+                self.control_resize_start_global_rect = self._control_group_global_rect()
+                self.control_resize_dirty = False
+                self.drag_anchor = None
+                event.accept()
+                return True
             self.drag_anchor = self._drag_anchor_from_event(event, source_widget)
             event.accept()
             return True
@@ -793,15 +835,30 @@ class PetWindow(QWidget):
             return True
         return False
 
-    def _handle_mouse_move(self, event: QMouseEvent) -> bool:
+    def _handle_mouse_move(self, event: QMouseEvent, source_widget: QWidget | None = None) -> bool:
+        if (
+            getattr(self, "control_resize_edges", frozenset())
+            and getattr(self, "control_resize_start_global", None) is not None
+        ):
+            self._resize_control_panel_from_event(event)
+            event.accept()
+            return True
         if event.buttons() & Qt.MouseButton.LeftButton and self.drag_anchor is not None:
             self.move(event.globalPosition().toPoint() - self.drag_anchor)
             event.accept()
             return True
+        event_position_in_window = getattr(self, "_event_position_in_window", None)
+        update_cursor = getattr(self, "_update_control_resize_cursor", None)
+        if callable(event_position_in_window) and callable(update_cursor):
+            update_cursor(event_position_in_window(event, source_widget))
         return False
 
     def _handle_mouse_release(self, event: QMouseEvent) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
+            if getattr(self, "control_resize_edges", frozenset()):
+                self._finish_control_resize()
+                event.accept()
+                return True
             self.drag_anchor = None
             event.accept()
             return True
@@ -825,10 +882,133 @@ class PetWindow(QWidget):
             return map_to(self, position)
         return position
 
+    def _event_position_in_window(
+        self,
+        event: QMouseEvent,
+        source_widget: QWidget | None = None,
+    ) -> QPoint:
+        position = event.position().toPoint()
+        if source_widget is None or source_widget is self:
+            return position
+        map_to = getattr(source_widget, "mapTo", None)
+        if callable(map_to):
+            return map_to(self, position)
+        return position
+
+    def _control_group_rect(self) -> QRect | None:
+        bubble = getattr(self, "bubble", None)
+        input_bar = getattr(self, "input_bar", None)
+        if bubble is None or input_bar is None:
+            return None
+        return QRect(bubble.geometry()).united(QRect(input_bar.geometry()))
+
+    def _control_group_global_rect(self) -> QRect | None:
+        rect = self._control_group_rect()
+        if rect is None:
+            return None
+        return QRect(self.pos() + rect.topLeft(), rect.size())
+
+    def _control_resize_edges_at(self, position: QPoint) -> frozenset[str]:
+        rect = self._control_group_rect()
+        if rect is None:
+            return frozenset()
+        hit_rect = QRect(rect).adjusted(
+            -CONTROL_PANEL_RESIZE_MARGIN,
+            -CONTROL_PANEL_RESIZE_MARGIN,
+            CONTROL_PANEL_RESIZE_MARGIN,
+            CONTROL_PANEL_RESIZE_MARGIN,
+        )
+        if not hit_rect.contains(position):
+            return frozenset()
+
+        edges: set[str] = set()
+        if abs(position.x() - rect.left()) <= CONTROL_PANEL_RESIZE_MARGIN:
+            edges.add("left")
+        if abs(position.x() - rect.right()) <= CONTROL_PANEL_RESIZE_MARGIN:
+            edges.add("right")
+        if abs(position.y() - rect.top()) <= CONTROL_PANEL_RESIZE_MARGIN:
+            edges.add("top")
+        if abs(position.y() - rect.bottom()) <= CONTROL_PANEL_RESIZE_MARGIN:
+            edges.add("bottom")
+        return frozenset(edges)
+
+    def _resize_control_panel_from_event(self, event: QMouseEvent) -> None:
+        start_global = self.control_resize_start_global
+        if start_global is None:
+            return
+        delta = event.globalPosition().toPoint() - start_global
+        next_width = self.control_resize_start_width
+        next_height = self.control_resize_start_bubble_height
+        if "left" in self.control_resize_edges:
+            next_width -= delta.x()
+        if "right" in self.control_resize_edges:
+            next_width += delta.x()
+        if "top" in self.control_resize_edges:
+            next_height -= delta.y()
+        if "bottom" in self.control_resize_edges:
+            next_height += delta.y()
+        self._apply_control_panel_size(next_width, next_height, persist=False)
+        self._anchor_resized_control_group(delta)
+        self.control_resize_dirty = True
+
+    def _anchor_resized_control_group(self, delta: QPoint) -> None:
+        start_rect = self.control_resize_start_global_rect
+        current_rect = self._control_group_global_rect()
+        if start_rect is None or current_rect is None:
+            return
+        offset = QPoint(0, 0)
+        if "left" in self.control_resize_edges:
+            offset.setX(start_rect.left() + delta.x() - current_rect.left())
+        if "top" in self.control_resize_edges:
+            offset.setY(start_rect.top() + delta.y() - current_rect.top())
+        if not offset.isNull():
+            self.move(self.pos() + offset)
+
+    def _finish_control_resize(self) -> None:
+        should_persist = self.control_resize_dirty
+        self.control_resize_edges = frozenset()
+        self.control_resize_start_global = None
+        self.control_resize_start_global_rect = None
+        self.control_resize_dirty = False
+        self.unsetCursor()
+        if should_persist:
+            self._save_control_panel_size()
+
+    def _update_control_resize_cursor(self, position: QPoint) -> None:
+        edges = self._control_resize_edges_at(position)
+        if not edges:
+            self.unsetCursor()
+            return
+        if {"left", "top"}.issubset(edges) or {"right", "bottom"}.issubset(edges):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            return
+        if {"right", "top"}.issubset(edges) or {"left", "bottom"}.issubset(edges):
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+            return
+        if "left" in edges or "right" in edges:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            return
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+
     def _schedule_screen_change_relayout(self) -> None:
         QTimer.singleShot(0, self._restore_geometry_after_screen_change)
 
     def _restore_geometry_after_screen_change(self) -> None:
+        if all(
+            hasattr(self, name)
+            for name in (
+                "portrait_scale_percent",
+                "control_panel_width",
+                "bubble_height",
+                "portrait_controller",
+            )
+        ):
+            self.stage_size = _stage_size_for_layout(
+                self.portrait_scale_percent,
+                self.control_panel_width,
+                self.bubble_height,
+            )
+            self.portrait_controller.set_stage_size(self.stage_size)
         self.resize(*self.stage_size)
         self._layout_stage()
         self._schedule_native_topmost_sync()
@@ -1006,19 +1186,18 @@ class PetWindow(QWidget):
             max(0, height - transition_height - 62),
         )
 
-        bubble_width = min(640, width - 96)
-        bubble_height = 128
-        input_height = 52
-        input_gap = 10
+        bubble_width = min(self.control_panel_width, max(MIN_CONTROL_PANEL_WIDTH, width - 32))
+        bubble_height = self.bubble_height
         bubble_x = (width - bubble_width) // 2
-        bubble_y = height - bubble_height - input_height - input_gap - 84
+        bubble_y = height - bubble_height - INPUT_BAR_HEIGHT - CONTROL_PANEL_GAP - CONTROL_PANEL_BOTTOM_MARGIN
         self.bubble.setGeometry(QRect(bubble_x, bubble_y, bubble_width, bubble_height))
         self.bubble.raise_()
 
-        input_y = bubble_y + bubble_height + input_gap
-        self.input_bar.setGeometry(QRect(bubble_x, input_y, bubble_width, input_height))
+        input_y = bubble_y + bubble_height + CONTROL_PANEL_GAP
+        self.input_bar.setGeometry(QRect(bubble_x, input_y, bubble_width, INPUT_BAR_HEIGHT))
         self._update_input_backdrop_geometry()
         self.input_bar.raise_()
+        self._apply_stage_mask()
 
     def _update_input_backdrop_geometry(self) -> None:
         self.input_bar.layout().activate()
@@ -1026,6 +1205,33 @@ class PetWindow(QWidget):
         self.input_backdrop.setGeometry(QRect(input_top_left, self.input_edit.size()))
         self.input_backdrop.raise_()
         self.input_backdrop.update()
+
+    def _apply_stage_mask(self) -> None:
+        label_rect = QRect(self.label.geometry())
+        transition_rect = (
+            QRect(self.portrait_transition_label.geometry())
+            if self.portrait_transition_label.isVisible()
+            else None
+        )
+        bubble_rect = QRect(self.bubble.geometry())
+        input_rect = QRect(self.input_bar.geometry())
+        resize_rect = self._control_group_rect()
+        if resize_rect is not None:
+            resize_rect = QRect(resize_rect).adjusted(
+                -CONTROL_PANEL_RESIZE_MARGIN,
+                -CONTROL_PANEL_RESIZE_MARGIN,
+                CONTROL_PANEL_RESIZE_MARGIN,
+                CONTROL_PANEL_RESIZE_MARGIN,
+            )
+
+        region = QRegion()
+        for rect in (label_rect, transition_rect, bubble_rect, input_rect, resize_rect):
+            if rect is not None and rect.isValid() and not rect.isEmpty():
+                region = region.united(QRegion(rect))
+        if region.isEmpty():
+            self.clearMask()
+            return
+        self.setMask(region)
 
     def _create_tray_icon(self) -> None:
         icon = _build_status_tray_icon(self.theme_settings.primary_color)
@@ -3164,6 +3370,18 @@ class PetWindow(QWidget):
             system_values.get("portrait_scale_percent", PORTRAIT_SCALE_DEFAULT_PERCENT)
         )
 
+    def _load_control_panel_width(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_control_panel_width(
+            system_values.get("control_panel_width", DEFAULT_CONTROL_PANEL_WIDTH)
+        )
+
+    def _load_bubble_height(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_bubble_height(
+            system_values.get("bubble_height", DEFAULT_BUBBLE_HEIGHT)
+        )
+
     def _load_subtitle_display_speed(self) -> tuple[int, int]:
         system_values = self._load_system_config_values("ui")
         return normalize_subtitle_display_speed(
@@ -3263,10 +3481,52 @@ class PetWindow(QWidget):
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.control_panel_width,
+            self.bubble_height,
+        )
         self.portrait_controller.set_stage_size(self.stage_size)
         self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
         self.portrait_controller.apply_current()
+
+    def _apply_control_panel_size(
+        self,
+        width: object,
+        bubble_height: object,
+        *,
+        persist: bool = True,
+    ) -> None:
+        next_width = _normalize_control_panel_width(width)
+        next_bubble_height = _normalize_bubble_height(bubble_height)
+        changed = (
+            next_width != self.control_panel_width
+            or next_bubble_height != self.bubble_height
+        )
+        self.control_panel_width = next_width
+        self.bubble_height = next_bubble_height
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.control_panel_width,
+            self.bubble_height,
+        )
+        self.portrait_controller.set_stage_size(self.stage_size)
+        self.resize(*self.stage_size)
+        self._layout_stage()
+        if changed and persist:
+            self._save_control_panel_size()
+
+    def _save_control_panel_size(self) -> None:
+        try:
+            self._save_system_config_values(
+                "ui",
+                {
+                    "control_panel_width": self.control_panel_width,
+                    "bubble_height": self.bubble_height,
+                },
+            )
+        except OSError as exc:
+            debug_log("PetWindow", "保存操作区尺寸失败", {"error": str(exc)})
 
     def _apply_subtitle_display_speed(
         self,
@@ -3610,6 +3870,42 @@ def _stage_size_for_portrait_scale_percent(portrait_scale_percent: int) -> tuple
         DEFAULT_STAGE_WIDTH,
         max(MIN_STAGE_HEIGHT, round(DEFAULT_STAGE_HEIGHT * scale)),
     )
+
+
+def _stage_size_for_layout(
+    portrait_scale_percent: int,
+    control_panel_width: object = DEFAULT_CONTROL_PANEL_WIDTH,
+    bubble_height: object = DEFAULT_BUBBLE_HEIGHT,
+) -> tuple[int, int]:
+    scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+    portrait_width = round(PORTRAIT_BASE_MAX_WIDTH * scale)
+    panel_width = _normalize_control_panel_width(control_panel_width)
+    normalized_bubble_height = _normalize_bubble_height(bubble_height)
+    width = max(
+        portrait_width + 40,
+        panel_width + 96,
+    )
+    height = max(
+        MIN_STAGE_HEIGHT,
+        round(DEFAULT_STAGE_HEIGHT * scale) + normalized_bubble_height - DEFAULT_BUBBLE_HEIGHT,
+    )
+    return width, height
+
+
+def _normalize_control_panel_width(value: object) -> int:
+    try:
+        width = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_CONTROL_PANEL_WIDTH
+    return max(MIN_CONTROL_PANEL_WIDTH, min(MAX_CONTROL_PANEL_WIDTH, width))
+
+
+def _normalize_bubble_height(value: object) -> int:
+    try:
+        height = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_BUBBLE_HEIGHT
+    return max(MIN_BUBBLE_HEIGHT, min(MAX_BUBBLE_HEIGHT, height))
 
 
 def _is_screen_change_event(event: object) -> bool:
