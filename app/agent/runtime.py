@@ -108,13 +108,16 @@ class AgentRuntime:
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
         parsed = parse_chat_reply_result(raw_content)
-        if not parsed.needs_retry:
+        retry_reason = parsed.reason if parsed.needs_retry else ""
+        if not parsed.needs_retry and _reply_has_display_translation(parsed.reply):
             return parsed.reply
+        if not retry_reason:
+            retry_reason = "missing_translation"
 
         debug_log(
             "AgentRuntime",
             "最终回复结构异常，准备请求模型修复",
-            {"reason": parsed.reason, "raw_content": raw_content},
+            {"reason": retry_reason, "raw_content": raw_content},
         )
         repair_messages: list[ChatMessage] = [
             *working_messages,
@@ -940,6 +943,15 @@ def _should_emit_progress(metadata: dict[str, Any]) -> bool:
     if not isinstance(tool_names, list):
         return False
     return any(str(name).startswith("windows__") for name in tool_names)
+
+
+def _reply_has_display_translation(reply: ChatReply) -> bool:
+    """最终回复需要中文显示文本，避免兼容模型的纯日语正文漏到中文字幕 UI。"""
+
+    return any(
+        segment.text.strip() and segment.translation.strip()
+        for segment in reply.segments
+    )
 
 
 def _native_tool_call_to_policy_call(
