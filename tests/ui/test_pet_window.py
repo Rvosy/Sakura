@@ -304,13 +304,19 @@ def test_message_box_stylesheet_contains_configured_theme_colors() -> None:
 
 def test_pet_window_hide_and_show_to_tray_tracks_hidden_state() -> None:
     from app.ui.pet_window import PetWindow
+    from app.agent.runtime_events import RuntimeEventQueue
 
     class MinimalWindow:
         _hide_to_tray = PetWindow._hide_to_tray
         _show_from_tray = PetWindow._show_from_tray
+        emit_runtime_event = PetWindow.emit_runtime_event
 
         def __init__(self) -> None:
             self.hidden_to_tray = False
+            self.startup_initializing = False
+            self.pet_hidden_at = None
+            self.runtime_event_queue = RuntimeEventQueue()
+            self.runtime_event_log = None
             self.events: list[str] = []
 
         def hide(self) -> None:
@@ -337,6 +343,145 @@ def test_pet_window_hide_and_show_to_tray_tracks_hidden_state() -> None:
     window._show_from_tray()
     assert window.hidden_to_tray is False
     assert window.events == ["hide", "refresh", "show", "raise", "activate", "refresh"]
+
+
+class _RecordingEventLog:
+    """记录被落盘事件的假 RuntimeEventLog，用于断言 emit 行为。"""
+
+    def __init__(self) -> None:
+        self.appended: list = []
+
+    def append(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.appended.append(event)
+
+    def load_startup_carryover(self):  # type: ignore[no-untyped-def]
+        return None
+
+
+def test_hide_to_tray_emits_pet_hidden_runtime_event() -> None:
+    from app.ui.pet_window import PetWindow
+    from app.agent.runtime_events import PET_HIDDEN, RuntimeEventQueue
+
+    class MinimalWindow:
+        _hide_to_tray = PetWindow._hide_to_tray
+        emit_runtime_event = PetWindow.emit_runtime_event
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = False
+            self.pet_hidden_at = None
+            self.runtime_event_queue = RuntimeEventQueue()
+            self.runtime_event_log = _RecordingEventLog()
+
+        def hide(self) -> None:
+            pass
+
+        def _refresh_tray_menu(self) -> None:
+            pass
+
+    window = MinimalWindow()
+    window._hide_to_tray()
+
+    assert window.pet_hidden_at is not None
+    assert [e.event_type for e in window.runtime_event_queue.peek()] == [PET_HIDDEN]
+    assert [e.event_type for e in window.runtime_event_log.appended] == [PET_HIDDEN]
+
+
+def test_show_from_tray_emits_reopened_with_hidden_duration() -> None:
+    import time
+
+    from app.ui.pet_window import PetWindow
+    from app.agent.runtime_events import PET_REOPENED, RuntimeEventQueue
+
+    class MinimalWindow:
+        _show_from_tray = PetWindow._show_from_tray
+        emit_runtime_event = PetWindow.emit_runtime_event
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = True
+            self.startup_initializing = False
+            self.pet_hidden_at = time.perf_counter() - 3
+            self.runtime_event_queue = RuntimeEventQueue()
+            self.runtime_event_log = _RecordingEventLog()
+
+        def show(self) -> None:
+            pass
+
+        def raise_(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+        def _refresh_tray_menu(self) -> None:
+            pass
+
+    window = MinimalWindow()
+    window._show_from_tray()
+
+    drained = window.runtime_event_queue.drain()
+    assert len(drained) == 1
+    assert drained[0].event_type == PET_REOPENED
+    assert drained[0].metadata["hidden_duration"] >= 2
+    assert window.pet_hidden_at is None
+
+
+def test_show_from_tray_skips_reopened_during_startup() -> None:
+    from app.ui.pet_window import PetWindow
+    from app.agent.runtime_events import RuntimeEventQueue
+
+    class MinimalWindow:
+        _show_from_tray = PetWindow._show_from_tray
+        emit_runtime_event = PetWindow.emit_runtime_event
+
+        def __init__(self) -> None:
+            self.hidden_to_tray = True
+            self.startup_initializing = True
+            self.pet_hidden_at = None
+            self.runtime_event_queue = RuntimeEventQueue()
+            self.runtime_event_log = _RecordingEventLog()
+
+        def show(self) -> None:
+            pass
+
+        def raise_(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+        def _refresh_tray_menu(self) -> None:
+            pass
+
+    window = MinimalWindow()
+    window._show_from_tray()
+
+    assert window.runtime_event_queue.drain() == []
+    assert window.runtime_event_log.appended == []
+
+
+def test_emit_app_closed_event_logs_once_with_interrupted_flag() -> None:
+    from app.ui.pet_window import PetWindow
+    from app.agent.runtime_events import APP_CLOSED, RuntimeEventQueue
+
+    class MinimalWindow:
+        emit_runtime_event = PetWindow.emit_runtime_event
+        _emit_app_closed_event = PetWindow._emit_app_closed_event
+
+        def __init__(self) -> None:
+            self.worker_thread = object()  # 模拟回复进行中被关闭
+            self._runtime_app_closed_logged = False
+            self.runtime_event_queue = RuntimeEventQueue()
+            self.runtime_event_log = _RecordingEventLog()
+
+    window = MinimalWindow()
+    window._emit_app_closed_event()
+    window._emit_app_closed_event()  # 退出链路多次触发，应被一次性保护拦截
+
+    appended = window.runtime_event_log.appended
+    assert [e.event_type for e in appended] == [APP_CLOSED]
+    assert appended[0].metadata["interrupted_reply"] is True
+    # app.closed 用 inject=False，不进内存队列
+    assert len(window.runtime_event_queue) == 0
 
 
 def test_pet_window_application_activation_restores_when_hidden_to_tray(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -6859,3 +7004,29 @@ def test_subtitle_controller_show_text_immediately_does_not_use_tts() -> None:
         "speech_text_shown_immediately",
         {"text": "第一段。 第二段。"},
     )
+
+
+def test_send_message_injects_runtime_event_context_before_user_message() -> None:
+    from app.agent.runtime_events import PET_REOPENED, RuntimeEvent, RuntimeEventQueue
+
+    window, requests, history = _build_minimal_manual_screenshot_window("继续刚才的话题")
+    window.pending_manual_screen_observation = None
+    window.runtime_event_queue = RuntimeEventQueue()
+    window.runtime_event_queue.push(
+        RuntimeEvent(PET_REOPENED, metadata={"hidden_duration": 300})
+    )
+
+    window.send_message("test")
+
+    assert len(requests) == 1
+    request = requests[0]
+    # 事件上下文应作为 system 消息插在历史与当前用户消息之间
+    assert request[0]["role"] == "system"
+    assert "重新打开" in request[0]["content"]
+    assert request[-1] == {"role": "user", "content": "继续刚才的话题"}
+    # 只进 request_messages：不污染 self.messages
+    assert window.messages == [{"role": "user", "content": "继续刚才的话题"}]
+    # 不污染聊天历史
+    assert history == [("user", "继续刚才的话题")]
+    # 队列已被一次性消费
+    assert len(window.runtime_event_queue) == 0

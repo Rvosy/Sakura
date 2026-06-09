@@ -37,6 +37,7 @@ from app.core.extensions import ExtensionRegistry
 from app.core.plugin_manager import SakuraPluginManager
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.storage.chat_history import ChatHistoryStore
+from app.agent.runtime_events import RuntimeEventLog
 from app.storage.visual_observation import VisualObservationStore
 from app.voice.tts import TTSProvider
 
@@ -60,6 +61,7 @@ class AppBuilder:
         self._memory_store: MemoryStore | None = None
         self._reminder_store: ReminderStore | None = None
         self._history_store: ChatHistoryStore | None = None
+        self._runtime_event_log: RuntimeEventLog | None = None
         self._visual_store: VisualObservationStore | None = None
         self._extension_registry: ExtensionRegistry | None = None
         self._mcp_provider: MCPToolProvider | None = None
@@ -150,6 +152,7 @@ class AppBuilder:
         self._memory_store = MemoryStore(base_dir=self.base_dir)
         self._reminder_store = ReminderStore(base_dir=self.base_dir)
         self._history_store = _create_history_store(self.base_dir, self._character_profile)
+        self._runtime_event_log = _create_runtime_event_log(self.base_dir, self._character_profile)
         self._visual_store = _create_visual_observation_store(self.base_dir, self._character_profile)
         return self
 
@@ -205,6 +208,7 @@ class AppBuilder:
             reminder_store=self._reminder_store,
             history_store=self._history_store,
             visual_observation_store=self._visual_store,
+            runtime_event_log=self._runtime_event_log,
         )
 
         debug_log_settings = (
@@ -255,6 +259,12 @@ def _create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHist
     """为角色创建聊天历史存储。"""
     history_path = base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
     return ChatHistoryStore(history_path, profile.display_name)
+
+
+def _create_runtime_event_log(base_dir: Path, profile: CharacterProfile) -> RuntimeEventLog:
+    """为角色创建运行时事件日志（与聊天历史路径风格一致，但完全独立）。"""
+    event_path = base_dir / "data" / "runtime_events" / f"{profile.id}.jsonl"
+    return RuntimeEventLog(event_path)
 
 
 def _create_visual_observation_store(

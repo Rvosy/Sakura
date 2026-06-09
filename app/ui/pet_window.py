@@ -67,6 +67,17 @@ from app.config.character_loader import (
     save_character_theme,
 )
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
+from app.agent.runtime_events import (
+    APP_CLOSED,
+    APP_STARTED,
+    LONG_HIDDEN_SECONDS,
+    PET_HIDDEN,
+    PET_REOPENED,
+    RuntimeEvent,
+    RuntimeEventLog,
+    RuntimeEventQueue,
+    build_runtime_event_context_message,
+)
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
 from app.llm.api_client import ApiSettings
@@ -318,6 +329,7 @@ class PetWindow(QWidget):
         self.tts_provider = context.tts_provider
         self.retired_tts_providers: list[TTSProvider] = []
         self.history_store = context.history_store
+        self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
@@ -369,6 +381,10 @@ class PetWindow(QWidget):
         self.pending_event_visual_observation_jobs: list[VisualObservationJob] = []
         self.plugin_chat_ui_widget_instances: list[QWidget] = []
         self.hidden_to_tray = False
+        # 运行时事件系统：队列负责注入下次请求，pet_hidden_at 记录隐藏起点用于计算重开时长。
+        self.runtime_event_queue = RuntimeEventQueue()
+        self.pet_hidden_at: float | None = None
+        self._runtime_app_closed_logged = False
         self.screen_observation_followup_in_progress = False
         self.active_reminder_id: str | None = None
         self.active_reminder_text = ""
@@ -703,9 +719,37 @@ class PetWindow(QWidget):
 
     @Slot()
     def close_external_tools(self) -> None:
+        self._emit_app_closed_event()
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
+
+    def _emit_app_started_event(self) -> None:
+        """启动就绪后落盘 app.started；若存在上次关闭记录则附带跨会话信息并注入首条消息。"""
+        log = getattr(self, "runtime_event_log", None)
+        carryover = log.load_startup_carryover() if log is not None else None
+        away = carryover.get("away_seconds") if carryover else None
+        priority = 1 if isinstance(away, (int, float)) and away >= LONG_HIDDEN_SECONDS else 0
+        self.emit_runtime_event(
+            APP_STARTED,
+            source="startup",
+            metadata=carryover or {},
+            priority=priority,
+            # 无上次关闭记录（首启 / 上次异常退出）时只落盘，不注入空洞的「已启动」提示。
+            inject=carryover is not None,
+        )
+
+    def _emit_app_closed_event(self) -> None:
+        """关闭前落盘 app.closed（供下次启动衔接）。退出链路可能多次触发，做一次性保护。"""
+        if getattr(self, "_runtime_app_closed_logged", False):
+            return
+        self._runtime_app_closed_logged = True
+        self.emit_runtime_event(
+            APP_CLOSED,
+            source="shutdown",
+            metadata={"interrupted_reply": self.worker_thread is not None},
+            inject=False,
+        )
 
     @Slot()
     def close_tts_tools(self) -> None:
@@ -1274,6 +1318,13 @@ class PetWindow(QWidget):
             store=getattr(self, "visual_observation_store", None),
             has_current_image=manual_observation is not None,
         )
+        # 注入运行时事件上下文：与视觉上下文同样只进 request_messages，不写入 self.messages、不持久化。
+        runtime_event_queue = getattr(self, "runtime_event_queue", None)
+        if runtime_event_queue is not None:
+            request_messages = _add_runtime_event_context_to_messages(
+                request_messages,
+                runtime_event_queue.drain(),
+            )
         request_messages = trim_messages_for_model(request_messages)
         debug_log(
             "PetWindow",
@@ -2219,6 +2270,7 @@ class PetWindow(QWidget):
         self.mcp_settings = services.mcp_settings
 
         self.startup_initializing = False
+        self._emit_app_started_event()
         self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
         self.subtitle_controller.cancel_reply_flow(self.character_profile.initial_message)
         if self.memory_status_message_active:
@@ -2527,16 +2579,60 @@ class PetWindow(QWidget):
     @Slot()
     def _hide_to_tray(self) -> None:
         self.hidden_to_tray = True
+        self.pet_hidden_at = time.perf_counter()
+        self.emit_runtime_event(PET_HIDDEN, source="tray")
         self.hide()
         self._refresh_tray_menu()
 
     @Slot()
     def _show_from_tray(self) -> None:
         self.hidden_to_tray = False
+        # 启动阶段的初次显示不算「重新打开」，避免首启被误判。
+        if not getattr(self, "startup_initializing", False):
+            hidden_at = self.pet_hidden_at
+            metadata: dict[str, Any] = {}
+            priority = 0
+            if hidden_at is not None:
+                hidden_duration = int(time.perf_counter() - hidden_at)
+                metadata["hidden_duration"] = hidden_duration
+                if hidden_duration >= LONG_HIDDEN_SECONDS:
+                    priority = 1
+            self.emit_runtime_event(
+                PET_REOPENED, source="tray", metadata=metadata, priority=priority
+            )
+        self.pet_hidden_at = None
         self.show()
         self.raise_()
         self.activateWindow()
         self._refresh_tray_menu()
+
+    def emit_runtime_event(
+        self,
+        event_type: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+        priority: int = 0,
+        inject: bool = True,
+    ) -> None:
+        """运行时事件的唯一发射入口（后续情绪 / 好感 / 插件订阅在此接入）。
+
+        - 始终落盘到 RuntimeEventLog（行为日志 + 跨会话衔接）；
+        - inject=True 时同时入内存队列，等下一次用户消息注入模型请求。
+          app.closed 等跨进程事件用 inject=False（队列随进程消亡，只对落盘有意义）。
+        """
+        event = RuntimeEvent(
+            event_type=event_type,
+            source=source,
+            metadata=dict(metadata or {}),
+            priority=priority,
+        )
+        log = getattr(self, "runtime_event_log", None)
+        if log is not None:
+            log.append(event)
+        if inject:
+            self.runtime_event_queue.push(event)
+        debug_log("PetWindow", "运行时事件", {"event": event.to_dict(), "inject": inject})
 
     def _handle_application_activated(self) -> None:
         if getattr(self, "hidden_to_tray", False):
@@ -3221,6 +3317,8 @@ class PetWindow(QWidget):
             self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
         self.history_store = self._create_history_store(profile)
+        self.runtime_event_log = self._create_runtime_event_log(profile)
+        self.pet_hidden_at = None
         self.visual_observation_store = self._create_visual_observation_store(profile)
         if self.history_window is not None:
             self.history_window.set_history_store(self.history_store, profile.display_name)
@@ -3234,6 +3332,10 @@ class PetWindow(QWidget):
         history_path = self.base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
         self._migrate_legacy_history(profile, history_path)
         return ChatHistoryStore(history_path, profile.display_name)
+
+    def _create_runtime_event_log(self, profile: CharacterProfile) -> RuntimeEventLog:
+        event_path = self.base_dir / "data" / "runtime_events" / f"{profile.id}.jsonl"
+        return RuntimeEventLog(event_path)
 
     def _create_visual_observation_store(self, profile: CharacterProfile) -> VisualObservationStore:
         visual_path = self.base_dir / "data" / "visual_observations" / f"{profile.id}.jsonl"
@@ -3307,6 +3409,23 @@ def _add_visual_context_to_messages(
     if context_message is None:
         return messages
 
+    return [*messages[:-1], context_message, messages[-1]]
+
+
+def _add_runtime_event_context_to_messages(
+    messages: list[dict[str, Any]],
+    events: list[RuntimeEvent],
+) -> list[dict[str, Any]]:
+    """把待注入的运行时事件合并成一条 system 上下文，插在历史与当前用户消息之间。
+
+    与 _add_visual_context_to_messages 同模式：只作用于本次 request_messages，
+    不修改 self.messages、不写入 chat_history。无事件或消息为空时原样返回。
+    """
+    if not events or not messages:
+        return messages
+    context_message = build_runtime_event_context_message(events)
+    if context_message is None:
+        return messages
     return [*messages[:-1], context_message, messages[-1]]
 
 

@@ -31,6 +31,7 @@ data/memory.json
 data/memory_curation_state.json
 data/reminders.json
 data/visual_observations/
+data/runtime_events/
 data/notes/
 data/tts_bundles/
 data/logs/

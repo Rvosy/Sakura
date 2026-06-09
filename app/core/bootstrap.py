@@ -18,6 +18,7 @@ from app.config.character_loader import (
     load_character_system_prompt,
 )
 from app.storage.chat_history import ChatHistoryStore
+from app.agent.runtime_events import RuntimeEventLog
 from app.core.debug_log import debug_log
 from app.voice.tts import (
     TTS_PROVIDER_GENIE,
@@ -145,6 +146,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         memory=memory_store,
     )
     history_store = _create_history_store(base_dir, character_profile)
+    runtime_event_log = _create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = _create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
     startup_settings = settings_service.load_startup_settings()
@@ -185,6 +187,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             reminder_store=reminder_store,
             history_store=history_store,
             visual_observation_store=visual_observation_store,
+            runtime_event_log=runtime_event_log,
         ),
         features=FeatureServices(
             settings_service=settings_service,
@@ -328,6 +331,12 @@ def _create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHist
     history_path = base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
     _migrate_legacy_history(base_dir, profile, history_path)
     return ChatHistoryStore(history_path, profile.display_name)
+
+
+def _create_runtime_event_log(base_dir: Path, profile: CharacterProfile) -> RuntimeEventLog:
+    """按角色创建运行时事件日志（与聊天历史路径风格一致，但完全独立）。"""
+    event_path = base_dir / "data" / "runtime_events" / f"{profile.id}.jsonl"
+    return RuntimeEventLog(event_path)
 
 
 def _create_visual_observation_store(

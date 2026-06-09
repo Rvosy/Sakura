@@ -10,6 +10,7 @@ from app.config.settings_service import AppSettingsService, DebugLogSettings, St
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.storage.chat_history import ChatHistoryStore
+from app.agent.runtime_events import RuntimeEventLog
 from app.core.extensions import ExtensionRegistry
 from app.agent.proactive_care import ProactiveCareSettings
 from app.voice.tts import TTSProvider
@@ -34,6 +35,7 @@ class StorageServices:
     reminder_store: ReminderStore
     history_store: ChatHistoryStore
     visual_observation_store: VisualObservationStore
+    runtime_event_log: RuntimeEventLog
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,10 @@ class AppContext:
     @property
     def visual_observation_store(self) -> VisualObservationStore:
         return self.storage.visual_observation_store
+
+    @property
+    def runtime_event_log(self) -> RuntimeEventLog:
+        return self.storage.runtime_event_log
 
     @property
     def extension_registry(self) -> ExtensionRegistry:
