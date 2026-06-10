@@ -750,7 +750,9 @@ def test_pet_window_screen_change_restores_stage_geometry(monkeypatch) -> None: 
             self.layout_count = 0
             self.topmost_sync_count = 0
 
-        def _layout_stage(self) -> None:
+        def _apply_pet_layout(self, *, anchor_global=None) -> None:  # type: ignore[no-untyped-def]
+            # 换屏恢复走统一布局；最小窗口无立绘，这里直接按 stage_size 复位并计数。
+            self.resize(*self.stage_size)
             self.layout_count += 1
 
         def _schedule_native_topmost_sync(self) -> None:
@@ -1031,32 +1033,6 @@ def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
     assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 150
 
 
-def test_stage_size_shrinks_with_portrait_scale_below_default_height() -> None:
-    from app.ui.pet_window import _stage_size_for_portrait_scale_percent, MIN_STAGE_HEIGHT
-
-    # scale=100 → 默认 640px，不受影响
-    width, height = _stage_size_for_portrait_scale_percent(100)
-    assert width == 860
-    assert height == 640
-
-    # scale=65 → 640*0.65 = 416，触及下限 420
-    _, height = _stage_size_for_portrait_scale_percent(65)
-    assert height == MIN_STAGE_HEIGHT
-
-    # scale=50 → 640*0.5 = 320，下限保护
-    _, height = _stage_size_for_portrait_scale_percent(50)
-    assert height == MIN_STAGE_HEIGHT
-
-    # scale=150 → 640*1.5 = 960，正常放大
-    _, height = _stage_size_for_portrait_scale_percent(150)
-    assert height == 960
-
-    # 宽度始终固定 860，不随缩放变化
-    for percent in (50, 65, 100, 150):
-        width, _ = _stage_size_for_portrait_scale_percent(percent)
-        assert width == 860
-
-
 def test_control_panel_layout_normalization() -> None:
     from app.ui.control_panel_layout import (
         DEFAULT_BUBBLE_HEIGHT,
@@ -1093,37 +1069,6 @@ def test_control_panel_layout_normalization() -> None:
     assert normalize_control_panel_vertical_offset(40) == 40
     assert normalize_control_panel_vertical_offset(-40) == -40
     assert normalize_control_panel_vertical_offset(0) == 0
-
-
-def test_stage_size_for_layout_respects_panel_and_bubble() -> None:
-    from app.ui.pet_window import DEFAULT_STAGE_WIDTH, _stage_size_for_layout
-    from app.ui.control_panel_layout import (
-        DEFAULT_BUBBLE_HEIGHT,
-        DEFAULT_CONTROL_PANEL_WIDTH,
-        MAX_CONTROL_PANEL_WIDTH,
-        MIN_CONTROL_PANEL_WIDTH,
-    )
-
-    # 默认参数：宽度保底为默认舞台宽度 860，高度 640
-    width, height = _stage_size_for_layout(
-        100, DEFAULT_CONTROL_PANEL_WIDTH, DEFAULT_BUBBLE_HEIGHT
-    )
-    assert width == DEFAULT_STAGE_WIDTH
-    assert height == 640
-
-    # 控制组加宽到上限：舞台宽度扩展为 panel + 96
-    wide_width, _ = _stage_size_for_layout(100, MAX_CONTROL_PANEL_WIDTH, DEFAULT_BUBBLE_HEIGHT)
-    assert wide_width == MAX_CONTROL_PANEL_WIDTH + 96
-
-    # 控制组窄于默认时仍保底 860
-    narrow_width, _ = _stage_size_for_layout(100, MIN_CONTROL_PANEL_WIDTH, DEFAULT_BUBBLE_HEIGHT)
-    assert narrow_width == DEFAULT_STAGE_WIDTH
-
-    # 气泡变高：舞台高度随气泡增量同步增高
-    _, taller = _stage_size_for_layout(
-        100, DEFAULT_CONTROL_PANEL_WIDTH, DEFAULT_BUBBLE_HEIGHT + 60
-    )
-    assert taller == 640 + 60
 
 
 def test_pet_window_defaults_subtitle_language_to_chinese() -> None:
@@ -7401,54 +7346,49 @@ def test_pet_window_applies_visual_effect_dynamic_property() -> None:
     window.input_bar.deleteLater()
 
 
-def test_pet_window_removes_old_backdrop_before_hiding_visible_input_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
+def test_sync_input_bar_backdrop_toggles_software_blur_layer_by_mode() -> None:
+    """单窗口重构后：纯色模式不挂软件模糊背景层，其余模式挂载并绑定截图回调。"""
     from app.ui.pet_window import PetWindow
     from app.ui.theme import ThemeSettings
     from app.ui.window_backdrop import VisualEffectMode
 
-    events: list[tuple[str, bool]] = []
-
-    class OldBackdrop:
-        def remove(self, window) -> None:  # type: ignore[no-untyped-def]
-            events.append(("remove", window.hidden))
-
-    class InputWindowStub:
+    class CardStub:
         def __init__(self) -> None:
-            self.hidden = False
-            self._backdrop = OldBackdrop()
-            self._background_layer = None
+            self.layer = "untouched"
 
-        def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
-            return True
+        def set_background_layer(self, layer) -> None:  # type: ignore[no-untyped-def]
+            self.layer = layer
 
-        def hide(self) -> None:
-            self.hidden = True
-            events.append(("hide", self.hidden))
+    class AnimatorStub:
+        def __init__(self) -> None:
+            self.before_show = "untouched"
 
-        def show(self) -> None:
-            events.append(("show", self.hidden))
+        def set_before_show(self, callback) -> None:  # type: ignore[no-untyped-def]
+            self.before_show = callback
 
-    input_window = InputWindowStub()
-    window = PetWindow.__new__(PetWindow)
-    window.theme_settings = ThemeSettings(visual_effect_mode=VisualEffectMode.SOLID)
-    window.input_window = input_window
-    window.input_blur_background = None
-    window.input_bar_animator = None
-    monkeypatch.setattr(
-        pet_window_module.QApplication,
-        "processEvents",
-        lambda *args, **_kwargs: events.append(("process", input_window.hidden)),
-    )
+    blur_bg = object()
 
-    PetWindow._sync_input_bar_backdrop(window)
+    def _make_window(mode: str):  # type: ignore[no-untyped-def]
+        window = PetWindow.__new__(PetWindow)
+        window.theme_settings = ThemeSettings(visual_effect_mode=mode)
+        window.input_card = CardStub()
+        window.input_blur_background = blur_bg
+        window.input_bar = None
+        window.input_edit = None
+        window.input_bar_animator = AnimatorStub()
+        return window
 
-    assert events == [
-        ("remove", False),
-        ("hide", True),
-        ("process", True),
-        ("show", True),
-    ]
+    # 纯色：不挂背景层、无截图回调。
+    solid = _make_window(VisualEffectMode.SOLID)
+    PetWindow._sync_input_bar_backdrop(solid)
+    assert solid.input_card.layer is None
+    assert solid.input_bar_animator.before_show is None
+
+    # 高斯模糊：挂软件模糊背景层 + 截图回调。
+    blur = _make_window(VisualEffectMode.GAUSSIAN_BLUR)
+    PetWindow._sync_input_bar_backdrop(blur)
+    assert blur.input_card.layer is blur_bg
+    assert blur.input_bar_animator.before_show == blur._refresh_input_blur_background
 
 
 def test_local_rect_to_global_keeps_size_and_uses_main_window_origin() -> None:
@@ -7471,16 +7411,18 @@ def test_local_rect_to_global_keeps_size_and_uses_main_window_origin() -> None:
 
 def test_input_bar_animator_visibility_follows_hover_and_pin() -> None:
     _qt_app_or_skip()
-    from PySide6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
     from app.ui.input_bar_animator import InputBarAnimator
 
     bar = QWidget()
-    window = QWidget()
+    card = QWidget()
+    effect = QGraphicsOpacityEffect(card)
     pinned = {"value": False}
     hover = {"value": False}
     animator = InputBarAnimator(
         bar,
-        window,
+        card,
+        effect,
         lambda: pinned["value"],
         lambda: hover["value"],
     )
@@ -7497,23 +7439,24 @@ def test_input_bar_animator_visibility_follows_hover_and_pin() -> None:
     assert animator._target_visible() is True
 
     bar.deleteLater()
-    window.deleteLater()
+    card.deleteLater()
 
 
 def test_input_bar_animator_send_feedback_starts_animation() -> None:
     _qt_app_or_skip()
-    from PySide6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
     from app.ui.input_bar_animator import InputBarAnimator
 
     bar = QWidget()
-    window = QWidget()
-    animator = InputBarAnimator(bar, window, lambda: False, lambda: False)
+    card = QWidget()
+    effect = QGraphicsOpacityEffect(card)
+    animator = InputBarAnimator(bar, card, effect, lambda: False, lambda: False)
 
     animator.play_send_feedback()
     assert animator._send_anim is not None
 
     bar.deleteLater()
-    window.deleteLater()
+    card.deleteLater()
 
 
 class _StubVoicePlayback:

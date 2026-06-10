@@ -104,6 +104,8 @@ from app.agent.screen_observation import (
 )
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.portrait_controller import (
+    PORTRAIT_BASE_MAX_HEIGHT,
+    PORTRAIT_BASE_MAX_WIDTH,
     PORTRAIT_SCALE_DEFAULT_PERCENT,
     normalize_portrait_scale_percent,
 )
@@ -118,6 +120,8 @@ from app.ui.control_panel_layout import (
     MAX_BUBBLE_HEIGHT,
     MIN_BUBBLE_HEIGHT,
     MIN_CONTROL_PANEL_WIDTH,
+    PetLayout,
+    compute_pet_layout,
     normalize_bubble_height,
     normalize_control_panel_vertical_offset,
     normalize_control_panel_width,
@@ -147,8 +151,8 @@ from app.storage.visual_observation import (
 )
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
-from app.ui.acrylic_card_window import AcrylicCardWindow
-from app.ui.window_backdrop import FallbackTintBackdrop, SoftwareBlurBackdrop, VisualEffectMode, create_window_backdrop
+from app.ui.card_container import CardContainer
+from app.ui.window_backdrop import VisualEffectMode
 from app.ui.input_blur_background import InputBlurBackground, make_blurred_pixmap
 from app.ui.bubble_auto_hide import BubbleAutoHideController
 from app.ui import (
@@ -195,11 +199,6 @@ REPLY_HISTORY_PANEL_HEIGHT = 70
 REPLY_HISTORY_BUTTON_SIZE = 30
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
-DEFAULT_STAGE_WIDTH = 860
-DEFAULT_STAGE_HEIGHT = 640
-# 立绘缩放时碰撞箱高度下限：底部 UI 区（气泡 128 + 输入框 52 + 间距 94 = 274px）
-# 加上立绘顶部约 146px 可见区，合计 ~420px。
-MIN_STAGE_HEIGHT = 420
 
 
 def _message_box_theme(parent: QWidget | None, theme_settings: ThemeSettings | None) -> ThemeSettings:
@@ -399,19 +398,20 @@ class PetWindow(QWidget):
         self.input_bar_offset = self._load_input_bar_offset()
         # 自适应文本气泡高度（None = 使用用户设置的 bubble_height）
         self._auto_fit_bubble_height: int | None = None
-        # 程序主动调用 _resize_stage_anchor_bottom 时置 True，
-        # 防止 setGeometry 触发的 moveEvent 用旧 rect 重定位子窗口（产生一闪）。
-        self._repositioning_stage: bool = False
         (
             self.subtitle_typing_interval_ms,
             self.reply_segment_pause_ms,
         ) = self._load_subtitle_display_speed()
-        self.stage_size = _stage_size_for_layout(
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            self.bubble_height,
-            self.input_bar_offset,
-        )
+        # 初始窗口尺寸：立绘尚未建立，用按缩放的名义立绘尺寸算包围盒；首帧布局后会以实际立绘尺寸校正。
+        _init_scale = self.portrait_scale_percent / 100
+        self.stage_size = compute_pet_layout(
+            portrait_width=round(PORTRAIT_BASE_MAX_WIDTH * _init_scale),
+            portrait_height=round(PORTRAIT_BASE_MAX_HEIGHT * _init_scale),
+            control_panel_width=self.control_panel_width,
+            bubble_height=self.bubble_height,
+            vertical_offset=self.control_panel_vertical_offset,
+            input_bar_offset=self.input_bar_offset,
+        ).window_size
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
@@ -616,15 +616,9 @@ class PetWindow(QWidget):
         bubble_layout.setSpacing(0)
         bubble_layout.addLayout(bubble_body_layout, 1)
         self.bubble.setLayout(bubble_layout)
-        # 气泡独立为半透明卡片子窗口：纯色半透明，不加系统级毛玻璃。
-        # macOS 毛玻璃已移入输入框（与高斯模糊/亚克力并列为可选外观效果）。
-        # 圆角与底色由 #speechBubble 的 QSS 大圆角 + 较高 alpha 背景负责（保证文字可读）。
-        self.bubble_window = AcrylicCardWindow(
-            self.bubble,
-            activatable=False,
-            backdrop=FallbackTintBackdrop(),
-            parent=self,
-        )
+        # 气泡为「窗口内」卡片容器（单窗口重构）：作为主窗口子控件随其单帧合成，不再是独立 HWND，
+        # 圆角与底色由 #speechBubble 的 QSS 大圆角 + 较高 alpha 背景负责（主窗口样式表级联，保证文字可读）。
+        self.bubble_card = CardContainer(self.bubble, parent=self)
 
         self.input_bar = QFrame(self)
         self.input_bar.setObjectName("inputBar")
@@ -667,20 +661,19 @@ class PetWindow(QWidget):
         input_layout.addWidget(self.screenshot_button)
         input_layout.addWidget(self.send_button)
         self.input_bar.setLayout(input_layout)
-        # 输入栏独立为可激活的卡片子窗口：默认视觉模式从主题读取，
-        # 支持纯色/高斯模糊/Windows亚克力/macOS毛玻璃四种效果。
+        # 输入栏为「窗口内」卡片容器（单窗口重构）：原生亚克力/毛玻璃依赖独立 HWND 已不可用，
+        # 视觉收敛为「纯色 / 软件高斯模糊」；非纯色模式由窗口内软件模糊背景层呈现。
         self.input_blur_background = InputBlurBackground(corner_radius=22.0)
-        input_backdrop, needs_bg, input_before_show = self._backdrop_for_input_bar()
-        self.input_window = AcrylicCardWindow(
+        needs_bg, input_before_show = self._input_bar_blur_pipeline()
+        self.input_card = CardContainer(
             self.input_bar,
-            activatable=True,
-            backdrop=input_backdrop,
             background_layer=self.input_blur_background if needs_bg else None,
             parent=self,
         )
         self.input_bar_animator = InputBarAnimator(
             self.input_bar,
-            self.input_window,
+            self.input_card,
+            self.input_card.fade_effect,
             self._input_bar_pinned,
             self._cursor_in_pet_region,
             parent=self,
@@ -689,7 +682,8 @@ class PetWindow(QWidget):
         # 气泡无操作自动隐藏控制器：说完话后倒计时，悬停桌宠暂停，超时淡出，点击桌宠唤回。
         self.bubble_settings = self.settings_service.load_bubble_settings()
         self.bubble_auto_hide = BubbleAutoHideController(
-            self.bubble_window,
+            self.bubble_card,
+            self.bubble_card.fade_effect,
             self._cursor_in_pet_region,
             enabled=self.bubble_settings.auto_hide_enabled,
             delay_seconds=self.bubble_settings.auto_hide_delay_seconds,
@@ -710,11 +704,10 @@ class PetWindow(QWidget):
         ):
             drag_widget.installEventFilter(self)
 
-        # 初始窗口尺寸此前唯一依赖 apply_current 内部的 resize；方案2 把几何收口到
-        # PetWindow 后，这里显式设定初始尺寸。位置稍后由 _move_to_default_position 处理，
-        # 故此处平铺 resize 即可，无需底边锚点。
-        self.resize(*self.stage_size)
+        # 初始：先按当前立绘贴图，再用统一布局模型把窗口尺寸校正到实际立绘并摆放子控件。
+        # 位置稍后由 _move_to_default_position 处理，故此处不做底边锚点（anchor=None 走平铺 resize）。
         self.portrait_controller.apply_current()
+        self._apply_pet_layout()
         self._create_tray_icon()
         self.memory_status_changed.connect(self._handle_memory_status_changed)
         self._connect_memory_status_listener()
@@ -734,26 +727,19 @@ class PetWindow(QWidget):
 
     def moveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().moveEvent(event)
-        # _repositioning_stage 为 True 时由 resizeEvent → _layout_stage 统一重定位，
-        # 此处跳过，避免 moveEvent 先于 resizeEvent 触发时用旧 rect 产生一闪。
-        if not self._repositioning_stage:
-            self._reposition_child_windows()
-        # macOS 上拖动导致 Qt.Tool 子窗口层级丢失，需要重新 raise
-        if sys.platform == "darwin":
-            self._raise_foreground_controls()
+        # 单窗口重构后气泡/输入栏为子控件，随主窗口一起移动，无需在此重定位。
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if hasattr(self, "bubble_window"):
-            self._reposition_child_windows()
-            self.bubble_window.show()
+        # 子控件随主窗口显示；此处只需把它们摆到位并启动动画/自动隐藏。
+        self._layout_stage()
+        if hasattr(self, "bubble_card"):
+            self.bubble_card.show()
         if hasattr(self, "input_bar_animator"):
             self.input_bar_animator.start()
         if hasattr(self, "bubble_auto_hide"):
             self.bubble_auto_hide.start()
-        # macOS 上 Qt.Tool 子窗口 show() 后不会自动浮在父窗口之上。
-        # singleShot(0) 延迟一帧 → 窗口刚创建完但 WindowServer 合成器可能尚未提交；
-        # singleShot(100ms) 补一发确保 bubble 确实在立绘前端渲染。
+        # macOS 上子控件 z 序在窗口刚提交时可能未稳定，补两发 raise 确保气泡/输入栏在立绘前端。
         if sys.platform == "darwin":
             QTimer.singleShot(0, self._raise_foreground_controls)
             QTimer.singleShot(100, self._raise_foreground_controls)
@@ -764,10 +750,7 @@ class PetWindow(QWidget):
 
     def hideEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().hideEvent(event)
-        if hasattr(self, "bubble_window"):
-            self.bubble_window.hide()
-        if hasattr(self, "input_window"):
-            self.input_window.hide()
+        # 子控件随主窗口隐藏，无需单独 hide。
         self._refresh_tray_menu()
 
     def changeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
@@ -937,9 +920,11 @@ class PetWindow(QWidget):
         return False
 
     def _finish_drag_resume(self) -> None:
-        """拖动松手后：把卡片窗口摆到新位置，再让输入栏按可见性重算（重截新位置桌面后现身）。"""
-        self._reposition_child_windows()
-        # macOS 上拖动结束后子窗口层级可能丢失，重新 raise
+        """拖动松手后：让输入栏按可见性重算（重截新位置桌面后现身）。
+
+        单窗口重构后气泡/输入栏为子控件，已随主窗口移动到新位置，无需重定位；
+        仅在 macOS 上补一发 raise 保证 z 序，再触发输入栏动画恢复。
+        """
         if sys.platform == "darwin":
             self._raise_foreground_controls()
         animator = getattr(self, "input_bar_animator", None)
@@ -982,8 +967,7 @@ class PetWindow(QWidget):
         QTimer.singleShot(0, self._restore_geometry_after_screen_change)
 
     def _restore_geometry_after_screen_change(self) -> None:
-        self.resize(*self.stage_size)
-        self._layout_stage()
+        self._apply_pet_layout()
         self._schedule_native_topmost_sync()
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
@@ -1126,10 +1110,11 @@ class PetWindow(QWidget):
         )
 
     def _raise_foreground_controls(self) -> None:
-        if hasattr(self, "bubble_window"):
-            self.bubble_window.raise_()
-        if hasattr(self, "input_window"):
-            self.input_window.raise_()
+        # 子控件 z 序：气泡/输入栏需浮在立绘之上。
+        if hasattr(self, "bubble_card"):
+            self.bubble_card.raise_()
+        if hasattr(self, "input_card"):
+            self.input_card.raise_()
         self._raise_open_dialogs()
 
     def _raise_open_dialogs(self) -> None:
@@ -1172,30 +1157,78 @@ class PetWindow(QWidget):
             return
         self.speech_label.setFont(_rounded_japanese_font(15, QFont.Weight.Medium))
 
-    def _resize_stage_anchor_bottom(self, new_size: tuple[int, int]) -> None:
-        """调整舞台尺寸，以底边为锚点向上增长（立绘屏幕位置保持不变）。
+    def _current_portrait_size(self) -> tuple[int, int]:
+        """当前立绘标签实际尺寸；标签尚未贴图时回退到按缩放的名义尺寸。"""
+        w = self.label.width()
+        h = self.label.height()
+        if w > 0 and h > 0:
+            return w, h
+        scale = self.portrait_scale_percent / 100
+        return round(PORTRAIT_BASE_MAX_WIDTH * scale), round(PORTRAIT_BASE_MAX_HEIGHT * scale)
 
-        直接 resize() 锚点在左上角，高度增加时底边下移导致立绘一起下移。
-        改为 setGeometry 同步修正 y 坐标：Δy = -(new_h - old_h)，底边固定。
-        setGeometry 会同时触发 moveEvent 和 resizeEvent；用 _repositioning_stage
-        标记屏蔽 moveEvent 中的重定位，统一交由 resizeEvent → _layout_stage 处理，
-        避免 moveEvent 先触发时子窗口用旧坐标产生一闪。
+    def _effective_bubble_height(self) -> int:
+        """自适应文本高度优先，回退到用户设置高度。"""
+        if self._auto_fit_bubble_height is not None:
+            return self._auto_fit_bubble_height
+        return self.bubble_height
+
+    def _compute_pet_layout(self) -> PetLayout:
+        pw, ph = self._current_portrait_size()
+        return compute_pet_layout(
+            portrait_width=pw,
+            portrait_height=ph,
+            control_panel_width=self.control_panel_width,
+            bubble_height=self._effective_bubble_height(),
+            vertical_offset=self.control_panel_vertical_offset,
+            input_bar_offset=self.input_bar_offset,
+        )
+
+    def _portrait_anchor_global(self) -> QPoint:
+        """当前布局下立绘底边中心的屏幕坐标——参数变化时把它钉在原位即可让立绘位置不动。
+
+        用「当前布局的 portrait_anchor（窗口本地坐标）映射到全局」，而非读立绘标签几何：
+        前者与 _apply_pet_layout 写回时用的是同一套整除公式，能精确往返、不产生逐次累积的像素漂移。
         """
-        new_w, new_h = new_size
-        delta_h = new_h - self.height()
-        pos = self.pos()
-        # setUpdatesEnabled(False) 抑制 setGeometry 期间的中间帧绘制：在同一抑制区间内把
-        # 窗口几何与立绘/子窗口位置都更新到最终状态，再统一恢复绘制。否则 moveEvent 若先于
-        # resizeEvent 触发，此刻窗口原点已上移但立绘 label 仍在旧局部坐标，会被合成出一帧
-        # 向上错位（即变高时立绘向上闪一下）。
-        self._repositioning_stage = True
+        ax, ay = self._compute_pet_layout().portrait_anchor
+        return self.mapToGlobal(QPoint(ax, ay))
+
+    def _apply_pet_layout(self, *, anchor_global: QPoint | None = None) -> None:
+        """重算统一布局，并把主窗口与三个子控件一次性（单帧）摆到位。
+
+        anchor_global 给定时：保持立绘底边中心钉在该屏幕点（改气泡高度/输入栏下移/缩放
+        都不移动立绘）；为 None 时按当前位置直接 resize（仅初始化/换屏用）。
+        气泡/输入栏现为窗口内子控件，随主窗口同帧合成，不再有跨窗口同步竞态。
+        """
+        layout = self._compute_pet_layout()
+        new_w, new_h = layout.window_size
+        ax, ay = layout.portrait_anchor
+        # setUpdatesEnabled(False) 把窗口几何与子控件位置的更新合并到同一抑制区间，
+        # 恢复绘制后单帧呈现，避免任何中间错位帧。
         self.setUpdatesEnabled(False)
         try:
-            self.setGeometry(pos.x(), pos.y() - delta_h, new_w, new_h)
-            self._layout_stage()
+            if anchor_global is not None and self.isVisible():
+                self.setGeometry(anchor_global.x() - ax, anchor_global.y() - ay, new_w, new_h)
+            else:
+                self.resize(new_w, new_h)
+            self.stage_size = (new_w, new_h)
+            self._place_pet_children(layout)
         finally:
             self.setUpdatesEnabled(True)
-            self._repositioning_stage = False
+
+    def _place_pet_children(self, layout: PetLayout) -> None:
+        """按布局把立绘/气泡卡片/输入栏卡片摆到窗口本地坐标（不改窗口尺寸）。"""
+        if not hasattr(self, "input_card"):
+            return
+        px, py, pw, ph = layout.portrait_rect
+        self.label.setGeometry(px, py, pw, ph)
+        self.portrait_transition_label.setGeometry(px, py, pw, ph)
+        bx, by, bw, bh = layout.bubble_rect
+        self.bubble_card.setGeometry(bx, by, bw, bh)
+        ix, iy, iw, ih = layout.input_rect
+        self.input_card.setGeometry(ix, iy, iw, ih)
+        # 软件模糊背景截图需要输入栏/气泡的窗口本地矩形（转全局），此处缓存。
+        self._bubble_local_rect = QRect(bx, by, bw, bh)
+        self._input_local_rect = QRect(ix, iy, iw, ih)
 
     def _fit_bubble_for_label_height(self, label_h: int) -> None:
         """打字机溢出回调：按标签实际高度逐行扩展气泡（不持久化、不超上限）。"""
@@ -1203,7 +1236,7 @@ class PetWindow(QWidget):
         # 纵向开销：bubble_layout 上下 margin(12+14) + name_label + 内层 spacing(6) + 余量(4)
         overhead = 12 + name_h + 6 + 14 + 4
         needed = label_h + overhead
-        current = self._auto_fit_bubble_height if self._auto_fit_bubble_height is not None else self.bubble_height
+        current = self._effective_bubble_height()
         if needed <= current:
             return
         line_h = self.speech_label.fontMetrics().lineSpacing()
@@ -1211,98 +1244,23 @@ class PetWindow(QWidget):
         if new_h == current:
             return
         self._auto_fit_bubble_height = new_h
-        self._ensure_stage_for_bubble_height(new_h)
-        # setGeometry 触发 resizeEvent → _layout_stage()，无需再手动调用
-
-    def _ensure_stage_for_bubble_height(self, bubble_height: int) -> None:
-        """必要时扩大舞台以容纳气泡高度；若窗口已够高则直接跳过，不触发缩小。
-
-        以 self.height()（实际窗口高度）而非 stage_size 做比较，确保打字机过程中
-        只增不减：避免新段初次溢出时目标尺寸小于上段残留的舞台而导致先缩后扩的闪现。
-        "don't grow" 路径不调用 _layout_stage，防止每行都触发 _reposition_child_windows
-        导致气泡窗口逐行抖动；配合段间不重置 _auto_fit_bubble_height，正常流程几乎不会
-        进入该分支。
-        """
-        new_size = _stage_size_for_layout(
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            bubble_height,
-            self.input_bar_offset,
-        )
-        if new_size[1] <= self.height():
-            return  # 窗口已够高，不缩小，也不重布局（避免逐行抖动）
-        self.stage_size = new_size
-        self.portrait_controller.set_stage_size(new_size)
-        self._resize_stage_anchor_bottom(new_size)
-        # resizeEvent → _layout_stage 自动触发，无需手动调用
+        # 单窗口原子布局：以立绘底边为锚点向上扩展气泡，立绘不动、子控件同帧到位。
+        self._apply_pet_layout(anchor_global=self._portrait_anchor_global())
 
     def _collapse_auto_fit_bubble_height(self) -> None:
-        """将自适应气泡高度收回到用户设置值，以底边为锚点收缩窗口。
-
-        在 cancel_reply_flow 之前调用：回复结束或被打断时统一收回上次拓展的高度，
-        避免下一轮回复开始时窗口仍处于拓展状态导致先缩后扩的闪现。
-        """
+        """将自适应气泡高度收回到用户设置值（回复结束/打断时调用），以立绘底边为锚点收缩。"""
         if self._auto_fit_bubble_height is None:
             return
         self._auto_fit_bubble_height = None
-        base_size = _stage_size_for_layout(
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            self.bubble_height,
-            self.input_bar_offset,
-        )
-        if self.stage_size == base_size:
-            self._layout_stage()
-            return
-        self.stage_size = base_size
-        self.portrait_controller.set_stage_size(base_size)
-        self._resize_stage_anchor_bottom(base_size)
+        self._apply_pet_layout(anchor_global=self._portrait_anchor_global())
 
     def _layout_stage(self) -> None:
-        width = self.width()
-        height = self.height()
-        portrait_width = self.label.width()
-        portrait_height = self.label.height()
-        self.label.move((width - portrait_width) // 2, max(0, height - portrait_height - 62))
-        transition_width = self.portrait_transition_label.width()
-        transition_height = self.portrait_transition_label.height()
-        self.portrait_transition_label.move(
-            (width - transition_width) // 2,
-            max(0, height - transition_height - 62),
-        )
+        """重新摆放子控件到当前窗口（PortraitController 的 relayout 回调 / resizeEvent）。
 
-        bubble_width = min(self.control_panel_width, max(MIN_CONTROL_PANEL_WIDTH, width - 32))
-        # 优先使用自适应文本高度，回退到用户设置
-        bubble_height = (
-            self._auto_fit_bubble_height
-            if self._auto_fit_bubble_height is not None
-            else self.bubble_height
-        )
-        bubble_x = (width - bubble_width) // 2
-        # vertical_offset 正值向上抬升整组（减小 y），负值向下沉。
-        bubble_y = (
-            height
-            - bubble_height
-            - INPUT_BAR_HEIGHT
-            - CONTROL_PANEL_GAP
-            - CONTROL_PANEL_BOTTOM_MARGIN
-            - self.control_panel_vertical_offset
-        )
-        self._bubble_local_rect = QRect(bubble_x, bubble_y, bubble_width, bubble_height)
-
-        # input_bar_offset 只能为正：在气泡正下方再额外下移，加大与气泡的间距。
-        input_y = bubble_y + bubble_height + CONTROL_PANEL_GAP + self.input_bar_offset
-        self._input_local_rect = QRect(bubble_x, input_y, bubble_width, INPUT_BAR_HEIGHT)
-        self._reposition_child_windows()
-
-    def _reposition_child_windows(self) -> None:
-        # 气泡/输入栏是独立顶层卡片窗口，用全局坐标跟随主窗口定位。
-        bubble_rect = getattr(self, "_bubble_local_rect", None)
-        if bubble_rect is not None and hasattr(self, "bubble_window"):
-            self.bubble_window.setGeometry(self._local_rect_to_global(bubble_rect))
-        input_rect = getattr(self, "_input_local_rect", None)
-        if input_rect is not None and hasattr(self, "input_window"):
-            self.input_window.setGeometry(self._local_rect_to_global(input_rect))
+        只摆子控件、不改窗口尺寸，避免 setGeometry → resizeEvent → _layout_stage 递归；
+        窗口尺寸的变更统一由 _apply_pet_layout 负责。
+        """
+        self._place_pet_children(self._compute_pet_layout())
 
     def _local_rect_to_global(self, rect: QRect) -> QRect:
         return QRect(self.mapToGlobal(rect.topLeft()), rect.size())
@@ -1310,16 +1268,16 @@ class PetWindow(QWidget):
     def _refresh_input_blur_background(self) -> None:
         """输入栏现身前刷新软件模糊背景：截输入栏正后方桌面，模糊后铺到背景层。
 
-        此回调仅在高斯模糊模式下才会被绑定到 InputBarAnimator，其他模式不需要截图。
-        调用前已确保 input_window 在当前实际区域正上方，截图后再显示。
+        此回调在非纯色模式下绑定到 InputBarAnimator，由其在卡片现身前调用。
+        先隐藏输入栏卡片（主窗口该区域透明，露出正后方桌面），截图后再由动画器显示。
         """
         background = getattr(self, "input_blur_background", None)
         input_rect = getattr(self, "_input_local_rect", None)
         if background is None or input_rect is None:
             return
 
-        self.input_window.hide()
-        # 让出一帧，确保 DWM 把刚隐藏的窗口移出画面，否则会截到残影。
+        self.input_card.hide()
+        # 让出一帧，确保合成器把刚隐藏的卡片移出画面，否则会截到残影。
         QApplication.processEvents()
 
         try:
@@ -1352,17 +1310,10 @@ class PetWindow(QWidget):
         # 设置/历史窗口打开时禁用输入栏浮现，避免盖住对话框。
         if self._any_dialog_open():
             return False
-        # 光标是否落在桌宠任一可见窗口内（主窗口立绘 ∪ 气泡卡片 ∪ 输入栏卡片），
-        # 避免鼠标移到气泡卡片上时输入栏误收起。
+        # 单窗口重构后气泡/输入栏已并入主窗口，主窗口几何即桌宠整体区域；
+        # 光标落在其中即视为悬停桌宠（暂停自动隐藏倒计时）。
         pos = QCursor.pos()
-        for window in (
-            self,
-            getattr(self, "bubble_window", None),
-            getattr(self, "input_window", None),
-        ):
-            if window is not None and window.isVisible() and window.frameGeometry().contains(pos):
-                return True
-        return False
+        return self.isVisible() and self.frameGeometry().contains(pos)
 
     def _input_bar_pinned(self) -> bool:
         """输入栏在以下任一情况保持常显，避免用户操作中途被收起。
@@ -3712,18 +3663,11 @@ class PetWindow(QWidget):
     def _apply_window_flags(self) -> None:
         was_visible = self.isVisible()
         self.setWindowFlags(self._window_flags())
-        # 同步气泡/输入栏卡片窗口的置顶标志，避免主窗口置顶后立绘盖住气泡和输入栏
-        self._sync_card_window_topmost_flags()
+        # 单窗口重构后气泡/输入栏为子控件，无独立置顶标志需同步。
         if was_visible:
             self.show()
             self._schedule_native_topmost_sync()
             QTimer.singleShot(0, self._raise_foreground_controls)
-
-    def _sync_card_window_topmost_flags(self) -> None:
-        enabled = self.always_on_top_enabled
-        for window in (getattr(self, "bubble_window", None), getattr(self, "input_window", None)):
-            if window is not None:
-                window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
 
     def _schedule_native_topmost_sync(self) -> None:
         if sys.platform not in {"win32", "darwin"}:
@@ -3760,36 +3704,17 @@ class PetWindow(QWidget):
                 debug_log("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
 
     def _topmost_sync_windows(self):
-        # 置顶状态需覆盖主窗口 + 气泡/输入栏卡片子窗口，避免一个置顶一个不置顶被盖。
-        windows = [self]
-        for window in (getattr(self, "bubble_window", None), getattr(self, "input_window", None)):
-            if window is not None:
-                windows.append(window)
-        return windows
+        # 单窗口重构后只有主窗口一个顶层窗口，置顶仅作用于它。
+        return [self]
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
+        # 缩放前先锁定立绘底边的屏幕点：缩放后以它为锚点，立绘底边不动、只从底边向上缩放。
+        anchor = self._portrait_anchor_global()
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
-        # 扩展态下必须沿用当前有效气泡高度（自适应优先），不能用 self.bubble_height。
-        # 否则用较小的设置值算出的舞台会让 apply_current 的左上锚点 resize 把窗口从底部
-        # 缩掉，紧接着 _apply_control_panel_layout 的底边锚点 resize 又以被抬高后的底边
-        # 重新撑起，每次滑块预览都向上漏掉一截，导致桌宠持续上移飞出屏幕。
-        effective_bubble_height = (
-            self._auto_fit_bubble_height
-            if self._auto_fit_bubble_height is not None
-            else self.bubble_height
-        )
-        self.stage_size = _stage_size_for_layout(
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            effective_bubble_height,
-            self.input_bar_offset,
-        )
-        self.portrait_controller.set_stage_size(self.stage_size)
         self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
-        # apply_current 不再 resize 主窗口，立绘缩放改由底边锚点驱动窗口高度变化：
-        # 底边固定、立绘不随之下移，也不会与设置面板的底边锚点 resize 相互漏帧上移。
-        self._resize_stage_anchor_bottom(self.stage_size)
+        # 先按新缩放重贴立绘（更新标签实际尺寸），再用统一布局把窗口与子控件同帧摆到位。
         self.portrait_controller.apply_current()
+        self._apply_pet_layout(anchor_global=anchor)
 
     def _apply_control_panel_layout(
         self,
@@ -3811,6 +3736,8 @@ class PetWindow(QWidget):
             or next_offset != self.control_panel_vertical_offset
             or next_input_offset != self.input_bar_offset
         )
+        # 改布局前锁定立绘底边屏幕点，确保调气泡高度/输入栏下移/控制组偏移时立绘不动。
+        anchor = self._portrait_anchor_global()
         self.control_panel_width = next_width
         self.bubble_height = next_bubble_height
         self.control_panel_vertical_offset = next_offset
@@ -3821,16 +3748,7 @@ class PetWindow(QWidget):
         #   等用户拖到超过自适应高度时再接管，避免拖动时错位。
         if self._auto_fit_bubble_height is not None and next_bubble_height >= self._auto_fit_bubble_height:
             self._auto_fit_bubble_height = None
-        effective_h = self._auto_fit_bubble_height if self._auto_fit_bubble_height is not None else self.bubble_height
-        self.stage_size = _stage_size_for_layout(
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            effective_h,
-            self.input_bar_offset,
-        )
-        self.portrait_controller.set_stage_size(self.stage_size)
-        self._resize_stage_anchor_bottom(self.stage_size)
-        self._layout_stage()
+        self._apply_pet_layout(anchor_global=anchor)
         if changed and persist:
             self._save_control_panel_layout()
 
@@ -3903,18 +3821,12 @@ class PetWindow(QWidget):
             app.setStyleSheet(build_app_chrome_stylesheet(self.theme_settings))
 
     def _apply_card_window_theme(self) -> None:
-        # 独立顶层卡片窗口不继承主窗口样式，需各自 setStyleSheet 并按主题色重应用磨砂底。
-        stylesheet = pet_window_stylesheet(self.theme_settings)
-        tint = self._card_tint()
-        for window in (getattr(self, "bubble_window", None), getattr(self, "input_window", None)):
-            if window is not None:
-                window.set_theme(stylesheet, tint)
-        # 输入栏软件模糊背景层的叠色与暗色遮罩随主题更新。
+        # 单窗口重构后气泡/输入栏为子控件，样式由主窗口 setStyleSheet 级联，无需各自 set_theme。
+        # 仅需更新输入栏软件模糊背景层的叠色与暗色遮罩，并按当前模式重建背景管线。
         background = getattr(self, "input_blur_background", None)
         if background is not None:
-            background.set_tint(tint)
+            background.set_tint(self._card_tint())
             background.set_shadow_overlay(self._card_shadow_overlay())
-        # 外观效果模式可能改变，重建输入栏 backdrop
         self._sync_input_bar_backdrop()
 
     def _card_tint(self) -> QColor:
@@ -3954,71 +3866,30 @@ class PetWindow(QWidget):
             style.polish(widget)
             widget.update()
 
-    def _backdrop_for_input_bar(self) -> tuple:
-        """根据当前主题的 visual_effect_mode 返回 (backdrop, needs_bg_layer, before_show_callback)。
+    def _input_bar_blur_pipeline(self) -> tuple[bool, Callable[[], None] | None]:
+        """根据当前视觉效果模式返回 (是否需要软件模糊背景层, 显示前截图回调)。
 
-        三种输出对称映射到四个视觉模式：
-        - SOLID:              FallbackTintBackdrop  + 无 bg 层 + 无回调
-        - GAUSSIAN_BLUR:      SoftwareBlurBackdrop  + InputBlurBackground 层 + 截图回调
-        - WINDOWS_ACRYLIC:    WindowsAcrylicBackdrop + 无 bg 层 + 无回调
-        - MACOS_VISUAL_EFFECT: MacOSVisualEffectBackdrop + 无 bg 层 + 无回调
+        单窗口重构后输入栏为子控件，原生亚克力/macOS 毛玻璃依赖独立 HWND 已不可用：
+        - SOLID：纯色块，无背景层、无回调；
+        - 其余（高斯模糊 / 原 Windows 亚克力 / 原 macOS 毛玻璃）：统一用窗口内软件高斯模糊呈现。
+        同时同步动态 QSS 属性，使纯色等模式能触发对应样式。
         """
         mode = self._input_bar_visual_effect_mode()
-        backdrop = create_window_backdrop(mode=mode)
-
-        if mode == VisualEffectMode.GAUSSIAN_BLUR:
-            needs_bg = True
-            before_show: Callable[[], None] | None = self._refresh_input_blur_background
-        else:
-            needs_bg = False
-            before_show = None
-
-        return backdrop, needs_bg, before_show
+        self._apply_input_bar_visual_effect_property(mode)
+        if mode == VisualEffectMode.SOLID:
+            return False, None
+        return True, self._refresh_input_blur_background
 
     def _sync_input_bar_backdrop(self) -> None:
-        """外观效果模式 / 主题改变时，重建整个输入栏外观管线。"""
-        mode = self._input_bar_visual_effect_mode()
-        self._apply_input_bar_visual_effect_property(mode)
-        backdrop, needs_bg, before_show = self._backdrop_for_input_bar()
-        window = getattr(self, "input_window", None)
-        if window is None:
-            return
-
-        if type(window._backdrop) is type(backdrop):  # noqa: SLF001
-            return
-
-        # 先移除旧 backdrop，再隐藏窗口。Windows DWM 状态绑定在 HWND 上；
-        # 若先 hide，后续 remove 可能拿不到有效窗口句柄，导致亚克力/小圆角残留。
-        visible = window.isVisible()
-        try:
-            window._backdrop.remove(window)  # noqa: SLF001
-        except Exception:  # noqa: BLE001
-            pass
-
-        if visible:
-            window.hide()
-            QApplication.processEvents()
-
-        window._backdrop = backdrop  # noqa: SLF001
-
-        # 同步软件模糊背景层和 InputBarAnimator 回调
+        """外观效果模式 / 主题改变时，重建输入栏窗口内软件模糊背景管线。"""
+        needs_bg, before_show = self._input_bar_blur_pipeline()
+        card = getattr(self, "input_card", None)
         bg = getattr(self, "input_blur_background", None)
-        window._background_layer = bg if needs_bg else None  # noqa: SLF001
-        if bg is not None:
-            if needs_bg:
-                bg.setParent(window)
-                bg.setGeometry(window.rect())
-                bg.lower()
-                bg.show()
-            else:
-                bg.hide()
-
+        if card is not None:
+            card.set_background_layer(bg if needs_bg else None)
         animator = getattr(self, "input_bar_animator", None)
         if animator is not None:
             animator.set_before_show(before_show)
-
-        if visible:
-            window.show()
 
     # ── 角色切换 ─────────────────────────────────────────────────────
 
@@ -4329,37 +4200,6 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
-
-
-def _stage_size_for_layout(
-    portrait_scale_percent: int,
-    control_panel_width: object = DEFAULT_CONTROL_PANEL_WIDTH,
-    bubble_height: object = DEFAULT_BUBBLE_HEIGHT,
-    input_bar_offset: object = DEFAULT_INPUT_BAR_OFFSET,
-) -> tuple[int, int]:
-    """按立绘缩放、控制组宽度、气泡高度、输入栏下移计算舞台（主窗口）尺寸。
-
-    宽度：以默认舞台宽度（860）保底；控制组加宽时随之扩展，保证气泡水平居中不越界。
-    高度：沿用按立绘缩放的高度，叠加气泡相对默认高度的增量，并预留输入栏下移占用，使其不越出底部。
-    """
-    scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
-    panel_width = normalize_control_panel_width(control_panel_width)
-    normalized_bubble_height = normalize_bubble_height(bubble_height)
-    normalized_input_offset = normalize_input_bar_offset(input_bar_offset)
-    width = max(DEFAULT_STAGE_WIDTH, panel_width + 96)
-    height = max(
-        MIN_STAGE_HEIGHT,
-        round(DEFAULT_STAGE_HEIGHT * scale)
-        + normalized_bubble_height
-        - DEFAULT_BUBBLE_HEIGHT
-        + normalized_input_offset,
-    )
-    return width, height
-
-
-def _stage_size_for_portrait_scale_percent(portrait_scale_percent: int) -> tuple[int, int]:
-    """兼容旧调用：按默认控制组宽度与气泡高度计算舞台尺寸。"""
-    return _stage_size_for_layout(portrait_scale_percent)
 
 
 def _is_screen_change_event(event: object) -> bool:

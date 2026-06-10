@@ -26,15 +26,16 @@ class InputBarAnimator(QObject):
     可见性 = hover_active OR pinned。pinned 由「输入框有焦点 / 输入框有文本 / 待确认动作面板」
     决定（不含桌宠讲话），保证用户正在输入或有未完成交互时输入栏不会被收起。
 
-    浮现/收起对**整个输入栏卡片窗口**做 windowOpacity 淡入淡出——连同亚克力背景一起淡，
-    避免内容淡完后亚克力背景才突然消失的生硬感。发送脉冲只作用输入栏内容自身的 opacity effect，
-    与窗口级淡入淡出互不干扰。
+    浮现/收起对**整个输入栏卡片容器**做 QGraphicsOpacityEffect 淡入淡出——连同软件模糊背景一起淡，
+    避免内容淡完后背景才突然消失的生硬感（单窗口重构后输入栏为子控件，不能再用 windowOpacity）。
+    发送脉冲只作用输入栏内容自身的 opacity effect，与容器级淡入淡出分属父子两层 effect，互不干扰。
     """
 
     def __init__(
         self,
         input_bar: QWidget,
-        input_window: QWidget,
+        input_card: QWidget,
+        card_opacity_effect: QGraphicsOpacityEffect,
         is_pinned: Callable[[], bool],
         is_hover_active: Callable[[], bool],
         parent: QObject | None = None,
@@ -42,7 +43,8 @@ class InputBarAnimator(QObject):
     ) -> None:
         super().__init__(parent)
         self._input_bar = input_bar
-        self._input_window = input_window
+        self._input_card = input_card
+        self._card_effect = card_opacity_effect
         self._is_pinned = is_pinned
         self._is_hover_active = is_hover_active
         # 显示前回调：输入栏现身前刷新软件模糊背景截图（截正后方桌面），避免现身后才换背景闪一下。
@@ -106,13 +108,13 @@ class InputBarAnimator(QObject):
             self._shown = False
             self._animate(False)
         else:
-            self._input_window.hide()
+            self._input_card.hide()
 
     def resume_after_drag(self) -> None:
         """拖动结束：恢复轮询并按当前可见性走淡入/淡出动画重算。
 
         应可见则经 _animate → before_show 截「新位置」桌面后慢慢淡入现身，否则保持收起。
-        依赖外部已先把输入窗口几何摆到新位置（_reposition_child_windows）。
+        输入栏为子控件已随主窗口移动到新位置，无需外部重定位。
         """
         if not self._started:
             self._suspended = False
@@ -148,8 +150,8 @@ class InputBarAnimator(QObject):
             self._anim = None
         if show:
             self._maybe_before_show()
-            self._input_window.show()
-        anim = QPropertyAnimation(self._input_window, b"windowOpacity")
+            self._input_card.show()
+        anim = QPropertyAnimation(self._card_effect, b"opacity")
         anim.setDuration(HOVER_ANIM_DURATION_MS)
         anim.setEndValue(1.0 if show else 0.0)
         anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -159,9 +161,9 @@ class InputBarAnimator(QObject):
         self._anim = anim
 
     def _on_hide_finished(self) -> None:
-        # 整窗淡出结束后再隐藏，避免亚克力背景残留（若期间又变可见则跳过）。
+        # 淡出结束后再隐藏卡片，避免软件模糊背景残留（若期间又变可见则跳过）。
         if not self._shown:
-            self._input_window.hide()
+            self._input_card.hide()
 
     def _apply_resting_state(self) -> None:
         if self._anim is not None:
@@ -171,11 +173,11 @@ class InputBarAnimator(QObject):
         self._shown = self._target_visible()
         if self._shown:
             self._maybe_before_show()
-            self._input_window.setWindowOpacity(1.0)
-            self._input_window.show()
+            self._card_effect.setOpacity(1.0)
+            self._input_card.show()
         else:
-            self._input_window.setWindowOpacity(0.0)
-            self._input_window.hide()
+            self._card_effect.setOpacity(0.0)
+            self._input_card.hide()
 
     def play_send_feedback(self) -> None:
         """发送时让输入栏内容做一次轻微"暗-亮"脉冲作为反馈。"""

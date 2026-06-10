@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QTimer
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 # hover 轮询间隔：判断光标是否停在桌宠区域以暂停（重置）倒计时。
 HOVER_POLL_INTERVAL_MS = 300
@@ -16,12 +16,14 @@ class BubbleAutoHideController(QObject):
 
     行为：桌宠说完话后开始倒计时；倒计时期间鼠标停在桌宠/气泡区域则不断重置（等效暂停），
     移开后跑完延时即淡出隐藏气泡。隐藏后单击桌宠唤回；说话/新台词时保持显示、停止倒计时。
-    关闭开关时控制器空转（气泡常显）。淡入淡出走窗口级 windowOpacity，不干扰内容脉冲动画。
+    关闭开关时控制器空转（气泡常显）。淡入淡出作用于气泡卡片容器的 QGraphicsOpacityEffect
+    （单窗口重构后气泡为子控件，不能再用 windowOpacity），与内容脉冲动画分属父子两层 effect，互不干扰。
     """
 
     def __init__(
         self,
-        bubble_window: QWidget,
+        bubble_card: QWidget,
+        opacity_effect: QGraphicsOpacityEffect,
         is_cursor_in_region: Callable[[], bool],
         *,
         enabled: bool,
@@ -29,7 +31,8 @@ class BubbleAutoHideController(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self._bubble_window = bubble_window
+        self._bubble_card = bubble_card
+        self._opacity_effect = opacity_effect
         self._is_cursor_in_region = is_cursor_in_region
         self._enabled = bool(enabled)
         self._delay_ms = max(1, int(delay_seconds)) * 1000
@@ -111,27 +114,27 @@ class BubbleAutoHideController(QObject):
 
     def _hide(self) -> None:
         self._hidden = True
-        window = self._bubble_window
-        if window is None or not window.isVisible():
+        card = self._bubble_card
+        if card is None or not card.isVisible():
             return
-        anim = self._make_fade(window.windowOpacity(), 0.0)
+        anim = self._make_fade(self._opacity_effect.opacity(), 0.0)
         anim.finished.connect(self._on_fade_out_finished)
         anim.start()
         self._fade_anim = anim
 
     def _on_fade_out_finished(self) -> None:
-        if self._hidden and self._bubble_window is not None:
-            self._bubble_window.hide()
+        if self._hidden and self._bubble_card is not None:
+            self._bubble_card.hide()
 
     def _reveal(self) -> None:
         self._hidden = False
-        window = self._bubble_window
-        if window is None:
+        card = self._bubble_card
+        if card is None:
             return
-        if not window.isVisible():
-            window.setWindowOpacity(0.0)
-            window.show()
-        anim = self._make_fade(window.windowOpacity(), 1.0)
+        if not card.isVisible():
+            self._opacity_effect.setOpacity(0.0)
+            card.show()
+        anim = self._make_fade(self._opacity_effect.opacity(), 1.0)
         anim.start()
         self._fade_anim = anim
 
@@ -140,7 +143,7 @@ class BubbleAutoHideController(QObject):
             self._fade_anim.stop()
             self._fade_anim.deleteLater()
             self._fade_anim = None
-        anim = QPropertyAnimation(self._bubble_window, b"windowOpacity")
+        anim = QPropertyAnimation(self._opacity_effect, b"opacity")
         anim.setDuration(FADE_DURATION_MS)
         anim.setStartValue(start)
         anim.setEndValue(end)

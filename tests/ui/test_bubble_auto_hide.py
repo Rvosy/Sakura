@@ -16,8 +16,12 @@ def _qt_app_or_skip():  # type: ignore[no-untyped-def]
 
 
 def _make(window, in_region, *, enabled=True, delay_seconds=1):  # type: ignore[no-untyped-def]
+    from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+    effect = QGraphicsOpacityEffect(window)
     return BubbleAutoHideController(
         window,
+        effect,
         lambda: in_region[0],
         enabled=enabled,
         delay_seconds=delay_seconds,

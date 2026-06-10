@@ -80,7 +80,7 @@ class PortraitController(QObject):
         self.transition_id = 0
 
     def apply_current(self) -> None:
-        # 主窗口几何统一由 PetWindow 以底边为锚点管理（见 _resize_stage_anchor_bottom）。
+        # 主窗口几何统一由 PetWindow 的统一布局模型管理（见 _apply_pet_layout）。
         # 这里只负责把当前立绘贴到主标签并重新布局，绝不再 resize 主窗口，
         # 避免左上锚点 resize 与底边锚点几何相互打架产生偶发跳闪。
         self._stop_transition()
