@@ -219,15 +219,21 @@ class _NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
     pass
 
 
-class _NoWheelComboBox(_NoWheelMixin, QComboBox):
-    pass
+class _NoWheelComboBox(QComboBox):
+    """仅弹出列表打开时响应滚轮，避免未展开时滚动意外切换选项。"""
+
+    def wheelEvent(self, event):  # type: ignore[no-untyped-def]
+        if self.view().isVisible():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class _NoWheelSlider(_NoWheelMixin, QSlider):
     pass
 
 
-class ModelComboBox(_NoWheelMixin, QComboBox):
+class ModelComboBox(_NoWheelComboBox):
     """可编辑模型选择框，保留 QLineEdit 风格的 text/setText 兼容接口。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
