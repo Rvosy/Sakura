@@ -146,7 +146,7 @@ from app.storage.visual_observation import (
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.acrylic_card_window import AcrylicCardWindow
-from app.ui.window_backdrop import FallbackTintBackdrop, SoftwareBlurBackdrop
+from app.ui.window_backdrop import SoftwareBlurBackdrop, create_window_backdrop
 from app.ui.input_blur_background import InputBlurBackground, make_blurred_pixmap
 from app.ui.bubble_auto_hide import BubbleAutoHideController
 from app.ui import (
@@ -607,12 +607,13 @@ class PetWindow(QWidget):
         bubble_layout.setSpacing(0)
         bubble_layout.addLayout(bubble_body_layout, 1)
         self.bubble.setLayout(bubble_layout)
-        # 气泡独立为半透明卡片子窗口：放弃 DWM 亚克力（做不出大圆角），改纯半透明无模糊，
+        # 气泡独立为半透明卡片子窗口：macOS 用 NSVisualEffectView 原生毛玻璃，
+        # Windows 用 DWM 亚克力，其他平台降级为纯半透明无模糊。
         # 圆角与底色由 #speechBubble 的 QSS 大圆角 + 较高 alpha 背景负责（保证文字可读）。
         self.bubble_window = AcrylicCardWindow(
             self.bubble,
             activatable=False,
-            backdrop=FallbackTintBackdrop(),
+            backdrop=create_window_backdrop(),
             parent=self,
         )
 
@@ -730,6 +731,9 @@ class PetWindow(QWidget):
             self.input_bar_animator.start()
         if hasattr(self, "bubble_auto_hide"):
             self.bubble_auto_hide.start()
+        # macOS 上 Qt.Tool 子窗口 show() 后不会自动浮在父窗口之上，需要延迟一帧 raise
+        if sys.platform == "darwin":
+            QTimer.singleShot(0, self._raise_foreground_controls)
         self._refresh_tray_menu()
         self._schedule_native_topmost_sync()
         if getattr(self, "memory_failure_dialog_pending_message", ""):

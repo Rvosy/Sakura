@@ -30,7 +30,9 @@ def create_window_backdrop() -> WindowBackdrop:
         build = _windows_build()
         if build >= 17134:  # Windows 10 1803+ 起支持亚克力
             return WindowsAcrylicBackdrop(rounded=build >= 22000)
-    # Mac/Linux/旧 Windows 本次只做降级占位，原生模糊以后再接。
+    if sys.platform == "darwin":
+        return MacOSVisualEffectBackdrop()
+    # Linux/旧 Windows 降级占位
     return FallbackTintBackdrop()
 
 
@@ -56,6 +58,143 @@ class FallbackTintBackdrop:
 
     def supports_native_blur(self) -> bool:
         return False
+
+
+class MacOSVisualEffectBackdrop:
+    """macOS 原生 NSVisualEffectView 毛玻璃背景。
+
+    通过 ctypes 调用 Objective-C runtime 创建 NSVisualEffectView 并添加到窗口内容视图。
+    material 使用 Popover（弹出窗口风格），blendingMode 使用 BehindWindow（模糊窗口后方内容）。
+    任何调用失败都静默降级到 FallbackTintBackdrop。
+    """
+
+    _NS_VISUAL_EFFECT_MATERIAL_POPOVER = 10
+    _NS_VISUAL_EFFECT_BLENDING_BEHIND_WINDOW = 0
+    _NS_VISUAL_EFFECT_STATE_ACTIVE = 0
+
+    def __init__(self) -> None:
+        self._effect_view: object | None = None
+        self._fallback = FallbackTintBackdrop()
+
+    def apply(self, window: QWidget, tint: QColor) -> None:
+        if sys.platform != "darwin":
+            return
+        try:
+            import ctypes
+            import ctypes.util
+
+            objc = ctypes.CDLL(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
+
+            # 设置 objc_msgSend 签名
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+            def msg_send(obj, sel_name, *args):
+                sel = objc.sel_registerName(sel_name.encode())
+                if not args:
+                    objc.objc_msgSend.restype = ctypes.c_void_p
+                    objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                    return objc.objc_msgSend(obj, sel)
+                else:
+                    argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [type(a) for a in args]
+                    objc.objc_msgSend.restype = ctypes.c_void_p
+                    objc.objc_msgSend.argtypes = argtypes
+                    return objc.objc_msgSend(obj, sel, *args)
+
+            # 获取窗口的 NSWindow
+            win_id = int(window.winId())
+            # Qt 的 winId() 在 macOS 上返回 NSView*，需要获取其 window
+            ns_view = ctypes.c_void_p(win_id)
+            ns_window = msg_send(ns_view, "window")
+            if not ns_window:
+                self._fallback.apply(window, tint)
+                return
+
+            # 获取 contentView
+            content_view = msg_send(ctypes.c_void_p(ns_window), "contentView")
+            if not content_view:
+                self._fallback.apply(window, tint)
+                return
+
+            # 创建 NSVisualEffectView
+            ns_visual_effect_class = objc.objc_getClass(b"NSVisualEffectView")
+            if not ns_visual_effect_class:
+                self._fallback.apply(window, tint)
+                return
+
+            # alloc + initWithFrame:
+            alloc = msg_send(ns_visual_effect_class, "alloc")
+            # 使用窗口的 bounds 作为 frame
+            bounds = msg_send(ctypes.c_void_p(content_view), "bounds")
+            # bounds 是 NSRect (struct)，需要特殊处理
+            # 简化：使用 initWithFrame:NSZeroRect，然后 setAutoresizingMask
+            zero_rect = (ctypes.c_double * 4)(0, 0, 0, 0)
+            objc.objc_msgSend.restype = ctypes.c_void_p
+            objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            effect_view = objc.objc_msgSend(
+                alloc,
+                objc.sel_registerName(b"initWithFrame:"),
+                zero_rect,
+            )
+            if not effect_view:
+                self._fallback.apply(window, tint)
+                return
+
+            self._effect_view = ctypes.c_void_p(effect_view)
+
+            # setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+            msg_send(self._effect_view, "setAutoresizingMask:", ctypes.c_ulong(2 | 16))
+
+            # setMaterial: NSVisualEffectMaterialPopover
+            msg_send(
+                self._effect_view,
+                "setMaterial:",
+                ctypes.c_long(self._NS_VISUAL_EFFECT_MATERIAL_POPOVER),
+            )
+
+            # setBlendingMode: NSVisualEffectBlendingModeBehindWindow
+            msg_send(
+                self._effect_view,
+                "setBlendingMode:",
+                ctypes.c_long(self._NS_VISUAL_EFFECT_BLENDING_BEHIND_WINDOW),
+            )
+
+            # setState: NSVisualEffectStateActive
+            msg_send(
+                self._effect_view,
+                "setState:",
+                ctypes.c_long(self._NS_VISUAL_EFFECT_STATE_ACTIVE),
+            )
+
+            # addSubview: 添加到 contentView
+            msg_send(ctypes.c_void_p(content_view), "addSubview:", self._effect_view)
+
+            # 确保 effect view 在最底层（其他内容在上）
+            msg_send(self._effect_view, "setWantsLayer:", ctypes.c_bool(True))
+
+        except Exception as exc:  # noqa: BLE001
+            debug_log("UI", "macOS NSVisualEffectView 创建失败，降级为半透明", {"error": str(exc)})
+            self._fallback.apply(window, tint)
+
+    def remove(self, window: QWidget) -> None:
+        if self._effect_view is not None:
+            try:
+                import ctypes
+                objc = ctypes.CDLL(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
+                objc.sel_registerName.restype = ctypes.c_void_p
+                objc.sel_registerName.argtypes = [ctypes.c_char_p]
+                objc.objc_msgSend.restype = ctypes.c_void_p
+                objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                sel = objc.sel_registerName(b"removeFromSuperview")
+                objc.objc_msgSend(self._effect_view, sel)
+                self._effect_view = None
+            except Exception:  # noqa: BLE001
+                pass
+
+    def supports_native_blur(self) -> bool:
+        return sys.platform == "darwin"
 
 
 class SoftwareBlurBackdrop:
