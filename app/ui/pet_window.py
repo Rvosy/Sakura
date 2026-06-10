@@ -115,6 +115,8 @@ from app.ui.control_panel_layout import (
     DEFAULT_CONTROL_PANEL_WIDTH,
     DEFAULT_INPUT_BAR_OFFSET,
     INPUT_BAR_HEIGHT,
+    MAX_BUBBLE_HEIGHT,
+    MIN_BUBBLE_HEIGHT,
     MIN_CONTROL_PANEL_WIDTH,
     normalize_bubble_height,
     normalize_control_panel_vertical_offset,
@@ -394,6 +396,8 @@ class PetWindow(QWidget):
         self.bubble_height = self._load_bubble_height()
         self.control_panel_vertical_offset = self._load_control_panel_vertical_offset()
         self.input_bar_offset = self._load_input_bar_offset()
+        # 自适应文本气泡高度（None = 使用用户设置的 bubble_height）
+        self._auto_fit_bubble_height: int | None = None
         (
             self.subtitle_typing_interval_ms,
             self.reply_segment_pause_ms,
@@ -571,6 +575,7 @@ class PetWindow(QWidget):
             typing_interval_ms=self.subtitle_typing_interval_ms,
             segment_pause_ms=self.reply_segment_pause_ms,
             bubble_opacity_effect=self.bubble_opacity_effect,
+            on_speech_text_shown=self._auto_fit_bubble_for_text,
         )
         self.speech_timer = self.subtitle_controller.speech_timer
         if not self.startup_initializing:
@@ -1140,6 +1145,62 @@ class PetWindow(QWidget):
             return
         self.speech_label.setFont(_rounded_japanese_font(15, QFont.Weight.Medium))
 
+    def _compute_text_bubble_height(self, text: str) -> int:
+        """计算 word-wrap 后文本需要的气泡高度（含内边距/间距开销）。"""
+        # 文本可用宽度 = 气泡宽度 - 左右 margin (22 + 18 = 40)
+        bw = min(self.control_panel_width, max(MIN_CONTROL_PANEL_WIDTH, self.width() - 32))
+        text_width = max(1, bw - 40)
+
+        fm = self.speech_label.fontMetrics()
+        text_rect = fm.boundingRect(
+            QRect(0, 0, text_width, 0),
+            Qt.TextFlag.TextWordWrap,
+            text,
+        )
+        text_height = text_rect.height()
+
+        # 纵向开销：
+        #   bubble_layout top margin(12) + name_label + spacing(6) + bottom margin(14)
+        name_h = self.name_label.sizeHint().height()
+        overhead = 12 + name_h + 6 + 14
+
+        # 留少量余量防止边缘裁剪
+        needed = text_height + overhead + 4
+        return max(needed, MIN_BUBBLE_HEIGHT)
+
+    def _auto_fit_bubble_for_text(self, text: str) -> None:
+        """根据台词全文自适应气泡高度（不低于用户设置、不超最大值，不持久化）。"""
+        if not text:
+            return
+
+        needed = self._compute_text_bubble_height(text)
+        effective = max(self.bubble_height, needed)
+        effective = max(MIN_BUBBLE_HEIGHT, min(MAX_BUBBLE_HEIGHT, effective))
+
+        if effective == self.bubble_height:
+            # 无需额外空间：复位自适应高度，使用用户设置
+            self._auto_fit_bubble_height = None
+        else:
+            self._auto_fit_bubble_height = effective
+
+        # 确保舞台尺寸与有效气泡高度匹配（自适应变大或回退到用户设置时都会处理）
+        self._ensure_stage_for_bubble_height(effective)
+        self._layout_stage()
+
+    def _ensure_stage_for_bubble_height(self, bubble_height: int) -> None:
+        """必要时调整舞台尺寸以容纳指定气泡高度。"""
+        new_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.control_panel_width,
+            bubble_height,
+            self.input_bar_offset,
+        )
+        if self.stage_size == new_size:
+            return
+        self.stage_size = new_size
+        self.portrait_controller.set_stage_size(new_size)
+        self.resize(*new_size)
+
     def _layout_stage(self) -> None:
         width = self.width()
         height = self.height()
@@ -1154,7 +1215,12 @@ class PetWindow(QWidget):
         )
 
         bubble_width = min(self.control_panel_width, max(MIN_CONTROL_PANEL_WIDTH, width - 32))
-        bubble_height = self.bubble_height
+        # 优先使用自适应文本高度的气泡高度，回退到用户设置
+        bubble_height = (
+            self._auto_fit_bubble_height
+            if self._auto_fit_bubble_height is not None
+            else self.bubble_height
+        )
         bubble_x = (width - bubble_width) // 2
         # vertical_offset 正值向上抬升整组（减小 y），负值向下沉。
         bubble_y = (

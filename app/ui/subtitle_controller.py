@@ -46,6 +46,7 @@ class SubtitleController(QObject):
         typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
         segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
         bubble_opacity_effect: Any = None,
+        on_speech_text_shown: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.speech_label = speech_label
@@ -59,6 +60,8 @@ class SubtitleController(QObject):
         # 气泡淡入脉冲：用于每段台词浮现，None 时退化为无动画（测试/历史窗口单独构造安全）。
         self._bubble_opacity_effect = bubble_opacity_effect
         self._bubble_fade_anim: QSequentialAnimationGroup | None = None
+        # 台词文本已准备好时回调（用于自适应气泡高度等布局调整）
+        self._on_speech_text_shown = on_speech_text_shown
 
         self.speech_text = ""
         self.speech_index = 0
@@ -164,6 +167,9 @@ class SubtitleController(QObject):
         self.speech_index = 0
         self.speech_label.clear()
         if self.speech_text:
+            # 通知父级调整气泡高度（在逐字显示动画开始前），确保全文可容纳
+            if self._on_speech_text_shown is not None:
+                self._on_speech_text_shown(cleaned)
             self.speech_timer.start()
             if pulse:
                 self._pulse_bubble()
@@ -200,6 +206,8 @@ class SubtitleController(QObject):
         self.speech_timer.stop()
         self.speech_text = cleaned
         self.speech_index = len(cleaned)
+        if self._on_speech_text_shown is not None:
+            self._on_speech_text_shown(cleaned)
         self.speech_label.setText(cleaned)
         self._log_stage("speech_text_shown_immediately", {"text": cleaned})
 
