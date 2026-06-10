@@ -146,7 +146,7 @@ from app.storage.visual_observation import (
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.acrylic_card_window import AcrylicCardWindow
-from app.ui.window_backdrop import SoftwareBlurBackdrop, create_window_backdrop
+from app.ui.window_backdrop import FallbackTintBackdrop, SoftwareBlurBackdrop, VisualEffectMode, create_window_backdrop
 from app.ui.input_blur_background import InputBlurBackground, make_blurred_pixmap
 from app.ui.bubble_auto_hide import BubbleAutoHideController
 from app.ui import (
@@ -607,13 +607,13 @@ class PetWindow(QWidget):
         bubble_layout.setSpacing(0)
         bubble_layout.addLayout(bubble_body_layout, 1)
         self.bubble.setLayout(bubble_layout)
-        # 气泡独立为半透明卡片子窗口：macOS 用 NSVisualEffectView 原生毛玻璃，
-        # Windows 用 DWM 亚克力，其他平台降级为纯半透明无模糊。
+        # 气泡独立为半透明卡片子窗口：纯色半透明，不加系统级毛玻璃。
+        # macOS 毛玻璃已移入输入框（与高斯模糊/亚克力并列为可选外观效果）。
         # 圆角与底色由 #speechBubble 的 QSS 大圆角 + 较高 alpha 背景负责（保证文字可读）。
         self.bubble_window = AcrylicCardWindow(
             self.bubble,
             activatable=False,
-            backdrop=create_window_backdrop(),
+            backdrop=FallbackTintBackdrop(),
             parent=self,
         )
 
@@ -658,14 +658,15 @@ class PetWindow(QWidget):
         input_layout.addWidget(self.screenshot_button)
         input_layout.addWidget(self.send_button)
         self.input_bar.setLayout(input_layout)
-        # 输入栏独立为可激活的卡片子窗口（可聚焦打字），默认收起、hover 浮现。
-        # 改软件截图模糊（替代亚克力以实现大圆角）：背景层垫在内容下，浮现/松手时刷新截图。
+        # 输入栏独立为可激活的卡片子窗口：默认视觉模式从主题读取，
+        # 支持纯色/高斯模糊/Windows亚克力/macOS毛玻璃四种效果。
         self.input_blur_background = InputBlurBackground(corner_radius=22.0)
+        input_backdrop, needs_bg = self._backdrop_for_input_bar()
         self.input_window = AcrylicCardWindow(
             self.input_bar,
             activatable=True,
-            backdrop=SoftwareBlurBackdrop(),
-            background_layer=self.input_blur_background,
+            backdrop=input_backdrop,
+            background_layer=self.input_blur_background if needs_bg else None,
             parent=self,
         )
         self.input_bar_animator = InputBarAnimator(
@@ -3771,6 +3772,8 @@ class PetWindow(QWidget):
         if background is not None:
             background.set_tint(tint)
             background.set_shadow_overlay(self._card_shadow_overlay())
+        # 外观效果模式可能改变，重建输入栏 backdrop
+        self._sync_input_bar_backdrop()
 
     def _card_tint(self) -> QColor:
         # 亚克力磨砂底色：从气泡背景色派生，alpha 偏低让背后桌面更通透、磨砂更淡。
@@ -3788,6 +3791,52 @@ class PetWindow(QWidget):
             24,
         )
         return overlay
+
+    # ── 输入栏视觉效果模式 ────────────────────────────────────────────
+
+    def _backdrop_for_input_bar(self) -> tuple:
+        """根据当前主题的 visual_effect_mode 返回 (backdrop, needs_bg_layer)。"""
+        mode = VisualEffectMode.validate(
+            getattr(self.theme_settings, "visual_effect_mode", VisualEffectMode.DEFAULT)
+        )
+        needs_bg = (mode == VisualEffectMode.GAUSSIAN_BLUR)
+        backdrop = create_window_backdrop(mode=mode)
+        return backdrop, needs_bg
+
+    def _sync_input_bar_backdrop(self) -> None:
+        """外观效果模式改变时，重建输入栏背景实现。"""
+        backdrop, needs_bg = self._backdrop_for_input_bar()
+        window = getattr(self, "input_window", None)
+        if window is None:
+            return
+
+        # 移除旧 backdrop
+        try:
+            window._backdrop.remove(window)  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 替换 backdrop
+        window._backdrop = backdrop  # noqa: SLF001
+
+        # 控制软件模糊背景层显隐
+        bg = getattr(self, "input_blur_background", None)
+        window._background_layer = bg if needs_bg else None  # noqa: SLF001
+        if bg is not None:
+            if needs_bg:
+                bg.setParent(window)
+                bg.setGeometry(window.rect())
+                bg.lower()
+                bg.show()
+            else:
+                bg.hide()
+
+        # 窗口可见则立刻应用新 backdrop
+        if window.isVisible():
+            tint = self._card_tint()
+            backdrop.apply(window, tint)
+
+    # ── 角色切换 ─────────────────────────────────────────────────────
 
     def _apply_character(self, profile: CharacterProfile) -> None:
         previous_character_id = self.character_profile.id

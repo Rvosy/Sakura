@@ -24,15 +24,59 @@ class WindowBackdrop(Protocol):
     def supports_native_blur(self) -> bool: ...
 
 
-def create_window_backdrop() -> WindowBackdrop:
-    """按当前平台与系统版本探测，返回最合适的背景模糊实现。"""
-    if sys.platform == "win32":
+class VisualEffectMode:
+    """输入框/卡片窗口的视觉效果模式。"""
+
+    SOLID = "solid"
+    GAUSSIAN_BLUR = "gaussian_blur"
+    WINDOWS_ACRYLIC = "windows_acrylic"
+    MACOS_VISUAL_EFFECT = "macos_visual_effect"
+
+    _ALL = (SOLID, GAUSSIAN_BLUR, WINDOWS_ACRYLIC, MACOS_VISUAL_EFFECT)
+    DEFAULT = GAUSSIAN_BLUR
+
+    @classmethod
+    def available_modes(cls) -> list[str]:
+        """当前平台可用的模式列表。"""
+        modes = [cls.SOLID, cls.GAUSSIAN_BLUR]
+        if sys.platform == "win32" and _windows_build() >= 17134:
+            modes.append(cls.WINDOWS_ACRYLIC)
+        if sys.platform == "darwin":
+            modes.append(cls.MACOS_VISUAL_EFFECT)
+        return modes
+
+    @classmethod
+    def validate(cls, value: str) -> str:
+        if value in cls._ALL:
+            return value
+        return cls.DEFAULT
+
+
+def create_window_backdrop(mode: str | None = None) -> WindowBackdrop:
+    """按指定模式（或平台探测）返回最合适的背景实现。
+
+    mode 为空时走平台自动探测（旧行为，保持兼容）。
+    """
+    if mode is None:
+        # 平台自动探测：mac → VisualEffect, win → Acrylic, 其他 → Fallback
+        if sys.platform == "win32":
+            build = _windows_build()
+            if build >= 17134:
+                return WindowsAcrylicBackdrop(rounded=build >= 22000)
+        if sys.platform == "darwin":
+            return MacOSVisualEffectBackdrop()
+        return FallbackTintBackdrop()
+
+    mode = VisualEffectMode.validate(mode)
+    if mode == VisualEffectMode.SOLID:
+        return FallbackTintBackdrop()
+    if mode == VisualEffectMode.GAUSSIAN_BLUR:
+        return SoftwareBlurBackdrop()
+    if mode == VisualEffectMode.WINDOWS_ACRYLIC:
         build = _windows_build()
-        if build >= 17134:  # Windows 10 1803+ 起支持亚克力
-            return WindowsAcrylicBackdrop(rounded=build >= 22000)
-    if sys.platform == "darwin":
-        return MacOSVisualEffectBackdrop()
-    # Linux/旧 Windows 降级占位
+        return WindowsAcrylicBackdrop(rounded=build >= 22000) if build >= 17134 else FallbackTintBackdrop()
+    if mode == VisualEffectMode.MACOS_VISUAL_EFFECT:
+        return MacOSVisualEffectBackdrop() if sys.platform == "darwin" else FallbackTintBackdrop()
     return FallbackTintBackdrop()
 
 

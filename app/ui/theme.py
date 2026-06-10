@@ -54,8 +54,11 @@ class ThemeSettings:
     bubble_background_color: str = DEFAULT_BUBBLE_BACKGROUND_COLOR
     border_color: str = DEFAULT_BORDER_COLOR
     ai_enabled: bool = False
+    visual_effect_mode: str = "gaussian_blur"
 
     def normalized(self) -> "ThemeSettings":
+        from app.ui.window_backdrop import VisualEffectMode
+
         return ThemeSettings(
             primary_color=normalize_hex_color(self.primary_color, DEFAULT_PRIMARY_COLOR),
             primary_hover_color=normalize_hex_color(self.primary_hover_color, DEFAULT_PRIMARY_HOVER_COLOR),
@@ -69,6 +72,7 @@ class ThemeSettings:
             bubble_background_color=normalize_hex_color(self.bubble_background_color, DEFAULT_BUBBLE_BACKGROUND_COLOR),
             border_color=normalize_hex_color(self.border_color, DEFAULT_BORDER_COLOR),
             ai_enabled=bool(self.ai_enabled),
+            visual_effect_mode=VisualEffectMode.validate(self.visual_effect_mode),
         )
 
 
@@ -94,18 +98,26 @@ def normalize_hex_color(value: object, default: str) -> str:
 
 
 def theme_from_mapping(data: Any) -> ThemeSettings:
+    from app.ui.window_backdrop import VisualEffectMode
+
     if not isinstance(data, dict):
         return DEFAULT_THEME_SETTINGS
     values = {
         field: normalize_hex_color(data.get(field), default)
         for field, _label, default in THEME_COLOR_FIELDS
     }
-    return ThemeSettings(**values, ai_enabled=_bool_value(data.get("ai_enabled"), False))
+    return ThemeSettings(
+        **values,
+        ai_enabled=_bool_value(data.get("ai_enabled"), False),
+        visual_effect_mode=VisualEffectMode.validate(str(data.get("visual_effect_mode", VisualEffectMode.DEFAULT))),
+    )
 
 
 def theme_to_mapping(settings: ThemeSettings) -> dict[str, object]:
     data = theme_colors_to_mapping(settings)
-    data["ai_enabled"] = bool(settings.normalized().ai_enabled)
+    normalized = settings.normalized()
+    data["ai_enabled"] = bool(normalized.ai_enabled)
+    data["visual_effect_mode"] = normalized.visual_effect_mode
     return data
 
 

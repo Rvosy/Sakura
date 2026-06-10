@@ -145,6 +145,7 @@ from app.ui.theme import (
     mix,
     parse_ai_theme_response,
 )
+from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_work_dir, is_provider_bundle_work_dir
 from sdk.types import SettingsPanelContribution, ToolsTabContribution
 
@@ -812,6 +813,20 @@ class SettingsDialog(QDialog):
         self.theme_accent_button = self.theme_color_buttons["accent_color"]
         self.theme_text_edit = self.theme_color_edits["text_color"]
         self.theme_text_button = self.theme_color_buttons["text_color"]
+        # 外观效果模式下拉框
+        self.theme_visual_effect_combo = QComboBox(tab)
+        for mode_id in VisualEffectMode.available_modes():
+            label = {
+                VisualEffectMode.SOLID: "纯色块",
+                VisualEffectMode.GAUSSIAN_BLUR: "高斯模糊",
+                VisualEffectMode.WINDOWS_ACRYLIC: "Windows 亚克力模糊",
+                VisualEffectMode.MACOS_VISUAL_EFFECT: "macOS 原生毛玻璃",
+            }.get(mode_id, mode_id)
+            self.theme_visual_effect_combo.addItem(label, mode_id)
+        self.theme_visual_effect_combo.currentIndexChanged.connect(
+            self._handle_visual_effect_changed
+        )
+        form_layout.addRow("输入栏外观效果", self.theme_visual_effect_combo)
         form_layout.addRow("", button_row)
         form_layout.addRow("状态", self.theme_status_label)
         tab.setLayout(form_layout)
@@ -2044,6 +2059,12 @@ class SettingsDialog(QDialog):
             return
         edit.setText(color.name())
 
+    def _handle_visual_effect_changed(self, _index: int) -> None:
+        """外观效果下拉框切换时标记主题为手动修改。"""
+        if not self._syncing_theme_controls:
+            self._theme_ai_enabled = False
+            self._theme_write_mode = "manual"
+
     def _handle_theme_color_changed(self, edit: QLineEdit) -> None:
         if not self._syncing_theme_controls:
             self._theme_ai_enabled = False
@@ -2075,9 +2096,14 @@ class SettingsDialog(QDialog):
                     QMessageBox.warning(self, "主题颜色无效", f"{label}必须是 #RRGGBB 格式。")
                 return None
             normalized_values[field] = normalized
+        visual_effect_mode = VisualEffectMode.DEFAULT
+        combo = getattr(self, "theme_visual_effect_combo", None)
+        if combo is not None and combo.currentData() is not None:
+            visual_effect_mode = str(combo.currentData())
         return ThemeSettings(
             **normalized_values,
             ai_enabled=self._theme_ai_enabled,
+            visual_effect_mode=visual_effect_mode,
         ).normalized()
 
     def _set_theme_controls(self, settings: ThemeSettings) -> None:
@@ -2089,6 +2115,12 @@ class SettingsDialog(QDialog):
                 self.theme_color_buttons[field].setStyleSheet(
                     build_color_button_stylesheet(getattr(theme, field))
                 )
+            # 视觉效果下拉框
+            combo = getattr(self, "theme_visual_effect_combo", None)
+            if combo is not None:
+                idx = combo.findData(theme.visual_effect_mode)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
         finally:
             self._syncing_theme_controls = False
         self._theme_ai_enabled = theme.ai_enabled
