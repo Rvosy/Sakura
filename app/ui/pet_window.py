@@ -3600,9 +3600,18 @@ class PetWindow(QWidget):
     def _apply_window_flags(self) -> None:
         was_visible = self.isVisible()
         self.setWindowFlags(self._window_flags())
+        # 同步气泡/输入栏卡片窗口的置顶标志，避免主窗口置顶后立绘盖住气泡和输入栏
+        self._sync_card_window_topmost_flags()
         if was_visible:
             self.show()
             self._schedule_native_topmost_sync()
+            QTimer.singleShot(0, self._raise_foreground_controls)
+
+    def _sync_card_window_topmost_flags(self) -> None:
+        enabled = self.always_on_top_enabled
+        for window in (getattr(self, "bubble_window", None), getattr(self, "input_window", None)):
+            if window is not None:
+                window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
 
     def _schedule_native_topmost_sync(self) -> None:
         if sys.platform not in {"win32", "darwin"}:
