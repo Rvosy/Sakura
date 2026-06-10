@@ -6267,6 +6267,12 @@ def test_pet_window_apply_window_flags_syncs_native_topmost_state() -> None:
         def _schedule_native_topmost_sync(self) -> None:
             self.sync_count += 1
 
+        def _sync_card_window_topmost_flags(self) -> None:
+            pass
+
+        def _raise_foreground_controls(self) -> None:
+            pass
+
     window = MinimalWindow()
 
     window._apply_window_flags()
@@ -6300,6 +6306,12 @@ def test_pet_window_apply_window_flags_does_not_sync_native_state_before_visible
 
         def _schedule_native_topmost_sync(self) -> None:
             self.sync_count += 1
+
+        def _sync_card_window_topmost_flags(self) -> None:
+            pass
+
+        def _raise_foreground_controls(self) -> None:
+            pass
 
     window = MinimalWindow()
 
