@@ -140,7 +140,9 @@ class MacOSVisualEffectBackdrop:
     def apply(self, window: QWidget, tint: QColor) -> None:
         if sys.platform != "darwin":
             return
-        # 幂等：已创建过就不再重复添加
+        # 幂等：已创建过就不再重复添加。
+        # 注意：_refresh_input_blur_background 在非高斯模糊模式时不会 hide 窗口，
+        # 因此 effect view 不会因 Qt hide/show 而被意外销毁。
         if self._effect_view is not None:
             return
         try:

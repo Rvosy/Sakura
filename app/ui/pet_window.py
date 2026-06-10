@@ -1201,10 +1201,19 @@ class PetWindow(QWidget):
     def _refresh_input_blur_background(self) -> None:
         """输入栏现身前刷新软件模糊背景：截输入栏正后方那块桌面，模糊后铺到背景层。
 
-        输入栏窗口自身在截图区域内，会被 grabWindow 截进去，故截图前先确保它隐藏、
-        让出一帧待合成器把窗口移出画面后再截。气泡位于输入栏正上方、不在输入栏截图区域内
-        （_layout_stage 中两者有 input_gap 间隔不重叠），无需隐藏气泡——隐藏反而会导致气泡闪烁。
+        仅在当前视觉效果模式为高斯模糊（SoftwareBlurBackdrop 路径）时执行截图/模糊。
+        其他模式（纯色/macOS毛玻璃/Windows亚克力）不需要软件截图背景层，
+        反而会因为 hide() 破坏原生 NSWindow 的 Content Swap 状态导致毛玻璃永久失效。
         """
+        # 非高斯模糊模式：不需要软件截图模糊，直接返回。
+        # 注意：不要在这里调用 hide()，否则 macOS 的 MacOSVisualEffectBackdrop
+        # Content Swap 会被销毁，且 apply() 的幂等检查会阻止重建。
+        mode = VisualEffectMode.validate(
+            getattr(self.theme_settings, "visual_effect_mode", VisualEffectMode.DEFAULT)
+        )
+        if mode != VisualEffectMode.GAUSSIAN_BLUR:
+            return
+
         background = getattr(self, "input_blur_background", None)
         input_rect = getattr(self, "_input_local_rect", None)
         if background is None or input_rect is None:
