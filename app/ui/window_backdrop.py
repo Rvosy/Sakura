@@ -11,11 +11,7 @@ from app.core.debug_log import debug_log
 
 @runtime_checkable
 class WindowBackdrop(Protocol):
-    """跨平台窗口背景模糊能力接口。
-
-    apply 把系统级背景模糊（如 Windows 亚克力）施加到一个**已显示**的顶层窗口，
-    让窗口透明区透出并模糊背后的真实桌面。不支持的平台用降级实现，保证调用统一、不报错。
-    """
+    """跨平台窗口背景模糊能力接口。"""
 
     def apply(self, window: QWidget, tint: QColor) -> None: ...
 
@@ -23,6 +19,8 @@ class WindowBackdrop(Protocol):
 
     def supports_native_blur(self) -> bool: ...
 
+
+# ── 视觉效果模式枚举 ────────────────────────────────────────────────
 
 class VisualEffectMode:
     """输入框/卡片窗口的视觉效果模式。"""
@@ -37,7 +35,6 @@ class VisualEffectMode:
 
     @classmethod
     def available_modes(cls) -> list[str]:
-        """当前平台可用的模式列表。"""
         modes = [cls.SOLID, cls.GAUSSIAN_BLUR]
         if sys.platform == "win32" and _windows_build() >= 17134:
             modes.append(cls.WINDOWS_ACRYLIC)
@@ -47,18 +44,13 @@ class VisualEffectMode:
 
     @classmethod
     def validate(cls, value: str) -> str:
-        if value in cls._ALL:
-            return value
-        return cls.DEFAULT
+        return value if value in cls._ALL else cls.DEFAULT
 
+
+# ── 工厂 ─────────────────────────────────────────────────────────────
 
 def create_window_backdrop(mode: str | None = None) -> WindowBackdrop:
-    """按指定模式（或平台探测）返回最合适的背景实现。
-
-    mode 为空时走平台自动探测（旧行为，保持兼容）。
-    """
     if mode is None:
-        # 平台自动探测：mac → VisualEffect, win → Acrylic, 其他 → Fallback
         if sys.platform == "win32":
             build = _windows_build()
             if build >= 17134:
@@ -87,200 +79,113 @@ def _windows_build() -> int:
         return 0
 
 
-class FallbackTintBackdrop:
-    """无系统级模糊的平台（Mac/Linux/旧 Windows）降级占位。
+# ── 实现 ──────────────────────────────────────────────────────────────
 
-    不做真模糊：卡片自身的半透明 QSS 背景即降级效果，这里只作为接口占位，
-    apply/remove 为空操作，保证上层调用统一、不报错。
-    """
+class FallbackTintBackdrop:
+    """无系统级模糊的平台降级：apply/remove 为空操作。"""
 
     def apply(self, window: QWidget, tint: QColor) -> None:
-        del window, tint
+        pass
 
     def remove(self, window: QWidget) -> None:
-        del window
+        pass
 
     def supports_native_blur(self) -> bool:
         return False
 
 
 class MacOSVisualEffectBackdrop:
-    """macOS 原生 NSVisualEffectView 毛玻璃背景。
+    """macOS 原生毛玻璃（NSVisualEffectView with HUDWindow material）。
 
-    使用 PyObjC 桥接 AppKit（而非 ctypes），因为 ctypes 在 arm64 上无法正确按值
-    传递 NSRect（HFA-4）等 AppKit struct 给 objc_msgSend。
-    PyObjC 内置完整的 Objective-C 类型编码支持，能够正确处理所有 struct 传参。
-
-    参照 pyqt-liquidglass (https://github.com/kotikotprojects/pyqt-liquidglass) 方案：
-
-    **为什么要用 Content Swap 而不是直接改 NSWindow 透明属性？**
-
-    如果直接设置 NSWindow.setOpaque_(False) + setBackgroundColor_(clearColor())，
-    整个窗口的 backing store 进入 ARGB 全透明模式。Qt 在 macOS 上通过 CoreText/Metal
-    渲染文字和控件时，依赖窗口背景做 alpha 混合。背景全透明 → premultiplied alpha
-    全部归零 → 所有内容肉眼不可见（毛玻璃可见，内容消失）。
-
-    Content Swap 方案：
-    1. 创建一个新的透明 NSView 作为容器
-    2. 替换 NSWindow 的 contentView
-    3. 把 Qt 的 root_view 和 NSVisualEffectView 都加入容器
-    4. effect view 放在 root_view 下面（sibling 关系，不是父子）
-    5. 容器自身透明，但 NSWindow 不透明 → Qt 渲染正常
-
-    任何调用失败都静默降级到 FallbackTintBackdrop。
+    直接将 NSVisualEffectView 添加到 NSWindow.contentView 最底层。
+    使用 HUDWindow 材质提供显著可见的暗色毛玻璃效果。
     """
+
+    _MATERIAL = 13  # NSVisualEffectMaterialHUDWindow — 显著的暗色毛玻璃
+    _BLENDING = 0   # NSVisualEffectBlendingModeBehindWindow
+    _STATE = 0      # NSVisualEffectStateActive
+    _NS_WINDOW_BELOW = -1
 
     def __init__(self) -> None:
         self._effect_view: object | None = None
-        self._container: object | None = None
-        self._original_content_view: object | None = None
-        self._root_view: object | None = None  # Qt 的 NSView，remove 时需要重新挂回原始 contentView
         self._fallback = FallbackTintBackdrop()
 
     def apply(self, window: QWidget, tint: QColor) -> None:
         if sys.platform != "darwin":
             return
-        # 幂等：已创建过就不再重复添加。
-        # 注意：_refresh_input_blur_background 在非高斯模糊模式时不会 hide 窗口，
-        # 因此 effect view 不会因 Qt hide/show 而被意外销毁。
         if self._effect_view is not None:
             return
         try:
             from ctypes import c_void_p
 
-            import objc  # pyobjc-core
-            from AppKit import (
-                NSView,
-                NSVisualEffectBlendingModeBehindWindow,
-                NSVisualEffectMaterialUnderWindowBackground,
-                NSVisualEffectStateActive,
-                NSVisualEffectView,
-            )
+            import objc
+            from AppKit import NSVisualEffectView
             from Foundation import NSMakeRect
 
-            # 1. 用 PyObjC 获取 Qt 窗口的 NSView（root_view）
             win_id = int(window.winId())
             root_view = objc.objc_object(c_void_p=c_void_p(win_id))
-
-            # 2. 获取 NSWindow 和 contentView
             ns_window = root_view.window()
             if ns_window is None:
                 self._fallback.apply(window, tint)
                 return
-
             content_view = ns_window.contentView()
             if content_view is None:
                 self._fallback.apply(window, tint)
                 return
 
-            # 保存 root_view 供 remove 时重新挂回
-            self._root_view = root_view
-
-            # ── Content Swap ──
-            # 创建一个新的透明容器，替换 NSWindow 的 contentView，
-            # 然后把 Qt 的 root_view 和 NSVisualEffectView 都加入新容器。
-            frame_w = float(window.width())
-            frame_h = float(window.height())
-            container_frame = NSMakeRect(0.0, 0.0, frame_w, frame_h)
-
-            container = NSView.alloc().initWithFrame_(container_frame)
-            if container is None:
-                self._fallback.apply(window, tint)
-                return
-
-            container.setAutoresizingMask_(2 | 16)  # NSViewWidthSizable | NSViewHeightSizable
-            container.setWantsLayer_(True)
-
-            # 保存原始 contentView，用于 remove 时恢复
-            self._original_content_view = content_view
-
-            # 替换 contentView
-            ns_window.setContentView_(container)
-
-            # 把 Qt 的 root_view 加入容器（撑满）
-            root_view.setFrame_(container.bounds())
-            root_view.setAutoresizingMask_(2 | 16)
-            container.addSubview_(root_view)
-
-            # ── 创建 NSVisualEffectView ──
-            effect_frame = NSMakeRect(0.0, 0.0, frame_w, frame_h)
-            effect_view = NSVisualEffectView.alloc().initWithFrame_(effect_frame)
+            frame = NSMakeRect(0, 0, float(window.width()), float(window.height()))
+            effect_view = NSVisualEffectView.alloc().initWithFrame_(frame)
             if effect_view is None:
                 self._fallback.apply(window, tint)
                 return
 
-            # 使用 UnderWindowBackground 材质（窗口背景毛玻璃），
-            # 比 Popover 更适合作为窗口底色。
-            effect_view.setMaterial_(NSVisualEffectMaterialUnderWindowBackground)
-            effect_view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-            effect_view.setState_(NSVisualEffectStateActive)
+            effect_view.setMaterial_(self._MATERIAL)
+            effect_view.setBlendingMode_(self._BLENDING)
+            effect_view.setState_(self._STATE)
             effect_view.setAutoresizingMask_(2 | 16)
+            effect_view.setWantsLayer_(True)
 
-            # ── 关键：effect view 放在 root_view 下面 ──
-            # 使用 sibling 关系：effect view 是 container 的子视图，排在 root_view 之下。
-            # NSWindowBelow = -1
-            container.addSubview_positioned_relativeTo_(effect_view, -1, root_view)
+            # 直接添加到 contentView 最底层
+            content_view.addSubview_positioned_relativeTo_(
+                effect_view, self._NS_WINDOW_BELOW, None,
+            )
 
             self._effect_view = effect_view
-            self._container = container
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             debug_log("UI", "macOS NSVisualEffectView 创建失败，降级为半透明", {"error": str(exc)})
             self._fallback.apply(window, tint)
 
     def remove(self, window: QWidget) -> None:
-        del window
-        # 移除 effect view
         if self._effect_view is not None:
             try:
                 self._effect_view.removeFromSuperview()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
-        # 恢复原始 contentView（将 root_view 从容器移回）
-        try:
-            if self._container is not None and self._original_content_view is not None:
-                ns_window = self._container.window()
-                if ns_window is not None and self._root_view is not None:
-                    self._root_view.removeFromSuperview()
-                    self._original_content_view.addSubview_(self._root_view)
-                    ns_window.setContentView_(self._original_content_view)
-        except Exception:  # noqa: BLE001
-            pass
-        # 始终清空所有状态
         self._effect_view = None
-        self._container = None
-        self._original_content_view = None
-        self._root_view = None
 
     def supports_native_blur(self) -> bool:
         return True
 
 
 class SoftwareBlurBackdrop:
-    """软件截图模糊背景标记：不施加任何系统级模糊。
+    """软件截图模糊标记：不施加任何系统级模糊。
 
-    输入栏改用软件自截图 + 高斯模糊 + 自绘大圆角（见 app/ui/input_blur_background.py），
-    DWM 亚克力是窗口级合成、做不出大圆角，故这里把窗口从亚克力路径摘下：apply/remove 均为空操作，
-    圆角与背景完全由 InputBlurBackground 负责。supports_native_blur 返回 False（它是静态截图，非实时）。
+    apply/remove 均为空操作。圆角与背景完全由 InputBlurBackground 负责。
     """
 
     def apply(self, window: QWidget, tint: QColor) -> None:
-        del window, tint
+        pass
 
     def remove(self, window: QWidget) -> None:
-        del window
+        pass
 
     def supports_native_blur(self) -> bool:
         return False
 
 
 class WindowsAcrylicBackdrop:
-    """Windows 亚克力背景模糊（DWM 合成器实时模糊窗口背后的真实桌面）。
-
-    主路径：user32.SetWindowCompositionAttribute + ACCENT_ENABLE_ACRYLICBLURBEHIND，
-    Win10 1803+ / Win11 通用；Win11 额外用 DwmSetWindowAttribute 设原生圆角。
-    任何调用失败都静默降级（不影响窗口正常显示）。
-    """
+    """Windows 亚克力背景模糊（DWM 合成器实时模糊）。"""
 
     _WCA_ACCENT_POLICY = 19
     _ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
@@ -292,20 +197,18 @@ class WindowsAcrylicBackdrop:
         self._rounded = rounded
 
     def apply(self, window: QWidget, tint: QColor) -> None:
-        # 亚克力是 DWM 窗口级合成，无视 Qt setMask/SetWindowRgn，圆角只能交给 DWM 原生圆角。
         try:
             hwnd = int(window.winId())
             self._set_accent(hwnd, self._ACCENT_ENABLE_ACRYLICBLURBEHIND, tint)
             if self._rounded:
                 self._set_round_corners(hwnd)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             debug_log("UI", "Windows 亚克力背景应用失败，降级为半透明", {"error": str(exc)})
 
     def remove(self, window: QWidget) -> None:
         try:
-            hwnd = int(window.winId())
-            self._set_accent(hwnd, self._ACCENT_DISABLED, QColor(0, 0, 0, 0))
-        except Exception as exc:  # noqa: BLE001
+            self._set_accent(int(window.winId()), self._ACCENT_DISABLED, QColor(0, 0, 0, 0))
+        except Exception as exc:
             debug_log("UI", "Windows 亚克力背景移除失败", {"error": str(exc)})
 
     def supports_native_blur(self) -> bool:
@@ -344,18 +247,14 @@ class WindowsAcrylicBackdrop:
 
     def _set_round_corners(self, hwnd: int) -> None:
         import ctypes
-
         preference = ctypes.c_int(self._DWMWCP_ROUND)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            self._DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(preference),
-            ctypes.sizeof(preference),
+            hwnd, self._DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(preference), ctypes.sizeof(preference),
         )
 
 
 def _gradient_color(tint: QColor) -> int:
-    """QColor → 亚克力 GradientColor 的 0xAABBGGRR 整数（磨砂底色 + alpha）。"""
     return (
         (tint.alpha() << 24)
         | (tint.blue() << 16)
