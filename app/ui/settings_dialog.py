@@ -667,7 +667,7 @@ class SettingsDialog(QDialog):
         self._capture_initial_tts_settings_from_controls()
         self._apply_theme_stylesheet(self.theme_settings)
         # 初始化外观效果下拉框等控件为当前主题值
-        self._set_theme_controls(self.theme_settings)
+        self._set_theme_controls(self.theme_settings, sync_visual_effect=True)
 
     def _capture_initial_tts_settings_from_controls(self) -> None:
         settings = self._validated_tts_settings(
@@ -2108,7 +2108,14 @@ class SettingsDialog(QDialog):
             visual_effect_mode=visual_effect_mode,
         ).normalized()
 
-    def _set_theme_controls(self, settings: ThemeSettings) -> None:
+    def _set_theme_controls(
+        self, settings: ThemeSettings, *, sync_visual_effect: bool = False
+    ) -> None:
+        """将主题控件的颜色值同步到界面，可选择性同步视觉效果下拉框。
+
+        sync_visual_effect 默认为 False：切换角色/AI配色/重置时不覆盖用户手动选择的视觉效果。
+        仅在对话框初始化（__init__）和点击"恢复默认配色"时传 True。
+        """
         theme = settings.normalized()
         self._syncing_theme_controls = True
         try:
@@ -2117,12 +2124,12 @@ class SettingsDialog(QDialog):
                 self.theme_color_buttons[field].setStyleSheet(
                     build_color_button_stylesheet(getattr(theme, field))
                 )
-            # 视觉效果下拉框
-            combo = getattr(self, "theme_visual_effect_combo", None)
-            if combo is not None:
-                idx = combo.findData(theme.visual_effect_mode)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
+            if sync_visual_effect:
+                combo = getattr(self, "theme_visual_effect_combo", None)
+                if combo is not None:
+                    idx = combo.findData(theme.visual_effect_mode)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
         finally:
             self._syncing_theme_controls = False
         self._theme_ai_enabled = theme.ai_enabled
@@ -2133,10 +2140,10 @@ class SettingsDialog(QDialog):
     def _reset_theme_colors(self) -> None:
         profile = self._selected_character_profile()
         if profile is None:
-            self._set_theme_controls(ThemeSettings())
+            self._set_theme_controls(ThemeSettings(), sync_visual_effect=True)
             self.theme_status_label.setText("已恢复默认 Sakura 粉色配色。")
         else:
-            self._set_theme_controls(profile.theme_settings or DEFAULT_THEME_SETTINGS)
+            self._set_theme_controls(profile.theme_settings or DEFAULT_THEME_SETTINGS, sync_visual_effect=True)
             if profile.theme_source == THEME_SOURCE_COMPAT_DEFAULT:
                 self.theme_status_label.setText("已恢复默认 Sakura 粉色配色。")
             else:

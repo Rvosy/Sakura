@@ -3814,10 +3814,12 @@ class PetWindow(QWidget):
         if type(window._backdrop) is type(backdrop):  # noqa: SLF001
             return
 
-        # 模式真正变化：先隐藏窗口避免过渡闪现白框
+        # 模式真正变化：隐藏 → 同步 → 应用新 → 显示
+        # hide + processEvents 确保 NSWindow 在 remove 前已不可见，避免中间态白框
         visible = window.isVisible()
         if visible:
             window.hide()
+            QApplication.processEvents()
 
         try:
             window._backdrop.remove(window)  # noqa: SLF001
