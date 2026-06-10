@@ -63,18 +63,18 @@ class FallbackTintBackdrop:
 class MacOSVisualEffectBackdrop:
     """macOS 原生 NSVisualEffectView 毛玻璃背景。
 
-    通过 ctypes 调用 Objective-C runtime 创建 NSVisualEffectView 并添加到窗口内容视图。
-    material 使用 Popover（弹出窗口风格），blendingMode 使用 BehindWindow（模糊窗口后方内容）。
+    使用 PyObjC 桥接 AppKit（而非 ctypes），因为 ctypes 在 arm64 上无法正确按值
+    传递 NSRect（HFA-4）等 AppKit struct 给 objc_msgSend。
+    PyObjC 内置完整的 Objective-C 类型编码支持，能够正确处理所有 struct 传参。
 
-    注意：arm64 macOS 上 NSRect 是 HFA-4（4×double），ctypes 不支持 HFA 调用约定，
-    传 NSRect struct 给 objc_msgSend 会被错误地当作指针传递。
-    因此这里使用 init（无参）+ NSLayoutConstraint 固定四边来避免任何 NSRect 传参。
+    参照 pyqt-liquidglass (https://github.com/kotikotprojects/pyqt-liquidglass) 方案：
+    1. 用 objc.objc_object 获取 Qt 窗口的 NSView/NSWindow
+    2. 创建 NSVisualEffectView 并添加到 contentView
+    3. 配置窗口透明属性（setOpaque, clearColor, titlebarAppearsTransparent）
+    4. 把 effect view 放在 Qt 内容之下
+
     任何调用失败都静默降级到 FallbackTintBackdrop。
     """
-
-    _NS_VISUAL_EFFECT_MATERIAL_POPOVER = 10
-    _NS_VISUAL_EFFECT_BLENDING_BEHIND_WINDOW = 0
-    _NS_VISUAL_EFFECT_STATE_ACTIVE = 0
 
     def __init__(self) -> None:
         self._effect_view: object | None = None
@@ -87,149 +87,79 @@ class MacOSVisualEffectBackdrop:
         if self._effect_view is not None:
             return
         try:
-            import ctypes
-            import ctypes.util
+            from ctypes import c_void_p
 
-            objc = ctypes.CDLL(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
+            import objc  # pyobjc-core
+            from AppKit import (
+                NSColor,
+                NSVisualEffectBlendingModeBehindWindow,
+                NSVisualEffectMaterialPopover,
+                NSVisualEffectStateActive,
+                NSVisualEffectView,
+            )
+            from Foundation import NSMakeRect
 
-            # 设置 objc_msgSend 签名
-            objc.objc_getClass.restype = ctypes.c_void_p
-            objc.objc_getClass.argtypes = [ctypes.c_char_p]
-            objc.sel_registerName.restype = ctypes.c_void_p
-            objc.sel_registerName.argtypes = [ctypes.c_char_p]
-
-            # Objective-C runtime: ivar 直接写入（绕过 HFA-4 struct 传参问题）
-            objc.class_getInstanceVariable.restype = ctypes.c_void_p
-            objc.class_getInstanceVariable.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-            objc.ivar_getOffset.restype = ctypes.c_size_t
-            objc.ivar_getOffset.argtypes = [ctypes.c_void_p]
-
-            def msg_send(obj, sel_name, *args):
-                sel = objc.sel_registerName(sel_name.encode())
-                if not args:
-                    objc.objc_msgSend.restype = ctypes.c_void_p
-                    objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-                    return objc.objc_msgSend(obj, sel)
-                else:
-                    argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [type(a) for a in args]
-                    objc.objc_msgSend.restype = ctypes.c_void_p
-                    objc.objc_msgSend.argtypes = argtypes
-                    return objc.objc_msgSend(obj, sel, *args)
-
-            # 获取窗口的 NSWindow
+            # 1. 用 PyObjC 获取 Qt 窗口的 NSView
             win_id = int(window.winId())
-            # Qt 的 winId() 在 macOS 上返回 NSView*，需要获取其 window
-            ns_view = ctypes.c_void_p(win_id)
-            ns_window = msg_send(ns_view, "window")
-            if not ns_window:
+            ns_view = objc.objc_object(c_void_p=c_void_p(win_id))
+
+            # 2. 获取 NSWindow
+            ns_window = ns_view.window()
+            if ns_window is None:
                 self._fallback.apply(window, tint)
                 return
 
-            # 获取 contentView
-            content_view = msg_send(ctypes.c_void_p(ns_window), "contentView")
-            if not content_view:
+            # 3. 获取 contentView
+            content_view = ns_window.contentView()
+            if content_view is None:
                 self._fallback.apply(window, tint)
                 return
 
-            # 创建 NSVisualEffectView
-            ns_visual_effect_class = objc.objc_getClass(b"NSVisualEffectView")
-            if not ns_visual_effect_class:
-                self._fallback.apply(window, tint)
-                return
-
-            # ── alloc + init ──
-            # 不用 initWithFrame:，因为 NSRect 在 arm64 上是 HFA-4（4×double），
-            # ctypes (Python ≤3.12) 不支持 HFA 调用约定，会把数组当指针传，
-            # 导致 NSVisualEffectView 收到垃圾 frame。
-            # 改用 init 创建零 frame，再通过 _frame ivar 直接写入正确尺寸。
-            alloc = msg_send(ns_visual_effect_class, "alloc")
-            effect_view = msg_send(alloc, "init")
-            if not effect_view:
-                self._fallback.apply(window, tint)
-                return
-
-            self._effect_view = ctypes.c_void_p(effect_view)
-
-            # ── 通过 _frame ivar 直接写入 frame（绕过 objc_msgSend 的 HFA-4 限制）──
-            # 从 Qt widget 获取尺寸（纯标量调用，无 struct 传参）
+            # 4. 创建 NSVisualEffectView，使用窗口尺寸
             frame_w = float(window.width())
             frame_h = float(window.height())
+            frame = NSMakeRect(0.0, 0.0, frame_w, frame_h)
 
-            nsview_class = objc.objc_getClass(b"NSView")
-            frame_ivar = objc.class_getInstanceVariable(nsview_class, b"_frame")
-            frame_offset = objc.ivar_getOffset(frame_ivar)
+            effect_view = NSVisualEffectView.alloc().initWithFrame_(frame)
+            if effect_view is None:
+                self._fallback.apply(window, tint)
+                return
 
-            # NSRect = { origin.x, origin.y, size.width, size.height } = 4 doubles
-            # 直接写入对象内存中 _frame ivar 的位置
-            obj_base = ctypes.cast(ctypes.c_void_p(effect_view), ctypes.POINTER(ctypes.c_byte))
-            frame_ptr = ctypes.cast(
-                ctypes.addressof(obj_base.contents) + frame_offset,
-                ctypes.POINTER(ctypes.c_double),
-            )
-            frame_ptr[0] = 0.0  # origin.x
-            frame_ptr[1] = 0.0  # origin.y
-            frame_ptr[2] = frame_w  # size.width
-            frame_ptr[3] = frame_h  # size.height
+            effect_view.setMaterial_(NSVisualEffectMaterialPopover)
+            effect_view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            effect_view.setState_(NSVisualEffectStateActive)
+            effect_view.setAutoresizingMask_(2 | 16)  # NSViewWidthSizable | NSViewHeightSizable
 
-            # setAutoresizingMask: NSViewWidthSizable | NSViewHeightizable
-            msg_send(self._effect_view, "setAutoresizingMask:", ctypes.c_ulong(2 | 16))
+            # 5. 配置 NSWindow 透明属性（让毛玻璃可以透过窗口显示）
+            ns_window.setOpaque_(False)
+            ns_window.setBackgroundColor_(NSColor.clearColor())
+            ns_window.setTitlebarAppearsTransparent_(True)
+            # 启用全屏内容视图 (NSFullSizeContentViewWindowMask = 1 << 15)
+            current_mask = ns_window.styleMask()
+            ns_window.setStyleMask_(current_mask | (1 << 15))
 
-            # setMaterial: NSVisualEffectMaterialPopover
-            msg_send(
-                self._effect_view,
-                "setMaterial:",
-                ctypes.c_long(self._NS_VISUAL_EFFECT_MATERIAL_POPOVER),
-            )
+            # 6. 把 effect view 放在 contentView 最底层（Qt 内容在上面）
+            # NSViewBelow = -1 (NSWindowBelow), 0 = nil
+            content_view.addSubview_positioned_relativeTo_(effect_view, -1, None)
 
-            # setBlendingMode: NSVisualEffectBlendingModeBehindWindow
-            msg_send(
-                self._effect_view,
-                "setBlendingMode:",
-                ctypes.c_long(self._NS_VISUAL_EFFECT_BLENDING_BEHIND_WINDOW),
-            )
-
-            # setState: NSVisualEffectStateActive
-            msg_send(
-                self._effect_view,
-                "setState:",
-                ctypes.c_long(self._NS_VISUAL_EFFECT_STATE_ACTIVE),
-            )
-
-            # addSubview:positioned:relativeTo: — 把 effect view 放在最底层，
-            # Qt 渲染的内容在上，frosted glass 效果透过 Qt 的透明区域显示。
-            # NSViewBelow = 1
-            msg_send(
-                ctypes.c_void_p(content_view),
-                "addSubview:positioned:relativeTo:",
-                self._effect_view,
-                ctypes.c_long(1),
-                ctypes.c_void_p(0),
-            )
-
-            # 确保 effect view 启用 layer
-            msg_send(self._effect_view, "setWantsLayer:", ctypes.c_bool(True))
+            self._effect_view = effect_view
 
         except Exception as exc:  # noqa: BLE001
             debug_log("UI", "macOS NSVisualEffectView 创建失败，降级为半透明", {"error": str(exc)})
             self._fallback.apply(window, tint)
 
     def remove(self, window: QWidget) -> None:
+        del window
         if self._effect_view is not None:
             try:
-                import ctypes
-                objc = ctypes.CDLL(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
-                objc.sel_registerName.restype = ctypes.c_void_p
-                objc.sel_registerName.argtypes = [ctypes.c_char_p]
-                objc.objc_msgSend.restype = ctypes.c_void_p
-                objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-                sel = objc.sel_registerName(b"removeFromSuperview")
-                objc.objc_msgSend(self._effect_view, sel)
-                self._effect_view = None
+                self._effect_view.removeFromSuperview()
             except Exception:  # noqa: BLE001
                 pass
+            finally:
+                self._effect_view = None
 
     def supports_native_blur(self) -> bool:
-        return sys.platform == "darwin"
+        return True
 
 
 class SoftwareBlurBackdrop:
