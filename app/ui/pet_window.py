@@ -1205,7 +1205,9 @@ class PetWindow(QWidget):
         new_w, new_h = layout.window_size
         ax, ay = layout.portrait_anchor
         # setUpdatesEnabled(False) 把窗口几何与子控件位置的更新合并到同一抑制区间，
-        # 恢复绘制后单帧呈现，避免任何中间错位帧。
+        # 恢复绘制后单帧呈现，避免任何中间错位帧。用「保存/恢复」而非硬置 True：
+        # 当外层（如立绘缩放）已抑帧时，这里不会提前恢复绘制，保证整段操作只出一帧。
+        was_enabled = self.updatesEnabled()
         self.setUpdatesEnabled(False)
         try:
             if anchor_global is not None and self.isVisible():
@@ -1215,7 +1217,7 @@ class PetWindow(QWidget):
             self.stage_size = (new_w, new_h)
             self._place_pet_children(layout)
         finally:
-            self.setUpdatesEnabled(True)
+            self.setUpdatesEnabled(was_enabled)
 
     def _place_pet_children(self, layout: PetLayout) -> None:
         """按布局把立绘/气泡/输入栏卡片摆到窗口本地坐标（不改窗口尺寸）。"""
@@ -3714,9 +3716,16 @@ class PetWindow(QWidget):
         anchor = self._portrait_anchor_global()
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
         self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
-        # 先按新缩放重贴立绘（更新标签实际尺寸），再用统一布局把窗口与子控件同帧摆到位。
-        self.portrait_controller.apply_current()
-        self._apply_pet_layout(anchor_global=anchor)
+        # 全程抑帧：apply_current 会先按新缩放重贴立绘并触发一次 _layout_stage，
+        # 若不抑帧，这次会在「旧窗口几何 + 新立绘尺寸」下摆出一帧错位（缩放抖动）。
+        # 把重贴与统一布局收口到同一抑制区间，最终只呈现一帧。
+        was_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            self.portrait_controller.apply_current()
+            self._apply_pet_layout(anchor_global=anchor)
+        finally:
+            self.setUpdatesEnabled(was_enabled)
 
     def _apply_control_panel_layout(
         self,
@@ -3904,7 +3913,16 @@ class PetWindow(QWidget):
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
         self.input_edit.setPlaceholderText(f"和{profile.display_name}说点什么...")
-        self.portrait_controller.set_profile(profile)
+        # 角色切换可能改变立绘实际尺寸，需按新立绘重算窗口几何；全程抑帧避免中间错位帧，
+        # 以立绘底边为锚点保持桌宠站位不动。
+        anchor = self._portrait_anchor_global()
+        was_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            self.portrait_controller.set_profile(profile)
+            self._apply_pet_layout(anchor_global=anchor)
+        finally:
+            self.setUpdatesEnabled(was_enabled)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setToolTip(profile.display_name)
             self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
