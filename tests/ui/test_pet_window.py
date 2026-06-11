@@ -1355,7 +1355,7 @@ def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
 def test_settings_dialog_adds_plugin_settings_panel() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QTabWidget")):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
@@ -1363,7 +1363,7 @@ def test_settings_dialog_adds_plugin_settings_panel() -> None:
 
     QApplication = qtwidgets.QApplication
     QLabel = qtwidgets.QLabel
-    QTabWidget = qtwidgets.QTabWidget
+    QListWidget = qtwidgets.QListWidget
     app = QApplication.instance() or QApplication([])
     dialog = SettingsDialog(
         api_settings=ApiSettings(
@@ -1382,9 +1382,13 @@ def test_settings_dialog_adds_plugin_settings_panel() -> None:
         ],
     )
 
-    tabs = dialog.findChild(QTabWidget)
-    assert tabs is not None
-    assert "插件" in [tabs.tabText(index) for index in range(tabs.count())]
+    nav = dialog.findChild(QListWidget, "settingsNavList")
+    assert nav is not None
+    assert "插件" in [nav.item(index).text() for index in range(nav.count())]
+    assert any(
+        isinstance(label, QLabel) and label.text() == "插件设置"
+        for label in dialog.findChildren(QLabel)
+    )
 
     dialog.deleteLater()
     app.processEvents()
@@ -1394,7 +1398,7 @@ def test_settings_dialog_manages_plugin_enabled_state() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTabWidget", "QTableWidget", "QCheckBox")):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.plugins.discovery import PluginDiscovery
@@ -1457,14 +1461,18 @@ priority: 10
 def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QComboBox", "QTabWidget")):
+    if not all(
+        hasattr(qtwidgets, name)
+        for name in ("QApplication", "QComboBox", "QListWidget", "QStackedWidget")
+    ):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
 
     QApplication = qtwidgets.QApplication
     QComboBox = qtwidgets.QComboBox
-    QTabWidget = qtwidgets.QTabWidget
+    QListWidget = qtwidgets.QListWidget
+    QStackedWidget = qtwidgets.QStackedWidget
     app = QApplication.instance() or QApplication([])
     app_stylesheet_before = app.styleSheet()
     root = _ui_runtime_root("grouped_settings_tabs")
@@ -1481,15 +1489,21 @@ def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
     )
 
-    tabs = dialog.findChild(QTabWidget)
-    assert tabs is not None
-    assert [tabs.tabText(index) for index in range(tabs.count())] == [
-        "角色与外观",
-        "模型与语音",
-        "权限与工具",
+    nav = dialog.findChild(QListWidget, "settingsNavList")
+    stack = dialog.findChild(QStackedWidget, "settingsNavStack")
+    assert nav is not None
+    assert stack is not None
+    assert [nav.item(index).text() for index in range(nav.count())] == [
+        "角色",
+        "外观",
+        "模型",
+        "语音",
+        "隐私",
+        "工具",
         "插件",
         "系统",
     ]
+    assert stack.count() == nav.count()
     assert dialog.minimumWidth() >= 680
     assert dialog.minimumHeight() >= 500
     assert dialog.width() >= 820
@@ -2278,6 +2292,7 @@ def test_settings_dialog_skips_api_test_when_api_unchanged(monkeypatch) -> None:
 
     assert dialog.result_api_settings is not None
     assert dialog.result_api_settings.model == "test-model"
+    assert dialog.result_api_settings.temperature is None
     dialog.deleteLater()
     app.processEvents()
 

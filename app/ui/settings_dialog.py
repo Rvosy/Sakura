@@ -3048,6 +3048,12 @@ class SettingsDialog(QDialog):
         base_url = self.base_url_edit.text().strip().rstrip("/")
         api_key = self.api_key_edit.text().strip()
         model = self.model_edit.text().strip()
+        temperature = self.llm_temperature_spin.value()
+        if (
+            self._initial_api_settings.temperature is None
+            and abs(temperature - 0.8) < 0.005
+        ):
+            temperature = None
 
         if not _is_http_url(base_url):
             QMessageBox.warning(self, "配置无效", "Base URL 必须是有效的 http 或 https 地址。")
@@ -3064,7 +3070,7 @@ class SettingsDialog(QDialog):
             api_key=api_key,
             model=model,
             timeout_seconds=self.api_timeout_spin.value(),
-            temperature=self.llm_temperature_spin.value(),
+            temperature=temperature,
             top_p=(
                 self.llm_top_p_spin.value()
                 if self.llm_top_p_enabled_check.isChecked()
