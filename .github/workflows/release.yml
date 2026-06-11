@@ -226,3 +226,35 @@ jobs:
           files: |
             ${{ matrix.artifact }}
             ${{ matrix.runtime_artifact }}
+
+  attach-assets:
+    needs: [tag, release, bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download assets from sakura-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p downloaded-assets
+          gh release download assets-latest \
+            --repo Rvosy/sakura-assets \
+            --dir downloaded-assets
+          echo "Downloaded files:"
+          ls -lh downloaded-assets/
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(downloaded-assets/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No assets to upload, skipping."
+            exit 0
+          fi
+          gh release upload "${{ needs.tag.outputs.TAG }}" \
+            "${files[@]}" \
+            --repo Rvosy/sakura \
+            --clobber

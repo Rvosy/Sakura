@@ -1439,12 +1439,14 @@ def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) ->
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
+    from app.agent.memory import MemoryStore
     from app.core.bootstrap import build_initial_app_context
     from app.ui.pet_window import PetWindow, STARTUP_INITIALIZING_TEXT
 
     QApplication = qtwidgets.QApplication
     app = QApplication.instance() or QApplication([])
     root = _build_runtime_root_with_character(qtgui.QPixmap, qtcore.Qt)
+    monkeypatch.setattr(MemoryStore, "preload", lambda *a, **kw: None)
     context = build_initial_app_context(root)
     monkeypatch.setattr(PetWindow, "_maybe_start_memory_backfill", lambda _self: None)
     window = PetWindow(context)
@@ -1479,6 +1481,7 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
+    from app.agent.memory import MemoryStore
     from app.core.bootstrap import DeferredStartupServices, build_initial_app_context
     from app.core.extensions import ExtensionRegistry
     from app.core.plugin_manager import SakuraPluginManager
@@ -1495,6 +1498,7 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
     QApplication = qtwidgets.QApplication
     app = QApplication.instance() or QApplication([])
     root = _build_runtime_root_with_character(qtgui.QPixmap, qtcore.Qt)
+    monkeypatch.setattr(MemoryStore, "preload", lambda *a, **kw: None)
     context = build_initial_app_context(root)
     monkeypatch.setattr(PetWindow, "_maybe_start_memory_backfill", lambda _self: None)
     window = PetWindow(context)

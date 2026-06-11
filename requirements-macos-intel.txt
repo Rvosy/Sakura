@@ -1,0 +1,15 @@
+# macOS (Intel / x86_64) dependency constraints.
+#
+# On Intel Macs, PyTorch's last available wheel is 2.2.2, which requires:
+#   - numpy < 2        (numpy 2.x crashes torch 2.2.2: "_ARRAY_API not found")
+#   - transformers < 4.45  (transformers >= 5.x disables torch < 2.4, breaking
+#                           sentence-transformers used by the local memory feature)
+#
+# Usage (run AFTER `pip install -r requirements.txt`):
+#   pip install -r requirements-macos-intel.txt
+#
+# These pins are only needed for the long-term memory (mem0 local embeddings)
+# feature. The app launches fine without them; memory just won't initialize.
+
+numpy<2
+transformers>=4.41,<4.45

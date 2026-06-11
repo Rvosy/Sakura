@@ -39,7 +39,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       BUNDLE_ARCHIVE: sakura-${{ needs.metadata.outputs.TAG }}-${{ matrix.platform }}.zip
-      RUNTIME_ARCHIVE: runtime-${{ matrix.platform }}.zip
     steps:
       - uses: actions/checkout@v6
 
@@ -72,16 +71,10 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path * -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
 
-      - name: Create runtime archive
-        shell: pwsh
-        run: Compress-Archive -Path runtime -DestinationPath "$env:RUNTIME_ARCHIVE" -Force
-
       - name: Upload package artifacts
         uses: actions/upload-artifact@v7
         with:
           name: sakura-${{ needs.metadata.outputs.TAG }}-${{ matrix.platform }}
-          path: |
-            ${{ env.BUNDLE_ARCHIVE }}
-            ${{ env.RUNTIME_ARCHIVE }}
+          path: ${{ env.BUNDLE_ARCHIVE }}
           if-no-files-found: error
           retention-days: 5
