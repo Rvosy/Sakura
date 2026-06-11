@@ -817,13 +817,15 @@ def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None
     assert "bad weights" in messages[0]
 
 
-def test_local_tts_subprocess_env_forces_utf8(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_local_tts_subprocess_env_uses_utf8_stdio_without_forcing_interpreter(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("PYTHONUTF8", "0")
     monkeypatch.setenv("PYTHONIOENCODING", "cp936")
 
     env = _local_tts_subprocess_env()
 
-    assert env["PYTHONUTF8"] == "1"
+    assert "PYTHONUTF8" not in env
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
@@ -835,6 +837,7 @@ def test_gptsovits_charmap_http_error_gets_actionable_message() -> None:
 
     assert "运行时编码不是 UTF-8" in message
     assert "由 Sakura 重新启动" in message
+    assert "UTF-8 标准输入输出" in message
     assert "原始响应" in message
 
 

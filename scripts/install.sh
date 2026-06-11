@@ -45,7 +45,7 @@ echo "Installing dependencies..."
 echo ""
 
 cd "$PROJECT_ROOT"
-$PYTHON_EXE -m pip install -r requirements.txt
+$PYTHON_EXE -m pip install -r requirements.txt --no-warn-script-location
 
 echo ""
 echo "========================================"

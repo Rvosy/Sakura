@@ -56,7 +56,8 @@ echo.
 "%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" ^
     -i https://mirrors.aliyun.com/pypi/simple ^
     --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple ^
-    --extra-index-url https://pypi.org/simple
+    --extra-index-url https://pypi.org/simple ^
+    --no-warn-script-location
 
 if errorlevel 1 (
     echo.

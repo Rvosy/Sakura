@@ -2165,7 +2165,7 @@ def _build_gpt_sovits_start_command(
 
 def _local_tts_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["PYTHONUTF8"] = "1"
+    env.pop("PYTHONUTF8", None)
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 
@@ -2175,8 +2175,8 @@ def _format_gpt_sovits_http_error(status_code: int, error_body: str) -> str:
         return (
             "GPT-SoVITS HTTP 400: 本地 GPT-SoVITS 运行时编码不是 UTF-8，"
             "中文或日文文本写入时触发 charmap 编码错误。"
-            "Sakura 启动本地服务时已启用 UTF-8 环境；如果仍然失败，"
-            "请关闭当前 GPT-SoVITS 服务后由 Sakura 重新启动，或手动以 UTF-8 环境重启服务。"
+            "Sakura 启动本地服务时已启用 UTF-8 标准输入输出；如果仍然失败，"
+            "请关闭当前 GPT-SoVITS 服务后由 Sakura 重新启动，或手动检查运行时编码。"
             f"\n原始响应：{error_body}"
         )
     return f"GPT-SoVITS HTTP {status_code}: {error_body}"
