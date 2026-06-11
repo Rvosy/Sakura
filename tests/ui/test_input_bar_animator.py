@@ -40,6 +40,44 @@ def test_before_show_runs_before_window_show() -> None:
     window.deleteLater()
 
 
+def test_show_paths_raise_window_above_portrait() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    _qt_app_or_skip()
+    bar = QWidget()
+
+    class RaiseTrackingWindow(QWidget):
+        raise_count = 0
+
+        def raise_(self) -> None:  # noqa: N802
+            self.raise_count += 1
+            super().raise_()
+
+    window = RaiseTrackingWindow()
+    animator = InputBarAnimator(
+        bar,
+        window,
+        is_pinned=lambda: True,
+        is_hover_active=lambda: False,
+    )
+    # macOS 上 Qt.Tool 子窗口 show() 不会自动浮到立绘之上，两条显示路径都必须 raise。
+    # 静止态显示路径：start → _apply_resting_state。
+    animator.start()
+    assert window.isVisible()
+    assert window.raise_count == 1
+
+    # 淡入显示路径：拖动挂起后恢复 → _animate(True)。
+    animator.suspend_for_drag()
+    window.hide()  # 模拟淡出动画结束后的真正隐藏
+    window.raise_count = 0
+    animator.resume_after_drag()
+    assert window.isVisible()
+    assert window.raise_count == 1
+
+    bar.deleteLater()
+    window.deleteLater()
+
+
 def test_suspend_for_drag_hides_and_blocks_sync() -> None:
     from PySide6.QtWidgets import QWidget
 

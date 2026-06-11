@@ -131,6 +131,8 @@ class BubbleAutoHideController(QObject):
         if not window.isVisible():
             window.setWindowOpacity(0.0)
             window.show()
+            # macOS 上 Qt.Tool 子窗口 show() 不会自动浮到父窗口（立绘）之上，需显式 raise
+            window.raise_()
         anim = self._make_fade(window.windowOpacity(), 1.0)
         anim.start()
         self._fade_anim = anim

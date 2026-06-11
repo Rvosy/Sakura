@@ -97,6 +97,33 @@ def test_pet_click_reveals_when_hidden() -> None:
     window.deleteLater()
 
 
+def test_reveal_after_hidden_shows_and_raises() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    _qt_app_or_skip()
+
+    class RaiseTrackingWindow(QWidget):
+        raise_count = 0
+
+        def raise_(self) -> None:  # noqa: N802
+            self.raise_count += 1
+            super().raise_()
+
+    window = RaiseTrackingWindow()
+    window.show()
+    controller = _make(window, [False])
+    controller.notify_settled()
+    controller._on_hide_timeout()
+    controller._on_fade_out_finished()  # 跳过淡出动画，直接落到真正隐藏态
+    assert not window.isVisible()
+    window.raise_count = 0
+    # macOS 上 Qt.Tool 子窗口 show() 不会自动浮到立绘之上，唤回时必须 raise。
+    controller.notify_speaking()
+    assert window.isVisible()
+    assert window.raise_count == 1
+    window.deleteLater()
+
+
 def test_set_settings_disable_reveals_and_stops() -> None:
     from PySide6.QtWidgets import QWidget
 

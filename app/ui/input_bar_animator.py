@@ -149,6 +149,8 @@ class InputBarAnimator(QObject):
         if show:
             self._maybe_before_show()
             self._input_window.show()
+            # macOS 上 Qt.Tool 子窗口 show() 不会自动浮到父窗口（立绘）之上，需显式 raise
+            self._input_window.raise_()
         anim = QPropertyAnimation(self._input_window, b"windowOpacity")
         anim.setDuration(HOVER_ANIM_DURATION_MS)
         anim.setEndValue(1.0 if show else 0.0)
@@ -173,6 +175,7 @@ class InputBarAnimator(QObject):
             self._maybe_before_show()
             self._input_window.setWindowOpacity(1.0)
             self._input_window.show()
+            self._input_window.raise_()
         else:
             self._input_window.setWindowOpacity(0.0)
             self._input_window.hide()
