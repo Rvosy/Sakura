@@ -460,11 +460,12 @@ QGroupBox {{
     border-radius: 8px;
     color: {theme.secondary_text_color};
     font-weight: 700;
-    margin-top: 12px;
+    margin-top: 18px;
     padding-top: 10px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
+    subcontrol-position: top left;
     left: 12px;
     padding: 0 6px;
 }}
