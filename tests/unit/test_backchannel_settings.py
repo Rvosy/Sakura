@@ -17,18 +17,26 @@ def test_defaults_when_section_absent(tmp_path: Path) -> None:
     assert settings.mode == "rules"
     assert settings.delay_ms == 600
     assert settings.probability == 1.0
+    assert settings.tts_enabled is False
     assert settings.active is False
 
 
 def test_save_load_round_trip(tmp_path: Path) -> None:
     service = AppSettingsService(tmp_path)
     service.save_backchannel_settings(
-        BackchannelSettings(enabled=True, mode="rules", delay_ms=900, probability=0.6)
+        BackchannelSettings(
+            enabled=True,
+            mode="rules",
+            delay_ms=900,
+            probability=0.6,
+            tts_enabled=True,
+        )
     )
     loaded = service.load_backchannel_settings()
     assert loaded.enabled is True
     assert loaded.delay_ms == 900
     assert loaded.probability == 0.6
+    assert loaded.tts_enabled is True
     assert loaded.active is True
 
 

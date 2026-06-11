@@ -159,12 +159,16 @@ _DRAFT_PATH = (
 
 @pytest.mark.skipif(not _DRAFT_PATH.exists(), reason="草案 manifest 不在仓库中")
 def test_load_sakura_draft_manifest() -> None:
-    """集成自检:sakura 草案应整体可加载且无条目被跳过。"""
+    """集成自检:sakura 草案应整体可加载且无条目/变体被静默跳过(词表对齐探针)。"""
+    raw = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
     manifest = load_backchannel_manifest(_DRAFT_PATH)
-    assert len(manifest.templates) == 11
-    assert sum(len(t.variants) for t in manifest.templates) == 66
+    assert len(manifest.templates) == len(raw["templates"])
+    assert sum(len(t.variants) for t in manifest.templates) == sum(
+        len(entry["variants"]) for entry in raw["templates"]
+    )
     assert {t.phase for t in manifest.templates if t.phase} == {
         "repeated_issue",
         "tool_running",
         "long_wait",
     }
+    assert manifest.fallback_templates, "兜底池不能为空"

@@ -31,7 +31,9 @@ class TemplateResolver:
       1. phase 命中(相位条目优先,如 repeated_issue 覆盖普通 error 条目)
       2. (intent, emotion) 精确命中
       3. 同 intent 命中(emotion 不同——窄词表下让模板尽量可用)
-      4. fallback 兜底池(闲聊与低置信输入有意落在这里)
+      4. 意图家族根命中(如 greeting_return 无模板时落 greeting;
+         绝不混抽同家族其他子类——"我回来了"不能抽到"晚安")
+      5. fallback 兜底池(闲聊与低置信输入有意落在这里)
     任何一级命中即在该级的全部变体池中防重复随机选取。
     """
 
@@ -72,6 +74,10 @@ class TemplateResolver:
                 [t for t in plain if t.intent == label.intent and t.emotion == label.emotion]
             )
             tiers.append([t for t in plain if t.intent == label.intent])
+            # 家族回退:子类意图(含下划线)落到家族根,不混抽其他子类。
+            if "_" in label.intent:
+                family = label.intent.split("_", 1)[0]
+                tiers.append([t for t in plain if t.intent == family])
         tiers.append([t for t in self._templates if t.is_fallback and t.phase is None])
         return tiers
 

@@ -63,6 +63,18 @@ _EXCLAMATION_RUN = re.compile(r"[!！]{2,}")
 _QUESTION_MARKS = re.compile(r"[?？]")
 _CODE_FENCE = "```"
 
+# 社交礼仪句(greeting 家族):高度程式化的封闭集,会话分析中的相邻对首件。
+# 仅对短输入短路(长句里"我回来了,帮我查…"应让任务意图按正常计分胜出)。
+_GREETING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("greeting_goodnight", ("晚安", "去睡了", "睡觉去", "我先睡", "去休息了")),
+    ("greeting_return", ("回来了", "我回啦", "我回来", "到家", "下班了", "放学了")),
+    ("greeting_morning", ("早上好", "早安", "早哇", "我醒了", "起床了")),
+    ("greeting_evening", ("晚上好",)),
+    ("greeting", ("你好", "您好", "哈喽", "嗨", "hello", "Hello", "hi", "Hi", "在吗", "在不在", "在么")),
+)
+_GREETING_MAX_LENGTH = 12
+_GREETING_CONFIDENCE = 0.85
+
 _BASE_CONFIDENCE = 0.5
 _CONFIDENCE_STEP = 0.15
 _MAX_CONFIDENCE = 0.9
@@ -76,6 +88,10 @@ class RuleClassifier:
         if not content:
             return None
 
+        greeting = self._classify_greeting(content)
+        if greeting is not None:
+            return greeting
+
         intent, hits = self._classify_intent(content)
         if intent is None:
             return None
@@ -85,6 +101,20 @@ class RuleClassifier:
             _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
         )
         return BackchannelLabel(intent=intent, emotion=emotion, confidence=confidence)
+
+    def _classify_greeting(self, content: str) -> BackchannelLabel | None:
+        # 程式化问候只在短输入时短路(近确定性);长句交给计分器,
+        # 让"我回来了,帮我查下天气"按 request 处理。
+        if len(content) > _GREETING_MAX_LENGTH:
+            return None
+        for intent, keywords in _GREETING_PATTERNS:
+            if any(keyword in content for keyword in keywords):
+                return BackchannelLabel(
+                    intent=intent,
+                    emotion=DEFAULT_EMOTION,
+                    confidence=_GREETING_CONFIDENCE,
+                )
+        return None
 
     def _classify_intent(self, content: str) -> tuple[str | None, int]:
         scores: dict[str, int] = {}

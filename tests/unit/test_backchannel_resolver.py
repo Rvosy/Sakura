@@ -109,6 +109,31 @@ def test_phase_entries_excluded_from_intent_tiers() -> None:
     assert choice.template.id == "fb"
 
 
+def test_family_fallback_does_not_pool_sibling_subtypes() -> None:
+    # "我回来了"(greeting_return)绝不能抽到 goodnight 子类的"晚安"。
+    manifest = _manifest(
+        _template("g_root", intent="greeting", emotion="neutral"),
+        _template("g_night", intent="greeting_goodnight", emotion="neutral"),
+        _template("fb", intent="fallback"),
+    )
+    resolver = _resolver(manifest)
+    for _ in range(8):
+        choice = resolver.resolve(BackchannelLabel("greeting_return", "neutral"))
+        assert choice is not None
+        # 子类无精确模板 → 回退家族根 greeting,而非兄弟子类
+        assert choice.template.id == "g_root"
+
+
+def test_subtype_exact_match_beats_family_root() -> None:
+    manifest = _manifest(
+        _template("g_root", intent="greeting", emotion="neutral"),
+        _template("g_return", intent="greeting_return", emotion="neutral"),
+    )
+    choice = _resolver(manifest).resolve(BackchannelLabel("greeting_return", "neutral"))
+    assert choice is not None
+    assert choice.template.id == "g_return"
+
+
 def test_anti_repetition_no_consecutive_variant() -> None:
     resolver = _resolver()
     label = BackchannelLabel("error", "frustrated")

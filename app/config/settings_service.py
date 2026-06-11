@@ -89,6 +89,7 @@ class BackchannelSettings:
     mode: str = BACKCHANNEL_DEFAULT_MODE
     delay_ms: int = BACKCHANNEL_DEFAULT_DELAY_MS
     probability: float = 1.0
+    tts_enabled: bool = False
 
     @property
     def active(self) -> bool:
@@ -106,6 +107,7 @@ class BackchannelSettings:
             mode=mode,
             delay_ms=delay,
             probability=probability,
+            tts_enabled=bool(self.tts_enabled),
         )
 
 
@@ -415,6 +417,7 @@ class AppSettingsService:
             mode=str(section.get("mode", BACKCHANNEL_DEFAULT_MODE) or BACKCHANNEL_DEFAULT_MODE),
             delay_ms=_int_value(section.get("delay_ms"), BACKCHANNEL_DEFAULT_DELAY_MS),
             probability=_float_value(section.get("probability"), 1.0),
+            tts_enabled=_bool_value(section.get("tts_enabled"), False),
         ).normalized()
 
     def save_backchannel_settings(self, settings: BackchannelSettings) -> None:
@@ -425,6 +428,7 @@ class AppSettingsService:
             "mode": normalized.mode,
             "delay_ms": int(normalized.delay_ms),
             "probability": float(normalized.probability),
+            "tts_enabled": bool(normalized.tts_enabled),
         }
         save_yaml_mapping(self.system_config_path, data)
 

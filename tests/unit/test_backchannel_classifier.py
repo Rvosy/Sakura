@@ -37,6 +37,37 @@ def test_classify_representative_inputs(
     assert 0.0 < label.confidence <= 0.9
 
 
+@pytest.mark.parametrize(
+    ("text", "intent"),
+    [
+        ("我回来了", "greeting_return"),
+        ("到家啦", "greeting_return"),
+        ("早上好~", "greeting_morning"),
+        ("早安", "greeting_morning"),
+        ("晚上好", "greeting_evening"),
+        ("晚安", "greeting_goodnight"),
+        ("我先睡了", "greeting_goodnight"),
+        ("在吗?", "greeting"),
+        ("你好呀", "greeting"),
+    ],
+)
+def test_greeting_family_short_circuit(
+    classifier: RuleClassifier, text: str, intent: str
+) -> None:
+    # 程式化社交句是封闭集,短输入直接短路,不被疑问词/问号信号抢走("在吗?")。
+    label = classifier.classify(text)
+    assert label is not None
+    assert label.intent == intent
+    assert label.emotion == "neutral"
+
+
+def test_long_text_with_task_signal_beats_greeting(classifier: RuleClassifier) -> None:
+    # 长句中问候只是开场白,任务意图应胜出。
+    label = classifier.classify("我回来了,帮我搜一下今天的新闻")
+    assert label is not None
+    assert label.intent == "request"
+
+
 @pytest.mark.parametrize("text", ["", "   ", "今天天气不错"])
 def test_no_signal_returns_none(classifier: RuleClassifier, text: str) -> None:
     # 无可靠信号 → None,由 resolver 落兜底池(闲聊有意走 fallback,FEAT.md §9)。

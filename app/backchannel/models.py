@@ -14,6 +14,13 @@ INTENTS = (
     "support",
     "positive",
     "affection",
+    # 社交礼仪家族(ISO 24617-2 Social Obligations Management 维度):
+    # 子类是独立交际功能(报到/早安/晚间/睡前),无精确模板时回退家族根 greeting。
+    "greeting",
+    "greeting_return",
+    "greeting_morning",
+    "greeting_evening",
+    "greeting_goodnight",
 )
 FALLBACK_INTENT = "fallback"
 EMOTIONS = (
