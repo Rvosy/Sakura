@@ -323,6 +323,16 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid {rgba(theme.border_color, 92)};
     color: rgba(255, 255, 255, 178);
 }}
+#sendButton[replyWaiting="true"] {{
+    background: {rgba(theme.primary_color, 146)};
+    border: 1px solid {rgba(theme.primary_color, 174)};
+    color: rgba(255, 255, 255, 218);
+}}
+#sendButton[replyWaiting="true"]:disabled {{
+    background: {rgba(theme.primary_color, 146)};
+    border: 1px solid {rgba(theme.primary_color, 174)};
+    color: rgba(255, 255, 255, 218);
+}}
 #confirmActionButton {{
     background: rgba(93, 181, 130, 225);
     border: none;

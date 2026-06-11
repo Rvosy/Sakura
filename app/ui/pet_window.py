@@ -628,7 +628,7 @@ class PetWindow(QWidget):
 
         self.input_edit = QLineEdit(self.input_bar)
         self.input_edit.setObjectName("petInput")
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
+        self.input_edit.setPlaceholderText(self._normal_input_placeholder_text())
         self.input_edit.setFixedHeight(38)
         self.input_edit.installEventFilter(self)
         self.input_edit.returnPressed.connect(self._handle_return_pressed)
@@ -637,6 +637,7 @@ class PetWindow(QWidget):
         self.send_button.setObjectName("sendButton")
         self.send_button.setFixedHeight(38)
         self.send_button.clicked.connect(self._handle_send_button_clicked)
+        self.reply_waiting_ui_active = False
 
         self.screenshot_button = QToolButton(self.input_bar)
         self.screenshot_button.setObjectName("screenshotButton")
@@ -987,6 +988,55 @@ class PetWindow(QWidget):
         if controller is not None:
             controller.notify_speaking()
 
+    def _normal_input_placeholder_text(self, profile: CharacterProfile | None = None) -> str:
+        profile = profile or self.character_profile
+        return f"和{profile.display_name}说点什么..."
+
+    def _reply_waiting_placeholder_text(self) -> str:
+        return f"{self.character_profile.display_name}正在思考中…"
+
+    def _set_reply_waiting_ui(self, waiting: bool) -> None:
+        """切换回复等待期间的输入区状态：保留输入能力，只提示当前正在等待。"""
+        if getattr(self, "startup_initializing", False):
+            waiting = False
+        self.reply_waiting_ui_active = waiting
+        if hasattr(self, "input_edit"):
+            self.input_edit.setPlaceholderText(
+                self._reply_waiting_placeholder_text()
+                if waiting
+                else self._normal_input_placeholder_text()
+            )
+            self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
+        if hasattr(self, "send_button"):
+            self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
+        self._sync_input_bar_waiting_visibility()
+
+    def _sync_input_bar_waiting_visibility(self) -> None:
+        animator = getattr(self, "input_bar_animator", None)
+        sync = getattr(animator, "sync", None)
+        if callable(sync):
+            sync()
+
+    def _set_widget_dynamic_property(self, widget: QWidget | None, name: str, value: object) -> None:
+        if widget is None:
+            return
+        property_getter = getattr(widget, "property", None)
+        if callable(property_getter) and property_getter(name) == value:
+            return
+        set_property = getattr(widget, "setProperty", None)
+        if not callable(set_property):
+            return
+        set_property(name, value)
+        style_getter = getattr(widget, "style", None)
+        if not callable(style_getter):
+            return
+        style = style_getter()
+        style.unpolish(widget)
+        style.polish(widget)
+        update = getattr(widget, "update", None)
+        if callable(update):
+            update()
+
     def _remember_reply_history_segments(self, segments: list[ChatSegment]) -> None:
         clean_segments = [segment for segment in segments if segment.text.strip()]
         if not clean_segments:
@@ -1329,8 +1379,8 @@ class PetWindow(QWidget):
     def _input_bar_pinned(self) -> bool:
         """输入栏在以下任一情况保持常显，避免用户操作中途被收起。
 
-        注意：不把「对话进行中(active_interaction_id)」算进来——输入框的显隐只跟随用户意图
-        （hover/焦点/有文本/待确认动作），不受桌宠讲话或请求影响。
+        注意：不把「对话进行中(active_interaction_id)」整体算进来；但等待模型回复时输入栏有状态提示
+        与呼吸动效，需要保持可见直到回复流程结束。
         """
         # 设置/历史窗口打开时不固定输入栏，配合 hover 禁用一起彻底收起。
         if self._any_dialog_open():
@@ -1338,6 +1388,7 @@ class PetWindow(QWidget):
         return (
             self.input_edit.hasFocus()
             or bool(self.input_edit.text().strip())
+            or bool(getattr(self, "reply_waiting_ui_active", False))
             # 用待确认动作状态而非 panel.isVisible()：输入栏卡片收起时 panel 的可见性会假阴性。
             or self.pending_tool_action is not None
         )
@@ -1461,6 +1512,8 @@ class PetWindow(QWidget):
     @Slot()
     def _handle_return_pressed(self) -> None:
         if getattr(self, "startup_initializing", False):
+            return
+        if self.worker_thread is not None:
             return
         self._begin_interaction("return_pressed")
         self.send_message("return_pressed")
@@ -1615,7 +1668,7 @@ class PetWindow(QWidget):
         self.input_edit.clear()
         self._log_interaction_stage("input_cleared")
         self._collapse_auto_fit_bubble_height()
-        self.subtitle_controller.cancel_reply_flow("......")
+        self._show_waiting_reply_placeholder()
         self._log_interaction_stage("placeholder_reply_shown")
 
         visual_observation_jobs: list[VisualObservationJob] = []
@@ -1679,6 +1732,21 @@ class PetWindow(QWidget):
             ]
         self._log_interaction_stage("user_message_recorded")
         self._start_chat_worker(request_messages)
+
+    def _show_waiting_reply_placeholder(self) -> None:
+        """显示模型回复等待动效，并阻止自动隐藏在等待期间藏起气泡。"""
+        self._set_reply_waiting_ui(True)
+        controller = getattr(self, "bubble_auto_hide", None)
+        if controller is not None:
+            controller.notify_speaking()
+        subtitle_controller = getattr(self, "subtitle_controller", None)
+        if subtitle_controller is None:
+            return
+        start_waiting_indicator = getattr(subtitle_controller, "start_waiting_indicator", None)
+        if callable(start_waiting_indicator):
+            start_waiting_indicator()
+            return
+        subtitle_controller.cancel_reply_flow("...")
 
     def _start_chat_worker(self, request_messages: list[dict[str, Any]]) -> None:
         visual_observation_jobs = getattr(self, "pending_visual_observation_jobs", [])
@@ -2598,7 +2666,7 @@ class PetWindow(QWidget):
 
         self.startup_initializing = False
         self._emit_app_started_event()
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
+        self.input_edit.setPlaceholderText(self._normal_input_placeholder_text())
         self._collapse_auto_fit_bubble_height()
         self.subtitle_controller.cancel_reply_flow(self.character_profile.initial_message)
         if self.memory_status_message_active:
@@ -2630,7 +2698,7 @@ class PetWindow(QWidget):
     @Slot(str)
     def handle_deferred_startup_failed(self, error: str) -> None:
         self.startup_initializing = False
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
+        self.input_edit.setPlaceholderText(self._normal_input_placeholder_text())
         self._collapse_auto_fit_bubble_height()
         self.subtitle_controller.cancel_reply_flow(f"初始化失败：{error}")
         self._set_busy(False)
@@ -2756,7 +2824,7 @@ class PetWindow(QWidget):
     def _set_busy(self, busy: bool) -> None:
         startup_initializing = getattr(self, "startup_initializing", False)
         controls_enabled = not busy and not startup_initializing
-        self.input_edit.setEnabled(controls_enabled)
+        self.input_edit.setEnabled(not startup_initializing)
         self.screenshot_button.setEnabled(controls_enabled)
         self.send_button.setEnabled(controls_enabled)
         tool_confirmation_panel = getattr(self, "tool_confirmation_panel", None)
@@ -2769,6 +2837,9 @@ class PetWindow(QWidget):
             self.send_button.setText("初始化")
         else:
             self.send_button.setText("等待" if busy else "发送")
+            set_reply_waiting_ui = getattr(self, "_set_reply_waiting_ui", None)
+            if callable(set_reply_waiting_ui):
+                set_reply_waiting_ui(busy)
         self._log_interaction_stage("set_busy", {"busy": busy})
         update_reply_history_buttons = getattr(self, "_update_reply_history_buttons", None)
         if update_reply_history_buttons is not None:
@@ -4001,7 +4072,7 @@ class PetWindow(QWidget):
         self.agent_runtime.update_character(self.system_prompt, profile.reply_tones, profile.portrait_choices)
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
-        self.input_edit.setPlaceholderText(f"和{profile.display_name}说点什么...")
+        self.input_edit.setPlaceholderText(self._normal_input_placeholder_text(profile))
         # 角色切换可能改变立绘实际尺寸，需按新立绘重算窗口几何；全程抑帧避免中间错位帧，
         # 以立绘底边为锚点保持桌宠站位不动。
         anchor = self._portrait_anchor_global()

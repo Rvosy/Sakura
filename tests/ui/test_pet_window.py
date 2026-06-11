@@ -6182,9 +6182,15 @@ class _DummyEditableInput:
     def __init__(self, text: str) -> None:
         self._text = text
         self.cleared = False
+        self.enabled = True
+        self.placeholder = ""
+        self.properties: dict[str, object] = {}
 
     def text(self) -> str:
         return self._text
+
+    def hasFocus(self) -> bool:
+        return False
 
     def clear(self) -> None:
         self.cleared = True
@@ -6192,6 +6198,15 @@ class _DummyEditableInput:
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setPlaceholderText(self, text: str) -> None:
+        self.placeholder = text
+
+    def property(self, name: str) -> object:
+        return self.properties.get(name)
+
+    def setProperty(self, name: str, value: object) -> None:
+        self.properties[name] = value
 
 
 class _DummyTimer:
@@ -6203,6 +6218,7 @@ class _DummyButton:
     def __init__(self) -> None:
         self.enabled = True
         self.text = ""
+        self.properties: dict[str, object] = {}
 
     def setVisible(self, _visible: bool) -> None:
         pass
@@ -6213,10 +6229,17 @@ class _DummyButton:
     def setText(self, text: str) -> None:
         self.text = text
 
+    def property(self, name: str) -> object:
+        return self.properties.get(name)
+
+    def setProperty(self, name: str, value: object) -> None:
+        self.properties[name] = value
+
 
 class _DummySubtitleController:
     def __init__(self) -> None:
         self.cancelled_with: list[str | None] = []
+        self.waiting_started = 0
         self.active = False
         self.segments = []
         self.shown_immediately: list[str] = []
@@ -6226,6 +6249,9 @@ class _DummySubtitleController:
 
     def cancel_reply_flow(self, placeholder_text: str | None = None) -> None:
         self.cancelled_with.append(placeholder_text)
+
+    def start_waiting_indicator(self) -> None:
+        self.waiting_started += 1
 
     def show_segments(self, segments):  # type: ignore[no-untyped-def]
         self.segments.append(segments)
@@ -6246,6 +6272,26 @@ class _DummySubtitleController:
         self.display_speeds.append((typing_interval_ms, segment_pause_ms))
 
 
+class _DummyBubbleAutoHide:
+    def __init__(self) -> None:
+        self.speaking_count = 0
+
+    def notify_speaking(self) -> None:
+        self.speaking_count += 1
+
+
+class _DummyInputBarAnimator:
+    def __init__(self) -> None:
+        self.sync_count = 0
+        self.feedback_count = 0
+
+    def sync(self) -> None:
+        self.sync_count += 1
+
+    def play_send_feedback(self) -> None:
+        self.feedback_count += 1
+
+
 def test_manual_screenshot_empty_input_sends_default_text() -> None:
     window, requests, history = _build_minimal_manual_screenshot_window("")
 
@@ -6256,6 +6302,13 @@ def test_manual_screenshot_empty_input_sends_default_text() -> None:
     assert isinstance(content, list)
     assert content[0]["text"].startswith("请根据我框选的截图继续对话。")
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,manual"
+    assert window.subtitle_controller.waiting_started == 1
+    assert window.subtitle_controller.cancelled_with == []
+    assert window.bubble_auto_hide.speaking_count == 1
+    assert window.input_edit.placeholder == "Sakura正在思考中…"
+    assert window.input_edit.properties["replyWaiting"] is True
+    assert window.send_button.properties["replyWaiting"] is True
+    assert window.input_bar_animator.sync_count == 1
     assert window.pending_manual_screen_observation is None
     assert history
     assert "data:image/jpeg;base64" not in history[0][1]
@@ -6323,20 +6376,60 @@ def test_set_busy_disables_manual_screenshot_button() -> None:
 
     class MinimalBusyWindow:
         _set_busy = PetWindow._set_busy
+        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
+        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
+        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
+        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
+        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
 
     window = MinimalBusyWindow()
+    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
+    window.startup_initializing = False
     window.input_edit = _DummyEditableInput("")
     window.screenshot_button = _DummyButton()
     window.send_button = _DummyButton()
     window.confirm_action_button = _DummyButton()
     window.cancel_action_button = _DummyButton()
+    window.input_bar_animator = _DummyInputBarAnimator()
     window._log_interaction_stage = lambda *_args, **_kwargs: None
 
     window._set_busy(True)
+    assert window.input_edit.enabled
     assert not window.screenshot_button.enabled
+    assert not window.send_button.enabled
+    assert window.send_button.text == "等待"
+    assert window.input_edit.placeholder == "Sakura正在思考中…"
+    assert window.input_edit.properties["replyWaiting"] is True
+    assert window.send_button.properties["replyWaiting"] is True
+    assert window.input_bar_animator.sync_count == 1
 
     window._set_busy(False)
     assert window.screenshot_button.enabled
+    assert window.send_button.enabled
+    assert window.send_button.text == "发送"
+    assert window.input_edit.placeholder == "和Sakura说点什么..."
+    assert window.input_edit.properties["replyWaiting"] is False
+    assert window.send_button.properties["replyWaiting"] is False
+    assert window.input_bar_animator.sync_count == 2
+
+
+def test_input_bar_pinned_while_waiting_reply() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalInputBarWindow:
+        _input_bar_pinned = PetWindow._input_bar_pinned
+        _any_dialog_open = lambda _self: False
+
+    window = MinimalInputBarWindow()
+    window.input_edit = _DummyEditableInput("")
+    window.pending_tool_action = None
+    window.reply_waiting_ui_active = False
+
+    assert not window._input_bar_pinned()
+
+    window.reply_waiting_ui_active = True
+
+    assert window._input_bar_pinned()
 
 
 def test_progress_reply_displays_and_records_assistant_message() -> None:
@@ -7051,6 +7144,12 @@ def _build_minimal_manual_screenshot_window(text: str):
 
     class MinimalManualScreenshotWindow:
         send_message = PetWindow.send_message
+        _show_waiting_reply_placeholder = PetWindow._show_waiting_reply_placeholder
+        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
+        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
+        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
+        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
+        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
         _record_user_message = PetWindow._record_user_message
 
     window = MinimalManualScreenshotWindow()
@@ -7068,7 +7167,12 @@ def _build_minimal_manual_screenshot_window(text: str):
     window.screen_observation_enabled = True
     window.messages = []
     window.active_interaction_id = ""
+    window.startup_initializing = False
+    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
+    window.send_button = _DummyButton()
+    window.input_bar_animator = _DummyInputBarAnimator()
     window.subtitle_controller = _DummySubtitleController()
+    window.bubble_auto_hide = _DummyBubbleAutoHide()
     window._mark_user_activity = lambda: None
     window._begin_interaction = lambda _source: setattr(window, "active_interaction_id", "test")
     window._log_interaction_stage = lambda *_args, **_kwargs: None
@@ -7707,6 +7811,110 @@ def test_subtitle_controller_show_text_immediately_does_not_use_tts() -> None:
     )
 
 
+def test_subtitle_waiting_indicator_animates_and_stops_on_text() -> None:
+    from app.ui.subtitle_controller import SubtitleController
+    from app.voice import VoicePlaybackController
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def clear(self) -> None:
+            self.text = ""
+
+        def setText(self, text: str) -> None:
+            self.text = text
+
+    class DummyTTS:
+        def discard_prepared(self, _handle):  # type: ignore[no-untyped-def]
+            pass
+
+    _qt_app_or_skip()
+    label = DummyLabel()
+    controller = SubtitleController(
+        label,  # type: ignore[arg-type]
+        VoicePlaybackController(DummyTTS(), lambda *_args, **_kwargs: None),
+        "zh",
+        lambda *_args, **_kwargs: None,
+        lambda _segment: None,
+        lambda: None,
+        lambda: True,
+    )
+
+    controller.start_waiting_indicator()
+    assert label.text == "."
+    assert controller.is_reply_sequence_active()
+
+    frames = []
+    for _ in range(8):
+        controller._show_next_waiting_indicator_frame()
+        frames.append(label.text)
+
+    assert frames == ["..", "...", "....", ".....", "......", ".....", "......", "....."]
+
+    controller.show_text_immediately("回复到了")
+
+    assert not controller.waiting_indicator_active
+    assert not controller.waiting_indicator_timer.isActive()
+    assert label.text == "回复到了"
+
+
+def test_subtitle_waiting_indicator_continues_until_tts_starts() -> None:
+    from app.ui.subtitle_controller import SubtitleController
+    from app.voice import VoicePlaybackController
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def clear(self) -> None:
+            self.text = ""
+
+        def setText(self, text: str) -> None:
+            self.text = text
+
+    class DelayedTTS:
+        def __init__(self) -> None:
+            self.on_started = None
+            self.on_finished = None
+
+        def speak(self, _text, _tone, on_finished=None, on_started=None):  # type: ignore[no-untyped-def]
+            self.on_started = on_started
+            self.on_finished = on_finished
+
+        def discard_prepared(self, _handle):  # type: ignore[no-untyped-def]
+            pass
+
+    _qt_app_or_skip()
+    label = DummyLabel()
+    tts = DelayedTTS()
+    controller = SubtitleController(
+        label,  # type: ignore[arg-type]
+        VoicePlaybackController(tts, lambda *_args, **_kwargs: None),
+        "zh",
+        lambda *_args, **_kwargs: None,
+        lambda _segment: None,
+        lambda: None,
+        lambda: True,
+    )
+
+    controller.start_waiting_indicator()
+    controller._show_next_waiting_indicator_frame()
+    controller.show_segments([ChatSegment("第一段回复", "中性", "第一段回复")])
+
+    assert controller.waiting_indicator_active
+    assert label.text == ".."
+    assert controller.current_segment is not None
+    assert tts.on_started is not None
+
+    tts.on_started()
+
+    assert not controller.waiting_indicator_active
+    assert not controller.waiting_indicator_timer.isActive()
+    assert controller.speech_text == "第一段回复"
+    controller.cancel_reply_flow()
+
+
 def test_send_message_injects_runtime_event_context_before_user_message() -> None:
     from app.agent.runtime_events import PET_REOPENED, RuntimeEvent, RuntimeEventQueue
 
@@ -7759,6 +7967,14 @@ def test_pet_input_stylesheet_has_solid_visual_effect_state() -> None:
     assert '#inputBar[visualEffectMode="solid"]' in stylesheet
     assert '#petInput[visualEffectMode="solid"]' in stylesheet
     assert '#petInput[visualEffectMode="solid"]:focus' in stylesheet
+
+
+def test_pet_input_stylesheet_has_waiting_send_button_state() -> None:
+    stylesheet = build_pet_window_stylesheet(DEFAULT_THEME_SETTINGS)
+
+    assert '#petInput[replyWaiting="true"]' not in stylesheet
+    assert "waitingBreath" not in stylesheet
+    assert '#sendButton[replyWaiting="true"]:disabled' in stylesheet
 
 
 def test_pet_window_applies_visual_effect_dynamic_property() -> None:

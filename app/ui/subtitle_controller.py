@@ -20,6 +20,9 @@ from app.voice import VoicePlaybackController
 SPEECH_TYPING_INTERVAL_MS = 35
 # 分段回复之间的默认停顿时间。
 REPLY_SEGMENT_PAUSE_MS = 100
+# 等待模型回复时的点状动效。
+WAITING_INDICATOR_INTERVAL_MS = 360
+WAITING_INDICATOR_FRAMES = (".", "..", "...", "....", ".....", "......", ".....")
 SUBTITLE_TYPING_INTERVAL_MIN_MS = 5
 SUBTITLE_TYPING_INTERVAL_MAX_MS = 200
 REPLY_SEGMENT_PAUSE_MIN_MS = 0
@@ -75,6 +78,8 @@ class SubtitleController(QObject):
         self.current_segment_speech_done = False
         self.current_segment_tts_done = True
         self.reply_advance_scheduled = False
+        self.waiting_indicator_active = False
+        self.waiting_indicator_index = 0
         self.typing_interval_ms, self.segment_pause_ms = normalize_subtitle_display_speed(
             typing_interval_ms,
             segment_pause_ms,
@@ -83,6 +88,9 @@ class SubtitleController(QObject):
         self.speech_timer = QTimer(self)
         self.speech_timer.setInterval(self.typing_interval_ms)
         self.speech_timer.timeout.connect(self._show_next_speech_char)
+        self.waiting_indicator_timer = QTimer(self)
+        self.waiting_indicator_timer.setInterval(WAITING_INDICATOR_INTERVAL_MS)
+        self.waiting_indicator_timer.timeout.connect(self._show_next_waiting_indicator_frame)
 
     def set_display_speed(self, typing_interval_ms: int, segment_pause_ms: int) -> None:
         """更新字幕逐字间隔和分段停顿，后续显示流程立即使用新配置。"""
@@ -94,27 +102,53 @@ class SubtitleController(QObject):
 
     def show_segments(self, segments: list[ChatSegment]) -> None:
         clean_segments = [segment for segment in segments if segment.text.strip()]
-        if self.is_reply_sequence_active():
-            if clean_segments:
-                self.queued_reply_segment_batches.append(clean_segments)
-                self._log_stage(
-                    "reply_segments_queued",
-                    {
-                        "queued_batch_count": len(self.queued_reply_segment_batches),
-                        "segment_count": len(clean_segments),
-                    },
-                )
-                debug_log(
-                    "PetWindow",
-                    "当前回复未播完，后续分段已排队",
-                    {
-                        "queued_batch_count": len(self.queued_reply_segment_batches),
-                        "segments": [_segment_debug_payload(segment) for segment in clean_segments],
-                    },
-                )
+        if not clean_segments:
+            self.stop_waiting_indicator()
+            return
+        if self._reply_segments_active():
+            self.queued_reply_segment_batches.append(clean_segments)
+            self._log_stage(
+                "reply_segments_queued",
+                {
+                    "queued_batch_count": len(self.queued_reply_segment_batches),
+                    "segment_count": len(clean_segments),
+                },
+            )
+            debug_log(
+                "PetWindow",
+                "当前回复未播完，后续分段已排队",
+                {
+                    "queued_batch_count": len(self.queued_reply_segment_batches),
+                    "segments": [_segment_debug_payload(segment) for segment in clean_segments],
+                },
+            )
             return
 
         self._start_reply_segments_now(clean_segments)
+
+    def start_waiting_indicator(self) -> None:
+        """显示模型回复等待动效；收到真实回复或错误时由后续流程停止。"""
+        self.reply_sequence_id += 1
+        self.pending_reply_segments = []
+        self.queued_reply_segment_batches = []
+        self.reset_current_segment_progress()
+        self.speech_timer.stop()
+        self.speech_text = ""
+        self.speech_index = 0
+        self._last_label_height = 0
+        self.waiting_indicator_active = True
+        self.waiting_indicator_index = 0
+        self._show_waiting_indicator_frame()
+        self.waiting_indicator_timer.start()
+        self._log_stage("waiting_indicator_started", None)
+
+    def stop_waiting_indicator(self) -> None:
+        """停止等待动效；若动效未启动则安全空操作。"""
+        if not self.waiting_indicator_active and not self.waiting_indicator_timer.isActive():
+            return
+        self.waiting_indicator_active = False
+        self.waiting_indicator_timer.stop()
+        self._log_stage("waiting_indicator_stopped", None)
 
     def cancel_reply_flow(
         self,
@@ -122,6 +156,7 @@ class SubtitleController(QObject):
         *,
         transition: bool = False,
     ) -> None:
+        self.stop_waiting_indicator()
         self.reply_sequence_id += 1
         self.pending_reply_segments = []
         self.queued_reply_segment_batches = []
@@ -147,6 +182,11 @@ class SubtitleController(QObject):
         )
 
     def is_reply_sequence_active(self) -> bool:
+        if self.waiting_indicator_active:
+            return True
+        return self._reply_segments_active()
+
+    def _reply_segments_active(self) -> bool:
         if self.pending_reply_segments or self.reply_advance_scheduled:
             return True
         return self.current_segment_in_progress()
@@ -162,6 +202,7 @@ class SubtitleController(QObject):
 
     @Slot(str)
     def set_speech(self, text: str, *, pulse: bool = False) -> None:
+        self.stop_waiting_indicator()
         cleaned = " ".join(text.split())
         self.speech_timer.stop()
         self.speech_text = cleaned
@@ -201,6 +242,7 @@ class SubtitleController(QObject):
 
     def show_text_immediately(self, text: str) -> None:
         """立即显示完整字幕，用于历史回看，不触发 TTS 或分段推进。"""
+        self.stop_waiting_indicator()
         cleaned = " ".join(text.split())
         self.speech_timer.stop()
         self.speech_text = cleaned
@@ -393,6 +435,22 @@ class SubtitleController(QObject):
             self.speech_timer.stop()
             if self.current_segment_sequence_id is not None:
                 self._mark_segment_speech_done(self.current_segment_sequence_id)
+
+    def _show_waiting_indicator_frame(self) -> None:
+        if not self.waiting_indicator_active:
+            return
+        self.speech_label.setText(WAITING_INDICATOR_FRAMES[self.waiting_indicator_index])
+
+    @Slot()
+    def _show_next_waiting_indicator_frame(self) -> None:
+        if not self.waiting_indicator_active:
+            self.waiting_indicator_timer.stop()
+            return
+        if self.waiting_indicator_index < len(WAITING_INDICATOR_FRAMES) - 1:
+            self.waiting_indicator_index += 1
+        else:
+            self.waiting_indicator_index = len(WAITING_INDICATOR_FRAMES) - 2
+        self._show_waiting_indicator_frame()
 
 
 def _segment_debug_payload(segment: ChatSegment) -> dict[str, str]:
