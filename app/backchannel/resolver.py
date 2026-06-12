@@ -14,6 +14,7 @@ from app.backchannel.models import (
 # 防重复记忆窗口:最近 N 个变体不再被选中。
 # 依据:filler 的缓和效果随重复使用衰减(Shiwa et al. 2009 习惯化效应,FEAT.md §3)。
 DEFAULT_RECENT_LIMIT = 3
+MIN_DIRECT_CONFIDENCE = 0.55
 
 
 @dataclass(frozen=True)
@@ -43,10 +44,12 @@ class TemplateResolver:
         *,
         rng: random.Random | None = None,
         recent_limit: int = DEFAULT_RECENT_LIMIT,
+        min_direct_confidence: float = MIN_DIRECT_CONFIDENCE,
     ) -> None:
         self._templates = manifest.templates
         self._rng = rng if rng is not None else random.Random()
         self._recent: deque[tuple[str, int]] = deque(maxlen=max(1, recent_limit))
+        self._min_direct_confidence = max(0.0, min(1.0, min_direct_confidence))
 
     def resolve(
         self,
@@ -67,7 +70,7 @@ class TemplateResolver:
         tiers: list[list[BackchannelTemplate]] = []
         if phase is not None:
             tiers.append([t for t in self._templates if t.phase == phase])
-        if label is not None:
+        if label is not None and label.confidence >= self._min_direct_confidence:
             # 相位条目不参与意图匹配(带 phase 的条目只在对应相位出场)。
             plain = [t for t in self._templates if t.phase is None]
             tiers.append(

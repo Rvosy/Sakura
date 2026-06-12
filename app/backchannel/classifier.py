@@ -15,7 +15,7 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "报错", "出错", "错误", "bug", "Bug", "BUG", "error", "Error",
         "Traceback", "traceback", "exception", "Exception", "崩", "闪退",
         "失败", "跑不起来", "运行不了", "不工作", "坏了", "404", "500",
-        "不行", "无法",
+        "还是不行", "又不行", "无法运行", "无法打开",
     ),
     "complaint": (
         "烦", "气死", "讨厌", "受不了", "无语", "服了", "恶心", "垃圾",
@@ -34,7 +34,7 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "question": (
         "什么", "怎么", "为什么", "为啥", "如何", "哪里", "哪个", "是不是",
-        "能不能", "可以吗", "吗", "呢",
+        "能不能", "可以吗",
     ),
     "positive": (
         "成功", "搞定", "解决了", "太好了", "好耶", "通过了", "完成了",
@@ -67,15 +67,17 @@ _CODE_FENCE = "```"
 # 仅对短输入短路(长句里"我回来了,帮我查…"应让任务意图按正常计分胜出)。
 _GREETING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("greeting_goodnight", ("晚安", "去睡了", "睡觉去", "我先睡", "去休息了")),
-    ("greeting_return", ("回来了", "我回啦", "我回来", "到家", "下班了", "放学了")),
+    ("greeting_return", ("回来了", "回来啦", "我回啦", "我回来", "到家", "下班", "放学")),
     ("greeting_morning", ("早上好", "早安", "早哇", "我醒了", "起床了")),
     ("greeting_evening", ("晚上好",)),
     ("greeting", ("你好", "您好", "哈喽", "嗨", "hello", "Hello", "hi", "Hi", "在吗", "在不在", "在么")),
 )
 _GREETING_MAX_LENGTH = 12
 _GREETING_CONFIDENCE = 0.85
+_GREETING_ALLOWED_SUFFIX = ("了", "啦", "呀", "啊", "呢", "哦", "喔", "哇", "哈", "咯")
+_GREETING_STRIP_CHARS = re.compile(r"[\s,，.。!！?？~～…、]+")
 
-_BASE_CONFIDENCE = 0.5
+_BASE_CONFIDENCE = 0.65
 _CONFIDENCE_STEP = 0.15
 _MAX_CONFIDENCE = 0.9
 
@@ -103,18 +105,26 @@ class RuleClassifier:
         return BackchannelLabel(intent=intent, emotion=emotion, confidence=confidence)
 
     def _classify_greeting(self, content: str) -> BackchannelLabel | None:
-        # 程式化问候只在短输入时短路(近确定性);长句交给计分器,
-        # 让"我回来了,帮我查下天气"按 request 处理。
-        if len(content) > _GREETING_MAX_LENGTH:
+        # 程式化问候必须基本占满整句;短句里混入任务/情绪信号时交给计分器,
+        # 让"在吗帮我查天气"按 request 处理,不被 greeting 抢走。
+        normalized = _GREETING_STRIP_CHARS.sub("", content).casefold()
+        if len(normalized) > _GREETING_MAX_LENGTH:
             return None
         for intent, keywords in _GREETING_PATTERNS:
-            if any(keyword in content for keyword in keywords):
+            if any(self._is_complete_greeting(normalized, keyword) for keyword in keywords):
                 return BackchannelLabel(
                     intent=intent,
                     emotion=DEFAULT_EMOTION,
                     confidence=_GREETING_CONFIDENCE,
                 )
         return None
+
+    def _is_complete_greeting(self, normalized: str, keyword: str) -> bool:
+        base = _GREETING_STRIP_CHARS.sub("", keyword).casefold()
+        if not base or not normalized.startswith(base):
+            return False
+        suffix = normalized[len(base):]
+        return all(char in _GREETING_ALLOWED_SUFFIX for char in suffix)
 
     def _classify_intent(self, content: str) -> tuple[str | None, int]:
         scores: dict[str, int] = {}

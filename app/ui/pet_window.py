@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -1174,16 +1176,61 @@ class PetWindow(QWidget):
         manifest: BackchannelManifest,
         audio: str | None,
     ) -> bool:
+        return self._resolve_backchannel_audio_path(manifest, audio) is not None
+
+    def _resolve_backchannel_audio_path(
+        self,
+        manifest: BackchannelManifest | None,
+        audio: str | None,
+    ) -> Path | None:
         if not audio:
-            return False
+            return None
         path = Path(audio)
-        if not path.is_absolute() and manifest.source_path is not None:
+        if not path.is_absolute() and manifest is not None and manifest.source_path is not None:
             path = manifest.source_path.parent / path
-        return path.exists()
+        return path if path.exists() else None
+
+    def _copy_backchannel_audio_for_playback(self, source: Path) -> Path | None:
+        suffix = source.suffix or ".wav"
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix="sakura_backchannel_",
+                suffix=suffix,
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+            shutil.copyfile(source, temp_path)
+            return temp_path
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "Backchannel",
+                "接话预置音频复制失败",
+                {"audio_path": str(source), "error": str(exc)},
+            )
+            try:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
 
     def _play_backchannel_audio(self, choice: BackchannelChoice) -> None:
-        if not self._backchannel_tts_active():
+        if not self._backchannel_tts_wanted():
             return
+        manifest = getattr(self, "backchannel_manifest", None)
+        source_audio = self._resolve_backchannel_audio_path(manifest, choice.variant.audio)
+        if source_audio is not None:
+            playable_audio = self._copy_backchannel_audio_for_playback(source_audio)
+            if playable_audio is not None:
+                handle = TTSPreparedAudio(
+                    text=choice.variant.ja,
+                    tone=choice.template.tone,
+                    audio_path=playable_audio,
+                )
+                self._request_backchannel_audio_playback(choice, handle)
+                return
+
         prepared = getattr(self, "_backchannel_prepared_audio", {})
         key = self._backchannel_audio_key(choice)
         handle = prepared.get(key)
@@ -1199,6 +1246,13 @@ class PetWindow(QWidget):
             )
             return
         prepared.pop(key, None)
+        self._request_backchannel_audio_playback(choice, handle)
+
+    def _request_backchannel_audio_playback(
+        self,
+        choice: BackchannelChoice,
+        handle: TTSPreparedAudio,
+    ) -> None:
         self._active_backchannel_audio = handle
         try:
             self.tts_provider.speak_prepared(

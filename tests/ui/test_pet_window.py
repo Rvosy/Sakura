@@ -1455,7 +1455,9 @@ def test_pet_window_backchannel_audio_uses_prepared_tts() -> None:
         _backchannel_audio_key = PetWindow._backchannel_audio_key
         _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
         _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
         _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
         _handle_backchannel_audio_finished = PetWindow._handle_backchannel_audio_finished
         _discard_active_backchannel_audio = PetWindow._discard_active_backchannel_audio
 
@@ -1504,6 +1506,93 @@ def test_pet_window_backchannel_audio_uses_prepared_tts() -> None:
     assert window._active_backchannel_audio is None
 
 
+def test_pet_window_backchannel_audio_uses_manifest_audio_copy(tmp_path: Path) -> None:
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    source_audio = tmp_path / "line.wav"
+    source_audio.write_bytes(b"RIFFbackchannel")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, str | None]] = []
+            self.spoken: list[TTSPreparedAudio] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append((text, tone))
+            return TTSPreparedAudio(text=text, tone=tone)
+
+        def speak_prepared(
+            self,
+            handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.spoken.append(handle)
+            if on_finished is not None:
+                on_finished()
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _copy_backchannel_audio_for_playback = PetWindow._copy_backchannel_audio_for_playback
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+        _handle_backchannel_audio_finished = PetWindow._handle_backchannel_audio_finished
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            self._active_backchannel_audio = None
+            self._backchannel_prepared_audio = {}
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(
+                    BackchannelVariant(
+                        ja="……おかえり。",
+                        zh="……欢迎回来。",
+                        audio="line.wav",
+                    ),
+                ),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(
+                templates=(template,),
+                source_path=manifest_path,
+            )
+            self.choice = BackchannelChoice(template, template.variants[0])
+            self.logged: list[tuple[str, dict[str, object] | None]] = []
+
+        def _log_interaction_stage(
+            self,
+            stage: str,
+            payload: dict[str, object] | None = None,
+        ) -> None:
+            self.logged.append((stage, payload))
+
+    window = WindowStub()
+    window._play_backchannel_audio(window.choice)
+
+    assert window.tts_provider.prepared == []
+    assert len(window.tts_provider.spoken) == 1
+    played = window.tts_provider.spoken[0]
+    assert played.audio_path is not None
+    assert played.audio_path != source_audio
+    assert played.audio_path.read_bytes() == source_audio.read_bytes()
+    assert ("backchannel_tts_requested", {"template": "greeting", "tone": "中性"}) in window.logged
+
+
 def test_pet_window_backchannel_unready_audio_plays_subtitle_only() -> None:
     """缓存里音频未合成完(audio_path=None)时只显示字幕,不在对话中触发补合成,
     且未就绪句柄留在缓存中等待合成完成。"""
@@ -1532,7 +1621,9 @@ def test_pet_window_backchannel_unready_audio_plays_subtitle_only() -> None:
         _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
         _backchannel_tts_active = PetWindow._backchannel_tts_active
         _backchannel_audio_key = PetWindow._backchannel_audio_key
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
         _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
 
         def __init__(self) -> None:
             self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
@@ -1628,6 +1719,7 @@ def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
         _backchannel_tts_active = PetWindow._backchannel_tts_active
         _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
         _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
         _handle_tts_ready_warmup_succeeded = PetWindow._handle_tts_ready_warmup_succeeded
 
         def __init__(self) -> None:

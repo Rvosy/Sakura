@@ -68,6 +68,29 @@ def test_long_text_with_task_signal_beats_greeting(classifier: RuleClassifier) -
     assert label.intent == "request"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "在吗帮我查天气",
+        "我回来了帮我查天气",
+        "到家啦好累",
+    ],
+)
+def test_greeting_must_be_complete_social_act(classifier: RuleClassifier, text: str) -> None:
+    label = classifier.classify(text)
+    assert label is not None
+    assert label.intent != "greeting"
+    assert not label.intent.startswith("greeting_")
+
+
+@pytest.mark.parametrize("text", ["今天好热呢", "这个颜色很怪呢"])
+def test_sentence_final_particles_do_not_create_question_signal(
+    classifier: RuleClassifier,
+    text: str,
+) -> None:
+    assert classifier.classify(text) is None
+
+
 @pytest.mark.parametrize("text", ["", "   ", "今天天气不错"])
 def test_no_signal_returns_none(classifier: RuleClassifier, text: str) -> None:
     # 无可靠信号 → None,由 resolver 落兜底池(闲聊有意走 fallback,FEAT.md §9)。
