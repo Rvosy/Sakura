@@ -46,6 +46,8 @@ _AUDIO_CLEANUP_DELAY_MS = 5000
 _AUDIO_CLEANUP_MAX_ATTEMPTS = 5
 _AUDIO_FINISH_FALLBACK_GRACE_MS = 1500
 _AUDIO_FINISH_FALLBACK_MIN_MS = 2000
+# 播放完成兜底的上限：时长无法解析或异常超长时按此值兜底，防止流程永久挂起
+_AUDIO_FINISH_FALLBACK_MAX_MS = 60_000
 _LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
 _CJK_TEXT_LANGS = {"ja", "all_ja", "zh", "all_zh", "ko", "all_ko", "yue", "all_yue"}
 TTS_PROVIDER_NONE = "none"
@@ -842,6 +844,12 @@ class GPTSoVITSTTSProvider(QObject):
                 audio_file.write(audio_data)
                 audio_path = audio_file.name
             debug_log("TTS", "临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
+            audio_issue = _verify_generated_audio(Path(audio_path))
+            if audio_issue is not None:
+                debug_log("TTS", "生成音频校验失败", {"audio_path": audio_path, "issue": audio_issue})
+                self._fail_audio_request(tts_request, f"GPT-SoVITS 生成的音频无效（{audio_issue}）。")
+                self._schedule_audio_cleanup(Path(audio_path))
+                return
             if tts_request.prepared_audio is None:
                 self._audio_ready.emit(
                     audio_path,
@@ -1363,6 +1371,19 @@ class GPTSoVITSTTSProvider(QObject):
             },
         )
 
+        # 播放前最后一道检查：文件可能在排队期间被清理/损坏；
+        # 坏条目直接跳过并继续播放队列，绝不交给播放器去卡死
+        audio_issue = _verify_generated_audio(audio_path)
+        if audio_issue is not None:
+            debug_log(
+                "TTS",
+                "播放前音频校验失败，跳过该条目",
+                {"audio_path": str(audio_path), "issue": audio_issue},
+            )
+            self._finish_current_audio("invalid_audio")
+            self._play_next()
+            return
+
         if self._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK:
             self._play_next_with_sink()
         else:
@@ -1573,11 +1594,17 @@ class GPTSoVITSTTSProvider(QObject):
     def _schedule_current_audio_finish_fallback(self, audio_path: Path, playback_finish_token: int) -> None:
         duration_ms = _wav_duration_ms(audio_path)
         if duration_ms is None:
-            debug_log("TTS", "无法读取音频时长，跳过播放完成兜底", {"audio_path": audio_path})
-            return
+            # 时长读不出（文件损坏/被占用）更要兜底——这是播放器最可能卡死的场景；
+            # 用保守上限兜住，绝不能因解析失败而放弃兜底导致对话流程挂起
+            debug_log(
+                "TTS",
+                "无法读取音频时长，使用上限时长兜底",
+                {"audio_path": audio_path, "delay_ms": _AUDIO_FINISH_FALLBACK_MAX_MS},
+            )
+            duration_ms = _AUDIO_FINISH_FALLBACK_MAX_MS
         delay_ms = max(
             _AUDIO_FINISH_FALLBACK_MIN_MS,
-            duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS,
+            min(duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS, _AUDIO_FINISH_FALLBACK_MAX_MS),
         )
         debug_log(
             "TTS",
@@ -1761,6 +1788,12 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 return
 
             debug_log("TTS", "Genie 临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
+            audio_issue = _verify_generated_audio(audio_path)
+            if audio_issue is not None:
+                debug_log("TTS", "Genie 生成音频校验失败", {"audio_path": str(audio_path), "issue": audio_issue})
+                self._fail_audio_request(tts_request, f"Genie TTS 生成的音频无效（{audio_issue}）。")
+                self._schedule_audio_cleanup(audio_path)
+                return
             if tts_request.prepared_audio is None:
                 self._audio_ready.emit(
                     str(audio_path),
@@ -2675,12 +2708,45 @@ def _write_raw_float_or_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sampl
     return _write_raw_pcm_as_wav(pcm_bytes, output_path, sample_rate=sample_rate)
 
 
+def _verify_generated_audio(path: Path) -> str | None:
+    """音频文件统一检查关卡：生成后入队前、播放前各过一次。
+
+    返回 None 表示通过；否则返回错误码，日志可借此区分：
+    audio_file_missing / audio_file_empty / audio_file_unreadable / audio_format_invalid
+    """
+    path = Path(path)
+    if not path.is_file():
+        return "audio_file_missing"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "audio_file_unreadable"
+    if size <= 0:
+        return "audio_file_empty"
+    try:
+        with path.open("rb") as handle:
+            handle.read(16)
+    except OSError:
+        return "audio_file_unreadable"
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            frame_rate = wav_file.getframerate()
+    # wave 对截断文件抛 EOFError，不属于 wave.Error，需单独捕获
+    except (OSError, wave.Error, EOFError):
+        return "audio_format_invalid"
+    if channels not in (1, 2) or sample_width <= 0 or frame_rate <= 0:
+        return "audio_format_invalid"
+    return None
+
+
 def _wav_duration_ms(path: Path) -> int | None:
     try:
         with wave.open(str(path), "rb") as wav_file:
             frame_rate = wav_file.getframerate()
             frame_count = wav_file.getnframes()
-    except (OSError, wave.Error):
+    except (OSError, wave.Error, EOFError):
         return None
     if frame_rate <= 0 or frame_count < 0:
         return None
@@ -2695,6 +2761,6 @@ def _is_valid_wav_file(path: Path) -> bool:
             wav_file.getnchannels()
             wav_file.getframerate()
             wav_file.getnframes()
-    except (OSError, wave.Error):
+    except (OSError, wave.Error, EOFError):
         return False
     return True
