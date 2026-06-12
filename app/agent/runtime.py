@@ -585,7 +585,7 @@ class AgentRuntime:
                 self.reply_portraits,
             )
         except Exception as exc:
-            print(f"[AgentRuntime] 工具结果总结失败，使用本地兜底回复：{exc}")
+            debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
             debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
             final_reply = _build_fallback_tool_reply(execution_results)
         debug_log(
@@ -680,7 +680,7 @@ class AgentRuntime:
                 self.reply_portraits,
             )
         except Exception as exc:
-            print(f"[AgentRuntime] 确认动作总结失败，使用本地兜底回复：{exc}")
+            debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
             debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
             reply = _build_fallback_tool_reply(results)
         debug_log(

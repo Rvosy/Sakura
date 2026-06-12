@@ -81,7 +81,7 @@ class VoicePlaybackController:
                     "error": str(exc),
                 },
             )
-            print(f"[TTS] 播放失败，已继续显示字幕：{exc}")
+            debug_log("TTS", "播放失败，已继续显示字幕", {"error": str(exc)})
             self._notify_error(f"播放失败，已继续显示字幕：{exc}")
             on_started()
             on_finished()
@@ -133,7 +133,7 @@ class VoicePlaybackController:
                     "error": str(exc),
                 },
             )
-            print(f"[TTS] 预生成失败，已继续字幕流程：{exc}")
+            debug_log("TTS", "预生成失败，已继续字幕流程", {"error": str(exc)})
             self._notify_error(f"预生成失败，已继续字幕流程：{exc}")
 
     def discard_prepared(self) -> None:

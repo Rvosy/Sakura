@@ -81,6 +81,7 @@ from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
+from app.core.interaction import clear_interaction_id, set_interaction_id
 from app.config.settings_service import BubbleSettings, StartupSettings
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
@@ -1049,7 +1050,7 @@ class PetWindow(QWidget):
         try:
             entries = self.history_store.load()
         except OSError as exc:
-            print(f"[History] 回溯历史读取失败：{exc}")
+            debug_log("History", "回溯历史读取失败", {"error": str(exc)})
             debug_log("History", "回溯历史读取失败", {"error": str(exc)})
             entries = []
         self.reply_history_segments = _reply_history_segments_from_entries(entries)
@@ -1449,6 +1450,8 @@ class PetWindow(QWidget):
         self.active_interaction_id = f"interaction-{self.interaction_sequence}"
         self.active_interaction_started_at = now
         self.active_interaction_last_at = now
+        # UI 线程后续的 debug_log 自动带上交互 ID；worker/TTS 线程由各自入口恢复
+        set_interaction_id(self.active_interaction_id)
         debug_log(
             "Latency",
             "输入事件开始",
@@ -1496,6 +1499,7 @@ class PetWindow(QWidget):
         self.active_interaction_id = ""
         self.active_interaction_started_at = None
         self.active_interaction_last_at = None
+        clear_interaction_id()
         self._update_reply_history_buttons()
         # 每完成一轮对话（含完整回复）累计一次，驱动自动记忆整理触发
         if outcome == "reply_completed":
@@ -1766,6 +1770,7 @@ class PetWindow(QWidget):
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -2054,6 +2059,7 @@ class PetWindow(QWidget):
             self.agent_runtime,
             confirmed_action=confirmed_action,
             cancelled_action=cancelled_action,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -2099,7 +2105,7 @@ class PetWindow(QWidget):
             try:
                 self._set_pending_tool_action(PendingToolAction.from_dict(action.payload))
             except ValueError as exc:
-                print(f"[Tool] 待确认动作无效：{exc}")
+                debug_log("Tool", "待确认动作无效", {"error": str(exc)})
             return
         self._set_pending_tool_action(None)
 
@@ -2309,6 +2315,7 @@ class PetWindow(QWidget):
         self.worker = EventWorker(
             self.agent_runtime,
             event,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         self.worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
@@ -2350,7 +2357,7 @@ class PetWindow(QWidget):
         reminder_id = self.active_reminder_id
         reminder_text = self.active_reminder_text
         self._clear_active_event()
-        print(f"[Event] 主动事件生成失败：{message}")
+        debug_log("Event", "主动事件生成失败", {"error": message})
         if event_type == "reminder_due":
             result = AgentResult(
                 reply=ChatReply(
@@ -2392,7 +2399,7 @@ class PetWindow(QWidget):
         try:
             self.reminder_store.mark_completed(reminder_id)
         except ValueError as exc:
-            print(f"[Reminder] 标记完成失败：{exc}")
+            debug_log("Reminder", "标记完成失败", {"error": str(exc)})
 
     @Slot(str)
     def _handle_error(self, message: str) -> None:
@@ -2690,7 +2697,7 @@ class PetWindow(QWidget):
             },
         )
         for error in services.errors:
-            print(f"[Startup] {error}")
+            debug_log("Startup", "后台初始化错误", {"error": error})
             if error.startswith("TTS"):
                 self._show_tts_error(error)
 
@@ -2704,7 +2711,7 @@ class PetWindow(QWidget):
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log("Startup", "后台启动服务失败", {"error": error})
-        print(f"[Startup] 后台初始化失败：{error}")
+        debug_log("Startup", "后台初始化失败", {"error": error})
 
     def _sync_plugin_chat_ui_widgets(self) -> None:
         layout = self.input_bar.layout() if hasattr(self, "input_bar") else None
@@ -3579,7 +3586,7 @@ class PetWindow(QWidget):
         try:
             self.history_store.append(role, content, translation, tone, portrait, _debug=_debug)
         except OSError as exc:
-            print(f"[History] 写入失败：{exc}")
+            debug_log("History", "写入失败", {"error": str(exc)})
             debug_log(
                 "History",
                 "写入失败",
@@ -3616,7 +3623,7 @@ class PetWindow(QWidget):
         try:
             due_reminders = self.reminder_store.due_reminders()
         except ValueError as exc:
-            print(f"[Reminder] 读取失败：{exc}")
+            debug_log("Reminder", "读取失败", {"error": str(exc)})
             debug_log("Reminder", "读取失败", {"error": str(exc)})
             return
         if not due_reminders:

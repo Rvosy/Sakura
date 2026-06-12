@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.chat_pipeline import ChatPipeline
 from app.core.debug_log import debug_log
+from app.core.interaction import set_interaction_id
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
@@ -27,6 +28,7 @@ class ChatWorker(QObject):
         cancelled_action: PendingToolAction | None = None,
         visual_observation_store: VisualObservationStore | None = None,
         visual_observation_jobs: list[VisualObservationJob] | None = None,
+        interaction_id: str = "",
     ) -> None:
         super().__init__()
         self.agent_runtime = agent_runtime
@@ -35,6 +37,7 @@ class ChatWorker(QObject):
         self.cancelled_action = cancelled_action
         self.visual_observation_store = visual_observation_store
         self.visual_observation_jobs = visual_observation_jobs or []
+        self.interaction_id = interaction_id
         self.pipeline = ChatPipeline(
             agent_runtime,
             visual_observation_store=visual_observation_store,
@@ -42,6 +45,8 @@ class ChatWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        # 跨线程恢复交互 ID：worker 在独立 QThread 中执行，ContextVar 不自动传播
+        set_interaction_id(self.interaction_id)
         started_at = time.perf_counter()
         try:
             if self.confirmed_action is not None:
@@ -97,16 +102,23 @@ class EventWorker(QObject):
     failed = Signal(str)
     progress = Signal(object)
 
-    def __init__(self, agent_runtime: AgentRuntime, event: AgentEvent) -> None:
+    def __init__(
+        self,
+        agent_runtime: AgentRuntime,
+        event: AgentEvent,
+        interaction_id: str = "",
+    ) -> None:
         super().__init__()
         self.agent_runtime = agent_runtime
         # 避免覆盖 QObject.event() 虚函数名；PySide 在 moveToThread 时会访问该方法。
         self.agent_event = event
         self.visual_observation_store: VisualObservationStore | None = None
         self.visual_observation_jobs: list[VisualObservationJob] = []
+        self.interaction_id = interaction_id
 
     @Slot()
     def run(self) -> None:
+        set_interaction_id(self.interaction_id)
         started_at = time.perf_counter()
         try:
             pipeline = ChatPipeline(

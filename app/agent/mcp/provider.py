@@ -75,7 +75,7 @@ class MCPToolProvider:
                     if server.allows_tool(tool_spec.name)
                 ]
             except Exception as exc:
-                print(f"[MCP] 连接或读取工具失败，已跳过 {server.name}：{exc}")
+                debug_log("MCP", "连接或读取工具失败，已跳过", {"server": server.name, "error": str(exc)})
                 debug_log("MCP", "连接或读取工具失败", {"server": server.name, "error": str(exc)})
                 _close_quietly(bridge)
                 continue
@@ -84,7 +84,7 @@ class MCPToolProvider:
             for tool_spec in tool_specs:
                 internal_name = _build_internal_tool_name(server, tool_spec.name)
                 if registry.get(internal_name) is not None:
-                    print(f"[MCP] 工具名冲突，已跳过 {internal_name}。")
+                    debug_log("MCP", "工具名冲突，已跳过", {"name": internal_name})
                     debug_log("MCP", "工具名冲突，已跳过", {"tool_name": internal_name})
                     continue
                 registry.register(
@@ -150,7 +150,6 @@ def register_mcp_tools_from_config(
         config = load_mcp_config(StoragePaths(base_dir).mcp_config())
         mcp_settings = runtime_settings or MCPRuntimeSettings()
     except Exception as exc:
-        print(f"[MCP] 配置读取失败，已跳过 MCP：{exc}")
         debug_log("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
         return None
     config = apply_mcp_runtime_settings(config, mcp_settings)
@@ -161,7 +160,6 @@ def register_mcp_tools_from_config(
         provider.close()
         debug_log("MCP", "没有注册任何 MCP 工具")
         return None
-    print(f"[MCP] 已注册 {registered} 个 MCP 工具。")
     debug_log("MCP", "MCP 工具注册完成", {"registered": registered})
     return provider
 
@@ -236,5 +234,5 @@ def _close_quietly(bridge: MCPBridgeLike) -> None:
     try:
         bridge.close()
     except Exception as exc:
-        print(f"[MCP] 关闭连接失败：{exc}")
+        debug_log("MCP", "关闭连接失败", {"error": str(exc)})
         debug_log("MCP", "关闭连接失败", {"error": str(exc)})

@@ -64,7 +64,12 @@ def debug_file_enabled() -> bool:
 
 
 def debug_log(category: str, message: str, data: Any | None = None) -> None:
-    """按统一格式输出调试日志；文件日志始终使用严格脱敏数据。"""
+    """按统一格式输出调试日志；文件日志始终使用严格脱敏数据。
+
+    当前调用链存在交互 ID 时自动附加 interaction_id 字段，
+    使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
+    """
+    data = _attach_interaction_id(data)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     try:
         record_debug_log_for_gui(category, message, data, timestamp=timestamp)
@@ -84,6 +89,23 @@ def debug_log(category: str, message: str, data: Any | None = None) -> None:
         print(line)
     if file_enabled:
         _write_file_log(timestamp, category, message, data)
+
+
+def _attach_interaction_id(data: Any) -> Any:
+    """data 为 dict 或 None 时附加当前 interaction_id；调用方已显式给出则不覆盖。"""
+    try:
+        from app.core.interaction import get_interaction_id
+
+        interaction_id = get_interaction_id()
+    except Exception:
+        return data
+    if not interaction_id:
+        return data
+    if data is None:
+        return {"interaction_id": interaction_id}
+    if isinstance(data, dict) and "interaction_id" not in data:
+        return {"interaction_id": interaction_id, **data}
+    return data
 
 
 def format_debug_data(data: Any) -> str:

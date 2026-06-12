@@ -232,7 +232,7 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
         else:
             tts_provider = GPTSoVITSTTSProvider(tts_settings, base_dir=base_dir)
     except TTSConfigError as exc:
-        print(f"[TTS] 配置无效，已禁用 TTS：{exc}")
+        debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
         debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
         errors.append(f"TTS 配置无效，已禁用：{exc}")
         tts_provider = NullTTSProvider()
@@ -254,7 +254,7 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
     try:
         plugin_manager.load_from_config(tool_registry)
     except Exception as exc:  # noqa: BLE001
-        print(f"[Plugin] 启动加载失败，已跳过插件：{exc}")
+        debug_log("Plugin", "启动加载失败，已跳过插件", {"error": str(exc)})
         debug_log("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
         errors.append(f"插件加载失败，已跳过：{exc}")
     for result in plugin_manager.results:

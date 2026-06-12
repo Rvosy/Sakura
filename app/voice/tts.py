@@ -35,6 +35,7 @@ from app.config.character_loader import CharacterProfile
 from app.core.gui_log import record_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
+from app.core.interaction import get_interaction_id, set_interaction_id
 from app.storage.paths import StoragePaths
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
 
@@ -114,6 +115,8 @@ class _TTSRequest:
     on_started: TTSCallback | None = None
     on_finished: TTSCallback | None = None
     prepared_audio: TTSPreparedAudio | None = None
+    # 发起请求时的交互 ID；请求线程入口恢复，使 TTS 日志可与该次交互串联
+    interaction_id: str = ""
 
 
 class _LocalProcessHandle(Protocol):
@@ -467,6 +470,7 @@ class GPTSoVITSTTSProvider(QObject):
                 tone=tone,
                 on_started=on_started,
                 on_finished=on_finished,
+                interaction_id=get_interaction_id(),
             )
         )
 
@@ -478,7 +482,14 @@ class GPTSoVITSTTSProvider(QObject):
             handle.failed = True
             return handle
         debug_log("TTS", "提交预生成请求", {"text": text, "tone": tone})
-        self._queue_request(_TTSRequest(text=text, tone=tone, prepared_audio=handle))
+        self._queue_request(
+            _TTSRequest(
+                text=text,
+                tone=tone,
+                prepared_audio=handle,
+                interaction_id=get_interaction_id(),
+            )
+        )
         return handle
 
     def speak_prepared(
@@ -632,6 +643,8 @@ class GPTSoVITSTTSProvider(QObject):
         thread.start()
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
+        # 请求线程恢复发起方的交互 ID，使本线程内日志可与该次交互串联
+        set_interaction_id(tts_request.interaction_id)
         try:
             if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
                 debug_log("TTS", "请求已取消，跳过音频生成", {"text": tts_request.text})
@@ -1189,7 +1202,7 @@ class GPTSoVITSTTSProvider(QObject):
 
     @Slot(str)
     def _log_error(self, message: str) -> None:
-        print(f"[TTS] {message}")
+        debug_log("TTS", "错误通知", {"message": message})
         self.error_occurred.emit(message)
 
     @Slot(object)
@@ -1600,6 +1613,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         self._reference_audio_key: str | None = None
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
+        set_interaction_id(tts_request.interaction_id)
         try:
             if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
                 debug_log("TTS", "请求已取消，跳过 Genie 音频生成", {"text": tts_request.text})

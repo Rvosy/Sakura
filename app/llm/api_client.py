@@ -453,7 +453,6 @@ class OpenAICompatibleClient:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
                 last_error = exc
 
-            print(f"[API] 请求失败，准备重试 {attempt}/{MAX_API_RETRY_ATTEMPTS}：{last_error}")
             debug_log(
                 "API",
                 "准备重试请求",
