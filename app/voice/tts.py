@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 import wave
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -117,6 +118,91 @@ class _TTSRequest:
     prepared_audio: TTSPreparedAudio | None = None
     # 发起请求时的交互 ID；请求线程入口恢复，使 TTS 日志可与该次交互串联
     interaction_id: str = ""
+
+
+class TTSServiceState(str, Enum):
+    """TTS 本地服务生命周期的显式状态；转移由 _set_service_state 统一记日志。
+
+    IDLE → PROBING → (READY | STARTING) ; STARTING → WAITING_READY → (READY | FAILED)
+    READY 后探测短路；FAILED 不缓存——下次请求重新走完整流程（服务可能被手动拉起）。
+    """
+
+    IDLE = "idle"
+    PROBING = "probing"
+    STARTING = "starting"
+    WAITING_READY = "waiting_ready"
+    READY = "ready"
+    FAILED = "failed"
+
+
+def _set_service_state(provider: object, new_state: TTSServiceState, detail: dict | None = None) -> None:
+    """记录服务状态转移；provider 可能是测试桩（SimpleNamespace），全程容错。"""
+    old_state = getattr(provider, "_service_state", TTSServiceState.IDLE)
+    try:
+        setattr(provider, "_service_state", new_state)
+    except (AttributeError, TypeError):
+        pass
+    if old_state == new_state:
+        return
+    payload = {"from": str(getattr(old_state, "value", old_state)), "to": new_state.value}
+    if detail:
+        payload.update(detail)
+    debug_log("TTS", "tts.service_state", payload)
+
+
+def _parse_service_endpoint(api_url: str) -> tuple[str, int] | None:
+    """解析服务地址为 (host, port)；地址非法返回 None，由调用方给出服务名相关提示。"""
+    parsed_url = urlparse(api_url)
+    host = parsed_url.hostname
+    try:
+        port = parsed_url.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed_url.scheme == "https" else 80
+    if not host:
+        return None
+    return host, port
+
+
+def _wait_local_service_ready(
+    *,
+    provider: object,
+    service_name: str,
+    ready_check: Callable[[], bool],
+    fail_callback: Callable[[str], None],
+    timeout_seconds: int,
+) -> bool:
+    """启动本地服务后的统一就绪轮询：进程存活检查 + ready_check，直到超时。
+
+    大模型首次加载可能超过 30 秒，按用户配置等待（封顶 _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX），
+    避免刚加载完成就被判超时。
+    """
+    settings = getattr(provider, "settings")
+    base_dir = getattr(provider, "_base_dir", None)
+    _set_service_state(provider, TTSServiceState.WAITING_READY)
+    deadline = time.monotonic() + max(3, min(timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
+    while time.monotonic() < deadline:
+        process = getattr(provider, "_server_process", None)
+        exit_code = process.poll() if process is not None else None
+        if exit_code is not None:
+            log_path = _local_tts_service_log_path(settings.provider, base_dir)
+            _set_service_state(provider, TTSServiceState.FAILED, {"reason": "process_exited", "exit_code": exit_code})
+            fail_callback(
+                f"{service_name} 本地服务进程已退出，退出码：{exit_code}。"
+                f"请查看启动日志：{log_path}"
+            )
+            return False
+        if ready_check():
+            return True
+        time.sleep(0.5)
+    log_path = _local_tts_service_log_path(settings.provider, base_dir)
+    _set_service_state(provider, TTSServiceState.FAILED, {"reason": "startup_timeout"})
+    fail_callback(
+        f"{service_name} 已尝试启动，但端口仍不可用：{settings.api_url}。"
+        f"请查看启动日志：{log_path}"
+    )
+    return False
 
 
 class _LocalProcessHandle(Protocol):
@@ -429,6 +515,8 @@ class GPTSoVITSTTSProvider(QObject):
         self._tone_indices: dict[str, int] = {}
         self._weights_ready = False
         self._service_checked = False
+        # 服务生命周期显式状态（_service_checked 是其 READY 的向后兼容投影）
+        self._service_state = TTSServiceState.IDLE
         self._server_process: _LocalProcessHandle | None = None
         self._playback_warmup_requested = False
         self._playback_finish_token = 0
@@ -776,67 +864,57 @@ class GPTSoVITSTTSProvider(QObject):
             debug_log("TTS", "服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
-        parsed_url = urlparse(self.settings.api_url)
-        host = parsed_url.hostname
-        try:
-            port = parsed_url.port
-        except ValueError as exc:
-            debug_log("TTS", "服务地址端口无效", {"api_url": self.settings.api_url, "reason": str(exc)})
-            fail_callback(f"GPT-SoVITS 服务地址端口无效：{self.settings.api_url}")
-            return False
-
-        if port is None:
-            port = 443 if parsed_url.scheme == "https" else 80
-        if not host:
+        endpoint = _parse_service_endpoint(self.settings.api_url)
+        if endpoint is None:
             debug_log("TTS", "服务地址无效", {"api_url": self.settings.api_url})
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "invalid_api_url"})
             fail_callback(f"GPT-SoVITS 服务地址无效：{self.settings.api_url}")
             return False
+        host, port = endpoint
 
         timeout = min(self.settings.timeout_seconds, 3)
         probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        _set_service_state(self, TTSServiceState.PROBING)
         if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             GPTSoVITSTTSProvider._adopt_existing_local_service(self, host, port)
             self._service_checked = True
+            _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
             debug_log("TTS", "服务探测成功", {"api_url": self.settings.api_url})
             return True
 
         if self.settings.work_dir is None:
+            # 没有可启动的本地整合包：探测失败即不可用（远端/手动服务场景）
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "service_unreachable"})
             fail_callback(f"GPT-SoVITS 服务不可用，请先启动或检查地址 {self.settings.api_url}。")
             return False
 
+        _set_service_state(self, TTSServiceState.STARTING)
         if not GPTSoVITSTTSProvider._start_local_service(self, fail_callback):
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "start_failed"})
             return False
 
-        # 大模型首次加载可能超过 30 秒，按用户配置等待，避免刚加载完成就被杀掉。
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
-        while time.monotonic() < deadline:
-            exit_code = self._server_process.poll() if self._server_process is not None else None
-            if exit_code is not None:
-                log_path = _local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))
-                fail_callback(
-                    f"GPT-SoVITS 本地服务进程已退出，退出码：{exit_code}。"
-                    f"请查看启动日志：{log_path}"
-                )
-                return False
-            if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait"):
-                if not _probe_gpt_sovits_http(self.settings.api_url, timeout):
-                    # 端口通但 HTTP 层尚未就绪（模型仍在加载），继续等待
-                    time.sleep(0.5)
-                    continue
-                self._service_checked = True
-                debug_log(
-                    "TTS",
-                    "本地 GPT-SoVITS 服务启动并探测成功",
-                    {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
-                )
-                return True
-            time.sleep(0.5)
+        def _ready() -> bool:
+            # 端口通但 HTTP 层尚未就绪（模型仍在加载）时继续等待
+            return GPTSoVITSTTSProvider._probe_service_port(
+                self, host, port, timeout, purpose="startup_wait"
+            ) and _probe_gpt_sovits_http(self.settings.api_url, timeout)
 
-        fail_callback(
-            f"GPT-SoVITS 已尝试启动，但端口仍不可用：{self.settings.api_url}。"
-            f"请查看启动日志：{_local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))}"
+        if not _wait_local_service_ready(
+            provider=self,
+            service_name="GPT-SoVITS",
+            ready_check=_ready,
+            fail_callback=fail_callback,
+            timeout_seconds=self.settings.timeout_seconds,
+        ):
+            return False
+        self._service_checked = True
+        _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
+        debug_log(
+            "TTS",
+            "本地 GPT-SoVITS 服务启动并探测成功",
+            {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
         )
-        return False
+        return True
 
     def _adopt_existing_local_service(self, host: str, port: int) -> None:
         current = getattr(self, "_server_process", None)
@@ -1723,29 +1801,27 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             debug_log("TTS", "Genie 服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
-        parsed_url = urlparse(self.settings.api_url)
-        host = parsed_url.hostname
-        try:
-            port = parsed_url.port
-        except ValueError:
-            fail_callback(f"Genie TTS 服务地址端口无效：{self.settings.api_url}")
-            return False
-        if port is None:
-            port = 443 if parsed_url.scheme == "https" else 80
-        if not host:
+        endpoint = _parse_service_endpoint(self.settings.api_url)
+        if endpoint is None:
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "invalid_api_url"})
             fail_callback(f"Genie TTS 服务地址无效：{self.settings.api_url}")
             return False
+        host, port = endpoint
 
         timeout = min(self.settings.timeout_seconds, 3)
         probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        _set_service_state(self, TTSServiceState.PROBING)
         if GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             if GenieTTSProvider._probe_genie_api(self, timeout):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
+                _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
                 debug_log("TTS", "Genie 服务探测成功", {"api_url": self.settings.api_url})
                 return True
+            # 端口通但不是 Genie（典型：被 GPT-SoVITS 占用 9880）→ 尝试备用端口
             fallback_port = GenieTTSProvider._select_fallback_port(self, host, port, timeout)
             if fallback_port is None:
+                _set_service_state(self, TTSServiceState.FAILED, {"reason": "port_conflict"})
                 fail_callback(
                     f"端口 {port} 上的服务不是 Genie TTS，且未找到可用的本地备用端口。"
                     f"请将 Genie API URL 改为 {DEFAULT_GENIE_TTS_API_URL} 或检查占用服务。"
@@ -1765,36 +1841,41 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             ):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
+                _set_service_state(self, TTSServiceState.READY, {"via": "fallback_port"})
                 debug_log("TTS", "Genie 备用端口已有可用服务", {"api_url": self.settings.api_url})
                 return True
 
         if self.settings.work_dir is None:
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "service_unreachable"})
             fail_callback(f"Genie TTS 服务不可用，请先启动或检查地址 {self.settings.api_url}。")
             return False
 
+        _set_service_state(self, TTSServiceState.STARTING)
         if not GenieTTSProvider._start_local_service(self, fail_callback, host, port):
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "start_failed"})
             return False
 
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
-        while time.monotonic() < deadline:
-            if self._server_process is not None and self._server_process.poll() is not None:
-                fail_callback(f"Genie TTS 本地服务进程已退出，退出码：{self._server_process.poll()}")
-                return False
-            if (
-                GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait")
-                and GenieTTSProvider._probe_genie_api(self, timeout)
-            ):
-                self._service_checked = True
-                debug_log(
-                    "TTS",
-                    "本地 Genie TTS 服务启动并探测成功",
-                    {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
-                )
-                return True
-            time.sleep(0.5)
+        def _ready() -> bool:
+            return GenieTTSProvider._probe_service_port(
+                self, host, port, timeout, purpose="startup_wait"
+            ) and GenieTTSProvider._probe_genie_api(self, timeout)
 
-        fail_callback(f"Genie TTS 已尝试启动，但端口仍不可用：{self.settings.api_url}")
-        return False
+        if not _wait_local_service_ready(
+            provider=self,
+            service_name="Genie TTS",
+            ready_check=_ready,
+            fail_callback=fail_callback,
+            timeout_seconds=self.settings.timeout_seconds,
+        ):
+            return False
+        self._service_checked = True
+        _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
+        debug_log(
+            "TTS",
+            "本地 Genie TTS 服务启动并探测成功",
+            {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
+        )
+        return True
 
     def _start_local_service(self, fail_callback: Callable[[str], None], host: str, port: int) -> bool:
         work_dir = self.settings.work_dir
