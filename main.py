@@ -34,7 +34,7 @@ from app.ui.subtitle_controller import (
     SPEECH_TYPING_INTERVAL_MS,
     normalize_subtitle_display_speed,
 )
-from app.voice.tts import TTSConfigError
+from app.voice.tts_settings import TTSConfigError
 from app.voice.tts_bundle import (
     TTSBundleMigration,
     TTSBundleMigrationProgress,
@@ -51,7 +51,7 @@ def _qt_message_handler(msg_type: QtMsgType, context: object, msg: str) -> None:
     # Windows 无边框透明窗口触发的无害 DWM 边框设置警告，直接丢弃
     if "setDarkBorderToWindow" in msg:
         return
-    print(msg, file=sys.stderr)
+    sys.stderr.write(f"{msg}\n")
     if msg_type == QtMsgType.QtFatalMsg:
         sys.exit(1)
 
@@ -261,6 +261,13 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
     _force_light_palette(app)
 
+    # 启动自检必须先于单实例锁创建：data/ 不可写或被文件占位时，
+    # 应给出明确 fatal，而不是在锁文件目录创建阶段提前失败。
+    self_check = run_startup_self_check(BASE_DIR)
+    if self_check.fatal_issues:
+        QMessageBox.critical(None, "启动检查未通过", self_check.fatal_message())
+        return 1
+
     # 单实例锁：防止双开并发写历史/配置、争抢记忆库锁。
     # guard 需存活到进程结束（main 栈帧持有），崩溃残留锁由 QLockFile stale 检测接管。
     instance_guard = SingleInstanceGuard(BASE_DIR)
@@ -273,12 +280,6 @@ def main() -> int:
         )
         return 0
     app.aboutToQuit.connect(instance_guard.release)
-
-    # 启动自检：仅"数据目录不可写"阻断启动，其余问题降级为日志警告
-    self_check = run_startup_self_check(BASE_DIR)
-    if self_check.fatal_issues:
-        QMessageBox.critical(None, "启动检查未通过", self_check.fatal_message())
-        return 1
 
     # 发布包不携带 mcp.yaml/plugins.yaml（避免覆盖升级冲掉用户配置），缺失时生成默认
     ensure_default_configs(BASE_DIR)
@@ -299,18 +300,18 @@ def main() -> int:
         context = build_initial_app_context(BASE_DIR)
     except CharacterConfigError as exc:
         if not _character_packages_missing(BASE_DIR):
-            print(f"[Character] 配置无效：{exc}")
+            _write_startup_error("Character", f"配置无效：{exc}")
             return 1
         try:
             context = _open_first_run_settings(BASE_DIR)
         except (CharacterConfigError, OSError, TTSConfigError, ValueError) as first_run_exc:
             QMessageBox.critical(None, "启动失败", str(first_run_exc))
-            print(f"[Character] 配置无效：{first_run_exc}")
+            _write_startup_error("Character", f"配置无效：{first_run_exc}")
             return 1
         if context is None:
             return 0
     except (OSError, ValueError) as exc:
-        print(f"[Character] 配置无效：{exc}")
+        _write_startup_error("Character", f"配置无效：{exc}")
         return 1
 
     _ensure_launch_at_login_state(BASE_DIR, context.settings_service)
@@ -320,6 +321,11 @@ def main() -> int:
     QTimer.singleShot(0, lambda: _start_tts_migration_or_deferred(BASE_DIR, pet_window))
 
     return app.exec()
+
+
+def _write_startup_error(category: str, message: str) -> None:
+    debug_log(category, "启动失败", {"error": message})
+    sys.stderr.write(f"[{category}] {message}\n")
 
 
 def _character_packages_missing(base_dir: Path) -> bool:

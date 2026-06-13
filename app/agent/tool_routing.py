@@ -2,7 +2,6 @@
 
 从 runtime.py 拆出的纯函数层：根据对话内容决定浏览器页面模式、
 可见浏览器模式、Windows 控制与屏幕观察的工具过滤与提示词规则。
-runtime.py re-export 这些符号，旧 import 路径保持可用。
 """
 
 from __future__ import annotations
@@ -14,9 +13,10 @@ from typing import Any
 from app.agent.actions import PendingToolAction
 from app.agent.screen_policy import ScreenPolicy
 from app.agent.tool_policy import BROWSER_SNAPSHOT_TOOL_NAME, ToolPolicy
-from app.agent.tool_registry import ToolExecutionResult, ToolRegistry
+from app.agent.tools import ToolExecutionResult, ToolRegistry
 from app.core.debug_log import debug_log
 from app.llm.api_client import ChatMessage, NativeToolCall
+
 
 def _filter_tools_for_browser_routing(
     tools: list[dict[str, Any]],
@@ -489,5 +489,3 @@ def _latest_user_text(messages: list[ChatMessage]) -> str | None:
             return "\n".join(parts)
         return ""
     return None
-
-

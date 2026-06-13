@@ -108,7 +108,7 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         name=_string_value(raw.get("name")) or plugin_id,
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
-        api_version=_int_value(raw.get("api_version"), 1),
+        api_version=_int_value(raw.get("api_version"), 0),
         enabled=_bool_value(raw.get("enabled"), True),
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),

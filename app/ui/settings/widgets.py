@@ -108,5 +108,3 @@ class ModelComboBox(_NoWheelComboBox):
         elif self._model_names:
             self.setCurrentIndex(0)
         self.blockSignals(False)
-
-

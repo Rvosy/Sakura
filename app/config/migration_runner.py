@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -218,8 +218,7 @@ def _parse_env_keys(env_path: Path) -> list[str]:
 def _migrate_legacy_single_chat_history(context: MigrationContext) -> None:
     """旧版单文件 data/chat_history.jsonl → data/chat_history/<默认角色>.jsonl。
 
-    与 bootstrap._migrate_legacy_history 行为一致（只迁默认角色、目标存在则跳过），
-    收编到版本化迁移后旧文件归档备份，不再每次启动判断。
+    只迁默认角色、目标存在则跳过；成功后旧文件归档备份，不再每次启动判断。
     """
     from app.config.character_loader import DEFAULT_CHARACTER_ID
 

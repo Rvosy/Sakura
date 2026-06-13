@@ -143,11 +143,9 @@ from app.ui.subtitle_controller import (
     normalize_subtitle_display_speed,
 )
 from app.voice.factory import create_tts_provider
+from app.voice.tts_settings import DEFAULT_GPT_SOVITS_API_URL, GPTSoVITSTTSSettings, TTSConfigError
 from app.voice.tts import (
-    DEFAULT_GPT_SOVITS_API_URL,
-    GPTSoVITSTTSSettings,
     NullTTSProvider,
-    TTSConfigError,
     TTSProvider,
 )
 from app.storage.visual_observation import (

@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.plugins import (
     PluginCapabilityRegistry,
     PluginDiscovery,

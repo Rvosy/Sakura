@@ -75,12 +75,10 @@ if importlib.util.find_spec("PySide6") is None:
 from app.voice.tts import (
     GenieTTSProvider,
     GPTSoVITSTTSProvider,
-    GPTSoVITSTTSSettings,
     TTSPreparedAudio,
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
     _format_gpt_sovits_http_error,
-    _load_tone_references,
     _local_tts_subprocess_env,
     _read_local_tts_output,
     _resolve_request_text_lang,
@@ -88,6 +86,7 @@ from app.voice.tts import (
     _write_genie_audio,
     purge_tts_cache,
 )
+from app.voice.tts_settings import GPTSoVITSTTSSettings, _load_tone_references
 from app.core.gui_log import GUI_LOG_SCOPE_TTS, clear_gui_logs, get_gui_log_buffer
 from app.voice import VoicePlaybackController
 from app.voice.text_language_guard import should_skip_tts_text
@@ -1596,7 +1595,7 @@ def test_handle_media_status_passes_reason_to_finish(monkeypatch) -> None:  # ty
 def test_playback_backend_is_configurable() -> None:
     """playback backend should be readable from settings, defaulting to media_player."""
     from dataclasses import replace as dc_replace
-    from app.voice.tts import (
+    from app.voice.tts_settings import (
         TTS_PLAYBACK_BACKEND_MEDIA_PLAYER,
         TTS_PLAYBACK_BACKEND_AUDIO_SINK,
     )

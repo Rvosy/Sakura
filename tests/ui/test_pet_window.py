@@ -25,7 +25,7 @@ from app.ui.theme import (
 )
 from app.agent.proactive_care import ProactiveCareSettings
 from app.agent.screen_observation import ScreenObservation
-from app.voice.tts import GPTSoVITSTTSSettings
+from app.voice.tts_settings import GPTSoVITSTTSSettings
 from app.storage.visual_observation import VisualObservationRecord, VisualObservationStore
 
 
@@ -4983,6 +4983,44 @@ def test_main_detects_missing_character_packages() -> None:
     assert not sakura_main._character_packages_missing(root)
 
 
+def test_main_selfcheck_runs_before_single_instance_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    import main as sakura_main
+
+    root = _ui_runtime_root("selfcheck_before_lock")
+    (root / "data").write_text("not a directory", encoding="utf-8")
+    critical_messages: list[str] = []
+
+    class AppStub:
+        def __init__(self, _argv):  # type: ignore[no-untyped-def]
+            pass
+
+        def setApplicationName(self, _name):  # type: ignore[no-untyped-def]
+            pass
+
+        def setQuitOnLastWindowClosed(self, _enabled):  # type: ignore[no-untyped-def]
+            pass
+
+    class GuardShouldNotRun:
+        def __init__(self, _base_dir):  # type: ignore[no-untyped-def]
+            raise AssertionError("SingleInstanceGuard should not run before fatal selfcheck")
+
+    monkeypatch.setattr(sakura_main, "BASE_DIR", root)
+    monkeypatch.setattr(sakura_main, "QApplication", AppStub)
+    monkeypatch.setattr(sakura_main, "_configure_windows_high_dpi", lambda: None)
+    monkeypatch.setattr(sakura_main, "_force_light_palette", lambda _app: None)
+    monkeypatch.setattr(sakura_main, "qInstallMessageHandler", lambda _handler: None)
+    monkeypatch.setattr(sakura_main, "SingleInstanceGuard", GuardShouldNotRun)
+    monkeypatch.setattr(
+        sakura_main.QMessageBox,
+        "critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+
+    assert sakura_main.main() == 1
+    assert critical_messages
+    assert "目录无法写入" in critical_messages[0]
+
+
 def test_main_detects_legacy_tts_migration_even_when_tts_disabled() -> None:
     import main as sakura_main
 
@@ -5754,7 +5792,7 @@ def test_theme_ai_worker_sends_portrait_image_and_prompt(monkeypatch) -> None:  
     import app.ui.settings.workers as settings_workers
     monkeypatch.setattr(settings_workers, "OpenAICompatibleClient", FakeClient)
     events: list[ThemeSettings] = []
-    worker = settings_dialog.ThemeAiWorker(
+    worker = settings_workers.ThemeAiWorker(
         ApiSettings("https://api.example.com/v1", "test-key", "test-model"),
         profile,
         ai_enabled=True,
@@ -5843,7 +5881,7 @@ def test_settings_dialog_ai_theme_success_and_failure_keep_current(monkeypatch) 
         ),
     )
     monkeypatch.setattr("app.ui.settings_dialog.QThread", FakeThread)
-    monkeypatch.setattr("app.ui.settings_dialog.ThemeAiWorker", SuccessWorker)
+    monkeypatch.setattr("app.ui.settings.workers.ThemeAiWorker", SuccessWorker)
 
     dialog._generate_ai_theme()
 
@@ -5851,7 +5889,7 @@ def test_settings_dialog_ai_theme_success_and_failure_keep_current(monkeypatch) 
     assert dialog.theme_accent_edit.text() == "#445566"
     assert dialog.theme_text_edit.text() == "#070809"
 
-    monkeypatch.setattr("app.ui.settings_dialog.ThemeAiWorker", FailedWorker)
+    monkeypatch.setattr("app.ui.settings.workers.ThemeAiWorker", FailedWorker)
     dialog.theme_primary_edit.setText("#aabbcc")
     dialog.theme_accent_edit.setText("#bbccdd")
     dialog.theme_text_edit.setText("#111111")
@@ -7540,7 +7578,7 @@ def test_tts_test_worker_keeps_provider_after_success(monkeypatch) -> None:  # t
 
     monkeypatch.setattr(settings_workers, "create_tts_provider", fake_create_tts_provider)
 
-    worker = settings_dialog.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
+    worker = settings_workers.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
     worker.run()
 
     assert closed == []
@@ -7580,7 +7618,7 @@ def test_tts_test_worker_closes_provider_after_failure(monkeypatch) -> None:  # 
 
     monkeypatch.setattr(settings_workers, "create_tts_provider", fake_create_tts_provider)
 
-    worker = settings_dialog.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
+    worker = settings_workers.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
     worker.failed.connect(lambda _message: events.append("failed"))
     worker.finished.connect(lambda: events.append("finished"))
     worker.run()

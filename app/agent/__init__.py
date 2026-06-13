@@ -6,8 +6,7 @@ from app.agent.memory import MemoryStore
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
 from app.agent.reminders import ReminderStore, ScheduledReminder
 from app.agent.runtime import AgentRuntime
-from app.agent.tool_registry import Tool, ToolExecutionResult, ToolRegistry
-from app.agent.tools import ToolMetadata, ToolPermissionPolicy
+from app.agent.tools import Tool, ToolExecutionResult, ToolMetadata, ToolPermissionPolicy, ToolRegistry
 from app.agent.runtime_limits import (
     MAX_AGENT_STEPS_PER_TURN,
     MAX_TOOL_CALLS_PER_STEP,

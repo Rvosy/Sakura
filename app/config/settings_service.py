@@ -16,7 +16,7 @@ from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ProactiveCareSettings,
 )
-from app.voice.tts import (
+from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,

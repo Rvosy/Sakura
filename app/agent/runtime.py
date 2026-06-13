@@ -22,7 +22,8 @@ from app.agent.tool_policy import (
     WINDOWS_SCREENSHOT_TOOL_NAME,
     WINDOWS_SNAPSHOT_TOOL_NAME,
 )
-from app.agent.tool_registry import ToolExecutionResult, ToolRegistry
+import app.agent.tool_routing as tool_routing
+from app.agent.tools import ToolExecutionResult, ToolRegistry
 from app.llm.api_client import (
     ApiRequestError,
     ChatMessage,
@@ -174,7 +175,7 @@ class AgentRuntime:
             self.model_vision_enabled
             and self.autonomous_screen_observation_enabled
             and not messages_contain_image(messages)
-            and _should_offer_screen_observation(messages)
+            and tool_routing._should_offer_screen_observation(messages)
         )
         debug_log(
             "AgentRuntime",
@@ -214,21 +215,21 @@ class AgentRuntime:
         total_tool_calls = 0
         active_groups: set[str] = {"default", "mcp", "memory"}
         for step_index in range(MAX_AGENT_STEPS_PER_TURN):
-            browser_page_mode = _should_prefer_browser_page_tools(working_messages)
+            browser_page_mode = tool_routing._should_prefer_browser_page_tools(working_messages)
             browser_page_guard_active = (
                 browser_page_mode
-                and _browser_dom_tools_available(self.tools)
-                and not _recent_browser_tool_failed(working_messages)
-                and not _latest_user_explicitly_requests_windows_control(working_messages)
+                and tool_routing._browser_dom_tools_available(self.tools)
+                and not tool_routing._recent_browser_tool_failed(working_messages)
+                and not tool_routing._latest_user_explicitly_requests_windows_control(working_messages)
             )
             visible_browser_guard_active = (
-                _latest_user_requests_visible_browser(working_messages)
-                and _browser_dom_tools_available(self.tools)
+                tool_routing._latest_user_requests_visible_browser(working_messages)
+                and tool_routing._browser_dom_tools_available(self.tools)
             )
             if browser_page_mode or visible_browser_guard_active:
                 active_groups.add("browser")
             allowed_capabilities = {SCREEN_OBSERVATION_CAPABILITY} if allow_screen_observation else set()
-            tool_defs = _filter_openai_tools_for_browser_routing(
+            tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
                     active_groups=active_groups,
@@ -336,8 +337,8 @@ class AgentRuntime:
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
                 call_data = _native_tool_call_to_policy_call(call, execution_arguments)
                 debug_log("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
-                if _should_block_windows_tool_for_browser_page(call_data, browser_page_guard_active):
-                    blocked_result = _build_browser_page_windows_tool_block_result(call_data)
+                if tool_routing._should_block_windows_tool_for_browser_page(call_data, browser_page_guard_active):
+                    blocked_result = tool_routing._build_browser_page_windows_tool_block_result(call_data)
                     debug_log("AgentRuntime", "浏览器页面模式拦截 Windows 工具", blocked_result.to_dict())
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
@@ -355,8 +356,8 @@ class AgentRuntime:
                         )
                     )
                     continue
-                if _should_block_background_web_tool_for_visible_browser(call_data, visible_browser_guard_active):
-                    blocked_result = _build_visible_browser_web_tool_block_result(call_data)
+                if tool_routing._should_block_background_web_tool_for_visible_browser(call_data, visible_browser_guard_active):
+                    blocked_result = tool_routing._build_visible_browser_web_tool_block_result(call_data)
                     debug_log("AgentRuntime", "可见浏览器模式拦截后台网页工具", blocked_result.to_dict())
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
@@ -501,8 +502,8 @@ class AgentRuntime:
                 _native_tool_call_to_policy_call(call, _tool_arguments_for_execution(call, self.tools))
                 for call in turn.tool_calls[:allowed_calls]
             ]
-            if _should_auto_snapshot_after_browser_navigation(executed_calls, step_results, self.tools):
-                snapshot_result = _execute_auto_browser_snapshot(self.tools, step_index)
+            if tool_routing._should_auto_snapshot_after_browser_navigation(executed_calls, step_results, self.tools):
+                snapshot_result = tool_routing._execute_auto_browser_snapshot(self.tools, step_index)
                 step_results.append(snapshot_result)
                 execution_results.append(snapshot_result)
                 tool_messages.extend(
@@ -523,7 +524,7 @@ class AgentRuntime:
                         payload=_redact_tool_result_for_model(snapshot_result),
                     )
                 )
-                should_fast_forward_final_reply = _should_fast_forward_after_auto_browser_snapshot(
+                should_fast_forward_final_reply = tool_routing._should_fast_forward_after_auto_browser_snapshot(
                     working_messages,
                     snapshot_result,
                 )
@@ -585,7 +586,6 @@ class AgentRuntime:
                 self.reply_portraits,
             )
         except Exception as exc:
-            debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
             debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
             final_reply = _build_fallback_tool_reply(execution_results)
         debug_log(
@@ -651,7 +651,7 @@ class AgentRuntime:
                 self.model_vision_enabled
                 and self.autonomous_screen_observation_enabled
                 and not messages_contain_image(working_messages)
-                and _should_offer_screen_observation(working_messages)
+                and tool_routing._should_offer_screen_observation(working_messages)
             )
             debug_log(
                 "AgentRuntime",
@@ -680,7 +680,6 @@ class AgentRuntime:
                 self.reply_portraits,
             )
         except Exception as exc:
-            debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
             debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
             reply = _build_fallback_tool_reply(results)
         debug_log(
@@ -818,10 +817,10 @@ class AgentRuntime:
         context_strategy = build_context_acquisition_strategy(
             allow_screen_observation=allow_screen_observation
         )
-        screen_observation_rule = _build_screen_and_desktop_routing_rule(allow_screen_observation)
-        browser_page_rule = _build_browser_page_mode_rule(browser_page_mode)
-        visible_browser_rule = _build_visible_browser_mode_rule(visible_browser_mode)
-        web_tool_capability_rule = _build_web_tool_capability_rule(visible_browser_mode)
+        screen_observation_rule = tool_routing._build_screen_and_desktop_routing_rule(allow_screen_observation)
+        browser_page_rule = tool_routing._build_browser_page_mode_rule(browser_page_mode)
+        visible_browser_rule = tool_routing._build_visible_browser_mode_rule(visible_browser_mode)
+        web_tool_capability_rule = tool_routing._build_web_tool_capability_rule(visible_browser_mode)
         return f"""
 {self._patched_system_prompt()}
 
@@ -1141,36 +1140,6 @@ def _verify_confirmed_windows_click(
         error="没有可用的 windows__Screenshot 或 windows__Snapshot，无法自动验证点击结果。",
     )
 
-
-# 浏览器/屏幕工具路由策略已拆至 tool_routing；re-export 保持旧 import 路径可用
-from app.agent.tool_routing import (
-    _browser_dom_tools_available,
-    _browser_snapshot_has_readable_content,
-    _browser_snapshot_looks_like_search_results,
-    _build_browser_page_mode_rule,
-    _build_browser_page_windows_tool_block_result,
-    _build_screen_and_desktop_routing_rule,
-    _build_visible_browser_mode_rule,
-    _build_visible_browser_web_tool_block_result,
-    _build_web_tool_capability_rule,
-    _execute_auto_browser_snapshot,
-    _filter_openai_tools_for_browser_routing,
-    _filter_tools_for_browser_routing,
-    _latest_user_explicitly_requests_windows_control,
-    _latest_user_is_browser_interaction_request,
-    _latest_user_is_browser_lookup_request,
-    _latest_user_requests_visible_browser,
-    _latest_user_text,
-    _messages_text_for_tool_routing,
-    _recent_browser_tool_failed,
-    _should_auto_snapshot_after_browser_navigation,
-    _should_block_background_web_tool_for_visible_browser,
-    _should_block_windows_tool_for_browser_page,
-    _should_fast_forward_after_auto_browser_snapshot,
-    _should_offer_screen_observation,
-    _should_prefer_browser_page_tools,
-    _tool_result_content_text,
-)
 
 def _build_pending_continuation_messages(
     working_messages: list[ChatMessage],

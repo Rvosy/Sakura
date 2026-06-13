@@ -26,7 +26,7 @@ from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
 from app.ui.theme import parse_ai_theme_response
 from app.voice.factory import create_tts_provider
-from app.voice.tts import GPTSoVITSTTSSettings
+from app.voice.tts_settings import GPTSoVITSTTSSettings
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -252,5 +252,3 @@ def _has_exportable_voice_model(profile: CharacterProfile | None) -> bool:
         and profile.voice.sovits_model_path is not None
         and profile.voice.sovits_model_path.is_file()
     )
-
-

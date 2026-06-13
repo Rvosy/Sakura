@@ -1,8 +1,7 @@
 """app/voice/tts_settings.py — TTS 配置数据模型与 provider 常量。
 
 从 tts.py 拆出的纯配置层：设置数据类、provider/后端常量、语气参考
-解析。不依赖 Qt 与网络，可独立测试；tts.py 全量 re-export 这些符号，
-旧 import 路径（from app.voice.tts import ...）保持可用。
+解析。不依赖 Qt 与网络，可独立测试；新代码统一从本模块导入配置类型与常量。
 """
 
 from __future__ import annotations

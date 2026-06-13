@@ -30,7 +30,7 @@ from app.agent.screen_tools import (
     SCREEN_OBSERVATION_REQUEST_ACTION,
     create_screen_observation_tool,
 )
-from app.agent.tool_registry import Tool, ToolExecutionResult, ToolRegistry
+from app.agent.tools import Tool, ToolExecutionResult, ToolRegistry
 from app.config.settings_service import AppSettingsService
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import (

@@ -85,7 +85,7 @@ from app.ui.subtitle_controller import (
 )
 from app.ui.theme import THEME_COLOR_FIELDS, build_color_button_stylesheet
 from app.ui.window_backdrop import VisualEffectMode
-from app.voice.tts import (
+from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
     GPTSoVITSTTSSettings,

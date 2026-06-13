@@ -17,11 +17,11 @@ from pathlib import Path
 import pytest
 
 import app.voice.tts as tts_module
+from app.voice.audio_checks import _verify_generated_audio
 from app.voice.tts import (
     _AUDIO_FINISH_FALLBACK_GRACE_MS,
     _AUDIO_FINISH_FALLBACK_MAX_MS,
     GPTSoVITSTTSProvider,
-    _verify_generated_audio,
 )
 
 

@@ -12,7 +12,7 @@ from types import ModuleType
 from typing import Any
 
 from app.agent.tools.registry import Tool
-from app.agent.tool_registry import ToolRegistry
+from app.agent.tools import ToolRegistry
 from app.core.debug_log import debug_log
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry

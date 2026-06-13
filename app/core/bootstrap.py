@@ -12,7 +12,6 @@ from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
 from app.core.extensions import ExtensionRegistry
 from app.config.character_loader import (
-    DEFAULT_CHARACTER_ID,
     CharacterProfile,
     CharacterRegistry,
     load_character_system_prompt,
@@ -23,10 +22,10 @@ from app.core.debug_log import debug_log
 from app.voice.factory import create_tts_provider
 from app.voice.tts import (
     NullTTSProvider,
-    TTSConfigError,
     TTSProvider,
     purge_tts_cache,
 )
+from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
@@ -281,44 +280,6 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
     )
 
 
-def build_app_context(base_dir: Path, startup_state: StartupState | None = None) -> AppContext:
-    """兼容旧调用：同步创建完整依赖。"""
-
-    context = build_initial_app_context(base_dir, startup_state=startup_state)
-    deferred = build_deferred_services(base_dir, context)
-    context.agent_runtime.tools = deferred.tool_registry
-    context.agent_runtime.set_prompt_patches(deferred.plugin_manager.prompt_patches)
-    return AppContext(
-        base_dir=context.base_dir,
-        settings_service=context.settings_service,
-        settings=context.settings,
-        character_registry=context.character_registry,
-        character_profile=context.character_profile,
-        system_prompt=context.system_prompt,
-        tts_provider=deferred.tts_provider,
-        core=CoreServices(
-            api_client=context.api_client,
-            tool_registry=deferred.tool_registry,
-            agent_runtime=context.agent_runtime,
-        ),
-        storage=context.storage,
-        features=FeatureServices(
-            settings_service=context.settings_service,
-            extension_registry=deferred.extension_registry,
-            mcp_tool_provider=deferred.mcp_tool_provider,
-            plugin_manager=deferred.plugin_manager,
-            mcp_settings=deferred.mcp_settings,
-            debug_log_settings=context.debug_log_settings,
-            startup_settings=context.startup_settings,
-            memory_curation_settings=context.memory_curation_settings,
-            memory_curation_state=context.memory_curation_state,
-            memory_curator=context.memory_curator,
-            proactive_care_settings=context.proactive_care_settings,
-        ),
-        startup_initializing=False,
-    )
-
-
 def _normalize_portrait_scale_percent(value: object) -> int:
     try:
         percent = int(str(value).strip())
@@ -330,7 +291,6 @@ def _normalize_portrait_scale_percent(value: object) -> int:
 def create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHistoryStore:
     """按角色创建聊天历史存储；路径统一来自 StoragePaths（pet_window 复用）。"""
     history_path = StoragePaths(base_dir).chat_history_for(profile.id)
-    _migrate_legacy_history(base_dir, profile, history_path)
     return ChatHistoryStore(history_path, profile.display_name)
 
 
@@ -346,16 +306,3 @@ def create_visual_observation_store(
 ) -> VisualObservationStore:
     visual_path = StoragePaths(base_dir).visual_observations_for(profile.id)
     return VisualObservationStore(visual_path)
-
-
-def _migrate_legacy_history(base_dir: Path, profile: CharacterProfile, history_path: Path) -> None:
-    if profile.id != DEFAULT_CHARACTER_ID or history_path.exists():
-        return
-    legacy_path = StoragePaths(base_dir).legacy_chat_history()
-    if not legacy_path.exists():
-        return
-    try:
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        history_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-    except OSError as exc:
-        debug_log("History", "旧历史迁移失败", {"error": str(exc), "legacy": str(legacy_path)})

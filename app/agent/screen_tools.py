@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent.tool_registry import Tool
+from app.agent.tools import Tool
 
 
 OBSERVE_SCREEN_TOOL_NAME = "observe_screen"

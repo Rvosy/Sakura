@@ -7,7 +7,7 @@ from typing import Any
 from app.agent.actions import PendingToolAction
 from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.runtime import AgentRuntime
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.llm.api_client import ChatCompletionTurn, NativeToolCall
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.manager import PluginManager

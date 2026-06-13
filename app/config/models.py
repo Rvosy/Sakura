@@ -34,8 +34,8 @@ class DebugLogSettings:
     file_enabled: bool = False
 
 
-# ---- TTS 配置 (存根，实际实现在 app/voice/tts.py) ----
-# GPTSoVITSTTSSettings 仍在 app/voice/tts.py 中定义，
+# ---- TTS 配置 (存根，实际实现在 app/voice/tts_settings.py) ----
+# GPTSoVITSTTSSettings 在 app/voice/tts_settings.py 中定义，
 # 因其包含 validate() 等逻辑方法，不适合纯数据容器。
 
 

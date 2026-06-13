@@ -20,6 +20,8 @@ from app.agent.actions import AgentAction, AgentEvent, AgentResult, PendingToolA
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
+)
+from app.agent.tool_routing import (
     _filter_openai_tools_for_browser_routing,
     _should_block_windows_tool_for_browser_page,
 )
@@ -33,7 +35,7 @@ from app.agent.runtime_limits import (
     MAX_TOOL_CALLS_PER_TURN,
     MAX_TOOL_RESULT_CHARS,
 )
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.llm.api_client import ApiRequestError, ChatMessage, NativeToolCall, OpenAICompatibleClient
 from app.llm.chat_reply import ChatReply, ChatSegment
 
@@ -133,7 +135,7 @@ class TestPendingActionFlow:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt(), tools=registry)
         action = PendingToolAction(
             tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="call_1", continuation_messages=None, risk="low",
+            tool_call_id="call_1", continuation_messages=None,
         )
         result = runtime.handle_confirmed_action(action)
         assert isinstance(result, AgentResult)
@@ -145,7 +147,7 @@ class TestPendingActionFlow:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt(), tools=registry)
         action = PendingToolAction(
             tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="call_1", continuation_messages=None, risk="low",
+            tool_call_id="call_1", continuation_messages=None,
         )
         result = runtime.handle_cancelled_action(action)
         assert result.actions[0].type == "cancelled_action"
@@ -164,7 +166,7 @@ class TestPendingActionFlow:
         ]
         action = PendingToolAction(
             tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="c1", continuation_messages=continuation, risk="low",
+            tool_call_id="c1", continuation_messages=continuation,
         )
         result = runtime.handle_confirmed_action(action)
         assert client.complete_with_tools.called

@@ -75,7 +75,7 @@ from app.ui.subtitle_controller import (
 from app.agent.proactive_care import (
     ProactiveCareSettings,
 )
-from app.voice.tts import (
+from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,
@@ -104,26 +104,8 @@ MEMORY_READING_TEXT = "正在读取长期记忆..."
 MEMORY_DEPENDENCY_LOADING_TEXT = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
 
 
-# 后台 Worker 与通用控件已拆至 app/ui/settings/*；re-export 保持旧引用路径可用
-from app.ui.settings.workers import (
-    ApiConnectionTestWorker,
-    ApiModelListProbeWorker,
-    CharacterArchiveExportWorker,
-    MemoryListWorker,
-    MemoryModelImportWorker,
-    ThemeAiWorker,
-    TTSTestWorker,
-    _has_exportable_voice_model,
-)
-from app.ui.settings.widgets import (
-    ModelComboBox,
-    _ClickOnlyListWidget,
-    _NoWheelComboBox,
-    _NoWheelDoubleSpinBox,
-    _NoWheelMixin,
-    _NoWheelSlider,
-    _NoWheelSpinBox,
-)
+from app.ui.settings import workers as settings_workers
+from app.ui.settings import widgets as settings_widgets
 from app.ui.settings.pages import (
     ApiSettingsPage,
     CharacterSettingsPage,
@@ -226,25 +208,25 @@ class SettingsDialog(QDialog):
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
         self._api_test_thread: QThread | None = None
-        self._api_test_worker: ApiConnectionTestWorker | None = None
+        self._api_test_worker: settings_workers.ApiConnectionTestWorker | None = None
         self._api_model_probe_thread: QThread | None = None
-        self._api_model_probe_worker: ApiModelListProbeWorker | None = None
+        self._api_model_probe_worker: settings_workers.ApiModelListProbeWorker | None = None
         self._tts_test_thread: QThread | None = None
-        self._tts_test_worker: TTSTestWorker | None = None
+        self._tts_test_worker: settings_workers.TTSTestWorker | None = None
         self._pending_api_accept_values: dict[str, object] | None = None
         self._pending_accept_values: dict[str, object] | None = None
         self._save_button_text: str | None = None
         self._memory_list_thread: QThread | None = None
-        self._memory_list_worker: MemoryListWorker | None = None
+        self._memory_list_worker: settings_workers.MemoryListWorker | None = None
         self._memory_model_import_thread: QThread | None = None
-        self._memory_model_import_worker: MemoryModelImportWorker | None = None
+        self._memory_model_import_worker: settings_workers.MemoryModelImportWorker | None = None
         self._theme_ai_thread: QThread | None = None
-        self._theme_ai_worker: ThemeAiWorker | None = None
+        self._theme_ai_worker: settings_workers.ThemeAiWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
         self._character_export_thread: QThread | None = None
-        self._character_export_worker: CharacterArchiveExportWorker | None = None
+        self._character_export_worker: settings_workers.CharacterArchiveExportWorker | None = None
         self._memory_reload_pending = False
         self._syncing_memory_selection = False
 
@@ -329,7 +311,7 @@ class SettingsDialog(QDialog):
     def _build_navigation(self, items: list[tuple[str, QWidget]]) -> QWidget:
         """左侧分类列表 + 右侧内容堆叠，替代原顶部横向 tab，便于纵向扩展分类。"""
         container = QWidget(self)
-        nav_list = _ClickOnlyListWidget(container)
+        nav_list = settings_widgets._ClickOnlyListWidget(container)
         nav_list.setObjectName("settingsNavList")
         nav_list.setFixedWidth(140)
         nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -533,7 +515,7 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder(loading_text)
 
         thread = QThread()
-        worker = MemoryListWorker(self.memory_store, limit=200)
+        worker = settings_workers.MemoryListWorker(self.memory_store, limit=200)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_load_success)
@@ -570,7 +552,7 @@ class SettingsDialog(QDialog):
         self.memory_status_label.setText("正在导入记忆模型...")
 
         thread = QThread()
-        worker = MemoryModelImportWorker(self.memory_store, archive_path)
+        worker = settings_workers.MemoryModelImportWorker(self.memory_store, archive_path)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_model_import_success)
@@ -1190,7 +1172,7 @@ class SettingsDialog(QDialog):
         self.theme_status_label.setText("正在根据默认立绘生成配色...")
         self._set_theme_ai_busy(True)
         thread = QThread(self)
-        worker = ThemeAiWorker(
+        worker = settings_workers.ThemeAiWorker(
             api_settings,
             profile,
             ai_enabled=True,
@@ -1524,7 +1506,7 @@ class SettingsDialog(QDialog):
         self._pending_api_accept_values = dict(accept_values) if accept_values is not None else None
         self._set_api_test_busy(True)
         thread = QThread()
-        worker = ApiConnectionTestWorker(settings)
+        worker = settings_workers.ApiConnectionTestWorker(settings)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_api_test_success)
@@ -1590,7 +1572,7 @@ class SettingsDialog(QDialog):
             return
         self._set_api_model_probe_busy(True)
         thread = QThread()
-        worker = ApiModelListProbeWorker(settings)
+        worker = settings_workers.ApiModelListProbeWorker(settings)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_api_model_probe_success)
@@ -1655,7 +1637,7 @@ class SettingsDialog(QDialog):
         self._set_tts_test_busy(True)
 
         thread = QThread()
-        worker = TTSTestWorker(settings, base_dir=self.base_dir)
+        worker = settings_workers.TTSTestWorker(settings, base_dir=self.base_dir)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_tts_test_success)
@@ -1854,7 +1836,7 @@ class SettingsDialog(QDialog):
         if profile is None:
             QMessageBox.warning(self, "导出失败", "当前没有可导出的角色。")
             return
-        if export_kind in ("full", "voice") and not _has_exportable_voice_model(profile):
+        if export_kind in ("full", "voice") and not settings_workers._has_exportable_voice_model(profile):
             if export_kind == "full":
                 QMessageBox.warning(
                     self,
@@ -1900,7 +1882,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         self._set_character_export_busy(True)
         thread = QThread()
-        worker = CharacterArchiveExportWorker(profile, output_path, export_kind)
+        worker = settings_workers.CharacterArchiveExportWorker(profile, output_path, export_kind)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_character_export_success)
@@ -1961,7 +1943,7 @@ class SettingsDialog(QDialog):
         if busy is None:
             busy = self._character_export_thread is not None
         has_profile = profile is not None
-        has_voice_model = _has_exportable_voice_model(profile)
+        has_voice_model = settings_workers._has_exportable_voice_model(profile)
         self.character_export_full_action.setEnabled(not busy and has_voice_model)
         self.character_export_card_action.setEnabled(not busy and has_profile)
         self.character_export_voice_action.setEnabled(not busy and has_voice_model)

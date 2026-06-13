@@ -46,8 +46,8 @@ def test_build_deferred_services_loads_injectable_runtime_services(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.bootstrap as bootstrap
-    from app.agent.tool_registry import Tool
-    from app.voice.tts import GPTSoVITSTTSSettings
+    from app.agent.tools import Tool
+    from app.voice.tts_settings import GPTSoVITSTTSSettings
 
     root = _build_startup_root()
     context = bootstrap.build_initial_app_context(root)
@@ -100,7 +100,7 @@ def test_build_deferred_services_creates_genie_tts_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.bootstrap as bootstrap
-    from app.voice.tts import GPTSoVITSTTSSettings
+    from app.voice.tts_settings import GPTSoVITSTTSSettings
 
     root = _build_startup_root()
     context = bootstrap.build_initial_app_context(root)

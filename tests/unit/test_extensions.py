@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.core.extensions import ExtensionRegistry
 
 

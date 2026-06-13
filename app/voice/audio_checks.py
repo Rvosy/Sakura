@@ -1,8 +1,7 @@
 """app/voice/audio_checks.py — 音频文件检查与 wav 元信息。
 
 从 tts.py 拆出的纯函数层：生成后入队前、播放前的统一检查关卡，
-以及播放完成兜底依赖的时长解析。不依赖 Qt；tts.py re-export
-这些符号，旧 import 路径保持可用。
+以及播放完成兜底依赖的时长解析。不依赖 Qt。
 """
 
 from __future__ import annotations

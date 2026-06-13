@@ -32,36 +32,21 @@ from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
 from app.core.interaction import get_interaction_id, set_interaction_id
 from app.storage.paths import StoragePaths
-# 配置数据模型与 provider 常量已拆至 tts_settings；此处 re-export 保持旧 import 路径可用
 from app.voice.tts_settings import (
-    DEFAULT_GENIE_TTS_API_URL,
-    DEFAULT_GPT_SOVITS_API_URL,
-    GPTSoVITSTTSSettings,
-    TTS_PLAYBACK_BACKEND_AUDIO_SINK,
-    TTS_PLAYBACK_BACKEND_MEDIA_PLAYER,
-    TTS_PROVIDER_CUSTOM_GPT_SOVITS,
-    TTS_PROVIDER_GENIE,
-    TTS_PROVIDER_GPT_SOVITS,
-    TTS_PROVIDER_NONE,
-    TTSConfigError,
-    ToneReference,
-    _SUPPORTED_TTS_PROVIDERS,
-    _load_tone_references,
-    _normalize_lang,
-    _normalize_tts_provider,
-    _resolve_path,
-    _select_neutral_reference,
+    DEFAULT_GENIE_TTS_API_URL as _DEFAULT_GENIE_TTS_API_URL,
+    GPTSoVITSTTSSettings as _GPTSoVITSTTSSettings,
+    TTS_PLAYBACK_BACKEND_AUDIO_SINK as _TTS_PLAYBACK_BACKEND_AUDIO_SINK,
+    TTS_PROVIDER_GENIE as _TTS_PROVIDER_GENIE,
+    TTS_PROVIDER_GPT_SOVITS as _TTS_PROVIDER_GPT_SOVITS,
+    TTSConfigError as _TTSConfigError,
+    ToneReference as _ToneReference,
+    _normalize_tts_provider as _normalize_tts_provider_setting,
 )
-# 音频检查关卡已拆至 audio_checks；同样 re-export
-from app.voice.audio_checks import (
-    _is_valid_wav_file,
-    _verify_generated_audio,
-    _wav_duration_ms,
-)
+from app.voice import audio_checks as _audio_checks
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
 
 # 默认使用 AudioSink 后端
-_DEFAULT_PLAYBACK_BACKEND = TTS_PLAYBACK_BACKEND_AUDIO_SINK
+_DEFAULT_PLAYBACK_BACKEND = _TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
 TTSCallback = Callable[[], None]
 _AUDIO_CLEANUP_DELAY_MS = 5000
@@ -366,7 +351,7 @@ class GPTSoVITSTTSProvider(QObject):
 
     def __init__(
         self,
-        settings: GPTSoVITSTTSSettings,
+        settings: _GPTSoVITSTTSSettings,
         *,
         base_dir: Path | None = None,
         adopt_existing_service: bool = True,
@@ -562,7 +547,7 @@ class GPTSoVITSTTSProvider(QObject):
 
         try:
             self.settings.validate()
-        except TTSConfigError as exc:
+        except _TTSConfigError as exc:
             return False, str(exc)
 
         messages: list[str] = []
@@ -723,7 +708,7 @@ class GPTSoVITSTTSProvider(QObject):
                 audio_file.write(audio_data)
                 audio_path = audio_file.name
             debug_log("TTS", "临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
-            audio_issue = _verify_generated_audio(Path(audio_path))
+            audio_issue = _audio_checks._verify_generated_audio(Path(audio_path))
             if audio_issue is not None:
                 debug_log("TTS", "生成音频校验失败", {"audio_path": audio_path, "issue": audio_issue})
                 self._fail_audio_request(tts_request, f"GPT-SoVITS 生成的音频无效（{audio_issue}）。")
@@ -1015,13 +1000,13 @@ class GPTSoVITSTTSProvider(QObject):
             return False
         return True
 
-    def _select_reference(self, tone: str | None) -> ToneReference:
+    def _select_reference(self, tone: str | None) -> _ToneReference:
         tone_key = (tone or DEFAULT_TONE).strip() or DEFAULT_TONE
         references = self.settings.tone_references.get(tone_key)
         if not references:
             references = self.settings.tone_references.get(DEFAULT_TONE)
         if not references:
-            reference = ToneReference(
+            reference = _ToneReference(
                 tone=DEFAULT_TONE,
                 ref_audio_path=self.settings.ref_audio_path,
                 ref_text=self.settings.ref_text,
@@ -1252,7 +1237,7 @@ class GPTSoVITSTTSProvider(QObject):
 
         # 播放前最后一道检查：文件可能在排队期间被清理/损坏；
         # 坏条目直接跳过并继续播放队列，绝不交给播放器去卡死
-        audio_issue = _verify_generated_audio(audio_path)
+        audio_issue = _audio_checks._verify_generated_audio(audio_path)
         if audio_issue is not None:
             debug_log(
                 "TTS",
@@ -1263,7 +1248,7 @@ class GPTSoVITSTTSProvider(QObject):
             self._play_next()
             return
 
-        if self._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK:
+        if self._playback_backend == _TTS_PLAYBACK_BACKEND_AUDIO_SINK:
             self._play_next_with_sink()
         else:
             self._play_next_with_media_player()
@@ -1471,7 +1456,7 @@ class GPTSoVITSTTSProvider(QObject):
         self._current_started_emitted = False
 
     def _schedule_current_audio_finish_fallback(self, audio_path: Path, playback_finish_token: int) -> None:
-        duration_ms = _wav_duration_ms(audio_path)
+        duration_ms = _audio_checks._wav_duration_ms(audio_path)
         if duration_ms is None:
             # 时长读不出（文件损坏/被占用）更要兜底——这是播放器最可能卡死的场景；
             # 用保守上限兜住，绝不能因解析失败而放弃兜底导致对话流程挂起
@@ -1583,7 +1568,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
     def __init__(
         self,
-        settings: GPTSoVITSTTSSettings,
+        settings: _GPTSoVITSTTSSettings,
         *,
         base_dir: Path | None = None,
         adopt_existing_service: bool = True,
@@ -1667,7 +1652,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 return
 
             debug_log("TTS", "Genie 临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
-            audio_issue = _verify_generated_audio(audio_path)
+            audio_issue = _audio_checks._verify_generated_audio(audio_path)
             if audio_issue is not None:
                 debug_log("TTS", "Genie 生成音频校验失败", {"audio_path": str(audio_path), "issue": audio_issue})
                 self._fail_audio_request(tts_request, f"Genie TTS 生成的音频无效（{audio_issue}）。")
@@ -1692,7 +1677,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
         try:
             self.settings.validate()
-        except TTSConfigError as exc:
+        except _TTSConfigError as exc:
             return False, str(exc)
 
         messages: list[str] = []
@@ -1736,7 +1721,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 _set_service_state(self, TTSServiceState.FAILED, {"reason": "port_conflict"})
                 fail_callback(
                     f"端口 {port} 上的服务不是 Genie TTS，且未找到可用的本地备用端口。"
-                    f"请将 Genie API URL 改为 {DEFAULT_GENIE_TTS_API_URL} 或检查占用服务。"
+                    f"请将 Genie API URL 改为 {_DEFAULT_GENIE_TTS_API_URL} 或检查占用服务。"
                 )
                 return False
             old_api_url = self.settings.api_url
@@ -1897,7 +1882,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
     def _ensure_reference_audio(
         self,
-        reference: ToneReference,
+        reference: _ToneReference,
         fail_callback: Callable[[str], None],
     ) -> bool:
         character_name = self._genie_character_name()
@@ -1999,12 +1984,12 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
 
 def _find_running_local_tts_process(
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
     port: int,
 ) -> _AttachedLocalProcess | None:
     if sys.platform != "win32" or settings.work_dir is None:
         return None
-    if settings.provider not in {TTS_PROVIDER_GPT_SOVITS, TTS_PROVIDER_GENIE}:
+    if settings.provider not in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_GENIE}:
         return None
 
     pid = _find_listening_tcp_pid(port)
@@ -2086,7 +2071,7 @@ def _query_windows_process_command_line(pid: int) -> str | None:
 
 
 def _command_line_matches_local_tts(
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
     command_line: str,
     port: int,
 ) -> bool:
@@ -2100,10 +2085,10 @@ def _command_line_matches_local_tts(
     if python_exe not in normalized_command:
         return False
 
-    if settings.provider == TTS_PROVIDER_GENIE:
+    if settings.provider == _TTS_PROVIDER_GENIE:
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
-    if settings.provider == TTS_PROVIDER_GPT_SOVITS:
+    if settings.provider == _TTS_PROVIDER_GPT_SOVITS:
         api_script = _normalize_process_text(str(work_dir.resolve() / "api_v2.py"))
         return api_script in normalized_command
 
@@ -2200,7 +2185,7 @@ def _build_genie_start_command(python_exe: Path, host: str, port: int) -> list[s
 def _build_gpt_sovits_start_command(
     python_exe: Path,
     api_script: Path,
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
 ) -> list[str]:
     cmd = [str(python_exe), str(api_script)]
     if settings.tts_config_path is not None:
@@ -2326,8 +2311,8 @@ def _can_bind_local_port(host: str, port: int) -> bool:
 
 
 def _tts_service_display_name(provider: str) -> str:
-    normalized = _normalize_tts_provider(provider)
-    if normalized == TTS_PROVIDER_GENIE:
+    normalized = _normalize_tts_provider_setting(provider)
+    if normalized == _TTS_PROVIDER_GENIE:
         return "Genie TTS"
     return "GPT-SoVITS"
 
@@ -2471,7 +2456,7 @@ def _write_genie_audio(audio_data: bytes, output_path: Path) -> bool:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if audio_data[:4] == b"RIFF":
         output_path.write_bytes(audio_data)
-        return _is_valid_wav_file(output_path)
+        return _audio_checks._is_valid_wav_file(output_path)
     return _write_raw_float_or_pcm_as_wav(audio_data, output_path, sample_rate=32000)
 
 
@@ -2484,7 +2469,7 @@ def _write_raw_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sample_rate: i
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(raw_bytes)
-        return _is_valid_wav_file(output_path)
+        return _audio_checks._is_valid_wav_file(output_path)
     except (OSError, wave.Error):
         return False
 
@@ -2510,5 +2495,3 @@ def _write_raw_float_or_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sampl
     if not pcm_bytes:
         return False
     return _write_raw_pcm_as_wav(pcm_bytes, output_path, sample_rate=sample_rate)
-
-
