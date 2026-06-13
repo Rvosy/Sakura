@@ -44,6 +44,15 @@ from PySide6.QtWidgets import (
 
 from app.agent.memory import EmbeddingModelImportResult, MemoryStore
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
+from app.backchannel.model_cache import (
+    BACKCHANNEL_MODEL_CACHE_NAME,
+    DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
+    BackchannelModelImportResult,
+    backchannel_model_endpoint,
+    backchannel_model_cached,
+    download_backchannel_model,
+    import_backchannel_model_archive,
+)
 from app.core.debug_log import debug_log
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -53,6 +62,9 @@ from app.config.character_archive import (
     import_character_voice_archive,
 )
 from app.config.settings_service import (
+    BACKCHANNEL_MAX_DELAY_MS,
+    BACKCHANNEL_MIN_DELAY_MS,
+    BackchannelSettings,
     BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BubbleSettings,
@@ -377,6 +389,71 @@ class MemoryModelImportWorker(QObject):
             self.finished.emit()
 
 
+class MemoryModelDownloadWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, memory_store: MemoryStore) -> None:
+        super().__init__()
+        self.memory_store = memory_store
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            download_model = getattr(self.memory_store, "download_embedding_model")
+            result = download_model()
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class BackchannelModelImportWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path, archive_path: Path) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.archive_path = archive_path
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = import_backchannel_model_archive(self.archive_path, self.base_dir)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class BackchannelModelDownloadWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = download_backchannel_model(self.base_dir)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
 class ThemeAiWorker(QObject):
     succeeded = Signal(object)
     failed = Signal(str)
@@ -493,6 +570,7 @@ class SettingsDialog(QDialog):
         theme_settings: ThemeSettings | None = None,
         startup_settings: StartupSettings | None = None,
         bubble_settings: BubbleSettings | None = None,
+        backchannel_settings: BackchannelSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -500,6 +578,7 @@ class SettingsDialog(QDialog):
         self.tts_settings = tts_settings
         self.startup_settings = startup_settings or StartupSettings()
         self.bubble_settings = bubble_settings or BubbleSettings()
+        self.backchannel_settings = (backchannel_settings or BackchannelSettings()).normalized()
         self._initial_api_settings = api_settings
         self._initial_tts_settings = tts_settings
         self._initial_character_id = current_character.id if current_character is not None else None
@@ -553,6 +632,7 @@ class SettingsDialog(QDialog):
         self.result_debug_log_settings: DebugLogSettings | None = None
         self.result_startup_settings: StartupSettings | None = None
         self.result_bubble_settings: BubbleSettings | None = None
+        self.result_backchannel_settings: BackchannelSettings | None = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
@@ -569,6 +649,12 @@ class SettingsDialog(QDialog):
         self._memory_list_worker: MemoryListWorker | None = None
         self._memory_model_import_thread: QThread | None = None
         self._memory_model_import_worker: MemoryModelImportWorker | None = None
+        self._memory_model_download_thread: QThread | None = None
+        self._memory_model_download_worker: MemoryModelDownloadWorker | None = None
+        self._backchannel_model_import_thread: QThread | None = None
+        self._backchannel_model_import_worker: BackchannelModelImportWorker | None = None
+        self._backchannel_model_download_thread: QThread | None = None
+        self._backchannel_model_download_worker: BackchannelModelDownloadWorker | None = None
         self._theme_ai_thread: QThread | None = None
         self._theme_ai_worker: ThemeAiWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
@@ -622,6 +708,7 @@ class SettingsDialog(QDialog):
                         debug_log_settings or DebugLogSettings(),
                         self.startup_settings,
                         self.bubble_settings,
+                        self.backchannel_settings,
                     )
                 ),
             ),
@@ -1403,6 +1490,7 @@ class SettingsDialog(QDialog):
         debug_settings: DebugLogSettings,
         startup_settings: StartupSettings,
         bubble_settings: BubbleSettings,
+        backchannel_settings: BackchannelSettings,
     ) -> QWidget:
         tab = QWidget(self)
         self.launch_at_login_check = QCheckBox("登录时自动启动 Sakura", tab)
@@ -1455,6 +1543,65 @@ class SettingsDialog(QDialog):
         )
         self.bubble_auto_hide_check.toggled.connect(self._sync_bubble_auto_hide_controls)
 
+        normalized_backchannel = backchannel_settings.normalized()
+        self.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
+        self.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
+        self.backchannel_enabled_check.setToolTip(
+            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
+        )
+        self.backchannel_mode_combo = QComboBox(tab)
+        self.backchannel_mode_combo.addItem("规则模式", "rules")
+        self.backchannel_mode_combo.addItem("模型增强", "hybrid")
+        mode_index = self.backchannel_mode_combo.findData(normalized_backchannel.mode)
+        self.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
+        self.backchannel_mode_combo.setToolTip(
+            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
+        )
+        self.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
+        self.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
+        self.backchannel_tts_enabled_check.setToolTip(
+            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
+        )
+        self.backchannel_delay_spin = _NoWheelSpinBox(tab)
+        self.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
+        self.backchannel_delay_spin.setSuffix(" 毫秒")
+        self.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
+        self.backchannel_probability_spin = QDoubleSpinBox(tab)
+        self.backchannel_probability_spin.setRange(0.0, 1.0)
+        self.backchannel_probability_spin.setSingleStep(0.05)
+        self.backchannel_probability_spin.setDecimals(2)
+        self.backchannel_probability_spin.setValue(normalized_backchannel.probability)
+        self.backchannel_setup_hint_label = QLabel(self._backchannel_setup_hint_text(), tab)
+        self.backchannel_setup_hint_label.setWordWrap(True)
+        self.backchannel_model_status_label = QLabel(self._backchannel_model_status_text(), tab)
+        self.backchannel_model_status_label.setWordWrap(True)
+        self.backchannel_download_model_button = QPushButton("在线安装", tab)
+        self.backchannel_download_model_button.setToolTip(
+            f"从 {backchannel_model_endpoint()} 安装 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL} 到本地缓存。"
+        )
+        self.backchannel_download_model_button.clicked.connect(self._download_backchannel_model)
+        self.backchannel_import_model_button = QPushButton("导入接话模型", tab)
+        self.backchannel_import_model_button.setToolTip(
+            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
+        )
+        self.backchannel_import_model_button.clicked.connect(self._import_backchannel_model_archive)
+        self.backchannel_refresh_status_button = QPushButton("重新检测", tab)
+        self.backchannel_refresh_status_button.setToolTip("重新检测接话模型状态。")
+        self.backchannel_refresh_status_button.clicked.connect(self._refresh_backchannel_setup_status)
+        self.backchannel_enabled_check.toggled.connect(self._sync_backchannel_controls)
+        self.backchannel_mode_combo.currentIndexChanged.connect(
+            lambda _index: self._refresh_backchannel_setup_status()
+        )
+        # TTS tab 先于系统 tab 构建,此处 tts_enabled_check 已存在;
+        # 全局 TTS 开关变化时重算接话语音复选框的可用态。
+        tts_enabled_check = getattr(self, "tts_enabled_check", None)
+        if tts_enabled_check is not None:
+            tts_enabled_check.toggled.connect(
+                lambda _checked: self._sync_backchannel_controls(
+                    self.backchannel_enabled_check.isChecked()
+                )
+            )
+
         startup_form = QFormLayout()
         startup_form.setContentsMargins(16, 12, 16, 12)
         startup_form.setSpacing(12)
@@ -1478,8 +1625,24 @@ class SettingsDialog(QDialog):
         bubble_form.setSpacing(12)
         bubble_form.addRow("", self.bubble_auto_hide_check)
         bubble_form.addRow("气泡无操作时长", self.bubble_auto_hide_delay_spin)
-        # _sync_bubble_auto_hide_controls 依赖此 form 查找时长输入框的 label，故指向气泡组。
-        self._system_form_layout = bubble_form
+        self._bubble_form_layout = bubble_form
+
+        backchannel_form = QFormLayout()
+        backchannel_form.setContentsMargins(16, 12, 16, 12)
+        backchannel_form.setSpacing(12)
+        backchannel_form.addRow("", self.backchannel_enabled_check)
+        backchannel_form.addRow("接话模式", self.backchannel_mode_combo)
+        backchannel_form.addRow("配置状态", self.backchannel_setup_hint_label)
+        backchannel_form.addRow("", self.backchannel_tts_enabled_check)
+        backchannel_form.addRow("接话延迟", self.backchannel_delay_spin)
+        backchannel_form.addRow("接话触发概率", self.backchannel_probability_spin)
+        backchannel_model_layout = QHBoxLayout()
+        backchannel_model_layout.addWidget(self.backchannel_model_status_label, 1)
+        backchannel_model_layout.addWidget(self.backchannel_download_model_button)
+        backchannel_model_layout.addWidget(self.backchannel_import_model_button)
+        backchannel_model_layout.addWidget(self.backchannel_refresh_status_button)
+        backchannel_form.addRow("接话模型", backchannel_model_layout)
+        self._backchannel_form_layout = backchannel_form
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
@@ -1489,6 +1652,7 @@ class SettingsDialog(QDialog):
             ("调试日志", debug_form),
             ("字幕与回复", subtitle_form),
             ("气泡", bubble_form),
+            ("接话", backchannel_form),
         ):
             group = QGroupBox(title, tab)
             group.setLayout(group_form)
@@ -1496,6 +1660,7 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
 
         self._sync_bubble_auto_hide_controls(self.bubble_auto_hide_check.isChecked())
+        self._sync_backchannel_controls(self.backchannel_enabled_check.isChecked())
         tab.setLayout(layout)
         return tab
 
@@ -1516,10 +1681,32 @@ class SettingsDialog(QDialog):
     def _sync_bubble_auto_hide_controls(self, enabled: bool) -> None:
         """气泡自动隐藏关闭时，不允许调整无操作时长。"""
         self._set_form_widgets_enabled(
-            getattr(self, "_system_form_layout", None),
+            getattr(self, "_bubble_form_layout", None),
             (self.bubble_auto_hide_delay_spin,),
             enabled,
         )
+
+    @Slot(bool)
+    def _sync_backchannel_controls(self, enabled: bool) -> None:
+        """接话层关闭时，不允许调整从属参数;接话语音还需全局 TTS 总开关。"""
+        self._set_form_widgets_enabled(
+            getattr(self, "_backchannel_form_layout", None),
+            (
+                self.backchannel_mode_combo,
+                self.backchannel_delay_spin,
+                self.backchannel_probability_spin,
+            ),
+            enabled,
+        )
+        # 接话语音依赖全局 TTS:总开关关闭时勾选只会"设置了但不生效",直接禁用。
+        tts_check = getattr(self, "tts_enabled_check", None)
+        tts_on = tts_check.isChecked() if tts_check is not None else True
+        self._set_form_widgets_enabled(
+            getattr(self, "_backchannel_form_layout", None),
+            (self.backchannel_tts_enabled_check,),
+            enabled and tts_on,
+        )
+        self._refresh_backchannel_setup_status()
 
     def _sync_tts_enabled_controls(self, enabled: bool) -> None:
         """同步 TTS 总开关和整合包模式下的从属控件可交互状态。"""
@@ -1589,6 +1776,11 @@ class SettingsDialog(QDialog):
 
         self.memory_refresh_button = QPushButton("刷新", tab)
         self.memory_refresh_button.clicked.connect(self._load_memory_entries)
+        self.memory_download_model_button = QPushButton("在线安装记忆模型", tab)
+        self.memory_download_model_button.setToolTip(
+            "从 Hugging Face 安装 sentence-transformers/all-MiniLM-L6-v2 到本地缓存。"
+        )
+        self.memory_download_model_button.clicked.connect(self._download_memory_model)
         self.memory_import_model_button = QPushButton("导入记忆模型", tab)
         self.memory_import_model_button.setToolTip(
             "导入 models--sentence-transformers--all-MiniLM-L6-v2.zip，供无法自动下载时使用。"
@@ -1644,6 +1836,7 @@ class SettingsDialog(QDialog):
 
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self.memory_search_edit, 1)
+        filter_layout.addWidget(self.memory_download_model_button)
         filter_layout.addWidget(self.memory_import_model_button)
         filter_layout.addWidget(self.memory_refresh_button)
 
@@ -1713,8 +1906,8 @@ class SettingsDialog(QDialog):
     def _import_memory_model_archive(self) -> None:
         if self.memory_store is None:
             return
-        if self._memory_model_import_thread is not None:
-            QMessageBox.information(self, "导入中", "记忆模型正在导入，请等待完成。")
+        if self._memory_model_import_thread is not None or self._memory_model_download_thread is not None:
+            QMessageBox.information(self, "处理中", "记忆模型正在安装或导入，请等待完成。")
             return
         path_text, _ = QFileDialog.getOpenFileName(
             self,
@@ -1725,6 +1918,191 @@ class SettingsDialog(QDialog):
         if not path_text:
             return
         self._start_memory_model_import(Path(path_text))
+
+    def _download_memory_model(self) -> None:
+        if self.memory_store is None:
+            return
+        if self._memory_model_import_thread is not None or self._memory_model_download_thread is not None:
+            QMessageBox.information(self, "处理中", "记忆模型正在安装或导入，请等待完成。")
+            return
+        if not callable(getattr(self.memory_store, "download_embedding_model", None)):
+            QMessageBox.warning(self, "安装失败", "当前记忆模块不支持在线安装模型。")
+            return
+        self._start_memory_model_download()
+
+    def _import_backchannel_model_archive(self) -> None:
+        if self._backchannel_model_import_thread is not None or self._backchannel_model_download_thread is not None:
+            QMessageBox.information(self, "处理中", "接话模型正在安装或导入，请等待完成。")
+            return
+        path_text, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入接话模型 ZIP",
+            str(self.base_dir),
+            "接话模型 ZIP (*.zip)",
+        )
+        if not path_text:
+            return
+        self._start_backchannel_model_import(Path(path_text))
+
+    def _download_backchannel_model(self) -> None:
+        if self._backchannel_model_import_thread is not None or self._backchannel_model_download_thread is not None:
+            QMessageBox.information(self, "处理中", "接话模型正在安装或导入，请等待完成。")
+            return
+        self._start_backchannel_model_download()
+
+    def _refresh_backchannel_setup_status(self) -> None:
+        if hasattr(self, "backchannel_setup_hint_label"):
+            self.backchannel_setup_hint_label.setText(self._backchannel_setup_hint_text())
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText(self._backchannel_model_status_text())
+
+    def _start_backchannel_model_import(self, archive_path: Path) -> None:
+        self._set_backchannel_model_import_busy(True)
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText("正在导入接话模型...")
+
+        thread = QThread()
+        worker = BackchannelModelImportWorker(self.base_dir, archive_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_backchannel_model_import_success)
+        worker.failed.connect(self._handle_backchannel_model_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_backchannel_model_import_worker)
+
+        self._backchannel_model_import_thread = thread
+        self._backchannel_model_import_worker = worker
+        thread.start()
+
+    def _start_backchannel_model_download(self) -> None:
+        self._set_backchannel_model_download_busy(True)
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText("正在在线安装接话模型...")
+
+        thread = QThread()
+        worker = BackchannelModelDownloadWorker(self.base_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_backchannel_model_download_success)
+        worker.failed.connect(self._handle_backchannel_model_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_backchannel_model_download_worker)
+
+        self._backchannel_model_download_thread = thread
+        self._backchannel_model_download_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_backchannel_model_import_success(self, result: BackchannelModelImportResult) -> None:
+        self._refresh_backchannel_setup_status()
+        QMessageBox.information(
+            self,
+            "导入成功",
+            (
+                f"接话模型已导入：{result.model_name}\n"
+                f"缓存目录：{result.cache_folder}\n"
+                f"快照数量：{result.snapshot_count}"
+            ),
+        )
+
+    @Slot(str)
+    def _handle_backchannel_model_import_failed(self, message: str) -> None:
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText(f"导入失败：{message}")
+        QMessageBox.warning(self, "导入失败", message)
+
+    @Slot(object)
+    def _handle_backchannel_model_download_success(self, result: BackchannelModelImportResult) -> None:
+        self._refresh_backchannel_setup_status()
+        QMessageBox.information(
+            self,
+            "安装成功",
+            (
+                f"接话模型已安装：{result.model_name}\n"
+                f"缓存目录：{result.cache_folder}\n"
+                f"快照数量：{result.snapshot_count}"
+            ),
+        )
+
+    @Slot(str)
+    def _handle_backchannel_model_download_failed(self, message: str) -> None:
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText(f"安装失败：{message}")
+        QMessageBox.warning(self, "安装失败", message)
+
+    @Slot()
+    def _reset_backchannel_model_import_worker(self) -> None:
+        self._backchannel_model_import_thread = None
+        self._backchannel_model_import_worker = None
+        self._set_backchannel_model_import_busy(False)
+        self._refresh_backchannel_setup_status()
+
+    @Slot()
+    def _reset_backchannel_model_download_worker(self) -> None:
+        self._backchannel_model_download_thread = None
+        self._backchannel_model_download_worker = None
+        self._set_backchannel_model_download_busy(False)
+        self._refresh_backchannel_setup_status()
+
+    def _set_backchannel_model_import_busy(self, busy: bool) -> None:
+        if hasattr(self, "backchannel_import_model_button"):
+            self.backchannel_import_model_button.setEnabled(not busy)
+        if hasattr(self, "backchannel_download_model_button"):
+            self.backchannel_download_model_button.setEnabled(
+                not busy and self._backchannel_model_download_thread is None
+            )
+        if hasattr(self, "backchannel_refresh_status_button"):
+            self.backchannel_refresh_status_button.setEnabled(
+                not busy and self._backchannel_model_download_thread is None
+            )
+
+    def _set_backchannel_model_download_busy(self, busy: bool) -> None:
+        if hasattr(self, "backchannel_download_model_button"):
+            self.backchannel_download_model_button.setEnabled(not busy)
+        if hasattr(self, "backchannel_import_model_button"):
+            self.backchannel_import_model_button.setEnabled(
+                not busy and self._backchannel_model_import_thread is None
+            )
+        if hasattr(self, "backchannel_refresh_status_button"):
+            self.backchannel_refresh_status_button.setEnabled(
+                not busy and self._backchannel_model_import_thread is None
+            )
+
+    def _backchannel_model_status_text(self) -> str:
+        if backchannel_model_cached(self.base_dir):
+            if self._selected_backchannel_mode() == "hybrid":
+                return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}，模型增强可用。"
+            return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}；切换到模型增强后启用。"
+        return "未导入模型；模型增强会自动使用规则模式降级。"
+
+    def _backchannel_setup_hint_text(self) -> str:
+        enabled = self._selected_backchannel_enabled()
+        mode = self._selected_backchannel_mode()
+        model_ready = backchannel_model_cached(self.base_dir)
+
+        if not enabled:
+            return "接话当前关闭；仍可先导入句向量模型备用。"
+        if mode == "rules":
+            return "当前使用规则模式；句向量模型可作为后续模型增强(probe)的前置准备。"
+        if model_ready:
+            return "模型增强已就绪；保存后规则优先，规则无命中时由 probe 分类头补足泛化。"
+        return "已选择模型增强；缺句向量模型或低置信时会自动降级到规则，不会强行接话。"
+
+    def _selected_backchannel_mode(self) -> str:
+        combo = getattr(self, "backchannel_mode_combo", None)
+        if combo is not None:
+            return str(combo.currentData() or self.backchannel_settings.mode)
+        return self.backchannel_settings.mode
+
+    def _selected_backchannel_enabled(self) -> bool:
+        check = getattr(self, "backchannel_enabled_check", None)
+        if check is not None:
+            return check.isChecked()
+        return self.backchannel_settings.enabled
 
     def _start_memory_model_import(self, archive_path: Path) -> None:
         if self.memory_store is None:
@@ -1747,6 +2125,27 @@ class SettingsDialog(QDialog):
         self._memory_model_import_worker = worker
         thread.start()
 
+    def _start_memory_model_download(self) -> None:
+        if self.memory_store is None:
+            return
+        self._set_memory_model_download_busy(True)
+        self.memory_status_label.setText("正在在线安装记忆模型...")
+
+        thread = QThread()
+        worker = MemoryModelDownloadWorker(self.memory_store)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_memory_model_download_success)
+        worker.failed.connect(self._handle_memory_model_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_memory_model_download_worker)
+
+        self._memory_model_download_thread = thread
+        self._memory_model_download_worker = worker
+        thread.start()
+
     @Slot(object)
     def _handle_memory_model_import_success(self, result: EmbeddingModelImportResult) -> None:
         self.memory_status_label.setText("记忆模型已导入，正在重新读取长期记忆...")
@@ -1766,17 +2165,64 @@ class SettingsDialog(QDialog):
         self.memory_status_label.setText(f"导入失败：{message}")
         QMessageBox.warning(self, "导入失败", message)
 
+    @Slot(object)
+    def _handle_memory_model_download_success(self, result: EmbeddingModelImportResult) -> None:
+        self.memory_status_label.setText("记忆模型已安装，正在重新读取长期记忆...")
+        QMessageBox.information(
+            self,
+            "安装成功",
+            (
+                f"记忆模型已安装：{result.model_name}\n"
+                f"缓存目录：{result.cache_folder}\n"
+                f"快照数量：{result.snapshot_count}"
+            ),
+        )
+        self._load_memory_entries()
+
+    @Slot(str)
+    def _handle_memory_model_download_failed(self, message: str) -> None:
+        self.memory_status_label.setText(f"安装失败：{message}")
+        QMessageBox.warning(self, "安装失败", message)
+
     @Slot()
     def _reset_memory_model_import_worker(self) -> None:
         self._memory_model_import_thread = None
         self._memory_model_import_worker = None
         self._set_memory_model_import_busy(False)
 
+    @Slot()
+    def _reset_memory_model_download_worker(self) -> None:
+        self._memory_model_download_thread = None
+        self._memory_model_download_worker = None
+        self._set_memory_model_download_busy(False)
+
     def _set_memory_model_import_busy(self, busy: bool) -> None:
         if hasattr(self, "memory_import_model_button"):
             self.memory_import_model_button.setEnabled(not busy)
+        if hasattr(self, "memory_download_model_button"):
+            self.memory_download_model_button.setEnabled(
+                not busy and self._memory_model_download_thread is None
+            )
         if hasattr(self, "memory_refresh_button"):
-            self.memory_refresh_button.setEnabled(not busy and self._memory_list_thread is None)
+            self.memory_refresh_button.setEnabled(
+                not busy
+                and self._memory_model_download_thread is None
+                and self._memory_list_thread is None
+            )
+
+    def _set_memory_model_download_busy(self, busy: bool) -> None:
+        if hasattr(self, "memory_download_model_button"):
+            self.memory_download_model_button.setEnabled(not busy)
+        if hasattr(self, "memory_import_model_button"):
+            self.memory_import_model_button.setEnabled(
+                not busy and self._memory_model_import_thread is None
+            )
+        if hasattr(self, "memory_refresh_button"):
+            self.memory_refresh_button.setEnabled(
+                not busy
+                and self._memory_model_import_thread is None
+                and self._memory_list_thread is None
+            )
 
     def _memory_loading_text(self) -> str:
         if self.memory_store is None:
@@ -1812,7 +2258,10 @@ class SettingsDialog(QDialog):
 
     @Slot()
     def _reset_memory_list_worker(self) -> None:
-        self.memory_refresh_button.setEnabled(self._memory_model_import_thread is None)
+        self.memory_refresh_button.setEnabled(
+            self._memory_model_import_thread is None
+            and self._memory_model_download_thread is None
+        )
         self._memory_list_thread = None
         self._memory_list_worker = None
         if self._memory_reload_pending:
@@ -2534,6 +2983,15 @@ class SettingsDialog(QDialog):
                 auto_hide_enabled=self.bubble_auto_hide_check.isChecked(),
                 auto_hide_delay_seconds=self.bubble_auto_hide_delay_spin.value(),
             ),
+            "backchannel_settings": BackchannelSettings(
+                enabled=self.backchannel_enabled_check.isChecked(),
+                mode=str(self.backchannel_mode_combo.currentData() or self.backchannel_settings.mode),
+                delay_ms=self.backchannel_delay_spin.value(),
+                probability=self.backchannel_probability_spin.value(),
+                tts_enabled=self.backchannel_tts_enabled_check.isChecked(),
+                # timeout_ms 设置页不暴露,保存时保留 YAML 已配置值(避免覆盖回默认)
+                timeout_ms=self.backchannel_settings.timeout_ms,
+            ),
         }
 
     def _complete_accept(self, values: dict[str, object]) -> None:
@@ -2553,6 +3011,7 @@ class SettingsDialog(QDialog):
         debug_log_settings = values["debug_log_settings"]
         startup_settings = values["startup_settings"]
         bubble_settings = values["bubble_settings"]
+        backchannel_settings = values["backchannel_settings"]
 
         if not isinstance(api_settings, ApiSettings):
             return
@@ -2577,6 +3036,8 @@ class SettingsDialog(QDialog):
         if not isinstance(startup_settings, StartupSettings):
             return
         if not isinstance(bubble_settings, BubbleSettings):
+            return
+        if not isinstance(backchannel_settings, BackchannelSettings):
             return
 
         try:
@@ -2614,6 +3075,7 @@ class SettingsDialog(QDialog):
         self.result_debug_log_settings = debug_log_settings
         self.result_startup_settings = startup_settings
         self.result_bubble_settings = bubble_settings
+        self.result_backchannel_settings = backchannel_settings.normalized()
         self.result_plugin_config_changed = plugin_config_changed
         super().accept()
 
@@ -2623,43 +3085,45 @@ class SettingsDialog(QDialog):
             return False
         return save_plugin_enabled_overrides(self.base_dir, enabled_by_id)
 
-    def reject(self) -> None:
+    def _active_background_thread_guard(self) -> str:
+        """若有任何后台线程正在运行，返回可读的原因字符串；否则返回空串。
+
+        统一在 reject() / closeEvent() 中调用，防止 UI 销毁后线程回调
+        访问已释放控件，引发 RuntimeError 或 Segment Fault 崩溃。
+        """
         if self._api_test_thread is not None:
-            QMessageBox.information(self, "测试中", "API 测试仍在进行，请等待完成后再关闭设置。")
-            return
+            return "API 测试仍在进行，请等待完成后再关闭设置。"
         if self._api_model_probe_thread is not None:
-            QMessageBox.information(self, "检测中", "模型列表仍在检测，请等待完成后再关闭设置。")
-            return
+            return "模型列表仍在检测，请等待完成后再关闭设置。"
         if self._tts_test_thread is not None:
-            QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
-            return
+            return "TTS 服务检测仍在进行，请等待完成后再关闭设置。"
         if self._character_export_thread is not None:
-            QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
-            return
+            return "角色包导出仍在进行，请等待完成后再关闭设置。"
         if self._theme_ai_thread is not None:
-            QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
+            return "AI 配色仍在生成，请等待完成后再关闭设置。"
+        if getattr(self, "_memory_list_thread", None) is not None:
+            return "长期记忆列表仍在读取，请等待完成后再关闭设置。"
+        if getattr(self, "_memory_model_import_thread", None) is not None:
+            return "记忆模型正在导入，请等待完成后再关闭设置。"
+        if getattr(self, "_memory_model_download_thread", None) is not None:
+            return "记忆模型正在在线安装，请等待完成后再关闭设置。"
+        if getattr(self, "_backchannel_model_import_thread", None) is not None:
+            return "接话模型正在导入，请等待完成后再关闭设置。"
+        if getattr(self, "_backchannel_model_download_thread", None) is not None:
+            return "接话模型正在在线安装，请等待完成后再关闭设置。"
+        return ""
+
+    def reject(self) -> None:
+        reason = self._active_background_thread_guard()
+        if reason:
+            QMessageBox.information(self, "操作进行中", reason)
             return
         super().reject()
 
     def closeEvent(self, event):  # type: ignore[no-untyped-def]
-        if self._api_test_thread is not None:
-            QMessageBox.information(self, "测试中", "API 测试仍在进行，请等待完成后再关闭设置。")
-            event.ignore()
-            return
-        if self._api_model_probe_thread is not None:
-            QMessageBox.information(self, "检测中", "模型列表仍在检测，请等待完成后再关闭设置。")
-            event.ignore()
-            return
-        if self._tts_test_thread is not None:
-            QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
-            event.ignore()
-            return
-        if self._character_export_thread is not None:
-            QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
-            event.ignore()
-            return
-        if self._theme_ai_thread is not None:
-            QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
+        reason = self._active_background_thread_guard()
+        if reason:
+            QMessageBox.information(self, "操作进行中", reason)
             event.ignore()
             return
         super().closeEvent(event)

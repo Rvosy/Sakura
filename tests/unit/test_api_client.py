@@ -707,3 +707,11 @@ def test_parse_chat_reply_replaces_chinese_ja_with_safe_japanese() -> None:
 
     assert "原因是" not in reply.segments[0].text
     assert reply.segments[0].translation == "原因是 Mermaid 语法。"
+    assert reply.segments[0].suppress_tts is True
+
+
+def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:
+    reply = parse_chat_reply('{"segments":')
+
+    assert reply.segments[0].text
+    assert reply.segments[0].suppress_tts is True

@@ -17,6 +17,7 @@ class ChatSegment:
     tone: str = DEFAULT_TONE
     translation: str = ""
     portrait: str = ""
+    suppress_tts: bool = False
 
     def __init__(
         self,
@@ -27,6 +28,7 @@ class ChatSegment:
         *,
         ja: str | None = None,
         zh: str | None = None,
+        suppress_tts: bool = False,
     ) -> None:
         """兼容旧测试/调用点中的 ja、zh 命名参数。"""
         if ja is not None and not text:
@@ -37,6 +39,7 @@ class ChatSegment:
         object.__setattr__(self, "tone", tone)
         object.__setattr__(self, "translation", translation)
         object.__setattr__(self, "portrait", portrait)
+        object.__setattr__(self, "suppress_tts", suppress_tts)
 
     def display_text(self, subtitle_language: str) -> str:
         """按字幕语言返回气泡显示文本；缺少译文时回退日文原文。"""
@@ -173,6 +176,7 @@ def _build_segment(text: str, tone: Any, translation: str, portrait: Any) -> tup
                 _clean_tone(tone),
                 fallback_translation,
                 _clean_portrait(portrait),
+                suppress_tts=True,
             ),
             True,
         )
@@ -314,8 +318,8 @@ def _build_safe_parse_failure_reply() -> ChatReply:
                 SAFE_PARSE_FAILURE_TEXT,
                 DEFAULT_TONE,
                 SAFE_PARSE_FAILURE_TRANSLATION,
+                suppress_tts=True,
             )
         ]
     )
-
 

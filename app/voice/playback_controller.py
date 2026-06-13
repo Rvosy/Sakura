@@ -162,6 +162,8 @@ class VoicePlaybackController:
             return "ja"
 
     def _should_skip_segment_tts(self, segment: ChatSegment) -> bool:
+        if segment.suppress_tts:
+            return True
         return should_skip_tts_text(segment.text, self._target_text_lang())
 
     def _log_tts_skipped(

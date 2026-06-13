@@ -302,6 +302,8 @@ class TestAgentRuntimeBasics:
 
         assert client.complete_with_tools.call_count == 2
         assert result.reply.segments[0].text == "直したよ。"
+        repair_messages = client.complete_with_tools.call_args_list[1].args[1]
+        assert "不要用固定兜底句替代" in repair_messages[-1]["content"]
 
     def test_final_reply_retries_when_plain_japanese_lacks_translation(self) -> None:
         client = _dummy_api_client()
@@ -348,6 +350,7 @@ class TestAgentRuntimeBasics:
         assert client.complete_with_tools.call_count == 2
         assert result.reply.segments[0].text != bad_content
         assert "segments" not in result.reply.segments[0].text
+        assert result.reply.segments[0].suppress_tts is True
 
     def test_update_character_preserves_tools(self) -> None:
         tool = _dummy_tool("my_tool")
