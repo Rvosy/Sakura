@@ -174,6 +174,14 @@ def test_tts_provider_can_skip_constructor_service_adoption(monkeypatch) -> None
     assert calls == ["GPTSoVITSTTSProvider"]
 
 
+def test_service_ready_property_reflects_probe_state() -> None:
+    # 接话音频预生成依赖此公开属性做就绪门控:探测成功前必须为 False。
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    assert provider.service_ready is False
+    provider._service_checked = True
+    assert provider.service_ready is True
+
+
 def test_tts_service_probe_reports_unavailable_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings()
