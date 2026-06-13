@@ -3050,8 +3050,8 @@ class PetWindow(QWidget):
             )
         self.history_window.set_subtitle_language(self.subtitle_language)
         self.history_window.set_theme_settings(self.theme_settings)
-        # 始终置顶，避免被桌宠卡片（同为置顶窗口）盖住。
-        _mark_dialog_always_on_top(self.history_window)
+        # 作为普通窗口打开：可最小化、有独立任务栏按钮，不置顶。
+        _configure_secondary_window(self.history_window)
         self.history_window.refresh()
         self.history_window.show()
         self.history_window.raise_()
@@ -3065,6 +3065,8 @@ class PetWindow(QWidget):
                 parent=self,
             )
         self.runtime_log_window.set_theme_settings(self.theme_settings)
+        # 作为普通窗口打开：可最小化、有独立任务栏按钮、不置顶（与设置/历史窗口一致）。
+        _configure_secondary_window(self.runtime_log_window)
         self.runtime_log_window.refresh(reset=True)
         self.runtime_log_window.show()
         self.runtime_log_window.raise_()
@@ -3179,8 +3181,8 @@ class PetWindow(QWidget):
             on_layout_preview=self._preview_layout,
         )
         self.settings_dialog = dialog
-        # 始终置顶，避免被桌宠卡片（同为置顶窗口）盖住。
-        _mark_dialog_always_on_top(dialog)
+        # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
+        _configure_secondary_window(dialog)
         # 记录打开前的立绘缩放与控制组布局，便于取消时回滚实时预览。
         original_layout = (
             self.portrait_scale_percent,
@@ -3196,16 +3198,36 @@ class PetWindow(QWidget):
         input_bar_animator = getattr(self, "input_bar_animator", None)
         if input_bar_animator is not None:
             input_bar_animator.set_force_visible(True)
-        try:
-            dialog_result = dialog.exec()
-        finally:
-            if getattr(self, "settings_dialog", None) is dialog:
-                self.settings_dialog = None
-            # 关闭设置后恢复气泡自动隐藏计时与输入栏常规显隐。
-            if bubble_auto_hide is not None:
-                bubble_auto_hide.notify_settled()
-            if input_bar_animator is not None:
-                input_bar_animator.set_force_visible(False)
+        # 非模态没有阻塞返回值，结果处理改由 finished 信号驱动；闭包捕获打开前状态用于回滚。
+        dialog.finished.connect(
+            lambda result: self._on_settings_dialog_finished(
+                dialog,
+                result,
+                original_layout,
+                bubble_auto_hide,
+                input_bar_animator,
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_settings_dialog_finished(
+        self,
+        dialog: SettingsDialog,
+        dialog_result: int,
+        original_layout: tuple[int, int, int, int, int],
+        bubble_auto_hide: object,
+        input_bar_animator: object,
+    ) -> None:
+        """设置窗口关闭后的结果处理（原 exec() 之后的同步逻辑，迁移到非模态信号回调）。"""
+        if getattr(self, "settings_dialog", None) is dialog:
+            self.settings_dialog = None
+        # 关闭设置后恢复气泡自动隐藏计时与输入栏常规显隐。
+        if bubble_auto_hide is not None:
+            bubble_auto_hide.notify_settled()
+        if input_bar_animator is not None:
+            input_bar_animator.set_force_visible(False)
         if dialog_result != QDialog.DialogCode.Accepted:
             # 取消/关闭：回滚到打开前的立绘与控制组布局，撤销实时预览的改动。
             self._preview_layout(*original_layout)
@@ -4457,11 +4479,61 @@ def _should_write_character_theme(theme_write_mode: object, profile: CharacterPr
     return theme_write_mode in {"manual", "ai"}
 
 
-def _mark_dialog_always_on_top(window) -> None:  # type: ignore[no-untyped-def]
-    # 给设置/历史窗口加置顶标志，使其与桌宠卡片同处置顶层、再靠 raise 保持在最上。
+def _configure_secondary_window(window) -> None:  # type: ignore[no-untyped-def]
+    # 设置/历史窗口作为普通窗口处理：不再钉在最上层，点击其他窗口时正常退到后面。
+    #
+    # 根因：这两个窗口以桌宠（Qt.Tool）为父窗口，在 Windows 上属于“被拥有窗口”。
+    # 当桌宠开启置顶（WS_EX_TOPMOST）时，系统强制让被拥有窗口在 z 序上位于拥有者
+    # 之上，于是它们也被一起置顶——单清 Qt 的 WindowStaysOnTopHint 标志无效，
+    # show 后再用 SetWindowPos 下推也会被系统打回。唯一可靠的办法是切断原生拥有
+    # 关系：setParent(None) 把它变成独立顶层窗口，就不再继承桌宠的置顶。
+    #
+    # 注意：setParent(None) 会重置 window flags，所以必须先 detach、再设 flags。
+    # 窗口的 Python 引用由调用方持有（设置窗口靠局部变量 + 模态 exec，历史窗口靠
+    # self.history_window），脱离 Qt 对象树后生命周期仍安全。
+    set_parent = getattr(window, "setParent", None)
+    if callable(set_parent) and window.parent() is not None:
+        set_parent(None)
     set_flag = getattr(window, "setWindowFlag", None)
     if callable(set_flag):
-        set_flag(Qt.WindowType.WindowStaysOnTopHint, True)
+        set_flag(Qt.WindowType.WindowStaysOnTopHint, False)
+        # QDialog 默认标题栏只有关闭按钮，补上系统菜单与最小化按钮，让窗口可被最小化。
+        set_flag(Qt.WindowType.WindowTitleHint, True)
+        set_flag(Qt.WindowType.WindowSystemMenuHint, True)
+        set_flag(Qt.WindowType.WindowMinimizeButtonHint, True)
+    # 顶层窗口默认应有任务栏按钮；保险起见在 Windows 上显式写入 WS_EX_APPWINDOW、
+    # 清掉 WS_EX_TOOLWINDOW，确保最小化后能在任务栏单独点回来。
+    if sys.platform == "win32":
+        _force_windows_taskbar_button(window)
+
+
+def _force_windows_taskbar_button(window) -> None:  # type: ignore[no-untyped-def]
+    # 在原生窗口上设置 WS_EX_APPWINDOW、清掉 WS_EX_TOOLWINDOW，
+    # 使被父窗口拥有的对话框获得独立任务栏按钮。必须在 show() 之前调用。
+    win_id = getattr(window, "winId", None)
+    if not callable(win_id):
+        return
+    try:
+        import ctypes
+
+        hwnd = int(win_id())  # 触发原生窗口创建并取得 HWND
+        if not hwnd:
+            return
+        GWL_EXSTYLE = -20
+        WS_EX_APPWINDOW = 0x00040000
+        WS_EX_TOOLWINDOW = 0x00000080
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+        ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        new_style = (ex_style | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
+        if new_style != ex_style:
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+    except (OSError, ValueError, AttributeError):
+        # 取不到原生句柄或非标准 Win32 环境时静默跳过，最小化按钮仍可用。
+        return
 
 
 def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
