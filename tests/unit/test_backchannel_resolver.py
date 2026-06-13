@@ -187,3 +187,29 @@ def test_anti_repetition_relaxes_when_pool_exhausted() -> None:
 def test_empty_manifest_returns_none() -> None:
     assert _resolver(_manifest()).resolve(_label("error")) is None
     assert not _manifest()
+
+
+def test_system_fallback_injected_when_manifest_lacks_fallback() -> None:
+    # 有条目但缺 fallback 的清单:低置信/无标签输入落系统兜底而非死寂。
+    from app.backchannel.resolver import SYSTEM_FALLBACK_TEMPLATE_ID
+
+    manifest = _manifest(_template("err", intent="error", emotion="frustrated"))
+    choice = _resolver(manifest).resolve(None)
+    assert choice is not None
+    assert choice.template.id == SYSTEM_FALLBACK_TEMPLATE_ID
+
+
+def test_system_fallback_not_injected_when_manifest_has_fallback() -> None:
+    # 清单自带 fallback 时不注入系统兜底,优先用角色自己的兜底句。
+    manifest = _manifest(
+        _template("err", intent="error", emotion="frustrated"),
+        _template("fb", intent="fallback"),
+    )
+    choice = _resolver(manifest).resolve(None)
+    assert choice is not None
+    assert choice.template.id == "fb"
+
+
+def test_system_fallback_not_injected_for_empty_manifest() -> None:
+    # 完全空清单 = opt-out,不注入系统兜底(保持空转)。
+    assert _resolver(_manifest()).resolve(None) is None
