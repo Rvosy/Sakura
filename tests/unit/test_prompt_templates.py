@@ -102,6 +102,13 @@ def test_segmented_reply_instruction_can_omit_translation_rules() -> None:
     assert "tone 只能从这些类别中选择：中性" in instruction
 
 
+def test_agent_reply_protocol_guides_ja_translation_self_check() -> None:
+    instruction = build_segmented_reply_instruction(["中性"], ["站立待机"])
+
+    assert "输出前静默自检每个 ja" in instruction
+    assert 'ja="原因は Mermaid の構文みたい。"' in instruction
+
+
 def test_prompt_lengths_stay_compact() -> None:
     proactive_tool_prompt = _build_proactive_tool_prompt()
     proactive_event_prompt = build_event_system_prompt(

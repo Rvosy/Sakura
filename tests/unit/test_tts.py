@@ -1211,6 +1211,53 @@ def test_voice_playback_controller_skips_chinese_text_for_japanese_tts() -> None
     assert "tts_skipped_language_guard" in stages
 
 
+def test_voice_playback_controller_skips_suppressed_tts_segment() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class RecordingTTS:
+        def __init__(self) -> None:
+            self.speak_calls = 0
+            self.prepare_calls = 0
+
+        def speak(self, *_args: object, **_kwargs: object) -> None:
+            self.speak_calls += 1
+
+        def prepare(self, *_args: object, **_kwargs: object) -> TTSPreparedAudio:
+            self.prepare_calls += 1
+            return TTSPreparedAudio(text="dummy")
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    events: list[str] = []
+    stages: list[str] = []
+    tts = RecordingTTS()
+    controller = VoicePlaybackController(
+        tts,
+        lambda stage, _payload=None: stages.append(stage),
+        target_text_lang_getter=lambda: "ja",
+    )  # type: ignore[arg-type]
+    segment = ChatSegment(
+        "うまく日本語にできなかったみたい。もう一度言い直すね。",
+        "中性",
+        "原因是 Mermaid 语法。",
+        suppress_tts=True,
+    )
+
+    controller.speak_segment(
+        segment,
+        1,
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+    controller.prepare_next(segment)
+
+    assert tts.speak_calls == 0
+    assert tts.prepare_calls == 0
+    assert events == ["started", "finished"]
+    assert stages == ["tts_skipped_language_guard", "tts_skipped_language_guard"]
+
+
 def test_voice_playback_controller_skips_prepare_for_chinese_text() -> None:
     from app.llm.chat_reply import ChatSegment
 
