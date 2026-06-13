@@ -53,11 +53,11 @@ def test_normalized_clamps_values() -> None:
     settings = BackchannelSettings(
         enabled=True, mode="hybrid", delay_ms=999999, probability=3.0
     ).normalized()
-    # v1 仅实现 off/rules,非法 mode 回退默认
-    assert settings.mode == "rules"
+    assert settings.mode == "hybrid"
     assert settings.delay_ms == 5000
     assert settings.probability == 1.0
-    low = BackchannelSettings(delay_ms=1, probability=-0.5).normalized()
+    low = BackchannelSettings(mode="missing", delay_ms=1, probability=-0.5).normalized()
+    assert low.mode == "rules"
     assert low.delay_ms == 100
     assert low.probability == 0.0
 

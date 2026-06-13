@@ -156,3 +156,126 @@ def test_set_settings_disable_cancels_pending() -> None:
     assert not controller.is_pending
     controller._on_timeout()
     assert displayed == []
+
+
+# --- 后台分类(hybrid prefers_background)路径 ---------------------------------
+
+class _BackgroundClassifier:
+    """声明走后台线程的分类器,classify 在 worker 线程被调用。"""
+
+    prefers_background = True
+
+    def __init__(self, label: object) -> None:
+        self._label = label
+        self.calls = 0
+
+    def classify(self, text: str) -> object:
+        self.calls += 1
+        return self._label
+
+
+def _make_async(
+    displayed: list[BackchannelChoice],
+    classifier: object,
+    *,
+    timeout_ms: int = 400,
+    on_classified=None,  # type: ignore[no-untyped-def]
+) -> BackchannelController:
+    controller = BackchannelController(
+        classifier,  # type: ignore[arg-type]
+        displayed.append,
+        settings=BackchannelSettings(enabled=True, mode="hybrid", timeout_ms=timeout_ms),
+        rng=random.Random(7),
+        on_classified=on_classified,
+    )
+    controller.set_manifest(_manifest())
+    return controller
+
+
+def _spin_until(predicate, timeout_ms: int = 2000) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtCore import QCoreApplication, QDeadlineTimer
+
+    deadline = QDeadlineTimer(timeout_ms)
+    while not predicate() and not deadline.hasExpired():
+        QCoreApplication.processEvents()
+
+
+def test_background_classify_dispatches_and_displays() -> None:
+    from app.backchannel.models import BackchannelLabel
+
+    _qt_app_or_skip()
+    displayed: list[BackchannelChoice] = []
+    classifier = _BackgroundClassifier(BackchannelLabel("error", "frustrated", 0.9))
+    controller = _make_async(displayed, classifier)
+    controller.schedule("随便什么")
+    controller._on_timeout()  # 派发到后台,结果异步回主线程
+    assert displayed == []  # 尚未完成
+    _spin_until(lambda: len(displayed) == 1)
+    assert displayed[0].template.id == "err"
+    assert classifier.calls == 1
+    assert not controller.is_pending
+
+
+def test_background_classify_cancel_drops_late_result() -> None:
+    from app.backchannel.models import BackchannelLabel
+
+    _qt_app_or_skip()
+    displayed: list[BackchannelChoice] = []
+    classifier = _BackgroundClassifier(BackchannelLabel("error", "frustrated", 0.9))
+    controller = _make_async(displayed, classifier)
+    controller.schedule("随便什么")
+    controller._on_timeout()
+    controller.cancel()  # 回复已到达
+    _spin_until(lambda: classifier.calls == 1)
+    # worker 跑完但 token 已失效,迟到结果被丢弃
+    from PySide6.QtCore import QCoreApplication
+    for _ in range(5):
+        QCoreApplication.processEvents()
+    assert displayed == []
+
+
+def test_background_classify_timeout_falls_back() -> None:
+    import time
+
+    _qt_app_or_skip()
+    displayed: list[BackchannelChoice] = []
+
+    class _SlowClassifier:
+        prefers_background = True
+
+        def classify(self, text: str) -> object:
+            time.sleep(0.3)
+            from app.backchannel.models import BackchannelLabel
+
+            return BackchannelLabel("error", "frustrated", 0.9)
+
+    controller = _make_async(displayed, _SlowClassifier(), timeout_ms=50)
+    controller.schedule("随便什么")
+    controller._on_timeout()
+    # 超时前先落兜底
+    _spin_until(lambda: len(displayed) == 1, timeout_ms=500)
+    assert displayed[0].template.id == "fb"
+    # 慢分类随后跑完,但 token 已失效不再二次显示
+    _spin_until(lambda: False, timeout_ms=400)
+    assert len(displayed) == 1
+
+
+def test_on_classified_callback_records_trace() -> None:
+    from app.backchannel.models import BackchannelLabel
+
+    _qt_app_or_skip()
+    displayed: list[BackchannelChoice] = []
+    traces: list[tuple] = []
+    classifier = _BackgroundClassifier(BackchannelLabel("error", "frustrated", 0.9))
+    controller = _make_async(
+        displayed,
+        classifier,
+        on_classified=lambda text, label, choice: traces.append((text, label, choice)),
+    )
+    controller.schedule("报错文本")
+    controller._on_timeout()
+    _spin_until(lambda: len(traces) == 1)
+    text, label, choice = traces[0]
+    assert text == "报错文本"
+    assert label.intent == "error"
+    assert choice is not None and choice.template.id == "err"
