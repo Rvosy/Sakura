@@ -70,6 +70,57 @@ class BubbleSettings:
         )
 
 
+BACKCHANNEL_MIN_DELAY_MS = 100
+BACKCHANNEL_MAX_DELAY_MS = 5000
+BACKCHANNEL_DEFAULT_DELAY_MS = 600
+BACKCHANNEL_MODES = ("off", "rules", "hybrid")
+BACKCHANNEL_DEFAULT_MODE = "rules"
+# hybrid 后台分类超时(安全网):超时按无标签落兜底,不阻塞迟到的接话。
+# 仅对 hybrid 生效;规则分类同步不触发。0 表示不设超时。
+BACKCHANNEL_MIN_TIMEOUT_MS = 0
+BACKCHANNEL_MAX_TIMEOUT_MS = 2000
+BACKCHANNEL_DEFAULT_TIMEOUT_MS = 400
+
+
+@dataclass(frozen=True)
+class BackchannelSettings:
+    """本地快速接话层配置。
+
+    默认关闭;rules 为纯规则模式,hybrid 为 rules-first + 本地 embedding 意图泛化。
+    """
+
+    enabled: bool = False
+    mode: str = BACKCHANNEL_DEFAULT_MODE
+    delay_ms: int = BACKCHANNEL_DEFAULT_DELAY_MS
+    probability: float = 1.0
+    tts_enabled: bool = False
+    timeout_ms: int = BACKCHANNEL_DEFAULT_TIMEOUT_MS
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and self.mode != "off"
+
+    def normalized(self) -> "BackchannelSettings":
+        mode = self.mode if self.mode in BACKCHANNEL_MODES else BACKCHANNEL_DEFAULT_MODE
+        delay = max(
+            BACKCHANNEL_MIN_DELAY_MS,
+            min(BACKCHANNEL_MAX_DELAY_MS, int(self.delay_ms)),
+        )
+        probability = max(0.0, min(1.0, float(self.probability)))
+        timeout = max(
+            BACKCHANNEL_MIN_TIMEOUT_MS,
+            min(BACKCHANNEL_MAX_TIMEOUT_MS, int(self.timeout_ms)),
+        )
+        return BackchannelSettings(
+            enabled=bool(self.enabled),
+            mode=mode,
+            delay_ms=delay,
+            probability=probability,
+            tts_enabled=bool(self.tts_enabled),
+            timeout_ms=timeout,
+        )
+
+
 @dataclass(frozen=True)
 class AppSettingsService:
     """集中管理运行配置；唯一持久化来源是 data/config/*.yaml。"""
@@ -380,6 +431,30 @@ class AppSettingsService:
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
+    def load_backchannel_settings(self) -> BackchannelSettings:
+        section = self._system_section("backchannel")
+        return BackchannelSettings(
+            enabled=_bool_value(section.get("enabled"), False),
+            mode=str(section.get("mode", BACKCHANNEL_DEFAULT_MODE) or BACKCHANNEL_DEFAULT_MODE),
+            delay_ms=_int_value(section.get("delay_ms"), BACKCHANNEL_DEFAULT_DELAY_MS),
+            probability=_float_value(section.get("probability"), 1.0),
+            tts_enabled=_bool_value(section.get("tts_enabled"), False),
+            timeout_ms=_int_value(section.get("timeout_ms"), BACKCHANNEL_DEFAULT_TIMEOUT_MS),
+        ).normalized()
+
+    def save_backchannel_settings(self, settings: BackchannelSettings) -> None:
+        normalized = settings.normalized()
+        data = load_yaml_mapping(self.system_config_path)
+        data["backchannel"] = {
+            "enabled": bool(normalized.enabled),
+            "mode": normalized.mode,
+            "delay_ms": int(normalized.delay_ms),
+            "probability": float(normalized.probability),
+            "tts_enabled": bool(normalized.tts_enabled),
+            "timeout_ms": int(normalized.timeout_ms),
+        }
+        save_yaml_mapping(self.system_config_path, data)
+
     def load_memory_curation_settings(self):
         from app.agent.memory_curator import MemoryCurationSettings
 
@@ -456,6 +531,13 @@ def _path_for_config(path: Path | None, base_dir: Path) -> str:
 def _int_value(value: Any, default: int) -> int:
     try:
         return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(str(value).strip())
     except (TypeError, ValueError):
         return default
 

@@ -442,6 +442,16 @@ class GPTSoVITSTTSProvider(QObject):
         if adopt_existing_service:
             self._adopt_existing_configured_service()
 
+    @property
+    def service_ready(self) -> bool:
+        """服务探测是否已成功(实际可达)。
+
+        供接话音频预生成等调用方做就绪门控:provider 实例存在不代表
+        服务已启动,未就绪时发起 prepare 只会得到静默失败。
+        Genie 子类共用 _service_checked,无需覆写。
+        """
+        return self._service_checked
+
     def speak(
         self,
         text: str,
