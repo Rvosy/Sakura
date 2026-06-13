@@ -15,6 +15,21 @@ from app.backchannel.models import (
 # 依据:filler 的缓和效果随重复使用衰减,所以短期内轮换变体。
 DEFAULT_RECENT_LIMIT = 3
 MIN_DIRECT_CONFIDENCE = 0.55
+SYSTEM_FALLBACK_TEMPLATE_ID = "__system_fallback__"
+SYSTEM_FALLBACK_TEMPLATE = BackchannelTemplate(
+    id=SYSTEM_FALLBACK_TEMPLATE_ID,
+    tone="中性",
+    portrait="站立待机",
+    intent="fallback",
+    variants=(
+        BackchannelVariant(ja="うん……", zh="嗯……"),
+        BackchannelVariant(ja="あ……", zh="啊……"),
+        BackchannelVariant(ja="えっと……", zh="那个……"),
+        BackchannelVariant(ja="うーん……", zh="唔……"),
+        BackchannelVariant(ja="いるよ。", zh="我在。"),
+        BackchannelVariant(ja="うんうん。", zh="嗯嗯。"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -46,10 +61,19 @@ class TemplateResolver:
         recent_limit: int = DEFAULT_RECENT_LIMIT,
         min_direct_confidence: float = MIN_DIRECT_CONFIDENCE,
     ) -> None:
-        self._templates = manifest.templates
+        self._templates = self._templates_with_system_fallback(manifest)
         self._rng = rng if rng is not None else random.Random()
         self._recent: deque[tuple[str, int]] = deque(maxlen=max(1, recent_limit))
         self._min_direct_confidence = max(0.0, min(1.0, min_direct_confidence))
+
+    def _templates_with_system_fallback(
+        self,
+        manifest: BackchannelManifest,
+    ) -> tuple[BackchannelTemplate, ...]:
+        # 完全空清单仍表示 opt-out/无可用条目,不注入系统 fallback。
+        if not manifest.templates or manifest.fallback_templates:
+            return manifest.templates
+        return (*manifest.templates, SYSTEM_FALLBACK_TEMPLATE)
 
     def resolve(
         self,

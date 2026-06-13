@@ -13,8 +13,14 @@ from app.backchannel.prototypes import (
 from app.core.debug_log import debug_log
 
 DEFAULT_BACKCHANNEL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
-DEFAULT_INTENT_THRESHOLD = 0.86
-DEFAULT_INTENT_MARGIN = 0.08
+# 阈值经 120 条种子 + 留出改写句网格标定(feats/backchannel-layer/threshold-calibration.md)。
+# bge-small-zh 对称句对相似度中位 ~0.77,旧默认 0.86 会让 embedding 层几乎全弃权(死层)。
+# threshold 须 >= resolver.MIN_DIRECT_CONFIDENCE(0.55),否则结果被二次门控丢弃。
+# margin 是压错接的主杠杆:0.05 把留出错接从 3 降到 1。
+# 这是合成数据起点;真实最优待用户用 tools/backchannel_tune.py 在 eval 日志上重标。
+DEFAULT_INTENT_THRESHOLD = 0.62
+DEFAULT_INTENT_MARGIN = 0.05
+# bge 查询指令前缀对本任务(对称句对)反而降准,刻意不加。
 
 
 class TextEncoder(Protocol):
@@ -58,6 +64,10 @@ class EmbeddingIntentClassifier:
         # 用锁保护 check-then-set,避免模型/原型重复初始化。
         # RLock:_ensure_prototype_vectors 持锁后会经 _encode_many 重入 _encoder_instance。
         self._init_lock = threading.RLock()
+
+    def preload(self) -> None:
+        """预加载模型并预计算原型向量。可由启动链路异步调用。"""
+        self._ensure_prototype_vectors()
 
     @property
     def available(self) -> bool:

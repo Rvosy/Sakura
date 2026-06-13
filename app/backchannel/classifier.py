@@ -19,8 +19,8 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "还是不行", "又不行", "无法运行", "无法打开",
     ),
     "complaint": (
-        "烦", "气死", "讨厌", "受不了", "无语", "服了", "恶心", "垃圾",
-        "难用", "卡死", "什么玩意",
+        "好烦", "很烦", "真烦", "烦死", "烦人", "气死", "讨厌", "受不了",
+        "无语", "服了", "恶心", "垃圾", "难用", "卡死", "什么玩意",
     ),
     "support": (
         "难过", "想哭", "哭了", "累了", "好累", "心情不好", "emo", "难受",
@@ -110,6 +110,11 @@ class RuleClassifier:
             _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
         )
         return BackchannelLabel(intent=intent, emotion=emotion, confidence=confidence)
+
+    def classify_emotion_for_intent(self, text: str, intent: str) -> str:
+        """按规则层语义为已知 intent 补用户情绪。"""
+
+        return self._classify_emotion((text or "").strip(), intent)
 
     def _classify_by_emotion_only(self, content: str) -> BackchannelLabel | None:
         """意图无关键词但情绪信号过阈值时,由情绪反推意图。

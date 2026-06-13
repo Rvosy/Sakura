@@ -121,6 +121,12 @@ def test_question_mark_alone_is_question(classifier: RuleClassifier) -> None:
     assert label.intent == "question"
 
 
+def test_polite_request_does_not_trigger_complaint_by_fan_substring(
+    classifier: RuleClassifier,
+) -> None:
+    assert classifier.classify("麻烦整理这段会议内容") is None
+
+
 def test_more_hits_raise_confidence(classifier: RuleClassifier) -> None:
     weak = classifier.classify("失败了")
     strong = classifier.classify("报错了,又失败,跑不起来")

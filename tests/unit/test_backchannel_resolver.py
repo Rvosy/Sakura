@@ -10,6 +10,7 @@ from app.backchannel.models import (
     BackchannelVariant,
 )
 from app.backchannel.resolver import TemplateResolver
+from app.backchannel.resolver import SYSTEM_FALLBACK_TEMPLATE_ID
 
 
 def _variants(*texts: str) -> tuple[BackchannelVariant, ...]:
@@ -94,6 +95,24 @@ def test_none_label_falls_to_fallback_pool() -> None:
     choice = _resolver().resolve(None)
     assert choice is not None
     assert choice.template.id == "fb"
+
+
+def test_manifest_without_fallback_gets_system_fallback() -> None:
+    manifest = _manifest(_template("request", intent="request", emotion="neutral"))
+    choice = _resolver(manifest).resolve(None)
+    assert choice is not None
+    assert choice.template.id == SYSTEM_FALLBACK_TEMPLATE_ID
+    assert choice.variant.zh in {"嗯……", "啊……", "那个……", "唔……", "我在。", "嗯嗯。"}
+
+
+def test_character_fallback_beats_system_fallback() -> None:
+    manifest = _manifest(
+        _template("request", intent="request", emotion="neutral"),
+        _template("character_fb", intent="fallback"),
+    )
+    choice = _resolver(manifest).resolve(None)
+    assert choice is not None
+    assert choice.template.id == "character_fb"
 
 
 def test_unknown_intent_falls_to_fallback() -> None:

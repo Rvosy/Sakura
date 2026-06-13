@@ -37,6 +37,12 @@ class HybridBackchannelClassifier:
             )
         )
 
+    def preload(self) -> None:
+        """预加载底层 embedding 分类器的模型与原型向量。"""
+        preload_fn = getattr(self._embedding_classifier, "preload", None)
+        if callable(preload_fn):
+            preload_fn()
+
     def classify(self, text: str) -> BackchannelLabel | None:
         rule_label = self._rule_classifier.classify(text)
         if rule_label is not None:
