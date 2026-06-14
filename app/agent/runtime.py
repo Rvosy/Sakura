@@ -52,7 +52,10 @@ from app.llm.prompt_templates import (
     build_event_system_prompt,
     build_proactive_check_tool_system_prompt,
 )
-from app.plugins.models import PromptPatchContribution
+from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+
+# 单个插件 context provider 注入 prompt 的最大字符数，超出截断，避免拖垮上下文。
+MAX_PLUGIN_CONTEXT_PROVIDER_CHARS = 2000
 
 
 
@@ -68,6 +71,7 @@ class AgentRuntime:
         tools: ToolRegistry | None = None,
         memory: MemoryStore | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
+        context_providers: list[ContextProviderContribution] | None = None,
     ) -> None:
         self.api_client = api_client
         self.system_prompt = system_prompt
@@ -76,6 +80,9 @@ class AgentRuntime:
         self.tools = tools or ToolRegistry()
         self.memory = memory or MemoryStore()
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
+        self.context_providers = (
+            [*context_providers] if context_providers is not None else []
+        )
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
 
@@ -93,6 +100,15 @@ class AgentRuntime:
     def set_prompt_patches(self, prompt_patches: list[PromptPatchContribution] | None) -> None:
         """同步插件提示词补丁。"""
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
+
+    def set_context_providers(
+        self,
+        context_providers: list[ContextProviderContribution] | None,
+    ) -> None:
+        """同步插件动态上下文提供者。"""
+        self.context_providers = (
+            [*context_providers] if context_providers is not None else []
+        )
 
     def set_model_vision_enabled(self, enabled: bool) -> None:
         """允许模型在需要时请求一次当前屏幕截图。"""
@@ -817,7 +833,58 @@ class AgentRuntime:
             for patch in getattr(self, "prompt_patches", [])
             if patch.system_prompt_append.strip()
         )
+        context_block = self._build_plugin_context_block()
+        if context_block:
+            parts.append(context_block)
         return "\n\n".join(part for part in parts if part)
+
+    def _build_plugin_context_block(self) -> str:
+        """汇总插件 context provider 的动态上下文。
+
+        - 按 order 升序排序，跳过 enabled=False；
+        - 单个 provider 异常只写日志、不影响其他 provider 与主 prompt；
+        - 单个 provider 输出超长会截断；
+        - 输出形如 ``[Plugin Context: <provider_id>]\\n<text>`` 的块，块间空行分隔。
+        """
+        providers = sorted(
+            (
+                provider
+                for provider in getattr(self, "context_providers", [])
+                if getattr(provider, "enabled", True)
+            ),
+            key=lambda provider: getattr(provider, "order", 100.0),
+        )
+        blocks: list[str] = []
+        for provider in providers:
+            provider_id = getattr(provider, "provider_id", "unknown")
+            try:
+                text = provider.build_context({})
+            except Exception as exc:  # noqa: BLE001 — provider 异常不得影响 prompt 构建
+                debug_log(
+                    "AgentRuntime",
+                    "插件上下文提供者执行失败，已跳过",
+                    {"provider_id": provider_id, "error": str(exc)},
+                )
+                continue
+            if not isinstance(text, str):
+                text = str(text) if text is not None else ""
+            text = text.strip()
+            if not text:
+                debug_log(
+                    "AgentRuntime",
+                    "插件上下文提供者无输出，已跳过",
+                    {"provider_id": provider_id},
+                )
+                continue
+            if len(text) > MAX_PLUGIN_CONTEXT_PROVIDER_CHARS:
+                text = text[:MAX_PLUGIN_CONTEXT_PROVIDER_CHARS] + "…（已截断）"
+            debug_log(
+                "AgentRuntime",
+                "插件上下文提供者已生效",
+                {"provider_id": provider_id, "chars": len(text)},
+            )
+            blocks.append(f"[Plugin Context: {provider_id}]\n{text}")
+        return "\n\n".join(blocks)
 
     def _reply_protocol_patch_text(self) -> str:
         patches = [

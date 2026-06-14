@@ -228,6 +228,7 @@ class TestPluginManager:
         assert registry.execute("demo_echo", {"text": "hi"}).content == {"text": "hi"}
         assert [tab.title for tab in mgr.tools_tabs] == ["Demo 工具"]
         assert [panel.title for panel in mgr.settings_panels] == ["Demo 设置"]
+        assert [panel.plugin_id for panel in mgr.settings_panels] == ["demo"]
         assert [widget.widget_id for widget in mgr.chat_ui_widgets] == ["demo_widget"]
         assert mgr.prompt_patches[0].system_prompt_append == "demo system"
 

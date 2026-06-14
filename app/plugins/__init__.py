@@ -3,10 +3,12 @@
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.events import PluginEventBus, ScopedEventBus
 from app.plugins.manager import PluginLoadResult, PluginManager
 from app.plugins.models import (
     KNOWN_PLUGIN_PERMISSIONS,
     PERMISSION_CHAT_UI,
+    PERMISSION_CONTEXT_PROVIDER,
     PERMISSION_EVENT_APP,
     PERMISSION_EVENT_CHARACTER,
     PERMISSION_EVENT_MESSAGE,
@@ -17,6 +19,7 @@ from app.plugins.models import (
     PERMISSION_TOOLS_TAB,
     PLUGIN_API_VERSION,
     ChatUIWidgetContribution,
+    ContextProviderContribution,
     PluginEvent,
     PluginManifest,
     PluginManifestView,
@@ -26,11 +29,19 @@ from app.plugins.models import (
     ToolContribution,
     ToolsTabContribution,
 )
+from app.plugins.services import (
+    PluginAgentService,
+    PluginServices,
+    PluginTTSService,
+    PluginUIService,
+)
 
 __all__ = [
     "ChatUIWidgetContribution",
+    "ContextProviderContribution",
     "KNOWN_PLUGIN_PERMISSIONS",
     "PERMISSION_CHAT_UI",
+    "PERMISSION_CONTEXT_PROVIDER",
     "PERMISSION_EVENT_APP",
     "PERMISSION_EVENT_CHARACTER",
     "PERMISSION_EVENT_MESSAGE",
@@ -40,18 +51,24 @@ __all__ = [
     "PERMISSION_TOOL",
     "PERMISSION_TOOLS_TAB",
     "PLUGIN_API_VERSION",
+    "PluginAgentService",
     "PluginBase",
     "PluginCapabilities",
     "PluginCapabilityRegistry",
     "PluginContext",
     "PluginDiscovery",
     "PluginEvent",
+    "PluginEventBus",
     "PluginLoadResult",
     "PluginManager",
     "PluginManifest",
     "PluginManifestView",
+    "PluginServices",
     "PluginSpec",
+    "PluginTTSService",
+    "PluginUIService",
     "PromptPatchContribution",
+    "ScopedEventBus",
     "SettingsPanelContribution",
     "ToolContribution",
     "ToolsTabContribution",

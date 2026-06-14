@@ -64,6 +64,10 @@ plugins/playwright_browser/config.json
 !plugins/example_plugin/**
 plugins/example_plugin/__pycache__/
 plugins/example_plugin/**/*.py[cod]
+!plugins/emotion_state_example/
+!plugins/emotion_state_example/**
+plugins/emotion_state_example/__pycache__/
+plugins/emotion_state_example/**/*.py[cod]
 
 # 备份文件
 *.bak

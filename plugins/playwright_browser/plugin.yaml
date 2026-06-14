@@ -8,4 +8,4 @@ enabled: true
 priority: 40
 permissions:
   - tool
-  - tools_tab
+  - settings_panel

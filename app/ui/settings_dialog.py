@@ -385,19 +385,11 @@ class SettingsDialog(QDialog):
         self.plugin_table.setItem(row, 0, enabled_item)
         self._set_plugin_checkbox_widget(row, spec)
 
-        values = [
-            spec.name or spec.plugin_id or spec.entry,
-            spec.version,
-            str(spec.priority),
-            "内置清单" if spec.source == "manifest" else "配置",
-            spec.description or "暂无介绍。",
-        ]
-        for column, value in enumerate(values, start=1):
-            item = QTableWidgetItem(value)
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            if column == 5:
-                item.setToolTip(value)
-            self.plugin_table.setItem(row, column, item)
+        display_name = spec.name or spec.plugin_id or spec.entry
+        name_item = QTableWidgetItem(display_name)
+        name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        name_item.setToolTip(display_name)
+        self.plugin_table.setItem(row, 1, name_item)
         self._apply_plugin_row_style(row)
 
     def _set_plugin_checkbox_widget(self, row: int, spec: PluginSpec) -> None:
@@ -409,11 +401,18 @@ class SettingsDialog(QDialog):
         checkbox.setChecked(spec.enabled or spec.required)
         checkbox.setEnabled(not spec.required)
         checkbox.setToolTip("启用此插件" if not spec.required else "必需插件不可禁用。")
-        checkbox.stateChanged.connect(lambda _state, current_row=row: self._apply_plugin_row_style(current_row))
+        checkbox.stateChanged.connect(
+            lambda _state, current_row=row: self._handle_plugin_enabled_check_changed(current_row)
+        )
         layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignCenter)
         container.setLayout(layout)
         self.plugin_table.setCellWidget(row, 0, container)
         self._style_plugin_checkbox_container(container, row)
+
+    def _handle_plugin_enabled_check_changed(self, row: int) -> None:
+        self._apply_plugin_row_style(row)
+        if getattr(self, "plugin_table", None) is not None and self.plugin_table.currentRow() == row:
+            self._refresh_plugin_detail_panel(row)
 
     def _apply_plugin_row_style(self, row: int) -> None:
         brush = _memory_row_background(row, False, self.theme_settings)
@@ -447,6 +446,83 @@ class SettingsDialog(QDialog):
                 spec.required if spec is not None and spec.required else checkbox is not None and checkbox.isChecked()
             )
         return selected
+
+    def _plugin_row_enabled(self, row: int) -> bool:
+        if not hasattr(self, "plugin_table"):
+            return False
+        item = self.plugin_table.item(row, 0)
+        if item is None:
+            return False
+        plugin_id = item.data(Qt.ItemDataRole.UserRole)
+        spec = self._plugin_specs_by_id.get(plugin_id) if isinstance(plugin_id, str) else None
+        if spec is not None and spec.required:
+            return True
+        container = self.plugin_table.cellWidget(row, 0)
+        checkbox = container.findChild(QCheckBox) if container is not None else None
+        return bool(checkbox is not None and checkbox.isChecked())
+
+    def _refresh_plugin_detail_panel(self, row: int | None = None) -> None:
+        if not hasattr(self, "plugin_detail_title_label"):
+            return
+        if not self.plugin_specs:
+            self.plugin_detail_title_label.setText("暂无插件")
+            self.plugin_detail_meta_label.setText("当前没有发现可管理的插件。")
+            self.plugin_detail_permissions_label.setText("无")
+            self.plugin_detail_description_label.setText("插件目录为空，或尚未配置插件清单。")
+            self._show_plugin_settings_empty("暂无可管理插件。")
+            return
+
+        if row is None or row < 0 or row >= len(self.plugin_specs):
+            row = 0
+        spec = self.plugin_specs[row]
+        selected_enabled = self._plugin_row_enabled(row)
+        persisted_enabled = bool(spec.enabled or spec.required)
+        status = "已启用" if selected_enabled else "已禁用"
+        if selected_enabled != persisted_enabled:
+            status += "（保存并重启后生效）"
+        if spec.required:
+            status += "，必需插件"
+
+        source = "内置清单" if spec.source == "manifest" else "配置"
+        self.plugin_detail_title_label.setText(spec.name or spec.plugin_id or spec.entry)
+        self.plugin_detail_meta_label.setText(
+            "\n".join(
+                [
+                    f"版本：{spec.version}",
+                    f"优先级：{spec.priority}",
+                    f"来源：{source}",
+                    f"状态：{status}",
+                ]
+            )
+        )
+        self.plugin_detail_permissions_label.setText(
+            "、".join(spec.permissions) if spec.permissions else "未声明"
+        )
+        self.plugin_detail_description_label.setText(spec.description or "暂无介绍。")
+
+        pages_by_id = getattr(self, "_plugin_settings_pages_by_id", {})
+        page = pages_by_id.get(spec.plugin_id)
+        if page is None and len(pages_by_id) == 1:
+            page = pages_by_id.get("__unscoped__")
+        if page is not None and hasattr(self, "plugin_settings_stack"):
+            self.plugin_settings_stack.setCurrentWidget(page)
+            return
+
+        if not spec.enabled and selected_enabled:
+            text = "已选择启用此插件。保存并重启 Sakura 后，内置详细设置会在下次启动后显示。"
+        elif not spec.enabled:
+            text = "此插件当前未启用。启用并保存重启后，才会加载内置详细设置。"
+        elif spec.enabled and not selected_enabled:
+            text = "此插件将在保存并重启 Sakura 后禁用；当前没有可显示的内置详细设置。"
+        else:
+            text = "暂无内置详细设置。"
+        self._show_plugin_settings_empty(text)
+
+    def _show_plugin_settings_empty(self, text: str) -> None:
+        if hasattr(self, "plugin_settings_empty_label"):
+            self.plugin_settings_empty_label.setText(text)
+        if hasattr(self, "plugin_settings_stack") and hasattr(self, "_plugin_settings_empty_page"):
+            self.plugin_settings_stack.setCurrentWidget(self._plugin_settings_empty_page)
 
     @Slot(bool)
     def _sync_proactive_screen_context_controls(self, enabled: bool) -> None:

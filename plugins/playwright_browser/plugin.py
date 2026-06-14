@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
-from app.plugins import ToolContribution, ToolsTabContribution
+from app.plugins import SettingsPanelContribution, ToolContribution
 
 from plugins.playwright_browser import browser
 
@@ -23,11 +23,11 @@ class PlaywrightBrowserPlugin(PluginBase):
         plugin_root = context.plugin_root
         browser.set_plugin_root(plugin_root)
         _register_tools(register)
-        register.register_tools_tab(
-            ToolsTabContribution(
-                tab_id="playwright_browser",
+        register.register_settings_panel(
+            SettingsPanelContribution(
+                section_id="playwright_browser",
                 title="Playwright 浏览器",
-                build=lambda parent=None: _build_tools_tab(plugin_root, parent),
+                build=lambda parent=None: _build_settings_panel(plugin_root, parent),
                 order=40.0,
             )
         )
@@ -128,7 +128,7 @@ def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
     }
 
 
-def _build_tools_tab(plugin_root: Path, parent: Any = None) -> Any:
+def _build_settings_panel(plugin_root: Path, parent: Any = None) -> Any:
     try:
         from plugins.playwright_browser.settings_tab import PlaywrightBrowserSettingsTab
     except Exception:

@@ -18,9 +18,11 @@ from app.core.debug_log import debug_log
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.events import PluginEventBus, ScopedEventBus
 from app.plugins.models import (
     KNOWN_PLUGIN_PERMISSIONS,
     PERMISSION_CHAT_UI,
+    PERMISSION_CONTEXT_PROVIDER,
     PERMISSION_EVENT_APP,
     PERMISSION_EVENT_CHARACTER,
     PERMISSION_EVENT_MESSAGE,
@@ -30,12 +32,14 @@ from app.plugins.models import (
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     PLUGIN_API_VERSION,
+    ContextProviderContribution,
     PluginEvent,
     PluginManifest,
     PluginManifestView,
     PluginSpec,
     ToolContribution,
 )
+from app.plugins.services import PluginServices
 from app.storage.paths import StoragePaths
 
 
@@ -85,6 +89,22 @@ class PluginManager:
     _loaded: list[PluginLoadResult] = field(default_factory=list)
     _plugins: list[PluginBase] = field(default_factory=list)
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
+    _event_bus: PluginEventBus = field(default_factory=PluginEventBus)
+    _services: PluginServices = field(default_factory=PluginServices)
+
+    @property
+    def event_bus(self) -> PluginEventBus:
+        """宿主用于 emit 的事件总线。"""
+        return self._event_bus
+
+    @property
+    def services(self) -> PluginServices:
+        """宿主用于注入真实后端的服务门面。"""
+        return self._services
+
+    def emit_bus_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
+        """向事件总线派发事件（供宿主在关键时机调用）。"""
+        self._event_bus.emit(event_name, payload)
 
     def load_from_config(self, tool_registry: ToolRegistry) -> None:
         """加载配置中的启用插件并注册工具。"""
@@ -133,7 +153,12 @@ class PluginManager:
             result.manifest = manifest
 
             capability_registry = PluginCapabilityRegistry()
-            context = _build_plugin_context(self.base_dir, manifest)
+            context = _build_plugin_context(
+                self.base_dir,
+                manifest,
+                event_bus=self._event_bus,
+                services=self._services,
+            )
             _initialize_plugin(plugin, capability_registry, context)
             legacy_tool_contributions = _consume_legacy_registered_tool_contributions()
             all_tool_contributions = [
@@ -151,10 +176,14 @@ class PluginManager:
             capabilities = PluginCapabilities(
                 plugin_id=manifest.plugin_id,
                 tools=list(all_tool_contributions),
-                settings_panels=list(capability_registry.settings_panels),
+                settings_panels=[
+                    replace(panel, plugin_id=manifest.plugin_id)
+                    for panel in capability_registry.settings_panels
+                ],
                 tools_tabs=list(capability_registry.tools_tabs),
                 chat_ui_widgets=list(capability_registry.chat_ui_widgets),
                 prompt_patches=list(capability_registry.prompt_patches),
+                context_providers=list(capability_registry.context_providers),
             )
             if tool_registry is not None:
                 for contribution in capabilities.tools:
@@ -176,12 +205,16 @@ class PluginManager:
                     "settings_panels": len(capabilities.settings_panels),
                     "chat_ui_widgets": len(capabilities.chat_ui_widgets),
                     "prompt_patches": len(capabilities.prompt_patches),
+                    "context_providers": len(capabilities.context_providers),
                 },
             )
         except Exception as exc:
             result.error = str(exc)
             if plugin is not None:
                 _shutdown_quietly(plugin)
+            # 加载失败时清理可能已注册的事件订阅，避免残留 handler。
+            if result.manifest is not None:
+                self._event_bus.remove_plugin(result.manifest.plugin_id)
             debug_log(
                 "PluginManager",
                 "插件加载失败",
@@ -259,6 +292,13 @@ class PluginManager:
                 patches.extend(result.capabilities.prompt_patches)
         return patches
 
+    def collect_context_providers(self) -> list[ContextProviderContribution]:
+        providers: list[ContextProviderContribution] = []
+        for result in self._loaded:
+            if result.capabilities:
+                providers.extend(result.capabilities.context_providers)
+        return providers
+
     @property
     def tools_tabs(self) -> list:
         return self.collect_tools_tabs()
@@ -275,10 +315,15 @@ class PluginManager:
     def prompt_patches(self) -> list:
         return self.collect_prompt_patches()
 
+    @property
+    def context_providers(self) -> list[ContextProviderContribution]:
+        return self.collect_context_providers()
+
     def shutdown_all(self) -> None:
-        """逆序关闭所有已加载插件。"""
-        for plugin in reversed(self._plugins):
+        """逆序关闭所有已加载插件，并清理其事件订阅。"""
+        for plugin, manifest in reversed(self._active_plugins):
             _shutdown_quietly(plugin)
+            self._event_bus.remove_plugin(manifest.plugin_id)
 
     @property
     def loaded_count(self) -> int:
@@ -418,6 +463,7 @@ def _validate_capability_permissions(
         (registry.settings_panels, PERMISSION_SETTINGS_PANEL, "设置面板"),
         (registry.chat_ui_widgets, PERMISSION_CHAT_UI, "聊天 UI"),
         (registry.prompt_patches, PERMISSION_PROMPT_PATCH, "提示词补丁"),
+        (registry.context_providers, PERMISSION_CONTEXT_PROVIDER, "上下文提供者"),
     )
     for contributions, permission, label in checks:
         if contributions and permission not in permission_set:
@@ -431,7 +477,13 @@ def _string_attr(plugin: PluginBase, name: str) -> str:
     return ""
 
 
-def _build_plugin_context(base_dir: Path, manifest: PluginManifest) -> PluginContext:
+def _build_plugin_context(
+    base_dir: Path,
+    manifest: PluginManifest,
+    *,
+    event_bus: PluginEventBus | None = None,
+    services: PluginServices | None = None,
+) -> PluginContext:
     plugin_root = manifest.plugin_root or base_dir / "plugins" / manifest.plugin_id
     data_dir = StoragePaths(base_dir).plugin_data_for(manifest.plugin_id)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -446,11 +498,17 @@ def _build_plugin_context(base_dir: Path, manifest: PluginManifest) -> PluginCon
         required=manifest.required,
         permissions=manifest.permissions,
     )
+    # 每插件一个 ScopedEventBus（只开放订阅）；services 为共享门面。
+    scoped_events = (
+        ScopedEventBus(event_bus, manifest.plugin_id) if event_bus is not None else None
+    )
     return PluginContext(
         base_dir=base_dir,
         plugin_root=plugin_root,
         data_dir=data_dir,
         manifest=manifest_view,
+        events=scoped_events,
+        services=services,
     )
 
 

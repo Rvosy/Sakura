@@ -14,6 +14,7 @@ PERMISSION_TOOLS_TAB = "tools_tab"
 PERMISSION_SETTINGS_PANEL = "settings_panel"
 PERMISSION_CHAT_UI = "chat_ui"
 PERMISSION_PROMPT_PATCH = "prompt_patch"
+PERMISSION_CONTEXT_PROVIDER = "context_provider"
 PERMISSION_EVENT_APP = "event.app"
 PERMISSION_EVENT_MESSAGE = "event.message"
 PERMISSION_EVENT_TTS = "event.tts"
@@ -26,6 +27,7 @@ KNOWN_PLUGIN_PERMISSIONS = frozenset(
         PERMISSION_SETTINGS_PANEL,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
+        PERMISSION_CONTEXT_PROVIDER,
         PERMISSION_EVENT_APP,
         PERMISSION_EVENT_MESSAGE,
         PERMISSION_EVENT_TTS,
@@ -66,6 +68,7 @@ class SettingsPanelContribution:
     title: str
     build: Callable[[Any], Any]
     order: float = 100.0
+    plugin_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,25 @@ class PromptPatchContribution:
     patch_id: str
     system_prompt_append: str = ""
     reply_protocol_append: str = ""
+
+
+@dataclass(frozen=True)
+class ContextProviderContribution:
+    """插件贡献的动态上下文提供者。
+
+    与 ``PromptPatchContribution`` 区分职责：
+    - PromptPatch 用于修改系统提示词、回复协议（相对静态）。
+    - ContextProvider 在每次构建 prompt 时动态生成一段局部上下文（如情绪、
+      屏幕摘要），由宿主统一组装，插件不拼完整 prompt。
+
+    ``build_context`` 接收宿主传入的上下文字典（本轮预留为空字典），返回字符串。
+    """
+
+    provider_id: str
+    description: str
+    build_context: Callable[[dict[str, Any]], str]
+    order: float = 100.0
+    enabled: bool = True
 
 
 @dataclass(frozen=True)

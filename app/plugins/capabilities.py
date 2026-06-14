@@ -8,6 +8,7 @@ from typing import Any, Callable, get_args, get_origin
 
 from app.plugins.models import (
     ChatUIWidgetContribution,
+    ContextProviderContribution,
     PromptPatchContribution,
     SettingsPanelContribution,
     ToolContribution,
@@ -25,6 +26,7 @@ class PluginCapabilities:
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
     prompt_patches: list[PromptPatchContribution] = field(default_factory=list)
+    context_providers: list[ContextProviderContribution] = field(default_factory=list)
 
 
 @dataclass
@@ -36,6 +38,7 @@ class PluginCapabilityRegistry:
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
     prompt_patches: list[PromptPatchContribution] = field(default_factory=list)
+    context_providers: list[ContextProviderContribution] = field(default_factory=list)
 
     def register_tool(self, contribution: ToolContribution) -> None:
         self.tools.append(contribution)
@@ -51,6 +54,9 @@ class PluginCapabilityRegistry:
 
     def register_prompt_patch(self, contribution: PromptPatchContribution) -> None:
         self.prompt_patches.append(contribution)
+
+    def register_context_provider(self, contribution: ContextProviderContribution) -> None:
+        self.context_providers.append(contribution)
 
     def tool(
         self,

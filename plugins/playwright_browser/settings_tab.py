@@ -1,10 +1,10 @@
-"""Playwright 插件设置页 — 挂载到 Tools 标签页。"""
+"""Playwright 插件设置页 — 挂载到插件管理详情。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +39,10 @@ class PlaywrightBrowserSettingsTab(QWidget):
         super().__init__(parent)
         self._root = plugin_root
         self._cfg_path = default_config_path(plugin_root)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(0)
+        self._save_timer.timeout.connect(self._save_now)
 
         lay = QVBoxLayout(self)
 
@@ -48,12 +52,13 @@ class PlaywrightBrowserSettingsTab(QWidget):
         cfg = load_config(self._cfg_path)
 
         self._browser_combo = QComboBox()
+        self._browser_combo.setMaxVisibleItems(len(BROWSER_CHOICES))
         for key in BROWSER_CHOICES:
             self._browser_combo.addItem(_BROWSER_LABELS.get(key, key), key)
         idx = self._browser_combo.findData(cfg.browser_type)
         if idx >= 0:
             self._browser_combo.setCurrentIndex(idx)
-        self._browser_combo.currentIndexChanged.connect(self._on_save)
+        self._browser_combo.currentIndexChanged.connect(self._schedule_save)
         form.addRow("浏览器类型", self._browser_combo)
 
         hint = QLabel(
@@ -66,13 +71,16 @@ class PlaywrightBrowserSettingsTab(QWidget):
 
         self._headless_cb = QCheckBox("无头模式（Headless）")
         self._headless_cb.setChecked(bool(cfg.headless))
-        self._headless_cb.toggled.connect(self._on_save)
+        self._headless_cb.toggled.connect(self._schedule_save)
         form.addRow(self._headless_cb)
 
         lay.addWidget(box)
         lay.addStretch(1)
 
-    def _on_save(self) -> None:
+    def _schedule_save(self) -> None:
+        self._save_timer.start()
+
+    def _save_now(self) -> None:
         cfg = PlaywrightBrowserConfig(
             headless=self._headless_cb.isChecked(),
             browser_type=str(self._browser_combo.currentData() or "chromium"),

@@ -99,7 +99,8 @@ def test_plugin_manager_loads_playwright_browser_plugin() -> None:
         "playwright_evaluate",
     }.issubset(names)
     assert registry.get("playwright_evaluate").requires_confirmation  # type: ignore[union-attr]
-    assert "Playwright 浏览器" in [tab.title for tab in manager.tools_tabs]
+    assert "Playwright 浏览器" in [panel.title for panel in manager.settings_panels]
+    assert "Playwright 浏览器" not in [tab.title for tab in manager.tools_tabs]
 
     manager.shutdown_all()
 
@@ -107,9 +108,9 @@ def test_plugin_manager_loads_playwright_browser_plugin() -> None:
 def test_plugin_config_manifest_is_read() -> None:
     specs = PluginDiscovery(Path(__file__).resolve().parents[2]).discover()
 
-    assert specs[0].plugin_id == "playwright_browser"
-    assert specs[0].entry == "plugin:PlaywrightBrowserPlugin"
-    assert specs[0].enabled
+    playwright = next(spec for spec in specs if spec.plugin_id == "playwright_browser")
+    assert playwright.entry == "plugin:PlaywrightBrowserPlugin"
+    assert playwright.enabled
     example_plugin = next(spec for spec in specs if spec.plugin_id == "example_plugin")
     assert example_plugin.entry == "plugin:ExamplePlugin"
     assert not example_plugin.enabled

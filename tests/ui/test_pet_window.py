@@ -1958,7 +1958,7 @@ def test_settings_dialog_manages_plugin_enabled_state() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox")):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel", "QSplitter")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.plugins.discovery import PluginDiscovery
@@ -1967,6 +1967,8 @@ def test_settings_dialog_manages_plugin_enabled_state() -> None:
     QApplication = qtwidgets.QApplication
     QTableWidget = qtwidgets.QTableWidget
     QCheckBox = qtwidgets.QCheckBox
+    QLabel = qtwidgets.QLabel
+    QSplitter = qtwidgets.QSplitter
     Qt = qtcore.Qt
     app = QApplication.instance() or QApplication([])
     root = _ui_runtime_root("plugin_manager_dialog")
@@ -2002,10 +2004,15 @@ permissions:
     )
 
     table = dialog.findChild(QTableWidget, "pluginManagerTable")
+    splitter = dialog.findChild(QSplitter, "pluginManagerSplitter")
+    description_label = dialog.findChild(QLabel, "pluginDetailDescriptionLabel")
     assert table is not None
+    assert splitter is not None
+    assert description_label is not None
     assert table.rowCount() == 1
+    assert table.columnCount() == 2
     assert table.item(0, 1).text() == "Demo 插件"
-    assert table.item(0, 5).text() == "用于测试插件管理页。"
+    assert description_label.text() == "用于测试插件管理页。"
 
     checkbox = table.cellWidget(0, 0).findChild(QCheckBox)
     assert checkbox is not None
@@ -2016,6 +2023,221 @@ permissions:
     assert specs[0].plugin_id == "demo"
     assert specs[0].enabled is False
     assert dialog.result_plugin_config_changed is True
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_plugin_detail_switches_settings_panel() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.plugins.models import SettingsPanelContribution
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QTableWidget = qtwidgets.QTableWidget
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_detail_switch")
+    _write_settings_plugin_manifest(
+        root,
+        "demo_a",
+        name="Demo A",
+        description="A 插件介绍",
+        priority=20,
+    )
+    _write_settings_plugin_manifest(
+        root,
+        "demo_b",
+        name="Demo B",
+        description="B 插件介绍",
+        priority=10,
+    )
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        settings_panel_contributions=[
+            SettingsPanelContribution(
+                section_id="demo_b_settings",
+                title="Demo B 设置",
+                build=lambda parent=None: QLabel("B 设置内容", parent),
+                plugin_id="demo_b",
+            )
+        ],
+    )
+
+    table = dialog.findChild(QTableWidget, "pluginManagerTable")
+    title_label = dialog.findChild(QLabel, "pluginDetailTitleLabel")
+    empty_label = dialog.findChild(QLabel, "pluginSettingsEmptyLabel")
+    description_label = dialog.findChild(QLabel, "pluginDetailDescriptionLabel")
+    assert table is not None
+    assert title_label is not None
+    assert empty_label is not None
+    assert description_label is not None
+    assert table.rowCount() == 2
+    assert title_label.text() == "Demo A"
+    assert empty_label.text() == "暂无内置详细设置。"
+
+    table.setCurrentCell(1, 1)
+    app.processEvents()
+
+    assert title_label.text() == "Demo B"
+    assert description_label.text() == "B 插件介绍"
+    assert any(
+        isinstance(label, QLabel) and label.text() == "B 设置内容"
+        for label in dialog.findChildren(QLabel)
+    )
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_plugin_detail_shows_disabled_restart_hint() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QTableWidget = qtwidgets.QTableWidget
+    QCheckBox = qtwidgets.QCheckBox
+    QLabel = qtwidgets.QLabel
+    Qt = qtcore.Qt
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_detail_disabled")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    table = dialog.findChild(QTableWidget, "pluginManagerTable")
+    empty_label = dialog.findChild(QLabel, "pluginSettingsEmptyLabel")
+    meta_label = dialog.findChild(QLabel, "pluginDetailMetaLabel")
+    assert table is not None
+    assert empty_label is not None
+    assert meta_label is not None
+    assert "当前未启用" in empty_label.text()
+
+    checkbox = table.cellWidget(0, 0).findChild(QCheckBox)
+    assert checkbox is not None
+    checkbox.setCheckState(Qt.CheckState.Checked)
+    app.processEvents()
+
+    assert "保存并重启" in empty_label.text()
+    assert "保存并重启" in meta_label.text()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_plugin_settings_build_failure_has_placeholder() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.plugins.models import SettingsPanelContribution
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_detail_build_failure")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件")
+
+    def build_failure(_parent=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        settings_panel_contributions=[
+            SettingsPanelContribution(
+                section_id="demo_settings",
+                title="Demo 设置",
+                build=build_failure,
+                plugin_id="demo",
+            )
+        ],
+    )
+
+    assert any(
+        isinstance(label, QLabel) and label.text() == "Demo 设置 设置加载失败：boom"
+        for label in dialog.findChildren(QLabel)
+    )
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_plugin_page_empty_state() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QTableWidget = qtwidgets.QTableWidget
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_detail_empty")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    table = dialog.findChild(QTableWidget, "pluginManagerTable")
+    title_label = dialog.findChild(QLabel, "pluginDetailTitleLabel")
+    empty_label = dialog.findChild(QLabel, "pluginSettingsEmptyLabel")
+    assert table is not None
+    assert title_label is not None
+    assert empty_label is not None
+    assert table.rowCount() == 0
+    assert title_label.text() == "暂无插件"
+    assert empty_label.text() == "暂无可管理插件。"
+
     dialog.deleteLater()
     app.processEvents()
 
@@ -3483,6 +3705,34 @@ def _ui_runtime_root(name: str) -> Path:
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _write_settings_plugin_manifest(
+    root: Path,
+    plugin_id: str,
+    *,
+    name: str,
+    description: str = "用于测试插件管理页。",
+    enabled: bool = True,
+    priority: int = 10,
+) -> None:
+    plugin_dir = root / "plugins" / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        f"""
+api_version: 1
+id: {plugin_id}
+name: {name}
+description: {description}
+version: 1.0.0
+entry: plugin:DemoPlugin
+enabled: {str(enabled).lower()}
+priority: {priority}
+permissions:
+  - settings_panel
+""".strip(),
+        encoding="utf-8",
+    )
 
 
 def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:

@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
@@ -77,6 +77,25 @@ class OpenAICompatibleClient:
     def __init__(self, settings: ApiSettings) -> None:
         self.settings = settings
         self._unsupported_chat_params: set[str] = set()
+        # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
+        self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
+
+    def set_event_emitter(
+        self,
+        emitter: Callable[[str, dict[str, Any] | None], None] | None,
+    ) -> None:
+        """注入插件事件发射器；传 None 关闭。"""
+        self._event_emit = emitter
+
+    def _emit_llm_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
+        """安全派发 LLM 请求事件，发射器异常不影响请求本身。"""
+        emitter = self._event_emit
+        if emitter is None:
+            return
+        try:
+            emitter(event_name, payload)
+        except Exception:  # noqa: BLE001 — 事件派发不得影响 LLM 请求
+            pass
 
     def update_settings(self, settings: ApiSettings) -> None:
         """运行时更新 API 配置，供设置界面保存后立即生效。"""
@@ -399,14 +418,23 @@ class OpenAICompatibleClient:
                 "payload": payload,
             },
         )
-        response_body = self._send_with_retries(request, cancel_checker=cancel_checker)
-        check_cancelled(cancel_checker)
-
+        model_name = payload.get("model")
+        self._emit_llm_event("llm.request.started", {"model": model_name})
         try:
-            data: dict[str, Any] = json.loads(response_body)
-        except json.JSONDecodeError as exc:
-            raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
+            response_body = self._send_with_retries(request, cancel_checker=cancel_checker)
+            check_cancelled(cancel_checker)
+            try:
+                data: dict[str, Any] = json.loads(response_body)
+            except json.JSONDecodeError as exc:
+                raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
+        except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
+            self._emit_llm_event(
+                "llm.request.failed",
+                {"model": model_name, "error": str(exc)},
+            )
+            raise
 
+        self._emit_llm_event("llm.request.finished", {"model": model_name})
         return data
 
     def _send_with_retries(

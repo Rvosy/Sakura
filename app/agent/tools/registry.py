@@ -105,8 +105,27 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         from app.agent.tools.permission_policy import ToolPermissionPolicy
         self.permission_policy = ToolPermissionPolicy()
+        # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
+        self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
         for tool in tools or []:
             self.register(tool)
+
+    def set_event_emitter(
+        self,
+        emitter: Callable[[str, dict[str, Any] | None], None] | None,
+    ) -> None:
+        """注入插件事件发射器；传 None 关闭。"""
+        self._event_emit = emitter
+
+    def _emit_tool_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
+        """安全派发工具事件，发射器异常不影响工具执行。"""
+        emitter = self._event_emit
+        if emitter is None:
+            return
+        try:
+            emitter(event_name, payload)
+        except Exception:  # noqa: BLE001 — 事件派发不得影响工具执行
+            pass
 
     # ---- 注册 ----
 
@@ -374,6 +393,10 @@ class ToolRegistry:
                     "arguments": arguments,
                 },
             )
+            self._emit_tool_event(
+                "tool.started",
+                {"name": name, "group": tool.group, "risk": tool.risk},
+            )
             content = tool.handler(arguments)
         except Exception as exc:
             result = ToolExecutionResult(
@@ -383,6 +406,7 @@ class ToolRegistry:
                 error=str(exc),
             )
             debug_log("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
+            self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
             return result
         result = ToolExecutionResult(
             tool_name=name,
@@ -390,6 +414,7 @@ class ToolRegistry:
             content=content,
         )
         debug_log("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        self._emit_tool_event("tool.finished", {"name": name})
         return result
 
 

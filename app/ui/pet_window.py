@@ -94,6 +94,14 @@ from app.plugins.manager import (
     PLUGIN_EVENT_TTS_START,
     PLUGIN_EVENT_USER_MESSAGE,
 )
+from app.plugins.events import (
+    EVENT_APP_CLOSING,
+    EVENT_APP_STARTED,
+    EVENT_CHAT_MESSAGE_RECEIVED,
+    EVENT_CHAT_MESSAGE_SENT,
+    EVENT_TTS_FINISHED,
+    EVENT_TTS_STARTED,
+)
 from app.ui.state import PetUiState, PetUiStateStore
 from app.config.settings_service import BubbleSettings, StartupSettings
 from app.platforms.launch_at_login import (
@@ -1094,6 +1102,15 @@ class PetWindow(QWidget):
             },
             source="startup",
         )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(
+                EVENT_APP_STARTED,
+                {
+                    "character_id": self.character_profile.id,
+                    "character_name": self.character_profile.display_name,
+                },
+            )
 
     def _emit_app_closed_event(self) -> None:
         """关闭前落盘 app.closed（供下次启动衔接）。退出链路可能多次触发，做一次性保护。"""
@@ -1106,6 +1123,12 @@ class PetWindow(QWidget):
             metadata={"interrupted_reply": self.worker_thread is not None},
             inject=False,
         )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(
+                EVENT_APP_CLOSING,
+                {"interrupted_reply": self.worker_thread is not None},
+            )
 
     def _emit_plugin_event(
         self,
@@ -1127,19 +1150,46 @@ class PetWindow(QWidget):
                 {"event_type": event_type, "error": str(exc)},
             )
 
+    def _emit_plugin_bus_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """向插件事件总线派发事件（与旧 hook 机制并存）。"""
+        manager = getattr(self, "plugin_manager", None)
+        emit_bus = getattr(manager, "emit_bus_event", None)
+        if not callable(emit_bus):
+            return
+        try:
+            emit_bus(event_name, payload or {})
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "PluginEventBus",
+                "插件总线事件派发失败",
+                {"event": event_name, "error": str(exc)},
+            )
+
     def _emit_tts_start_plugin_event(self, segment: ChatSegment, sequence_id: int) -> None:
+        payload = self._tts_plugin_payload(segment, sequence_id)
         self._emit_plugin_event(
             PLUGIN_EVENT_TTS_START,
-            self._tts_plugin_payload(segment, sequence_id),
+            payload,
             source="tts",
         )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(EVENT_TTS_STARTED, payload)
 
     def _emit_tts_end_plugin_event(self, segment: ChatSegment, sequence_id: int) -> None:
+        payload = self._tts_plugin_payload(segment, sequence_id)
         self._emit_plugin_event(
             PLUGIN_EVENT_TTS_END,
-            self._tts_plugin_payload(segment, sequence_id),
+            payload,
             source="tts",
         )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(EVENT_TTS_FINISHED, payload)
 
     def _tts_plugin_payload(self, segment: ChatSegment, sequence_id: int) -> dict[str, Any]:
         return {
@@ -2270,6 +2320,15 @@ class PetWindow(QWidget):
             },
             source="agent",
         )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(
+                EVENT_CHAT_MESSAGE_SENT,
+                {
+                    "text": reply.text,
+                    "character_id": self.character_profile.id,
+                },
+            )
         self._show_reply_segments(reply.segments)
         self._apply_pending_action_from_result(result)
 
@@ -2603,6 +2662,15 @@ class PetWindow(QWidget):
                     "character_id": self.character_profile.id,
                 },
                 source="user",
+            )
+        emit_plugin_bus_event = getattr(self, "_emit_plugin_bus_event", None)
+        if callable(emit_plugin_bus_event):
+            emit_plugin_bus_event(
+                EVENT_CHAT_MESSAGE_RECEIVED,
+                {
+                    "text": text,
+                    "character_id": self.character_profile.id,
+                },
             )
 
     @Slot()
@@ -3543,6 +3611,14 @@ class PetWindow(QWidget):
         self.free_access_enabled = self.tool_registry.free_access_enabled
         self.agent_runtime.tools = services.tool_registry
         self.agent_runtime.set_prompt_patches(services.plugin_manager.prompt_patches)
+        self.agent_runtime.set_context_providers(services.plugin_manager.context_providers)
+        # 把插件事件总线接到工具执行与 LLM 请求链路，供插件订阅 tool.* / llm.request.*。
+        emit_bus_event = getattr(services.plugin_manager, "emit_bus_event", None)
+        if callable(emit_bus_event):
+            services.tool_registry.set_event_emitter(emit_bus_event)
+            api_client = getattr(self.agent_runtime, "api_client", None)
+            if api_client is not None and hasattr(api_client, "set_event_emitter"):
+                api_client.set_event_emitter(emit_bus_event)
         self.mcp_tool_provider = services.mcp_tool_provider
         self.plugin_manager = services.plugin_manager
         self._sync_plugin_chat_ui_widgets()

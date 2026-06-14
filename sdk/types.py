@@ -6,6 +6,7 @@
 
 from app.plugins.models import (
     ChatUIWidgetContribution,
+    ContextProviderContribution,
     PluginManifestView,
     PromptPatchContribution,
     SettingsPanelContribution,
@@ -15,6 +16,7 @@ from app.plugins.models import (
 
 __all__ = [
     "ChatUIWidgetContribution",
+    "ContextProviderContribution",
     "PluginManifestView",
     "PromptPatchContribution",
     "SettingsPanelContribution",
