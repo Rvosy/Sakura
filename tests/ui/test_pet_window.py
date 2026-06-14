@@ -6969,6 +6969,7 @@ def test_input_bar_pinned_while_waiting_reply() -> None:
     class MinimalInputBarWindow:
         _input_bar_pinned = PetWindow._input_bar_pinned
         _any_dialog_open = lambda _self: False
+        _input_bar_foreground_allowed = lambda _self: True
 
     window = MinimalInputBarWindow()
     window.input_edit = _DummyEditableInput("")
@@ -8846,6 +8847,195 @@ def test_local_rect_to_global_keeps_size_and_uses_main_window_origin() -> None:
     assert result.size() == rect.size()
     assert result.topLeft() == host.mapToGlobal(QPoint(10, 20))
     host.deleteLater()
+
+
+def test_cursor_in_pet_region_requires_exposed_pet_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _cursor_in_pet_region = PetWindow._cursor_in_pet_region
+        _cursor_over_exposed_pet_window = PetWindow._cursor_over_exposed_pet_window
+        _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
+        always_on_top_enabled = True
+
+        def _any_dialog_open(self) -> bool:
+            return False
+
+        def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return True
+
+        def frameGeometry(self):  # type: ignore[no-untyped-def]
+            return qtcore.QRect(0, 0, 120, 80)
+
+        def windowHandle(self):  # type: ignore[no-untyped-def]
+            return object()
+
+        def isAncestorOf(self, _widget) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+    pos = qtcore.QPoint(20, 20)
+    window = MinimalWindow()
+    monkeypatch.setattr(pet_window_module.QCursor, "pos", lambda: pos)
+    monkeypatch.setattr(pet_window_module.QApplication, "widgetAt", lambda _pos: None)
+    monkeypatch.setattr(pet_window_module.QApplication, "topLevelAt", lambda _pos: None, raising=False)
+
+    # 坐标在窗口矩形内，但光标下方实际不是桌宠时，不应触发 hover 浮现。
+    assert window._cursor_in_pet_region() is False
+
+
+def test_cursor_in_pet_region_accepts_exposed_child_widget(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _cursor_in_pet_region = PetWindow._cursor_in_pet_region
+        _cursor_over_exposed_pet_window = PetWindow._cursor_over_exposed_pet_window
+        _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
+        always_on_top_enabled = True
+
+        def _any_dialog_open(self) -> bool:
+            return False
+
+        def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return True
+
+        def frameGeometry(self):  # type: ignore[no-untyped-def]
+            return qtcore.QRect(0, 0, 120, 80)
+
+        def isAncestorOf(self, _widget) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+    class ChildWidget:
+        def __init__(self, window: MinimalWindow) -> None:
+            self._window = window
+
+        def window(self) -> MinimalWindow:
+            return self._window
+
+    pos = qtcore.QPoint(20, 20)
+    window = MinimalWindow()
+    child = ChildWidget(window)
+    monkeypatch.setattr(pet_window_module.QCursor, "pos", lambda: pos)
+    monkeypatch.setattr(pet_window_module.QApplication, "widgetAt", lambda _pos: child)
+
+    assert window._cursor_in_pet_region() is True
+
+
+def test_cursor_in_pet_region_blocks_non_topmost_background_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _cursor_in_pet_region = PetWindow._cursor_in_pet_region
+        _cursor_over_exposed_pet_window = PetWindow._cursor_over_exposed_pet_window
+        _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
+        _is_pet_foreground_window = PetWindow._is_pet_foreground_window
+        always_on_top_enabled = False
+
+        def _any_dialog_open(self) -> bool:
+            return False
+
+        def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return True
+
+        def frameGeometry(self):  # type: ignore[no-untyped-def]
+            return qtcore.QRect(0, 0, 120, 80)
+
+        def isAncestorOf(self, _widget) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+        def isActiveWindow(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+    class ChildWidget:
+        def __init__(self, window: MinimalWindow) -> None:
+            self._window = window
+
+        def window(self) -> MinimalWindow:
+            return self._window
+
+    pos = qtcore.QPoint(20, 20)
+    window = MinimalWindow()
+    child = ChildWidget(window)
+    monkeypatch.setattr(pet_window_module.sys, "platform", "linux")
+    monkeypatch.setattr(pet_window_module.QCursor, "pos", lambda: pos)
+    monkeypatch.setattr(pet_window_module.QApplication, "activeWindow", lambda: None)
+    monkeypatch.setattr(pet_window_module.QApplication, "widgetAt", lambda _pos: child)
+
+    assert window._cursor_in_pet_region() is False
+
+
+def test_cursor_in_pet_region_allows_non_topmost_foreground_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _cursor_in_pet_region = PetWindow._cursor_in_pet_region
+        _cursor_over_exposed_pet_window = PetWindow._cursor_over_exposed_pet_window
+        _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
+        _is_pet_foreground_window = PetWindow._is_pet_foreground_window
+        always_on_top_enabled = False
+
+        def _any_dialog_open(self) -> bool:
+            return False
+
+        def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return True
+
+        def frameGeometry(self):  # type: ignore[no-untyped-def]
+            return qtcore.QRect(0, 0, 120, 80)
+
+        def isAncestorOf(self, _widget) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+    class ChildWidget:
+        def __init__(self, window: MinimalWindow) -> None:
+            self._window = window
+
+        def window(self) -> MinimalWindow:
+            return self._window
+
+    pos = qtcore.QPoint(20, 20)
+    window = MinimalWindow()
+    child = ChildWidget(window)
+    monkeypatch.setattr(pet_window_module.sys, "platform", "linux")
+    monkeypatch.setattr(pet_window_module.QCursor, "pos", lambda: pos)
+    monkeypatch.setattr(pet_window_module.QApplication, "activeWindow", lambda: child)
+    monkeypatch.setattr(pet_window_module.QApplication, "widgetAt", lambda _pos: child)
+
+    assert window._cursor_in_pet_region() is True
+
+
+def test_input_bar_pinned_requires_foreground_when_not_topmost() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class InputStub:
+        def hasFocus(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return False
+
+        def text(self) -> str:
+            return "未发送文本"
+
+    class MinimalWindow:
+        _input_bar_pinned = PetWindow._input_bar_pinned
+        _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
+        always_on_top_enabled = False
+        input_edit = InputStub()
+        reply_waiting_ui_active = False
+        pending_tool_action = None
+
+        def _any_dialog_open(self) -> bool:
+            return False
+
+        def _is_pet_foreground_window(self) -> bool:
+            return False
+
+    assert MinimalWindow()._input_bar_pinned() is False
 
 
 def test_input_bar_animator_visibility_follows_hover_and_pin() -> None:

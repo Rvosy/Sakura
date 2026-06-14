@@ -1706,10 +1706,65 @@ class PetWindow(QWidget):
         # 设置/历史窗口打开时禁用输入栏浮现，避免盖住对话框。
         if self._any_dialog_open():
             return False
+        if not self._input_bar_foreground_allowed():
+            return False
         # 单窗口重构后气泡/输入栏已并入主窗口，主窗口几何即桌宠整体区域；
-        # 光标落在其中即视为悬停桌宠（暂停自动隐藏倒计时）。
+        # 但只有桌宠实际位于光标下方时才视为悬停，避免窗口被其他软件遮挡时误触发输入栏浮现。
         pos = QCursor.pos()
-        return self.isVisible() and self.frameGeometry().contains(pos)
+        return (
+            self.isVisible()
+            and self.frameGeometry().contains(pos)
+            and self._cursor_over_exposed_pet_window(pos)
+        )
+
+    def _cursor_over_exposed_pet_window(self, pos: QPoint) -> bool:
+        """确认当前全局坐标实际命中的 Qt 窗口属于桌宠。
+
+        单纯用 frameGeometry 会在桌宠被其他窗口遮挡时误判 hover；widgetAt/topLevelAt
+        会经过平台命中测试，被外部窗口盖住时不会返回当前桌宠窗口。
+        """
+        widget = QApplication.widgetAt(pos)
+        if widget is not None:
+            return widget is self or widget.window() is self or self.isAncestorOf(widget)
+
+        top_level_at = getattr(QApplication, "topLevelAt", None)
+        window_handle = self.windowHandle()
+        if not callable(top_level_at) or window_handle is None:
+            return False
+        try:
+            return top_level_at(pos) is window_handle
+        except Exception:
+            return False
+
+    def _input_bar_foreground_allowed(self) -> bool:
+        """非置顶模式下，只有桌宠处于前台窗口时才允许输入栏显示。"""
+        if bool(getattr(self, "always_on_top_enabled", False)):
+            return True
+        return self._is_pet_foreground_window()
+
+    def _is_pet_foreground_window(self) -> bool:
+        """判断桌宠是否为当前前台窗口，优先使用 Windows 原生前台 HWND。"""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                hwnd = int(self.winId())
+                if hwnd:
+                    return int(ctypes.windll.user32.GetForegroundWindow()) == hwnd
+            except Exception:
+                pass
+
+        active_window = QApplication.activeWindow()
+        if active_window is not None:
+            return (
+                active_window is self
+                or active_window.window() is self
+                or self.isAncestorOf(active_window)
+            )
+        try:
+            return bool(self.isActiveWindow())
+        except Exception:
+            return False
 
     def _input_bar_pinned(self) -> bool:
         """输入栏在以下任一情况保持常显，避免用户操作中途被收起。
@@ -1719,6 +1774,8 @@ class PetWindow(QWidget):
         """
         # 设置/历史窗口打开时不固定输入栏，配合 hover 禁用一起彻底收起。
         if self._any_dialog_open():
+            return False
+        if not self._input_bar_foreground_allowed():
             return False
         return (
             self.input_edit.hasFocus()
