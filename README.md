@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/github/license/Rvosy/sakura)](LICENSE)
 
-[English](docs/README.en.md)
+[English](docs/README.en.md) [安装教程](docs/SETUP.md) [API配置教程](docs/API_CONFIG.md)  [插件开发文档](docs/SAKURA_PLUGIN_SDK.md)  [技术文档](docs/TECHNICAL_README.md) 
 
 </div>
 
@@ -86,7 +86,8 @@ Sakura 最大的特点是：**她会主动来找你**。
 
 | 文档 | 内容 |
 |---|---|
-| [安装与配置指南](docs/SETUP.md) | 完整安装步骤、API Key 配置、角色包获取、版本更新 |
+| [安装与配置指南](docs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
+| [API 配置教程](docs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
 | [macOS 安装指南](docs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
 | [技术讲解 README](docs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
 | [插件 SDK 文档](docs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |

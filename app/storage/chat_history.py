@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from app.storage.atomic import atomic_write_text
+
 
 @dataclass(frozen=True)
 class ChatHistoryEntry:
@@ -97,5 +99,4 @@ class ChatHistoryStore:
         return entries
 
     def clear(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text("", encoding="utf-8")
+        atomic_write_text(self.path, "", encoding="utf-8", backup=False)

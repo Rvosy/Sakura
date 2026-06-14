@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sdk import PluginBase, PluginCapabilityRegistry, PluginContext
-from sdk.types import (
+from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
+from app.plugins import (
     ChatUIWidgetContribution,
     PromptPatchContribution,
     SettingsPanelContribution,
@@ -15,7 +15,7 @@ from sdk.types import (
 
 
 class ExamplePlugin(PluginBase):
-    """演示 Sakura 插件 SDK 常见贡献点的示例插件。"""
+    """演示 Sakura 原生插件 API 常见贡献点的示例插件。"""
 
     plugin_id = "example_plugin"
     plugin_version = "1.0.0"
@@ -51,7 +51,7 @@ class ExamplePlugin(PluginBase):
                 name="sakura_example_status",
                 description="示例插件工具：读取插件状态和最近一次回显文本。",
                 parameters={"type": "object", "properties": {}, "required": []},
-                handler=lambda arguments: _read_state(context.data_dir),
+                handler=lambda _arguments: _read_state(context.data_dir),
                 group="example",
                 risk="low",
                 capability="example_plugin",

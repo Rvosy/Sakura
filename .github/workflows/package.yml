@@ -69,7 +69,10 @@ jobs:
 
       - name: Create bundle archive
         shell: pwsh
-        run: Compress-Archive -Path * -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
+        # 显式排除 data/：发布包绝不携带用户数据目录，覆盖解压才不会冲掉用户配置
+        run: |
+          $items = Get-ChildItem -Exclude 'data', '*.zip' | ForEach-Object { $_.Name }
+          Compress-Archive -Path $items -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v7

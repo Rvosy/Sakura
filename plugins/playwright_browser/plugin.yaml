@@ -6,3 +6,6 @@ version: 1.0.0
 entry: plugin:PlaywrightBrowserPlugin
 enabled: true
 priority: 40
+permissions:
+  - tool
+  - tools_tab

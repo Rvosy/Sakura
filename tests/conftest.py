@@ -29,6 +29,39 @@ def cleanup_qt_objects_after_test() -> Iterable[None]:
     _cleanup_qt_objects()
 
 
+@pytest.fixture(autouse=True)
+def block_memory_store_background_load(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterable[None]:
+    """全局阻断 MemoryStore.preload 的后台加载线程。
+
+    preload(wait=False) 会在后台线程 import sentence_transformers → transformers，
+    其 native 初始化与 Qt 事件循环并发时随机 access violation（0xC0000005，
+    见提交 71ea1a32 的局部修复；多个测试各自泄漏线程时崩溃概率叠加）。
+    需要真实 preload 行为的测试用 @pytest.mark.allow_memory_preload 豁免，
+    并自行保证 _create_memory_client 不触碰 native 库。
+    """
+    if request.node.get_closest_marker("allow_memory_preload"):
+        yield
+        return
+    try:
+        from app.agent.memory import MemoryStore
+    except Exception:
+        yield
+        return
+
+    def _blocked_create_memory_client(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("测试环境禁止初始化真实 mem0/sentence-transformers 后端")
+
+    # 双层拦截：preload 不起线程；其余路径（_get_memory 惰性加载、reload）
+    # 起的线程在触碰 native 库前立刻失败。子类 override 的 fake
+    # _create_memory_client 不受基类 patch 影响。
+    monkeypatch.setattr(MemoryStore, "preload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(MemoryStore, "_create_memory_client", _blocked_create_memory_client)
+    yield
+
+
 def _cleanup_qt_objects() -> None:
     if importlib.util.find_spec("PySide6") is None:
         return

@@ -7,9 +7,10 @@ from typing import Any
 from app.agent.actions import PendingToolAction
 from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.runtime import AgentRuntime
-from app.agent.tool_registry import Tool, ToolRegistry
-from app.core.plugin_manager import SakuraPluginManager, load_plugin_specs
+from app.agent.tools import Tool, ToolRegistry
 from app.llm.api_client import ChatCompletionTurn, NativeToolCall
+from app.plugins.discovery import PluginDiscovery
+from app.plugins.manager import PluginManager
 
 
 def _reply(text: str = "完成。") -> str:
@@ -83,7 +84,7 @@ def _final_turn(text: str = "完成。") -> ChatCompletionTurn:
 
 def test_plugin_manager_loads_playwright_browser_plugin() -> None:
     registry = create_builtin_tool_registry(Path(__file__).resolve().parents[2])
-    manager = SakuraPluginManager(Path(__file__).resolve().parents[2])
+    manager = PluginManager(Path(__file__).resolve().parents[2])
 
     manager.load_from_config(registry)
 
@@ -104,7 +105,7 @@ def test_plugin_manager_loads_playwright_browser_plugin() -> None:
 
 
 def test_plugin_config_manifest_is_read() -> None:
-    specs = load_plugin_specs(Path(__file__).resolve().parents[2] / "data" / "config" / "plugins.yaml")
+    specs = PluginDiscovery(Path(__file__).resolve().parents[2]).discover()
 
     assert specs[0].plugin_id == "playwright_browser"
     assert specs[0].entry == "plugin:PlaywrightBrowserPlugin"

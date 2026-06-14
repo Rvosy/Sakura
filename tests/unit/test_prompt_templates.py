@@ -11,7 +11,7 @@ from app.llm.prompt_templates import (
     build_proactive_tool_loop_rules,
     build_segmented_reply_instruction,
 )
-from sdk.types import PromptPatchContribution
+from app.plugins.models import PromptPatchContribution
 
 
 def _build_proactive_tool_prompt() -> str:

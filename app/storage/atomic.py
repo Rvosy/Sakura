@@ -57,7 +57,7 @@ def atomic_write_text(
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
+        replace_with_retry(Path(tmp_name), path)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -88,6 +88,33 @@ def rename_with_retry(source: Path, target: Path) -> None:
             debug_log(
                 "Storage",
                 "改名被瞬时锁定，准备重试",
+                {
+                    "source": str(source),
+                    "target": str(target),
+                    "winerror": winerror,
+                    "attempt": attempt + 1,
+                    "delay_seconds": delay,
+                },
+            )
+            time.sleep(delay)
+
+
+def replace_with_retry(source: Path, target: Path) -> None:
+    """原子替换文件；对 Windows 瞬时锁定做指数退避重试。"""
+    source = Path(source)
+    target = Path(target)
+    for attempt in range(_RENAME_RETRY_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _RETRYABLE_WINERRORS or attempt == _RENAME_RETRY_ATTEMPTS - 1:
+                raise
+            delay = _RENAME_RETRY_INITIAL_DELAY_SECONDS * (2**attempt)
+            debug_log(
+                "Storage",
+                "替换文件被瞬时锁定，准备重试",
                 {
                     "source": str(source),
                     "target": str(target),

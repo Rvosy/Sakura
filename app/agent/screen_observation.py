@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from PySide6.QtGui import QImage
     from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import QWidget
 
@@ -30,6 +31,15 @@ class ScreenObservation:
     data_url: str
     width: int
     height: int
+    captured_at: str
+    screen_name: str
+
+
+@dataclass(frozen=True)
+class CapturedScreenImage:
+    """UI 线程捕获的屏幕图像；后续压缩编码可放到后台线程。"""
+
+    image: QImage
     captured_at: str
     screen_name: str
 
@@ -88,11 +98,9 @@ def build_screen_observation_user_message(
     }
 
 
-def capture_screen_observation(excluded_widget: QWidget | None = None) -> ScreenObservation:
-    """截取光标所在屏幕。
+def capture_screen_image(excluded_widget: QWidget | None = None) -> CapturedScreenImage:
+    """截取光标所在屏幕并复制为 QImage，避免后台线程触碰 QPixmap。"""
 
-    不临时隐藏桌宠窗口，避免截图时立绘闪烁，以及事件循环重入打断 follow-up 请求调度。
-    """
     from PySide6.QtGui import QCursor
     from PySide6.QtWidgets import QApplication
 
@@ -110,13 +118,30 @@ def capture_screen_observation(excluded_widget: QWidget | None = None) -> Screen
     if pixmap.isNull():
         raise RuntimeError("屏幕截图为空，可能被系统权限或显示环境阻止。")
 
-    encoded_pixmap = _scaled_pixmap(pixmap)
-    return ScreenObservation(
-        data_url=_encode_pixmap_to_data_url(encoded_pixmap),
-        width=encoded_pixmap.width(),
-        height=encoded_pixmap.height(),
+    return CapturedScreenImage(
+        image=pixmap.toImage().copy(),
         captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         screen_name=screen.name() or "primary",
+    )
+
+
+def capture_screen_observation(excluded_widget: QWidget | None = None) -> ScreenObservation:
+    """同步截屏并编码；UI 调用优先使用 capture_screen_image + 后台编码。"""
+    return build_screen_observation_from_image(capture_screen_image(excluded_widget))
+
+
+def build_screen_observation_from_image(captured: CapturedScreenImage) -> ScreenObservation:
+    """从已复制的 QImage 构造观察结果，可在后台线程执行。"""
+    if captured.image.isNull():
+        raise RuntimeError("屏幕截图为空。")
+
+    encoded_image = _scaled_image(captured.image)
+    return ScreenObservation(
+        data_url=_encode_image_to_data_url(encoded_image),
+        width=encoded_image.width(),
+        height=encoded_image.height(),
+        captured_at=captured.captured_at,
+        screen_name=captured.screen_name,
     )
 
 
@@ -128,14 +153,39 @@ def build_screen_observation_from_pixmap(
     if pixmap.isNull():
         raise RuntimeError("框选截图为空。")
 
-    encoded_pixmap = _scaled_pixmap(pixmap)
-    return ScreenObservation(
-        data_url=_encode_pixmap_to_data_url(encoded_pixmap),
-        width=encoded_pixmap.width(),
-        height=encoded_pixmap.height(),
-        captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        screen_name=screen_name,
+    return build_screen_observation_from_image(
+        CapturedScreenImage(
+            image=pixmap.toImage().copy(),
+            captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            screen_name=screen_name,
+        )
     )
+
+
+def _scaled_image(image: QImage) -> QImage:
+    from PySide6.QtCore import Qt
+
+    longest_edge = max(image.width(), image.height())
+    if longest_edge <= SCREEN_OBSERVATION_MAX_EDGE:
+        return image
+    return image.scaled(
+        SCREEN_OBSERVATION_MAX_EDGE,
+        SCREEN_OBSERVATION_MAX_EDGE,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _encode_image_to_data_url(image: QImage) -> str:
+    from PySide6.QtCore import QBuffer, QIODevice
+
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not image.save(buffer, "JPEG", SCREEN_OBSERVATION_JPEG_QUALITY):
+        raise RuntimeError("屏幕截图编码失败。")
+    image_bytes = bytes(buffer.data())
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def _scaled_pixmap(pixmap: QPixmap) -> QPixmap:

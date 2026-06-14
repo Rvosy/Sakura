@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 import wave
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -25,24 +26,36 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from app.voice.audio_sink_player import AudioSinkPlayer
 
-# 播放后端类型
-TTS_PLAYBACK_BACKEND_AUDIO_SINK = "audio_sink"
-TTS_PLAYBACK_BACKEND_MEDIA_PLAYER = "media_player"
-# 默认使用旧 QMediaPlayer 后端，待 audio_sink 验证稳定后再切换
-_DEFAULT_PLAYBACK_BACKEND = TTS_PLAYBACK_BACKEND_AUDIO_SINK
-
 from app.config.character_loader import CharacterProfile
 from app.core.gui_log import record_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
+from app.core.interaction import get_interaction_id, set_interaction_id
+from app.storage.paths import StoragePaths
+from app.voice.tts_settings import (
+    DEFAULT_GENIE_TTS_API_URL as _DEFAULT_GENIE_TTS_API_URL,
+    GPTSoVITSTTSSettings as _GPTSoVITSTTSSettings,
+    TTS_PLAYBACK_BACKEND_AUDIO_SINK as _TTS_PLAYBACK_BACKEND_AUDIO_SINK,
+    TTS_PROVIDER_CUSTOM_GPT_SOVITS as _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
+    TTS_PROVIDER_GENIE as _TTS_PROVIDER_GENIE,
+    TTS_PROVIDER_GPT_SOVITS as _TTS_PROVIDER_GPT_SOVITS,
+    TTSConfigError as _TTSConfigError,
+    ToneReference as _ToneReference,
+    _normalize_tts_provider as _normalize_tts_provider_setting,
+)
+from app.voice import audio_checks as _audio_checks
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
 
+# 默认使用 AudioSink 后端
+_DEFAULT_PLAYBACK_BACKEND = _TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
 TTSCallback = Callable[[], None]
 _AUDIO_CLEANUP_DELAY_MS = 5000
 _AUDIO_CLEANUP_MAX_ATTEMPTS = 5
 _AUDIO_FINISH_FALLBACK_GRACE_MS = 1500
 _AUDIO_FINISH_FALLBACK_MIN_MS = 2000
+# 播放完成兜底的上限：时长无法解析或异常超长时按此值兜底，防止流程永久挂起
+_AUDIO_FINISH_FALLBACK_MAX_MS = 60_000
 _LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
 _TTS_SPEAKABLE_RE = re.compile(r"[0-9A-Za-z\u3040-\u30ff\uff66-\uff9f\u4e00-\u9fff\uac00-\ud7af]")
 _TTS_LEADING_NOISE_CHARS = "。．.、，,；;：:！？!?"
@@ -59,29 +72,21 @@ _TTS_WRAPPER_PAIRS = (
     ("'", "'"),
 )
 _CJK_TEXT_LANGS = {"ja", "all_ja", "zh", "all_zh", "ko", "all_ko", "yue", "all_yue"}
-TTS_PROVIDER_NONE = "none"
-TTS_PROVIDER_GPT_SOVITS = "gpt-sovits"
-TTS_PROVIDER_CUSTOM_GPT_SOVITS = "custom-gpt-sovits"
-TTS_PROVIDER_GENIE = "genie-tts"
-DEFAULT_GPT_SOVITS_API_URL = "http://127.0.0.1:9880/tts"
-DEFAULT_GENIE_TTS_API_URL = "http://127.0.0.1:9881/"
 _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX = 180
-_SUPPORTED_TTS_PROVIDERS = {
-    TTS_PROVIDER_GPT_SOVITS,
-    TTS_PROVIDER_CUSTOM_GPT_SOVITS,
-    TTS_PROVIDER_GENIE,
-}
+
+
+def _resolve_project_root(base_dir: Path | None = None) -> Path:
+    """解析项目根目录；base_dir 为空时基于 __file__ 推算（app/voice/tts.py → 项目根），
+    与 main.py 的路径惯例一致。"""
+    return Path(base_dir) if base_dir is not None else Path(__file__).resolve().parents[2]
 
 
 def _resolve_tts_cache_dir(base_dir: Path | None = None) -> Path:
     """返回 TTS 临时音频缓存目录（data/cache/tts），并确保存在。
 
     不再写入系统 Temp，改用 Sakura 自有数据目录，便于集中管理与启动清理。
-    base_dir 为空时基于 __file__ 推算项目根（app/voice/tts.py → 项目根），
-    与 main.py 的路径惯例一致。
     """
-    root = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parents[2]
-    cache_dir = root / "data" / "cache" / "tts"
+    cache_dir = StoragePaths(_resolve_project_root(base_dir)).tts_cache_dir
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -124,6 +129,103 @@ class _TTSRequest:
     on_started: TTSCallback | None = None
     on_finished: TTSCallback | None = None
     prepared_audio: TTSPreparedAudio | None = None
+    # 发起请求时的交互 ID；请求线程入口恢复，使 TTS 日志可与该次交互串联
+    interaction_id: str = ""
+
+
+class TTSServiceState(str, Enum):
+    """TTS 本地服务生命周期的显式状态；转移由 _set_service_state 统一记日志。
+
+    IDLE → PROBING → (READY | STARTING) ; STARTING → WAITING_READY → (READY | FAILED)
+    READY 后探测短路；FAILED 不缓存——下次请求重新走完整流程（服务可能被手动拉起）。
+    """
+
+    IDLE = "idle"
+    PROBING = "probing"
+    STARTING = "starting"
+    WAITING_READY = "waiting_ready"
+    READY = "ready"
+    FAILED = "failed"
+
+
+def _set_service_state(provider: object, new_state: TTSServiceState, detail: dict | None = None) -> None:
+    """记录服务状态转移；provider 可能是测试桩（SimpleNamespace），全程容错。"""
+    old_state = getattr(provider, "_service_state", TTSServiceState.IDLE)
+    try:
+        setattr(provider, "_service_state", new_state)
+    except (AttributeError, TypeError):
+        pass
+    if old_state == new_state:
+        return
+    payload = {"from": str(getattr(old_state, "value", old_state)), "to": new_state.value}
+    if detail:
+        payload.update(detail)
+    debug_log("TTS", "tts.service_state", payload)
+
+
+def _provider_is_closed(provider: object) -> bool:
+    is_closed = getattr(provider, "_is_closed", None)
+    if callable(is_closed):
+        return bool(is_closed())
+    return bool(getattr(provider, "_closed", False))
+
+
+def _parse_service_endpoint(api_url: str) -> tuple[str, int] | None:
+    """解析服务地址为 (host, port)；地址非法返回 None，由调用方给出服务名相关提示。"""
+    parsed_url = urlparse(api_url)
+    host = parsed_url.hostname
+    try:
+        port = parsed_url.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed_url.scheme == "https" else 80
+    if not host:
+        return None
+    return host, port
+
+
+def _wait_local_service_ready(
+    *,
+    provider: object,
+    service_name: str,
+    ready_check: Callable[[], bool],
+    fail_callback: Callable[[str], None],
+    timeout_seconds: int,
+) -> bool:
+    """启动本地服务后的统一就绪轮询：进程存活检查 + ready_check，直到超时。
+
+    大模型首次加载可能超过 30 秒，按用户配置等待（封顶 _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX），
+    避免刚加载完成就被判超时。
+    """
+    settings = getattr(provider, "settings")
+    base_dir = getattr(provider, "_base_dir", None)
+    _set_service_state(provider, TTSServiceState.WAITING_READY)
+    deadline = time.monotonic() + max(3, min(timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
+    while time.monotonic() < deadline:
+        if _provider_is_closed(provider):
+            _set_service_state(provider, TTSServiceState.FAILED, {"reason": "provider_closed"})
+            return False
+        process = getattr(provider, "_server_process", None)
+        exit_code = process.poll() if process is not None else None
+        if exit_code is not None:
+            log_path = _local_tts_service_log_path(settings.provider, base_dir)
+            _set_service_state(provider, TTSServiceState.FAILED, {"reason": "process_exited", "exit_code": exit_code})
+            fail_callback(
+                f"{service_name} 本地服务进程已退出，退出码：{exit_code}。"
+                f"请查看启动日志：{log_path}"
+            )
+            return False
+        if ready_check():
+            return True
+        time.sleep(0.5)
+    log_path = _local_tts_service_log_path(settings.provider, base_dir)
+    _set_service_state(provider, TTSServiceState.FAILED, {"reason": "startup_timeout"})
+    fail_callback(
+        f"{service_name} 已尝试启动，但端口仍不可用：{settings.api_url}。"
+        f"请查看启动日志：{log_path}"
+    )
+    return False
 
 
 class _LocalProcessHandle(Protocol):
@@ -263,138 +365,6 @@ class NullTTSProvider:
         debug_log("TTS", "静音 Provider 无需关闭")
 
 
-class TTSConfigError(RuntimeError):
-    """TTS 配置缺失或格式错误。"""
-
-
-@dataclass(frozen=True)
-class ToneReference:
-    tone: str
-    ref_audio_path: Path
-    ref_text: str
-    ref_lang: str
-
-
-@dataclass(frozen=True)
-class GPTSoVITSTTSSettings:
-    enabled: bool
-    api_url: str
-    ref_audio_path: Path
-    ref_text_path: Path
-    ref_text: str
-    provider: str = TTS_PROVIDER_GPT_SOVITS
-    gpt_model_path: Path | None = None
-    sovits_model_path: Path | None = None
-    work_dir: Path | None = None
-    python_path: Path | None = None
-    tts_config_path: Path | None = None
-    character_name: str = ""
-    onnx_model_dir: Path | None = None
-    ref_lang: str = "ja"
-    text_lang: str = "ja"
-    timeout_seconds: int = 60
-    tone_references: dict[str, list[ToneReference]] = field(default_factory=dict)
-    playback_backend: str = ""
-
-    @classmethod
-    def from_character_profile(
-        cls,
-        character_profile: CharacterProfile,
-        enabled: bool,
-        api_url: str,
-        ref_lang: str,
-        text_lang: str,
-        timeout_seconds: int,
-        provider: str = TTS_PROVIDER_GPT_SOVITS,
-        work_dir: Path | None = None,
-        python_path: Path | None = None,
-        tts_config_path: Path | None = None,
-        onnx_model_dir: Path | None = None,
-        validate_enabled: bool = True,
-    ) -> "GPTSoVITSTTSSettings":
-        provider = _normalize_tts_provider(provider, enabled)
-        if character_profile.voice is None:
-            settings = cls(
-                provider=provider,
-                enabled=enabled,
-                api_url=api_url,
-                ref_audio_path=character_profile.package_dir,
-                ref_text_path=character_profile.package_dir,
-                ref_text="",
-                ref_lang=ref_lang,
-                text_lang=text_lang,
-                timeout_seconds=timeout_seconds,
-                work_dir=work_dir,
-                python_path=python_path,
-                tts_config_path=tts_config_path,
-                character_name=character_profile.display_name or character_profile.id,
-                onnx_model_dir=onnx_model_dir,
-            )
-            if enabled and validate_enabled:
-                settings.validate()
-            return settings
-
-        voice = character_profile.voice
-        tone_references = _load_tone_references(
-            voice.tone_ref_path,
-            character_profile.package_dir,
-        )
-        neutral_reference = _select_neutral_reference(tone_references)
-        settings = cls(
-            provider=provider,
-            enabled=enabled,
-            api_url=api_url,
-            ref_audio_path=neutral_reference.ref_audio_path if neutral_reference else character_profile.package_dir,
-            ref_text_path=neutral_reference.ref_audio_path if neutral_reference else character_profile.package_dir,
-            ref_text=neutral_reference.ref_text if neutral_reference else "",
-            gpt_model_path=voice.gpt_model_path,
-            sovits_model_path=voice.sovits_model_path,
-            work_dir=work_dir,
-            python_path=python_path,
-            tts_config_path=tts_config_path,
-            character_name=character_profile.display_name or character_profile.id,
-            onnx_model_dir=onnx_model_dir,
-            ref_lang=ref_lang,
-            text_lang=text_lang,
-            timeout_seconds=timeout_seconds,
-            tone_references=tone_references,
-        )
-        if enabled and validate_enabled:
-            settings.validate()
-        return settings
-
-    def validate(self) -> None:
-        if not self.api_url:
-            raise TTSConfigError("缺少 TTS API URL。")
-        if self.provider not in _SUPPORTED_TTS_PROVIDERS:
-            raise TTSConfigError(f"不支持的 TTS Provider：{self.provider}")
-        if self.python_path is not None and not self.python_path.exists():
-            raise TTSConfigError(f"TTS Python 不存在：{self.python_path}")
-        if self.tts_config_path is not None and not self.tts_config_path.exists():
-            raise TTSConfigError(f"GPT-SoVITS 推理配置不存在：{self.tts_config_path}")
-        if self.gpt_model_path is not None and not self.gpt_model_path.exists():
-            raise TTSConfigError(f"GPT 模型不存在：{self.gpt_model_path}")
-        if self.sovits_model_path is not None and not self.sovits_model_path.exists():
-            raise TTSConfigError(f"SoVITS 模型不存在：{self.sovits_model_path}")
-        if self.tone_references:
-            for references in self.tone_references.values():
-                for reference in references:
-                    if not reference.ref_audio_path.exists():
-                        raise TTSConfigError(f"语气参考音频不存在：{reference.ref_audio_path}")
-                    if not reference.ref_text:
-                        raise TTSConfigError(f"语气参考文本为空：{reference.ref_audio_path}")
-                    if not reference.ref_lang:
-                        raise TTSConfigError(f"语气参考语言为空：{reference.ref_audio_path}")
-        else:
-            if not self.ref_audio_path.exists():
-                raise TTSConfigError(f"参考音频不存在：{self.ref_audio_path}")
-            if not self.ref_text:
-                raise TTSConfigError("缺少参考文本，请配置 GPT_SOVITS_REF_TEXT 或 GPT_SOVITS_REF_TEXT_PATH。")
-        if not self.ref_lang:
-            raise TTSConfigError("缺少 GPT_SOVITS_REF_LANG。")
-        if not self.text_lang:
-            raise TTSConfigError("缺少 GPT_SOVITS_TEXT_LANG。")
-
 class GPTSoVITSTTSProvider(QObject):
     error_occurred = Signal(str)
     _audio_ready = Signal(str, object, object, str)
@@ -406,7 +376,7 @@ class GPTSoVITSTTSProvider(QObject):
 
     def __init__(
         self,
-        settings: GPTSoVITSTTSSettings,
+        settings: _GPTSoVITSTTSSettings,
         *,
         base_dir: Path | None = None,
         adopt_existing_service: bool = True,
@@ -417,6 +387,7 @@ class GPTSoVITSTTSProvider(QObject):
         # TTS 临时音频缓存目录（data/cache/tts）。由调用方注入 base_dir，
         # 与启动清理 purge_tts_cache(base_dir) 同源，避免写入目录与清理目录错位。
         # base_dir 为空时退回 _resolve_tts_cache_dir 的 __file__ 推算，保持向后兼容。
+        self._base_dir = Path(base_dir) if base_dir is not None else None
         self._tts_cache_dir = _resolve_tts_cache_dir(base_dir)
         # 队列元素：(音频路径, 开始回调, 完成回调, 预生成句柄, 合成文本)
         self._pending_audio: list[
@@ -432,9 +403,12 @@ class GPTSoVITSTTSProvider(QObject):
         self._request_lock = threading.Lock()
         self._pending_requests: list[_TTSRequest] = []
         self._request_running = False
+        self._closed = False
         self._tone_indices: dict[str, int] = {}
         self._weights_ready = False
         self._service_checked = False
+        # 服务生命周期显式状态（_service_checked 是其 READY 的向后兼容投影）
+        self._service_state = TTSServiceState.IDLE
         self._server_process: _LocalProcessHandle | None = None
         self._playback_warmup_requested = False
         self._playback_finish_token = 0
@@ -489,6 +463,7 @@ class GPTSoVITSTTSProvider(QObject):
                 tone=tone,
                 on_started=on_started,
                 on_finished=on_finished,
+                interaction_id=get_interaction_id(),
             )
         )
 
@@ -503,7 +478,14 @@ class GPTSoVITSTTSProvider(QObject):
         if text != raw_text.strip():
             debug_log("TTS", "TTS 预生成文本已净化", {"raw_text": raw_text, "text": text, "tone": tone})
         debug_log("TTS", "提交预生成请求", {"text": text, "tone": tone})
-        self._queue_request(_TTSRequest(text=text, tone=tone, prepared_audio=handle))
+        self._queue_request(
+            _TTSRequest(
+                text=text,
+                tone=tone,
+                prepared_audio=handle,
+                interaction_id=get_interaction_id(),
+            )
+        )
         return handle
 
     def speak_prepared(
@@ -607,7 +589,7 @@ class GPTSoVITSTTSProvider(QObject):
 
         try:
             self.settings.validate()
-        except TTSConfigError as exc:
+        except _TTSConfigError as exc:
             return False, str(exc)
 
         messages: list[str] = []
@@ -619,6 +601,19 @@ class GPTSoVITSTTSProvider(QObject):
 
     def _queue_request(self, request: _TTSRequest) -> None:
         with self._request_lock:
+            if self._closed:
+                if request.prepared_audio is not None:
+                    request.prepared_audio.failed = True
+                debug_log(
+                    "TTS",
+                    "Provider 已关闭，丢弃新请求",
+                    {
+                        "text": request.text,
+                        "tone": request.tone,
+                        "prepared": request.prepared_audio is not None,
+                    },
+                )
+                return
             self._pending_requests.append(request)
             pending_count = len(self._pending_requests)
         debug_log(
@@ -635,7 +630,7 @@ class GPTSoVITSTTSProvider(QObject):
 
     def _start_next_request(self) -> None:
         with self._request_lock:
-            if self._request_running or not self._pending_requests:
+            if self._closed or self._request_running or not self._pending_requests:
                 return
             request = self._pending_requests.pop(0)
             self._request_running = True
@@ -657,7 +652,12 @@ class GPTSoVITSTTSProvider(QObject):
         thread.start()
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
+        # 请求线程恢复发起方的交互 ID，使本线程内日志可与该次交互串联
+        set_interaction_id(tts_request.interaction_id)
         try:
+            if _provider_is_closed(self):
+                debug_log("TTS", "Provider 已关闭，跳过音频请求", {"text": tts_request.text})
+                return
             if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
                 debug_log("TTS", "请求已取消，跳过音频生成", {"text": tts_request.text})
                 return
@@ -781,6 +781,12 @@ class GPTSoVITSTTSProvider(QObject):
                 audio_file.write(audio_data)
                 audio_path = audio_file.name
             debug_log("TTS", "临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
+            audio_issue = _audio_checks._verify_generated_audio(Path(audio_path))
+            if audio_issue is not None:
+                debug_log("TTS", "生成音频校验失败", {"audio_path": audio_path, "issue": audio_issue})
+                self._fail_audio_request(tts_request, f"GPT-SoVITS 生成的音频无效（{audio_issue}）。")
+                self._schedule_audio_cleanup(Path(audio_path))
+                return
             if tts_request.prepared_audio is None:
                 self._audio_ready.emit(
                     audio_path,
@@ -799,28 +805,24 @@ class GPTSoVITSTTSProvider(QObject):
         self,
         fail_callback: Callable[[str], None],
     ) -> bool:
+        if _provider_is_closed(self):
+            debug_log("TTS", "Provider 已关闭，跳过服务探测", {"api_url": self.settings.api_url})
+            return False
         if self._service_checked:
             debug_log("TTS", "服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
-        parsed_url = urlparse(self.settings.api_url)
-        host = parsed_url.hostname
-        try:
-            port = parsed_url.port
-        except ValueError as exc:
-            debug_log("TTS", "服务地址端口无效", {"api_url": self.settings.api_url, "reason": str(exc)})
-            fail_callback(f"GPT-SoVITS 服务地址端口无效：{self.settings.api_url}")
-            return False
-
-        if port is None:
-            port = 443 if parsed_url.scheme == "https" else 80
-        if not host:
+        endpoint = _parse_service_endpoint(self.settings.api_url)
+        if endpoint is None:
             debug_log("TTS", "服务地址无效", {"api_url": self.settings.api_url})
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "invalid_api_url"})
             fail_callback(f"GPT-SoVITS 服务地址无效：{self.settings.api_url}")
             return False
+        host, port = endpoint
 
         timeout = min(self.settings.timeout_seconds, 3)
         probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        _set_service_state(self, TTSServiceState.PROBING)
         if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             existing_process = _find_running_local_tts_process(self.settings, port)
             if (
@@ -840,46 +842,45 @@ class GPTSoVITSTTSProvider(QObject):
             else:
                 GPTSoVITSTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
+                _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
                 debug_log("TTS", "服务探测成功", {"api_url": self.settings.api_url})
                 return True
 
         if self.settings.work_dir is None:
+            # 没有可启动的本地整合包：探测失败即不可用（远端/手动服务场景）
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "service_unreachable"})
             fail_callback(f"GPT-SoVITS 服务不可用，请先启动或检查地址 {self.settings.api_url}。")
             return False
 
+        _set_service_state(self, TTSServiceState.STARTING)
+        if _provider_is_closed(self):
+            return False
         if not GPTSoVITSTTSProvider._start_local_service(self, fail_callback):
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "start_failed"})
             return False
 
-        # 大模型首次加载可能超过 30 秒，按用户配置等待，避免刚加载完成就被杀掉。
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
-        while time.monotonic() < deadline:
-            exit_code = self._server_process.poll() if self._server_process is not None else None
-            if exit_code is not None:
-                log_path = _local_tts_service_log_path(self.settings.provider)
-                fail_callback(
-                    f"GPT-SoVITS 本地服务进程已退出，退出码：{exit_code}。"
-                    f"请查看启动日志：{log_path}"
-                )
-                return False
-            if GPTSoVITSTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait"):
-                if not _probe_gpt_sovits_http(self.settings.api_url, timeout):
-                    # 端口通但 HTTP 层尚未就绪（模型仍在加载），继续等待
-                    time.sleep(0.5)
-                    continue
-                self._service_checked = True
-                debug_log(
-                    "TTS",
-                    "本地 GPT-SoVITS 服务启动并探测成功",
-                    {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
-                )
-                return True
-            time.sleep(0.5)
+        def _ready() -> bool:
+            # 端口通但 HTTP 层尚未就绪（模型仍在加载）时继续等待
+            return GPTSoVITSTTSProvider._probe_service_port(
+                self, host, port, timeout, purpose="startup_wait"
+            ) and _probe_gpt_sovits_http(self.settings.api_url, timeout)
 
-        fail_callback(
-            f"GPT-SoVITS 已尝试启动，但端口仍不可用：{self.settings.api_url}。"
-            f"请查看启动日志：{_local_tts_service_log_path(self.settings.provider)}"
+        if not _wait_local_service_ready(
+            provider=self,
+            service_name="GPT-SoVITS",
+            ready_check=_ready,
+            fail_callback=fail_callback,
+            timeout_seconds=self.settings.timeout_seconds,
+        ):
+            return False
+        self._service_checked = True
+        _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
+        debug_log(
+            "TTS",
+            "本地 GPT-SoVITS 服务启动并探测成功",
+            {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
         )
-        return False
+        return True
 
     def _adopt_existing_local_service(self, host: str, port: int) -> None:
         current = getattr(self, "_server_process", None)
@@ -941,6 +942,8 @@ class GPTSoVITSTTSProvider(QObject):
         return True
 
     def _start_local_service(self, fail_callback: Callable[[str], None]) -> bool:
+        if _provider_is_closed(self):
+            return False
         work_dir = self.settings.work_dir
         if work_dir is None:
             return False
@@ -970,7 +973,7 @@ class GPTSoVITSTTSProvider(QObject):
             return True
 
         try:
-            log_path = _local_tts_service_log_path(self.settings.provider)
+            log_path = _local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))
             log_path.parent.mkdir(parents=True, exist_ok=True)
             kwargs: dict[str, object] = {
                 "cwd": str(work_dir),
@@ -991,6 +994,9 @@ class GPTSoVITSTTSProvider(QObject):
                 _build_gpt_sovits_start_command(python_exe, api_script, self.settings),
                 **kwargs,
             )
+            if _provider_is_closed(self):
+                self._stop_local_service()
+                return False
             _start_local_tts_output_reader(
                 self._server_process,
                 log_path,
@@ -1007,7 +1013,7 @@ class GPTSoVITSTTSProvider(QObject):
             {
                 "work_dir": str(work_dir),
                 "pid": self._server_process.pid,
-                "log_path": str(_local_tts_service_log_path(self.settings.provider)),
+                "log_path": str(_local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))),
             },
         )
         return True
@@ -1117,13 +1123,13 @@ class GPTSoVITSTTSProvider(QObject):
             return False
         return True
 
-    def _select_reference(self, tone: str | None) -> ToneReference:
+    def _select_reference(self, tone: str | None) -> _ToneReference:
         tone_key = (tone or DEFAULT_TONE).strip() or DEFAULT_TONE
         references = self.settings.tone_references.get(tone_key)
         if not references:
             references = self.settings.tone_references.get(DEFAULT_TONE)
         if not references:
-            reference = ToneReference(
+            reference = _ToneReference(
                 tone=DEFAULT_TONE,
                 ref_audio_path=self.settings.ref_audio_path,
                 ref_text=self.settings.ref_text,
@@ -1165,6 +1171,11 @@ class GPTSoVITSTTSProvider(QObject):
         on_finished: TTSCallback | None,
         text: str = "",
     ) -> None:
+        if _provider_is_closed(self):
+            path = Path(audio_path)
+            debug_log("TTS", "Provider 已关闭，清理迟到音频", {"audio_path": path, "text": text})
+            self._schedule_audio_cleanup(path)
+            return
         self._pending_audio.append((Path(audio_path), on_started, on_finished, None, text))
         debug_log(
             "TTS",
@@ -1183,6 +1194,11 @@ class GPTSoVITSTTSProvider(QObject):
     @Slot(object, str)
     def _store_prepared_audio(self, handle: TTSPreparedAudio, audio_path: str) -> None:
         path = Path(audio_path)
+        if _provider_is_closed(self):
+            handle.failed = True
+            debug_log("TTS", "Provider 已关闭，清理迟到的预生成音频", {"audio_path": path})
+            self._schedule_audio_cleanup(path)
+            return
         if handle.cancelled:
             debug_log("TTS", "预生成音频已取消，清理文件", {"audio_path": path})
             self._schedule_audio_cleanup(path)
@@ -1203,6 +1219,9 @@ class GPTSoVITSTTSProvider(QObject):
 
     @Slot(object, str)
     def _fail_prepared_audio(self, handle: TTSPreparedAudio, message: str) -> None:
+        if _provider_is_closed(self):
+            handle.failed = True
+            return
         self._log_error(message)
         handle.failed = True
         if handle.cancelled or not handle.play_requested:
@@ -1269,7 +1288,7 @@ class GPTSoVITSTTSProvider(QObject):
 
     @Slot(str)
     def _log_error(self, message: str) -> None:
-        print(f"[TTS] {message}")
+        debug_log("TTS", "错误通知", {"message": message})
         self.error_occurred.emit(message)
 
     @Slot(object)
@@ -1293,12 +1312,21 @@ class GPTSoVITSTTSProvider(QObject):
         self._finished.emit(on_finished)
 
     def _fail_audio_request(self, request: _TTSRequest, message: str) -> None:
+        if _provider_is_closed(self):
+            debug_log("TTS", "Provider 已关闭，忽略音频请求失败通知", {"message": message})
+            return
         if request.prepared_audio is None:
             self._fail_request(message, request.on_started, request.on_finished)
             return
         self._prepared_audio_failed.emit(request.prepared_audio, message)
 
     def _enqueue_prepared_audio(self, handle: TTSPreparedAudio) -> None:
+        if _provider_is_closed(self):
+            if handle.audio_path is not None:
+                self._schedule_audio_cleanup(handle.audio_path)
+                handle.audio_path = None
+            handle.failed = True
+            return
         if handle.cancelled or handle.enqueued or handle.audio_path is None:
             return
         handle.enqueued = True
@@ -1324,6 +1352,9 @@ class GPTSoVITSTTSProvider(QObject):
 
     def _play_next(self) -> None:
         """从播放队列取下一段音频并播放，根据后端配置分发。"""
+        if _provider_is_closed(self):
+            self._clear_pending_audio()
+            return
         if self._current_audio is not None or not self._pending_audio:
             return
         (
@@ -1352,7 +1383,20 @@ class GPTSoVITSTTSProvider(QObject):
             },
         )
 
-        if self._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK:
+        # 播放前最后一道检查：文件可能在排队期间被清理/损坏；
+        # 坏条目直接跳过并继续播放队列，绝不交给播放器去卡死
+        audio_issue = _audio_checks._verify_generated_audio(audio_path)
+        if audio_issue is not None:
+            debug_log(
+                "TTS",
+                "播放前音频校验失败，跳过该条目",
+                {"audio_path": str(audio_path), "issue": audio_issue},
+            )
+            self._finish_current_audio("invalid_audio")
+            self._play_next()
+            return
+
+        if self._playback_backend == _TTS_PLAYBACK_BACKEND_AUDIO_SINK:
             self._play_next_with_sink()
         else:
             self._play_next_with_media_player()
@@ -1560,13 +1604,19 @@ class GPTSoVITSTTSProvider(QObject):
         self._current_started_emitted = False
 
     def _schedule_current_audio_finish_fallback(self, audio_path: Path, playback_finish_token: int) -> None:
-        duration_ms = _wav_duration_ms(audio_path)
+        duration_ms = _audio_checks._wav_duration_ms(audio_path)
         if duration_ms is None:
-            debug_log("TTS", "无法读取音频时长，跳过播放完成兜底", {"audio_path": audio_path})
-            return
+            # 时长读不出（文件损坏/被占用）更要兜底——这是播放器最可能卡死的场景；
+            # 用保守上限兜住，绝不能因解析失败而放弃兜底导致对话流程挂起
+            debug_log(
+                "TTS",
+                "无法读取音频时长，使用上限时长兜底",
+                {"audio_path": audio_path, "delay_ms": _AUDIO_FINISH_FALLBACK_MAX_MS},
+            )
+            duration_ms = _AUDIO_FINISH_FALLBACK_MAX_MS
         delay_ms = max(
             _AUDIO_FINISH_FALLBACK_MIN_MS,
-            duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS,
+            min(duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS, _AUDIO_FINISH_FALLBACK_MAX_MS),
         )
         debug_log(
             "TTS",
@@ -1632,8 +1682,24 @@ class GPTSoVITSTTSProvider(QObject):
             self._log_error(f"临时音频清理失败：{exc}")
 
     def close(self) -> None:
+        with self._request_lock:
+            self._closed = True
+            self._pending_requests.clear()
+        self._clear_pending_audio()
+        if self._current_audio is not None:
+            self._finish_current_audio("provider_closed")
         self._release_player_source()
         self._stop_local_service()
+
+    def _is_closed(self) -> bool:
+        with self._request_lock:
+            return self._closed
+
+    def _clear_pending_audio(self) -> None:
+        pending_audio = self._pending_audio
+        self._pending_audio = []
+        for audio_path, _on_started, _on_finished, _prepared_audio, _text in pending_audio:
+            self._schedule_audio_cleanup(audio_path)
 
     def detach_local_service(self) -> None:
         """交出本地服务进程所有权，供新的 Provider 在后台接管。"""
@@ -1666,7 +1732,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
     def __init__(
         self,
-        settings: GPTSoVITSTTSSettings,
+        settings: _GPTSoVITSTTSSettings,
         *,
         base_dir: Path | None = None,
         adopt_existing_service: bool = True,
@@ -1680,7 +1746,11 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         self._reference_audio_key: str | None = None
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
+        set_interaction_id(tts_request.interaction_id)
         try:
+            if _provider_is_closed(self):
+                debug_log("TTS", "Provider 已关闭，跳过 Genie 音频请求", {"text": tts_request.text})
+                return
             if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
                 debug_log("TTS", "请求已取消，跳过 Genie 音频生成", {"text": tts_request.text})
                 return
@@ -1749,6 +1819,12 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 return
 
             debug_log("TTS", "Genie 临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
+            audio_issue = _audio_checks._verify_generated_audio(audio_path)
+            if audio_issue is not None:
+                debug_log("TTS", "Genie 生成音频校验失败", {"audio_path": str(audio_path), "issue": audio_issue})
+                self._fail_audio_request(tts_request, f"Genie TTS 生成的音频无效（{audio_issue}）。")
+                self._schedule_audio_cleanup(audio_path)
+                return
             if tts_request.prepared_audio is None:
                 self._audio_ready.emit(
                     str(audio_path),
@@ -1768,7 +1844,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
         try:
             self.settings.validate()
-        except TTSConfigError as exc:
+        except _TTSConfigError as exc:
             return False, str(exc)
 
         messages: list[str] = []
@@ -1785,36 +1861,37 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         self,
         fail_callback: Callable[[str], None],
     ) -> bool:
+        if _provider_is_closed(self):
+            debug_log("TTS", "Provider 已关闭，跳过 Genie 服务探测", {"api_url": self.settings.api_url})
+            return False
         if self._service_checked:
             debug_log("TTS", "Genie 服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
-        parsed_url = urlparse(self.settings.api_url)
-        host = parsed_url.hostname
-        try:
-            port = parsed_url.port
-        except ValueError:
-            fail_callback(f"Genie TTS 服务地址端口无效：{self.settings.api_url}")
-            return False
-        if port is None:
-            port = 443 if parsed_url.scheme == "https" else 80
-        if not host:
+        endpoint = _parse_service_endpoint(self.settings.api_url)
+        if endpoint is None:
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "invalid_api_url"})
             fail_callback(f"Genie TTS 服务地址无效：{self.settings.api_url}")
             return False
+        host, port = endpoint
 
         timeout = min(self.settings.timeout_seconds, 3)
         probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
+        _set_service_state(self, TTSServiceState.PROBING)
         if GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
             if GenieTTSProvider._probe_genie_api(self, timeout):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
+                _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
                 debug_log("TTS", "Genie 服务探测成功", {"api_url": self.settings.api_url})
                 return True
+            # 端口通但不是 Genie（典型：被 GPT-SoVITS 占用 9880）→ 尝试备用端口
             fallback_port = GenieTTSProvider._select_fallback_port(self, host, port, timeout)
             if fallback_port is None:
+                _set_service_state(self, TTSServiceState.FAILED, {"reason": "port_conflict"})
                 fail_callback(
                     f"端口 {port} 上的服务不是 Genie TTS，且未找到可用的本地备用端口。"
-                    f"请将 Genie API URL 改为 {DEFAULT_GENIE_TTS_API_URL} 或检查占用服务。"
+                    f"请将 Genie API URL 改为 {_DEFAULT_GENIE_TTS_API_URL} 或检查占用服务。"
                 )
                 return False
             old_api_url = self.settings.api_url
@@ -1831,38 +1908,47 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             ):
                 GenieTTSProvider._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
+                _set_service_state(self, TTSServiceState.READY, {"via": "fallback_port"})
                 debug_log("TTS", "Genie 备用端口已有可用服务", {"api_url": self.settings.api_url})
                 return True
 
         if self.settings.work_dir is None:
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "service_unreachable"})
             fail_callback(f"Genie TTS 服务不可用，请先启动或检查地址 {self.settings.api_url}。")
             return False
 
+        _set_service_state(self, TTSServiceState.STARTING)
+        if _provider_is_closed(self):
+            return False
         if not GenieTTSProvider._start_local_service(self, fail_callback, host, port):
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "start_failed"})
             return False
 
-        deadline = time.monotonic() + max(3, min(self.settings.timeout_seconds, _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX))
-        while time.monotonic() < deadline:
-            if self._server_process is not None and self._server_process.poll() is not None:
-                fail_callback(f"Genie TTS 本地服务进程已退出，退出码：{self._server_process.poll()}")
-                return False
-            if (
-                GenieTTSProvider._probe_service_port(self, host, port, timeout, purpose="startup_wait")
-                and GenieTTSProvider._probe_genie_api(self, timeout)
-            ):
-                self._service_checked = True
-                debug_log(
-                    "TTS",
-                    "本地 Genie TTS 服务启动并探测成功",
-                    {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
-                )
-                return True
-            time.sleep(0.5)
+        def _ready() -> bool:
+            return GenieTTSProvider._probe_service_port(
+                self, host, port, timeout, purpose="startup_wait"
+            ) and GenieTTSProvider._probe_genie_api(self, timeout)
 
-        fail_callback(f"Genie TTS 已尝试启动，但端口仍不可用：{self.settings.api_url}")
-        return False
+        if not _wait_local_service_ready(
+            provider=self,
+            service_name="Genie TTS",
+            ready_check=_ready,
+            fail_callback=fail_callback,
+            timeout_seconds=self.settings.timeout_seconds,
+        ):
+            return False
+        self._service_checked = True
+        _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
+        debug_log(
+            "TTS",
+            "本地 Genie TTS 服务启动并探测成功",
+            {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
+        )
+        return True
 
     def _start_local_service(self, fail_callback: Callable[[str], None], host: str, port: int) -> bool:
+        if _provider_is_closed(self):
+            return False
         work_dir = self.settings.work_dir
         if work_dir is None:
             return False
@@ -1892,7 +1978,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             }
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-            log_path = _local_tts_service_log_path(self.settings.provider)
+            log_path = _local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("a", encoding="utf-8") as log_file:
                 log_file.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] 启动 Genie TTS：{work_dir}\n")
@@ -1901,6 +1987,9 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
                 _build_genie_start_command(python_exe, host, port),
                 **kwargs,
             )
+            if _provider_is_closed(self):
+                self._stop_local_service()
+                return False
             _start_local_tts_output_reader(
                 self._server_process,
                 log_path,
@@ -1970,7 +2059,7 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
     def _ensure_reference_audio(
         self,
-        reference: ToneReference,
+        reference: _ToneReference,
         fail_callback: Callable[[str], None],
     ) -> bool:
         character_name = self._genie_character_name()
@@ -2072,15 +2161,15 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
 
 
 def _find_running_local_tts_process(
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
     port: int,
 ) -> _AttachedLocalProcess | None:
     if settings.work_dir is None:
         return None
     if settings.provider not in {
-        TTS_PROVIDER_GPT_SOVITS,
-        TTS_PROVIDER_CUSTOM_GPT_SOVITS,
-        TTS_PROVIDER_GENIE,
+        _TTS_PROVIDER_GPT_SOVITS,
+        _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
+        _TTS_PROVIDER_GENIE,
     }:
         return None
 
@@ -2230,7 +2319,7 @@ def _query_posix_process_command_line(pid: int) -> str | None:
 
 
 def _command_line_matches_local_tts(
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
     command_line: str,
     port: int,
 ) -> bool:
@@ -2244,10 +2333,10 @@ def _command_line_matches_local_tts(
     if python_exe not in normalized_command:
         return False
 
-    if settings.provider == TTS_PROVIDER_GENIE:
+    if settings.provider == _TTS_PROVIDER_GENIE:
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
-    if settings.provider in {TTS_PROVIDER_GPT_SOVITS, TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
+    if settings.provider in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
         api_script = _normalize_process_text(str(work_dir.resolve() / "api_v2.py"))
         return api_script in normalized_command
 
@@ -2373,7 +2462,7 @@ def _build_genie_start_command(python_exe: Path, host: str, port: int) -> list[s
 def _build_gpt_sovits_start_command(
     python_exe: Path,
     api_script: Path,
-    settings: GPTSoVITSTTSSettings,
+    settings: _GPTSoVITSTTSSettings,
 ) -> list[str]:
     cmd = [str(python_exe), str(api_script)]
     if settings.tts_config_path is not None:
@@ -2554,8 +2643,8 @@ def _can_bind_local_port(host: str, port: int) -> bool:
 
 
 def _tts_service_display_name(provider: str) -> str:
-    normalized = _normalize_tts_provider(provider)
-    if normalized == TTS_PROVIDER_GENIE:
+    normalized = _normalize_tts_provider_setting(provider)
+    if normalized == _TTS_PROVIDER_GENIE:
         return "Genie TTS"
     return "GPT-SoVITS"
 
@@ -2568,11 +2657,14 @@ def _probe_failure_message(service_name: str, purpose: str, *, timeout: bool) ->
     return "服务探测超时" if timeout else "服务不可用"
 
 
-def _local_tts_service_log_path(provider: str) -> Path:
-    """返回本地 TTS 子进程启动日志路径。"""
+def _local_tts_service_log_path(provider: str, base_dir: Path | None = None) -> Path:
+    """返回本地 TTS 子进程启动日志路径。
 
-    safe_provider = re.sub(r"[^A-Za-z0-9_.-]+", "-", provider.strip().lower()) or "tts"
-    return Path.cwd() / "data" / "logs" / f"{safe_provider}-service.log"
+    旧实现基于 Path.cwd()，工作目录与安装目录不一致时日志会写错位置；
+    现统一走 StoragePaths（base_dir 缺省时与缓存目录同样按 __file__ 推算根）。
+    """
+
+    return StoragePaths(_resolve_project_root(base_dir)).tts_service_log(provider)
 
 
 def _start_local_tts_output_reader(
@@ -2636,81 +2728,6 @@ def _read_local_tts_output(stream, log_path: Path, provider: str) -> None:  # ty
             pass
 
 
-def _resolve_path(path_text: str, base_dir: Path) -> Path:
-    path = Path(path_text.strip().strip('"').strip("'"))
-    if path.is_absolute():
-        return path
-    return base_dir / path
-
-
-def _normalize_tts_provider(provider: str, enabled: bool = True) -> str:
-    if not enabled:
-        return TTS_PROVIDER_NONE
-    normalized = provider.strip().lower().replace("_", "-")
-    if normalized in {"", "gptsovits"}:
-        return TTS_PROVIDER_GPT_SOVITS
-    if normalized in {"gpt-so-vits", "gpt-sovits"}:
-        return TTS_PROVIDER_GPT_SOVITS
-    if normalized in {"custom-gpt-sovits", "external-gpt-sovits", "custom-sovits", "external-sovits"}:
-        return TTS_PROVIDER_CUSTOM_GPT_SOVITS
-    if normalized in {"genie", "genie-tts", "genietts"}:
-        return TTS_PROVIDER_GENIE
-    if normalized in {"none", "off", "disabled", "不使用"}:
-        return TTS_PROVIDER_NONE
-    return normalized
-
-
-def _load_tone_references(ref_path: Path | None, base_dir: Path) -> dict[str, list[ToneReference]]:
-    if ref_path is None or not ref_path.exists():
-        return {}
-
-    tone_references: dict[str, list[ToneReference]] = {}
-    for raw_line in ref_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        parts = [part.strip() for part in line.split("|")]
-        if len(parts) != 4:
-            continue
-
-        audio_text, lang, prompt_text, tone = parts
-        audio_path = _resolve_path(audio_text, base_dir)
-        copied_path = ref_path.parent / "tone_refs" / audio_path.name
-        if copied_path.exists():
-            audio_path = copied_path
-
-        tone_key = tone or DEFAULT_TONE
-        reference = ToneReference(
-            tone=tone_key,
-            ref_audio_path=audio_path,
-            ref_text=prompt_text,
-            ref_lang=_normalize_lang(lang),
-        )
-        tone_references.setdefault(tone_key, []).append(reference)
-
-    return tone_references
-
-
-def _select_neutral_reference(
-    tone_references: dict[str, list[ToneReference]],
-) -> ToneReference | None:
-    neutral_references = tone_references.get(DEFAULT_TONE)
-    if neutral_references:
-        return neutral_references[0]
-    for references in tone_references.values():
-        if references:
-            return references[0]
-    return None
-
-
-def _normalize_lang(lang: str) -> str:
-    normalized = lang.strip().lower()
-    if normalized == "ja":
-        return "ja"
-    return normalized or "ja"
-
-
 def _resolve_request_text_lang(text: str, configured_text_lang: str) -> str:
     """英文混入中日韩文本时切到 auto，避免 GPT-SoVITS 按单语 BERT 处理失败。"""
     normalized = configured_text_lang.strip().lower()
@@ -2771,7 +2788,7 @@ def _write_genie_audio(audio_data: bytes, output_path: Path) -> bool:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if audio_data[:4] == b"RIFF":
         output_path.write_bytes(audio_data)
-        return _is_valid_wav_file(output_path)
+        return _audio_checks._is_valid_wav_file(output_path)
     return _write_raw_float_or_pcm_as_wav(audio_data, output_path, sample_rate=32000)
 
 
@@ -2784,7 +2801,7 @@ def _write_raw_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sample_rate: i
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(raw_bytes)
-        return _is_valid_wav_file(output_path)
+        return _audio_checks._is_valid_wav_file(output_path)
     except (OSError, wave.Error):
         return False
 
@@ -2810,28 +2827,3 @@ def _write_raw_float_or_pcm_as_wav(raw_bytes: bytes, output_path: Path, *, sampl
     if not pcm_bytes:
         return False
     return _write_raw_pcm_as_wav(pcm_bytes, output_path, sample_rate=sample_rate)
-
-
-def _wav_duration_ms(path: Path) -> int | None:
-    try:
-        with wave.open(str(path), "rb") as wav_file:
-            frame_rate = wav_file.getframerate()
-            frame_count = wav_file.getnframes()
-    except (OSError, wave.Error):
-        return None
-    if frame_rate <= 0 or frame_count < 0:
-        return None
-    return max(1, int(frame_count * 1000 / frame_rate))
-
-
-def _is_valid_wav_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        with wave.open(str(path), "rb") as wav_file:
-            wav_file.getnchannels()
-            wav_file.getframerate()
-            wav_file.getnframes()
-    except (OSError, wave.Error):
-        return False
-    return True

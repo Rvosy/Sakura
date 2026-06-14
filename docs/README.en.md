@@ -46,7 +46,8 @@ llm:
 
 | Doc | Contents |
 |---|---|
-| [Setup Guide](SETUP.md) | Full install steps, API key config, character packs, updating |
+| [Setup Guide](SETUP.md) | Full install steps, character packs, TTS setup, updating |
+| [API Config Guide](API_CONFIG.md) | Base URL, API key, model selection, relay-provider setup |
 | [macOS Setup](MACOS_SETUP.md) | Apple Silicon/Rosetta, SSL cert fix, GPT-SoVITS on Mac |
 | [Technical README](TECHNICAL_README.md) | Runtime architecture, bootstrap, project layout, config reference |
 | [Plugin SDK](SAKURA_PLUGIN_SDK.md) | Plugin development |

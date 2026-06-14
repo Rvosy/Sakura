@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.plugins import (
     PluginCapabilityRegistry,
     PluginDiscovery,
@@ -25,6 +25,12 @@ from app.plugins import (
     PluginSpec,
 )
 from app.plugins.models import (
+    PERMISSION_CHAT_UI,
+    PERMISSION_EVENT_MESSAGE,
+    PERMISSION_PROMPT_PATCH,
+    PERMISSION_SETTINGS_PANEL,
+    PERMISSION_TOOL,
+    PERMISSION_TOOLS_TAB,
     ChatUIWidgetContribution,
     PromptPatchContribution,
     SettingsPanelContribution,
@@ -144,8 +150,8 @@ class TestPluginDiscovery:
         assert specs[0].plugin_id == "demo"
         assert specs[0].enabled is False
 
-    def test_discover_legacy_entry_config(self) -> None:
-        base = _runtime_root("legacy_config")
+    def test_config_entry_items_are_ignored(self) -> None:
+        base = _runtime_root("entry_config_ignored")
         config_dir = base / "data" / "config"
         config_dir.mkdir(parents=True)
         config_dir.joinpath("plugins.yaml").write_text(
@@ -161,24 +167,24 @@ class TestPluginDiscovery:
         )
         discovery = PluginDiscovery(base)
         specs = discovery.discover()
-        assert len(specs) == 2
-        assert specs[0].priority == 200
-        assert specs[0].enabled is True
+        assert specs == []
 
     def test_discover_enabled_only(self) -> None:
         base = _runtime_root("enabled_only")
+        _write_plugin_manifest(base, "a", priority=200)
+        _write_plugin_manifest(base, "b", priority=100)
         config_dir = base / "data" / "config"
         config_dir.mkdir(parents=True)
         config_dir.joinpath("plugins.yaml").write_text("""
-- entry: a:A
+- id: a
   enabled: true
-- entry: b:B
+- id: b
   enabled: false
 """)
         discovery = PluginDiscovery(base)
         enabled = discovery.discover_enabled()
         assert len(enabled) == 1
-        assert enabled[0].entry == "a:A"
+        assert enabled[0].plugin_id == "a"
 
 
 class TestPluginManager:
@@ -237,6 +243,36 @@ class TestPluginManager:
         assert "重复" in str(results[0].error)
         assert mgr.failed_count == 1
 
+    def test_missing_permissions_marks_plugin_failed(self) -> None:
+        base = _runtime_root("missing_permissions")
+        _write_demo_plugin(base, permissions=None)
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "permissions" in str(results[0].error)
+
+    def test_unknown_permission_marks_plugin_failed(self) -> None:
+        base = _runtime_root("unknown_permission")
+        _write_demo_plugin(base, permissions=("tool", "unknown.permission"))
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "未知权限" in str(results[0].error)
+
+    def test_missing_capability_permission_marks_plugin_failed(self) -> None:
+        base = _runtime_root("missing_capability_permission")
+        _write_demo_plugin(base, permissions=(PERMISSION_TOOL,))
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "tools_tab" in str(results[0].error)
+
     def test_plugin_failure_isolated_from_later_plugin(self) -> None:
         base = _runtime_root("failure_isolation")
         _write_failing_plugin(base, "bad", priority=200)
@@ -275,6 +311,27 @@ class TestPluginManager:
 
         order_file = base / "shutdown_order.txt"
         assert order_file.read_text(encoding="utf-8").splitlines() == ["second", "first"]
+
+    def test_emit_event_calls_permitted_hook(self) -> None:
+        base = _runtime_root("event_hook")
+        _write_event_plugin(base, "eventful", raise_hook=False)
+        mgr = PluginManager(base)
+        mgr.load_all()
+
+        mgr.emit_event("message.user", {"text": "hi"}, source="test")
+
+        event_file = base / "eventful_events.txt"
+        assert event_file.read_text(encoding="utf-8").splitlines() == ["message.user:hi:test"]
+
+    def test_emit_event_isolates_hook_failure(self) -> None:
+        base = _runtime_root("event_hook_failure")
+        _write_event_plugin(base, "bad_eventful", raise_hook=True)
+        mgr = PluginManager(base)
+        mgr.load_all()
+
+        mgr.emit_event("message.user", {"text": "hi"}, source="test")
+
+        assert mgr.loaded_count == 1
 
     def test_plugin_load_result(self) -> None:
         spec = PluginSpec(entry="test:Test")
@@ -333,11 +390,23 @@ def _write_plugin_manifest(
     *,
     priority: int = 100,
     required: bool = False,
+    permissions: tuple[str, ...] | None = (
+        PERMISSION_TOOL,
+        PERMISSION_TOOLS_TAB,
+        PERMISSION_SETTINGS_PANEL,
+        PERMISSION_CHAT_UI,
+        PERMISSION_PROMPT_PATCH,
+    ),
 ) -> Path:
     plugin_dir = base / "plugins" / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (base / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+    permissions_text = ""
+    if permissions is not None:
+        permissions_text = "\npermissions:\n" + "\n".join(
+            f"  - {permission}" for permission in permissions
+        )
     (plugin_dir / "plugin.yaml").write_text(
         f"""
 api_version: 1
@@ -349,6 +418,7 @@ entry: plugin:DemoPlugin
 enabled: true
 priority: {priority}
 required: {str(required).lower()}
+{permissions_text}
 """.strip(),
         encoding="utf-8",
     )
@@ -361,12 +431,24 @@ def _write_demo_plugin(
     plugin_id: str = "demo",
     tool_name: str = "demo_echo",
     priority: int = 100,
+    permissions: tuple[str, ...] | None = (
+        PERMISSION_TOOL,
+        PERMISSION_TOOLS_TAB,
+        PERMISSION_SETTINGS_PANEL,
+        PERMISSION_CHAT_UI,
+        PERMISSION_PROMPT_PATCH,
+    ),
 ) -> None:
-    plugin_dir = _write_plugin_manifest(base, plugin_id, priority=priority)
+    plugin_dir = _write_plugin_manifest(
+        base,
+        plugin_id,
+        priority=priority,
+        permissions=permissions,
+    )
     plugin_dir.joinpath("plugin.py").write_text(
         f'''
-from sdk import PluginBase
-from sdk.types import (
+from app.plugins import PluginBase
+from app.plugins import (
     ChatUIWidgetContribution,
     PromptPatchContribution,
     SettingsPanelContribution,
@@ -405,7 +487,7 @@ def _write_failing_plugin(
     plugin_dir = _write_plugin_manifest(base, plugin_id, priority=priority, required=required)
     plugin_dir.joinpath("plugin.py").write_text(
         f'''
-from sdk import PluginBase
+from app.plugins import PluginBase
 
 
 class DemoPlugin(PluginBase):
@@ -422,7 +504,7 @@ def _write_shutdown_plugin(base: Path, plugin_id: str, *, priority: int) -> None
     plugin_dir = _write_plugin_manifest(base, plugin_id, priority=priority)
     plugin_dir.joinpath("plugin.py").write_text(
         f'''
-from sdk import PluginBase
+from app.plugins import PluginBase
 
 
 class DemoPlugin(PluginBase):
@@ -435,6 +517,42 @@ class DemoPlugin(PluginBase):
         path = self.context.base_dir / "shutdown_order.txt"
         previous = path.read_text(encoding="utf-8") if path.exists() else ""
         path.write_text(previous + "{plugin_id}\\n", encoding="utf-8")
+'''.strip(),
+        encoding="utf-8",
+    )
+
+
+def _write_event_plugin(
+    base: Path,
+    plugin_id: str,
+    *,
+    raise_hook: bool,
+) -> None:
+    plugin_dir = _write_plugin_manifest(
+        base,
+        plugin_id,
+        permissions=(PERMISSION_EVENT_MESSAGE,),
+    )
+    raise_line = 'raise RuntimeError("hook boom")' if raise_hook else ""
+    plugin_dir.joinpath("plugin.py").write_text(
+        f'''
+from app.plugins import PluginBase
+
+
+class DemoPlugin(PluginBase):
+    plugin_id = "{plugin_id}"
+
+    def initialize(self, register, context):
+        self.context = context
+
+    def on_user_message(self, event):
+        {raise_line}
+        path = self.context.base_dir / f"{{self.plugin_id}}_events.txt"
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(
+            previous + f"{{event.event_type}}:{{event.payload.get('text', '')}}:{{event.source}}\\n",
+            encoding="utf-8",
+        )
 '''.strip(),
         encoding="utf-8",
     )

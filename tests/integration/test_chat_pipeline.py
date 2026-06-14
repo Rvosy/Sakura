@@ -17,13 +17,17 @@ class RuntimeStub:
         self.calls: list[str] = []
         self.events: list[AgentEvent] = []
 
-    def handle_user_message(self, messages, progress_callback=None):  # type: ignore[no-untyped-def]
+    def handle_user_message(self, messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+        if cancel_checker is not None:
+            cancel_checker()
         self.calls.append(f"user:{len(messages)}")
         if progress_callback is not None:
             progress_callback
         return AgentResult(parse_chat_reply("はい"), [])
 
-    def handle_confirmed_action(self, action, progress_callback=None):  # type: ignore[no-untyped-def]
+    def handle_confirmed_action(self, action, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+        if cancel_checker is not None:
+            cancel_checker()
         self.calls.append(f"confirmed:{action.tool_name}")
         return AgentResult(parse_chat_reply("確認したよ"), [])
 
@@ -31,7 +35,9 @@ class RuntimeStub:
         self.calls.append(f"cancelled:{action.tool_name}")
         return AgentResult(parse_chat_reply("やめたよ"), [])
 
-    def handle_event(self, event, progress_callback=None):  # type: ignore[no-untyped-def]
+    def handle_event(self, event, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+        if cancel_checker is not None:
+            cancel_checker()
         self.calls.append(f"event:{event.type}")
         self.events.append(event)
         return AgentResult(parse_chat_reply("見たよ"), [])

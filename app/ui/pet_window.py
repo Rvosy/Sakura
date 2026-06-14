@@ -62,7 +62,6 @@ from app.agent.memory_curation_worker import MemoryCurationWorker
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
 from app.core.app_context import AppContext
 from app.config.character_loader import (
-    DEFAULT_CHARACTER_ID,
     THEME_SOURCE_PACKAGE,
     CharacterConfigError,
     CharacterProfile,
@@ -85,8 +84,19 @@ from app.agent.runtime_events import (
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
+from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.debug_log import debug_log, summarize_messages
+from app.core.interaction import clear_interaction_id, set_interaction_id
 from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.plugins.manager import (
+    PLUGIN_EVENT_AI_MESSAGE,
+    PLUGIN_EVENT_APP_START,
+    PLUGIN_EVENT_CHARACTER_LOADED,
+    PLUGIN_EVENT_TTS_END,
+    PLUGIN_EVENT_TTS_START,
+    PLUGIN_EVENT_USER_MESSAGE,
+)
+from app.ui.state import PetUiState, PetUiStateStore
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
 from app.backchannel.controller import BackchannelController
@@ -107,13 +117,14 @@ from app.agent.proactive_care import (
     PROACTIVE_TIMER_POLL_INTERVAL_MS,
 )
 from app.agent.screen_observation import (
+    CapturedScreenImage,
     SCREEN_OBSERVATION_HISTORY_MARKER,
     ScreenObservation,
     append_manual_observation_marker,
     append_observation_marker,
-    build_screen_observation_from_pixmap,
+    build_screen_observation_from_image,
     build_screen_observation_user_message,
-    capture_screen_observation,
+    capture_screen_image,
 )
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.portrait_controller import (
@@ -145,14 +156,11 @@ from app.ui.subtitle_controller import (
     SPEECH_TYPING_INTERVAL_MS,
     normalize_subtitle_display_speed,
 )
+from app.voice.factory import create_tts_provider
+from app.voice.tts_settings import DEFAULT_GPT_SOVITS_API_URL, GPTSoVITSTTSSettings, TTSConfigError
 from app.voice.tts import (
-    TTS_PROVIDER_GENIE,
-    GenieTTSProvider,
-    GPTSoVITSTTSProvider,
-    GPTSoVITSTTSSettings,
     NullTTSProvider,
     TTSPreparedAudio,
-    TTSConfigError,
     TTSProvider,
 )
 from app.storage.visual_observation import (
@@ -196,6 +204,9 @@ STARTUP_INITIALIZING_TEXT = "初始化中……"
 TTS_ERROR_DISPLAY_MS = 8_000
 MEMORY_STATUS_DISPLAY_MS = 7_000
 MEMORY_STATUS_STARTUP_DELAY_MS = 1_000
+SPEAKING_STATE_TIMEOUT_MS = 45_000
+THREAD_SHUTDOWN_WAIT_MS = 1_000
+TRANSIENT_PROGRESS_MESSAGE_KEY = "_sakura_transient_progress"
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
 MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。"
@@ -219,6 +230,14 @@ DEFAULT_STAGE_HEIGHT = 640
 # 加上立绘顶部约 146px 可见区，合计 ~420px。
 MIN_STAGE_HEIGHT = 420
 BACKCHANNEL_AUDIO_PREPARE_LIMIT = 2
+
+
+def _without_transient_progress_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        message
+        for message in messages
+        if not message.get(TRANSIENT_PROGRESS_MESSAGE_KEY)
+    ]
 
 
 def _message_box_theme(parent: QWidget | None, theme_settings: ThemeSettings | None) -> ThemeSettings:
@@ -309,15 +328,22 @@ class TTSReadyWarmupWorker(QObject):
     def __init__(self, provider: TTSProvider) -> None:
         super().__init__()
         self.provider = provider
+        self._cancel_token = CancellationToken()
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancel_token.cancel()
 
     @Slot()
     def run(self) -> None:
         try:
+            self._cancel_token.throw_if_cancelled()
             ensure_ready = getattr(self.provider, "ensure_ready", None)
             if not callable(ensure_ready):
                 return
             debug_log("TTS", "开始后台预热 TTS 服务", {"provider": type(self.provider).__name__})
             ok, message = ensure_ready()
+            self._cancel_token.throw_if_cancelled()
             if ok:
                 debug_log(
                     "TTS",
@@ -332,7 +358,12 @@ class TTSReadyWarmupWorker(QObject):
                     {"provider": type(self.provider).__name__, "message": message},
                 )
                 self.failed.emit(message)
+        except OperationCancelled:
+            debug_log("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
         except Exception as exc:  # noqa: BLE001
+            if self._cancel_token.is_cancelled():
+                debug_log("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
+                return
             message = f"TTS 服务预热失败：{exc}"
             debug_log(
                 "TTS",
@@ -342,6 +373,41 @@ class TTSReadyWarmupWorker(QObject):
             self.failed.emit(message)
         finally:
             self.finished.emit()
+
+
+class ScreenObservationEncodeWorker(QObject):
+    """后台压缩屏幕截图，避免 QImage 缩放和 JPEG 编码阻塞 UI。"""
+
+    finished = Signal(object, object)
+    failed = Signal(object, str)
+    cancelled = Signal(object)
+
+    def __init__(self, captured: CapturedScreenImage, context: dict[str, Any]) -> None:
+        super().__init__()
+        self.captured = captured
+        self.context = context
+        self._cancel_token = CancellationToken()
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancel_token.cancel()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self._cancel_token.throw_if_cancelled()
+            observation = build_screen_observation_from_image(self.captured)
+            self._cancel_token.throw_if_cancelled()
+        except OperationCancelled:
+            self.cancelled.emit(self.context)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if self._cancel_token.is_cancelled():
+                self.cancelled.emit(self.context)
+                return
+            self.failed.emit(self.context, str(exc))
+            return
+        self.finished.emit(self.context, observation)
 
 
 class PetWindow(QWidget):
@@ -359,6 +425,8 @@ class PetWindow(QWidget):
         self.deferred_startup_worker: QObject | None = None
         self.tts_ready_warmup_thread: QThread | None = None
         self.tts_ready_warmup_worker: QObject | None = None
+        self.screen_observation_encode_thread: QThread | None = None
+        self.screen_observation_encode_worker: QObject | None = None
         self.settings_service = context.settings_service
         self.character_registry = context.character_registry
         self.character_profile = context.character_profile
@@ -447,6 +515,8 @@ class PetWindow(QWidget):
         self.runtime_event_queue = RuntimeEventQueue()
         self.pet_hidden_at: float | None = None
         self._runtime_app_closed_logged = False
+        self._shutdown_in_progress = False
+        self._shutdown_lingering_threads: list[tuple[QThread, QObject | None]] = []
         self.screen_observation_followup_in_progress = False
         self.active_reminder_id: str | None = None
         self.active_reminder_text = ""
@@ -467,6 +537,13 @@ class PetWindow(QWidget):
         self.active_interaction_id = ""
         self.active_interaction_started_at: float | None = None
         self.active_interaction_last_at: float | None = None
+        # UI 统一状态源：thinking/streaming/speaking/error 的唯一权威
+        self.ui_state = PetUiStateStore(self)
+        self.ui_state.state_changed.connect(self._handle_ui_state_changed)
+        self.speaking_state_watchdog = QTimer(self)
+        self.speaking_state_watchdog.setSingleShot(True)
+        self.speaking_state_watchdog.setInterval(SPEAKING_STATE_TIMEOUT_MS)
+        self.speaking_state_watchdog.timeout.connect(self._handle_speaking_state_timeout)
         self.reply_history_segments: list[ChatSegment] = []
         self.reply_history_index: int | None = None
         self.reply_history_review_active = False
@@ -599,6 +676,8 @@ class PetWindow(QWidget):
             self._log_interaction_stage,
             lambda: str(getattr(getattr(self.tts_provider, "settings", None), "text_lang", "ja")),
             self._show_tts_error,
+            self._emit_tts_start_plugin_event,
+            self._emit_tts_end_plugin_event,
         )
         self._connect_tts_error_signal(self.tts_provider)
         self.subtitle_controller = SubtitleController(
@@ -871,10 +950,78 @@ class PetWindow(QWidget):
 
     @Slot()
     def close_external_tools(self) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
+        self._shutdown_in_progress = True
         self._emit_app_closed_event()
+        self._stop_speaking_state_watchdog()
+        self.messages = _without_transient_progress_messages(self.messages)
+        subtitle_controller = getattr(self, "subtitle_controller", None)
+        if subtitle_controller is not None:
+            subtitle_controller.cancel_reply_flow()
+        self._shutdown_qthread("worker_thread", "worker")
+        self._shutdown_qthread("memory_curation_thread", "memory_curation_worker")
+        self._shutdown_qthread("deferred_startup_thread", "deferred_startup_worker")
+        self._shutdown_qthread("tts_ready_warmup_thread", "tts_ready_warmup_worker")
+        self._shutdown_qthread("screen_observation_encode_thread", "screen_observation_encode_worker")
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
+
+    def _shutdown_qthread(self, thread_attr: str, worker_attr: str) -> None:
+        thread = getattr(self, thread_attr, None)
+        worker = getattr(self, worker_attr, None)
+        if thread is None:
+            setattr(self, worker_attr, None)
+            return
+        debug_log("PetWindow", "准备关闭后台线程", {"thread": thread_attr})
+        try:
+            cancel = getattr(worker, "cancel", None)
+            if callable(cancel):
+                cancel()
+            thread.requestInterruption()
+            if thread.isRunning():
+                thread.quit()
+                if not thread.wait(THREAD_SHUTDOWN_WAIT_MS):
+                    debug_log(
+                        "PetWindow",
+                        "后台线程未在退出等待时间内结束",
+                        {"thread": thread_attr, "wait_ms": THREAD_SHUTDOWN_WAIT_MS},
+                    )
+                    self._keep_shutdown_lingering_thread(thread, worker)
+                    return
+        except RuntimeError as exc:
+            debug_log("PetWindow", "关闭后台线程失败", {"thread": thread_attr, "error": str(exc)})
+        setattr(self, thread_attr, None)
+        setattr(self, worker_attr, None)
+
+    def _keep_shutdown_lingering_thread(self, thread: QThread, worker: QObject | None) -> None:
+        if any(item_thread is thread for item_thread, _worker in self._shutdown_lingering_threads):
+            return
+        self._shutdown_lingering_threads.append((thread, worker))
+        try:
+            thread.finished.connect(lambda _thread=thread: self._release_shutdown_lingering_thread(_thread))
+        except RuntimeError:
+            self._release_shutdown_lingering_thread(thread)
+
+    def _release_shutdown_lingering_thread(self, thread: QThread) -> None:
+        remaining: list[tuple[QThread, QObject | None]] = []
+        released_worker: QObject | None = None
+        for item_thread, item_worker in self._shutdown_lingering_threads:
+            if item_thread is thread:
+                released_worker = item_worker
+                continue
+            remaining.append((item_thread, item_worker))
+        self._shutdown_lingering_threads = remaining
+        if released_worker is not None:
+            try:
+                released_worker.deleteLater()
+            except RuntimeError:
+                pass
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
 
     def _emit_app_started_event(self) -> None:
         """启动就绪后落盘 app.started；若存在上次关闭记录则附带跨会话信息并注入首条消息。"""
@@ -890,6 +1037,24 @@ class PetWindow(QWidget):
             # 无上次关闭记录（首启 / 上次异常退出）时只落盘，不注入空洞的「已启动」提示。
             inject=carryover is not None,
         )
+        self._emit_plugin_event(
+            PLUGIN_EVENT_APP_START,
+            {
+                "character_id": self.character_profile.id,
+                "character_name": self.character_profile.display_name,
+                "carryover": carryover or {},
+            },
+            source="startup",
+        )
+        self._emit_plugin_event(
+            PLUGIN_EVENT_CHARACTER_LOADED,
+            {
+                "character_id": self.character_profile.id,
+                "character_name": self.character_profile.display_name,
+                "previous_character_id": "",
+            },
+            source="startup",
+        )
 
     def _emit_app_closed_event(self) -> None:
         """关闭前落盘 app.closed（供下次启动衔接）。退出链路可能多次触发，做一次性保护。"""
@@ -902,6 +1067,50 @@ class PetWindow(QWidget):
             metadata={"interrupted_reply": self.worker_thread is not None},
             inject=False,
         )
+
+    def _emit_plugin_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        source: str = "pet_window",
+    ) -> None:
+        manager = getattr(self, "plugin_manager", None)
+        emit_event = getattr(manager, "emit_event", None)
+        if not callable(emit_event):
+            return
+        try:
+            emit_event(event_type, payload or {}, source=source)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "PluginManager",
+                "插件事件派发失败",
+                {"event_type": event_type, "error": str(exc)},
+            )
+
+    def _emit_tts_start_plugin_event(self, segment: ChatSegment, sequence_id: int) -> None:
+        self._emit_plugin_event(
+            PLUGIN_EVENT_TTS_START,
+            self._tts_plugin_payload(segment, sequence_id),
+            source="tts",
+        )
+
+    def _emit_tts_end_plugin_event(self, segment: ChatSegment, sequence_id: int) -> None:
+        self._emit_plugin_event(
+            PLUGIN_EVENT_TTS_END,
+            self._tts_plugin_payload(segment, sequence_id),
+            source="tts",
+        )
+
+    def _tts_plugin_payload(self, segment: ChatSegment, sequence_id: int) -> dict[str, Any]:
+        return {
+            "sequence_id": sequence_id,
+            "text": segment.text,
+            "translation": segment.translation,
+            "tone": segment.tone,
+            "portrait": segment.portrait,
+            "character_id": self.character_profile.id,
+        }
 
     @Slot()
     def close_tts_tools(self) -> None:
@@ -1088,6 +1297,8 @@ class PetWindow(QWidget):
         # 高度重置由 _collapse_auto_fit_bubble_height 在 cancel_reply_flow 前统一处理。
         self.portrait_controller.apply_for_segment(segment)
         self._sync_reply_history_index_for_segment(segment)
+        self.ui_state.begin_speaking("reply_segment")
+        self._start_speaking_state_watchdog()
         # 新台词开始：保持气泡显示并暂停自动隐藏倒计时。
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
@@ -1464,6 +1675,42 @@ class PetWindow(QWidget):
                 debug_log("Backchannel", "丢弃接话预生成音频失败", {"error": str(exc)})
         prepared.clear()
 
+    @Slot(object)
+    def _handle_ui_state_changed(self, state: PetUiState) -> None:
+        if state == PetUiState.SPEAKING:
+            self._start_speaking_state_watchdog()
+            return
+        self._stop_speaking_state_watchdog()
+
+    def _start_speaking_state_watchdog(self) -> None:
+        watchdog = getattr(self, "speaking_state_watchdog", None)
+        if watchdog is not None:
+            watchdog.start()
+
+    def _stop_speaking_state_watchdog(self) -> None:
+        watchdog = getattr(self, "speaking_state_watchdog", None)
+        if watchdog is not None and watchdog.isActive():
+            watchdog.stop()
+
+    @Slot()
+    def _handle_speaking_state_timeout(self) -> None:
+        if self.ui_state.state != PetUiState.SPEAKING:
+            return
+        subtitle_controller = getattr(self, "subtitle_controller", None)
+        if subtitle_controller is None or not subtitle_controller.is_reply_sequence_active():
+            self.ui_state.finish("speaking_timeout")
+            return
+        debug_log(
+            "PetWindow",
+            "SPEAKING 状态超时，强制结束当前回复",
+            {"timeout_ms": SPEAKING_STATE_TIMEOUT_MS},
+        )
+        subtitle_controller.cancel_reply_flow()
+        if self.active_interaction_id:
+            self._end_interaction("speaking_timeout")
+        else:
+            self.ui_state.finish("speaking_timeout")
+
     def _normal_input_placeholder_text(self, profile: CharacterProfile | None = None) -> str:
         profile = profile or self.character_profile
         return f"和{profile.display_name}说点什么..."
@@ -1526,7 +1773,7 @@ class PetWindow(QWidget):
         try:
             entries = self.history_store.load()
         except OSError as exc:
-            print(f"[History] 回溯历史读取失败：{exc}")
+            debug_log("History", "回溯历史读取失败", {"error": str(exc)})
             debug_log("History", "回溯历史读取失败", {"error": str(exc)})
             entries = []
         self.reply_history_segments = _reply_history_segments_from_entries(entries)
@@ -2008,6 +2255,9 @@ class PetWindow(QWidget):
         self.active_interaction_id = f"interaction-{self.interaction_sequence}"
         self.active_interaction_started_at = now
         self.active_interaction_last_at = now
+        # UI 线程后续的 debug_log 自动带上交互 ID；worker/TTS 线程由各自入口恢复
+        set_interaction_id(self.active_interaction_id)
+        self.ui_state.begin_thinking(source)
         debug_log(
             "Latency",
             "输入事件开始",
@@ -2055,6 +2305,10 @@ class PetWindow(QWidget):
         self.active_interaction_id = ""
         self.active_interaction_started_at = None
         self.active_interaction_last_at = None
+        clear_interaction_id()
+        # 失败结局保持 ERROR 状态供动效展示，直到下一次交互进入 thinking
+        if outcome != "error":
+            self.ui_state.finish(outcome)
         self._update_reply_history_buttons()
         # 每完成一轮对话（含完整回复）累计一次，驱动自动记忆整理触发
         if outcome == "reply_completed":
@@ -2126,13 +2380,21 @@ class PetWindow(QWidget):
     def _handle_manual_screenshot_selected(self, pixmap: QPixmap) -> None:
         self.show()
         self.raise_()
-        try:
-            observation = build_screen_observation_from_pixmap(pixmap)
-        except RuntimeError as exc:
-            show_themed_warning(self, "截图失败", str(exc))
-            debug_log("PetWindow", "手动框选截图编码失败", {"error": str(exc)})
+        if pixmap.isNull():
+            show_themed_warning(self, "截图失败", "框选截图为空。")
+            return
+        if not self._start_screen_observation_encode(
+            CapturedScreenImage(
+                image=pixmap.toImage().copy(),
+                captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                screen_name="manual-selection",
+            ),
+            {"kind": "manual"},
+        ):
+            show_themed_warning(self, "截图处理中", "上一张截图还在处理，请稍后再试。")
             return
 
+    def _finish_manual_screen_observation(self, observation: ScreenObservation) -> None:
         self.pending_manual_screen_observation = observation
         self._update_manual_screenshot_button()
         debug_log(
@@ -2334,6 +2596,7 @@ class PetWindow(QWidget):
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -2342,15 +2605,19 @@ class PetWindow(QWidget):
         self.worker.failed.connect(self._handle_error)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
+        self.worker.cancelled.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._cleanup_worker)
         self.worker_thread.start()
         self._log_interaction_stage("chat_worker_started")
 
     @Slot(object)
     def _handle_progress_reply(self, progress: AgentProgress) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         reply = progress.reply
         if not reply.text.strip():
             return
+        self.ui_state.begin_streaming(progress.stage)
         self._log_interaction_stage(
             "agent_progress_received",
             {
@@ -2368,11 +2635,24 @@ class PetWindow(QWidget):
                 "metadata": progress.metadata,
             },
         )
-        self.messages.append({"role": "assistant", "content": reply.text})
+        self.messages.append(
+            {
+                "role": "assistant",
+                "content": reply.text,
+                TRANSIENT_PROGRESS_MESSAGE_KEY: True,
+            }
+        )
         self._record_assistant_reply_history(reply)
+
+    def _remove_transient_progress_messages(self) -> None:
+        self.messages = _without_transient_progress_messages(self.messages)
 
     @Slot(object)
     def _handle_reply(self, result: AgentResult) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            self.messages = _without_transient_progress_messages(self.messages)
+            return
+        self.messages = _without_transient_progress_messages(self.messages)
         self._log_interaction_stage(
             "agent_result_received",
             {
@@ -2395,6 +2675,15 @@ class PetWindow(QWidget):
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
+        self._emit_plugin_event(
+            PLUGIN_EVENT_AI_MESSAGE,
+            {
+                "text": reply.text,
+                "segments": [_segment_plugin_payload(segment) for segment in reply.segments],
+                "character_id": self.character_profile.id,
+            },
+            source="agent",
+        )
         self._show_reply_segments(reply.segments)
         self._apply_pending_action_from_result(result)
 
@@ -2435,13 +2724,38 @@ class PetWindow(QWidget):
         text = str(self.messages[user_message_index].get("content", ""))
         self.screen_observation_followup_in_progress = True
         try:
-            observation = capture_screen_observation(self)
+            captured = capture_screen_image(self)
         except RuntimeError as exc:
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("screen_observation_failed", {"error": str(exc)})
             debug_log("PetWindow", "屏幕观察失败", {"error": str(exc)})
             self._consume_agent_result(_build_screen_observation_failed_result(str(exc)))
             return True
+        if not self._start_screen_observation_encode(
+            captured,
+            {
+                "kind": "chat_followup",
+                "user_message_index": user_message_index,
+                "text": text,
+            },
+        ):
+            self.screen_observation_followup_in_progress = False
+            self._consume_agent_result(_build_screen_observation_failed_result("屏幕截图正在处理中。"))
+            return True
+        return True
+
+    def _finish_chat_screen_observation_followup(
+        self,
+        context: dict[str, Any],
+        observation: ScreenObservation,
+    ) -> None:
+        user_message_index = int(context.get("user_message_index", -1))
+        text = str(context.get("text", ""))
+        if user_message_index < 0 or user_message_index >= len(self.messages):
+            self.screen_observation_followup_in_progress = False
+            self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的用户消息。"))
+            self._resume_screen_observation_followup_cleanup()
+            return
 
         visual_id = generate_visual_observation_id()
         observed_message = build_screen_observation_user_message(text, observation)
@@ -2486,7 +2800,7 @@ class PetWindow(QWidget):
                 "screen_name": observation.screen_name,
             },
         )
-        return True
+        self._resume_screen_observation_followup_cleanup()
 
     def _queue_event_screen_observation_followup(
         self,
@@ -2521,14 +2835,41 @@ class PetWindow(QWidget):
         reason = str(screen_action.payload.get("reason", "")).strip()
         self.screen_observation_followup_in_progress = True
         try:
-            observation = capture_screen_observation(self)
+            captured = capture_screen_image(self)
         except RuntimeError as exc:
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("event_screen_observation_failed", {"error": str(exc)})
             debug_log("PetWindow", "主动事件屏幕观察失败", {"error": str(exc)})
             self._consume_agent_result(_build_screen_observation_failed_result(str(exc)))
             return True
+        if not self._start_screen_observation_encode(
+            captured,
+            {
+                "kind": "event_followup",
+                "event": event,
+                "reminder_id": reminder_id,
+                "reason": reason,
+            },
+        ):
+            self.screen_observation_followup_in_progress = False
+            self._consume_agent_result(_build_screen_observation_failed_result("屏幕截图正在处理中。"))
+            return True
+        return True
 
+    def _finish_event_screen_observation_followup(
+        self,
+        context: dict[str, Any],
+        observation: ScreenObservation,
+    ) -> None:
+        event = context.get("event")
+        if not isinstance(event, AgentEvent):
+            self.screen_observation_followup_in_progress = False
+            self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的主动事件。"))
+            self._resume_screen_observation_followup_cleanup()
+            return
+        reminder_id = context.get("reminder_id")
+        reminder_id = reminder_id if isinstance(reminder_id, str) else None
+        reason = str(context.get("reason", "")).strip()
         payload = dict(event.payload)
         payload["screen_context"] = {
             "data_url": observation.data_url,
@@ -2574,11 +2915,109 @@ class PetWindow(QWidget):
                 "screen_name": observation.screen_name,
             },
         )
+        self._resume_screen_observation_followup_cleanup()
+
+    def _start_screen_observation_encode(
+        self,
+        captured: CapturedScreenImage,
+        context: dict[str, Any],
+    ) -> bool:
+        if (
+            getattr(self, "_shutdown_in_progress", False)
+            or self.screen_observation_encode_thread is not None
+        ):
+            return False
+        thread = QThread(self)
+        worker = ScreenObservationEncodeWorker(captured, context)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_screen_observation_encoded)
+        worker.failed.connect(self._handle_screen_observation_encode_failed)
+        worker.cancelled.connect(self._handle_screen_observation_encode_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_screen_observation_encode_worker)
+        self.screen_observation_encode_thread = thread
+        self.screen_observation_encode_worker = worker
+        thread.start()
         return True
+
+    @Slot(object, object)
+    def _handle_screen_observation_encoded(
+        self,
+        context: dict[str, Any],
+        observation: ScreenObservation,
+    ) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            self.screen_observation_followup_in_progress = False
+            return
+        kind = context.get("kind")
+        if kind == "chat_followup":
+            self._finish_chat_screen_observation_followup(context, observation)
+        elif kind == "event_followup":
+            self._finish_event_screen_observation_followup(context, observation)
+        elif kind == "proactive_context":
+            self._finish_proactive_screen_context(context, observation)
+        elif kind == "manual":
+            self._finish_manual_screen_observation(observation)
+
+    @Slot(object, str)
+    def _handle_screen_observation_encode_failed(self, context: dict[str, Any], message: str) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            self.screen_observation_followup_in_progress = False
+            return
+        kind = context.get("kind")
+        if kind == "chat_followup":
+            self.screen_observation_followup_in_progress = False
+            self._log_interaction_stage("screen_observation_failed", {"error": message})
+            debug_log("PetWindow", "屏幕观察失败", {"error": message})
+            self._consume_agent_result(_build_screen_observation_failed_result(message))
+            self._resume_screen_observation_followup_cleanup()
+        elif kind == "event_followup":
+            self.screen_observation_followup_in_progress = False
+            self._log_interaction_stage("event_screen_observation_failed", {"error": message})
+            debug_log("PetWindow", "主动事件屏幕观察失败", {"error": message})
+            self._consume_agent_result(_build_screen_observation_failed_result(message))
+            self._resume_screen_observation_followup_cleanup()
+        elif kind == "proactive_context":
+            debug_log("ProactiveCare", "主动屏幕上下文编码失败", {"error": message})
+        elif kind == "manual":
+            show_themed_warning(self, "截图失败", message)
+            debug_log("PetWindow", "手动框选截图编码失败", {"error": message})
+
+    @Slot(object)
+    def _handle_screen_observation_encode_cancelled(self, context: dict[str, Any]) -> None:
+        if context.get("kind") in {"chat_followup", "event_followup"}:
+            self.screen_observation_followup_in_progress = False
+            self._resume_screen_observation_followup_cleanup()
+
+    @Slot()
+    def _cleanup_screen_observation_encode_worker(self) -> None:
+        self.screen_observation_encode_thread = None
+        self.screen_observation_encode_worker = None
+
+    def _resume_screen_observation_followup_cleanup(self) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
+        if self.worker_thread is None:
+            QTimer.singleShot(0, self._cleanup_worker)
 
     def _record_user_message(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
         self._record_history("user", text)
+        emit_plugin_event = getattr(self, "_emit_plugin_event", None)
+        if callable(emit_plugin_event):
+            emit_plugin_event(
+                PLUGIN_EVENT_USER_MESSAGE,
+                {
+                    "text": text,
+                    "character_id": self.character_profile.id,
+                },
+                source="user",
+            )
 
     @Slot()
     def confirm_pending_action(self) -> None:
@@ -2622,6 +3061,7 @@ class PetWindow(QWidget):
             self.agent_runtime,
             confirmed_action=confirmed_action,
             cancelled_action=cancelled_action,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
@@ -2630,12 +3070,16 @@ class PetWindow(QWidget):
         self.worker.failed.connect(self._handle_error)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
+        self.worker.cancelled.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._cleanup_worker)
         self.worker_thread.start()
         self._log_interaction_stage("action_worker_started")
 
     @Slot(object)
     def _handle_action_reply(self, result: AgentResult) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            self.messages = _without_transient_progress_messages(self.messages)
+            return
         self._log_interaction_stage(
             "action_result_received",
             {
@@ -2646,6 +3090,7 @@ class PetWindow(QWidget):
         self._consume_agent_result(result)
 
     def _consume_agent_result(self, result: AgentResult, record_history: bool = True) -> None:
+        self.messages = _without_transient_progress_messages(self.messages)
         reply = result.reply
         self._log_interaction_stage(
             "consume_agent_result",
@@ -2667,7 +3112,7 @@ class PetWindow(QWidget):
             try:
                 self._set_pending_tool_action(PendingToolAction.from_dict(action.payload))
             except ValueError as exc:
-                print(f"[Tool] 待确认动作无效：{exc}")
+                debug_log("Tool", "待确认动作无效", {"error": str(exc)})
             return
         self._set_pending_tool_action(None)
 
@@ -2724,6 +3169,7 @@ class PetWindow(QWidget):
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
+            or self.screen_observation_encode_thread is not None
             or self.active_interaction_id
         ):
             return False
@@ -2757,11 +3203,25 @@ class PetWindow(QWidget):
     def _capture_proactive_screen_context(self, now: float) -> None:
         self.last_proactive_screen_context_at = now
         try:
-            observation = capture_screen_observation(self)
+            captured = capture_screen_image(self)
         except RuntimeError as exc:
             debug_log("ProactiveCare", "主动屏幕上下文获取失败", {"error": str(exc)})
             return
+        if not self._start_screen_observation_encode(
+            captured,
+            {"kind": "proactive_context", "captured_at_monotonic": now},
+        ):
+            debug_log("ProactiveCare", "主动屏幕上下文编码忙，跳过本次截图")
+            return
 
+    def _finish_proactive_screen_context(
+        self,
+        context_data: dict[str, Any],
+        observation: ScreenObservation,
+    ) -> None:
+        captured_at_monotonic = context_data.get("captured_at_monotonic")
+        if not isinstance(captured_at_monotonic, (int, float)):
+            captured_at_monotonic = time.perf_counter()
         context = {
             "data_url": observation.data_url,
             "width": observation.width,
@@ -2770,7 +3230,7 @@ class PetWindow(QWidget):
             "screen_name": observation.screen_name,
         }
         if not self.proactive_screen_contexts:
-            self.proactive_screen_context_batch_started_at = now
+            self.proactive_screen_context_batch_started_at = float(captured_at_monotonic)
         self.proactive_screen_contexts.append(context)
         batch_limit = self.proactive_care_settings.normalized().screen_context_batch_limit
         while len(self.proactive_screen_contexts) > batch_limit:
@@ -2877,6 +3337,7 @@ class PetWindow(QWidget):
         self.worker = EventWorker(
             self.agent_runtime,
             event,
+            interaction_id=self.active_interaction_id,
         )
         self.worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         self.worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
@@ -2888,12 +3349,18 @@ class PetWindow(QWidget):
         self.worker.failed.connect(self._handle_event_error)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
+        self.worker.cancelled.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._cleanup_worker)
         self.worker_thread.start()
         self._log_interaction_stage("event_worker_started")
 
     @Slot(object)
     def _handle_event_reply(self, result: AgentResult) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            self.messages = _without_transient_progress_messages(self.messages)
+            self._clear_active_event()
+            return
+        self.messages = _without_transient_progress_messages(self.messages)
         self._log_interaction_stage(
             "event_result_received",
             {"event_type": self.active_event_type, "segments": len(result.reply.segments)},
@@ -2913,12 +3380,16 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _handle_event_error(self, message: str) -> None:
+        self.messages = _without_transient_progress_messages(self.messages)
+        if getattr(self, "_shutdown_in_progress", False):
+            self._clear_active_event()
+            return
         event_type = self.active_event_type
         self._log_interaction_stage("event_error", {"event_type": event_type, "message": message})
         reminder_id = self.active_reminder_id
         reminder_text = self.active_reminder_text
         self._clear_active_event()
-        print(f"[Event] 主动事件生成失败：{message}")
+        debug_log("Event", "主动事件生成失败", {"error": message})
         if event_type == "reminder_due":
             result = AgentResult(
                 reply=ChatReply(
@@ -2960,12 +3431,16 @@ class PetWindow(QWidget):
         try:
             self.reminder_store.mark_completed(reminder_id)
         except ValueError as exc:
-            print(f"[Reminder] 标记完成失败：{exc}")
+            debug_log("Reminder", "标记完成失败", {"error": str(exc)})
 
     @Slot(str)
     def _handle_error(self, message: str) -> None:
         self._cancel_backchannel()
+        self.messages = _without_transient_progress_messages(self.messages)
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         self._log_interaction_stage("worker_error", {"message": message})
+        self.ui_state.fail("worker_error")
         if self.messages and self.messages[-1]["role"] == "user":
             self.messages.pop()
         self._record_history("error", message)
@@ -2992,9 +3467,14 @@ class PetWindow(QWidget):
             self.worker_thread.deleteLater()
         self.worker = None
         self.worker_thread = None
+        if getattr(self, "_shutdown_in_progress", False):
+            self.pending_screen_observation_messages = None
+            self.pending_screen_observation_event = None
+            self.pending_screen_observation_event_reminder_id = None
+            self.screen_observation_followup_in_progress = False
+            return
         if self.screen_observation_followup_in_progress:
             self._log_interaction_stage("screen_observation_cleanup_deferred")
-            QTimer.singleShot(0, self._cleanup_worker)
             return
         if self.pending_screen_observation_messages is not None:
             request_messages = self.pending_screen_observation_messages
@@ -3113,11 +3593,14 @@ class PetWindow(QWidget):
         self.memory_curation_worker.failed.connect(self._handle_memory_curation_failed)
         self.memory_curation_worker.finished.connect(self.memory_curation_thread.quit)
         self.memory_curation_worker.failed.connect(self.memory_curation_thread.quit)
+        self.memory_curation_worker.cancelled.connect(self.memory_curation_thread.quit)
         self.memory_curation_thread.finished.connect(self._cleanup_memory_curation_worker)
         self.memory_curation_thread.start()
 
     @Slot(object)
     def _handle_memory_curation_finished(self, result: MemoryCurationResult) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         mode = self.memory_curation_mode
         debug_log(
             "Memory",
@@ -3156,6 +3639,8 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _handle_memory_curation_failed(self, message: str) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         debug_log(
             "Memory",
             "记忆整理失败",
@@ -3178,6 +3663,9 @@ class PetWindow(QWidget):
         self.memory_curation_mode = ""
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
+        if getattr(self, "_shutdown_in_progress", False):
+            self.pending_history_clear_after_curation = False
+            return
         if self.pending_history_clear_after_curation:
             self.pending_history_clear_after_curation = False
             if self._start_pending_history_clear_after_curation():
@@ -3209,6 +3697,10 @@ class PetWindow(QWidget):
     @Slot(object)
     def apply_deferred_services(self, services: "DeferredStartupServices") -> None:
         """后台启动服务就绪后注入同一个真实主窗口。"""
+
+        if getattr(self, "_shutdown_in_progress", False):
+            self._close_deferred_services(services)
+            return
 
         self._move_tts_provider_to_ui_thread(services.tts_provider)
         if self.mcp_tool_provider is not None and self.mcp_tool_provider is not services.mcp_tool_provider:
@@ -3261,12 +3753,14 @@ class PetWindow(QWidget):
             },
         )
         for error in services.errors:
-            print(f"[Startup] {error}")
+            debug_log("Startup", "后台初始化错误", {"error": error})
             if error.startswith("TTS"):
                 self._show_tts_error(error)
 
     @Slot(str)
     def handle_deferred_startup_failed(self, error: str) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         self.startup_initializing = False
         self.input_edit.setPlaceholderText(self._normal_input_placeholder_text())
         self._collapse_auto_fit_bubble_height()
@@ -3275,7 +3769,31 @@ class PetWindow(QWidget):
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log("Startup", "后台启动服务失败", {"error": error})
-        print(f"[Startup] 后台初始化失败：{error}")
+        debug_log("Startup", "后台初始化失败", {"error": error})
+
+    def _close_deferred_services(self, services: "DeferredStartupServices") -> None:
+        debug_log("Startup", "关闭期间收到后台启动结果，立即释放服务")
+        for provider in (getattr(services, "tts_provider", None),):
+            close = getattr(provider, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001
+                    debug_log("TTS", "关闭延迟启动 TTS Provider 失败", {"error": str(exc)})
+        mcp_tool_provider = getattr(services, "mcp_tool_provider", None)
+        close_mcp = getattr(mcp_tool_provider, "close", None)
+        if callable(close_mcp):
+            try:
+                close_mcp()
+            except Exception as exc:  # noqa: BLE001
+                debug_log("MCP", "关闭延迟启动 MCP Provider 失败", {"error": str(exc)})
+        plugin_manager = getattr(services, "plugin_manager", None)
+        shutdown_all = getattr(plugin_manager, "shutdown_all", None)
+        if callable(shutdown_all):
+            try:
+                shutdown_all()
+            except Exception as exc:  # noqa: BLE001
+                debug_log("PluginManager", "关闭延迟启动插件失败", {"error": str(exc)})
 
     def _sync_plugin_chat_ui_widgets(self) -> None:
         layout = self.input_bar.layout() if hasattr(self, "input_bar") else None
@@ -3385,6 +3903,8 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _handle_tts_ready_warmup_failed(self, message: str) -> None:
+        if getattr(self, "_shutdown_in_progress", False):
+            return
         self._show_tts_error(message)
 
     @Slot()
@@ -4112,10 +4632,11 @@ class PetWindow(QWidget):
             debug_log("PetWindow", "设置保存后 TTS 保持关闭")
             return NullTTSProvider()
         try:
-            provider = (
-                GenieTTSProvider(settings, adopt_existing_service=False)
-                if settings.provider == TTS_PROVIDER_GENIE
-                else GPTSoVITSTTSProvider(settings, adopt_existing_service=False)
+            # 统一走工厂；补传 base_dir 修正旧实现缓存目录回退 __file__ 推算的问题
+            provider = create_tts_provider(
+                settings,
+                base_dir=self.base_dir,
+                adopt_existing_service=False,
             )
             debug_log(
                 "PetWindow",
@@ -4171,7 +4692,7 @@ class PetWindow(QWidget):
             return GPTSoVITSTTSSettings.from_character_profile(
                 character_profile=self.character_profile,
                 enabled=False,
-                api_url="http://127.0.0.1:9880/tts",
+                api_url=DEFAULT_GPT_SOVITS_API_URL,
                 ref_lang=self.character_profile.voice.ref_lang,
                 text_lang=self.character_profile.voice.text_lang,
                 timeout_seconds=60,
@@ -4179,7 +4700,7 @@ class PetWindow(QWidget):
             )
         return GPTSoVITSTTSSettings(
             enabled=False,
-            api_url="http://127.0.0.1:9880/tts",
+            api_url=DEFAULT_GPT_SOVITS_API_URL,
             ref_audio_path=self.base_dir / "ref" / "VO01_2210.ogg",
             ref_text_path=self.base_dir / "ref" / "text.txt",
             ref_text="",
@@ -4200,7 +4721,7 @@ class PetWindow(QWidget):
         try:
             self.history_store.append(role, content, translation, tone, portrait, _debug=_debug)
         except OSError as exc:
-            print(f"[History] 写入失败：{exc}")
+            debug_log("History", "写入失败", {"error": str(exc)})
             debug_log(
                 "History",
                 "写入失败",
@@ -4237,7 +4758,7 @@ class PetWindow(QWidget):
         try:
             due_reminders = self.reminder_store.due_reminders()
         except ValueError as exc:
-            print(f"[Reminder] 读取失败：{exc}")
+            debug_log("Reminder", "读取失败", {"error": str(exc)})
             debug_log("Reminder", "读取失败", {"error": str(exc)})
             return
         if not due_reminders:
@@ -4720,31 +5241,31 @@ class PetWindow(QWidget):
             self.messages = []
             self._collapse_auto_fit_bubble_height()
             self.subtitle_controller.cancel_reply_flow(profile.initial_message)
+            self._emit_plugin_event(
+                PLUGIN_EVENT_CHARACTER_LOADED,
+                {
+                    "character_id": profile.id,
+                    "character_name": profile.display_name,
+                    "previous_character_id": previous_character_id,
+                },
+                source="character",
+            )
 
     def _create_history_store(self, profile: CharacterProfile) -> ChatHistoryStore:
-        history_path = self.base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
-        self._migrate_legacy_history(profile, history_path)
-        return ChatHistoryStore(history_path, profile.display_name)
+        # 路径与旧历史迁移统一走 bootstrap 的公开 helper，避免两处实现漂移
+        from app.core.bootstrap import create_history_store
+
+        return create_history_store(self.base_dir, profile)
 
     def _create_runtime_event_log(self, profile: CharacterProfile) -> RuntimeEventLog:
-        event_path = self.base_dir / "data" / "runtime_events" / f"{profile.id}.jsonl"
-        return RuntimeEventLog(event_path)
+        from app.core.bootstrap import create_runtime_event_log
+
+        return create_runtime_event_log(self.base_dir, profile)
 
     def _create_visual_observation_store(self, profile: CharacterProfile) -> VisualObservationStore:
-        visual_path = self.base_dir / "data" / "visual_observations" / f"{profile.id}.jsonl"
-        return VisualObservationStore(visual_path)
+        from app.core.bootstrap import create_visual_observation_store
 
-    def _migrate_legacy_history(self, profile: CharacterProfile, history_path: Path) -> None:
-        if profile.id != DEFAULT_CHARACTER_ID or history_path.exists():
-            return
-        legacy_path = self.base_dir / "data" / "chat_history.jsonl"
-        if not legacy_path.exists():
-            return
-        try:
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            history_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-        except OSError as exc:
-            print(f"[History] 旧历史迁移失败：{exc}")
+        return create_visual_observation_store(self.base_dir, profile)
 
 
 def _build_screen_observation_disabled_result() -> AgentResult:
@@ -4775,6 +5296,15 @@ def _build_screen_observation_failed_result(message: str) -> AgentResult:
             ]
         )
     )
+
+
+def _segment_plugin_payload(segment: ChatSegment) -> dict[str, str]:
+    return {
+        "text": segment.text,
+        "translation": segment.translation,
+        "tone": segment.tone,
+        "portrait": segment.portrait,
+    }
 
 
 def _first_screen_observation_request(result: AgentResult) -> AgentAction | None:

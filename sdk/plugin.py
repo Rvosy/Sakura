@@ -2,29 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sdk.plugin_host_context import PluginContext, PluginHostContext
-from sdk.register import PluginCapabilityRegistry
+from app.plugins.base import PluginBase as _HostPluginBase
+from app.plugins.base import PluginContext
+from app.plugins.capabilities import PluginCapabilityRegistry
+from sdk.plugin_host_context import PluginHostContext
 
 
-class PluginBase:
-    """Sakura 插件基类。
+class PluginBase(_HostPluginBase):
+    """旧 SDK 插件基类。
 
-    新插件推荐使用类属性声明 plugin_id / plugin_version，并实现
-    initialize(register, context)。旧三参数 initialize 仍由宿主兼容。
+    继承宿主当前的 PluginBase，让旧插件仍能通过宿主的 isinstance 校验。
     """
-
-    plugin_id = ""
-    plugin_version = "0.0.0"
-
-    def initialize(
-        self,
-        register: PluginCapabilityRegistry,
-        context: PluginContext,
-    ) -> None:
-        raise NotImplementedError
-
-    def shutdown(self) -> None:
-        return None
 
 
 LegacyInitializeArgs = tuple[PluginCapabilityRegistry, Path, PluginHostContext]

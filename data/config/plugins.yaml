@@ -1,6 +1,0 @@
-- id: playwright_browser
-  enabled: true
-  priority: 40
-- id: example_plugin
-  enabled: false
-  priority: 30

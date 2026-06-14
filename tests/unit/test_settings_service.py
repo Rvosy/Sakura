@@ -23,7 +23,7 @@ from app.ui.theme import (
     build_pet_window_stylesheet,
     parse_ai_theme_response,
 )
-from app.voice.tts import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
+from app.voice.tts_settings import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
 
 
 class CharacterRegistryStub:

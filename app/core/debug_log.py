@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.gui_log import record_debug_log_for_gui
+from app.storage.paths import StoragePaths
 
 
 
@@ -42,7 +43,7 @@ _MAX_LIST_ITEMS = 8
 _MAX_DICT_ITEMS = 24
 FILE_LOG_MAX_BYTES = 10 * 1024 * 1024
 FILE_LOG_BACKUP_COUNT = 5
-_FILE_LOG_PATH = Path(__file__).resolve().parents[2] / "data" / "logs" / "sakura-runtime.log"
+_FILE_LOG_PATH = StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
 _FILE_LOGGER_NAME = "sakura.runtime_file_log"
 _file_logger_signature: tuple[str, int, int] | None = None
 
@@ -63,7 +64,12 @@ def debug_file_enabled() -> bool:
 
 
 def debug_log(category: str, message: str, data: Any | None = None) -> None:
-    """按统一格式输出调试日志；文件日志始终使用严格脱敏数据。"""
+    """按统一格式输出调试日志；文件日志始终使用严格脱敏数据。
+
+    当前调用链存在交互 ID 时自动附加 interaction_id 字段，
+    使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
+    """
+    data = _attach_interaction_id(data)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     try:
         record_debug_log_for_gui(category, message, data, timestamp=timestamp)
@@ -83,6 +89,23 @@ def debug_log(category: str, message: str, data: Any | None = None) -> None:
         print(line)
     if file_enabled:
         _write_file_log(timestamp, category, message, data)
+
+
+def _attach_interaction_id(data: Any) -> Any:
+    """data 为 dict 或 None 时附加当前 interaction_id；调用方已显式给出则不覆盖。"""
+    try:
+        from app.core.interaction import get_interaction_id
+
+        interaction_id = get_interaction_id()
+    except Exception:
+        return data
+    if not interaction_id:
+        return data
+    if data is None:
+        return {"interaction_id": interaction_id}
+    if isinstance(data, dict) and "interaction_id" not in data:
+        return {"interaction_id": interaction_id, **data}
+    return data
 
 
 def format_debug_data(data: Any) -> str:
@@ -497,7 +520,7 @@ def _read_bool(key: str, default: bool) -> bool:
 
 def _load_debug_values() -> dict[str, Any]:
     from app.config.yaml_config import load_yaml_mapping
-    config_path = Path(__file__).resolve().parents[2] / "data" / "config" / "system_config.yaml"
+    config_path = StoragePaths(Path(__file__).resolve().parents[2]).system_config()
     try:
         system_config = load_yaml_mapping(config_path)
     except (OSError, ValueError):

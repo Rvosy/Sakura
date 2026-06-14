@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.storage.paths import StoragePaths
+
 
 LAUNCH_AT_LOGIN_LABEL = "com.rvosy.sakura.launch-at-login"
 WINDOWS_RUN_VALUE_NAME = "Sakura Desktop Pet"
@@ -157,7 +159,7 @@ def _set_macos_launch_agent_enabled(
 ) -> None:
     plist_path = _macos_launch_agent_path(home_dir=home_dir)
     if enabled:
-        logs_dir = base_dir / "data" / "logs"
+        logs_dir = StoragePaths(base_dir).logs_dir
         logs_dir.mkdir(parents=True, exist_ok=True)
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         data = {

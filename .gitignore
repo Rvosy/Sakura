@@ -1,6 +1,7 @@
 .vscode/
 
 .env
+.env.migrated
 
 # macOS
 .DS_Store
@@ -39,10 +40,14 @@ data/notes/
 data/tts_bundles/
 data/logs/
 data/cache/
+data/sakura.lock
+data/migration_backup/
 tts/
 data/config/api.yaml
 data/config/characters.yaml
 data/config/system_config.yaml
+data/config/mcp.yaml
+data/config/plugins.yaml
 task.md
 log.txt
 
@@ -53,6 +58,8 @@ plugins/*
 !plugins/playwright_browser/**
 plugins/playwright_browser/__pycache__/
 plugins/playwright_browser/**/*.py[cod]
+# 用户态运行配置：发布包不携带，覆盖升级不冲掉（必须位于上方 ! 白名单之后）
+plugins/playwright_browser/config.json
 !plugins/example_plugin/
 !plugins/example_plugin/**
 plugins/example_plugin/__pycache__/

@@ -1,7 +1,8 @@
-"""SDK 工具装饰器 — 已废弃。
+"""旧 SDK 全局工具装饰器兼容层。
 
-新插件请使用 app/plugins/models.py 中的 ToolContribution，
-通过 PluginCapabilityRegistry.register_tool() 注册工具。
+新插件应使用 ``register.tool(...)`` 或 ``register.register_tool(...)``。
+这里保留全局注册表只为兼容旧插件；宿主加载单个插件前后会清理它，
+避免跨插件残留状态。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any, Callable, get_args, get_origin
 
 
 warnings.warn(
-    "sdk/tool_registry.py 已废弃，请使用 app.plugins.models.ToolContribution",
+    "sdk.tool_registry 已废弃，请改用 app.plugins.PluginCapabilityRegistry",
     DeprecationWarning,
     stacklevel=2,
 )
@@ -30,23 +31,33 @@ class RegisteredTool:
     parameters: dict[str, Any]
 
 
-# 保留全局变量以保持向后兼容 (但不推荐使用)
 _REGISTERED_TOOLS: list[RegisteredTool] = []
 
 
-def tool(*, name: str, description: str, group: str = "default",
-         risk: str = "low", requires_confirmation: bool = False,
+def tool(
+    *,
+    name: str,
+    description: str,
+    group: str = "default",
+    risk: str = "low",
+    requires_confirmation: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """注册工具 (已废弃)。"""
+    """注册旧式全局工具。"""
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         _REGISTERED_TOOLS.append(
             RegisteredTool(
-                name=name, description=description, group=group,
-                risk=risk, requires_confirmation=requires_confirmation,
-                func=func, parameters=_schema_from_signature(func),
+                name=name,
+                description=description,
+                group=group,
+                risk=risk,
+                requires_confirmation=requires_confirmation,
+                func=func,
+                parameters=_schema_from_signature(func),
             )
         )
         return func
+
     return decorator
 
 
@@ -64,6 +75,8 @@ def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
     required: list[str] = []
     for parameter in signature.parameters.values():
         if parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
+            continue
+        if parameter.name in {"self", "cls"}:
             continue
         properties[parameter.name] = _schema_for_annotation(parameter.annotation)
         if parameter.default is inspect.Parameter.empty:

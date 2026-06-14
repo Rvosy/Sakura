@@ -1,6 +1,6 @@
 # Sakura 安装与配置指南
 
-> 快速开始请看 [README.md](../README.md)；macOS 专项问题请看 [MACOS_SETUP.md](MACOS_SETUP.md)。
+> 快速开始请看 [README.md](../README.md)；API 配置教程请看 [API_CONFIG.md](API_CONFIG.md)；macOS 专项问题请看 [MACOS_SETUP.md](MACOS_SETUP.md)。
 
 ---
 
@@ -55,15 +55,11 @@
 
 ### 配置模型
 
-进入**模型**页面，填写以下信息：
+进入**模型**页面，填写 `Base URL`、`API Key` 和模型名称。新手或第一次配置中转站的用户，按 **[API 配置教程](API_CONFIG.md)** 操作。
 
-- **Base URL**：模型服务商提供的接口地址，通常以 `/v1` 结尾
-- **API Key**：申请到的密钥，通常以 `sk-` 开头
-- **模型**：填写服务商提供的模型名称，或点击**检测模型**自动获取可用列表
+> **必须选择支持多模态（图像识别）的模型**，否则屏幕观察等功能会报错。推荐 Gemini Flash 系列，不建议使用 DeepSeek 系列作为 Sakura 主模型。
 
-> **必须选择支持多模态（图像识别）的模型**，否则屏幕观察等功能会报错。推荐 Gemini Flash 系列。不要使用 DeepSeek 系列。
-
-填写完成后点击**测试 API** 验证连通性。
+填写完成后点击**检测模型**获取可用模型列表，再点击**测试 API** 验证连通性。
 
 ![配置模型](https://oss.cialloo.cn/img/setup_02.webp)
 

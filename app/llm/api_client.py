@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.llm.chat_reply import ChatReply, parse_chat_reply
 from app.core.debug_log import debug_log, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
@@ -157,6 +158,8 @@ class OpenAICompatibleClient:
         messages: list[ChatMessage],
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> ChatReply:
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
         temperature, extra_params = self.resolve_dialogue_params()
@@ -165,8 +168,10 @@ class OpenAICompatibleClient:
             messages,
             temperature=temperature,
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
+            cancel_checker=cancel_checker,
             **extra_params,
         )
+        check_cancelled(cancel_checker)
 
         reply = parse_chat_reply(content)
         debug_log(
@@ -186,10 +191,13 @@ class OpenAICompatibleClient:
         system_prompt: str,
         messages: list[ChatMessage],
         temperature: float = 0.8,
+        *,
+        cancel_checker: CancelChecker | None = None,
         **chat_params: Any,
     ) -> str:
         """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
         self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
+        check_cancelled(cancel_checker)
 
         payload = _build_chat_completion_payload(
             model=self.settings.model,
@@ -213,7 +221,11 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(
+            payload,
+            cancel_checker=cancel_checker,
+        )
+        check_cancelled(cancel_checker)
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -235,10 +247,12 @@ class OpenAICompatibleClient:
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.8,
         structured_response: bool = False,
+        cancel_checker: CancelChecker | None = None,
         **chat_params: Any,
     ) -> ChatCompletionTurn:
         """调用 OpenAI 原生 tools/tool_calls 协议并返回 assistant 消息。"""
         self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
+        check_cancelled(cancel_checker)
 
         if tools:
             chat_params["tools"] = tools
@@ -268,7 +282,11 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(
+            payload,
+            cancel_checker=cancel_checker,
+        )
+        check_cancelled(cancel_checker)
 
         try:
             raw_message = data["choices"][0]["message"]
@@ -302,13 +320,19 @@ class OpenAICompatibleClient:
     def _post_chat_completions_with_compatibility_fallbacks(
         self,
         payload: dict[str, Any],
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> dict[str, Any]:
         fallback_payload = dict(payload)
         for param in self._unsupported_chat_params:
             fallback_payload.pop(param, None)
         while True:
+            check_cancelled(cancel_checker)
             try:
-                return self._post_chat_completions(fallback_payload)
+                return self._post_chat_completions(
+                    fallback_payload,
+                    cancel_checker=cancel_checker,
+                )
             except ApiRequestError as exc:
                 if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
                     self._unsupported_chat_params.add("response_format")
@@ -344,8 +368,14 @@ class OpenAICompatibleClient:
         if not self.settings.base_url:
             raise ApiConfigError("缺少 BASE_URL。")
 
-    def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_chat_completions(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> dict[str, Any]:
         """调用 OpenAI 兼容的 chat/completions 接口并返回 JSON 数据。"""
+        check_cancelled(cancel_checker)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         base_url = _normalize_openai_base_url(self.settings.base_url)
         url = f"{base_url}/chat/completions"
@@ -369,7 +399,8 @@ class OpenAICompatibleClient:
                 "payload": payload,
             },
         )
-        response_body = self._send_with_retries(request)
+        response_body = self._send_with_retries(request, cancel_checker=cancel_checker)
+        check_cancelled(cancel_checker)
 
         try:
             data: dict[str, Any] = json.loads(response_body)
@@ -378,9 +409,15 @@ class OpenAICompatibleClient:
 
         return data
 
-    def _send_with_retries(self, request: urllib.request.Request) -> str:
+    def _send_with_retries(
+        self,
+        request: urllib.request.Request,
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> str:
         last_error: BaseException | None = None
         for attempt in range(1, MAX_API_RETRY_ATTEMPTS + 1):
+            check_cancelled(cancel_checker)
             started_at = time.perf_counter()
             try:
                 with urllib.request.urlopen(
@@ -453,7 +490,6 @@ class OpenAICompatibleClient:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
                 last_error = exc
 
-            print(f"[API] 请求失败，准备重试 {attempt}/{MAX_API_RETRY_ATTEMPTS}：{last_error}")
             debug_log(
                 "API",
                 "准备重试请求",
@@ -464,7 +500,7 @@ class OpenAICompatibleClient:
                     "last_error": str(last_error),
                 },
             )
-            time.sleep(API_RETRY_DELAY_SECONDS * attempt)
+            cancellable_sleep(API_RETRY_DELAY_SECONDS * attempt, cancel_checker)
 
         raise ApiRequestError("API 请求失败。")
 

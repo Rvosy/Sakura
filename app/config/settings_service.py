@@ -8,6 +8,7 @@ from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_set
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.llm.api_client import ApiSettings
+from app.storage.paths import StoragePaths
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
 from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -15,7 +16,7 @@ from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ProactiveCareSettings,
 )
-from app.voice.tts import (
+from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,
@@ -133,7 +134,7 @@ class AppSettingsService:
 
     @property
     def config_dir(self) -> Path:
-        return self.base_dir / "data" / "config"
+        return StoragePaths(self.base_dir).config_dir
 
     @property
     def api_config_path(self) -> Path:
@@ -233,7 +234,7 @@ class AppSettingsService:
         onnx_model_dir = _optional_path(genie_tts.get("onnx_model_dir"), self.base_dir)
         if character_profile is not None:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
-                onnx_model_dir = self.base_dir / "data" / "tts_bundles" / "onnx" / character_profile.id
+                onnx_model_dir = StoragePaths(self.base_dir).tts_bundle_onnx_for(character_profile.id)
             ref_lang = str(
                 provider_data.get(
                     "ref_lang",
@@ -264,7 +265,7 @@ class AppSettingsService:
                 settings = replace(settings, playback_backend=playback_backend)
         else:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
-                onnx_model_dir = self.base_dir / "data" / "tts_bundles" / "onnx" / "default"
+                onnx_model_dir = StoragePaths(self.base_dir).tts_bundle_onnx_for("default")
             settings = GPTSoVITSTTSSettings(
                 enabled=enabled,
                 api_url=api_url,

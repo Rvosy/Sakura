@@ -24,6 +24,8 @@ version: 1.0.0
 entry: plugin:MyPlugin
 enabled: true
 priority: 100
+permissions:
+  - tool
 ```
 
 字段说明：
@@ -38,6 +40,21 @@ priority: 100
 | `enabled` | 否 | 默认 `true` |
 | `priority` | 否 | 加载优先级，数值越大越先加载 |
 | `required` | 否 | 必需插件加载失败时停止继续加载后续插件 |
+| `permissions` | 是 | 插件权限声明，缺失或未知权限会导致加载失败 |
+
+固定权限：
+
+| 权限 | 说明 |
+|---|---|
+| `tool` | 注册 Agent 工具 |
+| `tools_tab` | 注册“工具”页扩展 |
+| `settings_panel` | 注册“插件”页设置面板 |
+| `chat_ui` | 注册聊天输入区控件 |
+| `prompt_patch` | 注册提示词补丁 |
+| `event.app` | 接收应用启动事件 |
+| `event.message` | 接收用户/AI 消息事件 |
+| `event.tts` | 接收 TTS 开始/结束事件 |
+| `event.character` | 接收角色加载事件 |
 
 `data/config/plugins.yaml` 只负责启停和优先级覆盖：
 
@@ -47,18 +64,11 @@ priority: 100
   priority: 100
 ```
 
-旧写法仍兼容：
-
-```yaml
-- entry: plugins.my_plugin.plugin:MyPlugin
-  enabled: true
-```
-
 ## 最小插件
 
 ```python
-from sdk import PluginBase, PluginCapabilityRegistry, PluginContext
-from sdk.types import ToolContribution
+from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
+from app.plugins import ToolContribution
 
 
 class MyPlugin(PluginBase):
@@ -139,7 +149,7 @@ class MyPlugin(PluginBase):
 `PromptPatchContribution`：
 
 ```python
-from sdk.types import PromptPatchContribution
+from app.plugins import PromptPatchContribution
 
 register.register_prompt_patch(
     PromptPatchContribution(
@@ -150,14 +160,32 @@ register.register_prompt_patch(
 )
 ```
 
-## 兼容迁移
+## 事件 Hook
 
-仍支持旧三参数初始化：
+插件可以按权限接收宿主事件。未声明对应 `event.*` 权限时，宿主不会调用 hook；hook 抛错只会写日志，不影响主流程。
 
 ```python
-def initialize(self, register, plugin_root, host):
-    ...
+from app.plugins import PluginBase
+
+
+class MyPlugin(PluginBase):
+    plugin_id = "my_plugin"
+
+    def initialize(self, register, context):
+        self.context = context
+
+    def on_user_message(self, event):
+        self.context.log("收到用户消息", {"text": event.payload.get("text", "")})
 ```
 
-仍支持旧 `sdk.tool_registry.tool()` 全局装饰器，但它已废弃。新插件必须使用 `PluginCapabilityRegistry.register_tool()` 或 `register.tool()`。旧全局注册表容易残留状态，不适合作为第三方插件开发接口。
+可实现的 hook：
+
+| 方法 | 权限 |
+|---|---|
+| `on_app_start(event)` | `event.app` |
+| `on_user_message(event)` | `event.message` |
+| `on_ai_message(event)` | `event.message` |
+| `on_tts_start(event)` | `event.tts` |
+| `on_tts_end(event)` | `event.tts` |
+| `on_character_loaded(event)` | `event.character` |
 
