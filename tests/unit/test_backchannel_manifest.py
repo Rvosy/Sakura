@@ -58,7 +58,12 @@ def test_load_valid_manifest(tmp_path: Path) -> None:
     assert manifest.templates[2].intent is None
     assert [t.id for t in manifest.fallback_templates] == ["fb"]
     variant = manifest.templates[0].variants[0]
-    assert (variant.ja, variant.zh, variant.audio) == ("見てみる。", "我看看。", None)
+    assert (variant.ja, variant.zh, variant.audio, variant.portrait) == (
+        "見てみる。",
+        "我看看。",
+        None,
+        None,
+    )
 
 
 def test_variant_display_text_language_fallback(tmp_path: Path) -> None:
@@ -66,6 +71,24 @@ def test_variant_display_text_language_fallback(tmp_path: Path) -> None:
     variant = load_backchannel_manifest(path).templates[0].variants[0]
     assert variant.display_text("zh") == "我看看。"
     assert variant.display_text("ja") == "見てみる。"
+
+
+def test_variant_portrait_override_parses_and_validates(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        [
+            _entry(
+                variants=[
+                    {"ja": "見てみる。", "zh": "我看看。", "portrait": "站立待机"},
+                    {"ja": "だめ。", "zh": "不行。", "portrait": "不存在的立绘"},
+                ]
+            )
+        ],
+    )
+    manifest = load_backchannel_manifest(path, profile=_StubProfile())
+    variants = manifest.templates[0].variants
+    assert len(variants) == 1
+    assert variants[0].portrait == "站立待机"
 
 
 def test_skip_unpaired_variant_keeps_rest(tmp_path: Path) -> None:

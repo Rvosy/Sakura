@@ -62,6 +62,7 @@ class BackchannelVariant:
     ja: str
     zh: str
     audio: str | None = None
+    portrait: str | None = None
 
     def display_text(self, subtitle_language: str) -> str:
         """按字幕语言返回显示文本;缺中文时回退日文(与 ChatSegment 行为一致)。"""

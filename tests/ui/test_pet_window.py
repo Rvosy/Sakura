@@ -8767,6 +8767,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _apply_launch_at_login_settings = pet_window_cls._apply_launch_at_login_settings
         _apply_bubble_settings = pet_window_cls._apply_bubble_settings
 
+        def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_debug_overlay_applied = (enabled, refresh)
+
+        def _apply_stage_collision_mask(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_collision_mask_applied = (enabled, refresh)
+
         def _create_tts_provider_from_settings(self, _settings):  # type: ignore[no-untyped-def]
             return object()
 

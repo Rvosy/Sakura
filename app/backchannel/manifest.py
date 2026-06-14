@@ -122,7 +122,7 @@ def _parse_template(
                 {"manifest": str(path), "id": entry_id, "tone": tone},
             )
 
-    variants = _parse_variants(entry.get("variants"), entry_id, path)
+    variants = _parse_variants(entry.get("variants"), entry_id, path, profile)
     if not variants:
         _skip(path, entry_id, "没有可用变体")
         return None
@@ -142,6 +142,7 @@ def _parse_variants(
     raw: Any,
     entry_id: str,
     path: Path,
+    profile: _CharacterVocabulary | None,
 ) -> tuple[BackchannelVariant, ...]:
     if not isinstance(raw, list):
         return ()
@@ -158,7 +159,11 @@ def _parse_variants(
             continue
         audio_raw = item.get("audio")
         audio = str(audio_raw).strip() if isinstance(audio_raw, str) and audio_raw.strip() else None
-        variants.append(BackchannelVariant(ja=ja, zh=zh, audio=audio))
+        portrait = _optional_label(item, "portrait")
+        if profile is not None and portrait is not None and portrait not in profile.expression_portraits:
+            _skip(path, f"{entry_id}[{index}]", f"portrait 不在角色词表:{portrait}")
+            continue
+        variants.append(BackchannelVariant(ja=ja, zh=zh, audio=audio, portrait=portrait))
     return tuple(variants)
 
 
