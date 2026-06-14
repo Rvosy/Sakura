@@ -9,10 +9,10 @@ from __future__ import annotations
 import pytest
 
 from app.ui.control_panel_layout import (
-    DEFAULT_STAGE_WIDTH,
     INPUT_BAR_HEIGHT,
     MIN_STAGE_HEIGHT,
     PORTRAIT_BOTTOM_PAD,
+    STAGE_WIDTH_PANEL_PAD,
     PetLayout,
     compute_pet_layout,
 )
@@ -27,21 +27,25 @@ def _rect_bottom(rect: tuple[int, int, int, int]) -> int:
     return rect[1] + rect[3]
 
 
-def test_default_layout_reproduces_legacy_geometry() -> None:
-    """默认参数（立绘 560x570、控制组 640、气泡 128、偏移 0）应复刻重构前几何。"""
+def test_default_layout_geometry() -> None:
+    """默认参数（立绘 560x570、控制组 640、气泡 128、偏移 0）的单窗口几何。
+
+    宽度为「立绘/控制组较宽者 + 边距」的动态包络（640+96=736），不再固定 860;
+    纵向几何（立绘底边锚点、各元素相对位置）仍复刻重构前。
+    """
     layout = compute_pet_layout(portrait_width=560, portrait_height=570)
 
-    assert layout.window_size == (860, 640)
+    assert layout.window_size == (736, 640)
     # 立绘水平居中、顶部留白 8、底边距窗口底 62。
-    assert layout.portrait_rect == (150, 8, 560, 570)
+    assert layout.portrait_rect == (88, 8, 560, 570)
     assert _portrait_bottom(layout) == 578
     assert layout.window_size[1] - _portrait_bottom(layout) == PORTRAIT_BOTTOM_PAD
-    assert layout.portrait_anchor == (430, 578)
+    assert layout.portrait_anchor == (368, 578)
     # 气泡：宽 640 居中，底边在立绘底边上方 84。
-    assert layout.bubble_rect == (110, 366, 640, 128)
+    assert layout.bubble_rect == (48, 366, 640, 128)
     assert _rect_bottom(layout.bubble_rect) == 578 - 84
     # 输入栏：与气泡同宽同 x，落在窗口内。
-    assert layout.input_rect == (110, 504, 640, 52)
+    assert layout.input_rect == (48, 504, 640, 52)
     assert _rect_bottom(layout.input_rect) <= layout.window_size[1]
 
 
@@ -89,11 +93,12 @@ def test_min_stage_height_clamp_keeps_portrait_bottom_pad() -> None:
     assert layout.window_size[1] - _portrait_bottom(layout) == PORTRAIT_BOTTOM_PAD
 
 
-def test_window_width_grows_with_control_panel() -> None:
+def test_window_width_is_content_envelope() -> None:
+    # 窗口宽 = max(立绘, 控制组) + 边距:窄面板时由立绘决定,宽面板时由面板决定,无 860 保底。
     narrow = compute_pet_layout(portrait_width=560, portrait_height=570, control_panel_width=420)
     wide = compute_pet_layout(portrait_width=560, portrait_height=570, control_panel_width=860)
-    assert narrow.window_size[0] == DEFAULT_STAGE_WIDTH  # 420+96=516 < 860 保底
-    assert wide.window_size[0] == 860 + 96
+    assert narrow.window_size[0] == 560 + STAGE_WIDTH_PANEL_PAD  # 立绘 560 > 面板 420
+    assert wide.window_size[0] == 860 + STAGE_WIDTH_PANEL_PAD     # 面板 860 > 立绘 560
 
 
 def test_portrait_anchor_matches_portrait_bottom_center() -> None:

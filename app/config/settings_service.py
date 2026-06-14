@@ -38,6 +38,10 @@ class DebugLogSettings:
     enabled: bool = False
     body_enabled: bool = False
     file_enabled: bool = False
+    # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
+    stage_debug_overlay: bool = False
+    # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。
+    stage_collision_mask: bool = True
 
 
 @dataclass(frozen=True)
@@ -341,6 +345,8 @@ class AppSettingsService:
             enabled=_bool_value(debug.get("enabled"), False),
             body_enabled=_bool_value(debug.get("body_enabled"), False),
             file_enabled=_bool_value(debug.get("file_enabled"), False),
+            stage_debug_overlay=_bool_value(debug.get("stage_debug_overlay"), False),
+            stage_collision_mask=_bool_value(debug.get("stage_collision_mask"), True),
         )
 
     def save_debug_log_settings(self, settings: DebugLogSettings) -> None:
@@ -350,6 +356,8 @@ class AppSettingsService:
                 "enabled": bool(settings.enabled),
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
+                "stage_debug_overlay": bool(settings.stage_debug_overlay),
+                "stage_collision_mask": bool(settings.stage_collision_mask),
             },
         )
 
