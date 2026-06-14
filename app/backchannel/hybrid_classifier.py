@@ -9,10 +9,11 @@ from app.backchannel.probe_classifier import ProbeIntentClassifier
 class HybridBackchannelClassifier:
     """probe-primary hybrid classifier。
 
-    架构(2026-06-14 翻转):规则层只保留闭集/结构化的高精度前置快路径
-    (程式化问候 + 无歧义技术报错);其余 complaint/support/positive/affection/
-    request 与一切语义/情感泛化交给 probe 层(bge 句向量 + 保守分类头,弃权即
-    落中性兜底)。审计证实规则关键词子串匹配粗颗粒度、是错接主因,故大幅删减。
+    架构(2026-06-14 翻转):规则层只保留高精度前置快路径(程式化问候 + 无歧义
+    技术报错 + 强吐槽 complaint 关键词);其余 support/positive/affection/request
+    与一切语义/情感泛化交给 probe 层(bge 句向量 + 保守分类头,弃权即落中性兜底)。
+    审计证实规则关键词子串匹配粗颗粒度、是错接主因,故大幅删减,只留 probe 实测
+    难稳定接住的高精度信号。
     """
 
     # 首次 classify 会冷加载句向量模型(数秒),必须派发到后台线程。

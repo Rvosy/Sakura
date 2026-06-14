@@ -114,12 +114,16 @@ class RuleClassifier:
     def classify_high_precision(self, text: str) -> BackchannelLabel | None:
         """只返回闭集/结构化的高精度信号,供 probe-primary 架构做前置快路径。
 
-        审计(2026-06-14)证实关键词子串匹配在情感/语义意图上粗颗粒度、精度低
-        (support 48% / positive 62% / request 68%),是错接主因。故仅保留两类
-        不依赖语义、近乎无歧义的信号:
+        审计(2026-06-14)证实关键词子串匹配在 support 48% / positive 62% /
+        request 68% 等语义意图上粗颗粒度、精度低,是错接主因,已下放 probe。
+        仅保留三类高精度、且 probe 实测难稳定接住的信号:
         - greeting:程式化社交闭集(短句短路,精度 100%);
-        - error:无歧义技术故障(已剪枝的高精度词表 + 代码块 / Traceback)。
-        其余 complaint/support/positive/affection/request 一律交给 probe。
+        - error:无歧义技术故障(已剪枝的高精度词表 + 代码块 / Traceback);
+        - complaint:强吐槽关键词(烦死/垃圾/难用…,精度 83.6%)。probe 即便
+          有 2300+ 条 complaint 数据仍常对「烦死了这破东西真难用」弃权,而这类
+          清晰抱怨漏接体验差;complaint→support 的误判是「软错」(同为负面共情)。
+        其余 support/positive/affection/request 一律交给 probe(弃权→中性兜底)。
+        优先级 error > complaint,与原计分一致。
         """
         content = (text or "").strip()
         if not content:
@@ -127,21 +131,27 @@ class RuleClassifier:
         greeting = self._classify_greeting(content)
         if greeting is not None:
             return greeting
-        hits = self._error_signal_score(content)
-        if hits:
-            confidence = min(
-                _MAX_CONFIDENCE,
-                _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
-            )
-            return BackchannelLabel(
-                intent="error",
-                emotion=self._classify_emotion(content, "error"),
-                confidence=confidence,
-            )
+        for intent, hits in (
+            ("error", self._error_signal_score(content)),
+            ("complaint", self._keyword_hits("complaint", content)),
+        ):
+            if hits:
+                confidence = min(
+                    _MAX_CONFIDENCE,
+                    _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
+                )
+                return BackchannelLabel(
+                    intent=intent,
+                    emotion=self._classify_emotion(content, intent),
+                    confidence=confidence,
+                )
         return None
 
+    def _keyword_hits(self, intent: str, content: str) -> int:
+        return sum(1 for keyword in _INTENT_KEYWORDS[intent] if keyword in content)
+
     def _error_signal_score(self, content: str) -> int:
-        hits = sum(1 for keyword in _INTENT_KEYWORDS["error"] if keyword in content)
+        hits = self._keyword_hits("error", content)
         if _CODE_FENCE in content or '  File "' in content:
             hits += 2
         return hits

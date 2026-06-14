@@ -12,9 +12,9 @@
     "support"
   ],
   "none_label": "none",
-  "threshold": 0.75,
-  "train_size": 10465,
-  "cv_macro_f1": 0.5826,
+  "threshold": 0.7,
+  "train_size": 13686,
+  "cv_macro_f1": 0.6082,
   "standard": "v4 conservative (default none, avoid 错接)",
   "note": "logits = bge.encode(text,normalize=True) @ coef.T + intercept; softmax argmax; label==none 或 conf<threshold 则弃权。"
 }
