@@ -3148,10 +3148,14 @@ class PetWindow(QWidget):
         if self._screen_awareness_health_reminder_seen(night_key):
             debug_log(
                 "ScreenAwareness",
-                "夜间健康类主动提醒已达上限，本次静默",
+                "夜间健康类主动提醒已达上限，改为屏幕内容分析",
                 {"night_key": night_key},
             )
-            return AgentResult(reply=ChatReply([]), actions=[])
+            return AgentResult(
+                reply=_build_screen_awareness_non_health_reply(result.reply, event),
+                actions=result.actions,
+                _debug=result._debug,
+            )
         self._record_screen_awareness_health_reminder(night_key)
         return result
 
@@ -5135,13 +5139,122 @@ def _is_screen_awareness_event_type(event_type: str) -> bool:
 
 
 def _is_screen_awareness_health_reply(reply: ChatReply) -> bool:
+    return any(
+        _is_screen_awareness_health_segment(segment)
+        for segment in reply.segments
+    )
+
+
+def _is_screen_awareness_health_segment(segment: ChatSegment) -> bool:
     text = "\n".join(
         part
-        for segment in reply.segments
         for part in (segment.text, segment.translation)
         if part
     )
     return any(keyword in text for keyword in SCREEN_AWARENESS_HEALTH_KEYWORDS)
+
+
+def _build_screen_awareness_non_health_reply(
+    reply: ChatReply,
+    event: AgentEvent | None,
+) -> ChatReply:
+    non_health_segments = [
+        segment
+        for segment in reply.segments
+        if not _is_screen_awareness_health_segment(segment)
+    ]
+    if non_health_segments:
+        return ChatReply(non_health_segments)
+    return _build_screen_awareness_screen_content_reply(event)
+
+
+def _build_screen_awareness_screen_content_reply(event: AgentEvent | None) -> ChatReply:
+    visual_context = _first_screen_awareness_visual_context(event)
+    summary = _screen_awareness_text_value(
+        visual_context.get("summary") if visual_context else None
+    )
+    visible_texts = _screen_awareness_text_list(
+        visual_context.get("visible_texts") if visual_context else None,
+        limit=3,
+    )
+    notable_elements = _screen_awareness_text_list(
+        visual_context.get("notable_elements") if visual_context else None,
+        limit=3,
+    )
+
+    if summary:
+        zh = f"我先按屏幕内容说：{summary}"
+        ja = f"画面内容のほうを見るね。{summary}"
+    else:
+        screen_count = _screen_awareness_screen_context_count(event)
+        if screen_count > 0:
+            zh = f"我先按屏幕内容说：这批主动感知拿到了 {screen_count} 张屏幕上下文，可以顺着当前窗口和任务状态继续看。"
+            ja = f"画面内容のほうを見るね。今回は {screen_count} 枚の画面文脈をもとに、今のウィンドウと作業状態に沿って見るよ。"
+        else:
+            zh = "我先按屏幕内容说：当前画面有新的上下文，可以顺着可见窗口和任务状态继续推进。"
+            ja = "画面内容のほうを見るね。今の画面の文脈に沿って、見えているウィンドウと作業状態から続けるよ。"
+
+    if visible_texts:
+        visible = "、".join(visible_texts)
+        zh += f" 画面里比较明确的文字有：{visible}。"
+        ja += f" 見えている文字は「{visible}」あたり。"
+    elif notable_elements:
+        notable = "、".join(notable_elements)
+        zh += f" 比较值得关注的是：{notable}。"
+        ja += f" 目立つ要素は「{notable}」あたり。"
+
+    return ChatReply(
+        [
+            ChatSegment(
+                text=ja,
+                translation=zh,
+                tone="中性",
+                portrait="思考",
+            )
+        ]
+    )
+
+
+def _first_screen_awareness_visual_context(event: AgentEvent | None) -> dict[str, Any] | None:
+    if event is None:
+        return None
+    visual_contexts = event.payload.get("visual_contexts")
+    if not isinstance(visual_contexts, list):
+        return None
+    for context in visual_contexts:
+        if isinstance(context, dict):
+            return context
+    return None
+
+
+def _screen_awareness_screen_context_count(event: AgentEvent | None) -> int:
+    if event is None:
+        return 0
+    count = event.payload.get("screen_context_count")
+    if isinstance(count, int) and count > 0:
+        return count
+    screen_contexts = event.payload.get("screen_contexts")
+    if isinstance(screen_contexts, list):
+        return len(screen_contexts)
+    return 0
+
+
+def _screen_awareness_text_value(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _screen_awareness_text_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = _screen_awareness_text_value(item)
+        if not text:
+            continue
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _screen_awareness_night_key(now: datetime | None = None) -> str:

@@ -6704,7 +6704,7 @@ def test_proactive_care_disabled_does_not_capture_or_send(monkeypatch) -> None: 
     assert window.proactive_screen_contexts == []
 
 
-def test_screen_awareness_limits_night_health_reminders(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_redirects_limited_night_health_reminders(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
 
@@ -6733,7 +6733,18 @@ def test_screen_awareness_limits_night_health_reminders(monkeypatch) -> None:  #
 
     monkeypatch.setattr(pet_window_module, "_screen_awareness_night_key", lambda: "2026-06-12")
     window = MinimalWindow()
-    event = AgentEvent(type="screen_awareness_check", payload={})
+    event = AgentEvent(
+        type="screen_awareness_check",
+        payload={
+            "visual_contexts": [
+                {
+                    "summary": "用户正在查看代码编辑器和 Git 客户端。",
+                    "visible_texts": ["event_result_received", "GitHub Desktop"],
+                    "notable_elements": ["代码窗口", "提交列表"],
+                }
+            ],
+        },
+    )
     result = AgentResult(
         reply=ChatReply(
             [
@@ -6750,7 +6761,10 @@ def test_screen_awareness_limits_night_health_reminders(monkeypatch) -> None:  #
     second = window._filter_screen_awareness_reply(result, event)
 
     assert first.reply.translation == "稍微休息一下也可以。"
-    assert second.reply.segments == []
+    assert second.reply.segments
+    assert "用户正在查看代码编辑器和 Git 客户端" in second.reply.translation
+    assert "event_result_received" in second.reply.translation
+    assert "休息" not in second.reply.translation
 
 
 def test_user_activity_keeps_pending_proactive_screenshot_batch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
