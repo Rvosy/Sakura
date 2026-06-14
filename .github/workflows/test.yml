@@ -105,10 +105,14 @@ jobs:
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -eq 134 ]; then
-            echo "::warning::Qt cleanup crash after all tests passed — treating as success"
+          python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee /tmp/ui-tests.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          # Qt 在进程退出 teardown 偶发崩溃(134/SIGABRT 或 139/SIGSEGV),与测试结果无关。
+          # 仅当 pytest 汇总确有 passed 且无 failed/error 时,才把退出码崩溃当成功放行;
+          # 真正测试中途崩溃(无汇总/有失败)仍判失败。
+          SUMMARY=$(grep -E "[0-9]+ (passed|failed|error)" /tmp/ui-tests.log | tail -1)
+          if [ $EXIT_CODE -ne 0 ] && echo "$SUMMARY" | grep -qE "[0-9]+ passed" && ! echo "$SUMMARY" | grep -qE "[0-9]+ (failed|error)"; then
+            echo "::warning::UI 测试全部通过,Qt teardown 崩溃(exit $EXIT_CODE)— 视为成功"
             exit 0
           fi
           exit $EXIT_CODE

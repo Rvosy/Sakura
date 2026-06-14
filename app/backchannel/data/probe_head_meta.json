@@ -1,0 +1,6 @@
+{
+  "encoder": "BAAI/bge-small-zh-v1.5",
+  "encode": "sentence-transformers, normalize_embeddings=True",
+  "none_label": "none",
+  "threshold": 0.5
+}

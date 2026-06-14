@@ -27,6 +27,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.backchannel.model_cache import (
+    BACKCHANNEL_MODEL_CACHE_NAME,
+    DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
+    backchannel_model_endpoint,
+)
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
 from app.agent.memory import MemoryStore
 from app.agent.proactive_care import (
@@ -40,6 +45,9 @@ from app.agent.proactive_care import (
 )
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.settings_service import (
+    BACKCHANNEL_MAX_DELAY_MS,
+    BACKCHANNEL_MIN_DELAY_MS,
+    BackchannelSettings,
     BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BubbleSettings,
@@ -747,6 +755,7 @@ class SystemSettingsPage:
         debug_settings: DebugLogSettings,
         startup_settings: StartupSettings,
         bubble_settings: BubbleSettings,
+        backchannel_settings: BackchannelSettings,
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
@@ -770,6 +779,18 @@ class SystemSettingsPage:
         owner.debug_body_enabled_check.setEnabled(owner.debug_log_enabled_check.isChecked())
         owner.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
         owner.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
+        owner.stage_debug_overlay_check = QCheckBox("舞台调试框（开发者，画窗口/布局/立绘边界 + DPR）", tab)
+        owner.stage_debug_overlay_check.setChecked(debug_settings.stage_debug_overlay)
+        owner.stage_debug_overlay_check.setToolTip(
+            "在桌宠上叠加可视化调试层:红=窗口/碰撞区,绿=布局算出的立绘框,蓝=实际立绘控件,"
+            "并显示逻辑尺寸与 devicePixelRatio,用于排查舞台尺寸/碰撞与 mac HiDPI 问题。"
+        )
+        owner.stage_collision_mask_check = QCheckBox("舞台碰撞贴合（立绘四周空白可穿透点击，默认开）", tab)
+        owner.stage_collision_mask_check.setChecked(debug_settings.stage_collision_mask)
+        owner.stage_collision_mask_check.setToolTip(
+            "用 setMask 把窗口命中区裁到「立绘+气泡+输入栏」矩形并集,立绘两侧/角落的透明空白"
+            "不再拦截点击(可点到下层窗口),也不会再误拖桌宠。"
+        )
 
         owner.subtitle_typing_interval_spin = _NoWheelSpinBox(tab)
         owner.subtitle_typing_interval_spin.setRange(
@@ -799,6 +820,63 @@ class SystemSettingsPage:
         )
         owner.bubble_auto_hide_check.toggled.connect(owner._sync_bubble_auto_hide_controls)
 
+        normalized_backchannel = backchannel_settings.normalized()
+        owner.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
+        owner.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
+        owner.backchannel_enabled_check.setToolTip(
+            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
+        )
+        owner.backchannel_mode_combo = _NoWheelComboBox(tab)
+        owner.backchannel_mode_combo.addItem("规则模式", "rules")
+        owner.backchannel_mode_combo.addItem("模型增强", "hybrid")
+        mode_index = owner.backchannel_mode_combo.findData(normalized_backchannel.mode)
+        owner.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
+        owner.backchannel_mode_combo.setToolTip(
+            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
+        )
+        owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
+        owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
+        owner.backchannel_tts_enabled_check.setToolTip(
+            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
+        )
+        owner.backchannel_delay_spin = _NoWheelSpinBox(tab)
+        owner.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
+        owner.backchannel_delay_spin.setSuffix(" 毫秒")
+        owner.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
+        owner.backchannel_probability_spin = _NoWheelDoubleSpinBox(tab)
+        owner.backchannel_probability_spin.setRange(0.0, 1.0)
+        owner.backchannel_probability_spin.setSingleStep(0.05)
+        owner.backchannel_probability_spin.setDecimals(2)
+        owner.backchannel_probability_spin.setValue(normalized_backchannel.probability)
+        owner.backchannel_setup_hint_label = QLabel(owner._backchannel_setup_hint_text(), tab)
+        owner.backchannel_setup_hint_label.setWordWrap(True)
+        owner.backchannel_model_status_label = QLabel(owner._backchannel_model_status_text(), tab)
+        owner.backchannel_model_status_label.setWordWrap(True)
+        owner.backchannel_download_model_button = QPushButton("在线安装", tab)
+        owner.backchannel_download_model_button.setToolTip(
+            f"从 {backchannel_model_endpoint()} 安装 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL} 到本地缓存。"
+        )
+        owner.backchannel_download_model_button.clicked.connect(owner._download_backchannel_model)
+        owner.backchannel_import_model_button = QPushButton("导入接话模型", tab)
+        owner.backchannel_import_model_button.setToolTip(
+            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
+        )
+        owner.backchannel_import_model_button.clicked.connect(owner._import_backchannel_model_archive)
+        owner.backchannel_refresh_status_button = QPushButton("重新检测", tab)
+        owner.backchannel_refresh_status_button.setToolTip("重新检测接话模型状态。")
+        owner.backchannel_refresh_status_button.clicked.connect(owner._refresh_backchannel_setup_status)
+        owner.backchannel_enabled_check.toggled.connect(owner._sync_backchannel_controls)
+        owner.backchannel_mode_combo.currentIndexChanged.connect(
+            lambda _index: owner._refresh_backchannel_setup_status()
+        )
+        tts_enabled_check = getattr(owner, "tts_enabled_check", None)
+        if tts_enabled_check is not None:
+            tts_enabled_check.toggled.connect(
+                lambda _checked: owner._sync_backchannel_controls(
+                    owner.backchannel_enabled_check.isChecked()
+                )
+            )
+
         startup_form = QFormLayout()
         startup_form.setContentsMargins(16, 12, 16, 12)
         startup_form.setSpacing(12)
@@ -809,6 +887,8 @@ class SystemSettingsPage:
         debug_form.addRow("", owner.debug_log_enabled_check)
         debug_form.addRow("", owner.debug_body_enabled_check)
         debug_form.addRow("", owner.debug_file_enabled_check)
+        debug_form.addRow("", owner.stage_debug_overlay_check)
+        debug_form.addRow("", owner.stage_collision_mask_check)
         subtitle_form = QFormLayout()
         subtitle_form.setContentsMargins(16, 12, 16, 12)
         subtitle_form.setSpacing(12)
@@ -819,7 +899,23 @@ class SystemSettingsPage:
         bubble_form.setSpacing(12)
         bubble_form.addRow("", owner.bubble_auto_hide_check)
         bubble_form.addRow("气泡无操作时长", owner.bubble_auto_hide_delay_spin)
-        owner._system_form_layout = bubble_form
+        owner._bubble_form_layout = bubble_form
+        backchannel_form = QFormLayout()
+        backchannel_form.setContentsMargins(16, 12, 16, 12)
+        backchannel_form.setSpacing(12)
+        backchannel_form.addRow("", owner.backchannel_enabled_check)
+        backchannel_form.addRow("接话模式", owner.backchannel_mode_combo)
+        backchannel_form.addRow("配置状态", owner.backchannel_setup_hint_label)
+        backchannel_form.addRow("", owner.backchannel_tts_enabled_check)
+        backchannel_form.addRow("接话延迟", owner.backchannel_delay_spin)
+        backchannel_form.addRow("接话触发概率", owner.backchannel_probability_spin)
+        backchannel_model_layout = QHBoxLayout()
+        backchannel_model_layout.addWidget(owner.backchannel_model_status_label, 1)
+        backchannel_model_layout.addWidget(owner.backchannel_download_model_button)
+        backchannel_model_layout.addWidget(owner.backchannel_import_model_button)
+        backchannel_model_layout.addWidget(owner.backchannel_refresh_status_button)
+        backchannel_form.addRow("接话模型", backchannel_model_layout)
+        owner._backchannel_form_layout = backchannel_form
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
@@ -829,12 +925,14 @@ class SystemSettingsPage:
             ("调试日志", debug_form),
             ("字幕与回复", subtitle_form),
             ("气泡", bubble_form),
+            ("接话", backchannel_form),
         ):
             group = QGroupBox(title, tab)
             group.setLayout(group_form)
             layout.addWidget(group)
         layout.addStretch(1)
         owner._sync_bubble_auto_hide_controls(owner.bubble_auto_hide_check.isChecked())
+        owner._sync_backchannel_controls(owner.backchannel_enabled_check.isChecked())
         tab.setLayout(layout)
         return tab
 
@@ -859,6 +957,11 @@ class MemorySettingsPage:
             "导入 models--sentence-transformers--all-MiniLM-L6-v2.zip，供无法自动下载时使用。"
         )
         owner.memory_import_model_button.clicked.connect(owner._import_memory_model_archive)
+        owner.memory_download_model_button = QPushButton("在线安装", tab)
+        owner.memory_download_model_button.setToolTip(
+            "从 Hugging Face 在线安装长期记忆所需的嵌入模型。"
+        )
+        owner.memory_download_model_button.clicked.connect(owner._download_memory_model)
         owner.memory_status_label = QLabel(MEMORY_READING_TEXT, tab)
 
         owner.memory_table = QTableWidget(0, 4, tab)
@@ -910,6 +1013,7 @@ class MemorySettingsPage:
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(owner.memory_search_edit, 1)
         filter_layout.addWidget(owner.memory_import_model_button)
+        filter_layout.addWidget(owner.memory_download_model_button)
         filter_layout.addWidget(owner.memory_refresh_button)
         status_layout = QHBoxLayout()
         status_layout.addWidget(owner.memory_status_label, 1)

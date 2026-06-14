@@ -36,6 +36,7 @@ from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL as _DEFAULT_GENIE_TTS_API_URL,
     GPTSoVITSTTSSettings as _GPTSoVITSTTSSettings,
     TTS_PLAYBACK_BACKEND_AUDIO_SINK as _TTS_PLAYBACK_BACKEND_AUDIO_SINK,
+    TTS_PROVIDER_CUSTOM_GPT_SOVITS as _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE as _TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS as _TTS_PROVIDER_GPT_SOVITS,
     TTSConfigError as _TTSConfigError,
@@ -414,6 +415,16 @@ class GPTSoVITSTTSProvider(QObject):
         self._finished.connect(self._run_callback)
         if adopt_existing_service:
             self._adopt_existing_configured_service()
+
+    @property
+    def service_ready(self) -> bool:
+        """服务探测是否已成功(实际可达)。
+
+        供接话音频预生成等调用方做就绪门控:provider 实例存在不代表
+        服务已启动,未就绪时发起 prepare 只会得到静默失败。
+        Genie 子类共用 _service_checked,无需覆写。
+        """
+        return self._service_checked
 
     def speak(
         self,
@@ -2080,7 +2091,11 @@ def _find_running_local_tts_process(
 ) -> _AttachedLocalProcess | None:
     if sys.platform != "win32" or settings.work_dir is None:
         return None
-    if settings.provider not in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_GENIE}:
+    if settings.provider not in {
+        _TTS_PROVIDER_GPT_SOVITS,
+        _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
+        _TTS_PROVIDER_GENIE,
+    }:
         return None
 
     pid = _find_listening_tcp_pid(port)
@@ -2179,7 +2194,7 @@ def _command_line_matches_local_tts(
     if settings.provider == _TTS_PROVIDER_GENIE:
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
-    if settings.provider == _TTS_PROVIDER_GPT_SOVITS:
+    if settings.provider in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
         api_script = _normalize_process_text(str(work_dir.resolve() / "api_v2.py"))
         return api_script in normalized_command
 

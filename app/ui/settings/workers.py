@@ -1,7 +1,7 @@
 """app/ui/settings/workers.py — 设置窗口的后台 Worker。
 
 从 settings_dialog.py 拆出：API 连通性测试、模型列表探测、TTS 试听、
-记忆列表加载、嵌入模型导入、主题 AI 生成、角色包导出。
+记忆列表加载、嵌入模型导入/下载、主题 AI 生成、角色包导出。
 全部为纯 QObject worker，不持有任何设置页控件。
 """
 
@@ -155,6 +155,27 @@ class MemoryModelImportWorker(QObject):
     def run(self) -> None:
         try:
             result = self.memory_store.import_embedding_model_archive(self.archive_path)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class MemoryModelDownloadWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, memory_store: MemoryStore) -> None:
+        super().__init__()
+        self.memory_store = memory_store
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.memory_store.download_embedding_model()
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
         else:

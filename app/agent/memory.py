@@ -197,6 +197,15 @@ class MemoryStore:
             self.preload(wait=False)
         return result
 
+    def download_embedding_model(self) -> EmbeddingModelImportResult:
+        """在线安装记忆嵌入模型，并重置长期记忆运行时以复用新缓存。"""
+
+        result = download_embedding_model(self.base_dir)
+        if not self.is_ready():
+            self.reset_runtime()
+            self.preload(wait=False)
+        return result
+
     def preload(self, *, wait: bool = False) -> None:
         """提前启动 mem0 加载，避免首次打开设置或聊天时才初始化。"""
 
@@ -863,6 +872,51 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
         cache_folder=destination_root,
         model_dir=destination_model_dir,
         snapshot_count=snapshot_count,
+    )
+
+
+def download_embedding_model(base_dir: Path | None = None) -> EmbeddingModelImportResult:
+    """下载 all-MiniLM-L6-v2 到 Sakura 管理的 HuggingFace hub 缓存。"""
+
+    destination_root = _project_embedding_cache_folder(base_dir)
+    destination_root.mkdir(parents=True, exist_ok=True)
+    try:
+        _download_hf_snapshot(DEFAULT_EMBEDDING_MODEL, destination_root)
+    except MemoryModelImportError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise MemoryModelImportError(
+            "记忆模型在线安装失败，请检查 HuggingFace 访问、网络或代理后重试。"
+            f"\n\n原始错误：{exc}"
+        ) from exc
+
+    model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    snapshot_dir = model_dir / "snapshots"
+    if not _hub_snapshot_has_model_weights(snapshot_dir):
+        raise MemoryModelImportError(
+            "记忆模型下载后仍不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
+        )
+    snapshot_count = sum(1 for child in snapshot_dir.iterdir() if child.is_dir())
+    return EmbeddingModelImportResult(
+        model_name=DEFAULT_EMBEDDING_MODEL,
+        cache_folder=destination_root,
+        model_dir=model_dir,
+        snapshot_count=snapshot_count,
+    )
+
+
+def _download_hf_snapshot(repo_id: str, cache_folder: Path) -> str:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise MemoryModelImportError("缺少 huggingface_hub 依赖，无法在线安装记忆模型。") from exc
+    return str(
+        snapshot_download(
+            repo_id=repo_id,
+            cache_dir=str(cache_folder),
+            endpoint=(os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip(),
+            local_files_only=False,
+        )
     )
 
 

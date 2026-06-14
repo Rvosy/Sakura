@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
-from app.config.settings_service import DebugLogSettings, StartupSettings
+from app.config.settings_service import BackchannelSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings
 from app.llm.chat_reply import ChatSegment
 from app.ui.portrait_utils import portrait_kind_key, should_crossfade_portrait
@@ -1900,6 +1900,599 @@ def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
     app.processEvents()
     assert all(not widget.isEnabled() for widget in controlled_widgets)
     assert dialog.tts_bundle_download_button.isEnabled()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_returns_backchannel_settings() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("backchannel_settings_dialog")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        backchannel_settings=BackchannelSettings(
+            enabled=False,
+            delay_ms=600,
+            probability=1.0,
+            tts_enabled=False,
+        ),
+    )
+
+    assert not dialog.backchannel_tts_enabled_check.isEnabled()
+    assert dialog.backchannel_download_model_button.isEnabled()
+    assert dialog.backchannel_import_model_button.isEnabled()
+    assert dialog.backchannel_refresh_status_button.isEnabled()
+    dialog.backchannel_enabled_check.setChecked(True)
+    dialog.backchannel_tts_enabled_check.setChecked(True)
+    dialog.backchannel_mode_combo.setCurrentIndex(dialog.backchannel_mode_combo.findData("hybrid"))
+    dialog.backchannel_delay_spin.setValue(900)
+    dialog.backchannel_probability_spin.setValue(0.55)
+    dialog.accept()
+
+    assert dialog.result_backchannel_settings == BackchannelSettings(
+        enabled=True,
+        mode="hybrid",
+        delay_ms=900,
+        probability=0.55,
+        tts_enabled=True,
+    )
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_pet_window_backchannel_disk_cache_persists_and_replays(tmp_path: Path) -> None:
+    """合成音频持久化与动态链接:空闲落盘 → 跳过重复合成 → 重启等价场景直接命中磁盘缓存播放。"""
+    from app.backchannel.audio_cache import BackchannelAudioCache
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.prepared: list[str] = []
+            self.spoken_paths: list[Path | None] = []
+            self.discarded: list[str] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append(text)
+            return TTSPreparedAudio(text=text, tone=tone)
+
+        def speak_prepared(self, handle, on_started=None, on_finished=None):  # type: ignore[no-untyped-def]
+            self.spoken_paths.append(handle.audio_path)
+
+        def discard_prepared(self, handle: TTSPreparedAudio) -> None:
+            self.discarded.append(handle.text)
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+        _backchannel_audio_key = PetWindow._backchannel_audio_key
+        _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
+        _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _copy_backchannel_audio_for_playback = PetWindow._copy_backchannel_audio_for_playback
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            self._active_backchannel_audio = None
+            self.logged: list[tuple[str, dict[str, object] | None]] = []
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(templates=(template,))
+            self.choice = BackchannelChoice(template, template.variants[0])
+            self._backchannel_audio_cache = BackchannelAudioCache(tmp_path / "audio", "fp")
+            synth = tmp_path / "synth.wav"
+            synth.write_bytes(b"wav-bytes")
+            self._backchannel_prepared_audio = {
+                ("greeting", "中性", "……おかえり。"): TTSPreparedAudio(
+                    text="……おかえり。", tone="中性", audio_path=synth
+                )
+            }
+
+        def _log_interaction_stage(self, stage: str, payload=None):  # type: ignore[no-untyped-def]
+            self.logged.append((stage, payload))
+
+    window = WindowStub()
+    cache = window._backchannel_audio_cache
+
+    # 空闲补合成入口:已合成句柄落盘、从内存丢弃、不重复提交合成
+    window._prepare_backchannel_audio_cache()
+    cached = cache.lookup("中性", "……おかえり。")
+    assert cached is not None and cached.read_bytes() == b"wav-bytes"
+    assert window._backchannel_prepared_audio == {}
+    assert window.tts_provider.discarded == ["……おかえり。"]
+    assert window.tts_provider.prepared == []  # 磁盘已有 → 不再合成
+
+    # 播放走磁盘缓存分支:播的是临时副本而非缓存本体,缓存在播后存活
+    window._play_backchannel_audio(window.choice)
+    assert len(window.tts_provider.spoken_paths) == 1
+    played = window.tts_provider.spoken_paths[0]
+    assert played is not None and played != cached
+    assert cached.exists()
+    played.unlink(missing_ok=True)
+
+
+def test_pet_window_backchannel_synth_persisted_on_play(tmp_path: Path) -> None:
+    """磁盘缓存未命中时播放内存句柄,播放前落盘——下次直接复用。"""
+    from app.backchannel.audio_cache import BackchannelAudioCache
+    from app.backchannel.models import BackchannelTemplate, BackchannelVariant
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.spoken: list[str] = []
+
+        def speak_prepared(self, handle, on_started=None, on_finished=None):  # type: ignore[no-untyped-def]
+            self.spoken.append(handle.text)
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_audio_key = PetWindow._backchannel_audio_key
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _copy_backchannel_audio_for_playback = PetWindow._copy_backchannel_audio_for_playback
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            self._active_backchannel_audio = None
+            self.backchannel_manifest = None
+            self.logged: list[tuple[str, dict[str, object] | None]] = []
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.choice = BackchannelChoice(template, template.variants[0])
+            self._backchannel_audio_cache = BackchannelAudioCache(tmp_path / "audio", "fp")
+            synth = tmp_path / "synth.wav"
+            synth.write_bytes(b"wav-bytes")
+            self._backchannel_prepared_audio = {
+                ("greeting", "中性", "……おかえり。"): TTSPreparedAudio(
+                    text="……おかえり。", tone="中性", audio_path=synth
+                )
+            }
+
+        def _log_interaction_stage(self, stage: str, payload=None):  # type: ignore[no-untyped-def]
+            self.logged.append((stage, payload))
+
+    window = WindowStub()
+    window._play_backchannel_audio(window.choice)
+    assert window.tts_provider.spoken == ["……おかえり。"]
+    # 播放前已持久化,句柄已从内存移除
+    assert window._backchannel_audio_cache.lookup("中性", "……おかえり。") is not None
+    assert window._backchannel_prepared_audio == {}
+
+
+def test_pet_window_backchannel_audio_uses_prepared_tts() -> None:
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, str | None]] = []
+            self.spoken: list[tuple[str, str | None]] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append((text, tone))
+            return TTSPreparedAudio(text=text, tone=tone, audio_path=Path("ready.wav"))
+
+        def speak_prepared(
+            self,
+            handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.spoken.append((handle.text, handle.tone))
+            if on_started is not None:
+                on_started()
+            _ = on_finished
+
+        def discard_prepared(self, _handle: TTSPreparedAudio) -> None:
+            pass
+
+    class PortraitControllerStub:
+        def __init__(self) -> None:
+            self.segments: list[ChatSegment] = []
+
+        def apply_for_segment(self, segment: ChatSegment) -> None:
+            self.segments.append(segment)
+
+    class SubtitleControllerStub:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def set_speech(self, text: str, *, pulse: bool = False) -> None:
+            self.texts.append(text)
+            assert pulse is True
+
+    class WindowStub:
+        _display_backchannel = PetWindow._display_backchannel
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+        _backchannel_audio_key = PetWindow._backchannel_audio_key
+        _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
+        _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+        _handle_backchannel_audio_finished = PetWindow._handle_backchannel_audio_finished
+        _discard_active_backchannel_audio = PetWindow._discard_active_backchannel_audio
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            self._backchannel_prepared_audio = {}
+            self._active_backchannel_audio = None
+            self.subtitle_language = "zh"
+            self.portrait_controller = PortraitControllerStub()
+            self.subtitle_controller = SubtitleControllerStub()
+            self.logged: list[tuple[str, dict[str, object] | None]] = []
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(templates=(template,))
+            self.choice = BackchannelChoice(template, template.variants[0])
+
+        def _log_interaction_stage(
+            self,
+            stage: str,
+            payload: dict[str, object] | None = None,
+        ) -> None:
+            self.logged.append((stage, payload))
+
+    window = WindowStub()
+    window._prepare_backchannel_audio_cache()
+    window._display_backchannel(window.choice)
+
+    assert window.tts_provider.prepared == [("……おかえり。", "中性")]
+    assert window.tts_provider.spoken == [("……おかえり。", "中性")]
+    assert window.subtitle_controller.texts == ["……欢迎回来。"]
+    assert ("backchannel_tts_requested", {"template": "greeting", "tone": "中性"}) in window.logged
+
+    # 接话音频播完不立即补合成:对话中补合成会抢占回复分段的串行合成队列,
+    # 统一推迟到 reply_completed 空闲时机。
+    played_handle = window._active_backchannel_audio
+    prepared_before = list(window.tts_provider.prepared)
+    window._handle_backchannel_audio_finished(played_handle)
+    assert window.tts_provider.prepared == prepared_before
+    assert window._active_backchannel_audio is None
+
+
+def test_pet_window_backchannel_audio_uses_manifest_audio_copy(tmp_path: Path) -> None:
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    source_audio = tmp_path / "line.wav"
+    source_audio.write_bytes(b"RIFFbackchannel")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, str | None]] = []
+            self.spoken: list[TTSPreparedAudio] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append((text, tone))
+            return TTSPreparedAudio(text=text, tone=tone)
+
+        def speak_prepared(
+            self,
+            handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.spoken.append(handle)
+            if on_finished is not None:
+                on_finished()
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _copy_backchannel_audio_for_playback = PetWindow._copy_backchannel_audio_for_playback
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+        _handle_backchannel_audio_finished = PetWindow._handle_backchannel_audio_finished
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            self._active_backchannel_audio = None
+            self._backchannel_prepared_audio = {}
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(
+                    BackchannelVariant(
+                        ja="……おかえり。",
+                        zh="……欢迎回来。",
+                        audio="line.wav",
+                    ),
+                ),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(
+                templates=(template,),
+                source_path=manifest_path,
+            )
+            self.choice = BackchannelChoice(template, template.variants[0])
+            self.logged: list[tuple[str, dict[str, object] | None]] = []
+
+        def _log_interaction_stage(
+            self,
+            stage: str,
+            payload: dict[str, object] | None = None,
+        ) -> None:
+            self.logged.append((stage, payload))
+
+    window = WindowStub()
+    window._play_backchannel_audio(window.choice)
+
+    assert window.tts_provider.prepared == []
+    assert len(window.tts_provider.spoken) == 1
+    played = window.tts_provider.spoken[0]
+    assert played.audio_path is not None
+    assert played.audio_path != source_audio
+    assert played.audio_path.read_bytes() == source_audio.read_bytes()
+    assert ("backchannel_tts_requested", {"template": "greeting", "tone": "中性"}) in window.logged
+
+
+def test_pet_window_backchannel_unready_audio_plays_subtitle_only() -> None:
+    """缓存里音频未合成完(audio_path=None)时只显示字幕,不在对话中触发补合成,
+    且未就绪句柄留在缓存中等待合成完成。"""
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.backchannel.resolver import BackchannelChoice
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.prepared: list[str] = []
+            self.spoken: list[str] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append(text)
+            return TTSPreparedAudio(text=text, tone=tone)
+
+        def speak_prepared(self, handle, on_started=None, on_finished=None):  # type: ignore[no-untyped-def]
+            self.spoken.append(handle.text)
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+        _backchannel_audio_key = PetWindow._backchannel_audio_key
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _play_backchannel_audio = PetWindow._play_backchannel_audio
+        _request_backchannel_audio_playback = PetWindow._request_backchannel_audio_playback
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ProviderStub()
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.choice = BackchannelChoice(template, template.variants[0])
+            # 合成尚未完成的句柄(audio_path 为 None)
+            unready = TTSPreparedAudio(text="……おかえり。", tone="中性")
+            self._backchannel_prepared_audio = {
+                ("greeting", "中性", "……おかえり。"): unready
+            }
+
+    window = WindowStub()
+    window._play_backchannel_audio(window.choice)
+
+    assert window.tts_provider.spoken == []      # 未就绪不播
+    assert window.tts_provider.prepared == []    # 对话中不补合成
+    assert len(window._backchannel_prepared_audio) == 1  # 句柄留在缓存继续等合成
+
+
+def test_pet_window_reply_arrival_discards_unready_backchannel_prepares() -> None:
+    """正式回复开始时,未合成完的接话请求让位(discard),已就绪音频保留。"""
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.discarded: list[str] = []
+
+        def discard_prepared(self, handle: TTSPreparedAudio) -> None:
+            self.discarded.append(handle.text)
+
+    class ControllerStub:
+        def cancel(self) -> None:
+            pass
+
+    class WindowStub:
+        _cancel_backchannel = PetWindow._cancel_backchannel
+        _discard_unready_backchannel_audio = PetWindow._discard_unready_backchannel_audio
+        _discard_active_backchannel_audio = PetWindow._discard_active_backchannel_audio
+
+        def __init__(self) -> None:
+            self.tts_provider = ProviderStub()
+            self.backchannel_controller = ControllerStub()
+            self._active_backchannel_audio = None
+            ready = TTSPreparedAudio(text="ready", tone="中性", audio_path=Path("ok.wav"))
+            unready = TTSPreparedAudio(text="unready", tone="中性")
+            failed = TTSPreparedAudio(text="failed", tone="中性")
+            failed.failed = True
+            self._backchannel_prepared_audio = {
+                ("a", "中性", "ready"): ready,
+                ("b", "中性", "unready"): unready,
+                ("c", "中性", "failed"): failed,
+            }
+
+    window = WindowStub()
+    window._cancel_backchannel()
+
+    assert sorted(window.tts_provider.discarded) == ["failed", "unready"]
+    remaining = list(window._backchannel_prepared_audio.values())
+    assert len(remaining) == 1 and remaining[0].text == "ready"
+
+
+def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
+    """服务未就绪时预生成被门控跳过,预热成功回调后补做(避免首批 HTTP 静默失败)。"""
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class ColdProviderStub:
+        def __init__(self) -> None:
+            self.service_ready = False
+            self.prepared: list[tuple[str, str | None]] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append((text, tone))
+            return TTSPreparedAudio(text=text, tone=tone, audio_path=Path("ready.wav"))
+
+    class WindowStub:
+        _apply_backchannel_settings = PetWindow._apply_backchannel_settings
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+        _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
+        _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+        _handle_tts_ready_warmup_succeeded = PetWindow._handle_tts_ready_warmup_succeeded
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = ColdProviderStub()
+            self._backchannel_prepared_audio: dict = {}
+            self.discarded = 0
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(templates=(template,))
+
+        def _discard_backchannel_audio_cache(self) -> None:
+            self.discarded += 1
+
+    window = WindowStub()
+    # 服务冷启动中:应用设置不触发任何 prepare,也不丢弃缓存(配置仍然需要语音)。
+    # stub 未提供 _warm_up_tts_playback/_start_tts_ready_warmup:
+    # 调用不抛错即证明 _apply_backchannel_settings 不再重复预热(由调用方负责)。
+    window._apply_backchannel_settings(window.backchannel_settings)
+    assert window.tts_provider.prepared == []
+    assert window.discarded == 0
+
+    # 预热成功 → 回调补做首批合成。
+    window.tts_provider.service_ready = True
+    window._handle_tts_ready_warmup_succeeded("TTS 服务已就绪。")
+    assert window.tts_provider.prepared == [("……おかえり。", "中性")]
+
+
+def test_settings_dialog_backchannel_tts_follows_global_tts_toggle() -> None:
+    """接话语音复选框须与全局 TTS 总开关联动,避免"设置了但不生效"。"""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("backchannel_tts_linkage_dialog")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        backchannel_settings=BackchannelSettings(enabled=True, tts_enabled=False),
+    )
+
+    dialog.tts_enabled_check.setChecked(True)
+    assert dialog.backchannel_tts_enabled_check.isEnabled()
+
+    # 关闭全局 TTS → 接话语音复选框禁用;重新开启 → 恢复。
+    dialog.tts_enabled_check.setChecked(False)
+    assert not dialog.backchannel_tts_enabled_check.isEnabled()
+    dialog.tts_enabled_check.setChecked(True)
+    assert dialog.backchannel_tts_enabled_check.isEnabled()
+
+    # 接话层总开关关闭时,无论全局 TTS 如何都禁用。
+    dialog.backchannel_enabled_check.setChecked(False)
+    assert not dialog.backchannel_tts_enabled_check.isEnabled()
 
     dialog.deleteLater()
     app.processEvents()
@@ -3988,6 +4581,215 @@ def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # t
     assert memory_store.imported_paths == [archive_path]
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
     assert memory_store.list_calls >= 2
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_downloads_memory_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class DownloadResult:
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        cache_folder = Path("runtime/hf-cache/hub")
+        snapshot_count = 1
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.list_calls = 0
+            self.download_calls = 0
+
+        def needs_embedding_model_download(self) -> bool:
+            return self.download_calls == 0
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            self.list_calls += 1
+            return []
+
+        def download_embedding_model(self) -> DownloadResult:
+            self.download_calls += 1
+            return DownloadResult()
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=_ui_runtime_root("memory_model_download_dialog"),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+
+    assert hasattr(dialog, "memory_download_model_button")
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+
+    dialog.memory_download_model_button.click()
+
+    assert _process_events_until(app, lambda: dialog._memory_model_download_thread is None)
+    assert memory_store.download_calls == 1
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+    assert memory_store.list_calls >= 2
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_imports_backchannel_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class ImportResult:
+        model_name = "BAAI/bge-small-zh-v1.5"
+        cache_folder = Path("runtime/hf-cache/hub")
+        snapshot_count = 1
+
+    imported_paths: list[Path] = []
+
+    def fake_import(archive_path: Path, _base_dir: Path) -> ImportResult:
+        imported_paths.append(archive_path)
+        return ImportResult()
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("backchannel_model_import_dialog")
+    archive_path = root / "models--BAAI--bge-small-zh-v1.5.zip"
+    archive_path.write_bytes(b"zip")
+    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", lambda _base_dir: False)
+    monkeypatch.setattr(settings_dialog_module, "import_backchannel_model_archive", fake_import)
+    monkeypatch.setattr(
+        settings_dialog_module.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(archive_path), "接话模型 ZIP (*.zip)"),
+    )
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    assert hasattr(dialog, "backchannel_import_model_button")
+    dialog.backchannel_import_model_button.click()
+
+    assert _process_events_until(app, lambda: dialog._backchannel_model_import_thread is None)
+    assert imported_paths == [archive_path]
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_downloads_backchannel_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    class DownloadResult:
+        model_name = "BAAI/bge-small-zh-v1.5"
+        cache_folder = Path("runtime/hf-cache/hub")
+        snapshot_count = 1
+
+    cached = {"ready": False}
+    download_calls: list[Path] = []
+
+    def fake_download(base_dir: Path) -> DownloadResult:
+        download_calls.append(base_dir)
+        cached["ready"] = True
+        return DownloadResult()
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("backchannel_model_download_dialog")
+    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", lambda _base_dir: cached["ready"])
+    monkeypatch.setattr(settings_dialog_module, "download_backchannel_model", fake_download)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        backchannel_settings=BackchannelSettings(enabled=True, mode="hybrid"),
+    )
+
+    assert hasattr(dialog, "backchannel_download_model_button")
+    dialog.backchannel_download_model_button.click()
+
+    assert _process_events_until(app, lambda: dialog._backchannel_model_download_thread is None)
+    assert download_calls == [root]
+    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_refreshes_backchannel_setup_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui import settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    cached = {"ready": False}
+
+    def fake_cached(_base_dir: Path) -> bool:
+        return cached["ready"]
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("backchannel_setup_refresh_dialog")
+    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", fake_cached)
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        backchannel_settings=BackchannelSettings(enabled=True, mode="hybrid"),
+    )
+
+    assert "未导入模型" in dialog.backchannel_model_status_label.text()
+    cached["ready"] = True
+    dialog.backchannel_refresh_status_button.click()
+
+    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
+    assert "缺模型" not in dialog.backchannel_setup_hint_label.text()
     dialog.deleteLater()
     app.processEvents()
 
@@ -7964,6 +8766,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _apply_subtitle_display_speed = pet_window_cls._apply_subtitle_display_speed
         _apply_launch_at_login_settings = pet_window_cls._apply_launch_at_login_settings
         _apply_bubble_settings = pet_window_cls._apply_bubble_settings
+
+        def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_debug_overlay_applied = (enabled, refresh)
+
+        def _apply_stage_collision_mask(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_collision_mask_applied = (enabled, refresh)
 
         def _create_tts_provider_from_settings(self, _settings):  # type: ignore[no-untyped-def]
             return object()
