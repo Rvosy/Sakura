@@ -30,7 +30,7 @@ from app.storage.paths import StoragePaths
 
 CONFIG_VERSION_KEY = "config_version"
 # 当前代码期望的数据形态版本；新增迁移步骤时同步 +1
-CURRENT_CONFIG_VERSION = 2
+CURRENT_CONFIG_VERSION = 3
 
 
 @dataclass
@@ -354,6 +354,35 @@ def _line_timestamp(line: str) -> str | None:
     return str(value) if value else None
 
 
+# ---------------------------------------------------------------------------
+# v2 → v3：旧主动配置迁移为主动屏幕感知配置
+# ---------------------------------------------------------------------------
+
+
+def _migrate_v2_to_v3(context: MigrationContext) -> None:
+    """复制旧 proactive_care 配置到 screen_awareness；旧段保留用于回滚。"""
+    system_path = context.paths.system_config()
+    data = load_yaml_mapping(system_path)
+    if "screen_awareness" in data:
+        debug_log(
+            "Migration",
+            "migration.v2_to_v3.screen_awareness.skipped",
+            {"reason": "screen_awareness 已存在"},
+        )
+        return
+    proactive = data.get("proactive_care")
+    if not isinstance(proactive, dict):
+        proactive = {}
+    context.backup_file(system_path)
+    data["screen_awareness"] = dict(proactive)
+    save_yaml_mapping(system_path, data)
+    debug_log(
+        "Migration",
+        "migration.v2_to_v3.screen_awareness.applied",
+        {"copied_keys": sorted(data["screen_awareness"].keys())},
+    )
+
+
 ALL_MIGRATIONS: list[MigrationStep] = [
     MigrationStep(
         version=1,
@@ -366,5 +395,11 @@ ALL_MIGRATIONS: list[MigrationStep] = [
         name="v1_to_v2",
         description="合并角色 JSONL 数据文件的尾点歧义变体",
         apply=_migrate_v1_to_v2,
+    ),
+    MigrationStep(
+        version=3,
+        name="v2_to_v3",
+        description="旧主动配置迁移为主动屏幕感知配置",
+        apply=_migrate_v2_to_v3,
     ),
 ]

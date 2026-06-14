@@ -101,7 +101,7 @@ def build_proactive_check_reply_protocol(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
 ) -> str:
-    """构建主动屏幕检查事件专用回复协议。"""
+    """构建主动屏幕感知事件专用回复协议。"""
 
     return build_event_reply_protocol(
         reply_tones,
@@ -130,7 +130,7 @@ def build_proactive_check_tool_system_prompt(
     max_tool_calls_per_turn: int,
     extra_instructions: str = "",
 ) -> str:
-    """构建主动屏幕检查 tool-loop 使用的系统提示词。"""
+    """构建主动屏幕感知 tool-loop 使用的系统提示词。"""
 
     reply_protocol = build_proactive_check_reply_protocol(reply_tones, reply_portraits)
     return render_blocks(
@@ -140,8 +140,8 @@ def build_proactive_check_tool_system_prompt(
                 None,
                 "\n\n".join(
                     [
-                        "你现在正在处理【主动检查事件 / 主动屏幕检查事件】。这不是用户直接发来的请求，而是系统定时触发的低打扰搭话。",
-                        "请用角色语气自然搭话、提问或提醒用户。",
+                        "你现在正在处理【主动屏幕感知事件】。这不是用户直接发来的请求，而是系统定时截图后触发的低打扰找话题。",
+                        "请用角色语气基于屏幕内容找话题：评论变化、接续任务、询问卡点、轻量协助或保持安静感。",
                         "请把 screen_contexts/visual_contexts 当作当前画面，把 recent_conversation 当作最近完整对话历史；必须结合两者判断用户正在延续什么任务、发生了什么变化、哪些话题已经聊过，再自然接话。",
                     ]
                 ),
@@ -150,12 +150,12 @@ def build_proactive_check_tool_system_prompt(
                 "核心目标",
                 "\n".join(
                     [
-                        "- 结合图片和最近对话历史理解用户这段时间在做什么，而不是逐张描述截图。",
+                        "- 结合图片和最近对话历史理解用户这段时间在做什么，并基于屏幕内容寻找自然话题，而不是逐张描述截图。",
                         "- recent_conversation 包含用户和 Sakura 的最近对话；它用于判断上下文、进展、已给建议和已重复话题，不只是用来避免 Sakura 自己复读。",
                         "- 优先使用 visual_contexts 中的 summary、visible_texts、notable_elements。",
                         "- 最终回复必须至少点到一个具体可见对象，除非视觉上下文为空或明确不可识别。",
                         "- 如果只能部分识别，也要先说出能确认的部分，再轻轻询问。",
-                        "- 不要机械套用休息、喝水、深呼吸、累不累等通用关怀。",
+                        "- 不要机械套用休息、喝水、深呼吸、累不累等通用提醒；深夜和停留时长只能作为弱信号。",
                     ]
                 ),
             ),
@@ -180,7 +180,7 @@ def build_proactive_check_tool_system_prompt(
                         "- 你可以使用只读或低风险工具补充上下文（后台 Web 搜索、当前时间、搜索记忆、列出待办和笔记、查看已有提醒）。",
                         "- 如果事件已有 screen_contexts（多张截图），不要再请求 observe_screen。",
                         "- 不要循环调用工具；工具结果足够后直接给最终回复。",
-                        "- 最终回复只说给用户听的自然搭话、提问或轻提醒，不要提及内部事件或工具协议。",
+                        "- 最终回复只说给用户听的屏幕相关自然搭话、提问、评论或轻量协助，不要提及内部事件或工具协议。",
                     ]
                 ),
             ),
@@ -201,7 +201,7 @@ def build_event_system_prompt(
         PromptBlock(None, character_prompt.strip()),
         PromptBlock(None, "你正在处理 Sakura 桌宠的主动事件。请用角色语气自然搭话、提问用户。"),
     ]
-    if event_type == "proactive_check":
+    if event_type in {"screen_awareness_check", "proactive_check"}:
         blocks.extend(
             [
                 PromptBlock(
@@ -239,8 +239,8 @@ def build_proactive_rules(*, include_tool_rules: bool = False) -> str:
 def build_proactive_tool_loop_rules() -> str:
     return render_blocks(
         [
-            PromptBlock(None, "- 这是主动检查事件，不是用户直接发来的请求；整体保持低打扰。"),
-            PromptBlock(None, "- 请用角色语气自然搭话、提问或提醒用户。"),
+            PromptBlock(None, "- 这是主动屏幕感知事件，不是用户直接发来的请求；整体保持低打扰。"),
+            PromptBlock(None, "- 请用角色语气基于屏幕内容找话题、接续任务、提问或轻量协助。"),
             proactive_reply_decision_flow_block(),
             proactive_scene_strategy_block(),
             proactive_web_research_rules_block(),
@@ -251,7 +251,7 @@ def build_proactive_tool_loop_rules() -> str:
 
 
 def build_proactive_reply_decision_flow() -> str:
-    """构建主动感知回复前的稳定判断链。"""
+    """构建主动屏幕感知回复前的稳定判断链。"""
 
     return proactive_reply_decision_flow_block().body
 
@@ -297,12 +297,23 @@ def build_theme_color_system_prompt(character_name: str) -> str:
 
 
 def build_proactive_web_research_rules() -> str:
-    """构建主动感知后台 Web 搜索规则。"""
+    """构建主动屏幕感知后台 Web 搜索规则。"""
 
     return proactive_web_research_rules_block().body
 
 
 def build_proactive_reply_examples() -> str:
-    """构建主动感知好坏例子，减少泛化关怀和过度吃醋。"""
+    """构建主动屏幕感知好坏例子，减少泛化关怀和过度吃醋。"""
 
     return proactive_reply_examples_block().body
+
+
+# 新命名导出；旧 proactive_* 名称保留给历史调用点。
+build_screen_awareness_check_reply_protocol = build_proactive_check_reply_protocol
+build_screen_awareness_check_tool_system_prompt = build_proactive_check_tool_system_prompt
+build_screen_awareness_reply_decision_flow = build_proactive_reply_decision_flow
+build_screen_awareness_scene_strategy_rules = build_proactive_scene_strategy_rules
+build_screen_awareness_rules = build_proactive_rules
+build_screen_awareness_tool_loop_rules = build_proactive_tool_loop_rules
+build_screen_awareness_web_research_rules = build_proactive_web_research_rules
+build_screen_awareness_reply_examples = build_proactive_reply_examples

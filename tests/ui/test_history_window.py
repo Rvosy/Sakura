@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -89,6 +90,17 @@ def _entry(role: str, content: str, translation: str = "") -> ChatHistoryEntry:
         content=content,
         translation=translation,
     )
+
+
+def _process_events_until(app, condition, timeout: float = 1.0) -> bool:  # type: ignore[no-untyped-def]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if condition():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(condition())
 
 
 def test_entry_view_model_uses_distinct_role_layouts() -> None:
@@ -265,5 +277,138 @@ def test_history_window_groups_consecutive_role_meta() -> None:
     assert meta_texts.count("桜 · 2026-05-30 16:20:30") == 1
     assert meta_texts.count("你 · 2026-05-30 16:20:30") == 2
 
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.history_window import HistoryWindow
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+
+    class MutableHistoryStore:
+        assistant_name = "桜"
+
+        def __init__(self) -> None:
+            self.entries = [_entry("user", "旧内容")]
+
+        def load(self) -> list[ChatHistoryEntry]:
+            return list(self.entries)
+
+    def label_texts() -> list[str]:
+        return [label.text() for label in window.findChildren(QLabel)]
+
+    store = MutableHistoryStore()
+    window = HistoryWindow(store)  # type: ignore[arg-type]
+    app.processEvents()
+    assert "旧内容" in label_texts()
+
+    store.entries = [_entry("user", "新内容")]
+    window.show()
+
+    texts_before_refresh = label_texts()
+    assert "正在读取历史记录..." in texts_before_refresh
+    assert "旧内容" not in texts_before_refresh
+
+    app.processEvents()
+    texts_after_refresh = label_texts()
+    assert "新内容" in texts_after_refresh
+    assert "旧内容" not in texts_after_refresh
+
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_history_window_keeps_loading_visible_until_batched_render_finishes() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.history_window import HistoryWindow
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+
+    class LargeHistoryStore:
+        assistant_name = "桜"
+
+        def load(self) -> list[ChatHistoryEntry]:
+            return [_entry("user", f"历史内容 {index}") for index in range(41)]
+
+    window = HistoryWindow(LargeHistoryStore())  # type: ignore[arg-type]
+    window.refresh()
+
+    texts_before_second_batch = [label.text() for label in window.findChildren(QLabel)]
+    assert "正在读取历史记录..." in texts_before_second_batch
+    assert "历史内容 0" not in texts_before_second_batch
+
+    assert _process_events_until(
+        app,
+        lambda: "历史内容 40" in [label.text() for label in window.findChildren(QLabel)],
+    )
+    texts_after_render = [label.text() for label in window.findChildren(QLabel)]
+    assert "历史内容 0" in texts_after_render
+    assert "历史内容 40" in texts_after_render
+    assert "正在读取历史记录..." not in texts_after_render
+
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.history_window import HistoryWindow
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+
+    class TallHistoryStore:
+        assistant_name = "桜"
+
+        def load(self) -> list[ChatHistoryEntry]:
+            entries: list[ChatHistoryEntry] = []
+            for index in range(90):
+                entries.append(
+                    _entry(
+                        "assistant" if index % 2 else "user",
+                        f"历史内容 {index} " + "这是一段用于撑高历史气泡的长文本。" * 3,
+                    )
+                )
+            entries.append(_entry("assistant", "末尾内容"))
+            return entries
+
+    window = HistoryWindow(TallHistoryStore())  # type: ignore[arg-type]
+    window.resize(620, 680)
+    window.show()
+
+    assert _process_events_until(
+        app,
+        lambda: "末尾内容" in [label.text() for label in window.findChildren(QLabel)],
+        timeout=2.0,
+    )
+    scrollbar = window.history_view.verticalScrollBar()
+    assert _process_events_until(
+        app,
+        lambda: scrollbar.maximum() > 0 and scrollbar.value() == scrollbar.maximum(),
+        timeout=2.0,
+    )
+
+    window.close()
     window.deleteLater()
     app.processEvents()

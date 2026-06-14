@@ -155,7 +155,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         StoragePaths(base_dir).memory_curation_state()
     )
     memory_curator = MemoryCurator(api_client, memory_store)
-    proactive_care_settings = settings_service.load_proactive_care_settings()
+    screen_awareness_settings = settings_service.load_screen_awareness_settings()
 
     debug_log(
         "Startup",
@@ -200,7 +200,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_settings=memory_curation_settings,
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
-            proactive_care_settings=proactive_care_settings,
+            screen_awareness_settings=screen_awareness_settings,
         ),
         startup_initializing=True,
     )

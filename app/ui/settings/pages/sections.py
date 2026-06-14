@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -29,14 +29,14 @@ from PySide6.QtWidgets import (
 
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
 from app.agent.memory import MemoryStore
-from app.agent.proactive_care import (
-    PROACTIVE_MAX_COOLDOWN_MINUTES,
-    PROACTIVE_MAX_CHECK_INTERVAL_MINUTES,
-    PROACTIVE_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
-    PROACTIVE_MIN_COOLDOWN_MINUTES,
-    PROACTIVE_MIN_CHECK_INTERVAL_MINUTES,
-    PROACTIVE_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
-    ProactiveCareSettings,
+from app.agent.screen_awareness import (
+    SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
+    SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
+    SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
+    SCREEN_AWARENESS_MIN_COOLDOWN_MINUTES,
+    SCREEN_AWARENESS_MIN_CHECK_INTERVAL_MINUTES,
+    SCREEN_AWARENESS_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
+    ScreenAwarenessSettings,
 )
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.settings_service import (
@@ -583,39 +583,40 @@ class PrivacySettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
 
-    def build(self, proactive_care_settings: ProactiveCareSettings) -> QWidget:
+    def build(self, screen_awareness_settings: ScreenAwarenessSettings) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
-        owner.proactive_screen_context_enabled_check = QCheckBox("允许模型主动获取屏幕信息", tab)
+        owner.proactive_screen_context_enabled_check = QCheckBox("启用主动屏幕感知（会定期获取屏幕信息）", tab)
+        normalized_screen_awareness_settings = screen_awareness_settings.normalized()
         owner.proactive_screen_context_enabled_check.setChecked(
-            proactive_care_settings.screen_context_enabled
+            normalized_screen_awareness_settings.allows_screen_context()
         )
         owner.proactive_check_interval_spin = _NoWheelSpinBox(tab)
         owner.proactive_check_interval_spin.setRange(
-            PROACTIVE_MIN_CHECK_INTERVAL_MINUTES,
-            PROACTIVE_MAX_CHECK_INTERVAL_MINUTES,
+            SCREEN_AWARENESS_MIN_CHECK_INTERVAL_MINUTES,
+            SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
         )
         owner.proactive_check_interval_spin.setSuffix(" 分钟")
         owner.proactive_check_interval_spin.setValue(
-            proactive_care_settings.normalized().check_interval_minutes
+            normalized_screen_awareness_settings.check_interval_minutes
         )
         owner.proactive_cooldown_spin = _NoWheelSpinBox(tab)
         owner.proactive_cooldown_spin.setRange(
-            PROACTIVE_MIN_COOLDOWN_MINUTES,
-            PROACTIVE_MAX_COOLDOWN_MINUTES,
+            SCREEN_AWARENESS_MIN_COOLDOWN_MINUTES,
+            SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
         )
         owner.proactive_cooldown_spin.setSuffix(" 分钟")
         owner.proactive_cooldown_spin.setValue(
-            proactive_care_settings.normalized().cooldown_minutes
+            normalized_screen_awareness_settings.cooldown_minutes
         )
         owner.proactive_batch_limit_spin = _NoWheelSpinBox(tab)
         owner.proactive_batch_limit_spin.setRange(
-            PROACTIVE_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
-            PROACTIVE_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
+            SCREEN_AWARENESS_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
+            SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
         )
         owner.proactive_batch_limit_spin.setSuffix(" 张")
         owner.proactive_batch_limit_spin.setValue(
-            proactive_care_settings.normalized().screen_context_batch_limit
+            normalized_screen_awareness_settings.screen_context_batch_limit
         )
         owner.proactive_screen_context_enabled_check.toggled.connect(
             owner._sync_proactive_screen_context_controls
@@ -626,7 +627,7 @@ class PrivacySettingsPage:
         form_layout.setSpacing(12)
         form_layout.addRow("", owner.proactive_screen_context_enabled_check)
         form_layout.addRow("主动检查间隔", owner.proactive_check_interval_spin)
-        form_layout.addRow("主动打扰冷却", owner.proactive_cooldown_spin)
+        form_layout.addRow("主动发言冷却", owner.proactive_cooldown_spin)
         form_layout.addRow("单次最多发送截图", owner.proactive_batch_limit_spin)
         owner._proactive_form_layout = form_layout
         tab.setLayout(form_layout)
@@ -939,11 +940,9 @@ class MemorySettingsPage:
         layout.addWidget(owner.memory_editor_container)
         tab.setLayout(layout)
 
-        loading_text = owner._memory_loading_text()
-        owner.memory_status_label.setText(loading_text)
-        owner._show_memory_placeholder(loading_text)
+        owner.memory_status_label.setText("打开记忆页时读取长期记忆。")
+        owner._show_memory_placeholder("切换到记忆页后读取长期记忆。")
         owner._clear_memory_editor()
-        QTimer.singleShot(0, owner._load_memory_entries)
         return tab
 
 

@@ -43,8 +43,8 @@ class DebugLogSettings:
 # MCPRuntimeSettings 在 app/agent/mcp/settings.py 中定义
 
 
-# ---- 主动关怀 ----
-# ProactiveCareSettings 在 app/agent/proactive_care.py 中定义
+# ---- 主动屏幕感知 ----
+# ScreenAwarenessSettings 在 app/agent/screen_awareness.py 中定义
 
 
 # ---- 记忆整理 ----

@@ -7,15 +7,15 @@ from app.agent.runtime import AgentRuntime
 from app.llm.chat_reply import parse_chat_reply
 from app.llm.prompt_templates import (
     build_event_system_prompt,
-    build_proactive_check_tool_system_prompt,
-    build_proactive_tool_loop_rules,
+    build_screen_awareness_check_tool_system_prompt,
+    build_screen_awareness_tool_loop_rules,
     build_segmented_reply_instruction,
 )
 from app.plugins.models import PromptPatchContribution
 
 
 def _build_proactive_tool_prompt() -> str:
-    return build_proactive_check_tool_system_prompt(
+    return build_screen_awareness_check_tool_system_prompt(
         "角色设定",
         ["中性"],
         ["站立待机"],
@@ -31,7 +31,7 @@ def _build_proactive_tool_prompt() -> str:
 def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
     prompt = _build_proactive_tool_prompt()
 
-    assert "【主动感知后台 Web 搜索规则】" in prompt
+    assert "【主动屏幕感知后台 Web 搜索规则】" in prompt
     assert "web__web_search" in prompt
     assert "web__fetch_url" in prompt
     assert "不能把截图本身当作反向图片搜索能力" in prompt
@@ -40,7 +40,7 @@ def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
 
 
 def test_proactive_check_tool_prompt_places_web_rules_before_loop_limits() -> None:
-    prompt = build_proactive_check_tool_system_prompt(
+    prompt = build_screen_awareness_check_tool_system_prompt(
         "角色设定",
         None,
         None,
@@ -52,8 +52,8 @@ def test_proactive_check_tool_prompt_places_web_rules_before_loop_limits() -> No
         max_tool_calls_per_turn=6,
     )
 
-    scene_index = prompt.index("【主动感知场景策略】")
-    web_index = prompt.index("【主动感知后台 Web 搜索规则】")
+    scene_index = prompt.index("【主动屏幕感知场景策略】")
+    web_index = prompt.index("【主动屏幕感知后台 Web 搜索规则】")
     loop_index = prompt.index("当前 Agent 循环：")
 
     assert scene_index < web_index < loop_index
@@ -77,16 +77,16 @@ def test_reminder_event_prompt_does_not_include_background_web_research_rules() 
         event_type="reminder_due",
     )
 
-    assert "主动感知后台 Web 搜索规则" not in prompt
+    assert "主动屏幕感知后台 Web 搜索规则" not in prompt
     assert "web__web_search" not in prompt
     assert "web__fetch_url" not in prompt
 
 
 def test_proactive_tool_loop_rules_contains_background_web_research_rules() -> None:
-    rules = build_proactive_tool_loop_rules()
+    rules = build_screen_awareness_tool_loop_rules()
 
-    assert "【主动感知后台 Web 搜索规则】" in rules
-    assert "每次主动检查最多 2 次搜索" in rules
+    assert "【主动屏幕感知后台 Web 搜索规则】" in rules
+    assert "每次主动屏幕感知最多 2 次搜索" in rules
     assert "最多读取 2 个网页" in rules
 
 
@@ -137,7 +137,7 @@ def test_agent_tool_prompt_length_stays_compact() -> None:
     )
 
     assert len(prompt) < 2800
-    assert prompt.count("主动感知核心规则") == 0
+    assert prompt.count("主动屏幕感知核心规则") == 0
 
 
 def test_agent_runtime_prompt_patches_apply_to_prompt_builders() -> None:

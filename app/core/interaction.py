@@ -1,6 +1,6 @@
 """app/core/interaction.py — 交互级追踪 ID。
 
-每次用户交互（发送消息、点击触发、主动关怀事件）由 UI 层分配一个
+每次用户交互（发送消息、点击触发、主动屏幕感知事件）由 UI 层分配一个
 interaction_id，通过 ContextVar 在当前线程的调用链内传播；跨线程边界
 （ChatWorker、TTS 请求线程）由发起方捕获、线程入口恢复。
 

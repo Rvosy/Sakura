@@ -45,10 +45,10 @@ from app.plugins.manager import PluginManager
 from app.llm.context_trimming import MAX_MODEL_CONTEXT_MESSAGES, trim_messages_for_model
 from app.llm.prompt_templates import (
     build_event_system_prompt,
-    build_proactive_check_tool_system_prompt,
+    build_screen_awareness_check_tool_system_prompt,
 )
-from app.agent.proactive_care import (
-    ProactiveCareSettings,
+from app.agent.screen_awareness import (
+    ScreenAwarenessSettings,
 )
 from app.agent.screen_observation import (
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -181,9 +181,9 @@ def test_due_reminders_and_mark_completed() -> None:
     assert store.due_reminders(now) == []
 
 
-def test_proactive_care_settings_default_to_enabled() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_defaults"))
-    settings = service.load_proactive_care_settings()
+def test_screen_awareness_settings_default_to_enabled() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_defaults"))
+    settings = service.load_screen_awareness_settings()
 
     assert settings.enabled
     assert settings.screen_context_enabled
@@ -192,10 +192,10 @@ def test_proactive_care_settings_default_to_enabled() -> None:
     assert settings.screen_context_batch_limit == 6
 
 
-def test_proactive_care_settings_clamp_intervals() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_interval"))
+def test_screen_awareness_settings_clamp_intervals() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_interval"))
     service.save_system_values(
-        "proactive_care",
+        "screen_awareness",
         {
             "enabled": True,
             "screen_context_enabled": True,
@@ -205,7 +205,7 @@ def test_proactive_care_settings_clamp_intervals() -> None:
         },
     )
 
-    settings = service.load_proactive_care_settings().normalized()
+    settings = service.load_screen_awareness_settings().normalized()
 
     assert settings.enabled
     assert settings.screen_context_enabled
@@ -214,10 +214,10 @@ def test_proactive_care_settings_clamp_intervals() -> None:
     assert settings.screen_context_batch_limit == 20
 
 
-def test_proactive_care_settings_min_intervals_are_one_minute() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_min_interval"))
+def test_screen_awareness_settings_min_intervals_are_one_minute() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_min_interval"))
     service.save_system_values(
-        "proactive_care",
+        "screen_awareness",
         {
             "check_interval_minutes": 0,
             "cooldown_minutes": 0,
@@ -225,36 +225,36 @@ def test_proactive_care_settings_min_intervals_are_one_minute() -> None:
         },
     )
 
-    settings = service.load_proactive_care_settings().normalized()
+    settings = service.load_screen_awareness_settings().normalized()
 
     assert settings.check_interval_minutes == 1
     assert settings.cooldown_minutes == 1
     assert settings.screen_context_batch_limit == 1
 
 
-def test_proactive_care_settings_invalid_cooldown_uses_default() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_invalid_cooldown"))
-    service.save_system_values("proactive_care", {"cooldown_minutes": "soon"})
+def test_screen_awareness_settings_invalid_cooldown_uses_default() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_invalid_cooldown"))
+    service.save_system_values("screen_awareness", {"cooldown_minutes": "soon"})
 
-    settings = service.load_proactive_care_settings()
+    settings = service.load_screen_awareness_settings()
 
     assert settings.cooldown_minutes == 10
 
 
-def test_proactive_care_settings_invalid_batch_limit_uses_default() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_invalid_batch_limit"))
-    service.save_system_values("proactive_care", {"screen_context_batch_limit": "many"})
+def test_screen_awareness_settings_invalid_batch_limit_uses_default() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_invalid_batch_limit"))
+    service.save_system_values("screen_awareness", {"screen_context_batch_limit": "many"})
 
-    settings = service.load_proactive_care_settings()
+    settings = service.load_screen_awareness_settings()
 
     assert settings.screen_context_batch_limit == 6
 
 
-def test_proactive_care_settings_save_writes_yaml() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_save_cooldown"))
+def test_screen_awareness_settings_save_writes_yaml() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_save_cooldown"))
 
-    service.save_proactive_care_settings(
-        ProactiveCareSettings(
+    service.save_screen_awareness_settings(
+        ScreenAwarenessSettings(
             enabled=True,
             screen_context_enabled=True,
             check_interval_minutes=3,
@@ -264,18 +264,18 @@ def test_proactive_care_settings_save_writes_yaml() -> None:
     )
 
     config = load_yaml_mapping(service.system_config_path)
-    assert config["proactive_care"]["enabled"] is True
-    assert config["proactive_care"]["screen_context_enabled"] is True
-    assert config["proactive_care"]["check_interval_minutes"] == 3
-    assert config["proactive_care"]["cooldown_minutes"] == 7
-    assert config["proactive_care"]["screen_context_batch_limit"] == 4
+    assert config["screen_awareness"]["enabled"] is True
+    assert config["screen_awareness"]["screen_context_enabled"] is True
+    assert config["screen_awareness"]["check_interval_minutes"] == 3
+    assert config["screen_awareness"]["cooldown_minutes"] == 7
+    assert config["screen_awareness"]["screen_context_batch_limit"] == 4
 
 
-def test_proactive_care_settings_save_normalizes_enabled_flag() -> None:
-    service = AppSettingsService(_runtime_root_path("proactive_save_sync_enabled"))
+def test_screen_awareness_settings_save_normalizes_enabled_flag() -> None:
+    service = AppSettingsService(_runtime_root_path("screen_awareness_save_sync_enabled"))
 
-    service.save_proactive_care_settings(
-        ProactiveCareSettings(
+    service.save_screen_awareness_settings(
+        ScreenAwarenessSettings(
             enabled=True,
             screen_context_enabled=False,
             check_interval_minutes=3,
@@ -284,29 +284,29 @@ def test_proactive_care_settings_save_normalizes_enabled_flag() -> None:
     )
 
     config = load_yaml_mapping(service.system_config_path)
-    assert config["proactive_care"]["enabled"] is False
-    assert config["proactive_care"]["screen_context_enabled"] is False
+    assert config["screen_awareness"]["enabled"] is True
+    assert config["screen_awareness"]["screen_context_enabled"] is False
 
 
-def test_proactive_care_screen_context_flag_controls_active_care() -> None:
-    enabled_settings = ProactiveCareSettings(
+def test_screen_awareness_screen_context_flag_controls_active_care() -> None:
+    enabled_settings = ScreenAwarenessSettings(
         enabled=True,
         screen_context_enabled=True,
         check_interval_minutes=20,
     )
-    care_disabled_settings = ProactiveCareSettings(
+    care_disabled_settings = ScreenAwarenessSettings(
         enabled=False,
         screen_context_enabled=True,
         check_interval_minutes=20,
     )
-    screen_disabled_settings = ProactiveCareSettings(
+    screen_disabled_settings = ScreenAwarenessSettings(
         enabled=True,
         screen_context_enabled=False,
         check_interval_minutes=20,
     )
 
     assert enabled_settings.allows_screen_context()
-    assert care_disabled_settings.allows_screen_context()
+    assert not care_disabled_settings.allows_screen_context()
     assert not screen_disabled_settings.allows_screen_context()
 
 
@@ -2895,7 +2895,7 @@ def test_vision_unsupported_error_gets_local_fallback_reply() -> None:
 
 
 def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
-    prompt = build_proactive_check_tool_system_prompt(
+    prompt = build_screen_awareness_check_tool_system_prompt(
         "你是 Sakura。",
         ["中性"],
         ["站立待机"],
@@ -2909,15 +2909,15 @@ def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
     )
 
     assert prompt.count("分段规则：") == 1
-    assert "主动屏幕检查事件" in prompt
+    assert "主动屏幕感知事件" in prompt
     assert "这是第 1 步" in prompt
     assert "每步最多请求 3 个工具，整轮最多 8 个工具" in prompt
     assert "主人正在整理提示词。" in prompt
     assert "2026-06-01T08:00:00+08:00" in prompt
     assert "额外规则。" in prompt
     assert "JSON 格式如下" in prompt
-    assert "主动感知回复决策流程" in prompt
-    assert "主动感知场景策略" in prompt
+    assert "主动屏幕感知回复决策流程" in prompt
+    assert "主动屏幕感知场景策略" in prompt
     assert "最终回复必须至少包含一个来自 screen_contexts 或 visual_contexts 的具体可见信息" in prompt
     assert "图片/角色/女性照片" in prompt
     assert "不确定时就普通问候" not in prompt
@@ -2932,8 +2932,8 @@ def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
     )
 
     assert prompt.count("分段规则：") == 1
-    assert "低打扰主动搭话" in prompt
-    assert "屏幕画面和近期对话充分时，可以展开到 2-4 段" in prompt
+    assert "低打扰主动屏幕感知" in prompt
+    assert "根据一段时间内的屏幕变化找自然话题" in prompt
     assert "主动搭话时不要固定使用同一种语气" in prompt
     assert "先阅读 recent_conversation" in prompt
     assert "把 screen_contexts/visual_contexts 和 recent_conversation 交叉对照" in prompt
@@ -2973,13 +2973,14 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
         )
     )
 
-    assert "低打扰主动搭话" in client.prompts[0]
+    assert "低打扰主动屏幕感知" in client.prompts[0]
     assert "只表示用户一段时间没有和桌宠交互" in client.prompts[0]
     assert "不要据此推断用户离开" in client.prompts[0]
+    assert "不要主动催睡觉、休息或喝水" in client.prompts[0]
     assert "真实可见或已知的具体内容" in client.prompts[0]
-    assert "自然搭话、提问或提醒用户" in client.prompts[0]
+    assert "基于屏幕内容找话题" in client.prompts[0]
     assert "tone 和 portrait 要根据内容选择" in client.prompts[0]
-    assert "自然搭话" in str(client.messages[0][0]["content"])
+    assert "主动屏幕感知事件" in str(client.messages[0][0]["content"])
     assert "seconds_since_pet_interaction" in str(client.messages[0][0]["content"])
     assert "idle_seconds" not in str(client.messages[0][0]["content"])
     assert result.reply.translation == "稍微休息一下吧。"
@@ -3029,11 +3030,11 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
     assert "abc123" not in content[0]["text"]
     assert "image_attached" in content[0]["text"]
     assert "先理解屏幕画面本身" in client.prompts[0]
-    assert "自然评论、提问或轻提醒" in client.prompts[0]
+    assert "自然评论、接续任务、提问或轻量协助" in client.prompts[0]
     assert "不要编造看不清" in client.prompts[0]
     assert "不要再请求 observe_screen" in client.prompts[0]
     assert "主动搭话时不要固定使用同一种语气" in client.prompts[0]
-    assert "自然搭话" in content[0]["text"]
+    assert "基于屏幕内容找话题" in content[0]["text"]
 
 
 def test_proactive_check_event_attaches_screen_context_image_batch() -> None:
@@ -3208,7 +3209,7 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
     assert [action.type for action in result.actions] == ["event", "tool_call"]
     assert result.actions[1].payload["tool_name"] == "playwright_get_text"
     assert len(client.prompts) == 2
-    assert "主动检查事件" in client.prompts[0]
+    assert "主动屏幕感知事件" in client.prompts[0]
     assert "不要为了显得主动而循环调用工具" in client.prompts[0]
 
 
@@ -3283,7 +3284,7 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
     assert not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions)
 
 
-def test_proactive_check_vision_unsupported_uses_safe_fallback() -> None:
+def test_proactive_check_vision_unsupported_uses_silent_fallback() -> None:
     class ProactiveVisionUnsupportedClient:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             raise ApiRequestError("model does not support image_url content")
@@ -3308,8 +3309,7 @@ def test_proactive_check_vision_unsupported_uses_safe_fallback() -> None:
         )
     )
 
-    assert "不会乱猜" in result.reply.translation
-    assert result.actions[0].payload["event_type"] == "proactive_check"
+    assert result.reply.segments == []
 
 
 def test_plain_text_messages_do_not_contain_image() -> None:

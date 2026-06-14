@@ -10,11 +10,11 @@ from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
-from app.agent.proactive_care import (
-    PROACTIVE_DEFAULT_CHECK_INTERVAL_MINUTES,
-    PROACTIVE_DEFAULT_COOLDOWN_MINUTES,
-    PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
-    ProactiveCareSettings,
+from app.agent.screen_awareness import (
+    SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
+    SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
+    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
+    ScreenAwarenessSettings,
 )
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
@@ -326,32 +326,34 @@ class AppSettingsService:
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
-    def load_proactive_care_settings(self) -> ProactiveCareSettings:
-        proactive = self._system_section("proactive_care")
-        return ProactiveCareSettings(
-            enabled=_bool_value(proactive.get("enabled"), True),
+    def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
+        screen_awareness = self._system_section("screen_awareness")
+        if not screen_awareness:
+            screen_awareness = self._system_section("proactive_care")
+        return ScreenAwarenessSettings(
+            enabled=_bool_value(screen_awareness.get("enabled"), True),
             screen_context_enabled=_bool_value(
-                proactive.get("screen_context_enabled"),
+                screen_awareness.get("screen_context_enabled"),
                 True,
             ),
             check_interval_minutes=_int_value(
-                proactive.get("check_interval_minutes"),
-                PROACTIVE_DEFAULT_CHECK_INTERVAL_MINUTES,
+                screen_awareness.get("check_interval_minutes"),
+                SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
             ),
             cooldown_minutes=_int_value(
-                proactive.get("cooldown_minutes"),
-                PROACTIVE_DEFAULT_COOLDOWN_MINUTES,
+                screen_awareness.get("cooldown_minutes"),
+                SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
             ),
             screen_context_batch_limit=_int_value(
-                proactive.get("screen_context_batch_limit"),
-                PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
+                screen_awareness.get("screen_context_batch_limit"),
+                SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
             ),
         )
 
-    def save_proactive_care_settings(self, settings: ProactiveCareSettings) -> None:
+    def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
         normalized = settings.normalized()
         self.save_system_values(
-            "proactive_care",
+            "screen_awareness",
             {
                 "enabled": bool(normalized.enabled),
                 "screen_context_enabled": bool(normalized.screen_context_enabled),
@@ -360,6 +362,14 @@ class AppSettingsService:
                 "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
             },
         )
+
+    def load_proactive_care_settings(self) -> ScreenAwarenessSettings:
+        """兼容旧调用点；新代码请使用 load_screen_awareness_settings。"""
+        return self.load_screen_awareness_settings()
+
+    def save_proactive_care_settings(self, settings: ScreenAwarenessSettings) -> None:
+        """兼容旧调用点；新代码请使用 save_screen_awareness_settings。"""
+        self.save_screen_awareness_settings(settings)
 
     def load_bubble_settings(self) -> BubbleSettings:
         ui = self._system_section("ui")

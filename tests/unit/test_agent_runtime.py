@@ -258,6 +258,15 @@ class TestProactiveEventFlow:
         runtime.handle_event(event)
         assert client.complete_with_tools.called
 
+    def test_screen_awareness_check_enters_tool_loop(self) -> None:
+        client = _dummy_api_client()
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+        event = AgentEvent(type="screen_awareness_check", payload={
+            "screen_context_allowed": False, "recent_conversation": [],
+        })
+        runtime.handle_event(event)
+        assert client.complete_with_tools.called
+
     def test_reminder_due_uses_chat_not_tools(self) -> None:
         client = _dummy_api_client()
         runtime = AgentRuntime(client, _dummy_system_prompt())

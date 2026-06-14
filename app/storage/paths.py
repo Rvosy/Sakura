@@ -111,6 +111,9 @@ class StoragePaths:
     def memory_curation_state(self) -> Path:
         return self._data / "memory_curation_state.json"
 
+    def screen_awareness_state(self) -> Path:
+        return self._data / "screen_awareness_state.json"
+
     # ---- 提醒 ----
     def reminders_store(self) -> Path:
         return self._data / "reminders.json"

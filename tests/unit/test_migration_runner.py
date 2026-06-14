@@ -57,7 +57,7 @@ class TestRunnerProtocol:
         base = _make_base("fresh")
         runner = MigrationRunner(base)
         assert runner.current_version() == 0
-        assert [s.version for s in runner.pending()] == [1, 2]
+        assert [s.version for s in runner.pending()] == [1, 2, 3]
 
     def test_run_advances_version_to_current(self) -> None:
         base = _make_base("advance")
@@ -279,6 +279,54 @@ class TestV1ToV2:
         # 含无法解析行：放弃排序、保序拼接（canonical 在前）
         assert lines[0] == "not-json-line"
         assert "ok" in lines[1]
+
+
+class TestV2ToV3:
+    def test_copies_proactive_care_to_screen_awareness(self) -> None:
+        base = _make_base("screen_awareness_migration")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 2,
+                "proactive_care": {
+                    "enabled": True,
+                    "screen_context_enabled": True,
+                    "check_interval_minutes": 5,
+                    "cooldown_minutes": 8,
+                    "screen_context_batch_limit": 4,
+                },
+            },
+        )
+
+        report = MigrationRunner(base).run()
+
+        assert not report.failed
+        system = load_yaml_mapping(paths.system_config())
+        assert system["screen_awareness"]["check_interval_minutes"] == 5
+        assert system["screen_awareness"]["cooldown_minutes"] == 8
+        assert system["proactive_care"]["screen_context_batch_limit"] == 4
+
+    def test_existing_screen_awareness_is_not_overwritten(self) -> None:
+        base = _make_base("screen_awareness_existing")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 2,
+                "proactive_care": {"check_interval_minutes": 5},
+                "screen_awareness": {"check_interval_minutes": 11},
+            },
+        )
+
+        MigrationRunner(base).run()
+
+        system = load_yaml_mapping(paths.system_config())
+        assert system["screen_awareness"]["check_interval_minutes"] == 11
 
 
 class TestFullReplay:

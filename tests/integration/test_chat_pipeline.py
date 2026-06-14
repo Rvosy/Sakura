@@ -86,12 +86,12 @@ def test_chat_pipeline_injects_event_visual_contexts() -> None:
         )
 
         pipeline.run_event(
-            AgentEvent(type="proactive_check", payload={"screen_context_count": 1}),
+            AgentEvent(type="screen_awareness_check", payload={"screen_context_count": 1}),
             visual_observation_jobs=[
                 VisualObservationJob(
                     id="vis_event",
-                    source="proactive_screen_context",
-                    user_text="主动关怀屏幕上下文批次",
+                    source="screen_awareness_context",
+                    user_text="主动屏幕感知上下文批次",
                     screen_contexts=[
                         {
                             "data_url": "data:image/jpeg;base64,event",

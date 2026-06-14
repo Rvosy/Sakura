@@ -761,7 +761,7 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        if event.type not in {"reminder_due", "proactive_check"}:
+        if event.type not in {"reminder_due", "screen_awareness_check", "proactive_check"}:
             return AgentResult(reply=parse_chat_reply("未対応のイベントだよ。"))
 
         debug_log("AgentRuntime", "处理主动事件", {"event": {"type": event.type, "payload": event.payload}})
@@ -773,7 +773,7 @@ class AgentRuntime:
                 "event_payload": event.payload,
             },
         )
-        if event.type == "proactive_check":
+        if event.type in {"screen_awareness_check", "proactive_check"}:
             screen_context_allowed = bool(event.payload.get("screen_context_allowed"))
             allow_screen_observation = (
                 screen_context_allowed
@@ -1706,8 +1706,8 @@ def _build_screen_context_image_part(screen_context: dict[str, Any]) -> dict[str
 
 def _format_event_for_model(event: AgentEvent) -> str:
     instruction = (
-        "主动事件如下，请基于屏幕或事件内容生成要直接说给用户听的自然搭话："
-        if event.type == "proactive_check"
+        "主动屏幕感知事件如下，请基于屏幕内容找话题：可以评论变化、接续任务、询问卡点、轻量协助或保持安静感；不要把时间或停留时长自动泛化成休息建议。"
+        if event.type in {"screen_awareness_check", "proactive_check"}
         else "主动事件如下，请生成要直接说给用户听的提醒："
     )
     return instruction + "\n" + json.dumps(
@@ -1782,21 +1782,7 @@ def _redact_screen_context_for_model(screen_context: dict[str, Any]) -> dict[str
 
 
 def _build_proactive_vision_unsupported_reply() -> ChatReply:
-    return parse_chat_reply(
-        json.dumps(
-            {
-                "segments": [
-                    {
-                        "ja": "今のモデルでは画面までは見られないみたい。勝手に想像しないで、少しだけ休憩の合図にしておくね。",
-                        "zh": "当前模型似乎还不能看屏幕。我不会乱猜，就先轻轻提醒你休息一下。",
-                        "tone": "请求",
-                        "portrait": "伸手命令",
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
-    )
+    return ChatReply([])
 
 
 

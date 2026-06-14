@@ -15,7 +15,8 @@ import pytest
 from app.agent.mcp import MCPRuntimeSettings
 from app.config.settings_service import DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings
-from app.llm.chat_reply import ChatSegment
+from app.agent import AgentEvent, AgentResult
+from app.llm.chat_reply import ChatReply, ChatSegment
 from app.ui.portrait_utils import portrait_kind_key, should_crossfade_portrait
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
@@ -24,6 +25,7 @@ from app.ui.theme import (
     build_pet_window_stylesheet,
 )
 from app.agent.proactive_care import ProactiveCareSettings
+from app.agent.screen_awareness import ScreenAwarenessSettings
 from app.agent.screen_observation import ScreenObservation
 from app.voice.tts_settings import GPTSoVITSTTSSettings
 from app.storage.visual_observation import VisualObservationRecord, VisualObservationStore
@@ -196,7 +198,7 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
 
     host.show_runtime_log()
 
-    assert events == ["theme", "refresh:True", "show", "raise", "activate"]
+    assert events == ["theme", "show", "raise", "activate"]
     assert host.runtime_log_window.kwargs["parent"] is host
     assert host._any_dialog_open() is False
 
@@ -258,6 +260,7 @@ def test_runtime_log_window_collapses_consecutive_duplicate_rows() -> None:
 
     app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
     window = RuntimeLogWindow(log_buffer=buffer, theme_settings=DEFAULT_THEME_SETTINGS)
+    window.refresh(reset=True)
 
     assert window.program_list.count() == 2
     first_item = window.program_list.item(0)
@@ -304,6 +307,7 @@ def test_runtime_log_window_row_shows_category_level_and_detail_summary() -> Non
 
     app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
     window = RuntimeLogWindow(log_buffer=buffer, theme_settings=DEFAULT_THEME_SETTINGS)
+    window.refresh(reset=True)
 
     info_item = window.program_list.item(0)
     # 行内带分类标签，detail 中的标量字段提取为行尾摘要，嵌套结构与脱敏值不出现
@@ -343,6 +347,7 @@ def test_runtime_log_window_shows_tts_text_preview_as_detail() -> None:
 
     app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
     window = RuntimeLogWindow(log_buffer=buffer, theme_settings=DEFAULT_THEME_SETTINGS)
+    window.refresh(reset=True)
 
     item = window.program_list.item(0)
     # 合成/播放记录的灰字摘要优先显示文本内容而不是 detail 字段
@@ -375,6 +380,7 @@ def test_runtime_log_window_updates_progress_rows_in_place() -> None:
 
     app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
     window = RuntimeLogWindow(log_buffer=buffer, theme_settings=DEFAULT_THEME_SETTINGS)
+    window.refresh(reset=True)
     assert window.tts_list.count() == 1
 
     # 已展示的进度行在新进度到达后应原地刷新，而不是追加新行
@@ -1822,6 +1828,7 @@ def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabl
         ),
     )
 
+    assert dialog.proactive_screen_context_enabled_check.text() == "启用主动屏幕感知（会定期获取屏幕信息）"
     assert not dialog.proactive_check_interval_spin.isEnabled()
     assert not dialog.proactive_cooldown_spin.isEnabled()
     assert not dialog.proactive_batch_limit_spin.isEnabled()
@@ -2096,6 +2103,71 @@ def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
 
     dialog.deleteLater()
     app.processEvents()
+
+
+def test_settings_dialog_defers_memory_load_until_memory_tab_selected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QListWidget = qtwidgets.QListWidget
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("settings_memory_lazy_load")
+    load_calls: list[str] = []
+    monkeypatch.setattr(
+        SettingsDialog,
+        "_load_memory_entries",
+        lambda self: load_calls.append("load"),
+    )
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        memory_store=object(),  # type: ignore[arg-type]
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+    app.processEvents()
+
+    nav = dialog.findChild(QListWidget, "settingsNavList")
+    assert nav is not None
+    titles = [nav.item(index).text() for index in range(nav.count())]
+    memory_row = titles.index("记忆")
+    assert load_calls == []
+
+    nav.setCurrentRow(memory_row)
+    app.processEvents()
+    assert load_calls == ["load"]
+
+    nav.setCurrentRow(0)
+    nav.setCurrentRow(memory_row)
+    app.processEvents()
+    assert load_calls == ["load"]
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def _open_settings_memory_tab(dialog, qtwidgets, app=None) -> None:  # type: ignore[no-untyped-def]
+    QListWidget = getattr(qtwidgets, "QListWidget", None)
+    if QListWidget is None:
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    nav = dialog.findChild(QListWidget, "settingsNavList")
+    assert nav is not None
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
+    if app is not None:
+        app.processEvents()
 
 
 def test_settings_dialog_groupbox_title_indicator_has_vertical_room() -> None:
@@ -3726,10 +3798,10 @@ def test_settings_dialog_formats_memory_time_as_local_timezone() -> None:
     assert _format_memory_time("2026-06-02T02:42:27+08:00") == expected
 
 
-def test_settings_dialog_loads_memory_on_open_in_background() -> None:
+def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
@@ -3764,6 +3836,13 @@ def test_settings_dialog_loads_memory_on_open_in_background() -> None:
         memory_store=memory_store,  # type: ignore[arg-type]
     )
 
+    assert dialog.memory_status_label.text() == "打开记忆页时读取长期记忆。"
+    assert memory_store.list_calls == 0
+    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+    assert nav is not None
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
+
     assert dialog.memory_status_label.text() == "正在读取长期记忆..."
     assert _process_events_until(app, lambda: memory_store.list_calls == 1)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
@@ -3776,7 +3855,7 @@ def test_settings_dialog_loads_memory_on_open_in_background() -> None:
 def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
@@ -3808,6 +3887,7 @@ def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
 
     QApplication = qtwidgets.QApplication
     app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
     dialog = SettingsDialog(
         api_settings=ApiSettings(
             base_url="https://api.example.com/v1",
@@ -3818,8 +3898,14 @@ def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
         base_dir=Path("."),
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
+        memory_store=memory_store,  # type: ignore[arg-type]
     )
+
+    assert memory_store.list_calls == 0
+    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+    assert nav is not None
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
 
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
     assert [dialog.memory_table.item(row, 1).text() for row in range(4)] == [
@@ -3835,7 +3921,7 @@ def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
 def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
@@ -3867,6 +3953,10 @@ def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
     )
 
     try:
+        nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+        assert nav is not None
+        memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+        nav.setCurrentRow(memory_row)
         assert _process_events_until(app, lambda: memory_store.started.is_set())
         assert dialog._memory_list_thread is not None
         assert dialog._memory_list_thread.parent() is None
@@ -3881,7 +3971,7 @@ def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
 def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui.settings_dialog import SettingsDialog
@@ -3914,6 +4004,13 @@ def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
     )
 
     expected = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
+    assert dialog.memory_status_label.text() == "打开记忆页时读取长期记忆。"
+    assert memory_store.list_calls == 0
+    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+    assert nav is not None
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
+
     assert dialog.memory_status_label.text() == expected
     assert dialog.memory_table.item(0, 1).text() == expected
     assert _process_events_until(app, lambda: memory_store.list_calls == 1)
@@ -3926,7 +4023,7 @@ def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
 def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     from app.ui import settings_dialog as settings_dialog_module
@@ -3980,6 +4077,10 @@ def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # t
     )
 
     assert hasattr(dialog, "memory_import_model_button")
+    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+    assert nav is not None
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog.memory_import_model_button.click()
@@ -4027,6 +4128,7 @@ def test_settings_dialog_filters_memory_locally() -> None:
         memory_store=memory_store,  # type: ignore[arg-type]
     )
 
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
     assert memory_store.list_calls == 1
 
@@ -4087,6 +4189,7 @@ def test_settings_dialog_deletes_selected_memories(monkeypatch) -> None:  # type
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=memory_store,  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._set_memory_checked(0, True)
@@ -4155,6 +4258,7 @@ def test_settings_dialog_reports_partial_memory_delete_failure(monkeypatch) -> N
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._set_memory_checked(0, True)
@@ -4198,6 +4302,7 @@ def test_settings_dialog_selects_all_visible_memories_without_native_selection()
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._toggle_select_all_visible_memories()
@@ -4242,6 +4347,7 @@ def test_settings_dialog_select_all_only_affects_filtered_results() -> None:
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog.memory_search_edit.setText("批量")
@@ -4298,6 +4404,7 @@ def test_settings_dialog_single_selection_opens_editor_and_updates_memory(monkey
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=memory_store,  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._open_memory_editor(0)
@@ -4348,6 +4455,7 @@ def test_settings_dialog_content_click_switches_to_single_selection() -> None:
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._set_memory_checked(0, True)
@@ -4387,6 +4495,7 @@ def test_settings_dialog_first_column_click_toggles_check_only() -> None:
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._handle_memory_item_clicked(dialog.memory_table.item(0, 0))
@@ -4427,6 +4536,7 @@ def test_settings_dialog_multiple_checked_rows_keep_current_editor() -> None:
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
 
     dialog._open_memory_editor(0)
@@ -4480,6 +4590,7 @@ def test_settings_dialog_collapses_manual_memory_entry_after_save(monkeypatch) -
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         memory_store=memory_store,  # type: ignore[arg-type]
     )
+    _open_settings_memory_tab(dialog, qtwidgets, app)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
     assert not dialog.memory_editor_container.isVisible()
 
@@ -6231,6 +6342,63 @@ def test_proactive_care_batches_screenshots_until_cooldown(monkeypatch) -> None:
     assert window.proactive_screen_contexts == []
 
 
+def test_screen_awareness_batches_screenshots_until_cooldown(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    current_time = {"value": 0.0}
+    captures: list[str] = []
+    events = []
+    history = []
+    window = _build_minimal_screen_awareness_window(
+        screen_context_enabled=True,
+        check_interval_minutes=1,
+        cooldown_minutes=2,
+        events=events,
+        history=history,
+    )
+
+    observations: list[ScreenObservation] = []
+
+    def fake_capture(_window):  # type: ignore[no-untyped-def]
+        index = len(captures) + 1
+        data_url = f"data:image/jpeg;base64,{index}"
+        captures.append(data_url)
+        observation = ScreenObservation(
+            data_url=data_url,
+            width=800,
+            height=600,
+            captured_at=f"2026-05-30T12:0{index}:00+08:00",
+            screen_name="DISPLAY1",
+        )
+        observations.append(observation)
+        return object()
+
+    monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: current_time["value"])
+    monkeypatch.setattr(pet_window_module, "capture_screen_image", fake_capture)
+    window._start_screen_observation_encode = lambda _captured, context: (
+        window._finish_screen_awareness_context(context, observations[-1]) or True
+    )
+
+    current_time["value"] = 60
+    window._check_screen_awareness()
+    assert captures == ["data:image/jpeg;base64,1"]
+    assert events == []
+
+    current_time["value"] = 120
+    window._check_screen_awareness()
+    assert captures == ["data:image/jpeg;base64,1", "data:image/jpeg;base64,2"]
+    assert events == []
+
+    current_time["value"] = 180
+    window._check_screen_awareness()
+
+    assert events[0].type == "screen_awareness_check"
+    assert [context["data_url"] for context in events[0].payload["screen_contexts"]] == captures
+    assert events[0].payload["screen_context_count"] == 3
+    assert history
+    assert window.screen_awareness_contexts == []
+
+
 def test_proactive_care_event_includes_recent_conversation() -> None:
     from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
     from app.ui.pet_window import PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT
@@ -6454,6 +6622,55 @@ def test_proactive_care_disabled_does_not_capture_or_send(monkeypatch) -> None: 
 
     assert events == []
     assert window.proactive_screen_contexts == []
+
+
+def test_screen_awareness_limits_night_health_reminders(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    runtime_root = (
+        Path(__file__).resolve().parents[2]
+        / "temp"
+        / "test_runtime"
+        / "screen_awareness_health"
+        / uuid.uuid4().hex
+    )
+
+    class MinimalWindow:
+        _filter_screen_awareness_reply = PetWindow._filter_screen_awareness_reply
+        _screen_awareness_health_reminder_seen = PetWindow._screen_awareness_health_reminder_seen
+        _record_screen_awareness_health_reminder = PetWindow._record_screen_awareness_health_reminder
+        _screen_awareness_state_path = PetWindow._screen_awareness_state_path
+        _load_screen_awareness_state = PetWindow._load_screen_awareness_state
+        _save_screen_awareness_state = PetWindow._save_screen_awareness_state
+
+        def __init__(self) -> None:
+            self.base_dir = runtime_root
+            self._logged = []
+
+        def _log_interaction_stage(self, *args):  # type: ignore[no-untyped-def]
+            self._logged.append(args)
+
+    monkeypatch.setattr(pet_window_module, "_screen_awareness_night_key", lambda: "2026-06-12")
+    window = MinimalWindow()
+    event = AgentEvent(type="screen_awareness_check", payload={})
+    result = AgentResult(
+        reply=ChatReply(
+            [
+                ChatSegment(
+                    text="少し休んでもいいよ。",
+                    translation="稍微休息一下也可以。",
+                )
+            ]
+        ),
+        actions=[],
+    )
+
+    first = window._filter_screen_awareness_reply(result, event)
+    second = window._filter_screen_awareness_reply(result, event)
+
+    assert first.reply.translation == "稍微休息一下也可以。"
+    assert second.reply.segments == []
 
 
 def test_user_activity_keeps_pending_proactive_screenshot_batch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -7603,6 +7820,65 @@ def _build_minimal_proactive_window(
     window.proactive_screen_context_dropped_count = 0
     window.confirm_action_button = _DummyButton()
     window.cancel_action_button = _DummyButton()
+    captured_events = events if events is not None else []
+    captured_history = history if history is not None else []
+    window._run_event_worker = lambda event, reminder_id=None: captured_events.append(event)
+    window._record_history = lambda *args: captured_history.append(args)
+    return window
+
+
+def _build_minimal_screen_awareness_window(
+    *,
+    screen_context_enabled: bool,
+    check_interval_minutes: int,
+    cooldown_minutes: int,
+    screen_context_batch_limit: int = 6,
+    events=None,  # type: ignore[no-untyped-def]
+    history=None,  # type: ignore[no-untyped-def]
+):
+    from app.ui.pet_window import PetWindow
+
+    class MinimalScreenAwarenessWindow:
+        _current_screen_awareness_settings = PetWindow._current_screen_awareness_settings
+        _can_run_screen_awareness = PetWindow._can_run_screen_awareness
+        _check_screen_awareness = PetWindow._check_screen_awareness
+        _should_capture_screen_awareness_context = (
+            PetWindow._should_capture_screen_awareness_context
+        )
+        _capture_screen_awareness_context = PetWindow._capture_screen_awareness_context
+        _finish_screen_awareness_context = PetWindow._finish_screen_awareness_context
+        _should_send_screen_awareness_batch = PetWindow._should_send_screen_awareness_batch
+        _build_screen_awareness_event = PetWindow._build_screen_awareness_event
+        _screen_awareness_context_allowed = PetWindow._screen_awareness_context_allowed
+        _clear_screen_awareness_context_batch = PetWindow._clear_screen_awareness_context_batch
+
+    window = MinimalScreenAwarenessWindow()
+    window.screen_awareness_settings = ScreenAwarenessSettings(
+        enabled=screen_context_enabled,
+        screen_context_enabled=screen_context_enabled,
+        check_interval_minutes=check_interval_minutes,
+        cooldown_minutes=cooldown_minutes,
+        screen_context_batch_limit=screen_context_batch_limit,
+    )
+    window.worker_thread = None
+    window.active_reminder_id = None
+    window.active_event_type = ""
+    window.pending_tool_action = None
+    window.pending_screen_observation_messages = None
+    window.screen_observation_followup_in_progress = False
+    window.screen_observation_encode_thread = None
+    window.active_interaction_id = ""
+    window.input_edit = _DummyTextInput()
+    window.speech_timer = _DummyTimer()
+    window.current_segment_sequence_id = None
+    window.current_segment_speech_done = True
+    window.current_segment_tts_done = True
+    window.last_user_activity_at = 0.0
+    window.last_screen_awareness_at = None
+    window.last_screen_awareness_context_at = None
+    window.screen_awareness_context_batch_started_at = None
+    window.screen_awareness_contexts = []
+    window.screen_awareness_context_dropped_count = 0
     captured_events = events if events is not None else []
     captured_history = history if history is not None else []
     window._run_event_worker = lambda event, reminder_id=None: captured_events.append(event)
