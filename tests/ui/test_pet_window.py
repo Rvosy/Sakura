@@ -1029,6 +1029,59 @@ def test_pet_window_screen_change_restores_stage_geometry(monkeypatch) -> None: 
     app.processEvents()
 
 
+def test_apply_pet_layout_refreshes_stage_mask_after_geometry_change() -> None:
+    from types import SimpleNamespace
+
+    from app.ui.pet_window import PetWindow
+
+    class WindowStub:
+        _apply_pet_layout = PetWindow._apply_pet_layout
+
+        def __init__(self) -> None:
+            self.layout = SimpleNamespace(window_size=(321, 234), portrait_anchor=(160, 200))
+            self.stage_size = (0, 0)
+            self.resized: tuple[int, int] | None = None
+            self.updates: list[bool] = []
+            self.placed: list[object] = []
+            self.debugged: list[object] = []
+            self.masked: list[object] = []
+
+        def _compute_pet_layout(self):  # type: ignore[no-untyped-def]
+            return self.layout
+
+        def updatesEnabled(self) -> bool:
+            return True
+
+        def setUpdatesEnabled(self, enabled: bool) -> None:
+            self.updates.append(enabled)
+
+        def isVisible(self) -> bool:
+            return False
+
+        def resize(self, width: int, height: int) -> None:
+            self.resized = (width, height)
+
+        def _place_pet_children(self, layout) -> None:  # type: ignore[no-untyped-def]
+            self.placed.append(layout)
+
+        def _update_stage_debug_overlay(self, layout) -> None:  # type: ignore[no-untyped-def]
+            self.debugged.append(layout)
+
+        def _update_stage_mask(self, layout) -> None:  # type: ignore[no-untyped-def]
+            self.masked.append(layout)
+
+    window = WindowStub()
+
+    window._apply_pet_layout()
+
+    assert window.resized == (321, 234)
+    assert window.stage_size == (321, 234)
+    assert window.placed == [window.layout]
+    assert window.debugged == [window.layout]
+    assert window.masked == [window.layout]
+    assert window.updates == [False, True]
+
+
 def test_screen_change_event_check_tolerates_missing_qt_enum(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import _is_screen_change_event
@@ -2187,6 +2240,58 @@ def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
     window.tts_provider.service_ready = True
     window._handle_tts_ready_warmup_succeeded("TTS 服务已就绪。")
     assert window.tts_provider.prepared == [("……おかえり。", "中性")]
+
+
+def test_pet_window_backchannel_audio_prepare_skips_when_tts_queue_busy() -> None:
+    """正文/播放队列忙时,接话预生成不继续塞 GPT-SoVITS 请求。"""
+    from app.backchannel.models import (
+        BackchannelManifest,
+        BackchannelTemplate,
+        BackchannelVariant,
+    )
+    from app.ui.pet_window import PetWindow
+    from app.voice.tts import TTSPreparedAudio
+
+    class BusyProviderStub:
+        service_ready = True
+        _request_running = True
+
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, str | None]] = []
+
+        def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
+            self.prepared.append((text, tone))
+            return TTSPreparedAudio(text=text, tone=tone)
+
+    class WindowStub:
+        _backchannel_tts_wanted = PetWindow._backchannel_tts_wanted
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+        _tts_provider_has_queued_work = PetWindow._tts_provider_has_queued_work
+        _prepare_backchannel_audio_cache = PetWindow._prepare_backchannel_audio_cache
+        _backchannel_variant_audio_available = PetWindow._backchannel_variant_audio_available
+        _resolve_backchannel_audio_path = PetWindow._resolve_backchannel_audio_path
+
+        def __init__(self) -> None:
+            self.backchannel_settings = BackchannelSettings(enabled=True, tts_enabled=True)
+            self.tts_provider = BusyProviderStub()
+            self._backchannel_prepared_audio: dict = {}
+            self._backchannel_audio_cache = None
+            template = BackchannelTemplate(
+                id="greeting",
+                tone="中性",
+                portrait="高兴满足",
+                variants=(BackchannelVariant(ja="……おかえり。", zh="……欢迎回来。"),),
+                intent="greeting_return",
+                emotion="neutral",
+            )
+            self.backchannel_manifest = BackchannelManifest(templates=(template,))
+
+    window = WindowStub()
+
+    window._prepare_backchannel_audio_cache()
+
+    assert window.tts_provider.prepared == []
+    assert window._backchannel_prepared_audio == {}
 
 
 def test_settings_dialog_backchannel_tts_follows_global_tts_toggle() -> None:
@@ -8382,6 +8487,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _apply_launch_at_login_settings = pet_window_cls._apply_launch_at_login_settings
         _apply_bubble_settings = pet_window_cls._apply_bubble_settings
 
+        def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_debug_overlay_calls.append((enabled, refresh))
+
+        def _apply_stage_collision_mask(self, enabled: bool, *, refresh: bool = False) -> None:
+            self.stage_collision_mask_calls.append((enabled, refresh))
+
         def _create_tts_provider_from_settings(self, _settings):  # type: ignore[no-untyped-def]
             return object()
 
@@ -8433,6 +8544,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.input_bar_offset = 0
     window.subtitle_typing_interval_ms = 35
     window.reply_segment_pause_ms = 100
+    window.stage_debug_overlay_calls = []
+    window.stage_collision_mask_calls = []
     window.retired_tts_providers = []
     window.tts_provider = object()
     window.warmed_tts_provider = None

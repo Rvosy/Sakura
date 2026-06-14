@@ -84,6 +84,32 @@ def test_skip_unpaired_variant_keeps_rest(tmp_path: Path) -> None:
     assert len(manifest.templates[0].variants) == 1
 
 
+def test_variant_level_portrait_override(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        [_entry(variants=[{"ja": "見てみる。", "zh": "我看看。", "portrait": "站立待机"}])],
+    )
+    manifest = load_backchannel_manifest(path, profile=_StubProfile())
+    assert manifest.templates[0].variants[0].portrait == "站立待机"
+
+
+def test_variant_level_unknown_portrait_is_skipped(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        [
+            _entry(
+                variants=[
+                    {"ja": "見てみる。", "zh": "我看看。", "portrait": "不存在的立绘"},
+                    {"ja": "少し待って。", "zh": "稍等一下。", "portrait": "站立待机"},
+                ]
+            )
+        ],
+    )
+    manifest = load_backchannel_manifest(path, profile=_StubProfile())
+    assert len(manifest.templates[0].variants) == 1
+    assert manifest.templates[0].variants[0].ja == "少し待って。"
+
+
 def test_skip_template_without_valid_variants(tmp_path: Path) -> None:
     path = _write_manifest(tmp_path, [_entry(variants=[{"ja": "只有日文"}])])
     assert not load_backchannel_manifest(path).templates

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 import types
 import urllib.error
@@ -79,9 +80,12 @@ from app.voice.tts import (
     TTSPreparedAudio,
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
+    _find_running_local_tts_process,
     _format_gpt_sovits_http_error,
     _load_tone_references,
     _local_tts_subprocess_env,
+    _looks_like_broken_pipe_error,
+    _normalize_tts_request_text,
     _read_local_tts_output,
     _resolve_request_text_lang,
     _resolve_tts_cache_dir,
@@ -133,6 +137,16 @@ def test_tts_yue_mixed_english_uses_auto_yue() -> None:
     text = "Steam 打开咗。"
 
     assert _resolve_request_text_lang(text, "all_yue") == "auto_yue"
+
+
+def test_tts_request_text_normalizer_strips_model_wrapper_noise() -> None:
+    assert (
+        _normalize_tts_request_text(
+            "。「はあ？『宝宝』なんて…もう、何呼び方してるのよ。照れるじゃない。」"
+        )
+        == "はあ？『宝宝』なんて…もう、何呼び方してるのよ。照れるじゃない。"
+    )
+    assert _normalize_tts_request_text("。」……！？") == ""
 
 
 def test_tone_references_load_four_part_rows_only() -> None:
@@ -317,6 +331,38 @@ def test_tts_provider_adopts_existing_local_process_on_init(monkeypatch) -> None
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings(work_dir=work_dir))
 
     assert provider._server_process is attached
+
+
+def test_find_running_local_gptsovits_process_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    work_dir = _runtime_root("gptsovits_posix_adopt") / "GPT-SoVITS"
+    python_path = work_dir.parent / "miniforge3" / "envs" / "gpt-sovits310" / "bin" / "python3.10"
+    api_script = work_dir / "api_v2.py"
+    settings = _minimal_tts_settings(
+        work_dir=work_dir,
+        provider="custom-gpt-sovits",
+        python_path=python_path,
+    )
+
+    def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
+        if args[0] == "lsof":
+            assert f"-iTCP:{9880}" in args
+            return types.SimpleNamespace(returncode=0, stdout="p4321\n")
+        if args[0] == "ps":
+            assert args[1:3] == ["-p", "4321"]
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=f"{python_path} {api_script} -c config.yaml -a 127.0.0.1 -p 9880\n",
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr("app.voice.tts.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.tts.os.getpid", lambda: 1234)
+    monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+
+    process = _find_running_local_tts_process(settings, 9880)
+
+    assert process is not None
+    assert process.pid == 4321
 
 
 def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -880,12 +926,115 @@ def test_gptsovits_charmap_http_error_gets_actionable_message() -> None:
     message = _format_gpt_sovits_http_error(
         400,
         '{"message":"tts failed","Exception":"\'charmap\' codec can\'t encode characters"}',
+        text="原因是 Mermaid 语法。",
     )
 
     assert "运行时编码不是 UTF-8" in message
     assert "由 Sakura 重新启动" in message
     assert "UTF-8 标准输入输出" in message
     assert "原始响应" in message
+    assert "失败文本：原因是 Mermaid 语法。" in message
+
+
+def test_gptsovits_broken_pipe_http_error_gets_actionable_message() -> None:
+    message = _format_gpt_sovits_http_error(
+        400,
+        '{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}',
+        text="十二時半を回ったわね。",
+    )
+
+    assert _looks_like_broken_pipe_error(message)
+    assert "输出管道已断开" in message
+    assert "残留 GPT-SoVITS 进程" in message
+    assert "失败文本：十二時半を回ったわね。" in message
+
+
+def test_gptsovits_restarts_and_retries_after_broken_pipe(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(
+        _minimal_tts_settings(),
+        adopt_existing_service=False,
+    )
+    provider._service_checked = True
+    provider._weights_ready = True
+    provider._tts_cache_dir = _runtime_root("broken_pipe_retry_cache")
+    ready_audio: list[tuple[object, ...]] = []
+    failures: list[str] = []
+    restarts: list[str] = []
+    request_count = 0
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"RIFFfake"
+
+    def fake_urlopen(*_args: object, **_kwargs: object) -> FakeResponse:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1:9880/tts",
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(b'{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}'),
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr("app.voice.tts.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(provider, "_ensure_service_available", lambda _fail: True)
+    monkeypatch.setattr(provider, "_ensure_character_weights", lambda _fail: True)
+    monkeypatch.setattr(provider, "_fail_audio_request", lambda _request, message: failures.append(message))
+    monkeypatch.setattr(provider, "_audio_ready", types.SimpleNamespace(emit=lambda *args: ready_audio.append(args)))
+    monkeypatch.setattr(
+        provider,
+        "_restart_local_service_after_broken_pipe",
+        lambda _fail: restarts.append("restart") or True,
+    )
+
+    provider._request_audio(
+        types.SimpleNamespace(
+            text="十二時半を回ったわね。",
+            tone="中性",
+            on_started=None,
+            on_finished=None,
+            prepared_audio=None,
+        )
+    )
+
+    assert request_count == 2
+    assert restarts == ["restart"]
+    assert failures == []
+    assert len(ready_audio) == 1
+    assert ready_audio[0][3] == "十二時半を回ったわね。"
+
+
+def test_gptsovits_provider_skips_punctuation_only_text(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(
+        _minimal_tts_settings(),
+        adopt_existing_service=False,
+    )
+    queued: list[object] = []
+    events: list[str] = []
+    monkeypatch.setattr(provider, "_queue_request", lambda request: queued.append(request))
+
+    provider.speak(
+        "。」……！？",
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+    handle = provider.prepare("。」……！？", "中性")
+
+    assert queued == []
+    assert events == ["started", "finished"]
+    assert handle.failed
+    assert handle.text == ""
 
 
 def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) -> None:  # type: ignore[no-untyped-def]

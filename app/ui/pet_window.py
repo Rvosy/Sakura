@@ -218,7 +218,7 @@ DEFAULT_STAGE_HEIGHT = 640
 # 立绘缩放时碰撞箱高度下限：底部 UI 区（气泡 128 + 输入框 52 + 间距 94 = 274px）
 # 加上立绘顶部约 146px 可见区，合计 ~420px。
 MIN_STAGE_HEIGHT = 420
-BACKCHANNEL_AUDIO_PREPARE_LIMIT = 16
+BACKCHANNEL_AUDIO_PREPARE_LIMIT = 2
 
 
 def _message_box_theme(parent: QWidget | None, theme_settings: ThemeSettings | None) -> ThemeSettings:
@@ -1197,6 +1197,21 @@ class PetWindow(QWidget):
             return False
         return bool(getattr(self.tts_provider, "service_ready", True))
 
+    def _tts_provider_has_queued_work(self) -> bool:
+        """接话预生成只在 TTS 队列空闲时补做,避免抢占正文合成/播放。"""
+        provider = getattr(self, "tts_provider", None)
+        if provider is None:
+            return False
+        if bool(getattr(provider, "_request_running", False)):
+            return True
+        pending_requests = getattr(provider, "_pending_requests", None)
+        if pending_requests:
+            return True
+        pending_audio = getattr(provider, "_pending_audio", None)
+        if pending_audio:
+            return True
+        return getattr(provider, "_current_audio", None) is not None
+
     def _backchannel_audio_key(self, choice: BackchannelChoice) -> tuple[str, str, str]:
         return (choice.template.id, choice.template.tone, choice.variant.ja)
 
@@ -1232,6 +1247,10 @@ class PetWindow(QWidget):
                         discard_prepared(handle)
                     except Exception as exc:  # noqa: BLE001
                         debug_log("Backchannel", "落盘后丢弃合成句柄失败", {"error": str(exc)})
+        queue_busy = getattr(self, "_tts_provider_has_queued_work", lambda: False)
+        if queue_busy():
+            debug_log("Backchannel", "TTS 队列忙,跳过本轮接话音频预生成")
+            return
         provider = self.tts_provider
         queued = 0
         missing_audio = 0
@@ -1729,6 +1748,8 @@ class PetWindow(QWidget):
                 self.resize(new_w, new_h)
             self.stage_size = (new_w, new_h)
             self._place_pet_children(layout)
+            self._update_stage_debug_overlay(layout)
+            self._update_stage_mask(layout)
         finally:
             self.setUpdatesEnabled(was_enabled)
 
