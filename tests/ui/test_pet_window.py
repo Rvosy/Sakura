@@ -4276,8 +4276,9 @@ def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -
         def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             calls["reload_memory"] += 1
 
-    class DialogStub:
+    class DialogStub(_NonModalSettingsDialogStub):
         def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
             self.result_api_settings = api_settings
             self.result_tts_settings = tts_settings
             self.result_character_id = "sakura"
@@ -4285,9 +4286,6 @@ def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -
             self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
             self.result_debug_log_settings = DebugLogSettings()
             self.result_portrait_scale_percent = 100
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return pet_window_module.QDialog.DialogCode.Accepted
 
     window = _minimal_settings_window(
         PetWindow,
@@ -4353,8 +4351,9 @@ def test_show_settings_applies_launch_at_login_change(monkeypatch) -> None:  # t
         def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             pass
 
-    class DialogStub:
+    class DialogStub(_NonModalSettingsDialogStub):
         def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
             self.result_api_settings = api_settings
             self.result_tts_settings = tts_settings
             self.result_character_id = "sakura"
@@ -4363,9 +4362,6 @@ def test_show_settings_applies_launch_at_login_change(monkeypatch) -> None:  # t
             self.result_debug_log_settings = DebugLogSettings()
             self.result_startup_settings = StartupSettings(launch_at_login=True)
             self.result_portrait_scale_percent = 100
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return pet_window_module.QDialog.DialogCode.Accepted
 
     window = _minimal_settings_window(
         PetWindow,
@@ -4411,8 +4407,10 @@ def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # t
     class DialogStub:
         def __init__(self, *_args, **_kwargs) -> None:
             events.append("dialog_init")
+            self.finished = _NonModalSettingsDialogStub._FinishedSignal()
 
         def show(self) -> None:
+            # 非模态：show 后窗口保持打开，不触发 finished（不清空 settings_dialog）。
             events.append("show")
 
         def raise_(self) -> None:
@@ -4420,11 +4418,6 @@ def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # t
 
         def activateWindow(self) -> None:
             events.append("activate")
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            events.append("exec")
-            window.show_settings()
-            return pet_window_module.QDialog.DialogCode.Rejected
 
     window = _minimal_settings_window(
         PetWindow,
@@ -4434,10 +4427,23 @@ def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # t
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
 
+    # 第一次打开：非模态创建并显示窗口。
+    window.show_settings()
+    # 第二次打开（窗口仍开着）：应激活已有窗口，而不是再建一个。
     window.show_settings()
 
-    assert events == ["load_tts", "dialog_init", "exec", "show", "raise", "activate"]
-    assert getattr(window, "settings_dialog", None) is None
+    assert events == [
+        "load_tts",
+        "dialog_init",
+        "show",
+        "raise",
+        "activate",
+        "show",
+        "raise",
+        "activate",
+    ]
+    # 窗口仍打开（非模态未关闭），settings_dialog 持有引用。
+    assert getattr(window, "settings_dialog", None) is not None
 
 
 def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -4487,8 +4493,9 @@ def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> 
         def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             pass
 
-    class DialogStub:
+    class DialogStub(_NonModalSettingsDialogStub):
         def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
             self.result_api_settings = api_settings
             self.result_tts_settings = tts_settings
             self.result_character_id = "sakura"
@@ -4498,9 +4505,6 @@ def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> 
             self.result_portrait_scale_percent = 100
             self.result_subtitle_typing_interval_ms = 80
             self.result_reply_segment_pause_ms = 900
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return pet_window_module.QDialog.DialogCode.Accepted
 
     window = _minimal_settings_window(
         PetWindow,
@@ -4842,8 +4846,9 @@ def test_show_settings_reloads_memory_in_background_when_api_changes(monkeypatch
             calls["reloaded"] = settings
             calls["wait"] = wait
 
-    class DialogStub:
+    class DialogStub(_NonModalSettingsDialogStub):
         def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
             self.result_api_settings = new_settings
             self.result_tts_settings = tts_settings
             self.result_character_id = "sakura"
@@ -4851,9 +4856,6 @@ def test_show_settings_reloads_memory_in_background_when_api_changes(monkeypatch
             self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
             self.result_debug_log_settings = DebugLogSettings()
             self.result_portrait_scale_percent = 100
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return pet_window_module.QDialog.DialogCode.Accepted
 
     messages: list[str] = []
     window = _minimal_settings_window(
@@ -4938,8 +4940,9 @@ def test_show_settings_uses_dialog_refreshed_character_registry(monkeypatch) -> 
         def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             pass
 
-    class DialogStub:
+    class DialogStub(_NonModalSettingsDialogStub):
         def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
             self.character_registry = imported_registry
             self.result_api_settings = api_settings
             self.result_tts_settings = tts_settings
@@ -4948,9 +4951,6 @@ def test_show_settings_uses_dialog_refreshed_character_registry(monkeypatch) -> 
             self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
             self.result_debug_log_settings = DebugLogSettings()
             self.result_portrait_scale_percent = 100
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return pet_window_module.QDialog.DialogCode.Accepted
 
     window = _minimal_settings_window(
         PetWindow,
@@ -7403,6 +7403,48 @@ def _build_settings_dialog_voice_archive(root: Path) -> Path:
     return archive_path
 
 
+class _NonModalSettingsDialogStub:
+    """非模态设置窗口的测试桩：模拟 finished 信号与 show/raise_ 等接口。
+
+    show_settings 已从模态 exec() 改为非模态 show() + finished 信号回调，
+    这里在 show() 时同步 emit finished(Accepted)，保持「调用 show_settings 后
+    结果处理同步完成」的测试语义。子类只需在 __init__ 里填好 result_* 属性。
+    """
+
+    class _FinishedSignal:
+        def __init__(self) -> None:
+            self._slots: list = []
+
+        def connect(self, slot) -> None:  # type: ignore[no-untyped-def]
+            self._slots.append(slot)
+
+        def emit(self, result: int) -> None:
+            for slot in list(self._slots):
+                slot(result)
+
+    _dialog_result = None  # 子类可覆盖；None 表示用 QDialog.DialogCode.Accepted
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.finished = _NonModalSettingsDialogStub._FinishedSignal()
+
+    def _resolved_result(self) -> int:
+        import app.ui.pet_window as pet_window_module
+
+        if self._dialog_result is not None:
+            return self._dialog_result
+        return pet_window_module.QDialog.DialogCode.Accepted
+
+    def show(self) -> None:
+        # 非模态打开后立即「关闭」，同步触发结果处理回调。
+        self.finished.emit(self._resolved_result())
+
+    def raise_(self) -> None:  # noqa: N802 - 匹配 Qt 接口名
+        pass
+
+    def activateWindow(self) -> None:  # noqa: N802 - 匹配 Qt 接口名
+        pass
+
+
 def _settings_dialog_character_kwargs(root: Path) -> dict[str, object]:
     from app.config.character_loader import CharacterRegistry
 
@@ -7573,6 +7615,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
 
     class MinimalSettingsWindow:
         show_settings = pet_window_cls.show_settings
+        _on_settings_dialog_finished = pet_window_cls._on_settings_dialog_finished
         _activate_settings_dialog = pet_window_cls._activate_settings_dialog
         _preview_layout = pet_window_cls._preview_layout
         _retire_tts_provider = pet_window_cls._retire_tts_provider
