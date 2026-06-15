@@ -15,10 +15,12 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     # 仅保留无歧义的技术故障信号。已剔除审计证实的高假阳性子串:
     # "崩"(心态崩溃→support)、"坏了"(灯泡/心情坏了→none)、"不工作"(不想工作)、
     # "还是不行/又不行"(泛化不满,非报错)——它们把情绪/闲聊误接成 error(原精度仅 35%)。
+    # "404"/"500" 也已移出裸词表(裸子串会把「人均500」「400-500元」误判 error),
+    # 改由 _http_status_error 做上下文门控(需 http/接口/报错等线索词)。
     "error": (
         "报错", "出错", "错误", "bug", "Bug", "BUG", "error", "Error",
         "Traceback", "traceback", "exception", "Exception", "闪退",
-        "失败", "跑不起来", "运行不了", "无法运行", "无法打开", "404", "500",
+        "失败", "跑不起来", "运行不了", "无法运行", "无法打开",
     ),
     "complaint": (
         "好烦", "很烦", "真烦", "烦死", "烦人", "气死", "讨厌", "受不了",
@@ -53,6 +55,14 @@ _INTENT_PRIORITY = (
 # 情绪信号,按优先级检查,首个命中即采用。
 _EXCLAMATION_RUN = re.compile(r"[!！]{2,}")
 _CODE_FENCE = "```"
+
+# HTTP 状态码(4xx/5xx)上下文门控:只有同时出现线索词才算报错信号,
+# 否则「人均500」「400-500元」会被裸子串误判 error。
+_HTTP_STATUS_RE = re.compile(r"(?<!\d)[45]\d{2}(?!\d)")
+_HTTP_ERROR_CUES = (
+    "http", "HTTP", "接口", "请求", "报错", "错误", "异常", "状态",
+    "服务器", "网关", "响应", "超时", "返回码", "code",
+)
 
 # 社交礼仪句(greeting 家族):高度程式化的封闭集,会话分析中的相邻对首件。
 # 仅对短输入短路(长句里"我回来了,帮我查…"应让任务意图按正常计分胜出)。
@@ -150,10 +160,19 @@ class RuleClassifier:
     def _keyword_hits(self, intent: str, content: str) -> int:
         return sum(1 for keyword in _INTENT_KEYWORDS[intent] if keyword in content)
 
+    def _http_status_error(self, content: str) -> bool:
+        # 4xx/5xx 状态码只在有 http/接口/报错等上下文线索时才算 error 信号,
+        # 避免「人均500」「400-500元」「预算500」这类价格/数量裸数字误触。
+        if not _HTTP_STATUS_RE.search(content):
+            return False
+        return any(cue in content for cue in _HTTP_ERROR_CUES)
+
     def _error_signal_score(self, content: str) -> int:
         hits = self._keyword_hits("error", content)
         if _CODE_FENCE in content or '  File "' in content:
             hits += 2
+        if self._http_status_error(content):
+            hits += 1
         return hits
 
     def classify_emotion_for_intent(self, text: str, intent: str) -> str:
@@ -207,6 +226,9 @@ class RuleClassifier:
         # 代码块/报错栈是 error 的强信号(报错往往整段粘贴而不含中文关键词)。
         if _CODE_FENCE in content or "  File \"" in content:
             scores["error"] = scores.get("error", 0) + 2
+        # HTTP 状态码需上下文门控,避免价格/数量裸数字误判 error。
+        if self._http_status_error(content):
+            scores["error"] = scores.get("error", 0) + 1
         if not scores:
             return None, 0
         best = max(scores.values())

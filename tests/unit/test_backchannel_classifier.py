@@ -141,6 +141,29 @@ def test_more_hits_raise_confidence(classifier: RuleClassifier) -> None:
     assert strong.confidence > weak.confidence
 
 
+@pytest.mark.parametrize("text", ["400-500元", "预算500左右", "这家店人均500", "我有500块", "房租3500"])
+def test_http_status_code_needs_error_context(classifier: RuleClassifier, text: str) -> None:
+    # 价格/数量里的 4xx/5xx 裸数字不应被判 error(评测报告暴露的规则 bug)。
+    assert classifier.classify_high_precision(text) is None
+
+
+@pytest.mark.parametrize("text", ["接口报错500", "服务器返回500错误", "请求超时504", "http 500 异常"])
+def test_http_status_code_with_context_is_error(classifier: RuleClassifier, text: str) -> None:
+    label = classifier.classify_high_precision(text)
+    assert label is not None
+    assert label.intent == "error"
+
+
+def test_high_precision_only_closed_and_structural_signals(classifier: RuleClassifier) -> None:
+    # probe-primary 前置:只接问候/技术报错/强吐槽;语义类(support/positive/request)
+    # 一律交 probe(此处应返回 None)。
+    assert classifier.classify_high_precision("我回来了").intent == "greeting_return"
+    assert classifier.classify_high_precision("又报错了跑不起来").intent == "error"
+    assert classifier.classify_high_precision("烦死了这破东西真难用").intent == "complaint"
+    for delegated in ("今天好累心情不好", "终于搞定了太好了", "帮我订个闹钟", "突然好想你"):
+        assert classifier.classify_high_precision(delegated) is None
+
+
 def test_labels_stay_inside_vocabulary(classifier: RuleClassifier) -> None:
     """词表对齐硬约束:分类器输出必须落在 models 词表内。"""
     samples = [

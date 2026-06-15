@@ -1,0 +1,35 @@
+{
+  "manifest_version": 1,
+  "created_utc": "2026-06-15T02:20:00Z",
+  "probe": {
+    "model_type": "bge-small-zh + logistic-regression head (numpy inference)",
+    "encoder": "BAAI/bge-small-zh-v1.5",
+    "labels": [
+      "affection",
+      "complaint",
+      "error",
+      "greeting",
+      "none",
+      "positive",
+      "request",
+      "support"
+    ],
+    "threshold": 0.7,
+    "none_label": "none",
+    "cv_macro_f1": 0.6082
+  },
+  "artifacts": {
+    "probe_head.npz": {
+      "sha256": "cec3d4b5c15723a74defac5714219814842a35f8a8662556e70bf70e2d89b6b3",
+      "bytes": 17460
+    },
+    "probe_head_meta.json": {
+      "sha256": "ad05d3bd835243965957c5db859b5794be81a0165704b3d1553671dc6b29b24b",
+      "bytes": 534
+    }
+  },
+  "git": {
+    "commit": "72948f608771bd0d3905aae5ade7d028c740dea5",
+    "branch": "feat/backchannel-model-classifier"
+  }
+}
