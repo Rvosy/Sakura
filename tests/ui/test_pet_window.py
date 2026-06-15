@@ -198,7 +198,7 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
 
     host.show_runtime_log()
 
-    assert events == ["theme", "show", "raise", "activate"]
+    assert events == ["theme", "refresh:True", "show", "raise", "activate"]
     assert host.runtime_log_window.kwargs["parent"] is host
     assert host._any_dialog_open() is False
 
