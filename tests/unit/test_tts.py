@@ -80,6 +80,8 @@ from app.voice.tts import (
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
     _format_gpt_sovits_http_error,
+    _is_soft_synth_failure,
+    _is_voiceable_text,
     _load_tone_references,
     _local_tts_subprocess_env,
     _read_local_tts_output,
@@ -133,6 +135,32 @@ def test_tts_yue_mixed_english_uses_auto_yue() -> None:
     text = "Steam 打开咗。"
 
     assert _resolve_request_text_lang(text, "all_yue") == "auto_yue"
+
+
+def test_voiceable_text_accepts_jp_cn_en_digits() -> None:
+    assert _is_voiceable_text("こんにちは")
+    assert _is_voiceable_text("你好")
+    assert _is_voiceable_text("Hello")
+    assert _is_voiceable_text("123")
+    assert _is_voiceable_text("（笑）")  # 含汉字
+
+
+def test_voiceable_text_rejects_punctuation_and_symbols() -> None:
+    # 纯标点/emoji/符号/空白归一化后音素为空，会触发服务端 [Errno 22]
+    assert not _is_voiceable_text("！？…、。")
+    assert not _is_voiceable_text("🎉🥳✨")
+    assert not _is_voiceable_text("♪♪♪")
+    assert not _is_voiceable_text("   ")
+
+
+def test_soft_synth_failure_only_for_tts_failed_400() -> None:
+    body = '{"message":"tts failed","Exception":"[Errno 22] Invalid argument"}'
+    assert _is_soft_synth_failure(400, body)
+    # charmap 编码错误是运行时配置问题，需保留提示
+    assert not _is_soft_synth_failure(400, "'charmap' codec can't encode character")
+    # 其他 400 与非 400 不按单段静默降级
+    assert not _is_soft_synth_failure(400, '{"detail":"bad param"}')
+    assert not _is_soft_synth_failure(500, '{"message":"tts failed"}')
 
 
 def test_tone_references_load_four_part_rows_only() -> None:
