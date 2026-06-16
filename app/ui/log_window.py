@@ -233,6 +233,7 @@ class RuntimeLogWindow(QDialog):
         self._lists_by_scope: dict[str, QListWidget] = {}
         self._last_selected_list: QListWidget | None = None
         self._item_delegate = RuntimeLogItemDelegate(self)
+        self._bulk_refreshing = False
 
         self.setWindowTitle("运行日志")
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -299,7 +300,7 @@ class RuntimeLogWindow(QDialog):
         self._poll_timer.timeout.connect(self.refresh)
 
         self.set_theme_settings(self.theme_settings)
-        self.refresh(reset=True)
+        self._refresh_summary()
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
@@ -318,20 +319,32 @@ class RuntimeLogWindow(QDialog):
             log_list.viewport().update()
 
     def refresh(self, *, reset: bool = False) -> None:
+        bulk_lists = list(self._lists_by_scope.values()) if reset else []
+        for log_list in bulk_lists:
+            log_list.setUpdatesEnabled(False)
+        self._bulk_refreshing = bool(bulk_lists)
         if reset:
             self._last_record_id = 0
             for log_list in self._lists_by_scope.values():
                 log_list.clear()
 
-        records = self.log_buffer.snapshot(after_id=self._last_record_id)
-        if not records:
-            self._refresh_summary()
-            return
+        try:
+            records = self.log_buffer.snapshot(after_id=self._last_record_id)
+            if not records:
+                self._refresh_summary()
+                return
 
-        for record in records:
-            self._append_record(record)
-            self._last_record_id = max(self._last_record_id, record.record_id)
-        self._refresh_summary()
+            for record in records:
+                self._append_record(record)
+                self._last_record_id = max(self._last_record_id, record.record_id)
+            self._refresh_summary()
+        finally:
+            self._bulk_refreshing = False
+            for log_list in bulk_lists:
+                log_list.setUpdatesEnabled(True)
+            if bulk_lists and self.auto_scroll_check.isChecked():
+                for log_list in bulk_lists:
+                    log_list.scrollToBottom()
 
     def _build_log_page(self, scope: str, _title: str) -> tuple[QListWidget, QFrame]:
         page = QFrame(self)
@@ -369,7 +382,7 @@ class RuntimeLogWindow(QDialog):
             and last_item.data(_MERGE_KEY_ROLE) == record.merge_key
         ):
             self._apply_record_to_item(last_item, record)
-            if self.auto_scroll_check.isChecked():
+            if not self._bulk_refreshing and self.auto_scroll_check.isChecked():
                 log_list.scrollToBottom()
             return
 
@@ -389,14 +402,14 @@ class RuntimeLogWindow(QDialog):
             last_item.setText(_segments_text(segments))
             last_item.setToolTip(_repeat_tooltip_text(base_tooltip, repeat_count))
             last_item.setData(_COPY_TEXT_ROLE, _repeat_copy_text(base_copy_text, repeat_count))
-            if self.auto_scroll_check.isChecked():
+            if not self._bulk_refreshing and self.auto_scroll_check.isChecked():
                 log_list.scrollToBottom()
             return
 
         item = QListWidgetItem()
         self._apply_record_to_item(item, record)
         log_list.addItem(item)
-        if self.auto_scroll_check.isChecked():
+        if not self._bulk_refreshing and self.auto_scroll_check.isChecked():
             log_list.scrollToBottom()
 
     def _apply_record_to_item(self, item: QListWidgetItem, record: GuiLogRecord) -> None:

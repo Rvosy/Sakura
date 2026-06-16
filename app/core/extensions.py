@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from app.agent.tool_registry import Tool, ToolRegistry
+from app.agent.tools import Tool, ToolRegistry
 from app.voice.tts import TTSProvider
 
 

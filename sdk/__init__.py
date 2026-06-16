@@ -1,7 +1,7 @@
-"""Sakura 插件公开 SDK。
+"""Sakura 旧插件 SDK 兼容入口。
 
-注意：sdk/tool_registry.py 的全局变量设计已废弃。
-新插件请使用 PluginCapabilityRegistry 直接注册贡献。
+新插件建议直接使用 ``app.plugins``。本包保留给已发布的旧 SDK 插件，
+避免覆盖升级后因 ``sdk.*`` 导入缺失而加载失败。
 """
 
 from sdk.plugin import PluginBase

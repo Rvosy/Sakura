@@ -54,7 +54,9 @@ def test_chat_worker_forwards_progress_signal() -> None:
     from app.core.chat_worker import ChatWorker
 
     class Runtime:
-        def handle_user_message(self, _messages, progress_callback=None):  # type: ignore[no-untyped-def]
+        def handle_user_message(self, _messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
             if progress_callback is not None:
                 progress_callback(
                     AgentProgress(
@@ -115,7 +117,9 @@ def test_chat_worker_records_visual_observation_before_reply() -> None:
     class Runtime:
         api_client = Client()
 
-        def handle_user_message(self, _messages, progress_callback=None):  # type: ignore[no-untyped-def]
+        def handle_user_message(self, _messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
             return AgentResult(
                 reply=parse_chat_reply(
                     '{"segments":[{"ja":"覚えたよ。","zh":"我记下来了。","tone":"中性"}]}'
@@ -173,7 +177,9 @@ def test_event_worker_forwards_progress_signal() -> None:
     from app.core.chat_worker import EventWorker
 
     class Runtime:
-        def handle_event(self, _event, progress_callback=None):  # type: ignore[no-untyped-def]
+        def handle_event(self, _event, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
             if progress_callback is not None:
                 progress_callback(
                     AgentProgress(
@@ -200,3 +206,44 @@ def test_event_worker_forwards_progress_signal() -> None:
 
     assert progress_replies == ["我确认一下。"]
     assert finished_replies == ["没问题。"]
+
+
+def test_chat_worker_cancel_suppresses_result_and_error() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    QApplication = qtwidgets.QApplication
+
+    from app.agent import AgentResult
+    from app.llm.chat_reply import parse_chat_reply
+    from app.core.chat_worker import ChatWorker
+
+    class Runtime:
+        def handle_user_message(self, _messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
+            return AgentResult(
+                reply=parse_chat_reply(
+                    '{"segments":[{"ja":"遅い返事。","zh":"迟到回复。","tone":"中性"}]}'
+                )
+            )
+
+    app = QApplication.instance() or QApplication([])
+    worker = ChatWorker(Runtime(), [{"role": "user", "content": "取消"}])  # type: ignore[arg-type]
+    finished = []
+    failed = []
+    cancelled = []
+    worker.finished.connect(lambda result: finished.append(result.reply.translation))
+    worker.failed.connect(lambda message: failed.append(message))
+    worker.cancelled.connect(lambda: cancelled.append(True))
+
+    worker.cancel()
+    worker.run()
+    app.processEvents()
+
+    assert finished == []
+    assert failed == []
+    assert cancelled == [True]

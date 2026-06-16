@@ -17,6 +17,7 @@ from app.config.character_loader import (
     character_theme_from_mapping,
     character_theme_to_mapping,
 )
+from app.storage.atomic import rename_with_retry, replace_with_retry
 
 
 ARCHIVE_FORMAT = "sakura.character.archive"
@@ -99,7 +100,8 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
 
                 moved = False
                 try:
-                    staging_dir.rename(target_dir)
+                    # 刚解压完的目录在 Windows 上可能被杀毒/索引器瞬时锁定，带重试改名
+                    rename_with_retry(staging_dir, target_dir)
                     moved = True
                     profile = CharacterRegistry(base_dir).get(target_id)
                 except Exception:
@@ -169,7 +171,7 @@ def import_character_voice_archive(
                 _validate_voice_referenced_files(staging_package_dir, normalized_voice)
 
                 if target_voice_dir.exists():
-                    target_voice_dir.rename(backup_voice_dir)
+                    rename_with_retry(target_voice_dir, backup_voice_dir)
                 moved = False
                 try:
                     shutil.copytree(staging_package_dir / "voice", target_voice_dir)
@@ -180,7 +182,7 @@ def import_character_voice_archive(
                     if moved and target_voice_dir.exists():
                         shutil.rmtree(target_voice_dir, ignore_errors=True)
                     if backup_voice_dir.exists():
-                        backup_voice_dir.rename(target_voice_dir)
+                        rename_with_retry(backup_voice_dir, target_voice_dir)
                     manifest_path.write_text(original_manifest, encoding="utf-8")
                     raise
                 else:
@@ -292,7 +294,7 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
                 ARCHIVE_MANIFEST,
                 json.dumps(archive_manifest, ensure_ascii=False, indent=2),
             )
-        temp_output.replace(destination)
+        replace_with_retry(temp_output, destination)
     finally:
         temp_output.unlink(missing_ok=True)
 
@@ -361,7 +363,7 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
                 ARCHIVE_MANIFEST,
                 json.dumps(archive_manifest, ensure_ascii=False, indent=2),
             )
-        temp_output.replace(destination)
+        replace_with_retry(temp_output, destination)
     finally:
         temp_output.unlink(missing_ok=True)
 

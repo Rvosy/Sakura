@@ -111,7 +111,7 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         captured.update(payload)
         return {"choices": [{"message": {"content": "OK"}}]}
 
@@ -140,7 +140,7 @@ def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypa
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         calls.append(dict(payload))
         if "temperature" in payload:
             raise ApiRequestError("Unsupported value: temperature only supports the default value")
@@ -168,7 +168,7 @@ def test_complete_raw_remembers_temperature_unsupported(monkeypatch) -> None:  #
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         calls.append(dict(payload))
         if "temperature" in payload:
             raise ApiRequestError("temperature does not support non-default values")
@@ -194,7 +194,7 @@ def test_update_settings_clears_cached_unsupported_params(monkeypatch) -> None: 
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         calls.append(dict(payload))
         if len(calls) == 1:
             raise ApiRequestError("temperature only supports the default value")
@@ -227,7 +227,7 @@ def test_complete_raw_requests_structured_json_by_default_for_chat(monkeypatch) 
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         captured.update(payload)
         return {"choices": [{"message": {"content": '{"segments":[{"ja":"うん。","zh":"嗯。"}]}'}}]}
 
@@ -248,7 +248,7 @@ def test_response_format_falls_back_when_provider_rejects(monkeypatch) -> None: 
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         calls.append(dict(payload))
         if "response_format" in payload:
             raise ApiRequestError("unsupported response_format json_object")
@@ -276,7 +276,7 @@ def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> N
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         captured.update(payload)
         return {
             "choices": [
@@ -334,7 +334,7 @@ def test_complete_with_tools_can_request_structured_json(monkeypatch) -> None:  
         )
     )
 
-    def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         captured.update(payload)
         return {"choices": [{"message": {"role": "assistant", "content": '{"segments":[]}'}}]}
 
@@ -358,7 +358,7 @@ def test_complete_with_tools_parses_pseudo_tool_call_json_content(monkeypatch) -
         )
     )
 
-    def fake_post(_payload: dict[str, Any]) -> dict[str, Any]:
+    def fake_post(_payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         return {
             "choices": [
                 {
@@ -408,7 +408,7 @@ def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypa
     monkeypatch.setattr(
         client,
         "_post_chat_completions",
-        lambda _payload: {
+        lambda _payload, **_kwargs: {
             "choices": [{"message": {"role": "assistant", "content": '{"segments":[]}'}}]
         },
     )
@@ -435,7 +435,7 @@ def test_complete_with_tools_parses_nested_pseudo_tool_call(monkeypatch) -> None
     monkeypatch.setattr(
         client,
         "_post_chat_completions",
-        lambda _payload: {
+        lambda _payload, **_kwargs: {
             "choices": [
                 {
                     "message": {
@@ -736,3 +736,11 @@ def test_parse_chat_reply_replaces_chinese_ja_with_safe_japanese() -> None:
 
     assert "原因是" not in reply.segments[0].text
     assert reply.segments[0].translation == "原因是 Mermaid 语法。"
+    assert reply.segments[0].suppress_tts is True
+
+
+def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:
+    reply = parse_chat_reply('{"segments":')
+
+    assert reply.segments[0].text
+    assert reply.segments[0].suppress_tts is True

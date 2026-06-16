@@ -33,6 +33,7 @@ _HISTORY_MARKER_DISPLAY_TEXT = {
     SCREEN_OBSERVATION_HISTORY_MARKER: "（已看过当前屏幕）",
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER: "刚才留意了一下屏幕状态。",
 }
+_RENDER_BATCH_SIZE = 40
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,11 @@ class HistoryWindow(QDialog):
         self.on_save_and_clear = on_save_and_clear
         self.theme_settings = (theme_settings or DEFAULT_THEME_SETTINGS).normalized()
         self._bubble_frames: list[QFrame] = []
+        self._pending_entries: list[ChatHistoryEntry] = []
+        self._render_index = 0
+        self._render_generation = 0
+        self._refresh_scheduled = False
+        self._staged_history_content: QWidget | None = None
 
         self.setWindowTitle("历史记录")
         self.resize(620, 680)
@@ -74,11 +80,7 @@ class HistoryWindow(QDialog):
         self.history_view.setWidgetResizable(True)
         self.history_view.setFrameShape(QFrame.Shape.NoFrame)
 
-        self.history_content = QWidget(self.history_view)
-        self.history_content.setObjectName("historyContent")
-        self.history_layout = QVBoxLayout(self.history_content)
-        self.history_layout.setContentsMargins(20, 14, 20, 14)
-        self.history_layout.setSpacing(12)
+        self.history_content, self.history_layout = self._create_history_content()
         self.history_view.setWidget(self.history_content)
 
         self.refresh_button = QPushButton("刷新", self)
@@ -118,7 +120,8 @@ class HistoryWindow(QDialog):
         self.setLayout(layout)
 
         self.set_theme_settings(self.theme_settings)
-        self.refresh()
+        self._show_loading_state()
+        self.request_refresh()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -128,38 +131,52 @@ class HistoryWindow(QDialog):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
+        self._show_loading_state()
+        self.request_refresh()
         self._schedule_layout_update()
 
     def set_subtitle_language(self, subtitle_language: str) -> None:
         if subtitle_language == self.subtitle_language:
             return
         self.subtitle_language = subtitle_language
-        self.refresh()
+        self.request_refresh()
 
     def set_history_store(self, history_store: ChatHistoryStore, assistant_name: str) -> None:
         self.history_store = history_store
         self.history_store.assistant_name = assistant_name
-        self.refresh()
+        self.request_refresh()
 
     def set_theme_settings(self, settings: ThemeSettings) -> None:
         self.theme_settings = settings.normalized()
         self.setStyleSheet(build_history_window_stylesheet(self.theme_settings))
 
+    def request_refresh(self) -> None:
+        """把历史刷新推迟到事件循环，避免打开窗口前同步渲染全部消息。"""
+        if self._refresh_scheduled:
+            return
+        self._refresh_scheduled = True
+        QTimer.singleShot(0, self._run_scheduled_refresh)
+
+    def _run_scheduled_refresh(self) -> None:
+        self._refresh_scheduled = False
+        self.refresh()
+
     def refresh(self) -> None:
+        self._refresh_scheduled = False
         entries = self.history_store.load()
         self.count_label.setText(f"{len(entries)} 条记录")
-        self._clear_entries()
 
         if not entries:
+            self._clear_entries()
+            content, layout = self._create_history_content()
+            self._install_history_content(content, layout)
             self._add_empty_state()
             return
 
-        previous_role: str | None = None
-        for entry in entries:
-            self._add_entry(entry, show_meta=entry.role != previous_role)
-            previous_role = entry.role
-        self.history_layout.addStretch(1)
-        self._schedule_layout_update()
+        self._stage_entries_for_render()
+        self._pending_entries = entries
+        self._render_index = 0
+        self._render_next_batch(self._render_generation)
 
     def clear_history(self) -> None:
         result = QMessageBox.question(
@@ -203,7 +220,13 @@ class HistoryWindow(QDialog):
         self.save_and_clear_button.setText("整理中..." if busy else "清除并保存至记忆")
 
     def _clear_entries(self) -> None:
+        self._render_generation += 1
+        self._pending_entries = []
+        self._render_index = 0
         self._bubble_frames.clear()
+        if self._staged_history_content is not None:
+            self._staged_history_content.deleteLater()
+            self._staged_history_content = None
         while self.history_layout.count():
             item = self.history_layout.takeAt(0)
             widget = item.widget()
@@ -214,6 +237,52 @@ class HistoryWindow(QDialog):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _create_history_content(self) -> tuple[QWidget, QVBoxLayout]:
+        content = QWidget()
+        content.setObjectName("historyContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(12)
+        return content, layout
+
+    def _install_history_content(
+        self,
+        content: QWidget,
+        layout: QVBoxLayout,
+        bubble_frames: list[QFrame] | None = None,
+    ) -> None:
+        previous = self.history_view.takeWidget()
+        if previous is not None and previous is not content:
+            previous.deleteLater()
+        self.history_content = content
+        self.history_layout = layout
+        self._bubble_frames = bubble_frames or []
+        self.history_view.setWidget(content)
+
+    def _stage_entries_for_render(self) -> None:
+        self._render_generation += 1
+        self._pending_entries = []
+        self._render_index = 0
+        if self._staged_history_content is not None:
+            self._staged_history_content.deleteLater()
+        content, layout = self._create_history_content()
+        self._staged_history_content = content
+        self.history_content = content
+        self.history_layout = layout
+        self._bubble_frames = []
+
+    def _show_loading_state(self) -> None:
+        self.count_label.setText("读取中...")
+        self._clear_entries()
+        content, layout = self._create_history_content()
+        self._install_history_content(content, layout)
+        loading_label = QLabel("正在读取历史记录...", self.history_content)
+        loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_label.setObjectName("systemText")
+        self.history_layout.addStretch(1)
+        self.history_layout.addWidget(loading_label)
+        self.history_layout.addStretch(1)
+
     def _add_empty_state(self) -> None:
         empty_label = QLabel("还没有历史记录\n等和桜聊过之后，这里会安静地收好对话。", self.history_content)
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -222,6 +291,40 @@ class HistoryWindow(QDialog):
         self.history_layout.addStretch(1)
         self.history_layout.addWidget(empty_label)
         self.history_layout.addStretch(1)
+
+    def _render_next_batch(self, generation: int) -> None:
+        if generation != self._render_generation:
+            return
+        if self._staged_history_content is None:
+            return
+        start = self._render_index
+        if start >= len(self._pending_entries):
+            return
+
+        end = min(start + _RENDER_BATCH_SIZE, len(self._pending_entries))
+        previous_role = self._pending_entries[start - 1].role if start > 0 else None
+        self.history_content.setUpdatesEnabled(False)
+        try:
+            for entry in self._pending_entries[start:end]:
+                self._add_entry(entry, show_meta=entry.role != previous_role)
+                previous_role = entry.role
+            self._update_bubble_widths()
+        finally:
+            self.history_content.setUpdatesEnabled(True)
+        self._render_index = end
+
+        if self._render_index >= len(self._pending_entries):
+            self.history_layout.addStretch(1)
+            self.history_layout.activate()
+            self._install_history_content(
+                self._staged_history_content,
+                self.history_layout,
+                list(self._bubble_frames),
+            )
+            self._staged_history_content = None
+            self._schedule_layout_update()
+            return
+        QTimer.singleShot(0, lambda generation=generation: self._render_next_batch(generation))
 
     def _add_entry(self, entry: ChatHistoryEntry, *, show_meta: bool = True) -> None:
         view = _entry_view_model(entry, self.subtitle_language, self.history_store.assistant_name)
@@ -290,11 +393,13 @@ class HistoryWindow(QDialog):
             bubble.updateGeometry()
 
     def _schedule_layout_update(self) -> None:
-        QTimer.singleShot(0, self._sync_history_layout)
-        QTimer.singleShot(80, self._sync_history_layout)
+        for delay_ms in (0, 60, 160, 320):
+            QTimer.singleShot(delay_ms, self._sync_history_layout)
 
     def _sync_history_layout(self) -> None:
         self._update_bubble_widths()
+        self.history_layout.activate()
+        self.history_content.adjustSize()
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self) -> None:

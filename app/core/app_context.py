@@ -12,10 +12,10 @@ from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.extensions import ExtensionRegistry
-from app.agent.proactive_care import ProactiveCareSettings
+from app.agent.screen_awareness import ScreenAwarenessSettings
 from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
-from app.core.plugin_manager import SakuraPluginManager
+from app.plugins.manager import PluginManager
 
 
 @dataclass(frozen=True)
@@ -45,14 +45,14 @@ class FeatureServices:
     settings_service: AppSettingsService
     extension_registry: ExtensionRegistry
     mcp_tool_provider: MCPToolProvider | None
-    plugin_manager: SakuraPluginManager
+    plugin_manager: PluginManager
     mcp_settings: MCPRuntimeSettings
     debug_log_settings: DebugLogSettings
     startup_settings: StartupSettings
     memory_curation_settings: MemoryCurationSettings
     memory_curation_state: MemoryCurationState
     memory_curator: MemoryCurator
-    proactive_care_settings: ProactiveCareSettings
+    screen_awareness_settings: ScreenAwarenessSettings
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class AppContext:
         return self.features.mcp_tool_provider
 
     @property
-    def plugin_manager(self) -> SakuraPluginManager:
+    def plugin_manager(self) -> PluginManager:
         return self.features.plugin_manager
 
     @property
@@ -140,5 +140,10 @@ class AppContext:
         return self.features.memory_curator
 
     @property
-    def proactive_care_settings(self) -> ProactiveCareSettings:
-        return self.features.proactive_care_settings
+    def screen_awareness_settings(self) -> ScreenAwarenessSettings:
+        return self.features.screen_awareness_settings
+
+    @property
+    def proactive_care_settings(self) -> ScreenAwarenessSettings:
+        """兼容旧调用点；新代码请使用 screen_awareness_settings。"""
+        return self.features.screen_awareness_settings

@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.storage.atomic import atomic_write_text
+
 
 @dataclass(frozen=True)
 class ScheduledReminder:
@@ -110,8 +112,8 @@ class ReminderStore:
 
     def _save(self, data: dict[str, list[dict[str, Any]]]) -> None:
         normalized = _normalize_data(data)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 import uuid
 
+import pytest
+
 from app.agent.memory import MemoryStore
 from app.agent.memory_curator import (
     DEFAULT_AUTO_MEMORY_TRIGGER_TURNS,
@@ -12,6 +14,7 @@ from app.agent.memory_curator import (
     MemoryCurator,
     _entries_for_model,
 )
+from app.core.cancellation import CancellationToken, OperationCancelled
 from app.storage.chat_history import ChatHistoryEntry
 
 
@@ -69,6 +72,25 @@ def test_memory_curator_chunks_large_history_before_mem0() -> None:
     assert result.returned == 2
     assert result.processed_entries == 35
     assert [len(call["messages"]) for call in fake.calls] == [32, 3]
+
+
+def test_memory_curator_cancel_stops_after_current_chunk() -> None:
+    token = CancellationToken()
+    fake = CancellingMem0(token)
+    store = MemoryStore(
+        base_dir=_runtime_root("memory_curator_cancel"),
+        scope_id="sakura",
+        memory_client=fake,
+    )
+    curator = MemoryCurator(store)
+
+    with pytest.raises(OperationCancelled):
+        curator.curate_entries(
+            [_entry("user", f"偏好 {index}") for index in range(35)],
+            cancel_checker=token.throw_if_cancelled,
+        )
+
+    assert [len(call["messages"]) for call in fake.calls] == [32]
 
 
 def test_memory_delete_resets_mem0_curation_cache_for_current_scope() -> None:
@@ -219,6 +241,17 @@ class FakeMem0:
                 }
             ]
         }
+
+
+class CancellingMem0(FakeMem0):
+    def __init__(self, token: CancellationToken) -> None:
+        super().__init__()
+        self.token = token
+
+    def add(self, messages, *, user_id=None, infer=True, metadata=None):  # type: ignore[no-untyped-def]
+        result = super().add(messages, user_id=user_id, infer=infer, metadata=metadata)
+        self.token.cancel()
+        return result
 
 
 class EmptyMem0:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent.tool_registry import ToolExecutionResult, ToolRegistry
+from app.agent.tools import ToolExecutionResult, ToolRegistry
 
 
 WINDOWS_CLICK_TOOL_NAME = "windows__Click"

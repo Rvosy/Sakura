@@ -1,12 +1,10 @@
-"""app/plugins/capabilities.py — 插件能力收集注册表。
-
-分离 PluginCapabilityRegistry 与 PluginDiscovery，让插件贡献收集集中管理。
-"""
+"""app/plugins/capabilities.py — Sakura 插件能力收集注册表。"""
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, get_args, get_origin
 
 from app.plugins.models import (
     ChatUIWidgetContribution,
@@ -15,7 +13,6 @@ from app.plugins.models import (
     ToolContribution,
     ToolsTabContribution,
 )
-from sdk.register import PluginCapabilityRegistry as SDKPluginCapabilityRegistry
 
 
 @dataclass
@@ -32,11 +29,7 @@ class PluginCapabilities:
 
 @dataclass
 class PluginCapabilityRegistry:
-    """收集所有插件的贡献，供 host 统一应用。
-
-    由插件在 initialize() 中调用注册方法填充。
-    最终由 PluginManager 收集所有注册项并返回。
-    """
+    """插件初始化时使用的能力注册表。"""
 
     tools: list[ToolContribution] = field(default_factory=list)
     settings_panels: list[SettingsPanelContribution] = field(default_factory=list)
@@ -70,17 +63,98 @@ class PluginCapabilityRegistry:
         requires_confirmation: bool = False,
         capability: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """公开 SDK 的无全局状态工具装饰器兼容入口。"""
-        return SDKPluginCapabilityRegistry.tool(
-            self,
-            name=name,
-            description=description,
-            parameters=parameters,
-            group=group,
-            risk=risk,
-            requires_confirmation=requires_confirmation,
-            capability=capability,
-        )
+        """把普通函数注册为 Sakura 工具，运行时统一接收 dict 参数。"""
 
-    # 向后兼容: 保持与旧 SDK register_tools_tab 的兼容
-    # 旧的 PluginCapabilityRegistry (sdk/register.py) 通过此方法兼容
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            self.register_tool(
+                ToolContribution(
+                    name=name,
+                    description=description,
+                    parameters=parameters or _schema_from_signature(func),
+                    handler=_handler_from_callable(func),
+                    group=group,
+                    risk=risk,
+                    requires_confirmation=requires_confirmation,
+                    capability=capability,
+                )
+            )
+            return func
+
+        return decorator
+
+
+def _handler_from_callable(func: Callable[..., Any]) -> Callable[[dict[str, Any]], Any]:
+    signature = inspect.signature(func)
+    parameters = list(signature.parameters.values())
+    if len(parameters) == 1:
+        parameter = parameters[0]
+        annotation = parameter.annotation
+        if (
+            parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+            and (
+                parameter.name in {"args", "arguments"}
+                or annotation in {dict, dict[str, Any]}
+            )
+        ):
+            return lambda arguments: func(arguments)
+
+    def handler(arguments: dict[str, Any]) -> Any:
+        kwargs = {
+            parameter.name: arguments[parameter.name]
+            for parameter in parameters
+            if parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+            and parameter.name in arguments
+        }
+        return func(**kwargs)
+
+    return handler
+
+
+def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
+    signature = inspect.signature(func)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for parameter in signature.parameters.values():
+        if parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
+            continue
+        if parameter.name in {"self", "cls"}:
+            continue
+        properties[parameter.name] = _schema_for_annotation(parameter.annotation)
+        if parameter.default is inspect.Parameter.empty:
+            required.append(parameter.name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def _schema_for_annotation(annotation: Any) -> dict[str, Any]:
+    origin = get_origin(annotation)
+    if origin is not None:
+        args = get_args(annotation)
+        if type(None) in args:
+            non_null = [item for item in args if item is not type(None)]
+            if non_null:
+                schema = _schema_for_annotation(non_null[0])
+                schema["nullable"] = True
+                return schema
+        if origin in {list, tuple, set}:
+            item_schema = _schema_for_annotation(args[0]) if args else {}
+            return {"type": "array", "items": item_schema}
+        if origin is dict:
+            return {"type": "object"}
+    if annotation in {str, inspect.Parameter.empty}:
+        return {"type": "string"}
+    if annotation is bool:
+        return {"type": "boolean"}
+    if annotation is int:
+        return {"type": "integer"}
+    if annotation is float:
+        return {"type": "number"}
+    return {"type": "string"}

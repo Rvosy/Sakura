@@ -14,7 +14,7 @@ from app.config.settings_service import (
 )
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
-from app.agent.proactive_care import ProactiveCareSettings
+from app.agent.screen_awareness import ScreenAwarenessSettings
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
     DEFAULT_PET_WINDOW_STYLESHEET,
@@ -23,7 +23,7 @@ from app.ui.theme import (
     build_pet_window_stylesheet,
     parse_ai_theme_response,
 )
-from app.voice.tts import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
+from app.voice.tts_settings import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
 
 
 class CharacterRegistryStub:
@@ -89,8 +89,8 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     service.save_mcp_runtime_settings(MCPRuntimeSettings(windows_enabled=True))
     service.save_debug_log_settings(DebugLogSettings(enabled=True, body_enabled=True, file_enabled=True))
     service.save_startup_settings(StartupSettings(launch_at_login=True))
-    service.save_proactive_care_settings(
-        ProactiveCareSettings(
+    service.save_screen_awareness_settings(
+        ScreenAwarenessSettings(
             enabled=True,
             screen_context_enabled=True,
             check_interval_minutes=5,
@@ -113,7 +113,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True
     assert system["startup"]["launch_at_login"] is True
-    assert system["proactive_care"]["check_interval_minutes"] == 5
+    assert system["screen_awareness"]["check_interval_minutes"] == 5
 
 
 def test_settings_service_loads_and_saves_startup_settings() -> None:

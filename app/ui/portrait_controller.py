@@ -144,14 +144,18 @@ class PortraitController(QObject):
         scale = self.portrait_scale_percent / 100
         target_width = round(PORTRAIT_BASE_MAX_WIDTH * scale)
         target_height = round(PORTRAIT_BASE_MAX_HEIGHT * scale)
+        # HiDPI:按物理像素(逻辑尺寸 × dpr)缩放并标记 dpr,否则 retina 上立绘被拉伸成半分辨率(糊)。
+        # 逻辑尺寸(deviceIndependentSize)不变,故不影响舞台布局,只提升清晰度。
+        dpr = label.devicePixelRatioF() or 1.0
         scaled = pixmap.scaled(
-            target_width,
-            target_height,
+            round(target_width * dpr),
+            round(target_height * dpr),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        scaled.setDevicePixelRatio(dpr)
         label.setPixmap(scaled)
-        label.resize(scaled.size())
+        label.resize(scaled.deviceIndependentSize().toSize())
 
     def _crossfade(self, next_pixmap: QPixmap) -> None:
         self._stop_transition(finish_current=True)

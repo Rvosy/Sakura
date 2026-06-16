@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd6e6"/>
+      <stop offset="1" stop-color="#d81b60"/>
+    </linearGradient>
+    <radialGradient id="petal" cx="0.5" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffe3ef"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 圆角方形底，粉色系渐变 -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+
+  <!-- 五瓣樱花：单瓣绕中心 (128,128) 旋转 72° 复制，瓣尖带樱花特有的凹口 -->
+  <g fill="url(#petal)" stroke="#ec7fa9" stroke-width="3" stroke-linejoin="round">
+    <g>
+      <path d="M128,132 C104,120 92,90 100,62 C104,50 116,48 128,64 C140,48 152,50 156,62 C164,90 152,120 128,132 Z"/>
+    </g>
+    <g transform="rotate(72 128 128)">
+      <path d="M128,132 C104,120 92,90 100,62 C104,50 116,48 128,64 C140,48 152,50 156,62 C164,90 152,120 128,132 Z"/>
+    </g>
+    <g transform="rotate(144 128 128)">
+      <path d="M128,132 C104,120 92,90 100,62 C104,50 116,48 128,64 C140,48 152,50 156,62 C164,90 152,120 128,132 Z"/>
+    </g>
+    <g transform="rotate(216 128 128)">
+      <path d="M128,132 C104,120 92,90 100,62 C104,50 116,48 128,64 C140,48 152,50 156,62 C164,90 152,120 128,132 Z"/>
+    </g>
+    <g transform="rotate(288 128 128)">
+      <path d="M128,132 C104,120 92,90 100,62 C104,50 116,48 128,64 C140,48 152,50 156,62 C164,90 152,120 128,132 Z"/>
+    </g>
+  </g>
+
+  <!-- 花蕊：金色短线 + 花心 -->
+  <g stroke="#f2b705" stroke-width="4" stroke-linecap="round">
+    <line x1="128" y1="128" x2="128" y2="104"/>
+    <line x1="128" y1="128" x2="151" y2="121"/>
+    <line x1="128" y1="128" x2="142" y2="147"/>
+    <line x1="128" y1="128" x2="114" y2="147"/>
+    <line x1="128" y1="128" x2="105" y2="121"/>
+  </g>
+  <g fill="#f59e0b">
+    <circle cx="128" cy="102" r="4.5"/>
+    <circle cx="153" cy="120" r="4.5"/>
+    <circle cx="143" cy="149" r="4.5"/>
+    <circle cx="113" cy="149" r="4.5"/>
+    <circle cx="103" cy="120" r="4.5"/>
+  </g>
+  <circle cx="128" cy="128" r="7" fill="#e08a1e"/>
+</svg>

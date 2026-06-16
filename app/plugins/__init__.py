@@ -1,25 +1,25 @@
-"""app/plugins/ — Sakura 原生插件系统。
+"""app/plugins/ — Sakura 原生插件系统。"""
 
-本包提供完整的插件生命周期管理：
-
-- models.py: 数据模型 (PluginManifest / PluginSpec / Contribution)
-- discovery.py: 插件发现 (PluginDiscovery)
-- capabilities.py: 能力收集注册表 (PluginCapabilityRegistry)
-- manager.py: 插件管理器 (PluginManager)
-- adapters.py: SDK 兼容适配层
-
-与旧 SDK (sdk/) 的关系：
-- sdk/ 保留作为 Shinsekai 兼容层
-- app/plugins/ 是 Sakura 原生接口
-- PluginManager 同时支持 SDK PluginBase 和新接口
-"""
-
+from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
-from app.plugins.discovery import PluginDiscovery, load_plugin_specs
+from app.plugins.discovery import PluginDiscovery
 from app.plugins.manager import PluginLoadResult, PluginManager
 from app.plugins.models import (
+    KNOWN_PLUGIN_PERMISSIONS,
+    PERMISSION_CHAT_UI,
+    PERMISSION_EVENT_APP,
+    PERMISSION_EVENT_CHARACTER,
+    PERMISSION_EVENT_MESSAGE,
+    PERMISSION_EVENT_TTS,
+    PERMISSION_PROMPT_PATCH,
+    PERMISSION_SETTINGS_PANEL,
+    PERMISSION_TOOL,
+    PERMISSION_TOOLS_TAB,
+    PLUGIN_API_VERSION,
     ChatUIWidgetContribution,
+    PluginEvent,
     PluginManifest,
+    PluginManifestView,
     PluginSpec,
     PromptPatchContribution,
     SettingsPanelContribution,
@@ -29,16 +29,30 @@ from app.plugins.models import (
 
 __all__ = [
     "ChatUIWidgetContribution",
+    "KNOWN_PLUGIN_PERMISSIONS",
+    "PERMISSION_CHAT_UI",
+    "PERMISSION_EVENT_APP",
+    "PERMISSION_EVENT_CHARACTER",
+    "PERMISSION_EVENT_MESSAGE",
+    "PERMISSION_EVENT_TTS",
+    "PERMISSION_PROMPT_PATCH",
+    "PERMISSION_SETTINGS_PANEL",
+    "PERMISSION_TOOL",
+    "PERMISSION_TOOLS_TAB",
+    "PLUGIN_API_VERSION",
+    "PluginBase",
     "PluginCapabilities",
     "PluginCapabilityRegistry",
+    "PluginContext",
     "PluginDiscovery",
+    "PluginEvent",
     "PluginLoadResult",
     "PluginManager",
     "PluginManifest",
+    "PluginManifestView",
     "PluginSpec",
     "PromptPatchContribution",
     "SettingsPanelContribution",
     "ToolContribution",
     "ToolsTabContribution",
-    "load_plugin_specs",
 ]

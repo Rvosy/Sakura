@@ -1,86 +1,56 @@
 from __future__ import annotations
 
-import base64
-import mimetypes
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QStringListModel, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QColor
+from PySide6.QtCore import Qt, QThread, QTimer, Slot
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
-    QComboBox,
-    QCompleter,
     QDialog,
     QDialogButtonBox,
     QColorDialog,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGroupBox,
-    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QMenu,
     QPushButton,
     QScrollArea,
-    QSlider,
-    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from app.agent.memory import EmbeddingModelImportResult, MemoryStore
-from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
+from app.agent.mcp import MCPRuntimeSettings
 from app.backchannel.model_cache import (
-    BACKCHANNEL_MODEL_CACHE_NAME,
     DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
     BackchannelModelImportResult,
-    backchannel_model_endpoint,
     backchannel_model_cached,
-    download_backchannel_model,
-    import_backchannel_model_archive,
 )
 from app.core.debug_log import debug_log
+from app.storage.paths import StoragePaths
 from app.config.character_archive import (
     CharacterArchiveError,
-    export_character_archive,
-    export_character_voice_archive,
     import_character_archive,
     import_character_voice_archive,
 )
 from app.config.settings_service import (
-    BACKCHANNEL_MAX_DELAY_MS,
-    BACKCHANNEL_MIN_DELAY_MS,
     BackchannelSettings,
-    BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
-    BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BubbleSettings,
     DebugLogSettings,
     StartupSettings,
 )
-from app.platforms.launch_at_login import (
-    is_launch_at_login_supported,
-    launch_at_login_platform_text,
-)
-from app.llm.api_client import (
-    ApiSettings,
-    OpenAICompatibleClient,
-    STRUCTURED_JSON_RESPONSE_FORMAT,
-)
-from app.llm.prompts.recipes import build_theme_color_system_prompt
+from app.platforms.launch_at_login import is_launch_at_login_supported
+from app.llm.api_client import ApiSettings
 from app.plugins.discovery import PluginDiscovery, save_plugin_enabled_overrides
 from app.plugins.models import PluginSpec
 from app.config.character_loader import (
@@ -91,8 +61,6 @@ from app.config.character_loader import (
 )
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
-    PORTRAIT_SCALE_MAX_PERCENT,
-    PORTRAIT_SCALE_MIN_PERCENT,
     normalize_portrait_scale_percent,
 )
 from app.ui.control_panel_layout import (
@@ -100,42 +68,22 @@ from app.ui.control_panel_layout import (
     DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
     DEFAULT_CONTROL_PANEL_WIDTH,
     DEFAULT_INPUT_BAR_OFFSET,
-    MAX_BUBBLE_HEIGHT,
-    MAX_CONTROL_PANEL_VERTICAL_OFFSET,
-    MAX_CONTROL_PANEL_WIDTH,
-    MAX_INPUT_BAR_OFFSET,
-    MIN_BUBBLE_HEIGHT,
-    MIN_CONTROL_PANEL_VERTICAL_OFFSET,
-    MIN_CONTROL_PANEL_WIDTH,
-    MIN_INPUT_BAR_OFFSET,
     normalize_bubble_height,
     normalize_control_panel_vertical_offset,
     normalize_control_panel_width,
     normalize_input_bar_offset,
 )
 from app.ui.subtitle_controller import (
-    REPLY_SEGMENT_PAUSE_MAX_MS,
-    REPLY_SEGMENT_PAUSE_MIN_MS,
     REPLY_SEGMENT_PAUSE_MS,
     SPEECH_TYPING_INTERVAL_MS,
-    SUBTITLE_TYPING_INTERVAL_MAX_MS,
-    SUBTITLE_TYPING_INTERVAL_MIN_MS,
     normalize_subtitle_display_speed,
 )
-from app.agent.proactive_care import (
-    PROACTIVE_MAX_COOLDOWN_MINUTES,
-    PROACTIVE_MAX_CHECK_INTERVAL_MINUTES,
-    PROACTIVE_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
-    PROACTIVE_MIN_COOLDOWN_MINUTES,
-    PROACTIVE_MIN_CHECK_INTERVAL_MINUTES,
-    PROACTIVE_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
-    ProactiveCareSettings,
+from app.agent.screen_awareness import (
+    ScreenAwarenessSettings,
 )
-from app.voice.tts import (
+from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
-    GenieTTSProvider,
-    GPTSoVITSTTSProvider,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS,
@@ -152,397 +100,29 @@ from app.ui.theme import (
     merge_theme_with_character,
     normalize_hex_color,
     mix,
-    parse_ai_theme_response,
 )
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_work_dir, is_provider_bundle_work_dir
-from sdk.types import SettingsPanelContribution, ToolsTabContribution
+from app.plugins.models import SettingsPanelContribution, ToolsTabContribution
 
 
 MEMORY_READING_TEXT = "正在读取长期记忆..."
 MEMORY_DEPENDENCY_LOADING_TEXT = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
 
 
-def _prepare_popup_menu(menu: QMenu) -> None:
-    # 弹出菜单默认有系统窗口边框/阴影；设置为无边框后由 QSS 绘制自身底色。
-    menu.setWindowFlags(
-        menu.windowFlags()
-        | Qt.WindowType.FramelessWindowHint
-        | Qt.WindowType.NoDropShadowWindowHint
-    )
-    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-
-class ApiConnectionTestWorker(QObject):
-    succeeded = Signal(str)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, settings: ApiSettings) -> None:
-        super().__init__()
-        self.settings = settings
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            message = OpenAICompatibleClient(self.settings).test_connection()
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(message)
-        finally:
-            self.finished.emit()
-
-
-class ApiModelListProbeWorker(QObject):
-    succeeded = Signal(list)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, settings: ApiSettings) -> None:
-        super().__init__()
-        self.settings = settings
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            models = OpenAICompatibleClient(self.settings).list_models()
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(models)
-        finally:
-            self.finished.emit()
-
-
-class _NoWheelMixin:
-    """禁止未获焦时响应滚轮，防止滚动设置页时意外改值。"""
-
-    def wheelEvent(self, event):  # type: ignore[no-untyped-def]
-        if self.hasFocus():  # type: ignore[attr-defined]
-            super().wheelEvent(event)  # type: ignore[misc]
-        else:
-            event.ignore()
-
-
-class _NoWheelSpinBox(_NoWheelMixin, QSpinBox):
-    pass
-
-
-class _NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
-    pass
-
-
-class _NoWheelComboBox(QComboBox):
-    """仅弹出列表打开时响应滚轮，避免未展开时滚动意外切换选项。"""
-
-    def wheelEvent(self, event):  # type: ignore[no-untyped-def]
-        if self.view().isVisible():
-            super().wheelEvent(event)
-        else:
-            event.ignore()
-
-
-class _NoWheelSlider(_NoWheelMixin, QSlider):
-    pass
-
-
-class _ClickOnlyListWidget(QListWidget):
-    """左侧分类导航列表：仅响应左键单击切换页面。
-
-    禁用按住左键拖动时随鼠标连续切换当前项（默认 QListWidget 行为会误切页），
-    同时屏蔽右键（不选中、不弹上下文菜单），避免误触。
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-
-    def mousePressEvent(self, event):  # type: ignore[no-untyped-def]
-        # 仅左键触发选中/切换，右键与中键直接忽略
-        if event.button() != Qt.MouseButton.LeftButton:
-            event.ignore()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):  # type: ignore[no-untyped-def]
-        # 按住左键拖动时不连续切换；无按键的悬停仍走默认逻辑以保留 hover 高亮
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            event.ignore()
-            return
-        super().mouseMoveEvent(event)
-
-
-class ModelComboBox(_NoWheelComboBox):
-    """可编辑模型选择框，保留 QLineEdit 风格的 text/setText 兼容接口。"""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._model_names: list[str] = []
-        self._completion_model = QStringListModel(self)
-        completer = QCompleter(self._completion_model, self)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.setEditable(True)
-        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.setCompleter(completer)
-
-    def setText(self, text: str) -> None:
-        self.setEditText(text)
-
-    def text(self) -> str:
-        return self.currentText()
-
-    def set_model_names(self, model_names: list[str]) -> None:
-        current_text = self.currentText().strip()
-        self._model_names = list(model_names)
-        self.blockSignals(True)
-        self.clear()
-        self.addItems(self._model_names)
-        self._completion_model.setStringList(self._model_names)
-        if current_text:
-            self.setEditText(current_text)
-        elif self._model_names:
-            self.setCurrentIndex(0)
-        self.blockSignals(False)
-
-
-class TTSTestWorker(QObject):
-    succeeded = Signal(object, str)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
-        super().__init__()
-        self.settings = settings
-
-    @Slot()
-    def run(self) -> None:
-        provider = None
-        should_close_provider = True
-        try:
-            provider = (
-                GenieTTSProvider(self.settings)
-                if self.settings.provider == TTS_PROVIDER_GENIE
-                else GPTSoVITSTTSProvider(self.settings)
-            )
-            ok, message = provider.ensure_ready()
-            if ok:
-                should_close_provider = False
-                self.succeeded.emit(provider.settings, message)
-            else:
-                self.failed.emit(message)
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        finally:
-            if should_close_provider and provider is not None:
-                close = getattr(provider, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception as exc:  # noqa: BLE001
-                        debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
-            self.finished.emit()
-
-
-class MemoryListWorker(QObject):
-    succeeded = Signal(list)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, memory_store: MemoryStore, limit: int = 200) -> None:
-        super().__init__()
-        self.memory_store = memory_store
-        self.limit = limit
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            memories = self.memory_store.list_memories(limit=self.limit)
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(memories)
-        finally:
-            self.finished.emit()
-
-
-class MemoryModelImportWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, memory_store: MemoryStore, archive_path: Path) -> None:
-        super().__init__()
-        self.memory_store = memory_store
-        self.archive_path = archive_path
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = self.memory_store.import_embedding_model_archive(self.archive_path)
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.finished.emit()
-
-
-class MemoryModelDownloadWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, memory_store: MemoryStore) -> None:
-        super().__init__()
-        self.memory_store = memory_store
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            download_model = getattr(self.memory_store, "download_embedding_model")
-            result = download_model()
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.finished.emit()
-
-
-class BackchannelModelImportWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, base_dir: Path, archive_path: Path) -> None:
-        super().__init__()
-        self.base_dir = base_dir
-        self.archive_path = archive_path
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = import_backchannel_model_archive(self.archive_path, self.base_dir)
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.finished.emit()
-
-
-class BackchannelModelDownloadWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, base_dir: Path) -> None:
-        super().__init__()
-        self.base_dir = base_dir
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = download_backchannel_model(self.base_dir)
-        except Exception as exc:  # UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.finished.emit()
-
-
-class ThemeAiWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, settings: ApiSettings, profile: CharacterProfile, *, ai_enabled: bool) -> None:
-        super().__init__()
-        self.settings = settings
-        self.profile = profile
-        self.ai_enabled = ai_enabled
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            data_url = _image_file_to_data_url(self.profile.default_portrait_path)
-            content = OpenAICompatibleClient(self.settings).complete_raw(
-                build_theme_color_system_prompt(self.profile.display_name),
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "请根据这张角色默认立绘生成 Sakura 桌宠 UI 主题配色。只返回完整 JSON 对象，不要输出 Markdown 或解释。",
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": data_url,
-                                    "detail": "low",
-                                },
-                            },
-                        ],
-                    }
-                ],
-                temperature=0.2,
-                # thinking 模型不兼容 json_object，依赖 prompt 约束 JSON 输出
-                max_tokens=2000,
-            )
-            self.succeeded.emit(parse_ai_theme_response(content, ai_enabled=self.ai_enabled))
-        except Exception as exc:  # noqa: BLE001 - UI 边界统一转成可读错误。
-            self.failed.emit(str(exc))
-        finally:
-            self.finished.emit()
-
-
-class CharacterArchiveExportWorker(QObject):
-    succeeded = Signal(str)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, profile: CharacterProfile, output_path: Path, export_kind: Literal["full", "card", "voice"]) -> None:
-        super().__init__()
-        self.profile = profile
-        self.output_path = output_path
-        self.export_kind = export_kind
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            if self.export_kind in ("full", "voice") and not _has_exportable_voice_model(self.profile):
-                raise CharacterArchiveError("当前角色没有完整语音模型，请导出单角色包。")
-            if self.export_kind == "voice":
-                export_character_voice_archive(self.profile, self.output_path)
-            else:
-                export_character_archive(
-                    self.profile,
-                    self.output_path,
-                    include_voice=self.export_kind == "full",
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(str(self.output_path))
-        finally:
-            self.finished.emit()
-
-
-def _has_exportable_voice_model(profile: CharacterProfile | None) -> bool:
-    """判断角色是否带有可随包导出的完整语音模型。"""
-
-    if profile is None or profile.voice is None:
-        return False
-    return (
-        profile.voice.gpt_model_path is not None
-        and profile.voice.gpt_model_path.is_file()
-        and profile.voice.sovits_model_path is not None
-        and profile.voice.sovits_model_path.is_file()
-    )
+from app.ui.settings import workers as settings_workers
+from app.ui.settings import widgets as settings_widgets
+from app.ui.settings.pages import (
+    ApiSettingsPage,
+    CharacterSettingsPage,
+    MemorySettingsPage,
+    PluginSettingsPage,
+    PrivacySettingsPage,
+    SystemSettingsPage,
+    ThemeSettingsPage,
+    ToolsSettingsPage,
+    TtsSettingsPage,
+)
 
 
 class SettingsDialog(QDialog):
@@ -553,7 +133,7 @@ class SettingsDialog(QDialog):
         base_dir: Path,
         character_registry: CharacterRegistry | None = None,
         current_character: CharacterProfile | None = None,
-        proactive_care_settings: ProactiveCareSettings | None = None,
+        screen_awareness_settings: ScreenAwarenessSettings | None = None,
         mcp_settings: MCPRuntimeSettings | None = None,
         debug_log_settings: DebugLogSettings | None = None,
         memory_store: MemoryStore | None = None,
@@ -572,8 +152,11 @@ class SettingsDialog(QDialog):
         bubble_settings: BubbleSettings | None = None,
         backchannel_settings: BackchannelSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
+        proactive_care_settings: ScreenAwarenessSettings | None = None,
     ) -> None:
         super().__init__(parent)
+        if screen_awareness_settings is None:
+            screen_awareness_settings = proactive_care_settings
         self.base_dir = base_dir
         self.tts_settings = tts_settings
         self.startup_settings = startup_settings or StartupSettings()
@@ -627,7 +210,8 @@ class SettingsDialog(QDialog):
         self.result_input_bar_offset: int | None = None
         self.result_subtitle_typing_interval_ms: int | None = None
         self.result_reply_segment_pause_ms: int | None = None
-        self.result_proactive_care_settings: ProactiveCareSettings | None = None
+        self.result_screen_awareness_settings: ScreenAwarenessSettings | None = None
+        self.result_proactive_care_settings: ScreenAwarenessSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
         self.result_debug_log_settings: DebugLogSettings | None = None
         self.result_startup_settings: StartupSettings | None = None
@@ -637,33 +221,34 @@ class SettingsDialog(QDialog):
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
         self._api_test_thread: QThread | None = None
-        self._api_test_worker: ApiConnectionTestWorker | None = None
+        self._api_test_worker: settings_workers.ApiConnectionTestWorker | None = None
         self._api_model_probe_thread: QThread | None = None
-        self._api_model_probe_worker: ApiModelListProbeWorker | None = None
+        self._api_model_probe_worker: settings_workers.ApiModelListProbeWorker | None = None
         self._tts_test_thread: QThread | None = None
-        self._tts_test_worker: TTSTestWorker | None = None
+        self._tts_test_worker: settings_workers.TTSTestWorker | None = None
         self._pending_api_accept_values: dict[str, object] | None = None
         self._pending_accept_values: dict[str, object] | None = None
         self._save_button_text: str | None = None
         self._memory_list_thread: QThread | None = None
-        self._memory_list_worker: MemoryListWorker | None = None
+        self._memory_list_worker: settings_workers.MemoryListWorker | None = None
         self._memory_model_import_thread: QThread | None = None
-        self._memory_model_import_worker: MemoryModelImportWorker | None = None
+        self._memory_model_import_worker: settings_workers.MemoryModelImportWorker | None = None
         self._memory_model_download_thread: QThread | None = None
-        self._memory_model_download_worker: MemoryModelDownloadWorker | None = None
+        self._memory_model_download_worker: settings_workers.MemoryModelDownloadWorker | None = None
         self._backchannel_model_import_thread: QThread | None = None
-        self._backchannel_model_import_worker: BackchannelModelImportWorker | None = None
+        self._backchannel_model_import_worker: settings_workers.BackchannelModelImportWorker | None = None
         self._backchannel_model_download_thread: QThread | None = None
-        self._backchannel_model_download_worker: BackchannelModelDownloadWorker | None = None
+        self._backchannel_model_download_worker: settings_workers.BackchannelModelDownloadWorker | None = None
         self._theme_ai_thread: QThread | None = None
-        self._theme_ai_worker: ThemeAiWorker | None = None
+        self._theme_ai_worker: settings_workers.ThemeAiWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
         self._character_export_thread: QThread | None = None
-        self._character_export_worker: CharacterArchiveExportWorker | None = None
+        self._character_export_worker: settings_workers.CharacterArchiveExportWorker | None = None
         self._memory_reload_pending = False
         self._syncing_memory_selection = False
+        self._memory_entries_loaded_once = False
 
         self.setWindowTitle("设置")
         self.setMinimumSize(680, 500)
@@ -674,22 +259,22 @@ class SettingsDialog(QDialog):
             (
                 "角色",
                 self._build_scrollable_tab(
-                    self._build_character_tab(character_registry, current_character)
+                    CharacterSettingsPage(self).build(character_registry, current_character)
                 ),
             ),
-            ("外观", self._build_scrollable_tab(self._build_theme_tab())),
-            ("模型", self._build_scrollable_tab(self._build_api_tab(api_settings))),
-            ("语音", self._build_scrollable_tab(self._build_tts_tab(tts_settings))),
+            ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
+            ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings))),
+            ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
             (
                 "隐私",
                 self._build_scrollable_tab(
-                    self._build_privacy_tab(proactive_care_settings or ProactiveCareSettings())
+                    PrivacySettingsPage(self).build(screen_awareness_settings or ScreenAwarenessSettings())
                 ),
             ),
             (
                 "工具",
                 self._build_scrollable_tab(
-                    self._build_mcp_tab(
+                    ToolsSettingsPage(self).build(
                         mcp_settings or MCPRuntimeSettings(),
                         tools_tab_contributions or [],
                     )
@@ -698,13 +283,13 @@ class SettingsDialog(QDialog):
             (
                 "插件",
                 self._build_scrollable_tab(
-                    self._build_plugin_tab(settings_panel_contributions or [])
+                    PluginSettingsPage(self).build(settings_panel_contributions or [])
                 ),
             ),
             (
                 "系统",
                 self._build_scrollable_tab(
-                    self._build_system_tab(
+                    SystemSettingsPage(self).build(
                         debug_log_settings or DebugLogSettings(),
                         self.startup_settings,
                         self.bubble_settings,
@@ -715,7 +300,7 @@ class SettingsDialog(QDialog):
         ]
         if memory_store is not None:
             # 记忆页自带列表滚动，沿用原行为不再额外包滚动区，避免双重滚动条。
-            nav_items.append(("记忆", self._build_memory_tab(memory_store)))
+            nav_items.append(("记忆", MemorySettingsPage(self).build(memory_store)))
 
         navigation = self._build_navigation(nav_items)
 
@@ -747,16 +332,18 @@ class SettingsDialog(QDialog):
     def _build_navigation(self, items: list[tuple[str, QWidget]]) -> QWidget:
         """左侧分类列表 + 右侧内容堆叠，替代原顶部横向 tab，便于纵向扩展分类。"""
         container = QWidget(self)
-        nav_list = _ClickOnlyListWidget(container)
+        nav_list = settings_widgets._ClickOnlyListWidget(container)
         nav_list.setObjectName("settingsNavList")
         nav_list.setFixedWidth(140)
         nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         stack = QStackedWidget(container)
         stack.setObjectName("settingsNavStack")
+        self._settings_nav_titles = [title for title, _panel in items]
         for title, panel in items:
             nav_list.addItem(QListWidgetItem(title))
             stack.addWidget(panel)
         nav_list.currentRowChanged.connect(stack.setCurrentIndex)
+        nav_list.currentRowChanged.connect(self._handle_settings_nav_changed)
         nav_list.setCurrentRow(0)
 
         layout = QHBoxLayout()
@@ -766,6 +353,22 @@ class SettingsDialog(QDialog):
         layout.addWidget(stack, 1)
         container.setLayout(layout)
         return container
+
+    @Slot(int)
+    def _handle_settings_nav_changed(self, row: int) -> None:
+        titles = getattr(self, "_settings_nav_titles", [])
+        if row < 0 or row >= len(titles):
+            return
+        if titles[row] == "记忆":
+            self._ensure_memory_entries_loaded()
+
+    def _ensure_memory_entries_loaded(self) -> None:
+        if self._memory_entries_loaded_once:
+            return
+        if self.memory_store is None or not hasattr(self, "memory_table"):
+            return
+        self._memory_entries_loaded_once = True
+        self._load_memory_entries()
 
     def _build_scrollable_tab(self, content: QWidget) -> QWidget:
         tab = QWidget(self)
@@ -788,630 +391,6 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(scroll_area)
-        tab.setLayout(layout)
-        return tab
-
-    def _build_character_tab(
-        self,
-        character_registry: CharacterRegistry | None,
-        current_character: CharacterProfile | None,
-    ) -> QWidget:
-        tab = QWidget(self)
-        self.character_combo = _NoWheelComboBox(tab)
-        self.character_empty_label = QLabel("尚未导入角色", tab)
-        self._refresh_character_combo(
-            current_character.id if current_character is not None else None
-        )
-        self.character_combo.currentIndexChanged.connect(lambda _index: self._handle_character_selection_changed())
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
-        form_layout.setSpacing(12)
-        form_layout.addRow("状态", self.character_empty_label)
-        form_layout.addRow("当前角色", self.character_combo)
-        form_layout.addRow("立绘大小", self._build_portrait_scale_control(tab))
-        form_layout.addRow("对话框宽度", self._build_control_panel_width_control(tab))
-        form_layout.addRow("气泡高度", self._build_bubble_height_control(tab))
-        form_layout.addRow("气泡上下位置", self._build_control_panel_offset_control(tab))
-        form_layout.addRow("输入框下移", self._build_input_bar_offset_control(tab))
-        form_layout.addRow("角色包", self._build_character_archive_controls(tab))
-        tab.setLayout(form_layout)
-        self._sync_character_archive_controls()
-        return tab
-
-    def _build_character_archive_controls(self, parent: QWidget) -> QWidget:
-        container = QWidget(parent)
-        self.character_import_button = QPushButton("导入 .char", container)
-        self.tts_voice_import_button = QPushButton("导入 .voice", container)
-        self.tts_voice_import_button.setToolTip("为当前选中的角色导入单独的 TTS 模型包。")
-        self.character_export_button = QPushButton("导出", container)
-        self.character_export_menu = QMenu(self.character_export_button)
-        _prepare_popup_menu(self.character_export_menu)
-        self.character_export_full_action = QAction("导出完整包 (.char)", self)
-        self.character_export_card_action = QAction("导出单角色包 (.char)", self)
-        self.character_export_voice_action = QAction("导出语音包 (.voice)", self)
-        self.character_export_full_action.triggered.connect(
-            lambda _checked=False: self._export_current_character_archive("full")
-        )
-        self.character_export_card_action.triggered.connect(
-            lambda _checked=False: self._export_current_character_archive("card")
-        )
-        self.character_export_voice_action.triggered.connect(
-            lambda _checked=False: self._export_current_character_archive("voice")
-        )
-        self.character_export_menu.addAction(self.character_export_full_action)
-        self.character_export_menu.addAction(self.character_export_card_action)
-        self.character_export_menu.addAction(self.character_export_voice_action)
-        self.character_export_button.setMenu(self.character_export_menu)
-        self.character_import_button.clicked.connect(self._import_character_archive)
-        self.tts_voice_import_button.clicked.connect(self._import_character_voice_archive)
-        self._sync_character_archive_controls()
-
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(self.character_import_button)
-        layout.addWidget(self.tts_voice_import_button)
-        layout.addWidget(self.character_export_button)
-        layout.addStretch(1)
-        container.setLayout(layout)
-        return container
-
-    def _build_theme_tab(self) -> QWidget:
-        tab = QWidget(self)
-        self.theme_color_edits: dict[str, QLineEdit] = {}
-        self.theme_color_buttons: dict[str, QPushButton] = {}
-
-        self.theme_ai_generate_button = QPushButton("AI 生成配色", tab)
-        self.theme_ai_generate_button.clicked.connect(self._generate_ai_theme)
-        self.theme_reset_button = QPushButton("恢复默认配色", tab)
-        self.theme_reset_button.clicked.connect(self._reset_theme_colors)
-        self.theme_status_label = QLabel("", tab)
-        self.theme_status_label.setWordWrap(True)
-
-        button_row = QWidget(tab)
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(10)
-        button_layout.addWidget(self.theme_ai_generate_button)
-        button_layout.addWidget(self.theme_reset_button)
-        button_layout.addStretch(1)
-        button_row.setLayout(button_layout)
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
-        form_layout.setSpacing(12)
-        for field, label, _default in THEME_COLOR_FIELDS:
-            edit, button = self._build_theme_color_control(
-                tab,
-                getattr(self.theme_settings, field),
-            )
-            self.theme_color_edits[field] = edit
-            self.theme_color_buttons[field] = button
-            form_layout.addRow(label, self._theme_color_row(edit, button))
-        self.theme_primary_edit = self.theme_color_edits["primary_color"]
-        self.theme_primary_button = self.theme_color_buttons["primary_color"]
-        self.theme_accent_edit = self.theme_color_edits["accent_color"]
-        self.theme_accent_button = self.theme_color_buttons["accent_color"]
-        self.theme_text_edit = self.theme_color_edits["text_color"]
-        self.theme_text_button = self.theme_color_buttons["text_color"]
-        # 外观效果模式下拉框
-        self.theme_visual_effect_combo = _NoWheelComboBox(tab)
-        for mode_id in VisualEffectMode.available_modes():
-            label = {
-                VisualEffectMode.SOLID: "纯色块",
-                VisualEffectMode.GAUSSIAN_BLUR: "高斯模糊",
-                VisualEffectMode.MACOS_VISUAL_EFFECT: "macOS 原生毛玻璃",
-            }.get(mode_id, mode_id)
-            self.theme_visual_effect_combo.addItem(label, mode_id)
-        self.theme_visual_effect_combo.currentIndexChanged.connect(
-            self._handle_visual_effect_changed
-        )
-        form_layout.addRow("输入栏外观效果", self.theme_visual_effect_combo)
-        form_layout.addRow("", button_row)
-        form_layout.addRow("状态", self.theme_status_label)
-        tab.setLayout(form_layout)
-        self._sync_theme_ai_controls()
-        return tab
-
-    def _build_theme_color_control(
-        self,
-        parent: QWidget,
-        color: str,
-    ) -> tuple[QLineEdit, QPushButton]:
-        edit = QLineEdit(color, parent)
-        edit.setMaxLength(7)
-        edit.setPlaceholderText("#RRGGBB")
-        button = QPushButton("", parent)
-        button.setFixedWidth(42)
-        button.setToolTip("选择颜色")
-        button.setStyleSheet(build_color_button_stylesheet(color))
-        button.clicked.connect(lambda _checked=False, color_edit=edit: self._choose_theme_color(color_edit))
-        edit.textChanged.connect(lambda _text, color_edit=edit: self._handle_theme_color_changed(color_edit))
-        return edit, button
-
-    def _theme_color_row(self, edit: QLineEdit, button: QPushButton) -> QWidget:
-        container = QWidget(self)
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(button)
-        layout.addWidget(edit, 1)
-        container.setLayout(layout)
-        return container
-
-    def _build_portrait_scale_control(self, parent: QWidget) -> QWidget:
-        container = QWidget(parent)
-        self.portrait_scale_slider = _NoWheelSlider(Qt.Orientation.Horizontal, container)
-        self.portrait_scale_slider.setRange(
-            PORTRAIT_SCALE_MIN_PERCENT,
-            PORTRAIT_SCALE_MAX_PERCENT,
-        )
-        self.portrait_scale_slider.setSingleStep(5)
-        self.portrait_scale_slider.setPageStep(10)
-        self.portrait_scale_slider.setTickInterval(25)
-        self.portrait_scale_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.portrait_scale_slider.setValue(self.portrait_scale_percent)
-
-        self.portrait_scale_spin = _NoWheelSpinBox(container)
-        self.portrait_scale_spin.setRange(
-            PORTRAIT_SCALE_MIN_PERCENT,
-            PORTRAIT_SCALE_MAX_PERCENT,
-        )
-        self.portrait_scale_spin.setSingleStep(5)
-        self.portrait_scale_spin.setSuffix("%")
-        self.portrait_scale_spin.setValue(self.portrait_scale_percent)
-
-        self.portrait_scale_slider.valueChanged.connect(self.portrait_scale_spin.setValue)
-        self.portrait_scale_spin.valueChanged.connect(self.portrait_scale_slider.setValue)
-        # 立绘缩放也接入实时预览。
-        self.portrait_scale_spin.valueChanged.connect(self._emit_layout_preview)
-
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(self.portrait_scale_slider, 1)
-        layout.addWidget(self.portrait_scale_spin)
-        container.setLayout(layout)
-        return container
-
-    def _build_range_control(
-        self,
-        parent: QWidget,
-        *,
-        slider_attr: str,
-        spin_attr: str,
-        minimum: int,
-        maximum: int,
-        value: int,
-        single_step: int,
-        suffix: str = "",
-    ) -> QWidget:
-        """构造一行「滑块 + 数值框」联动控件，并把两个子控件挂到 self 的指定属性名上。"""
-        container = QWidget(parent)
-        slider = _NoWheelSlider(Qt.Orientation.Horizontal, container)
-        slider.setRange(minimum, maximum)
-        slider.setSingleStep(single_step)
-        slider.setPageStep(single_step * 2)
-        slider.setValue(value)
-
-        spin = _NoWheelSpinBox(container)
-        spin.setRange(minimum, maximum)
-        spin.setSingleStep(single_step)
-        if suffix:
-            spin.setSuffix(suffix)
-        spin.setValue(value)
-
-        slider.valueChanged.connect(spin.setValue)
-        spin.valueChanged.connect(slider.setValue)
-        # 拖动时实时回调宿主窗口预览（_build_range_control 被控制组各项滑块复用）。
-        spin.valueChanged.connect(self._emit_layout_preview)
-
-        setattr(self, slider_attr, slider)
-        setattr(self, spin_attr, spin)
-
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(slider, 1)
-        layout.addWidget(spin)
-        container.setLayout(layout)
-        return container
-
-    def _build_control_panel_width_control(self, parent: QWidget) -> QWidget:
-        return self._build_range_control(
-            parent,
-            slider_attr="control_panel_width_slider",
-            spin_attr="control_panel_width_spin",
-            minimum=MIN_CONTROL_PANEL_WIDTH,
-            maximum=MAX_CONTROL_PANEL_WIDTH,
-            value=self.control_panel_width,
-            single_step=10,
-            suffix=" px",
-        )
-
-    def _build_bubble_height_control(self, parent: QWidget) -> QWidget:
-        return self._build_range_control(
-            parent,
-            slider_attr="bubble_height_slider",
-            spin_attr="bubble_height_spin",
-            minimum=MIN_BUBBLE_HEIGHT,
-            maximum=MAX_BUBBLE_HEIGHT,
-            value=self.bubble_height,
-            single_step=4,
-            suffix=" px",
-        )
-
-    def _build_control_panel_offset_control(self, parent: QWidget) -> QWidget:
-        # 正值=气泡与输入栏整体向上，负值=向下；范围对称。
-        return self._build_range_control(
-            parent,
-            slider_attr="control_panel_offset_slider",
-            spin_attr="control_panel_offset_spin",
-            minimum=MIN_CONTROL_PANEL_VERTICAL_OFFSET,
-            maximum=MAX_CONTROL_PANEL_VERTICAL_OFFSET,
-            value=self.control_panel_vertical_offset,
-            single_step=10,
-            suffix=" px",
-        )
-
-    def _build_input_bar_offset_control(self, parent: QWidget) -> QWidget:
-        # 输入栏相对气泡的额外下移：只能往下（>=0）。
-        return self._build_range_control(
-            parent,
-            slider_attr="input_bar_offset_slider",
-            spin_attr="input_bar_offset_spin",
-            minimum=MIN_INPUT_BAR_OFFSET,
-            maximum=MAX_INPUT_BAR_OFFSET,
-            value=self.input_bar_offset,
-            single_step=10,
-            suffix=" px",
-        )
-
-    def _build_api_tab(self, settings: ApiSettings) -> QWidget:
-        tab = QWidget(self)
-        self.base_url_edit = QLineEdit(settings.base_url, tab)
-        self.base_url_edit.setPlaceholderText("https://api.openai.com/v1")
-
-        self.api_key_edit = QLineEdit(settings.api_key, tab)
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText("请输入 API Key")
-
-        self.model_edit = ModelComboBox(tab)
-        self.model_edit.setText(settings.model)
-        self.model_edit.setPlaceholderText("gpt-4.1-mini")
-
-        self.api_timeout_spin = _NoWheelSpinBox(tab)
-        self.api_timeout_spin.setRange(1, 600)
-        self.api_timeout_spin.setSuffix(" 秒")
-        self.api_timeout_spin.setValue(settings.timeout_seconds)
-
-        self.api_model_probe_button = QPushButton("检测模型", tab)
-        self.api_model_probe_button.clicked.connect(self._probe_api_models)
-
-        self.api_test_button = QPushButton("测试 API", tab)
-        self.api_test_button.clicked.connect(self._test_api_settings)
-
-        api_actions = QWidget(tab)
-        api_actions_layout = QHBoxLayout(api_actions)
-        api_actions_layout.setContentsMargins(0, 0, 0, 0)
-        api_actions_layout.setSpacing(8)
-        api_actions_layout.addWidget(self.api_model_probe_button)
-        api_actions_layout.addWidget(self.api_test_button)
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(12)
-        form_layout.addRow("Base URL", self.base_url_edit)
-        form_layout.addRow("API Key", self.api_key_edit)
-        form_layout.addRow("模型", self.model_edit)
-        form_layout.addRow("超时", self.api_timeout_spin)
-        form_layout.addRow("", api_actions)
-
-        form_container = QWidget(tab)
-        form_container.setLayout(form_layout)
-
-        outer_layout = QVBoxLayout()
-        outer_layout.setContentsMargins(16, 18, 16, 16)
-        outer_layout.setSpacing(12)
-        outer_layout.addWidget(form_container)
-        outer_layout.addWidget(self._build_advanced_llm_params_group(settings, tab))
-        outer_layout.addStretch(1)
-        tab.setLayout(outer_layout)
-        return tab
-
-    def _build_advanced_llm_params_group(self, settings: ApiSettings, parent: QWidget) -> QGroupBox:
-        """模型页内的可折叠"高级参数"区。
-
-        以 checkable QGroupBox 作折叠开关：勾选展开、取消折叠。温度始终随配置生效
-        （默认 0.8，与历史行为一致）；top_p、max_tokens 各自带启用复选框，未启用时
-        构造为 None，请求不发送该参数，从而保持老用户行为不变。
-        """
-        group = QGroupBox("高级参数", parent)
-        group.setObjectName("advancedParamsGroup")
-        group.setCheckable(True)
-
-        # 警告说明：始终可见（折叠态也保留），既填充折叠后的空白，又提醒新手勿误改
-        self.advanced_params_hint = QLabel(
-            "⚠ 如果你不清楚这些参数的作用，请保持默认、不要随意修改。", group
-        )
-        self.advanced_params_hint.setObjectName("advancedParamsHint")
-        self.advanced_params_hint.setWordWrap(True)
-
-        # 温度：始终生效，缺省回退到内置默认 0.8
-        self.llm_temperature_spin = _NoWheelDoubleSpinBox(group)
-        self.llm_temperature_spin.setRange(0.0, 2.0)
-        self.llm_temperature_spin.setSingleStep(0.1)
-        self.llm_temperature_spin.setDecimals(2)
-        self.llm_temperature_spin.setValue(
-            settings.temperature if settings.temperature is not None else 0.8
-        )
-
-        # top_p：启用复选框 + 数值框，未启用则不发送
-        self.llm_top_p_enabled_check = QCheckBox("覆盖 top_p", group)
-        self.llm_top_p_spin = _NoWheelDoubleSpinBox(group)
-        self.llm_top_p_spin.setRange(0.0, 1.0)
-        self.llm_top_p_spin.setSingleStep(0.05)
-        self.llm_top_p_spin.setDecimals(2)
-        self.llm_top_p_spin.setValue(settings.top_p if settings.top_p is not None else 1.0)
-        self.llm_top_p_enabled_check.setChecked(settings.top_p is not None)
-        self.llm_top_p_spin.setEnabled(settings.top_p is not None)
-        self.llm_top_p_enabled_check.toggled.connect(self.llm_top_p_spin.setEnabled)
-
-        # max_tokens：启用复选框 + 数值框，未启用则不发送（不截断输出）
-        self.llm_max_tokens_enabled_check = QCheckBox("限制最大输出", group)
-        self.llm_max_tokens_spin = _NoWheelSpinBox(group)
-        self.llm_max_tokens_spin.setRange(1, 32768)
-        self.llm_max_tokens_spin.setSuffix(" tokens")
-        self.llm_max_tokens_spin.setValue(
-            settings.max_tokens if settings.max_tokens is not None else 2048
-        )
-        self.llm_max_tokens_enabled_check.setChecked(settings.max_tokens is not None)
-        self.llm_max_tokens_spin.setEnabled(settings.max_tokens is not None)
-        self.llm_max_tokens_enabled_check.toggled.connect(self.llm_max_tokens_spin.setEnabled)
-
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(12)
-        form.addRow("温度", self.llm_temperature_spin)
-        form.addRow(self.llm_top_p_enabled_check, self.llm_top_p_spin)
-        form.addRow(self.llm_max_tokens_enabled_check, self.llm_max_tokens_spin)
-
-        body = QWidget(group)
-        body.setLayout(form)
-        group_layout = QVBoxLayout()
-        group_layout.setContentsMargins(16, 10, 16, 12)
-        group_layout.setSpacing(10)
-        group_layout.addWidget(self.advanced_params_hint)
-        group_layout.addWidget(body)
-        group.setLayout(group_layout)
-
-        # checkable group 充当折叠开关：未勾选时仅隐藏参数区，警告说明保持可见
-        group.toggled.connect(body.setVisible)
-        group.toggled.connect(lambda _checked: self.advanced_params_hint.setEnabled(True))
-        has_custom = (
-            settings.temperature is not None
-            or settings.top_p is not None
-            or settings.max_tokens is not None
-        )
-        # 已配置过高级参数则默认展开，便于查看；否则默认折叠
-        group.setChecked(has_custom)
-        body.setVisible(has_custom)
-        # 折叠（未勾选）时 Qt 会禁用 group 内子控件，这里恢复警告说明的可读性
-        self.advanced_params_hint.setEnabled(True)
-        return group
-
-    def _build_tts_tab(self, settings: GPTSoVITSTTSSettings) -> QWidget:
-        tab = QWidget(self)
-        self.tts_enabled_check = QCheckBox("启用 TTS 语音", tab)
-        self.tts_enabled_check.setChecked(settings.enabled)
-
-        self.tts_provider_combo = _NoWheelComboBox(tab)
-        self.tts_provider_combo.addItem("GPT-SoVITS 整合包（GPU）", TTS_PROVIDER_GPT_SOVITS)
-        self.tts_provider_combo.addItem("Genie TTS 整合包（CPU）", TTS_PROVIDER_GENIE)
-        self.tts_provider_combo.addItem("自定义 GPT-SoVITS（macOS/Linux）", TTS_PROVIDER_CUSTOM_GPT_SOVITS)
-        provider_index = self.tts_provider_combo.findData(settings.provider)
-        self.tts_provider_combo.setCurrentIndex(provider_index if provider_index >= 0 else 0)
-
-        self.tts_api_url_edit = QLineEdit(settings.api_url, tab)
-        self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(settings.provider))
-        self.tts_work_dir_edit = QLineEdit(str(settings.work_dir or ""), tab)
-        self.tts_work_dir_edit.setPlaceholderText("tts/g50")
-        self.tts_python_path_edit = QLineEdit(str(settings.python_path or ""), tab)
-        self.tts_python_path_edit.setPlaceholderText("macOS/Linux Python，例如 /path/to/miniforge3/envs/gpt-sovits/bin/python")
-        self.tts_config_path_edit = QLineEdit(str(settings.tts_config_path or ""), tab)
-        self.tts_config_path_edit.setPlaceholderText("可选：GPT-SoVITS tts_infer.yaml")
-        self.tts_bundle_download_button = QPushButton("一键下载 TTS 整合包", tab)
-        self.tts_bundle_download_button.setToolTip(
-            "Windows 可一键下载内置整合包；macOS/Linux 请使用自定义 GPT-SoVITS 接入源码版运行环境。"
-        )
-        self.tts_bundle_download_button.clicked.connect(self._download_gpt_sovits_bundle)
-        self.tts_provider_combo.currentIndexChanged.connect(lambda _index: self._sync_tts_provider_controls(apply_defaults=True))
-        self.tts_enabled_check.toggled.connect(self._sync_tts_enabled_controls)
-
-        self.ref_lang_edit = QLineEdit(settings.ref_lang, tab)
-        self.text_lang_edit = QLineEdit(settings.text_lang, tab)
-
-        self.tts_timeout_spin = _NoWheelSpinBox(tab)
-        self.tts_timeout_spin.setRange(1, 600)
-        self.tts_timeout_spin.setSuffix(" 秒")
-        self.tts_timeout_spin.setValue(settings.timeout_seconds)
-
-        enabled_row = QWidget(tab)
-        enabled_layout = QHBoxLayout()
-        enabled_layout.setContentsMargins(0, 0, 0, 0)
-        enabled_layout.setSpacing(10)
-        enabled_layout.addWidget(self.tts_enabled_check)
-        enabled_layout.addWidget(self.tts_bundle_download_button)
-        enabled_layout.addStretch(1)
-        enabled_row.setLayout(enabled_layout)
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
-        form_layout.setSpacing(12)
-        form_layout.addRow("", enabled_row)
-        form_layout.addRow("TTS 提供器", self.tts_provider_combo)
-        form_layout.addRow("API URL", self.tts_api_url_edit)
-        form_layout.addRow("TTS 工作目录", self.tts_work_dir_edit)
-        form_layout.addRow("TTS Python", self.tts_python_path_edit)
-        form_layout.addRow("推理配置", self.tts_config_path_edit)
-        form_layout.addRow("参考语言", self.ref_lang_edit)
-        form_layout.addRow("文本语言", self.text_lang_edit)
-        form_layout.addRow("超时", self.tts_timeout_spin)
-        self._tts_form_layout = form_layout
-        tab.setLayout(form_layout)
-        self._sync_tts_provider_controls(apply_defaults=_is_bundled_tts_provider(settings.provider))
-        self._sync_tts_enabled_controls(settings.enabled)
-        return tab
-
-    def _build_privacy_tab(
-        self,
-        proactive_care_settings: ProactiveCareSettings,
-    ) -> QWidget:
-        tab = QWidget(self)
-        self.proactive_screen_context_enabled_check = QCheckBox("允许模型主动获取屏幕信息", tab)
-        self.proactive_screen_context_enabled_check.setChecked(
-            proactive_care_settings.screen_context_enabled
-        )
-
-        self.proactive_check_interval_spin = _NoWheelSpinBox(tab)
-        self.proactive_check_interval_spin.setRange(
-            PROACTIVE_MIN_CHECK_INTERVAL_MINUTES,
-            PROACTIVE_MAX_CHECK_INTERVAL_MINUTES,
-        )
-        self.proactive_check_interval_spin.setSuffix(" 分钟")
-        self.proactive_check_interval_spin.setValue(
-            proactive_care_settings.normalized().check_interval_minutes
-        )
-
-        self.proactive_cooldown_spin = _NoWheelSpinBox(tab)
-        self.proactive_cooldown_spin.setRange(
-            PROACTIVE_MIN_COOLDOWN_MINUTES,
-            PROACTIVE_MAX_COOLDOWN_MINUTES,
-        )
-        self.proactive_cooldown_spin.setSuffix(" 分钟")
-        self.proactive_cooldown_spin.setValue(
-            proactive_care_settings.normalized().cooldown_minutes
-        )
-
-        self.proactive_batch_limit_spin = _NoWheelSpinBox(tab)
-        self.proactive_batch_limit_spin.setRange(
-            PROACTIVE_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
-            PROACTIVE_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
-        )
-        self.proactive_batch_limit_spin.setSuffix(" 张")
-        self.proactive_batch_limit_spin.setValue(
-            proactive_care_settings.normalized().screen_context_batch_limit
-        )
-        self.proactive_screen_context_enabled_check.toggled.connect(
-            self._sync_proactive_screen_context_controls
-        )
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
-        form_layout.setSpacing(12)
-        form_layout.addRow("", self.proactive_screen_context_enabled_check)
-        form_layout.addRow("主动检查间隔", self.proactive_check_interval_spin)
-        form_layout.addRow("主动打扰冷却", self.proactive_cooldown_spin)
-        form_layout.addRow("单次最多发送截图", self.proactive_batch_limit_spin)
-        self._proactive_form_layout = form_layout
-        tab.setLayout(form_layout)
-        self._sync_proactive_screen_context_controls(
-            self.proactive_screen_context_enabled_check.isChecked()
-        )
-        return tab
-
-    def _build_mcp_tab(
-        self,
-        settings: MCPRuntimeSettings,
-        tools_tab_contributions: list[ToolsTabContribution],
-    ) -> QWidget:
-        tab = QWidget(self)
-        self.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（实验性）", tab)
-        self.windows_mcp_enabled_check.setChecked(settings.windows_enabled)
-        self.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_EXPERIMENTAL_TEXT)
-
-        restart_hint = QLabel(
-            f"{WINDOWS_MCP_EXPERIMENTAL_TEXT}。保存后需要重启 Sakura 才会加载或卸载 Windows MCP 工具。",
-            tab,
-        )
-        restart_hint.setWordWrap(True)
-        self.system_restart_hint_label = restart_hint
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
-        form_layout.setSpacing(12)
-        form_layout.addRow("", self.windows_mcp_enabled_check)
-        form_layout.addRow("生效方式", restart_hint)
-        for contribution in sorted(tools_tab_contributions, key=lambda item: item.order):
-            try:
-                widget = contribution.build(None)
-            except Exception as exc:
-                widget = QLabel(f"{contribution.title} 设置加载失败：{exc}", tab)
-                widget.setWordWrap(True)
-            form_layout.addRow(contribution.title, widget)
-        tab.setLayout(form_layout)
-        return tab
-
-    def _build_plugin_tab(
-        self,
-        settings_panel_contributions: list[SettingsPanelContribution],
-    ) -> QWidget:
-        tab = QWidget(self)
-        tab.setObjectName("settingsPluginTab")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(12)
-
-        hint = QLabel("插件启用状态保存后需要重启 Sakura 才会生效。", tab)
-        hint.setObjectName("pluginRestartHintLabel")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        self.plugin_table = QTableWidget(tab)
-        self.plugin_table.setObjectName("pluginManagerTable")
-        self.plugin_table.setColumnCount(6)
-        self.plugin_table.setHorizontalHeaderLabels(["启用", "名称", "版本", "优先级", "来源", "介绍"])
-        self.plugin_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.plugin_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.plugin_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.plugin_table.setAlternatingRowColors(True)
-        self.plugin_table.setWordWrap(True)
-        self.plugin_table.verticalHeader().setVisible(False)
-        self.plugin_table.setRowCount(len(self.plugin_specs))
-        header = self.plugin_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        for row, spec in enumerate(self.plugin_specs):
-            self._populate_plugin_table_row(row, spec)
-        self.plugin_table.resizeRowsToContents()
-        layout.addWidget(self.plugin_table, 1)
-
-        panel_title = QLabel("插件自定义设置", tab)
-        panel_title.setObjectName("pluginSettingsTitleLabel")
-        layout.addWidget(panel_title)
-
-        panel_container = QWidget(tab)
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(10)
-        for contribution in sorted(settings_panel_contributions, key=lambda item: item.order):
-            try:
-                widget = contribution.build(tab)
-            except Exception as exc:
-                widget = QLabel(f"{contribution.title} 设置加载失败：{exc}", tab)
-                widget.setWordWrap(True)
-            form_layout.addRow(contribution.title, widget)
-        if not settings_panel_contributions:
-            empty_label = QLabel("暂无插件自定义设置。", tab)
-            empty_label.setWordWrap(True)
-            form_layout.addRow("", empty_label)
-        panel_container.setLayout(form_layout)
-        layout.addWidget(panel_container)
         tab.setLayout(layout)
         return tab
 
@@ -1485,188 +464,9 @@ class SettingsDialog(QDialog):
             )
         return selected
 
-    def _build_system_tab(
-        self,
-        debug_settings: DebugLogSettings,
-        startup_settings: StartupSettings,
-        bubble_settings: BubbleSettings,
-        backchannel_settings: BackchannelSettings,
-    ) -> QWidget:
-        tab = QWidget(self)
-        self.launch_at_login_check = QCheckBox("登录时自动启动 Sakura", tab)
-        self.launch_at_login_check.setChecked(
-            startup_settings.launch_at_login and is_launch_at_login_supported()
-        )
-        if is_launch_at_login_supported():
-            self.launch_at_login_check.setToolTip(
-                f"保存后将更新 {launch_at_login_platform_text()} 登录启动项。"
-            )
-        else:
-            self.launch_at_login_check.setEnabled(False)
-            self.launch_at_login_check.setToolTip("当前平台暂不支持自动配置登录启动项。")
-
-        self.debug_log_enabled_check = QCheckBox("输出终端调试日志", tab)
-        self.debug_log_enabled_check.setChecked(debug_settings.enabled)
-        self.debug_body_enabled_check = QCheckBox("输出完整请求/回复正文", tab)
-        self.debug_body_enabled_check.setChecked(debug_settings.body_enabled)
-        self.debug_log_enabled_check.toggled.connect(self.debug_body_enabled_check.setEnabled)
-        self.debug_body_enabled_check.setEnabled(self.debug_log_enabled_check.isChecked())
-        self.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
-        self.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
-
-        self.subtitle_typing_interval_spin = _NoWheelSpinBox(tab)
-        self.subtitle_typing_interval_spin.setRange(
-            SUBTITLE_TYPING_INTERVAL_MIN_MS,
-            SUBTITLE_TYPING_INTERVAL_MAX_MS,
-        )
-        self.subtitle_typing_interval_spin.setSuffix(" 毫秒")
-        self.subtitle_typing_interval_spin.setValue(self.subtitle_typing_interval_ms)
-
-        self.reply_segment_pause_spin = _NoWheelSpinBox(tab)
-        self.reply_segment_pause_spin.setRange(
-            REPLY_SEGMENT_PAUSE_MIN_MS,
-            REPLY_SEGMENT_PAUSE_MAX_MS,
-        )
-        self.reply_segment_pause_spin.setSuffix(" 毫秒")
-        self.reply_segment_pause_spin.setValue(self.reply_segment_pause_ms)
-
-        self.bubble_auto_hide_check = QCheckBox("气泡无操作后自动隐藏", tab)
-        self.bubble_auto_hide_check.setChecked(bubble_settings.auto_hide_enabled)
-        self.bubble_auto_hide_delay_spin = _NoWheelSpinBox(tab)
-        self.bubble_auto_hide_delay_spin.setRange(
-            BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
-            BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
-        )
-        self.bubble_auto_hide_delay_spin.setSuffix(" 秒")
-        self.bubble_auto_hide_delay_spin.setValue(
-            bubble_settings.normalized().auto_hide_delay_seconds
-        )
-        self.bubble_auto_hide_check.toggled.connect(self._sync_bubble_auto_hide_controls)
-
-        normalized_backchannel = backchannel_settings.normalized()
-        self.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
-        self.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
-        self.backchannel_enabled_check.setToolTip(
-            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
-        )
-        self.backchannel_mode_combo = QComboBox(tab)
-        self.backchannel_mode_combo.addItem("规则模式", "rules")
-        self.backchannel_mode_combo.addItem("模型增强", "hybrid")
-        mode_index = self.backchannel_mode_combo.findData(normalized_backchannel.mode)
-        self.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
-        self.backchannel_mode_combo.setToolTip(
-            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
-        )
-        self.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
-        self.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
-        self.backchannel_tts_enabled_check.setToolTip(
-            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
-        )
-        self.backchannel_delay_spin = _NoWheelSpinBox(tab)
-        self.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
-        self.backchannel_delay_spin.setSuffix(" 毫秒")
-        self.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
-        self.backchannel_probability_spin = QDoubleSpinBox(tab)
-        self.backchannel_probability_spin.setRange(0.0, 1.0)
-        self.backchannel_probability_spin.setSingleStep(0.05)
-        self.backchannel_probability_spin.setDecimals(2)
-        self.backchannel_probability_spin.setValue(normalized_backchannel.probability)
-        self.backchannel_setup_hint_label = QLabel(self._backchannel_setup_hint_text(), tab)
-        self.backchannel_setup_hint_label.setWordWrap(True)
-        self.backchannel_model_status_label = QLabel(self._backchannel_model_status_text(), tab)
-        self.backchannel_model_status_label.setWordWrap(True)
-        self.backchannel_download_model_button = QPushButton("在线安装", tab)
-        self.backchannel_download_model_button.setToolTip(
-            f"从 {backchannel_model_endpoint()} 安装 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL} 到本地缓存。"
-        )
-        self.backchannel_download_model_button.clicked.connect(self._download_backchannel_model)
-        self.backchannel_import_model_button = QPushButton("导入接话模型", tab)
-        self.backchannel_import_model_button.setToolTip(
-            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
-        )
-        self.backchannel_import_model_button.clicked.connect(self._import_backchannel_model_archive)
-        self.backchannel_refresh_status_button = QPushButton("重新检测", tab)
-        self.backchannel_refresh_status_button.setToolTip("重新检测接话模型状态。")
-        self.backchannel_refresh_status_button.clicked.connect(self._refresh_backchannel_setup_status)
-        self.backchannel_enabled_check.toggled.connect(self._sync_backchannel_controls)
-        self.backchannel_mode_combo.currentIndexChanged.connect(
-            lambda _index: self._refresh_backchannel_setup_status()
-        )
-        # TTS tab 先于系统 tab 构建,此处 tts_enabled_check 已存在;
-        # 全局 TTS 开关变化时重算接话语音复选框的可用态。
-        tts_enabled_check = getattr(self, "tts_enabled_check", None)
-        if tts_enabled_check is not None:
-            tts_enabled_check.toggled.connect(
-                lambda _checked: self._sync_backchannel_controls(
-                    self.backchannel_enabled_check.isChecked()
-                )
-            )
-
-        startup_form = QFormLayout()
-        startup_form.setContentsMargins(16, 12, 16, 12)
-        startup_form.setSpacing(12)
-        startup_form.addRow("", self.launch_at_login_check)
-
-        debug_form = QFormLayout()
-        debug_form.setContentsMargins(16, 12, 16, 12)
-        debug_form.setSpacing(12)
-        debug_form.addRow("", self.debug_log_enabled_check)
-        debug_form.addRow("", self.debug_body_enabled_check)
-        debug_form.addRow("", self.debug_file_enabled_check)
-
-        subtitle_form = QFormLayout()
-        subtitle_form.setContentsMargins(16, 12, 16, 12)
-        subtitle_form.setSpacing(12)
-        subtitle_form.addRow("字幕逐字间隔", self.subtitle_typing_interval_spin)
-        subtitle_form.addRow("回复分段停顿", self.reply_segment_pause_spin)
-
-        bubble_form = QFormLayout()
-        bubble_form.setContentsMargins(16, 12, 16, 12)
-        bubble_form.setSpacing(12)
-        bubble_form.addRow("", self.bubble_auto_hide_check)
-        bubble_form.addRow("气泡无操作时长", self.bubble_auto_hide_delay_spin)
-        self._bubble_form_layout = bubble_form
-
-        backchannel_form = QFormLayout()
-        backchannel_form.setContentsMargins(16, 12, 16, 12)
-        backchannel_form.setSpacing(12)
-        backchannel_form.addRow("", self.backchannel_enabled_check)
-        backchannel_form.addRow("接话模式", self.backchannel_mode_combo)
-        backchannel_form.addRow("配置状态", self.backchannel_setup_hint_label)
-        backchannel_form.addRow("", self.backchannel_tts_enabled_check)
-        backchannel_form.addRow("接话延迟", self.backchannel_delay_spin)
-        backchannel_form.addRow("接话触发概率", self.backchannel_probability_spin)
-        backchannel_model_layout = QHBoxLayout()
-        backchannel_model_layout.addWidget(self.backchannel_model_status_label, 1)
-        backchannel_model_layout.addWidget(self.backchannel_download_model_button)
-        backchannel_model_layout.addWidget(self.backchannel_import_model_button)
-        backchannel_model_layout.addWidget(self.backchannel_refresh_status_button)
-        backchannel_form.addRow("接话模型", backchannel_model_layout)
-        self._backchannel_form_layout = backchannel_form
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(12)
-        for title, group_form in (
-            ("启动", startup_form),
-            ("调试日志", debug_form),
-            ("字幕与回复", subtitle_form),
-            ("气泡", bubble_form),
-            ("接话", backchannel_form),
-        ):
-            group = QGroupBox(title, tab)
-            group.setLayout(group_form)
-            layout.addWidget(group)
-        layout.addStretch(1)
-
-        self._sync_bubble_auto_hide_controls(self.bubble_auto_hide_check.isChecked())
-        self._sync_backchannel_controls(self.backchannel_enabled_check.isChecked())
-        tab.setLayout(layout)
-        return tab
-
     @Slot(bool)
     def _sync_proactive_screen_context_controls(self, enabled: bool) -> None:
-        """主动屏幕获取关闭时，不允许调整从属参数。"""
+        """主动屏幕感知关闭时，不允许调整从属参数。"""
         self._set_form_widgets_enabled(
             getattr(self, "_proactive_form_layout", None),
             (
@@ -1681,14 +481,14 @@ class SettingsDialog(QDialog):
     def _sync_bubble_auto_hide_controls(self, enabled: bool) -> None:
         """气泡自动隐藏关闭时，不允许调整无操作时长。"""
         self._set_form_widgets_enabled(
-            getattr(self, "_bubble_form_layout", None),
+            getattr(self, "_system_form_layout", None),
             (self.bubble_auto_hide_delay_spin,),
             enabled,
         )
 
     @Slot(bool)
     def _sync_backchannel_controls(self, enabled: bool) -> None:
-        """接话层关闭时，不允许调整从属参数;接话语音还需全局 TTS 总开关。"""
+        """接话层关闭时禁用从属参数；接话语音还依赖全局 TTS 开关。"""
         self._set_form_widgets_enabled(
             getattr(self, "_backchannel_form_layout", None),
             (
@@ -1698,7 +498,6 @@ class SettingsDialog(QDialog):
             ),
             enabled,
         )
-        # 接话语音依赖全局 TTS:总开关关闭时勾选只会"设置了但不生效",直接禁用。
         tts_check = getattr(self, "tts_enabled_check", None)
         tts_on = tts_check.isChecked() if tts_check is not None else True
         self._set_form_widgets_enabled(
@@ -1763,122 +562,10 @@ class SettingsDialog(QDialog):
             if label is not None:
                 label.setEnabled(enabled if labels_enabled is None else labels_enabled)
 
-    def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
-        tab = QWidget(self)
-        # 记忆页不经 _build_scrollable_tab，需直接承载面板背景，
-        # 与其它导航页保持一致的卡片底色与圆角边框。
-        tab.setObjectName("settingsNavPage")
-        _ = memory_store
-
-        self.memory_search_edit = QLineEdit(tab)
-        self.memory_search_edit.setPlaceholderText("搜索记忆内容或 ID")
-        self.memory_search_edit.textChanged.connect(self._refresh_memory_table)
-
-        self.memory_refresh_button = QPushButton("刷新", tab)
-        self.memory_refresh_button.clicked.connect(self._load_memory_entries)
-        self.memory_download_model_button = QPushButton("在线安装记忆模型", tab)
-        self.memory_download_model_button.setToolTip(
-            "从 Hugging Face 安装 sentence-transformers/all-MiniLM-L6-v2 到本地缓存。"
-        )
-        self.memory_download_model_button.clicked.connect(self._download_memory_model)
-        self.memory_import_model_button = QPushButton("导入记忆模型", tab)
-        self.memory_import_model_button.setToolTip(
-            "导入 models--sentence-transformers--all-MiniLM-L6-v2.zip，供无法自动下载时使用。"
-        )
-        self.memory_import_model_button.clicked.connect(self._import_memory_model_archive)
-        self.memory_status_label = QLabel(MEMORY_READING_TEXT, tab)
-
-        self.memory_table = QTableWidget(0, 4, tab)
-        self.memory_table.setHorizontalHeaderLabels(["", "内容", "更新时间", "ID"])
-        self.memory_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.memory_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.memory_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.memory_table.verticalHeader().setVisible(False)
-        self.memory_table.setAlternatingRowColors(True)
-        self.memory_table.setWordWrap(True)
-        self.memory_table.itemClicked.connect(self._handle_memory_item_clicked)
-        header = self.memory_table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.memory_table.setColumnWidth(0, 56)
-        self.memory_table.setColumnWidth(3, 82)
-        self.memory_select_all_check = QCheckBox(header)
-        self.memory_select_all_check.setToolTip("全选当前结果")
-        self.memory_select_all_check.stateChanged.connect(
-            self._handle_memory_select_all_check_changed
-        )
-        header.sectionResized.connect(
-            lambda *_args: self._sync_memory_select_all_check_geometry()
-        )
-        self._sync_memory_select_all_check_geometry()
-
-        self.memory_selection_label = QLabel("已选择 0 条", tab)
-        self.memory_delete_button = QPushButton("删除选中", tab)
-        self.memory_delete_button.setEnabled(False)
-        self.memory_delete_button.clicked.connect(self._delete_memory_entry)
-        self.memory_clear_selection_button = QPushButton("清空选择", tab)
-        self.memory_clear_selection_button.setEnabled(False)
-        self.memory_clear_selection_button.clicked.connect(self._clear_memory_selection)
-        self.memory_preview_label = QLabel("未选择记忆", tab)
-        self.memory_preview_label.setWordWrap(True)
-
-        self.memory_new_button = QPushButton("新增记忆", tab)
-        self.memory_new_button.setCheckable(True)
-        self.memory_new_button.toggled.connect(self._toggle_memory_new_editor)
-        self.memory_content_edit = QTextEdit(tab)
-        self.memory_content_edit.setPlaceholderText("新增长期记忆内容")
-        self.memory_content_edit.setFixedHeight(84)
-        self.memory_save_button = QPushButton("保存", tab)
-        self.memory_save_button.clicked.connect(self._save_memory_entry)
-
-        filter_layout = QHBoxLayout()
-        filter_layout.addWidget(self.memory_search_edit, 1)
-        filter_layout.addWidget(self.memory_download_model_button)
-        filter_layout.addWidget(self.memory_import_model_button)
-        filter_layout.addWidget(self.memory_refresh_button)
-
-        status_layout = QHBoxLayout()
-        status_layout.addWidget(self.memory_status_label, 1)
-        status_layout.addWidget(self.memory_new_button)
-
-        selection_layout = QHBoxLayout()
-        selection_layout.addWidget(self.memory_selection_label)
-        selection_layout.addStretch(1)
-        selection_layout.addWidget(self.memory_clear_selection_button)
-        selection_layout.addWidget(self.memory_delete_button)
-
-        self.memory_editor_container = QWidget(tab)
-        editor_layout = QFormLayout()
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.setSpacing(8)
-        editor_layout.addRow("内容", self.memory_content_edit)
-        editor_layout.addRow("", self.memory_save_button)
-        self.memory_editor_container.setLayout(editor_layout)
-        self.memory_editor_container.setVisible(False)
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(10)
-        layout.addLayout(filter_layout)
-        layout.addLayout(status_layout)
-        layout.addWidget(self.memory_table, 1)
-        layout.addLayout(selection_layout)
-        layout.addWidget(self.memory_editor_container)
-        tab.setLayout(layout)
-
-        loading_text = self._memory_loading_text()
-        self.memory_status_label.setText(loading_text)
-        self._show_memory_placeholder(loading_text)
-        self._clear_memory_editor()
-        QTimer.singleShot(0, self._load_memory_entries)
-        return tab
-
     def _load_memory_entries(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
             return
+        self._memory_entries_loaded_once = True
         if self._memory_list_thread is not None:
             self._memory_reload_pending = True
             return
@@ -1889,7 +576,7 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder(loading_text)
 
         thread = QThread()
-        worker = MemoryListWorker(self.memory_store, limit=200)
+        worker = settings_workers.MemoryListWorker(self.memory_store, limit=200)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_load_success)
@@ -1962,7 +649,7 @@ class SettingsDialog(QDialog):
             self.backchannel_model_status_label.setText("正在导入接话模型...")
 
         thread = QThread()
-        worker = BackchannelModelImportWorker(self.base_dir, archive_path)
+        worker = settings_workers.BackchannelModelImportWorker(self.base_dir, archive_path)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_backchannel_model_import_success)
@@ -1982,7 +669,7 @@ class SettingsDialog(QDialog):
             self.backchannel_model_status_label.setText("正在在线安装接话模型...")
 
         thread = QThread()
-        worker = BackchannelModelDownloadWorker(self.base_dir)
+        worker = settings_workers.BackchannelModelDownloadWorker(self.base_dir)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_backchannel_model_download_success)
@@ -1996,114 +683,6 @@ class SettingsDialog(QDialog):
         self._backchannel_model_download_worker = worker
         thread.start()
 
-    @Slot(object)
-    def _handle_backchannel_model_import_success(self, result: BackchannelModelImportResult) -> None:
-        self._refresh_backchannel_setup_status()
-        QMessageBox.information(
-            self,
-            "导入成功",
-            (
-                f"接话模型已导入：{result.model_name}\n"
-                f"缓存目录：{result.cache_folder}\n"
-                f"快照数量：{result.snapshot_count}"
-            ),
-        )
-
-    @Slot(str)
-    def _handle_backchannel_model_import_failed(self, message: str) -> None:
-        if hasattr(self, "backchannel_model_status_label"):
-            self.backchannel_model_status_label.setText(f"导入失败：{message}")
-        QMessageBox.warning(self, "导入失败", message)
-
-    @Slot(object)
-    def _handle_backchannel_model_download_success(self, result: BackchannelModelImportResult) -> None:
-        self._refresh_backchannel_setup_status()
-        QMessageBox.information(
-            self,
-            "安装成功",
-            (
-                f"接话模型已安装：{result.model_name}\n"
-                f"缓存目录：{result.cache_folder}\n"
-                f"快照数量：{result.snapshot_count}"
-            ),
-        )
-
-    @Slot(str)
-    def _handle_backchannel_model_download_failed(self, message: str) -> None:
-        if hasattr(self, "backchannel_model_status_label"):
-            self.backchannel_model_status_label.setText(f"安装失败：{message}")
-        QMessageBox.warning(self, "安装失败", message)
-
-    @Slot()
-    def _reset_backchannel_model_import_worker(self) -> None:
-        self._backchannel_model_import_thread = None
-        self._backchannel_model_import_worker = None
-        self._set_backchannel_model_import_busy(False)
-        self._refresh_backchannel_setup_status()
-
-    @Slot()
-    def _reset_backchannel_model_download_worker(self) -> None:
-        self._backchannel_model_download_thread = None
-        self._backchannel_model_download_worker = None
-        self._set_backchannel_model_download_busy(False)
-        self._refresh_backchannel_setup_status()
-
-    def _set_backchannel_model_import_busy(self, busy: bool) -> None:
-        if hasattr(self, "backchannel_import_model_button"):
-            self.backchannel_import_model_button.setEnabled(not busy)
-        if hasattr(self, "backchannel_download_model_button"):
-            self.backchannel_download_model_button.setEnabled(
-                not busy and self._backchannel_model_download_thread is None
-            )
-        if hasattr(self, "backchannel_refresh_status_button"):
-            self.backchannel_refresh_status_button.setEnabled(
-                not busy and self._backchannel_model_download_thread is None
-            )
-
-    def _set_backchannel_model_download_busy(self, busy: bool) -> None:
-        if hasattr(self, "backchannel_download_model_button"):
-            self.backchannel_download_model_button.setEnabled(not busy)
-        if hasattr(self, "backchannel_import_model_button"):
-            self.backchannel_import_model_button.setEnabled(
-                not busy and self._backchannel_model_import_thread is None
-            )
-        if hasattr(self, "backchannel_refresh_status_button"):
-            self.backchannel_refresh_status_button.setEnabled(
-                not busy and self._backchannel_model_import_thread is None
-            )
-
-    def _backchannel_model_status_text(self) -> str:
-        if backchannel_model_cached(self.base_dir):
-            if self._selected_backchannel_mode() == "hybrid":
-                return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}，模型增强可用。"
-            return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}；切换到模型增强后启用。"
-        return "未导入模型；模型增强会自动使用规则模式降级。"
-
-    def _backchannel_setup_hint_text(self) -> str:
-        enabled = self._selected_backchannel_enabled()
-        mode = self._selected_backchannel_mode()
-        model_ready = backchannel_model_cached(self.base_dir)
-
-        if not enabled:
-            return "接话当前关闭；仍可先导入句向量模型备用。"
-        if mode == "rules":
-            return "当前使用规则模式；句向量模型可作为后续模型增强(probe)的前置准备。"
-        if model_ready:
-            return "模型增强已就绪；保存后规则优先，规则无命中时由 probe 分类头补足泛化。"
-        return "已选择模型增强；缺句向量模型或低置信时会自动降级到规则，不会强行接话。"
-
-    def _selected_backchannel_mode(self) -> str:
-        combo = getattr(self, "backchannel_mode_combo", None)
-        if combo is not None:
-            return str(combo.currentData() or self.backchannel_settings.mode)
-        return self.backchannel_settings.mode
-
-    def _selected_backchannel_enabled(self) -> bool:
-        check = getattr(self, "backchannel_enabled_check", None)
-        if check is not None:
-            return check.isChecked()
-        return self.backchannel_settings.enabled
-
     def _start_memory_model_import(self, archive_path: Path) -> None:
         if self.memory_store is None:
             return
@@ -2111,7 +690,7 @@ class SettingsDialog(QDialog):
         self.memory_status_label.setText("正在导入记忆模型...")
 
         thread = QThread()
-        worker = MemoryModelImportWorker(self.memory_store, archive_path)
+        worker = settings_workers.MemoryModelImportWorker(self.memory_store, archive_path)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_model_import_success)
@@ -2132,7 +711,7 @@ class SettingsDialog(QDialog):
         self.memory_status_label.setText("正在在线安装记忆模型...")
 
         thread = QThread()
-        worker = MemoryModelDownloadWorker(self.memory_store)
+        worker = settings_workers.MemoryModelDownloadWorker(self.memory_store)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_model_download_success)
@@ -2184,6 +763,44 @@ class SettingsDialog(QDialog):
         self.memory_status_label.setText(f"安装失败：{message}")
         QMessageBox.warning(self, "安装失败", message)
 
+    @Slot(object)
+    def _handle_backchannel_model_import_success(self, result: BackchannelModelImportResult) -> None:
+        self._refresh_backchannel_setup_status()
+        QMessageBox.information(
+            self,
+            "导入成功",
+            (
+                f"接话模型已导入：{result.model_name}\n"
+                f"缓存目录：{result.cache_folder}\n"
+                f"快照数量：{result.snapshot_count}"
+            ),
+        )
+
+    @Slot(str)
+    def _handle_backchannel_model_import_failed(self, message: str) -> None:
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText(f"导入失败：{message}")
+        QMessageBox.warning(self, "导入失败", message)
+
+    @Slot(object)
+    def _handle_backchannel_model_download_success(self, result: BackchannelModelImportResult) -> None:
+        self._refresh_backchannel_setup_status()
+        QMessageBox.information(
+            self,
+            "安装成功",
+            (
+                f"接话模型已安装：{result.model_name}\n"
+                f"缓存目录：{result.cache_folder}\n"
+                f"快照数量：{result.snapshot_count}"
+            ),
+        )
+
+    @Slot(str)
+    def _handle_backchannel_model_download_failed(self, message: str) -> None:
+        if hasattr(self, "backchannel_model_status_label"):
+            self.backchannel_model_status_label.setText(f"安装失败：{message}")
+        QMessageBox.warning(self, "安装失败", message)
+
     @Slot()
     def _reset_memory_model_import_worker(self) -> None:
         self._memory_model_import_thread = None
@@ -2196,6 +813,20 @@ class SettingsDialog(QDialog):
         self._memory_model_download_worker = None
         self._set_memory_model_download_busy(False)
 
+    @Slot()
+    def _reset_backchannel_model_import_worker(self) -> None:
+        self._backchannel_model_import_thread = None
+        self._backchannel_model_import_worker = None
+        self._set_backchannel_model_import_busy(False)
+        self._refresh_backchannel_setup_status()
+
+    @Slot()
+    def _reset_backchannel_model_download_worker(self) -> None:
+        self._backchannel_model_download_thread = None
+        self._backchannel_model_download_worker = None
+        self._set_backchannel_model_download_busy(False)
+        self._refresh_backchannel_setup_status()
+
     def _set_memory_model_import_busy(self, busy: bool) -> None:
         if hasattr(self, "memory_import_model_button"):
             self.memory_import_model_button.setEnabled(not busy)
@@ -2205,9 +836,7 @@ class SettingsDialog(QDialog):
             )
         if hasattr(self, "memory_refresh_button"):
             self.memory_refresh_button.setEnabled(
-                not busy
-                and self._memory_model_download_thread is None
-                and self._memory_list_thread is None
+                not busy and self._memory_list_thread is None and self._memory_model_download_thread is None
             )
 
     def _set_memory_model_download_busy(self, busy: bool) -> None:
@@ -2219,10 +848,64 @@ class SettingsDialog(QDialog):
             )
         if hasattr(self, "memory_refresh_button"):
             self.memory_refresh_button.setEnabled(
-                not busy
-                and self._memory_model_import_thread is None
-                and self._memory_list_thread is None
+                not busy and self._memory_list_thread is None and self._memory_model_import_thread is None
             )
+
+    def _set_backchannel_model_import_busy(self, busy: bool) -> None:
+        if hasattr(self, "backchannel_import_model_button"):
+            self.backchannel_import_model_button.setEnabled(not busy)
+        if hasattr(self, "backchannel_download_model_button"):
+            self.backchannel_download_model_button.setEnabled(
+                not busy and self._backchannel_model_download_thread is None
+            )
+        if hasattr(self, "backchannel_refresh_status_button"):
+            self.backchannel_refresh_status_button.setEnabled(
+                not busy and self._backchannel_model_download_thread is None
+            )
+
+    def _set_backchannel_model_download_busy(self, busy: bool) -> None:
+        if hasattr(self, "backchannel_download_model_button"):
+            self.backchannel_download_model_button.setEnabled(not busy)
+        if hasattr(self, "backchannel_import_model_button"):
+            self.backchannel_import_model_button.setEnabled(
+                not busy and self._backchannel_model_import_thread is None
+            )
+        if hasattr(self, "backchannel_refresh_status_button"):
+            self.backchannel_refresh_status_button.setEnabled(
+                not busy and self._backchannel_model_import_thread is None
+            )
+
+    def _backchannel_model_status_text(self) -> str:
+        if backchannel_model_cached(self.base_dir):
+            if self._selected_backchannel_mode() == "hybrid":
+                return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}，模型增强可用。"
+            return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}；切换到模型增强后启用。"
+        return "未导入模型；模型增强会自动使用规则模式降级。"
+
+    def _backchannel_setup_hint_text(self) -> str:
+        enabled = self._selected_backchannel_enabled()
+        mode = self._selected_backchannel_mode()
+        model_ready = backchannel_model_cached(self.base_dir)
+
+        if not enabled:
+            return "接话当前关闭；仍可先导入句向量模型备用。"
+        if mode == "rules":
+            return "规则模式不依赖模型；保存后会用高精度规则触发接话。"
+        if model_ready:
+            return "模型增强已就绪；保存后规则优先，规则无命中时由 probe 分类头补足泛化。"
+        return "已选择模型增强；缺句向量模型或低置信时会自动降级到规则，不会强行接话。"
+
+    def _selected_backchannel_mode(self) -> str:
+        combo = getattr(self, "backchannel_mode_combo", None)
+        if combo is not None:
+            return str(combo.currentData() or self.backchannel_settings.mode)
+        return self.backchannel_settings.mode
+
+    def _selected_backchannel_enabled(self) -> bool:
+        check = getattr(self, "backchannel_enabled_check", None)
+        if check is not None:
+            return check.isChecked()
+        return self.backchannel_settings.enabled
 
     def _memory_loading_text(self) -> str:
         if self.memory_store is None:
@@ -2252,16 +935,14 @@ class SettingsDialog(QDialog):
     @Slot(str)
     def _handle_memory_load_failed(self, message: str) -> None:
         self._all_memories = []
+        self._memory_entries_loaded_once = False
         self.memory_status_label.setText(f"读取失败：{message}")
         self._show_memory_placeholder("记忆读取失败，请稍后重试。")
         QMessageBox.warning(self, "读取失败", message)
 
     @Slot()
     def _reset_memory_list_worker(self) -> None:
-        self.memory_refresh_button.setEnabled(
-            self._memory_model_import_thread is None
-            and self._memory_model_download_thread is None
-        )
+        self.memory_refresh_button.setEnabled(self._memory_model_import_thread is None)
         self._memory_list_thread = None
         self._memory_list_worker = None
         if self._memory_reload_pending:
@@ -2802,7 +1483,7 @@ class SettingsDialog(QDialog):
         self.theme_status_label.setText("正在根据默认立绘生成配色...")
         self._set_theme_ai_busy(True)
         thread = QThread(self)
-        worker = ThemeAiWorker(
+        worker = settings_workers.ThemeAiWorker(
             api_settings,
             profile,
             ai_enabled=True,
@@ -2886,6 +1567,18 @@ class SettingsDialog(QDialog):
         if self._theme_ai_thread is not None:
             QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再保存设置。")
             return
+        if self._memory_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "记忆模型正在导入，请等待完成后再保存设置。")
+            return
+        if self._memory_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "记忆模型正在在线安装，请等待完成后再保存设置。")
+            return
+        if self._backchannel_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "接话模型正在导入，请等待完成后再保存设置。")
+            return
+        if self._backchannel_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "接话模型正在在线安装，请等待完成后再保存设置。")
+            return
 
         accept_values = self._collect_accept_values()
         if accept_values is None:
@@ -2954,7 +1647,7 @@ class SettingsDialog(QDialog):
             "subtitle_typing_interval_ms": subtitle_typing_interval_ms,
             "reply_segment_pause_ms": reply_segment_pause_ms,
             "theme_settings": theme_settings,
-            "proactive_care_settings": ProactiveCareSettings(
+            "screen_awareness_settings": ScreenAwarenessSettings(
                 enabled=self.proactive_screen_context_enabled_check.isChecked(),
                 screen_context_enabled=self.proactive_screen_context_enabled_check.isChecked(),
                 check_interval_minutes=self.proactive_check_interval_spin.value(),
@@ -2971,6 +1664,8 @@ class SettingsDialog(QDialog):
                     and self.debug_body_enabled_check.isChecked()
                 ),
                 file_enabled=self.debug_file_enabled_check.isChecked(),
+                stage_debug_overlay=self.stage_debug_overlay_check.isChecked(),
+                stage_collision_mask=self.stage_collision_mask_check.isChecked(),
             ),
             "startup_settings": StartupSettings(
                 launch_at_login=(
@@ -2989,7 +1684,7 @@ class SettingsDialog(QDialog):
                 delay_ms=self.backchannel_delay_spin.value(),
                 probability=self.backchannel_probability_spin.value(),
                 tts_enabled=self.backchannel_tts_enabled_check.isChecked(),
-                # timeout_ms 设置页不暴露,保存时保留 YAML 已配置值(避免覆盖回默认)
+                # timeout_ms 设置页不暴露，保存时保留 YAML 已配置值，避免覆盖回默认。
                 timeout_ms=self.backchannel_settings.timeout_ms,
             ),
         }
@@ -3006,7 +1701,7 @@ class SettingsDialog(QDialog):
         subtitle_typing_interval_ms = values["subtitle_typing_interval_ms"]
         reply_segment_pause_ms = values["reply_segment_pause_ms"]
         theme_settings = values["theme_settings"]
-        proactive_care_settings = values["proactive_care_settings"]
+        screen_awareness_settings = values["screen_awareness_settings"]
         mcp_settings = values["mcp_settings"]
         debug_log_settings = values["debug_log_settings"]
         startup_settings = values["startup_settings"]
@@ -3027,7 +1722,7 @@ class SettingsDialog(QDialog):
             return
         if not isinstance(theme_settings, ThemeSettings):
             return
-        if not isinstance(proactive_care_settings, ProactiveCareSettings):
+        if not isinstance(screen_awareness_settings, ScreenAwarenessSettings):
             return
         if not isinstance(mcp_settings, MCPRuntimeSettings):
             return
@@ -3070,7 +1765,8 @@ class SettingsDialog(QDialog):
         self.result_reply_segment_pause_ms = reply_segment_pause_ms
         self.result_theme_settings = theme_settings
         self.result_theme_write_mode = self._theme_write_mode
-        self.result_proactive_care_settings = proactive_care_settings
+        self.result_screen_awareness_settings = screen_awareness_settings
+        self.result_proactive_care_settings = screen_awareness_settings
         self.result_mcp_settings = mcp_settings
         self.result_debug_log_settings = debug_log_settings
         self.result_startup_settings = startup_settings
@@ -3085,45 +1781,71 @@ class SettingsDialog(QDialog):
             return False
         return save_plugin_enabled_overrides(self.base_dir, enabled_by_id)
 
-    def _active_background_thread_guard(self) -> str:
-        """若有任何后台线程正在运行，返回可读的原因字符串；否则返回空串。
-
-        统一在 reject() / closeEvent() 中调用，防止 UI 销毁后线程回调
-        访问已释放控件，引发 RuntimeError 或 Segment Fault 崩溃。
-        """
-        if self._api_test_thread is not None:
-            return "API 测试仍在进行，请等待完成后再关闭设置。"
-        if self._api_model_probe_thread is not None:
-            return "模型列表仍在检测，请等待完成后再关闭设置。"
-        if self._tts_test_thread is not None:
-            return "TTS 服务检测仍在进行，请等待完成后再关闭设置。"
-        if self._character_export_thread is not None:
-            return "角色包导出仍在进行，请等待完成后再关闭设置。"
-        if self._theme_ai_thread is not None:
-            return "AI 配色仍在生成，请等待完成后再关闭设置。"
-        if getattr(self, "_memory_list_thread", None) is not None:
-            return "长期记忆列表仍在读取，请等待完成后再关闭设置。"
-        if getattr(self, "_memory_model_import_thread", None) is not None:
-            return "记忆模型正在导入，请等待完成后再关闭设置。"
-        if getattr(self, "_memory_model_download_thread", None) is not None:
-            return "记忆模型正在在线安装，请等待完成后再关闭设置。"
-        if getattr(self, "_backchannel_model_import_thread", None) is not None:
-            return "接话模型正在导入，请等待完成后再关闭设置。"
-        if getattr(self, "_backchannel_model_download_thread", None) is not None:
-            return "接话模型正在在线安装，请等待完成后再关闭设置。"
-        return ""
-
     def reject(self) -> None:
-        reason = self._active_background_thread_guard()
-        if reason:
-            QMessageBox.information(self, "操作进行中", reason)
+        if self._api_test_thread is not None:
+            QMessageBox.information(self, "测试中", "API 测试仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._api_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "模型列表仍在检测，请等待完成后再关闭设置。")
+            return
+        if self._tts_test_thread is not None:
+            QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._character_export_thread is not None:
+            QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._theme_ai_thread is not None:
+            QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
+            return
+        if self._memory_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "记忆模型正在导入，请等待完成后再关闭设置。")
+            return
+        if self._memory_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "记忆模型正在在线安装，请等待完成后再关闭设置。")
+            return
+        if self._backchannel_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "接话模型正在导入，请等待完成后再关闭设置。")
+            return
+        if self._backchannel_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "接话模型正在在线安装，请等待完成后再关闭设置。")
             return
         super().reject()
 
     def closeEvent(self, event):  # type: ignore[no-untyped-def]
-        reason = self._active_background_thread_guard()
-        if reason:
-            QMessageBox.information(self, "操作进行中", reason)
+        if self._api_test_thread is not None:
+            QMessageBox.information(self, "测试中", "API 测试仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._api_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "模型列表仍在检测，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._tts_test_thread is not None:
+            QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._character_export_thread is not None:
+            QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._theme_ai_thread is not None:
+            QMessageBox.information(self, "AI 配色中", "AI 配色仍在生成，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._memory_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "记忆模型正在导入，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._memory_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "记忆模型正在在线安装，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._backchannel_model_import_thread is not None:
+            QMessageBox.information(self, "导入中", "接话模型正在导入，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._backchannel_model_download_thread is not None:
+            QMessageBox.information(self, "安装中", "接话模型正在在线安装，请等待完成后再关闭设置。")
             event.ignore()
             return
         super().closeEvent(event)
@@ -3151,7 +1873,7 @@ class SettingsDialog(QDialog):
         self._pending_api_accept_values = dict(accept_values) if accept_values is not None else None
         self._set_api_test_busy(True)
         thread = QThread()
-        worker = ApiConnectionTestWorker(settings)
+        worker = settings_workers.ApiConnectionTestWorker(settings)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_api_test_success)
@@ -3217,7 +1939,7 @@ class SettingsDialog(QDialog):
             return
         self._set_api_model_probe_busy(True)
         thread = QThread()
-        worker = ApiModelListProbeWorker(settings)
+        worker = settings_workers.ApiModelListProbeWorker(settings)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_api_model_probe_success)
@@ -3282,7 +2004,7 @@ class SettingsDialog(QDialog):
         self._set_tts_test_busy(True)
 
         thread = QThread()
-        worker = TTSTestWorker(settings)
+        worker = settings_workers.TTSTestWorker(settings, base_dir=self.base_dir)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_tts_test_success)
@@ -3481,7 +2203,7 @@ class SettingsDialog(QDialog):
         if profile is None:
             QMessageBox.warning(self, "导出失败", "当前没有可导出的角色。")
             return
-        if export_kind in ("full", "voice") and not _has_exportable_voice_model(profile):
+        if export_kind in ("full", "voice") and not settings_workers._has_exportable_voice_model(profile):
             if export_kind == "full":
                 QMessageBox.warning(
                     self,
@@ -3527,7 +2249,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         self._set_character_export_busy(True)
         thread = QThread()
-        worker = CharacterArchiveExportWorker(profile, output_path, export_kind)
+        worker = settings_workers.CharacterArchiveExportWorker(profile, output_path, export_kind)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_character_export_success)
@@ -3588,7 +2310,7 @@ class SettingsDialog(QDialog):
         if busy is None:
             busy = self._character_export_thread is not None
         has_profile = profile is not None
-        has_voice_model = _has_exportable_voice_model(profile)
+        has_voice_model = settings_workers._has_exportable_voice_model(profile)
         self.character_export_full_action.setEnabled(not busy and has_voice_model)
         self.character_export_card_action.setEnabled(not busy and has_profile)
         self.character_export_voice_action.setEnabled(not busy and has_voice_model)
@@ -3853,7 +2575,7 @@ def _bundle_tts_config_display(provider: str, work_dir: Path | None) -> str:
 
 def _default_genie_onnx_dir(base_dir: Path, profile: CharacterProfile | None) -> Path:
     character_id = profile.id if profile is not None else "default"
-    return base_dir / "data" / "tts_bundles" / "onnx" / character_id
+    return StoragePaths(base_dir).tts_bundle_onnx_for(character_id)
 
 
 def _optional_path(value: str, base_dir: Path) -> Path | None:
@@ -3864,15 +2586,6 @@ def _optional_path(value: str, base_dir: Path) -> Path | None:
     if path.is_absolute():
         return path
     return base_dir / path
-
-
-def _image_file_to_data_url(path: Path) -> str:
-    data = path.read_bytes()
-    mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
-    if not mime_type.startswith("image/"):
-        mime_type = "image/png"
-    encoded = base64.b64encode(data).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
 
 
 def _compact_memory_id(memory_id: str) -> str:

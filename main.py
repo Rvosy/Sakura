@@ -9,9 +9,15 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot, QtMsgType
 from PySide6.QtGui import QGuiApplication, QPalette, QColor
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QStyleFactory
 
+from app.config.app_version import record_app_version
+from app.config.default_configs import ensure_default_configs
+from app.config.migration_runner import MigrationRunner
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
+from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.debug_log import debug_log
+from app.core.instance import SingleInstanceGuard
+from app.core.selfcheck import run_startup_self_check
 from app.config.character_loader import CharacterConfigError
 from app.config.settings_service import AppSettingsService, StartupSettings
 from app.agent.mcp import MCPRuntimeSettings
@@ -29,7 +35,7 @@ from app.ui.subtitle_controller import (
     SPEECH_TYPING_INTERVAL_MS,
     normalize_subtitle_display_speed,
 )
-from app.voice.tts import TTSConfigError
+from app.voice.tts_settings import TTSConfigError
 from app.voice.tts_bundle import (
     TTSBundleMigration,
     TTSBundleMigrationProgress,
@@ -46,7 +52,7 @@ def _qt_message_handler(msg_type: QtMsgType, context: object, msg: str) -> None:
     # Windows 无边框透明窗口触发的无害 DWM 边框设置警告，直接丢弃
     if "setDarkBorderToWindow" in msg:
         return
-    print(msg, file=sys.stderr)
+    sys.stderr.write(f"{msg}\n")
     if msg_type == QtMsgType.QtFatalMsg:
         sys.exit(1)
 
@@ -124,19 +130,46 @@ def _set_windows_process_dpi_awareness() -> str:
 class DeferredStartupWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, base_dir: Path, context: AppContext) -> None:
         super().__init__()
         self.base_dir = base_dir
         self.context = context
+        self._cancel_token = CancellationToken()
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancel_token.cancel()
 
     @Slot()
     def run(self) -> None:
+        services: object | None = None
         try:
-            services = build_deferred_services(self.base_dir, self.context)
+            self._cancel_token.throw_if_cancelled()
+            services = build_deferred_services(
+                self.base_dir,
+                self.context,
+                cancel_checker=self._cancel_token.throw_if_cancelled,
+            )
+            if self._cancel_token.is_cancelled():
+                self._close_services(services)
+                self.cancelled.emit()
+                return
             self._move_service_objects_to_ui_thread(services)
+            self._cancel_token.throw_if_cancelled()
             self.finished.emit(services)
+            services = None
+        except OperationCancelled:
+            if services is not None:
+                self._close_services(services)
+            self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
+            if self._cancel_token.is_cancelled():
+                if services is not None:
+                    self._close_services(services)
+                self.cancelled.emit()
+                return
             self.failed.emit(str(exc))
 
     def _move_service_objects_to_ui_thread(self, services: object) -> None:
@@ -146,6 +179,29 @@ class DeferredStartupWorker(QObject):
         tts_provider = getattr(services, "tts_provider", None)
         if isinstance(tts_provider, QObject):
             tts_provider.moveToThread(application.thread())
+
+    def _close_services(self, services: object) -> None:
+        for provider in (getattr(services, "tts_provider", None),):
+            close = getattr(provider, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001
+                    debug_log("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
+        mcp_tool_provider = getattr(services, "mcp_tool_provider", None)
+        close_mcp = getattr(mcp_tool_provider, "close", None)
+        if callable(close_mcp):
+            try:
+                close_mcp()
+            except Exception as exc:  # noqa: BLE001
+                debug_log("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
+        plugin_manager = getattr(services, "plugin_manager", None)
+        shutdown_all = getattr(plugin_manager, "shutdown_all", None)
+        if callable(shutdown_all):
+            try:
+                shutdown_all()
+            except Exception as exc:  # noqa: BLE001
+                debug_log("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
 
 
 class TTSBundleMigrationWorker(QObject):
@@ -256,22 +312,57 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
     _force_light_palette(app)
 
+    # 启动自检必须先于单实例锁创建：data/ 不可写或被文件占位时，
+    # 应给出明确 fatal，而不是在锁文件目录创建阶段提前失败。
+    self_check = run_startup_self_check(BASE_DIR)
+    if self_check.fatal_issues:
+        QMessageBox.critical(None, "启动检查未通过", self_check.fatal_message())
+        return 1
+
+    # 单实例锁：防止双开并发写历史/配置、争抢记忆库锁。
+    # guard 需存活到进程结束（main 栈帧持有），崩溃残留锁由 QLockFile stale 检测接管。
+    instance_guard = SingleInstanceGuard(BASE_DIR)
+    if not instance_guard.acquire():
+        QMessageBox.warning(
+            None,
+            "Sakura 已在运行",
+            f"{instance_guard.holder_description()}正在运行中。\n"
+            "请先退出已有实例（可在系统托盘中找到它）。",
+        )
+        return 0
+    app.aboutToQuit.connect(instance_guard.release)
+
+    # 发布包不携带 mcp.yaml/plugins.yaml（避免覆盖升级冲掉用户配置），缺失时生成默认
+    ensure_default_configs(BASE_DIR)
+    # 记录/比对 app_version，覆盖升级后第一时间在日志中留痕
+    record_app_version(BASE_DIR)
+
+    # 版本化数据迁移：失败不阻断启动（原文件保持原位，按旧形态继续运行，下次启动重试）
+    migration_report = MigrationRunner(BASE_DIR).run()
+    if migration_report.failed:
+        QMessageBox.warning(
+            None,
+            "数据迁移未完成",
+            "部分旧数据迁移失败，Sakura 将以兼容模式继续运行。\n"
+            "原数据未被修改，详情见运行日志（data/logs/sakura-runtime.log）。",
+        )
+
     try:
         context = build_initial_app_context(BASE_DIR)
     except CharacterConfigError as exc:
         if not _character_packages_missing(BASE_DIR):
-            print(f"[Character] 配置无效：{exc}")
+            _write_startup_error("Character", f"配置无效：{exc}")
             return 1
         try:
             context = _open_first_run_settings(BASE_DIR)
         except (CharacterConfigError, OSError, TTSConfigError, ValueError) as first_run_exc:
             QMessageBox.critical(None, "启动失败", str(first_run_exc))
-            print(f"[Character] 配置无效：{first_run_exc}")
+            _write_startup_error("Character", f"配置无效：{first_run_exc}")
             return 1
         if context is None:
             return 0
     except (OSError, ValueError) as exc:
-        print(f"[Character] 配置无效：{exc}")
+        _write_startup_error("Character", f"配置无效：{exc}")
         return 1
 
     _ensure_launch_at_login_state(BASE_DIR, context.settings_service)
@@ -281,6 +372,11 @@ def main() -> int:
     QTimer.singleShot(0, lambda: _start_tts_migration_or_deferred(BASE_DIR, pet_window))
 
     return app.exec()
+
+
+def _write_startup_error(category: str, message: str) -> None:
+    debug_log(category, "启动失败", {"error": message})
+    sys.stderr.write(f"[{category}] {message}\n")
 
 
 def _character_packages_missing(base_dir: Path) -> bool:
@@ -481,6 +577,7 @@ def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:
     worker.failed.connect(pet_window.handle_deferred_startup_failed)
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)
+    worker.cancelled.connect(thread.quit)
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
     thread.finished.connect(lambda: setattr(pet_window, "deferred_startup_thread", None))

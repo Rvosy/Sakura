@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.core.cancellation import CancelChecker, OperationCancelled
+from app.storage.atomic import atomic_write_text
+
 
 VISUAL_OBSERVATION_RECENT_MINUTES = 10
 VISUAL_OBSERVATION_RETENTION_DAYS = 7
@@ -77,10 +80,8 @@ class VisualObservationStore:
         redacted_record, _ = _redact_record_dict(asdict(record))
         records = [*self._load_raw_records(), redacted_record]
         records = self._prune(records)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as file:
-            for item in records:
-                file.write(json.dumps(item, ensure_ascii=False) + "\n")
+        text = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records)
+        atomic_write_text(self.path, text, encoding="utf-8")
 
     def recent(self, limit: int = 3, since_minutes: int | None = None) -> list[VisualObservationRecord]:
         threshold = None
@@ -161,6 +162,8 @@ def generate_visual_observation_id() -> str:
 def summarize_visual_observation(
     api_client: Any,
     job: VisualObservationJob,
+    *,
+    cancel_checker: CancelChecker | None = None,
 ) -> VisualObservationRecord:
     """调用视觉模型生成结构化观察；失败时返回可追踪的最小记录。"""
     metadata = _job_metadata(job)
@@ -185,7 +188,10 @@ def summarize_visual_observation(
                 }
             ],
             temperature=0.2,
+            cancel_checker=cancel_checker,
         )
+    except OperationCancelled:
+        raise
     except Exception as exc:
         return _fallback_record(job, metadata, f"视觉摘要生成失败：{exc}")
 

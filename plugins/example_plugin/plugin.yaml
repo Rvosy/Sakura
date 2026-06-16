@@ -7,3 +7,9 @@ entry: plugin:ExamplePlugin
 enabled: false
 priority: 30
 required: false
+permissions:
+  - tool
+  - tools_tab
+  - settings_panel
+  - chat_ui
+  - prompt_patch

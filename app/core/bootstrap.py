@@ -10,9 +10,9 @@ from app.agent.memory_curator import MemoryCurator, MemoryCurationState
 from app.config.settings_service import AppSettingsService
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
+from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.extensions import ExtensionRegistry
 from app.config.character_loader import (
-    DEFAULT_CHARACTER_ID,
     CharacterProfile,
     CharacterRegistry,
     load_character_system_prompt,
@@ -20,17 +20,16 @@ from app.config.character_loader import (
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.debug_log import debug_log
+from app.voice.factory import create_tts_provider
 from app.voice.tts import (
-    TTS_PROVIDER_GENIE,
-    GenieTTSProvider,
-    GPTSoVITSTTSProvider,
     NullTTSProvider,
-    TTSConfigError,
     TTSProvider,
     purge_tts_cache,
 )
+from app.voice.tts_settings import TTSConfigError
+from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
-from app.core.plugin_manager import SakuraPluginManager
+from app.plugins.manager import PluginManager
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -58,7 +57,7 @@ class DeferredStartupServices:
     tts_provider: TTSProvider
     tool_registry: ToolRegistry
     extension_registry: ExtensionRegistry
-    plugin_manager: SakuraPluginManager
+    plugin_manager: PluginManager
     mcp_settings: MCPRuntimeSettings
     mcp_tool_provider: MCPToolProvider | None
     errors: tuple[str, ...] = ()
@@ -128,7 +127,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         scope_id=character_profile.id,
     )
     memory_store.preload(wait=False)
-    reminder_store = ReminderStore(base_dir / "data" / "reminders.json")
+    reminder_store = ReminderStore(StoragePaths(base_dir).reminders_store())
     tool_registry = create_builtin_tool_registry(
         base_dir,
         memory_store,
@@ -136,7 +135,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
-    plugin_manager = SakuraPluginManager(base_dir=base_dir)
+    plugin_manager = PluginManager(base_dir=base_dir)
     mcp_settings = settings_service.load_mcp_runtime_settings()
     agent_runtime = AgentRuntime(
         api_client=api_client,
@@ -146,17 +145,17 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         tools=tool_registry,
         memory=memory_store,
     )
-    history_store = _create_history_store(base_dir, character_profile)
-    runtime_event_log = _create_runtime_event_log(base_dir, character_profile)
-    visual_observation_store = _create_visual_observation_store(base_dir, character_profile)
+    history_store = create_history_store(base_dir, character_profile)
+    runtime_event_log = create_runtime_event_log(base_dir, character_profile)
+    visual_observation_store = create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
     startup_settings = settings_service.load_startup_settings()
     memory_curation_settings = settings_service.load_memory_curation_settings()
     memory_curation_state = MemoryCurationState(
-        base_dir / "data" / "memory_curation_state.json"
+        StoragePaths(base_dir).memory_curation_state()
     )
     memory_curator = MemoryCurator(api_client, memory_store)
-    proactive_care_settings = settings_service.load_proactive_care_settings()
+    screen_awareness_settings = settings_service.load_screen_awareness_settings()
 
     debug_log(
         "Startup",
@@ -201,70 +200,84 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_settings=memory_curation_settings,
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
-            proactive_care_settings=proactive_care_settings,
+            screen_awareness_settings=screen_awareness_settings,
         ),
         startup_initializing=True,
     )
 
 
-def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStartupServices:
+def build_deferred_services(
+    base_dir: Path,
+    context: AppContext,
+    *,
+    cancel_checker: CancelChecker | None = None,
+) -> DeferredStartupServices:
     """后台创建启动首帧之后才需要的耗时服务。"""
 
     errors: list[str] = []
     settings_service = context.settings_service
     character_profile = context.character_profile
-
-    # 启动时清空 data/cache/tts 残留（崩溃/强退遗留的临时 wav），失败不影响启动
-    try:
-        purge_tts_cache(base_dir)
-    except OSError as exc:
-        debug_log("Startup", "TTS 缓存启动清理失败，已忽略", {"error": str(exc)})
+    tts_provider: TTSProvider | None = None
+    plugin_manager: PluginManager | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
 
     try:
-        tts_settings = settings_service.load_tts_settings(
-            character_profile=character_profile,
-        )
-        if not tts_settings.enabled:
+        check_cancelled(cancel_checker)
+        # 启动时清空 data/cache/tts 残留（崩溃/强退遗留的临时 wav），失败不影响启动
+        try:
+            purge_tts_cache(base_dir)
+        except OSError as exc:
+            debug_log("Startup", "TTS 缓存启动清理失败，已忽略", {"error": str(exc)})
+        check_cancelled(cancel_checker)
+
+        try:
+            tts_settings = settings_service.load_tts_settings(
+                character_profile=character_profile,
+            )
+            tts_provider = create_tts_provider(tts_settings, base_dir=base_dir)
+        except TTSConfigError as exc:
+            debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
+            errors.append(f"TTS 配置无效，已禁用：{exc}")
             tts_provider = NullTTSProvider()
-        elif tts_settings.provider == TTS_PROVIDER_GENIE:
-            tts_provider = GenieTTSProvider(tts_settings, base_dir=base_dir)
-        else:
-            tts_provider = GPTSoVITSTTSProvider(tts_settings, base_dir=base_dir)
-    except TTSConfigError as exc:
-        print(f"[TTS] 配置无效，已禁用 TTS：{exc}")
-        debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
-        errors.append(f"TTS 配置无效，已禁用：{exc}")
-        tts_provider = NullTTSProvider()
-    debug_log(
-        "Startup",
-        "TTS Provider 已创建",
-        {"provider": type(tts_provider).__name__},
-    )
+        check_cancelled(cancel_checker)
+        debug_log(
+            "Startup",
+            "TTS Provider 已创建",
+            {"provider": type(tts_provider).__name__},
+        )
 
-    tool_registry = create_builtin_tool_registry(
-        base_dir,
-        context.memory_store,
-        context.reminder_store,
-    )
-    tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
-    extension_registry = ExtensionRegistry()
-    extension_registry.apply_tools(tool_registry)
-    plugin_manager = SakuraPluginManager(base_dir=base_dir)
-    try:
-        plugin_manager.load_from_config(tool_registry)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[Plugin] 启动加载失败，已跳过插件：{exc}")
-        debug_log("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
-        errors.append(f"插件加载失败，已跳过：{exc}")
-    for result in plugin_manager.results:
-        if result.error:
-            errors.append(f"插件 {result.spec.plugin_id or result.spec.entry} 加载失败：{result.error}")
-    mcp_settings = settings_service.load_mcp_runtime_settings()
-    mcp_tool_provider = register_mcp_tools_from_config(
-        base_dir,
-        tool_registry,
-        runtime_settings=mcp_settings,
-    )
+        tool_registry = create_builtin_tool_registry(
+            base_dir,
+            context.memory_store,
+            context.reminder_store,
+        )
+        tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
+        extension_registry = ExtensionRegistry()
+        extension_registry.apply_tools(tool_registry)
+        plugin_manager = PluginManager(base_dir=base_dir)
+        try:
+            check_cancelled(cancel_checker)
+            plugin_manager.load_from_config(tool_registry)
+        except OperationCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            debug_log("Plugin", "启动加载失败，已跳过插件", {"error": str(exc)})
+            debug_log("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
+            errors.append(f"插件加载失败，已跳过：{exc}")
+        check_cancelled(cancel_checker)
+        for result in plugin_manager.results:
+            if result.error:
+                errors.append(f"插件 {result.spec.plugin_id or result.spec.entry} 加载失败：{result.error}")
+        mcp_settings = settings_service.load_mcp_runtime_settings()
+        mcp_tool_provider = register_mcp_tools_from_config(
+            base_dir,
+            tool_registry,
+            runtime_settings=mcp_settings,
+        )
+        check_cancelled(cancel_checker)
+    except OperationCancelled:
+        _close_deferred_service_objects(tts_provider, mcp_tool_provider, plugin_manager)
+        raise
 
     debug_log(
         "Startup",
@@ -288,42 +301,29 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
     )
 
 
-def build_app_context(base_dir: Path, startup_state: StartupState | None = None) -> AppContext:
-    """兼容旧调用：同步创建完整依赖。"""
-
-    context = build_initial_app_context(base_dir, startup_state=startup_state)
-    deferred = build_deferred_services(base_dir, context)
-    context.agent_runtime.tools = deferred.tool_registry
-    context.agent_runtime.set_prompt_patches(deferred.plugin_manager.prompt_patches)
-    return AppContext(
-        base_dir=context.base_dir,
-        settings_service=context.settings_service,
-        settings=context.settings,
-        character_registry=context.character_registry,
-        character_profile=context.character_profile,
-        system_prompt=context.system_prompt,
-        tts_provider=deferred.tts_provider,
-        core=CoreServices(
-            api_client=context.api_client,
-            tool_registry=deferred.tool_registry,
-            agent_runtime=context.agent_runtime,
-        ),
-        storage=context.storage,
-        features=FeatureServices(
-            settings_service=context.settings_service,
-            extension_registry=deferred.extension_registry,
-            mcp_tool_provider=deferred.mcp_tool_provider,
-            plugin_manager=deferred.plugin_manager,
-            mcp_settings=deferred.mcp_settings,
-            debug_log_settings=context.debug_log_settings,
-            startup_settings=context.startup_settings,
-            memory_curation_settings=context.memory_curation_settings,
-            memory_curation_state=context.memory_curation_state,
-            memory_curator=context.memory_curator,
-            proactive_care_settings=context.proactive_care_settings,
-        ),
-        startup_initializing=False,
-    )
+def _close_deferred_service_objects(
+    tts_provider: TTSProvider | None,
+    mcp_tool_provider: MCPToolProvider | None,
+    plugin_manager: PluginManager | None,
+) -> None:
+    close_tts = getattr(tts_provider, "close", None)
+    if callable(close_tts):
+        try:
+            close_tts()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
+    close_mcp = getattr(mcp_tool_provider, "close", None)
+    if callable(close_mcp):
+        try:
+            close_mcp()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
+    shutdown_all = getattr(plugin_manager, "shutdown_all", None)
+    if callable(shutdown_all):
+        try:
+            shutdown_all()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
 
 
 def _normalize_portrait_scale_percent(value: object) -> int:
@@ -334,34 +334,21 @@ def _normalize_portrait_scale_percent(value: object) -> int:
     return max(PORTRAIT_SCALE_MIN_PERCENT, min(PORTRAIT_SCALE_MAX_PERCENT, percent))
 
 
-def _create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHistoryStore:
-    history_path = base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
-    _migrate_legacy_history(base_dir, profile, history_path)
+def create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHistoryStore:
+    """按角色创建聊天历史存储；路径统一来自 StoragePaths（pet_window 复用）。"""
+    history_path = StoragePaths(base_dir).chat_history_for(profile.id)
     return ChatHistoryStore(history_path, profile.display_name)
 
 
-def _create_runtime_event_log(base_dir: Path, profile: CharacterProfile) -> RuntimeEventLog:
+def create_runtime_event_log(base_dir: Path, profile: CharacterProfile) -> RuntimeEventLog:
     """按角色创建运行时事件日志（与聊天历史路径风格一致，但完全独立）。"""
-    event_path = base_dir / "data" / "runtime_events" / f"{profile.id}.jsonl"
+    event_path = StoragePaths(base_dir).runtime_events_for(profile.id)
     return RuntimeEventLog(event_path)
 
 
-def _create_visual_observation_store(
+def create_visual_observation_store(
     base_dir: Path,
     profile: CharacterProfile,
 ) -> VisualObservationStore:
-    visual_path = base_dir / "data" / "visual_observations" / f"{profile.id}.jsonl"
+    visual_path = StoragePaths(base_dir).visual_observations_for(profile.id)
     return VisualObservationStore(visual_path)
-
-
-def _migrate_legacy_history(base_dir: Path, profile: CharacterProfile, history_path: Path) -> None:
-    if profile.id != DEFAULT_CHARACTER_ID or history_path.exists():
-        return
-    legacy_path = base_dir / "data" / "chat_history.jsonl"
-    if not legacy_path.exists():
-        return
-    try:
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        history_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-    except OSError as exc:
-        print(f"[History] 旧历史迁移失败：{exc}")

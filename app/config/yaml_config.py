@@ -5,6 +5,8 @@ from typing import Any
 
 import yaml
 
+from app.storage.atomic import atomic_write_text
+
 
 def load_yaml_mapping(path: Path) -> dict[str, Any]:
     """读取 YAML mapping；缺失、空文件或非 mapping 时返回空字典。"""
@@ -22,13 +24,16 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
 
 
 def save_yaml_mapping(path: Path, data: dict[str, Any]) -> None:
-    """保存 YAML mapping，保留中文并使用稳定顺序。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    """保存 YAML mapping，保留中文并使用稳定顺序。
+
+    使用原子写并滚动保留上一版本 .bak，避免断电/磁盘满损坏配置。
+    """
+    atomic_write_text(
+        path,
         yaml.safe_dump(
             data,
             allow_unicode=True,
             sort_keys=False,
         ),
-        encoding="utf-8",
+        backup=True,
     )

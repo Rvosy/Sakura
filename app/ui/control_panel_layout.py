@@ -46,8 +46,9 @@ CONTROL_PANEL_BOTTOM_MARGIN = 84
 # 舞台（主窗口）尺寸保底与下限，复刻 pet_window 中的同名常量。
 DEFAULT_STAGE_WIDTH = 860
 MIN_STAGE_HEIGHT = 420
-# 窗口宽度 = max(DEFAULT_STAGE_WIDTH, panel_width + STAGE_WIDTH_PANEL_PAD)；
+# 窗口宽度 = max(立绘宽, panel_width) + STAGE_WIDTH_PANEL_PAD(动态包络,无 860 保底);
 # 气泡/输入栏宽度 = min(panel_width, max(MIN_CONTROL_PANEL_WIDTH, window_w - BUBBLE_INNER_PAD))。
+# DEFAULT_STAGE_WIDTH 保留作初始名义尺寸/历史参考,不再参与 window_w 计算。
 STAGE_WIDTH_PANEL_PAD = 96
 BUBBLE_INNER_PAD = 32
 # 立绘底边到窗口底边的基础留白（重构前 _layout_stage 中 `height - portrait_h - 62` 的 62）。
@@ -102,8 +103,9 @@ def compute_pet_layout(
     pw = max(0, int(portrait_width))
     ph = max(0, int(portrait_height))
 
-    # 横向：窗口宽度保底 860 随控制组加宽；气泡/输入栏共用同一宽度并水平居中。
-    window_w = max(DEFAULT_STAGE_WIDTH, panel_width + STAGE_WIDTH_PANEL_PAD)
+    # 横向:窗口宽度取「立绘」与「控制组」中较宽者 + 边距(动态包络),不再固定保底 860,
+    # 避免窄立绘/窄气泡时窗口两侧留大片空白(及随之而来的多余可点击/碰撞区)。
+    window_w = max(pw, panel_width) + STAGE_WIDTH_PANEL_PAD
     bubble_w = min(panel_width, max(MIN_CONTROL_PANEL_WIDTH, window_w - BUBBLE_INNER_PAD))
 
     # 纵向：参考原点为立绘底边(0)，y 向下为正。

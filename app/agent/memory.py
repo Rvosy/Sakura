@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
+from app.storage.atomic import rename_with_retry
 from app.storage.chat_history import ChatHistoryEntry
+from app.storage.paths import StoragePaths
 
 if TYPE_CHECKING:
     from app.llm.api_client import ApiSettings
@@ -334,7 +336,7 @@ class MemoryStore:
     def build_mem0_config(self, api_settings: "ApiSettings | None" = None) -> dict[str, Any]:
         """生成 mem0 配置：本地 Qdrant + Sakura 当前 OpenAI-compatible LLM。"""
 
-        memory_dir = self.base_dir / "data" / "memory"
+        memory_dir = StoragePaths(self.base_dir).memory_dir
         qdrant_path = memory_dir / "qdrant"
         qdrant_path.mkdir(parents=True, exist_ok=True)
         settings = self.api_settings if api_settings is None else api_settings
@@ -855,7 +857,7 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
         if backup_model_dir.exists():
             shutil.rmtree(backup_model_dir, ignore_errors=True)
         if destination_model_dir.exists():
-            destination_model_dir.rename(backup_model_dir)
+            rename_with_retry(destination_model_dir, backup_model_dir)
         moved = False
         try:
             shutil.move(str(staging_model_dir), str(destination_model_dir))
@@ -866,7 +868,7 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
             if moved and destination_model_dir.exists():
                 shutil.rmtree(destination_model_dir, ignore_errors=True)
             if backup_model_dir.exists() and not destination_model_dir.exists():
-                backup_model_dir.rename(destination_model_dir)
+                rename_with_retry(backup_model_dir, destination_model_dir)
             raise
     except zipfile.BadZipFile as exc:
         raise MemoryModelImportError("不是有效的记忆模型 ZIP 包。") from exc

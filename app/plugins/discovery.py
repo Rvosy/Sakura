@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from app.plugins.models import PluginSpec
+from app.storage.paths import StoragePaths
 
 
 class PluginDiscovery:
@@ -26,7 +27,7 @@ class PluginDiscovery:
 
     def __init__(self, base_dir: Path, config_path: Path | None = None) -> None:
         self.base_dir = base_dir
-        self._config_path = config_path or base_dir / "data" / "config" / "plugins.yaml"
+        self._config_path = config_path or StoragePaths(base_dir).plugins_config()
 
     def discover(self) -> list[PluginSpec]:
         """发现所有已配置的插件（按优先级降序排列）。"""
@@ -40,9 +41,8 @@ class PluginDiscovery:
 
     def _load_specs(self) -> list[PluginSpec]:
         manifest_specs = self._load_manifest_specs()
-        overrides, legacy_specs = self._load_config_specs()
+        overrides = self._load_config_overrides()
         specs: list[PluginSpec] = []
-        seen_ids: set[str] = set()
         for spec in manifest_specs:
             override = overrides.get(spec.plugin_id)
             if override:
@@ -52,12 +52,6 @@ class PluginDiscovery:
                     priority=override.priority if override.priority_override else spec.priority,
                     required=override.required or spec.required,
                 )
-            specs.append(spec)
-            if spec.plugin_id:
-                seen_ids.add(spec.plugin_id)
-        for spec in legacy_specs:
-            if spec.plugin_id and spec.plugin_id in seen_ids:
-                continue
             specs.append(spec)
         return specs
 
@@ -75,57 +69,32 @@ class PluginDiscovery:
                 specs.append(spec)
         return specs
 
-    def _load_config_specs(self) -> tuple[dict[str, PluginSpec], list[PluginSpec]]:
+    def _load_config_overrides(self) -> dict[str, PluginSpec]:
         raw = _load_yaml(self._config_path)
         if not isinstance(raw, list):
-            return {}, []
+            return {}
         overrides: dict[str, PluginSpec] = {}
-        legacy_specs: list[PluginSpec] = []
         for idx, item in enumerate(raw):
             if not isinstance(item, dict):
                 continue
             plugin_id = _string_value(item.get("id"))
-            entry = item.get("entry")
+            if not plugin_id:
+                continue
             priority = _int_value(item.get("priority"), 100 - idx)
             priority_override = "priority" in item
             enabled = _bool_value(item.get("enabled"), True)
             required = _bool_value(item.get("required"), False)
-            if plugin_id:
-                overrides[plugin_id] = PluginSpec(
-                    entry=_string_value(entry) or "",
-                    plugin_id=plugin_id,
-                    enabled=enabled,
-                    priority=priority,
-                    required=required,
-                    description=_string_value(item.get("description")),
-                    source="config",
-                    priority_override=priority_override,
-                )
-                continue
-            if not isinstance(entry, str) or not entry.strip():
-                continue
-            legacy_specs.append(
-                PluginSpec(
-                    entry=entry.strip(),
-                    plugin_id=_plugin_id_from_entry(entry.strip()),
-                    enabled=enabled,
-                    priority=priority,
-                    required=required,
-                    description=_string_value(item.get("description")),
-                    source="config",
-                )
+            overrides[plugin_id] = PluginSpec(
+                entry="",
+                plugin_id=plugin_id,
+                enabled=enabled,
+                priority=priority,
+                required=required,
+                description=_string_value(item.get("description")),
+                source="config",
+                priority_override=priority_override,
             )
-        return overrides, legacy_specs
-
-
-def load_plugin_specs(path: Path) -> list[PluginSpec]:
-    """兼容旧调用：从 plugins.yaml 所在项目推导 base_dir 后发现插件。"""
-    config_path = path
-    if path.name == "plugins.yaml" and path.parent.name == "config" and path.parent.parent.name == "data":
-        base_dir = path.parent.parent.parent
-    else:
-        base_dir = path.parent
-    return PluginDiscovery(base_dir, config_path=config_path).discover()
+        return overrides
 
 
 def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | None:
@@ -139,10 +108,11 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         name=_string_value(raw.get("name")) or plugin_id,
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
-        api_version=_int_value(raw.get("api_version"), 1),
+        api_version=_int_value(raw.get("api_version"), 0),
         enabled=_bool_value(raw.get("enabled"), True),
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),
+        permissions=_permissions_value(raw.get("permissions")),
         plugin_root=plugin_root,
         source="manifest",
     )
@@ -154,21 +124,17 @@ def save_plugin_enabled_overrides(
     config_path: Path | None = None,
 ) -> bool:
     """保存插件启用状态覆盖配置，返回配置是否发生变化。"""
-    path = config_path or base_dir / "data" / "config" / "plugins.yaml"
+    path = config_path or StoragePaths(base_dir).plugins_config()
     raw = _load_yaml(path)
     entries = list(raw) if isinstance(raw, list) else []
     specs = PluginDiscovery(base_dir, config_path=path).discover()
     by_id: dict[str, dict[str, Any]] = {}
-    legacy_entries: list[Any] = []
     for item in entries:
         if not isinstance(item, dict):
-            legacy_entries.append(item)
             continue
         plugin_id = _string_value(item.get("id"))
         if plugin_id:
             by_id[plugin_id] = dict(item)
-        else:
-            legacy_entries.append(dict(item))
 
     next_entries: list[dict[str, Any] | Any] = []
     seen_ids: set[str] = set()
@@ -180,8 +146,6 @@ def save_plugin_enabled_overrides(
             enabled = True
         item = by_id.get(spec.plugin_id, {})
         item["id"] = spec.plugin_id
-        if spec.source != "manifest" and spec.entry:
-            item["entry"] = spec.entry
         item["enabled"] = bool(enabled)
         item["priority"] = int(item.get("priority", spec.priority))
         next_entries.append(item)
@@ -190,7 +154,6 @@ def save_plugin_enabled_overrides(
     for plugin_id, item in by_id.items():
         if plugin_id not in seen_ids:
             next_entries.append(item)
-    next_entries.extend(legacy_entries)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     next_text = yaml.safe_dump(next_entries, allow_unicode=True, sort_keys=False)
@@ -233,9 +196,12 @@ def _bool_value(value: Any, default: bool) -> bool:
     return default
 
 
-def _plugin_id_from_entry(entry: str) -> str:
-    module_name = entry.partition(":")[0]
-    parts = module_name.split(".")
-    if len(parts) >= 2 and parts[0] == "plugins":
-        return parts[1]
-    return module_name.rsplit(".", 1)[-1]
+def _permissions_value(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    permissions: list[str] = []
+    for item in value:
+        text = _string_value(item)
+        if text:
+            permissions.append(text)
+    return tuple(dict.fromkeys(permissions))

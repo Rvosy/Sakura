@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sdk import PluginBase, PluginCapabilityRegistry, PluginContext
-from sdk.types import ToolContribution, ToolsTabContribution
+from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
+from app.plugins import ToolContribution, ToolsTabContribution
 
 from plugins.playwright_browser import browser
 
@@ -42,7 +42,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
             name="playwright_navigate",
             description="使用 Playwright 浏览器打开网页 URL，并返回当前页面标题。",
             parameters=_object_schema({"url": {"type": "string"}}, ["url"]),
-            handler=browser.navigate,
+            handler=lambda args: browser.navigate(str(args["url"])),
             group="browser",
             risk="medium",
             requires_confirmation=True,
@@ -51,7 +51,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
             name="playwright_get_text",
             description="读取当前 Playwright 页面文本。selector 默认 body。",
             parameters=_object_schema({"selector": {"type": "string"}}, []),
-            handler=browser.get_text,
+            handler=lambda args: browser.get_text(str(args.get("selector", "body") or "body")),
             group="browser",
             risk="low",
             requires_confirmation=False,
@@ -66,7 +66,10 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
                 },
                 ["query"],
             ),
-            handler=browser.search_web,
+            handler=lambda args: browser.search_web(
+                str(args["query"]),
+                int(args.get("limit", 5)),
+            ),
             group="browser",
             risk="medium",
             requires_confirmation=True,
@@ -75,7 +78,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
             name="playwright_screenshot",
             description="截取当前 Playwright 页面截图，返回 data URL。",
             parameters=_object_schema({"full_page": {"type": "boolean"}}, []),
-            handler=browser.screenshot,
+            handler=lambda args: browser.screenshot(bool(args.get("full_page", False))),
             group="browser",
             risk="medium",
             requires_confirmation=False,
@@ -84,7 +87,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
             name="playwright_click",
             description="点击当前 Playwright 页面中的 CSS selector。",
             parameters=_object_schema({"selector": {"type": "string"}}, ["selector"]),
-            handler=browser.click,
+            handler=lambda args: browser.click(str(args["selector"])),
             group="browser",
             risk="medium",
             requires_confirmation=True,
@@ -99,7 +102,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
                 },
                 ["selector", "value"],
             ),
-            handler=browser.fill,
+            handler=lambda args: browser.fill(str(args["selector"]), str(args["value"])),
             group="browser",
             risk="medium",
             requires_confirmation=True,
@@ -108,7 +111,7 @@ def _register_tools(register: PluginCapabilityRegistry) -> None:
             name="playwright_evaluate",
             description="在当前 Playwright 页面执行 JavaScript 代码。",
             parameters=_object_schema({"js_code": {"type": "string"}}, ["js_code"]),
-            handler=browser.evaluate,
+            handler=lambda args: browser.evaluate(str(args["js_code"])),
             group="browser",
             risk="high",
             requires_confirmation=True,

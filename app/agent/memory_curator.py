@@ -7,6 +7,8 @@ from typing import Any
 
 from app.core.debug_log import debug_log
 from app.agent.memory import MemoryStore
+from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
+from app.storage.atomic import atomic_write_text
 from app.storage.chat_history import ChatHistoryEntry
 
 
@@ -94,8 +96,8 @@ class MemoryCurationState:
         return entries[processed:]
 
     def _save(self, state: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps(_normalize_state(state), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -116,7 +118,12 @@ class MemoryCurator:
             else memory_store
         )
 
-    def curate_entries(self, entries: list[ChatHistoryEntry]) -> MemoryCurationResult:
+    def curate_entries(
+        self,
+        entries: list[ChatHistoryEntry],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> MemoryCurationResult:
         model_entries = _entries_for_model(entries)
         if not model_entries:
             return MemoryCurationResult(processed_entries=len(entries))
@@ -129,7 +136,9 @@ class MemoryCurator:
         unclassified = 0
         event_counts: dict[str, int] = {}
         for chunk in _chunk_entries_for_curation(entries):
+            check_cancelled(cancel_checker)
             counts = self.memory_store.add_history_entries(chunk)
+            check_cancelled(cancel_checker)
             chunk_created = counts.created
             chunk_updated = counts.updated
             chunk_archived = counts.deleted
@@ -138,7 +147,10 @@ class MemoryCurator:
             chunk_unclassified = counts.unclassified
             _merge_event_counts(event_counts, counts.event_counts)
             if chunk_returned == 0 and self.api_client is not None:
-                fallback_created = self._curate_entries_with_fallback(_entries_for_model(chunk))
+                fallback_created = self._curate_entries_with_fallback(
+                    _entries_for_model(chunk),
+                    cancel_checker=cancel_checker,
+                )
                 if fallback_created:
                     event_counts["FALLBACK_ADD"] = event_counts.get("FALLBACK_ADD", 0) + fallback_created
                     chunk_created += fallback_created
@@ -161,7 +173,12 @@ class MemoryCurator:
             event_counts=event_counts,
         )
 
-    def _curate_entries_with_fallback(self, entries: list[dict[str, str]]) -> int:
+    def _curate_entries_with_fallback(
+        self,
+        entries: list[dict[str, str]],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> int:
         """mem0 抽取为空时，用主模型兜底抽取明确长期事实。"""
 
         if not entries:
@@ -174,7 +191,10 @@ class MemoryCurator:
                 temperature=0.1,
                 response_format={"type": "json_object"},
                 max_tokens=1200,
+                cancel_checker=cancel_checker,
             )
+        except OperationCancelled:
+            raise
         except Exception as exc:  # 兜底失败不应让主聊天崩溃。
             debug_log("Memory", "记忆整理兜底抽取失败", {"error": str(exc)})
             return 0
