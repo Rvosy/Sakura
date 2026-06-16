@@ -1200,8 +1200,19 @@ class PetWindow(QWidget):
     def close_plugins(self) -> None:
         self.plugin_manager.shutdown_all()
 
+    def _clear_input_focus_for_pet_interaction(self) -> None:
+        """点击/拖动桌宠本体时解除输入框焦点，避免输入栏被误判为常显。"""
+        input_edit = getattr(self, "input_edit", None)
+        has_focus = getattr(input_edit, "hasFocus", None)
+        if not callable(has_focus) or not has_focus():
+            return
+        clear_focus = getattr(input_edit, "clearFocus", None)
+        if callable(clear_focus):
+            clear_focus()
+
     def _handle_mouse_press(self, event: QMouseEvent, source_widget: QWidget | None = None) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
+            self._clear_input_focus_for_pet_interaction()
             self.drag_anchor = self._drag_anchor_from_event(event, source_widget)
             event.accept()
             return True

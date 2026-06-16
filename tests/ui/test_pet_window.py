@@ -1009,6 +1009,60 @@ def test_pet_window_context_menu_opens_on_right_release_not_press() -> None:
     assert window.context_menu_positions == [release_event.position().toPoint()]
 
 
+def test_pet_window_left_press_clears_input_focus_without_clearing_text() -> None:
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    from app.ui.pet_window import PetWindow
+
+    class MouseEventStub:
+        def __init__(self) -> None:
+            self.accepted = False
+            self._position = qtcore.QPointF(40, 60)
+
+        def button(self):  # type: ignore[no-untyped-def]
+            return qtcore.Qt.MouseButton.LeftButton
+
+        def position(self):  # type: ignore[no-untyped-def]
+            return self._position
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    class InputStub:
+        def __init__(self) -> None:
+            self._text = "还没发出去的话"
+            self.focused = True
+            self.clear_focus_count = 0
+
+        def hasFocus(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
+            return self.focused
+
+        def clearFocus(self) -> None:  # noqa: N802 - Qt API 兼容命名。
+            self.focused = False
+            self.clear_focus_count += 1
+
+        def text(self) -> str:
+            return self._text
+
+    class MinimalWindow:
+        _handle_mouse_press = PetWindow._handle_mouse_press
+        _drag_anchor_from_event = PetWindow._drag_anchor_from_event
+        _clear_input_focus_for_pet_interaction = PetWindow._clear_input_focus_for_pet_interaction
+
+        def __init__(self) -> None:
+            self.input_edit = InputStub()
+            self.drag_anchor = None
+
+    window = MinimalWindow()
+    press_event = MouseEventStub()
+
+    assert window._handle_mouse_press(press_event) is True
+    assert window.input_edit.clear_focus_count == 1
+    assert not window.input_edit.hasFocus()
+    assert window.input_edit.text() == "还没发出去的话"
+    assert window.drag_anchor == qtcore.QPoint(40, 60)
+    assert press_event.accepted
+
+
 def test_pet_window_drag_uses_window_local_anchor_not_frame_geometry() -> None:
     qtcore = pytest.importorskip("PySide6.QtCore")
     from app.ui.pet_window import PetWindow
@@ -1055,6 +1109,7 @@ def test_pet_window_drag_uses_window_local_anchor_not_frame_geometry() -> None:
         _handle_mouse_move = PetWindow._handle_mouse_move
         _handle_mouse_release = PetWindow._handle_mouse_release
         _drag_anchor_from_event = PetWindow._drag_anchor_from_event
+        _clear_input_focus_for_pet_interaction = PetWindow._clear_input_focus_for_pet_interaction
 
         def __init__(self) -> None:
             self.drag_anchor = None
@@ -1130,6 +1185,7 @@ def test_pet_window_drag_maps_child_widget_anchor_to_window_coordinates() -> Non
         _handle_mouse_press = PetWindow._handle_mouse_press
         _handle_mouse_move = PetWindow._handle_mouse_move
         _drag_anchor_from_event = PetWindow._drag_anchor_from_event
+        _clear_input_focus_for_pet_interaction = PetWindow._clear_input_focus_for_pet_interaction
 
         def __init__(self) -> None:
             self.drag_anchor = None
