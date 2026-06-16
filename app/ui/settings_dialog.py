@@ -35,6 +35,8 @@ from app.backchannel.model_cache import (
     DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
     BackchannelModelImportResult,
     backchannel_model_cached,
+    download_backchannel_model,
+    import_backchannel_model_archive,
 )
 from app.core.debug_log import debug_log
 from app.storage.paths import StoragePaths
@@ -615,6 +617,8 @@ class SettingsDialog(QDialog):
         if not callable(getattr(self.memory_store, "download_embedding_model", None)):
             QMessageBox.warning(self, "安装失败", "当前记忆模块不支持在线安装模型。")
             return
+        if not self._memory_entries_loaded_once:
+            self._ensure_memory_entries_loaded()
         self._start_memory_model_download()
 
     def _import_backchannel_model_archive(self) -> None:
@@ -649,7 +653,11 @@ class SettingsDialog(QDialog):
             self.backchannel_model_status_label.setText("正在导入接话模型...")
 
         thread = QThread()
-        worker = settings_workers.BackchannelModelImportWorker(self.base_dir, archive_path)
+        worker = settings_workers.BackchannelModelImportWorker(
+            self.base_dir,
+            archive_path,
+            import_backchannel_model_archive,
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_backchannel_model_import_success)
@@ -669,7 +677,10 @@ class SettingsDialog(QDialog):
             self.backchannel_model_status_label.setText("正在在线安装接话模型...")
 
         thread = QThread()
-        worker = settings_workers.BackchannelModelDownloadWorker(self.base_dir)
+        worker = settings_workers.BackchannelModelDownloadWorker(
+            self.base_dir,
+            download_backchannel_model,
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_backchannel_model_download_success)

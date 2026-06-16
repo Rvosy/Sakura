@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -193,15 +193,21 @@ class BackchannelModelImportWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, base_dir: Path, archive_path: Path) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        archive_path: Path,
+        import_model: Callable[[Path, Path], object] = import_backchannel_model_archive,
+    ) -> None:
         super().__init__()
         self.base_dir = base_dir
         self.archive_path = archive_path
+        self.import_model = import_model
 
     @Slot()
     def run(self) -> None:
         try:
-            result = import_backchannel_model_archive(self.archive_path, self.base_dir)
+            result = self.import_model(self.archive_path, self.base_dir)
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
         else:
@@ -215,14 +221,19 @@ class BackchannelModelDownloadWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        download_model: Callable[[Path], object] = download_backchannel_model,
+    ) -> None:
         super().__init__()
         self.base_dir = base_dir
+        self.download_model = download_model
 
     @Slot()
     def run(self) -> None:
         try:
-            result = download_backchannel_model(self.base_dir)
+            result = self.download_model(self.base_dir)
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
         else:
