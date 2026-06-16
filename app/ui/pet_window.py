@@ -1179,7 +1179,13 @@ class PetWindow(QWidget):
         """
         if not self._backchannel_tts_wanted():
             return False
-        return bool(getattr(self.tts_provider, "service_ready", True))
+        if getattr(self, "tts_ready_warmup_thread", None) is not None:
+            return False
+        provider = getattr(self, "tts_provider", None)
+        service_ready = getattr(provider, "service_ready", None)
+        if service_ready is None:
+            return True
+        return bool(service_ready)
 
     def _backchannel_audio_key(self, choice: BackchannelChoice) -> tuple[str, str, str]:
         return (choice.template.id, choice.template.tone, choice.variant.ja)

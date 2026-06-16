@@ -153,6 +153,11 @@ class _AttachedLocalProcess:
 
 
 class TTSProvider(Protocol):
+    @property
+    def service_ready(self) -> bool:
+        """本地 TTS 服务是否已探测/预热完成。"""
+        ...
+
     def speak(
         self,
         text: str,
@@ -187,6 +192,10 @@ class TTSProvider(Protocol):
 
 
 class NullTTSProvider:
+    @property
+    def service_ready(self) -> bool:
+        return False
+
     def speak(
         self,
         text: str,
