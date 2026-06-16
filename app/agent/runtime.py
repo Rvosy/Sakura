@@ -31,7 +31,7 @@ from app.llm.api_client import (
     is_vision_unsupported_error,
     messages_contain_image,
 )
-from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result
+from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.debug_log import debug_log, summarize_messages
 from app.agent.runtime_limits import (
     MAX_AGENT_STEPS_PER_TURN,
@@ -299,10 +299,13 @@ class AgentRuntime:
                     },
                 )
                 return AgentResult(
-                    reply=self._parse_final_reply_with_retry(
-                        system_prompt,
-                        working_messages,
-                        turn.content,
+                    reply=sanitize_reply_tones(
+                        self._parse_final_reply_with_retry(
+                            system_prompt,
+                            working_messages,
+                            turn.content,
+                        ),
+                        self.reply_tones,
                     ),
                     _debug=_build_debug_meta(
                         self.api_client, execution_results,

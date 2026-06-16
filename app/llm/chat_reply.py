@@ -125,6 +125,30 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
     )
 
 
+def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> ChatReply:
+    """把模型偶发越界的 tone（如 en、坚定）归一到 DEFAULT_TONE，避免脏标签流入下游。
+
+    模型被要求只用角色 reply.tones 里的情绪标签，但偶尔会把 tone 字段误当语言码
+    或自创类别。这类脏标签在 TTS 侧虽会回退到中性参考，但会污染历史、日志与统计，
+    故在产出边界统一清洗。allowed_tones 为空时不处理（保持向后兼容）；只替换 tone，
+    不动文本、译文与立绘。
+    """
+    if not allowed_tones:
+        return reply
+    allowed = set(allowed_tones)
+    changed = False
+    new_segments: list[ChatSegment] = []
+    for segment in reply.segments:
+        if segment.tone and segment.tone not in allowed:
+            new_segments.append(
+                ChatSegment(segment.text, DEFAULT_TONE, segment.translation, segment.portrait)
+            )
+            changed = True
+        else:
+            new_segments.append(segment)
+    return ChatReply(new_segments) if changed else reply
+
+
 def _parse_segments(data: dict[str, Any]) -> tuple[list[ChatSegment], bool]:
     raw_segments = data.get("segments")
     if isinstance(raw_segments, list):

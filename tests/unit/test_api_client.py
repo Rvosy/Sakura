@@ -12,7 +12,36 @@ from app.llm.api_client import (
     _build_chat_completion_payload,
     _filter_supported_chat_params,
 )
-from app.llm.chat_reply import parse_chat_reply
+from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply, sanitize_reply_tones
+
+
+def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
+    allowed = ["中性", "不满", "害羞", "请求", "惊讶"]
+    reply = ChatReply(
+        [
+            ChatSegment("hi", "en", "你好", "站立待机"),
+            ChatSegment("おはよ", "害羞", "早", "害羞"),
+            ChatSegment("x", "坚定", "", ""),
+        ]
+    )
+
+    out = sanitize_reply_tones(reply, allowed)
+
+    assert [segment.tone for segment in out.segments] == ["中性", "害羞", "中性"]
+    # 仅改 tone，文本/译文/立绘保持不变
+    assert out.segments[0].text == "hi"
+    assert out.segments[0].translation == "你好"
+    assert out.segments[0].portrait == "站立待机"
+
+
+def test_sanitize_reply_tones_keeps_object_when_all_valid() -> None:
+    allowed = ["中性", "害羞"]
+    reply = ChatReply([ChatSegment("a", "中性"), ChatSegment("b", "害羞")])
+
+    # 全合法时原样返回，避免无谓拷贝
+    assert sanitize_reply_tones(reply, allowed) is reply
+    # allowed 为空时不处理（向后兼容）
+    assert sanitize_reply_tones(reply, None) is reply
 
 
 def test_chat_param_filter_keeps_supported_values() -> None:
