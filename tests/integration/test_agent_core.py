@@ -676,6 +676,33 @@ def test_memory_store_downloads_embedding_model_to_project_cache(monkeypatch) ->
     assert store.needs_embedding_model_download() is False
 
 
+def test_memory_hf_snapshot_download_uses_minimal_file_allowlist(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+
+    def fake_snapshot_download(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return "snapshot"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=fake_snapshot_download),
+    )
+
+    result = memory_module._download_hf_snapshot(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        Path("runtime/hf-cache/hub"),
+    )
+
+    assert result == "snapshot"
+    assert captured["repo_id"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert captured["allow_patterns"] == list(memory_module.DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS)
+    assert "onnx/*" not in captured["allow_patterns"]
+    assert "openvino/*" not in captured["allow_patterns"]
+    assert "tf_model.h5" not in captured["allow_patterns"]
+    assert "rust_model.ot" not in captured["allow_patterns"]
+
+
 def test_memory_store_import_does_not_reload_ready_runtime() -> None:
     root = _runtime_root_path("memory_model_import_ready")
     archive_path = root / "models--sentence-transformers--all-MiniLM-L6-v2.zip"

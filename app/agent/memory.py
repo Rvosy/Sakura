@@ -31,6 +31,19 @@ DEFAULT_EMBEDDING_DIMS = 384
 DEFAULT_MEMORY_LIMIT = 20
 DEFAULT_HUGGINGFACE_ENDPOINT = "https://huggingface.co"
 DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_MODEL.replace("/", "--")
+DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
+    "1_Pooling/config.json",
+    "config.json",
+    "config_sentence_transformers.json",
+    "model.safetensors",
+    "modules.json",
+    "README.md",
+    "sentence_bert_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+)
 _MEM0_CREATE_LOCK = threading.Lock()
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 os.environ.setdefault("MEM0_TELEMETRY", "False")
@@ -913,6 +926,7 @@ def _download_hf_snapshot(repo_id: str, cache_folder: Path) -> str:
             repo_id=repo_id,
             cache_dir=str(cache_folder),
             endpoint=(os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip(),
+            allow_patterns=list(DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS),
             local_files_only=False,
         )
     )
