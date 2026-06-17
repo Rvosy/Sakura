@@ -3434,6 +3434,47 @@ def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
     app.processEvents()
 
 
+def test_pet_window_applies_plugin_input_requests() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QLineEdit")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.plugins.services import PluginInputTextRequest
+    from app.ui.pet_window import PetWindow
+
+    QApplication = qtwidgets.QApplication
+    QFrame = qtwidgets.QFrame
+    QLineEdit = qtwidgets.QLineEdit
+    app = QApplication.instance() or QApplication([])
+
+    class Host(QFrame):
+        _apply_plugin_input_text = PetWindow._apply_plugin_input_text
+        _apply_plugin_input_request = PetWindow._apply_plugin_input_request
+
+    host = Host()
+    host.input_edit = QLineEdit(host)
+
+    PetWindow._apply_plugin_input_text(host, "替换")  # type: ignore[arg-type]
+    assert host.input_edit.text() == "替换"
+
+    PetWindow._apply_plugin_input_text(  # type: ignore[arg-type]
+        host,
+        PluginInputTextRequest(text="追加", mode="append"),
+    )
+    assert host.input_edit.text() == "替换追加"
+
+    PetWindow._apply_plugin_input_text(  # type: ignore[arg-type]
+        host,
+        PluginInputTextRequest(text="-插入-", mode="insert", position=1),
+    )
+    assert host.input_edit.text() == "替-插入-换追加"
+    assert host.input_edit.cursorPosition() == 5
+
+    host.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_exposes_experimental_windows_mcp_restart_setting() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")

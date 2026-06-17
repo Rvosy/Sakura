@@ -25,8 +25,11 @@ from app.plugins import (
     PluginSpec,
 )
 from app.plugins.models import (
+    PERMISSION_AUDIO_INPUT,
     PERMISSION_CHAT_UI,
     PERMISSION_EVENT_MESSAGE,
+    PERMISSION_MODEL_DOWNLOAD,
+    PERMISSION_NETWORK,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
     PERMISSION_SETTINGS_PANEL,
@@ -277,6 +280,27 @@ class TestPluginManager:
 
         assert not results[0].loaded
         assert "未知权限" in str(results[0].error)
+
+    def test_voice_input_permissions_are_known(self) -> None:
+        base = _runtime_root("voice_permissions")
+        _write_demo_plugin(
+            base,
+            permissions=(
+                PERMISSION_TOOL,
+                PERMISSION_TOOLS_TAB,
+                PERMISSION_SETTINGS_PANEL,
+                PERMISSION_CHAT_UI,
+                PERMISSION_PROMPT_PATCH,
+                PERMISSION_AUDIO_INPUT,
+                PERMISSION_NETWORK,
+                PERMISSION_MODEL_DOWNLOAD,
+            ),
+        )
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert results[0].loaded, results[0].error
 
     def test_missing_capability_permission_marks_plugin_failed(self) -> None:
         base = _runtime_root("missing_capability_permission")

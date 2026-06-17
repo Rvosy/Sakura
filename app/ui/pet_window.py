@@ -115,6 +115,7 @@ from app.plugins.events import (
     EVENT_TTS_FINISHED,
     EVENT_TTS_STARTED,
 )
+from app.plugins.services import PluginInputTextRequest
 from app.ui.state import PetUiState, PetUiStateStore
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
@@ -467,7 +468,7 @@ def _screen_observation_max_edge_from_context(context: dict[str, Any]) -> int:
 class PetWindow(QWidget):
     memory_status_changed = Signal(str, str)
     # 插件请求把文本填入输入框；用信号 marshal 回 UI 线程（ASR 等可能在后台线程触发）。
-    plugin_input_text_requested = Signal(str)
+    plugin_input_text_requested = Signal(object)
 
     def __init__(
         self,
@@ -4467,7 +4468,10 @@ class PetWindow(QWidget):
         if services is None:
             return
         try:
-            services.set_backends(input_text_sink=self._request_fill_input_text)
+            services.set_backends(
+                input_text_sink=self._request_fill_input_text,
+                input_request_sink=self._request_plugin_input_text,
+            )
         except Exception as exc:  # noqa: BLE001 — 装配失败不得阻断启动
             debug_log("PetWindow", "注入插件服务后端失败", {"error": str(exc)})
 
@@ -4478,17 +4482,39 @@ class PetWindow(QWidget):
         """
         self.plugin_input_text_requested.emit(str(text))
 
-    @Slot(str)
-    def _apply_plugin_input_text(self, text: str) -> None:
-        """在 UI 线程把文本填入输入框并聚焦（替换当前内容，不发送）。"""
+    def _request_plugin_input_text(self, request: PluginInputTextRequest) -> None:
+        """插件侧入口：请求按指定模式写入输入框。"""
+        self.plugin_input_text_requested.emit(request)
+
+    @Slot(object)
+    def _apply_plugin_input_text(self, request: object) -> None:
+        """在 UI 线程把文本写入输入框并聚焦（不发送）。"""
         if not hasattr(self, "input_edit"):
             return
         try:
-            self.input_edit.setText(text)  # QLineEdit.setText 会把光标置于末尾
+            if isinstance(request, PluginInputTextRequest):
+                self._apply_plugin_input_request(request)
+            else:
+                self.input_edit.setText(str(request))  # QLineEdit.setText 会把光标置于末尾
             self.input_edit.setFocus()
         except RuntimeError as exc:
             # 输入控件可能已被销毁
             debug_log("PetWindow", "填入插件输入文本失败", {"error": str(exc)})
+
+    def _apply_plugin_input_request(self, request: PluginInputTextRequest) -> None:
+        text = str(request.text)
+        if request.mode == "append":
+            current = self.input_edit.text()
+            self.input_edit.setText(current + text)
+            return
+        if request.mode == "insert":
+            current = self.input_edit.text()
+            position = self.input_edit.cursorPosition() if request.position is None else request.position
+            position = max(0, min(int(position), len(current)))
+            self.input_edit.setText(current[:position] + text + current[position:])
+            self.input_edit.setCursorPosition(position + len(text))
+            return
+        self.input_edit.setText(text)
 
     def _sync_plugin_chat_ui_widgets(self) -> None:
         layout = self.input_bar.layout() if hasattr(self, "input_bar") else None

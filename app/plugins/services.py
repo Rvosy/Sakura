@@ -13,7 +13,8 @@ manager、LLM client 等），这里提供一组安全的门面服务。
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Literal
 
 from app.core.debug_log import debug_log
 
@@ -113,10 +114,23 @@ class PluginInputService:
     def __init__(self) -> None:
         # 宿主可注入：input_text_sink(text) -> None
         self._input_text_sink: Callable[[str], None] | None = None
+        # 宿主可注入：input_request_sink(request) -> None
+        self._input_request_sink: Callable[[PluginInputTextRequest], None] | None = None
 
     def set_input_text_sink(self, sink: Callable[[str], None] | None) -> None:
-        """注入真实输入框后端；传 None 恢复为空实现。"""
+        """注入旧版输入框后端；传 None 恢复为空实现。
+
+        该后端仅支持 ``set_input_text`` 的替换语义。宿主若要支持 append/insert，
+        应注入 ``set_input_request_sink``。
+        """
         self._input_text_sink = sink
+
+    def set_input_request_sink(
+        self,
+        sink: Callable[["PluginInputTextRequest"], None] | None,
+    ) -> None:
+        """注入支持 replace/append/insert 的输入框后端；传 None 恢复为空实现。"""
+        self._input_request_sink = sink
 
     def set_input_text(self, text: str) -> None:
         """请求宿主把文本填入聊天输入框（替换当前内容，不发送）。
@@ -124,17 +138,62 @@ class PluginInputService:
         典型用途：语音识别（ASR）得到结果后填入输入框，由用户确认或编辑后发送。
         未注入后端时仅写日志。
         """
+        self._dispatch_input_request(
+            PluginInputTextRequest(text=str(text), mode="replace")
+        )
+
+    def append_input_text(self, text: str) -> None:
+        """请求宿主把文本追加到聊天输入框末尾（不发送）。"""
+        self._dispatch_input_request(
+            PluginInputTextRequest(text=str(text), mode="append")
+        )
+
+    def insert_input_text(self, text: str, *, position: int | None = None) -> None:
+        """请求宿主把文本插入到输入框指定位置；``position=None`` 表示当前光标。"""
+        safe_position = None if position is None else max(0, int(position))
+        self._dispatch_input_request(
+            PluginInputTextRequest(
+                text=str(text),
+                mode="insert",
+                position=safe_position,
+            )
+        )
+
+    def _dispatch_input_request(self, request: "PluginInputTextRequest") -> None:
         try:
+            if self._input_request_sink is not None:
+                self._input_request_sink(request)
+                return
+            if request.mode == "replace" and self._input_text_sink is not None:
+                self._input_text_sink(request.text)
+                return
             if self._input_text_sink is not None:
-                self._input_text_sink(text)
+                debug_log(
+                    "PluginInputService",
+                    "输入框后端不支持该写入模式",
+                    {"mode": request.mode, "text": request.text},
+                )
                 return
             debug_log(
                 "PluginInputService",
-                "set_input_text（未接后端，空实现）",
-                {"text": text},
+                "input_text（未接后端，空实现）",
+                {"mode": request.mode, "text": request.text},
             )
         except Exception as exc:  # noqa: BLE001 — 服务调用不得影响插件或宿主
-            debug_log("PluginInputService", "set_input_text 失败", {"error": str(exc)})
+            debug_log("PluginInputService", "input_text 失败", {"error": str(exc)})
+
+
+@dataclass(frozen=True)
+class PluginInputTextRequest:
+    """插件输入框写入请求。
+
+    ``replace`` 替换当前输入框内容，``append`` 追加到末尾，``insert`` 插入到指定
+    位置或当前光标。宿主负责把请求 marshal 回 UI 线程。
+    """
+
+    text: str
+    mode: Literal["replace", "append", "insert"] = "replace"
+    position: int | None = None
 
 
 class PluginServices:
@@ -153,6 +212,7 @@ class PluginServices:
         tts_sink: Callable[[str, bool], None] | None = None,
         passive_reply_sink: Callable[[str, dict[str, Any] | None], None] | None = None,
         input_text_sink: Callable[[str], None] | None = None,
+        input_request_sink: Callable[[PluginInputTextRequest], None] | None = None,
     ) -> None:
         """宿主装配时一次性注入真实后端（任意项可省略）。"""
         if bubble_sink is not None:
@@ -163,3 +223,5 @@ class PluginServices:
             self.agent.set_passive_reply_sink(passive_reply_sink)
         if input_text_sink is not None:
             self.input.set_input_text_sink(input_text_sink)
+        if input_request_sink is not None:
+            self.input.set_input_request_sink(input_request_sink)

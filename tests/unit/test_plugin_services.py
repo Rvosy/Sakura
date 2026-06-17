@@ -7,7 +7,7 @@ import uuid
 
 from app.agent.tools import ToolRegistry
 from app.plugins.manager import PluginManager
-from app.plugins.services import PluginInputService, PluginServices
+from app.plugins.services import PluginInputService, PluginInputTextRequest, PluginServices
 
 
 def test_set_input_text_without_sink_is_noop() -> None:
@@ -21,6 +21,32 @@ def test_set_input_text_invokes_injected_sink() -> None:
     service.set_input_text_sink(received.append)
     service.set_input_text("识别结果")
     assert received == ["识别结果"]
+
+
+def test_input_request_sink_receives_replace_append_insert() -> None:
+    service = PluginInputService()
+    received: list[PluginInputTextRequest] = []
+    service.set_input_request_sink(received.append)
+
+    service.set_input_text("替换")
+    service.append_input_text("追加")
+    service.insert_input_text("插入", position=2)
+
+    assert received == [
+        PluginInputTextRequest(text="替换", mode="replace"),
+        PluginInputTextRequest(text="追加", mode="append"),
+        PluginInputTextRequest(text="插入", mode="insert", position=2),
+    ]
+
+
+def test_append_without_request_sink_is_isolated() -> None:
+    service = PluginInputService()
+    received: list[str] = []
+    service.set_input_text_sink(received.append)
+
+    service.append_input_text("追加")
+
+    assert received == []
 
 
 def test_set_input_text_sink_exception_is_isolated() -> None:
@@ -40,6 +66,14 @@ def test_set_backends_wires_input_text_sink() -> None:
     services.set_backends(input_text_sink=received.append)
     services.input.set_input_text("从 services 进")
     assert received == ["从 services 进"]
+
+
+def test_set_backends_wires_input_request_sink() -> None:
+    services = PluginServices()
+    received: list[PluginInputTextRequest] = []
+    services.set_backends(input_request_sink=received.append)
+    services.input.append_input_text("从 services 进")
+    assert received == [PluginInputTextRequest(text="从 services 进", mode="append")]
 
 
 def test_plugin_reaches_input_sink_end_to_end() -> None:
