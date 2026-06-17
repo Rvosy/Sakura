@@ -1,0 +1,11 @@
+{
+  "model_name": "tiny",
+  "language": "auto",
+  "audio_device": "",
+  "compute_device": "auto",
+  "vad_enabled": true,
+  "max_record_seconds": 30,
+  "silence_timeout_ms": 1500,
+  "vad_threshold": 500,
+  "sample_rate": 16000
+}

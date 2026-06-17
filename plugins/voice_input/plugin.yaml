@@ -1,0 +1,14 @@
+api_version: 1
+id: voice_input
+name: Voice Input
+description: 在聊天输入栏提供本地 ASR 语音输入按钮，识别文本回填输入框但不自动发送。
+version: 0.1.0
+entry: plugin:VoiceInputPlugin
+enabled: true
+priority: 60
+permissions:
+  - chat_ui
+  - settings_panel
+  - audio_input
+  - network
+  - model_download
