@@ -54,6 +54,11 @@ from app.config.settings_service import (
 )
 from app.platforms.launch_at_login import is_launch_at_login_supported
 from app.llm.api_client import ApiSettings
+from app.plugins.archive import (
+    PluginArchiveError,
+    export_plugin_archive,
+    import_plugin_archive,
+)
 from app.plugins.discovery import PluginDiscovery, save_plugin_enabled_overrides
 from app.plugins.models import PluginSpec
 from app.config.character_loader import (
@@ -413,6 +418,29 @@ class SettingsDialog(QDialog):
         self.plugin_table.setItem(row, 1, name_item)
         self._apply_plugin_row_style(row)
 
+    def _reload_plugin_specs(self, *, select_plugin_id: str | None = None) -> None:
+        self.plugin_specs = PluginDiscovery(self.base_dir).discover()
+        self._plugin_specs_by_id = {
+            spec.plugin_id: spec
+            for spec in self.plugin_specs
+            if spec.plugin_id
+        }
+        if not hasattr(self, "plugin_table"):
+            return
+        self.plugin_table.setRowCount(len(self.plugin_specs))
+        for row, spec in enumerate(self.plugin_specs):
+            self._populate_plugin_table_row(row, spec)
+        self.plugin_table.resizeRowsToContents()
+        selected_row = 0
+        if select_plugin_id:
+            for row, spec in enumerate(self.plugin_specs):
+                if spec.plugin_id == select_plugin_id:
+                    selected_row = row
+                    break
+        if self.plugin_specs:
+            self.plugin_table.setCurrentCell(selected_row, 1)
+        self._refresh_plugin_detail_panel(self.plugin_table.currentRow())
+
     def _set_plugin_checkbox_widget(self, row: int, spec: PluginSpec) -> None:
         container = QWidget(self.plugin_table)
         layout = QHBoxLayout(container)
@@ -492,6 +520,7 @@ class SettingsDialog(QDialog):
             self.plugin_detail_description_label.setText("插件目录为空，或尚未配置插件清单。")
             self._current_plugin_id = ""
             self._update_plugin_settings_button(enabled=False, tooltip="暂无可管理插件。")
+            self._update_plugin_export_button(enabled=False, tooltip="暂无可导出的插件。")
             return
 
         if row is None or row < 0 or row >= len(self.plugin_specs):
@@ -523,6 +552,11 @@ class SettingsDialog(QDialog):
         self.plugin_detail_description_label.setText(spec.description or "暂无介绍。")
 
         self._current_plugin_id = spec.plugin_id
+        plugin_root = spec.plugin_root or (self.base_dir / "plugins" / spec.plugin_id)
+        self._update_plugin_export_button(
+            enabled=bool(spec.plugin_id and plugin_root.is_dir()),
+            tooltip="" if plugin_root.is_dir() else "插件目录不存在，无法导出。",
+        )
         if self._plugin_settings_for(spec.plugin_id):
             self._update_plugin_settings_button(enabled=True, tooltip="")
         elif not spec.enabled:
@@ -547,11 +581,73 @@ class SettingsDialog(QDialog):
             button.setEnabled(enabled)
             button.setToolTip(tooltip)
 
+    def _update_plugin_export_button(self, *, enabled: bool, tooltip: str) -> None:
+        button = getattr(self, "plugin_export_button", None)
+        if button is not None:
+            button.setEnabled(enabled)
+            button.setToolTip(tooltip)
+
+    def _selected_plugin_spec(self) -> PluginSpec | None:
+        if not hasattr(self, "plugin_table") or not self.plugin_specs:
+            return None
+        row = self.plugin_table.currentRow()
+        if row < 0 or row >= len(self.plugin_specs):
+            return None
+        return self.plugin_specs[row]
+
     def _open_plugin_settings_dialog(self) -> None:
         """弹出独立对话框，整宽、可滚动地展示选中插件的设置面板。"""
         dialog = self._build_plugin_settings_dialog(getattr(self, "_current_plugin_id", ""))
         if dialog is not None:
             dialog.exec()
+
+    def _import_plugin_archive(self) -> None:
+        path_text, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入 Sakura 插件包",
+            str(self.base_dir),
+            "Sakura 插件包 (*.plugin)",
+        )
+        if not path_text:
+            return
+        try:
+            result = import_plugin_archive(Path(path_text), self.base_dir)
+        except (PluginArchiveError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "导入失败", str(exc))
+            return
+        self.result_plugin_config_changed = True
+        self._reload_plugin_specs(select_plugin_id=result.plugin_id)
+        QMessageBox.information(
+            self,
+            "导入成功",
+            f"已导入插件「{result.name}」。重启 Sakura 后生效。",
+        )
+
+    def _export_selected_plugin_archive(self) -> None:
+        spec = self._selected_plugin_spec()
+        if spec is None or not spec.plugin_id:
+            QMessageBox.warning(self, "导出失败", "请先选择要导出的插件。")
+            return
+        plugin_root = spec.plugin_root or (self.base_dir / "plugins" / spec.plugin_id)
+        default_name = _plugin_archive_default_name(spec)
+        output_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 Sakura 插件包",
+            str(self.base_dir / default_name),
+            "Sakura 插件包 (*.plugin)",
+        )
+        if not output_text:
+            return
+        try:
+            result = export_plugin_archive(plugin_root, Path(output_text))
+        except (PluginArchiveError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "导出成功",
+            f"插件包已导出到：{result.archive_path}",
+        )
 
     def _build_plugin_settings_dialog(self, plugin_id: str) -> QDialog | None:
         """构建（但不弹出）选中插件的设置对话框；无设置时返回 None。"""
@@ -2838,3 +2934,19 @@ def _format_memory_time(value: str) -> str:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone()
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _plugin_archive_default_name(spec: PluginSpec) -> str:
+    base = _safe_plugin_archive_name(spec.plugin_id or spec.name or "plugin")
+    version = _safe_plugin_archive_name(spec.version or "")
+    if version and version != "0.0.0":
+        return f"{base}-{version}.plugin"
+    return f"{base}.plugin"
+
+
+def _safe_plugin_archive_name(text: str) -> str:
+    safe = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "_"
+        for character in str(text).strip()
+    ).strip("._-")
+    return safe or "plugin"

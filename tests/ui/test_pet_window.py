@@ -3183,6 +3183,131 @@ def test_settings_dialog_plugin_page_empty_state() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_exports_selected_plugin_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QPushButton")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QPushButton = qtwidgets.QPushButton
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_export_archive")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件")
+    (root / "plugins" / "demo" / "plugin.py").write_text(
+        "from app.plugins import PluginBase\n\nclass DemoPlugin(PluginBase):\n    plugin_id = 'demo'\n",
+        encoding="utf-8",
+    )
+    output_path = root / "demo-export.plugin"
+    monkeypatch.setattr(
+        settings_dialog_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(output_path), ""),
+    )
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    export_button = dialog.findChild(QPushButton, "pluginExportButton")
+    assert export_button is not None
+    assert export_button.isEnabled()
+
+    dialog._export_selected_plugin_archive()
+
+    assert output_path.is_file()
+    with zipfile.ZipFile(output_path, "r") as archive:
+        assert {"plugin.yaml", "plugin.py"} <= set(archive.namelist())
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_imports_plugin_archive_and_refreshes_table(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QPushButton", "QTableWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QPushButton = qtwidgets.QPushButton
+    QTableWidget = qtwidgets.QTableWidget
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("plugin_import_archive")
+    archive_path = root / "imported.plugin"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "plugin.yaml",
+            """
+api_version: 1
+id: imported
+name: Imported 插件
+version: 1.0.0
+entry: plugin:ImportedPlugin
+enabled: true
+permissions:
+  - settings_panel
+""".lstrip(),
+        )
+        archive.writestr(
+            "plugin.py",
+            "from app.plugins import PluginBase\n\nclass ImportedPlugin(PluginBase):\n    plugin_id = 'imported'\n",
+        )
+    monkeypatch.setattr(
+        settings_dialog_module.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(archive_path), ""),
+    )
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
+
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    import_button = dialog.findChild(QPushButton, "pluginImportButton")
+    table = dialog.findChild(QTableWidget, "pluginManagerTable")
+    assert import_button is not None
+    assert table is not None
+    assert table.rowCount() == 0
+
+    dialog._import_plugin_archive()
+
+    assert (root / "plugins" / "imported" / "plugin.yaml").is_file()
+    assert table.rowCount() == 1
+    assert table.item(0, 1).text() == "Imported 插件"
+    assert dialog.result_plugin_config_changed is True
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
