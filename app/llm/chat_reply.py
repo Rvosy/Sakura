@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +52,7 @@ class ChatSegment:
 @dataclass(frozen=True)
 class ChatReply:
     segments: list[ChatSegment]
+    pet_state_delta: dict[str, Any] | None = None
 
     @property
     def text(self) -> str:
@@ -112,7 +114,7 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
         segments, has_language_issue = _parse_segments(data)
         if segments:
             return ChatReplyParseResult(
-                ChatReply(segments),
+                ChatReply(segments, pet_state_delta=_parse_pet_state_delta(data)),
                 ok=not has_language_issue,
                 needs_retry=has_language_issue,
                 repaired=repaired,
@@ -149,7 +151,14 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
             changed = True
         else:
             new_segments.append(segment)
-    return ChatReply(new_segments) if changed else reply
+    return ChatReply(new_segments, pet_state_delta=reply.pet_state_delta) if changed else reply
+
+
+def _parse_pet_state_delta(data: dict[str, Any]) -> dict[str, Any] | None:
+    raw_delta = data.get("pet_state_delta")
+    if not isinstance(raw_delta, dict) or not raw_delta:
+        return None
+    return deepcopy(raw_delta)
 
 
 def _parse_segments(data: dict[str, Any]) -> tuple[list[ChatSegment], bool]:
@@ -346,4 +355,3 @@ def _build_safe_parse_failure_reply() -> ChatReply:
             )
         ]
     )
-

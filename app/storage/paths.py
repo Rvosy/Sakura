@@ -100,6 +100,14 @@ class StoragePaths:
     def visual_observations_for(self, character_id: str) -> Path:
         return self.visual_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
 
+    # ---- 桌宠状态 ----
+    @property
+    def pet_state_dir(self) -> Path:
+        return self._data / "pet_state"
+
+    def pet_state_for(self, character_id: str) -> Path:
+        return self.pet_state_dir / f"{sanitize_file_stem(character_id)}.json"
+
     # ---- 记忆 ----
     @property
     def memory_dir(self) -> Path:
@@ -203,6 +211,7 @@ class StoragePaths:
             self.chat_history_dir,
             self.runtime_events_dir,
             self.visual_observations_dir,
+            self.pet_state_dir,
             self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,

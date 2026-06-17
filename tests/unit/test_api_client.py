@@ -23,7 +23,8 @@ def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
             ChatSegment("hi", "en", "你好", "站立待机"),
             ChatSegment("おはよ", "害羞", "早", "害羞"),
             ChatSegment("x", "坚定", "", ""),
-        ]
+        ],
+        pet_state_delta={"mood": "happy"},
     )
 
     out = sanitize_reply_tones(reply, allowed)
@@ -33,6 +34,7 @@ def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     assert out.segments[0].text == "hi"
     assert out.segments[0].translation == "你好"
     assert out.segments[0].portrait == "站立待机"
+    assert out.pet_state_delta == {"mood": "happy"}
 
 
 def test_sanitize_reply_tones_keeps_object_when_all_valid() -> None:
@@ -765,6 +767,20 @@ def test_parse_chat_reply_keeps_segment_portrait() -> None:
     )
 
     assert reply.segments[0].portrait == "站立待机"
+
+
+def test_parse_chat_reply_keeps_top_level_pet_state_delta() -> None:
+    reply = parse_chat_reply(
+        '{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性","portrait":"站立待机"}],'
+        '"pet_state_delta":{"mood":"happy","affect":{"valence":0.4},'
+        '"evidence":{"last_trigger":"assistant_reply","reason":"用户语气轻松"}}}'
+    )
+
+    assert reply.pet_state_delta == {
+        "mood": "happy",
+        "affect": {"valence": 0.4},
+        "evidence": {"last_trigger": "assistant_reply", "reason": "用户语气轻松"},
+    }
 
 
 def test_parse_chat_reply_fenced_json() -> None:

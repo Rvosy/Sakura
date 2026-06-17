@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
-from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
+from app.llm.chat_reply import ChatReply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.core.debug_log import debug_log, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
@@ -186,13 +186,15 @@ class OpenAICompatibleClient:
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
         *,
+        require_pet_state_delta: bool = False,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
     ) -> ChatReply:
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
         temperature, extra_params = self.resolve_dialogue_params()
+        full_system_prompt = f"{system_prompt.strip()}\n\n{segmented_reply_instruction}"
         content = self.complete_raw(
-            f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
+            full_system_prompt,
             messages,
             temperature=temperature,
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
@@ -202,7 +204,45 @@ class OpenAICompatibleClient:
         )
         check_cancelled(cancel_checker)
 
-        reply = sanitize_reply_tones(parse_chat_reply(content), reply_tones)
+        parsed = parse_chat_reply_result(content)
+        if require_pet_state_delta and not _reply_has_pet_state_delta(parsed.reply):
+            debug_log(
+                "API",
+                "聊天回复缺少 pet_state_delta，准备请求模型修复",
+                {"raw_content": content},
+            )
+            repair_messages: list[ChatMessage] = [
+                *messages,
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": (
+                        "上一条 assistant 输出缺少必需的顶层 pet_state_delta。"
+                        "请只修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
+                        "保持 segments 原意，并在 segments 同级加入 pet_state_delta。"
+                        "pet_state_delta 只能写 mood、affect、evidence，不要写 display。"
+                    ),
+                },
+            ]
+            repaired_content = self.complete_raw(
+                full_system_prompt,
+                repair_messages,
+                temperature=0.2,
+                response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
+                cancel_checker=cancel_checker,
+            )
+            check_cancelled(cancel_checker)
+            repaired = parse_chat_reply_result(repaired_content)
+            if not repaired.needs_retry and _reply_has_pet_state_delta(repaired.reply):
+                parsed = repaired
+            else:
+                debug_log(
+                    "API",
+                    "聊天回复补齐 pet_state_delta 失败，保留原回复",
+                    {"raw_content": repaired_content},
+                )
+
+        reply = sanitize_reply_tones(parsed.reply, reply_tones)
         debug_log(
             "API",
             "聊天回复解析完成",
@@ -608,6 +648,11 @@ def _build_segmented_reply_instruction(
     reply_portraits: list[str] | None = None,
 ) -> str:
     return build_segmented_reply_instruction(reply_tones, reply_portraits)
+
+
+def _reply_has_pet_state_delta(reply: ChatReply) -> bool:
+    delta = getattr(reply, "pet_state_delta", None)
+    return isinstance(delta, dict) and bool(delta)
 
 
 def _parse_model_ids(data: dict[str, Any]) -> list[str]:

@@ -190,11 +190,13 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     host.subtitle_language = SUBTITLE_LANGUAGE_ZH
     host.free_access_enabled = True
     host.always_on_top_enabled = False
+    host.pet_state_popup_pinned = True
     host._hide_to_tray = lambda: None
     host._show_from_tray = lambda: None
     host._toggle_chinese_subtitles = lambda _checked: None
     host._toggle_free_access = lambda _checked: None
     host._toggle_always_on_top = lambda _checked: None
+    host._toggle_pet_state_popup_pinned = lambda _checked: None
     host.show_history = lambda: None
     host.show_runtime_log = lambda: None
     host.show_settings = lambda: None
@@ -214,7 +216,10 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     assert "显示中文字幕" in checkable_texts
     assert "完整访问权限" in checkable_texts
     assert "保持置顶" in checkable_texts
-    assert len(checkable_texts) == 3
+    assert "桌宠状态" in checkable_texts
+    assert len(checkable_texts) == 4
+    pet_state_action = next(action for action in actions if action.text() == "桌宠状态")
+    assert pet_state_action.isChecked()
     stylesheet = build_pet_window_stylesheet(DEFAULT_THEME_SETTINGS)
     assert "QMenu {" in stylesheet
     assert "QMenu::item:selected" in stylesheet
@@ -241,11 +246,13 @@ def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
     host.subtitle_language = SUBTITLE_LANGUAGE_ZH
     host.free_access_enabled = True
     host.always_on_top_enabled = False
+    host.pet_state_popup_pinned = False
     host._hide_to_tray = lambda: None
     host._show_from_tray = lambda: None
     host._toggle_chinese_subtitles = lambda _checked: None
     host._toggle_free_access = lambda _checked: None
     host._toggle_always_on_top = lambda _checked: None
+    host._toggle_pet_state_popup_pinned = lambda _checked: None
     host.show_history = lambda: None
     host.show_runtime_log = lambda: None
     host.show_settings = lambda: None
@@ -1889,6 +1896,25 @@ def test_pet_window_loads_always_on_top_disabled_by_default() -> None:
     assert MinimalWindow({"always_on_top_enabled": "invalid"})._load_always_on_top_enabled() is False
     assert MinimalWindow({"always_on_top_enabled": True})._load_always_on_top_enabled() is True
     assert MinimalWindow({"always_on_top_enabled": "on"})._load_always_on_top_enabled() is True
+
+
+def test_pet_window_loads_pet_state_popup_pinned_disabled_by_default() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _load_pet_state_popup_pinned = PetWindow._load_pet_state_popup_pinned
+
+        def __init__(self, values):  # type: ignore[no-untyped-def]
+            self.values = values
+
+        def _load_system_config_values(self, section: str):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            return self.values
+
+    assert MinimalWindow({})._load_pet_state_popup_pinned() is False
+    assert MinimalWindow({"pet_state_popup_pinned": "invalid"})._load_pet_state_popup_pinned() is False
+    assert MinimalWindow({"pet_state_popup_pinned": True})._load_pet_state_popup_pinned() is True
+    assert MinimalWindow({"pet_state_popup_pinned": "on"})._load_pet_state_popup_pinned() is True
 
 
 def test_pet_window_defaults_free_access_to_enabled() -> None:
@@ -9076,6 +9102,67 @@ def test_consume_agent_result_shows_segments_for_tts_flow() -> None:
     assert applied_results == [result]
 
 
+def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> None:
+    from app.agent import AgentResult
+    from app.llm.chat_reply import ChatReply
+    from app.pet_state.store import PetStateStore
+    from app.ui.pet_window import PetWindow
+
+    class MinimalConsumeWindow:
+        _consume_agent_result = PetWindow._consume_agent_result
+        _apply_reply_pet_state_delta = PetWindow._apply_reply_pet_state_delta
+
+    window = MinimalConsumeWindow()
+    window.messages = []
+    window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._record_assistant_reply_history = lambda *_args, **_kwargs: None
+    window._show_reply_segments = lambda _segments: None
+    window._apply_pending_action_from_result = lambda _result: None
+    segment = ChatSegment("元気だよ。", "中性", "我很好。", "站立待机")
+    result = AgentResult(
+        reply=ChatReply(
+            [segment],
+            pet_state_delta={
+                "mood": "happy",
+                "affect": {"valence": 0.5, "arousal": 0.35, "confidence": 0.8},
+                "evidence": {
+                    "last_user_signal": "用户询问心情",
+                    "reason": "回复表达状态良好",
+                },
+            },
+        )
+    )
+
+    window._consume_agent_result(result)
+
+    snapshot = window.pet_state_store.snapshot()
+    assert snapshot["state"]["mood"] == "happy"
+    assert snapshot["state"]["affect"]["valence"] == 0.5
+    assert snapshot["state"]["evidence"]["last_trigger"] == "assistant_reply"
+    assert snapshot["last_model_delta"]["delta"]["mood"] == "happy"
+
+
+def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
+    from app.agent import AgentEvent
+    from app.pet_state.store import PetStateStore
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _event_with_pet_state_context = PetWindow._event_with_pet_state_context
+
+    window = MinimalWindow()
+    window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
+
+    event = window._event_with_pet_state_context(
+        AgentEvent(type="reminder_due", payload={"text": "喝水"})
+    )
+
+    assert event.payload["text"] == "喝水"
+    assert event.payload["pet_state_context"]["snapshot"]["state"]["mood"] == "neutral"
+    assert "pet_state_delta" in event.payload["pet_state_context"]["reply_contract"]
+
+
 def test_reply_history_buttons_disable_while_busy_or_playing() -> None:
     from app.ui.pet_window import PetWindow
 
@@ -9181,6 +9268,44 @@ def test_pet_window_toggle_always_on_top_saves_and_applies() -> None:
     assert window.raise_count == 1
 
 
+def test_pet_window_toggle_pet_state_popup_pinned_saves_and_shows_or_hides() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _toggle_pet_state_popup_pinned = PetWindow._toggle_pet_state_popup_pinned
+
+        def __init__(self) -> None:
+            self.pet_state_popup_pinned = False
+            self.saved_values: list[tuple[str, dict[str, bool]]] = []
+            self.show_count = 0
+            self.hide_count = 0
+
+        def _save_system_config_values(self, section: str, values: dict[str, bool]) -> None:
+            self.saved_values.append((section, values))
+
+        def show_pet_state_popup(self) -> None:
+            self.show_count += 1
+
+        def hide_pet_state_popup(self) -> None:
+            self.hide_count += 1
+
+    window = MinimalWindow()
+
+    window._toggle_pet_state_popup_pinned(True)
+
+    assert window.pet_state_popup_pinned is True
+    assert window.saved_values == [("ui", {"pet_state_popup_pinned": True})]
+    assert window.show_count == 1
+    assert window.hide_count == 0
+
+    window._toggle_pet_state_popup_pinned(False)
+
+    assert window.pet_state_popup_pinned is False
+    assert window.saved_values[-1] == ("ui", {"pet_state_popup_pinned": False})
+    assert window.show_count == 1
+    assert window.hide_count == 1
+
+
 def test_pet_window_apply_window_flags_syncs_native_topmost_state() -> None:
     from app.ui.pet_window import PetWindow
 
@@ -9260,6 +9385,92 @@ def test_pet_window_apply_window_flags_does_not_sync_native_state_before_visible
 
     assert window.show_count == 0
     assert window.sync_count == 0
+
+
+def test_pet_state_popup_window_flags_follow_main_topmost_state() -> None:
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _pet_state_popup_window_flags = PetWindow._pet_state_popup_window_flags
+
+        def __init__(self, always_on_top_enabled: bool) -> None:
+            self.always_on_top_enabled = always_on_top_enabled
+
+    topmost_flag = pet_window_module.Qt.WindowType.WindowStaysOnTopHint
+
+    disabled_flags = MinimalWindow(False)._pet_state_popup_window_flags()
+    enabled_flags = MinimalWindow(True)._pet_state_popup_window_flags()
+
+    assert not bool(disabled_flags & topmost_flag)
+    assert bool(enabled_flags & topmost_flag)
+
+
+def test_pet_window_applies_topmost_flags_to_visible_pet_state_popup() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class PopupStub:
+        def __init__(self) -> None:
+            self.applied_flags = None
+            self.show_count = 0
+            self.raise_count = 0
+
+        def isVisible(self) -> bool:
+            return True
+
+        def setWindowFlags(self, flags) -> None:  # type: ignore[no-untyped-def]
+            self.applied_flags = flags
+
+        def show(self) -> None:
+            self.show_count += 1
+
+        def raise_(self) -> None:
+            self.raise_count += 1
+
+    class MinimalWindow:
+        _apply_pet_state_popup_window_flags = PetWindow._apply_pet_state_popup_window_flags
+
+        def __init__(self) -> None:
+            self.pet_state_popup = PopupStub()
+
+        def _pet_state_popup_window_flags(self):  # type: ignore[no-untyped-def]
+            return "popup-flags"
+
+    window = MinimalWindow()
+
+    window._apply_pet_state_popup_window_flags()
+
+    assert window.pet_state_popup.applied_flags == "popup-flags"
+    assert window.pet_state_popup.show_count == 1
+    assert window.pet_state_popup.raise_count == 1
+
+
+def test_pet_window_topmost_sync_windows_include_visible_pet_state_popup() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class PopupStub:
+        def __init__(self, visible: bool) -> None:
+            self.visible = visible
+
+        def isVisible(self) -> bool:
+            return self.visible
+
+    class MinimalWindow:
+        _topmost_sync_windows = PetWindow._topmost_sync_windows
+
+        def __init__(self, popup: PopupStub | None) -> None:
+            self.pet_state_popup = popup
+
+    visible_popup = PopupStub(True)
+    hidden_popup = PopupStub(False)
+    window_with_visible_popup = MinimalWindow(visible_popup)
+    window_with_hidden_popup = MinimalWindow(hidden_popup)
+
+    assert window_with_visible_popup._topmost_sync_windows() == [
+        window_with_visible_popup,
+        visible_popup,
+    ]
+    assert window_with_hidden_popup._topmost_sync_windows() == [window_with_hidden_popup]
 
 
 def test_pet_window_schedules_native_topmost_sync_on_macos(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -118,6 +118,20 @@ class TestRuntimeLimits:
         assert "每步最多请求 4 个工具，整轮最多 12 个工具" in prompt
 
 
+class TestToolSystemPrompt:
+    """固定工具提示词约束"""
+
+    def test_pet_state_tools_are_explicitly_routed(self) -> None:
+        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
+        prompt = runtime._build_tool_system_prompt()
+
+        assert "pet_state_get" in prompt
+        assert "pet_state_update" in prompt
+        assert "当前心情" in prompt
+        assert "必须先调用 pet_state_get" in prompt
+        assert "不要提交 display" in prompt
+
+
 class TestToolCallCountLimits:
     """验证 allowed_calls 计算逻辑"""
 
@@ -363,6 +377,49 @@ class TestAgentRuntimeBasics:
         assert client.complete_with_tools.call_count == 2
         assert result.reply.segments[0].text == "北京の天気を確認したよ。"
         assert result.reply.segments[0].translation == "我确认了北京天气。"
+
+    def test_final_reply_retries_when_pet_state_delta_required_but_missing(self) -> None:
+        client = _dummy_api_client()
+        client.complete_with_tools.side_effect = [
+            MagicMock(
+                content=json.dumps(
+                    {"segments": [{"ja": "元気だよ。", "zh": "我很好。", "tone": "中性"}]},
+                    ensure_ascii=False,
+                ),
+                tool_calls=[],
+            ),
+            MagicMock(
+                content=json.dumps(
+                    {
+                        "segments": [{"ja": "元気だよ。", "zh": "我很好。", "tone": "中性"}],
+                        "pet_state_delta": {
+                            "mood": "happy",
+                            "affect": {"valence": 0.4, "arousal": 0.3, "confidence": 0.8},
+                            "evidence": {
+                                "last_user_signal": "用户询问心情",
+                                "last_trigger": "assistant_reply",
+                                "reason": "回复中表达状态良好",
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_calls=[],
+            ),
+        ]
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+        messages = [
+            ChatMessage(role="system", content="情绪模块已启用，最终回复必须包含 pet_state_delta。"),
+            ChatMessage(role="user", content="心情如何？"),
+        ]
+
+        result = runtime.handle_user_message(messages)
+
+        assert client.complete_with_tools.call_count == 2
+        assert result.reply.pet_state_delta is not None
+        assert result.reply.pet_state_delta["mood"] == "happy"
+        repair_messages = client.complete_with_tools.call_args_list[1].args[1]
+        assert "pet_state_delta" in repair_messages[-1]["content"]
 
     def test_final_reply_uses_safe_fallback_when_retry_still_invalid(self) -> None:
         client = _dummy_api_client()

@@ -17,6 +17,7 @@ from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.core.resource_manager import ResourceRegistry
+from app.pet_state.store import PetStateStore
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class StorageServices:
     reminder_store: ReminderStore
     history_store: ChatHistoryStore
     visual_observation_store: VisualObservationStore
+    pet_state_store: PetStateStore
     runtime_event_log: RuntimeEventLog
 
 
@@ -100,6 +102,10 @@ class AppContext:
     @property
     def visual_observation_store(self) -> VisualObservationStore:
         return self.storage.visual_observation_store
+
+    @property
+    def pet_state_store(self) -> PetStateStore:
+        return self.storage.pet_state_store
 
     @property
     def runtime_event_log(self) -> RuntimeEventLog:

@@ -11,6 +11,8 @@ from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tools import Tool, ToolRegistry
+from app.pet_state.store import PetStateStore
+from app.pet_state.tools import create_pet_state_tools
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -19,6 +21,7 @@ def create_builtin_tool_registry(
     base_dir: Path,
     memory: MemoryStore | None = None,
     reminders: ReminderStore | None = None,
+    pet_state: PetStateStore | None = None,
 ) -> ToolRegistry:
     paths = StoragePaths(base_dir)
     store = TodoStore(paths.tasks_store())
@@ -247,6 +250,9 @@ def create_builtin_tool_registry(
             ),
         ]
     )
+    if pet_state is not None:
+        for tool in create_pet_state_tools(pet_state):
+            registry.register(tool)
     registry.register(
         Tool(
             name="search_tools",
