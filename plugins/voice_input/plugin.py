@@ -48,12 +48,18 @@ class VoiceInputPlugin(PluginBase):
         for widget in list(self._widgets):
             shutdown = getattr(widget, "shutdown", None)
             if callable(shutdown):
-                shutdown()
+                try:
+                    shutdown()
+                except RuntimeError:
+                    pass
         self._widgets.clear()
         for panel in list(self._settings_panels):
             shutdown = getattr(panel, "shutdown", None)
             if callable(shutdown):
-                shutdown()
+                try:
+                    shutdown()
+                except RuntimeError:
+                    pass
         self._settings_panels.clear()
 
     def _build_chat_button(self, parent: Any = None) -> Any:

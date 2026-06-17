@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import VoiceInputConfig, load_voice_input_config, save_voice_input_config
-from .model_manager import MODEL_SPECS, VoiceInputModelError, download_model, model_status_text
+from .model_manager import MODEL_SPECS, download_model, model_status_text
 
 
 class VoiceInputSettingsPanel(QWidget):
@@ -36,6 +36,7 @@ class VoiceInputSettingsPanel(QWidget):
         self._build_ui()
         self._load_to_controls(load_voice_input_config(context))
         self._connect_signals()
+        self.destroyed.connect(lambda *_args: self.shutdown())
         self._refresh_model_status()
 
     def _build_ui(self) -> None:
@@ -162,7 +163,7 @@ class VoiceInputSettingsPanel(QWidget):
         return VoiceInputConfig(
             model_name=str(self.model_combo.currentData() or "tiny"),
             language=str(self.language_combo.currentData() or "auto"),
-            audio_device=str(self.audio_device_combo.currentData() or self.audio_device_combo.currentText() or ""),
+            audio_device=_current_audio_device_value(self.audio_device_combo),
             compute_device=str(self.compute_device_combo.currentData() or "auto"),
             vad_enabled=self.vad_check.isChecked(),
             max_record_seconds=self.max_record_spin.value(),
@@ -248,3 +249,13 @@ def _set_combo_text_or_data(combo: QComboBox, value: str) -> None:
         return
     if value:
         combo.setCurrentText(value)
+
+
+def _current_audio_device_value(combo: QComboBox) -> str:
+    data = combo.currentData()
+    if data is not None and str(data):
+        return str(data)
+    text = combo.currentText().strip()
+    if text in {"默认设备", "auto", "default"}:
+        return ""
+    return text

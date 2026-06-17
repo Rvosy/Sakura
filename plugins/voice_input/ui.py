@@ -37,6 +37,7 @@ class VoiceInputButton(QToolButton):
         self.finished.connect(self._show_finished)
         self.failed.connect(self._show_error)
         self.status_changed.connect(self._update_tooltip)
+        self.destroyed.connect(lambda *_args: self.shutdown())
 
     @Slot()
     def _handle_clicked(self) -> None:
