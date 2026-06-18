@@ -1701,6 +1701,13 @@ class SettingsDialog(QDialog):
             widget = getattr(self, attr, None)
             if isinstance(widget, QLabel):
                 widget.setStyleSheet(style)
+        splitter = getattr(self, "memory_list_splitter", None)
+        if splitter is not None and hasattr(splitter, "set_grip_colors"):
+            grip = QColor(theme.border_color)
+            grip.setAlpha(150)
+            grip_hover = QColor(theme.primary_color)
+            grip_hover.setAlpha(190)
+            splitter.set_grip_colors(grip, grip_hover)
 
     def _choose_theme_color(self, edit: QLineEdit) -> None:
         current_color = QColor(normalize_hex_color(edit.text(), DEFAULT_THEME_SETTINGS.primary_color))

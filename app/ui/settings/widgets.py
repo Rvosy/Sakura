@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, QStringListModel, Qt
+from PySide6.QtCore import QRectF, QSize, QStringListModel, Qt
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -15,6 +16,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QSplitter,
+    QSplitterHandle,
     QWidget,
 )
 
@@ -67,6 +70,64 @@ class _FitContentScrollArea(QScrollArea):
             hint = widget.sizeHint()
             return QSize(hint.width() + frame, hint.height() + frame)
         return super().sizeHint()
+
+
+class _GripSplitterHandle(QSplitterHandle):
+    """竖直 splitter 手柄:正中画一条固定短宽的圆角小条作抓取指示,其余透明。
+
+    用纯绘制而非 QSS,手柄抓取条宽度恒定(不随窗格变宽而变长),配色由所属
+    _GripSplitter 的 grip 颜色注入(随主题更新)。
+    """
+
+    _GRIP_WIDTH = 44
+    _GRIP_THICKNESS = 4
+
+    def __init__(self, orientation, parent) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(orientation, parent)
+        self._hover = False
+
+    def enterEvent(self, event):  # type: ignore[no-untyped-def]
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # type: ignore[no-untyped-def]
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):  # type: ignore[no-untyped-def]
+        splitter = self.splitter()
+        base = getattr(splitter, "_grip_color", None) or QColor(0, 0, 0, 70)
+        hover = getattr(splitter, "_grip_hover_color", None) or QColor(0, 0, 0, 120)
+        rect = self.rect()
+        width = min(self._GRIP_WIDTH, rect.width())
+        x = (rect.width() - width) / 2.0
+        y = (rect.height() - self._GRIP_THICKNESS) / 2.0
+        radius = self._GRIP_THICKNESS / 2.0
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(hover if self._hover else base)
+        painter.drawRoundedRect(QRectF(x, y, width, self._GRIP_THICKNESS), radius, radius)
+
+
+class _GripSplitter(QSplitter):
+    """带固定短抓取条的分隔器;抓取条配色由 set_grip_colors 注入主题色。"""
+
+    def __init__(self, orientation, parent: QWidget | None = None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(orientation, parent)
+        self._grip_color = QColor(0, 0, 0, 70)
+        self._grip_hover_color = QColor(0, 0, 0, 120)
+
+    def set_grip_colors(self, base: QColor, hover: QColor) -> None:
+        self._grip_color = base
+        self._grip_hover_color = hover
+        for index in range(1, self.count()):
+            self.handle(index).update()
+
+    def createHandle(self) -> QSplitterHandle:
+        return _GripSplitterHandle(self.orientation(), self)
 
 
 class _ClickOnlyListWidget(QListWidget):

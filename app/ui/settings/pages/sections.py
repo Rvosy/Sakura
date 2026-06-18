@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
-    QSplitter,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -93,6 +92,7 @@ from app.ui.portrait_controller import (
 from app.ui.settings.widgets import (
     ModelComboBox,
     _FitContentScrollArea,
+    _GripSplitter,
     _NoWheelComboBox,
     _NoWheelDoubleSpinBox,
     _NoWheelSlider,
@@ -1266,7 +1266,7 @@ class MemorySettingsPage:
         editor_pane_layout.addLayout(selection_layout)
         editor_pane_layout.addWidget(owner.memory_editor_container)
 
-        owner.memory_list_splitter = QSplitter(Qt.Orientation.Vertical, tab)
+        owner.memory_list_splitter = _GripSplitter(Qt.Orientation.Vertical, tab)
         owner.memory_list_splitter.setObjectName("memoryListSplitter")
         owner.memory_list_splitter.setChildrenCollapsible(False)
         owner.memory_list_splitter.setHandleWidth(8)
