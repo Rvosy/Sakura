@@ -20,6 +20,7 @@ def build_pet_tray_menu(
     on_toggle_always_on_top: Callable[[bool], None],
     on_show_history: Callable[[], None],
     on_show_runtime_log: Callable[[], None],
+    on_export_promo_image: Callable[[], None],
     on_show_settings: Callable[[], None],
     window_visible: bool = True,
     interactions_enabled: bool = True,
@@ -74,6 +75,11 @@ def build_pet_tray_menu(
     runtime_log_action.setEnabled(interactions_enabled)
     runtime_log_action.triggered.connect(on_show_runtime_log)
     menu.addAction(runtime_log_action)
+
+    export_promo_action = QAction("导出透明宣传图…", parent)
+    export_promo_action.setEnabled(interactions_enabled)
+    export_promo_action.triggered.connect(on_export_promo_image)
+    menu.addAction(export_promo_action)
 
     settings_action = QAction("设置", parent)
     settings_action.setEnabled(interactions_enabled)

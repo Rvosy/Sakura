@@ -16,6 +16,7 @@ from PySide6.QtCore import (
     QPoint,
     QRect,
     QSize,
+    QStandardPaths,
     Qt,
     QThread,
     QTimer,
@@ -36,6 +37,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -190,6 +192,12 @@ from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.card_container import CardContainer
 from app.ui.window_backdrop import MacOSVisualEffectBackdrop, VisualEffectMode
 from app.ui.input_blur_background import InputBlurBackground, make_blurred_pixmap
+from app.ui.promo_export import (
+    PromoExportError,
+    build_gaussian_input_background,
+    render_promo_image,
+    save_promo_image,
+)
 from app.ui.bubble_auto_hide import BubbleAutoHideController
 from app.ui import (
     ManualScreenshotOverlay,
@@ -206,6 +214,7 @@ from app.ui.theme import (
     build_app_chrome_stylesheet,
     build_message_box_stylesheet,
     merge_theme_with_character,
+    mix,
 )
 from app.voice import VoicePlaybackController
 
@@ -2582,8 +2591,93 @@ class PetWindow(QWidget):
             on_toggle_always_on_top=self._toggle_always_on_top,
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
+            on_export_promo_image=self.export_promo_image,
             on_show_settings=self.show_settings,
         )
+
+    def export_promo_image(self) -> None:
+        """Export portrait, speech bubble and input bar as a transparent PNG."""
+
+        pictures_dir = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.PicturesLocation
+        )
+        default_dir = Path(pictures_dir) if pictures_dir else self.base_dir
+        safe_id = "".join(
+            "_" if char in '<>:"/\\|?*' else char
+            for char in self.character_profile.id
+        ).strip(" .") or "sakura"
+        output_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出透明宣传图",
+            str(default_dir / f"{safe_id}-promo.png"),
+            "PNG 图片 (*.png)",
+        )
+        if not output_text:
+            return
+        output_path = Path(output_text)
+        if output_path.suffix.lower() != ".png":
+            output_path = output_path.with_suffix(".png")
+
+        bubble_hidden = self.bubble.isHidden()
+        input_hidden = self.input_card.isHidden()
+        blur_hidden = self.input_blur_background.isHidden()
+        input_background_layer = self.input_card.background_layer
+        input_blurred_pixmap = self.input_blur_background.blurred_pixmap()
+        bubble_effect_enabled = self.bubble_opacity_effect.isEnabled()
+        input_effect_enabled = self.input_card.fade_effect.isEnabled()
+        visual_effect_mode = self._input_bar_visual_effect_mode()
+        try:
+            # Export a stable complete composition, independent of hover and
+            # auto-hide state. Disabling effects avoids scaling cached low-res frames.
+            self.bubble.show()
+            self.input_card.show()
+            self.bubble_opacity_effect.setEnabled(False)
+            self.input_card.fade_effect.setEnabled(False)
+            if visual_effect_mode == VisualEffectMode.SOLID:
+                self._apply_input_bar_visual_effect_property(VisualEffectMode.SOLID)
+                self.input_card.set_background_layer(None)
+            else:
+                self._apply_input_bar_visual_effect_property(VisualEffectMode.GAUSSIAN_BLUR)
+                self.input_card.set_background_layer(self.input_blur_background)
+                self.input_blur_background.set_blurred_pixmap(
+                    build_gaussian_input_background(
+                        portrait_path=self.portrait_controller.current_path,
+                        display_layout=self._compute_pet_layout(),
+                        background_color=mix(
+                            self.theme_settings.border_color,
+                            "#ffffff",
+                            0.55,
+                        ),
+                    )
+                )
+                self.input_blur_background.show()
+            for widget in (self.bubble, self.input_card):
+                widget.ensurePolished()
+                layout = widget.layout()
+                if layout is not None:
+                    layout.activate()
+
+            image, _geometry = render_promo_image(
+                portrait_path=self.portrait_controller.current_path,
+                display_layout=self._compute_pet_layout(),
+                bubble=self.bubble,
+                input_card=self.input_card,
+            )
+            save_promo_image(image, output_path)
+        except (MemoryError, OSError, PromoExportError) as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return
+        finally:
+            self.input_blur_background.set_blurred_pixmap(input_blurred_pixmap)
+            self.input_card.set_background_layer(input_background_layer)
+            self._apply_input_bar_visual_effect_property(visual_effect_mode)
+            self.bubble_opacity_effect.setEnabled(bubble_effect_enabled)
+            self.input_card.fade_effect.setEnabled(input_effect_enabled)
+            self.input_blur_background.setHidden(blur_hidden)
+            self.bubble.setHidden(bubble_hidden)
+            self.input_card.setHidden(input_hidden)
+
+        QMessageBox.information(self, "导出成功", f"透明宣传图已保存到：{output_path}")
 
     def _refresh_tray_menu(self) -> None:
         if hasattr(self, "tray_icon"):

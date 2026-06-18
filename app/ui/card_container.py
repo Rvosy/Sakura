@@ -47,6 +47,10 @@ class CardContainer(QWidget):
     def content(self) -> QWidget:
         return self._content
 
+    @property
+    def background_layer(self) -> QWidget | None:
+        return self._background_layer
+
     def set_background_layer(self, background_layer: QWidget | None) -> None:
         """切换软件模糊背景层（外观模式变化时调用）。"""
         if self._background_layer is background_layer:

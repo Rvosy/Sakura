@@ -197,6 +197,7 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     host._toggle_always_on_top = lambda _checked: None
     host.show_history = lambda: None
     host.show_runtime_log = lambda: None
+    host.export_promo_image = lambda: None
     host.show_settings = lambda: None
     host.show()
     app.processEvents()
@@ -211,6 +212,7 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     assert "允许自主看屏幕" not in texts
     assert "自由访问权限" not in texts
     assert "运行日志" in texts
+    assert "导出透明宣传图…" in texts
     assert "显示中文字幕" in checkable_texts
     assert "完整访问权限" in checkable_texts
     assert "保持置顶" in checkable_texts
@@ -249,6 +251,7 @@ def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
     host._toggle_always_on_top = lambda _checked: None
     host.show_history = lambda: None
     host.show_runtime_log = lambda: None
+    host.export_promo_image = lambda: None
     host.show_settings = lambda: None
 
     menu = PetWindow._build_menu(host)  # type: ignore[arg-type]

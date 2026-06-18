@@ -93,6 +93,9 @@ class InputBlurBackground(QWidget):
         self._pixmap = pixmap if (pixmap is not None and not pixmap.isNull()) else QPixmap()
         self.update()
 
+    def blurred_pixmap(self) -> QPixmap:
+        return QPixmap(self._pixmap)
+
     def clear_pixmap(self) -> None:
         self._pixmap = QPixmap()
         self.update()
