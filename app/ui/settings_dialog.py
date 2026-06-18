@@ -1160,6 +1160,16 @@ class SettingsDialog(QDialog):
             self._memory_reload_pending = False
             self._load_memory_entries()
 
+    def _pin_active_memory_to_top(self) -> None:
+        """编辑某条记忆时把它挪到列表首行,避免被底部详情面板遮住、取消还要下拉找回。"""
+        if self._memory_editor_mode != "edit" or not self._active_memory_id:
+            return
+        for index, memory in enumerate(self._visible_memories):
+            if str(memory.get("id", "")) == self._active_memory_id:
+                if index > 0:
+                    self._visible_memories.insert(0, self._visible_memories.pop(index))
+                return
+
     def _refresh_memory_table(self) -> None:
         if not hasattr(self, "memory_table"):
             return
@@ -1186,6 +1196,7 @@ class SettingsDialog(QDialog):
                 for memory in self._visible_memories
                 if str(memory.get("layer") or DEFAULT_MEMORY_LAYER) == layer_filter
             ]
+        self._pin_active_memory_to_top()
         if not self._visible_memories:
             self._show_memory_placeholder("没有匹配的记忆。" if keyword else "暂无长期记忆。")
             return
@@ -1280,8 +1291,11 @@ class SettingsDialog(QDialog):
         if not memory_id:
             return
         self._selected_memory_ids = {memory_id}
-        self._refresh_memory_table()
+        # 先进入编辑态(置 _active_memory_id),再刷新表格,refresh 会把该项钉到首行,
+        # 最后滚动到顶部让被编辑项与详情面板同屏可见。
         self._open_memory_editor(row)
+        self._refresh_memory_table()
+        self.memory_table.scrollToTop()
 
     def _handle_memory_select_all_check_changed(self, state: int) -> None:
         if self._syncing_memory_selection:
@@ -1513,6 +1527,20 @@ class SettingsDialog(QDialog):
         # 编辑区贴合内容固定在底部；表格不再封顶，凭 stretch=1 吸收多余纵向空间，
         # 因此拉高窗口时增高的是记忆列表而非空白。
         self.memory_editor_container.setVisible(visible)
+        if not visible:
+            return
+        splitter = getattr(self, "memory_list_splitter", None)
+        if splitter is None:
+            return
+        # 编辑区在 QSplitter 中:把最大高度钉到内容高度,避免拖动/分配时被撑出空白;
+        # 默认给编辑区刚好贴合的高度,其余留给上方列表,用户可再拖手柄加长列表。
+        content_height = self.memory_editor_content.sizeHint().height()
+        self.memory_editor_container.setMaximumHeight(content_height)
+        total = splitter.height()
+        if total <= 0:
+            return
+        editor_height = min(content_height, max(0, total - 120))
+        splitter.setSizes([total - editor_height, editor_height])
 
     def _save_memory_entry(self) -> None:
         if self.memory_store is None:

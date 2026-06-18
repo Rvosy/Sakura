@@ -5312,6 +5312,81 @@ def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_pins_edited_memory_to_top() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.list_calls = 0
+
+        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+            self.list_calls += 1
+            return [
+                {
+                    "id": f"memory-{i:02d}",
+                    "content": f"记忆内容 {i}",
+                    "updated_at": f"2026-06-{20 - i:02d}T10:00:00+08:00",
+                }
+                for i in range(6)
+            ]
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    memory_store = MemoryStoreStub()
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=Path("."),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        memory_store=memory_store,  # type: ignore[arg-type]
+    )
+
+    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
+    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
+    nav.setCurrentRow(memory_row)
+    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
+
+    # 列表与编辑区由竖直 QSplitter 隔开,可手动拖动加长。
+    assert isinstance(dialog.memory_list_splitter, qtwidgets.QSplitter)
+    assert dialog.memory_list_splitter.orientation() == qtcore.Qt.Orientation.Vertical
+    assert dialog.memory_list_splitter.count() == 2
+
+    # 初始按时间倒序:memory-00 最新在首行,memory-05 在末行。
+    initial_ids = [str(m.get("id")) for m in dialog._visible_memories]
+    assert initial_ids[0] == "memory-00"
+    assert initial_ids[-1] == "memory-05"
+
+    # 点击末行进入编辑:该项被钉到首行,详情面板展开,不再被遮挡。
+    last_row = len(dialog._visible_memories) - 1
+    dialog._switch_memory_single_selection(last_row)
+    app.processEvents()
+    assert str(dialog._visible_memories[0].get("id")) == "memory-05"
+    assert dialog.memory_table.item(0, 1).text() == "记忆内容 5"
+    assert dialog._active_memory_id == "memory-05"
+    assert not dialog.memory_editor_container.isHidden()
+
+    # 退出编辑后恢复原有时间倒序,不再置顶。
+    dialog._clear_memory_selection()
+    app.processEvents()
+    restored_ids = [str(m.get("id")) for m in dialog._visible_memories]
+    assert restored_ids == initial_ids
+    assert dialog.memory_editor_container.isHidden()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):

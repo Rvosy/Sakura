@@ -463,6 +463,15 @@ QScrollArea#memoryEditorPanel > QWidget,
 QWidget#memoryEditorContent {{
     background: transparent;
 }}
+QSplitter#memoryListSplitter::handle:vertical {{
+    height: 8px;
+    margin: 2px 120px;
+    border-radius: 3px;
+    background: {rgba(theme.border_color, 110)};
+}}
+QSplitter#memoryListSplitter::handle:vertical:hover {{
+    background: {rgba(theme.primary_color, 150)};
+}}
 QScrollArea#settingsScrollArea {{
     background: transparent;
     border: none;

@@ -1255,15 +1255,32 @@ class MemorySettingsPage:
         owner.memory_editor_container.setWidget(owner.memory_editor_content)
         owner.memory_editor_container.setVisible(False)
 
+        # 表格 + 选择行放进上窗格,编辑区放进下窗格,用竖直 QSplitter 隔开:
+        # 用户可拖动手柄手动加长记忆列表(编辑区收缩并内部滚动),不必只靠拉伸整窗。
+        table_pane = QWidget(tab)
+        table_pane.setObjectName("memoryTablePane")
+        table_pane_layout = QVBoxLayout(table_pane)
+        table_pane_layout.setContentsMargins(0, 0, 0, 0)
+        table_pane_layout.setSpacing(10)
+        table_pane_layout.addWidget(owner.memory_table, 1)
+        table_pane_layout.addLayout(selection_layout)
+
+        owner.memory_list_splitter = QSplitter(Qt.Orientation.Vertical, tab)
+        owner.memory_list_splitter.setObjectName("memoryListSplitter")
+        owner.memory_list_splitter.setChildrenCollapsible(False)
+        owner.memory_list_splitter.setHandleWidth(8)
+        owner.memory_list_splitter.addWidget(table_pane)
+        owner.memory_list_splitter.addWidget(owner.memory_editor_container)
+        owner.memory_list_splitter.setStretchFactor(0, 1)
+        owner.memory_list_splitter.setStretchFactor(1, 0)
+
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(10)
         layout.addWidget(owner.memory_curation_group)
         layout.addLayout(filter_layout)
         layout.addLayout(status_layout)
-        layout.addWidget(owner.memory_table, 1)
-        layout.addLayout(selection_layout)
-        layout.addWidget(owner.memory_editor_container)
+        layout.addWidget(owner.memory_list_splitter, 1)
         tab.setLayout(layout)
 
         owner.memory_status_label.setText("打开记忆页时读取长期记忆。")
