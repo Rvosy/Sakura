@@ -223,28 +223,21 @@ def test_history_window_keeps_meta_outside_message_bubble() -> None:
 
     store = StaticHistoryStore()
 
-    try:
-        window = HistoryWindow(store)  # type: ignore[arg-type]
-        app.processEvents()
+    window = HistoryWindow(store)  # type: ignore[arg-type]
+    app.processEvents()
 
-        meta_labels = window.findChildren(QLabel, "entryMeta")
-        bubbles = [
-            *window.findChildren(QFrame, "userBubble"),
-            *window.findChildren(QFrame, "assistantBubble"),
-            *window.findChildren(QFrame, "systemBubble"),
-        ]
+    meta_labels = window.findChildren(QLabel, "entryMeta")
+    bubbles = [
+        *window.findChildren(QFrame, "userBubble"),
+        *window.findChildren(QFrame, "assistantBubble"),
+        *window.findChildren(QFrame, "systemBubble"),
+    ]
 
-        assert len(meta_labels) == 3
-        assert len(bubbles) == 3
-        for bubble in bubbles:
-            assert not any(meta.parent() is bubble for meta in meta_labels)
-            assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
-
-        window.deleteLater()
-    finally:
-        app.processEvents()
-        import time
-        time.sleep(0.1)  # Give Qt time to clean up
+    assert len(meta_labels) == 3
+    assert len(bubbles) == 3
+    for bubble in bubbles:
+        assert not any(meta.parent() is bubble for meta in meta_labels)
+        assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
 
 
 def test_history_window_groups_consecutive_role_meta() -> None:
@@ -280,9 +273,6 @@ def test_history_window_groups_consecutive_role_meta() -> None:
     assert len(window.findChildren(QFrame, "assistantBubble")) == 3
     assert meta_texts.count("桜 · 2026-05-30 16:20:30") == 1
     assert meta_texts.count("你 · 2026-05-30 16:20:30") == 2
-
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
@@ -326,10 +316,6 @@ def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
     assert "新内容" in texts_after_refresh
     assert "旧内容" not in texts_after_refresh
 
-    window.close()
-    window.deleteLater()
-    app.processEvents()
-
 
 def test_history_window_keeps_loading_visible_until_batched_render_finishes() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -364,10 +350,6 @@ def test_history_window_keeps_loading_visible_until_batched_render_finishes() ->
     assert "历史内容 0" in texts_after_render
     assert "历史内容 40" in texts_after_render
     assert "正在读取历史记录..." not in texts_after_render
-
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None:
@@ -412,7 +394,3 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None
         lambda: scrollbar.maximum() > 0 and scrollbar.value() == scrollbar.maximum(),
         timeout=2.0,
     )
-
-    window.close()
-    window.deleteLater()
-    app.processEvents()
