@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import random
 import threading
 
@@ -20,7 +19,6 @@ from app.config.settings_service import BackchannelSettings  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     return qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 

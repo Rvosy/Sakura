@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
-import os
 import sys
 import time
 import types
@@ -199,7 +198,6 @@ def test_entry_view_model_ignores_tone_and_portrait_metadata() -> None:
 
 
 def test_history_window_keeps_meta_outside_message_bubble(qtbot) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -239,10 +237,10 @@ def test_history_window_keeps_meta_outside_message_bubble(qtbot) -> None:  # typ
     for bubble in bubbles:
         assert not any(meta.parent() is bubble for meta in meta_labels)
         assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
+    window.close()
 
 
 def test_history_window_groups_consecutive_role_meta(qtbot) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -275,10 +273,10 @@ def test_history_window_groups_consecutive_role_meta(qtbot) -> None:  # type: ig
     assert len(window.findChildren(QFrame, "assistantBubble")) == 3
     assert meta_texts.count("桜 · 2026-05-30 16:20:30") == 1
     assert meta_texts.count("你 · 2026-05-30 16:20:30") == 2
+    window.close()
 
 
 def test_history_window_hides_stale_content_before_reopen_refresh(qtbot) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -318,10 +316,10 @@ def test_history_window_hides_stale_content_before_reopen_refresh(qtbot) -> None
     texts_after_refresh = label_texts()
     assert "新内容" in texts_after_refresh
     assert "旧内容" not in texts_after_refresh
+    window.close()
 
 
 def test_history_window_keeps_loading_visible_until_batched_render_finishes(qtbot) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -354,10 +352,10 @@ def test_history_window_keeps_loading_visible_until_batched_render_finishes(qtbo
     assert "历史内容 0" in texts_after_render
     assert "历史内容 40" in texts_after_render
     assert "正在读取历史记录..." not in texts_after_render
+    window.close()
 
 
 def test_history_window_scrolls_to_bottom_after_batched_layout_settles(qtbot) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -399,3 +397,4 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles(qtbot) ->
         lambda: scrollbar.maximum() > 0 and scrollbar.value() == scrollbar.maximum(),
         timeout=2.0,
     )
+    window.close()

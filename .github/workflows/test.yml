@@ -85,7 +85,6 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            xvfb \
             libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
@@ -101,13 +100,12 @@ jobs:
       - name: Run UI tests
         timeout-minutes: 6
         env:
-          QT_QPA_PLATFORM: xcb
+          QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          # run under a virtual X server to avoid offscreen plugin issues
-          xvfb-run -s "-screen 0 1280x720x24" python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee /tmp/ui-tests.log
+          python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee /tmp/ui-tests.log
           EXIT_CODE=${PIPESTATUS[0]}
 
           # Extract collected count (pytest prints "collected N items")
