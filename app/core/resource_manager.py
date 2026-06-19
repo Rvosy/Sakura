@@ -155,6 +155,7 @@ class ResourceManager(QObject):
         quit_on: Sequence[Any] = (),
         on_finished: Callable[[], None] | None = None,
         run_slot: Callable[[], None] | None = None,
+        register: bool = True,
         label: str = "",
     ) -> QtWorkerResource:
         """创建并启动一个受管 QThread worker。
@@ -167,6 +168,9 @@ class ResourceManager(QObject):
           清空宿主属性 / 运行 ``on_finished`` 业务回调）；
         - 把 ``thread``/``worker`` 写入 ``owner`` 的 ``thread_attr``/``worker_attr``，
           以兼容现有处理器与测试断言。
+
+        ``register=False`` 时不纳入 :meth:`stop_all` 的关闭清单（用于启动期一次性、
+        不应在退出时被打断的任务，如 TTS 整合包迁移），但仍会在线程结束时自动 finalize。
         """
         thread = QThread(parent)
         worker.moveToThread(thread)
@@ -190,7 +194,8 @@ class ResourceManager(QObject):
 
         setattr(owner, thread_attr, thread)
         setattr(owner, worker_attr, worker)
-        self._register(resource)
+        if register:
+            self._register(resource)
         thread.start()
         return resource
 

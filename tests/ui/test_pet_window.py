@@ -847,7 +847,7 @@ def test_emit_app_closed_event_logs_once_with_interrupted_flag() -> None:
 
 
 def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
-    from app.core.resource_manager import ResourceManager
+    from app.core.resource_manager import QtWorkerResource, ResourceManager
     from app.ui.pet_window import PetWindow, TRANSIENT_PROGRESS_MESSAGE_KEY
 
     class SignalStub:
@@ -893,28 +893,32 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
 
     class MinimalWindow:
         close_external_tools = PetWindow.close_external_tools
-        _shutdown_qthread = PetWindow._shutdown_qthread
 
     window = MinimalWindow()
+    manager = ResourceManager()
     thread = ThreadStub()
     worker = WorkerStub()
     subtitle = SubtitleStub()
     window._shutdown_in_progress = False
-    window.resource_manager = ResourceManager()
+    window.resource_manager = manager
     window.messages = [
         {"role": "assistant", "content": "途中", TRANSIENT_PROGRESS_MESSAGE_KEY: True}
     ]
     window.subtitle_controller = subtitle
     window.worker_thread = thread
     window.worker = worker
-    window.memory_curation_thread = None
-    window.memory_curation_worker = None
-    window.deferred_startup_thread = None
-    window.deferred_startup_worker = None
-    window.tts_ready_warmup_thread = None
-    window.tts_ready_warmup_worker = None
-    window.screen_observation_encode_thread = None
-    window.screen_observation_encode_worker = None
+    # close_external_tools 通过 resource_manager.stop_all 关闭已注册的 worker。
+    manager._register(
+        QtWorkerResource(
+            manager,
+            thread,
+            worker,
+            owner=window,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            label="worker_thread",
+        )
+    )
     window._emit_app_closed_event = lambda: None
     window._stop_speaking_state_watchdog = lambda: None
     window.close_tts_tools = lambda: None
@@ -929,7 +933,7 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
     assert thread.interrupted is True
     assert thread.quit_called is True
     assert thread.waits == [1000]
-    assert window.resource_manager._lingering == [(thread, worker)]
+    assert manager._lingering == [(thread, worker)]
     assert window.messages == []
     assert subtitle.cancelled is True
 

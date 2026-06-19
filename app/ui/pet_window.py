@@ -1237,27 +1237,11 @@ class PetWindow(QWidget):
                 "接话分类线程未在退出等待时间内结束，将在后台自然完成",
                 {"wait_ms": THREAD_SHUTDOWN_WAIT_MS},
             )
-        self._shutdown_qthread("worker_thread", "worker")
-        self._shutdown_qthread("memory_curation_thread", "memory_curation_worker")
-        self._shutdown_qthread("deferred_startup_thread", "deferred_startup_worker")
-        self._shutdown_qthread("tts_ready_warmup_thread", "tts_ready_warmup_worker")
-        self._shutdown_qthread("screen_observation_encode_thread", "screen_observation_encode_worker")
+        self.resource_manager.stop_all(THREAD_SHUTDOWN_WAIT_MS)
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
         self._close_renderer_manager()
-
-    def _shutdown_qthread(self, thread_attr: str, worker_attr: str) -> None:
-        thread = getattr(self, thread_attr, None)
-        worker = getattr(self, worker_attr, None)
-        # 关闭机制（cancel→interrupt→quit→wait→lingering）由资源管理器统一执行；
-        # 干净停止时清空宿主属性，超时 lingering 时保留属性（与旧行为一致）。
-        cleanly_stopped = self.resource_manager.stop_qt_thread(
-            thread, worker, label=thread_attr
-        )
-        if cleanly_stopped:
-            setattr(self, thread_attr, None)
-            setattr(self, worker_attr, None)
 
     def _emit_app_started_event(self) -> None:
         """启动就绪后落盘 app.started；若存在上次关闭记录则附带跨会话信息并注入首条消息。"""
@@ -2915,24 +2899,27 @@ class PetWindow(QWidget):
                 "messages": summarize_messages(request_messages),
             },
         )
-        self.worker_thread = QThread(self)
-        self.worker = ChatWorker(
+        worker = ChatWorker(
             self.agent_runtime,
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_reply)
-        self.worker.failed.connect(self._handle_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_reply),
+                (worker.failed, self._handle_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("chat_worker_started")
 
     @Slot(object)
@@ -3262,22 +3249,20 @@ class PetWindow(QWidget):
             or self.screen_observation_encode_thread is not None
         ):
             return False
-        thread = QThread(self)
         worker = ScreenObservationEncodeWorker(captured, context)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_screen_observation_encoded)
-        worker.failed.connect(self._handle_screen_observation_encode_failed)
-        worker.cancelled.connect(self._handle_screen_observation_encode_cancelled)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        worker.cancelled.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_screen_observation_encode_worker)
-        self.screen_observation_encode_thread = thread
-        self.screen_observation_encode_worker = worker
-        thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="screen_observation_encode_thread",
+            worker_attr="screen_observation_encode_worker",
+            signal_bindings=[
+                (worker.finished, self._handle_screen_observation_encoded),
+                (worker.failed, self._handle_screen_observation_encode_failed),
+                (worker.cancelled, self._handle_screen_observation_encode_cancelled),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+        )
         return True
 
     @Slot(object, object)
@@ -3328,15 +3313,6 @@ class PetWindow(QWidget):
         if context.get("kind") in {"chat_followup", "event_followup"}:
             self.screen_observation_followup_in_progress = False
             self._resume_screen_observation_followup_cleanup()
-
-    @Slot()
-    def _cleanup_screen_observation_encode_worker(self) -> None:
-        self._retain_qobject_wrappers_until_deleted(
-            self.screen_observation_encode_thread,
-            self.screen_observation_encode_worker,
-        )
-        self.screen_observation_encode_thread = None
-        self.screen_observation_encode_worker = None
 
     def _retain_qobject_wrappers_until_deleted(self, *objects: QObject | None) -> None:
         """委托资源管理器保留退役 wrapper，避开 Shiboken 双重析构窗口。"""
@@ -3408,23 +3384,26 @@ class PetWindow(QWidget):
                 "cancelled": cancelled_action.tool_name if cancelled_action is not None else "",
             },
         )
-        self.worker_thread = QThread(self)
-        self.worker = ChatWorker(
+        worker = ChatWorker(
             self.agent_runtime,
             confirmed_action=confirmed_action,
             cancelled_action=cancelled_action,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_action_reply)
-        self.worker.failed.connect(self._handle_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_action_reply),
+                (worker.failed, self._handle_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("action_worker_started")
 
     @Slot(object)
@@ -3891,25 +3870,28 @@ class PetWindow(QWidget):
         self.active_reminder_id = reminder_id
         self.active_reminder_text = str(event.payload.get("text", ""))
         self._set_busy(True)
-        self.worker_thread = QThread(self)
-        self.worker = EventWorker(
+        worker = EventWorker(
             self.agent_runtime,
             event,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.visual_observation_store = getattr(self, "visual_observation_store", None)
-        self.worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
+        worker.visual_observation_store = getattr(self, "visual_observation_store", None)
+        worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
         self.pending_event_visual_observation_jobs = []
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_event_reply)
-        self.worker.failed.connect(self._handle_event_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_event_reply),
+                (worker.failed, self._handle_event_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("event_worker_started")
 
     @Slot(object)
@@ -4077,13 +4059,6 @@ class PetWindow(QWidget):
                 "screen_observation_followup_in_progress": self.screen_observation_followup_in_progress,
             },
         )
-        self._retain_qobject_wrappers_until_deleted(self.worker_thread, self.worker)
-        if self.worker is not None:
-            self.worker.deleteLater()
-        if self.worker_thread is not None:
-            self.worker_thread.deleteLater()
-        self.worker = None
-        self.worker_thread = None
         if getattr(self, "_shutdown_in_progress", False):
             self.pending_screen_observation_messages = None
             self.pending_screen_observation_event = None
@@ -4202,17 +4177,20 @@ class PetWindow(QWidget):
         self.memory_curation_mode = mode
         self.memory_curation_target_history_count = target_history_count
         self.memory_curation_consumed_turns = consumed_turns
-        self.memory_curation_thread = QThread(self)
-        self.memory_curation_worker = MemoryCurationWorker(self.memory_curator, entries)
-        self.memory_curation_worker.moveToThread(self.memory_curation_thread)
-        self.memory_curation_thread.started.connect(self.memory_curation_worker.run)
-        self.memory_curation_worker.finished.connect(self._handle_memory_curation_finished)
-        self.memory_curation_worker.failed.connect(self._handle_memory_curation_failed)
-        self.memory_curation_worker.finished.connect(self.memory_curation_thread.quit)
-        self.memory_curation_worker.failed.connect(self.memory_curation_thread.quit)
-        self.memory_curation_worker.cancelled.connect(self.memory_curation_thread.quit)
-        self.memory_curation_thread.finished.connect(self._cleanup_memory_curation_worker)
-        self.memory_curation_thread.start()
+        worker = MemoryCurationWorker(self.memory_curator, entries)
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="memory_curation_thread",
+            worker_attr="memory_curation_worker",
+            signal_bindings=[
+                (worker.finished, self._handle_memory_curation_finished),
+                (worker.failed, self._handle_memory_curation_failed),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_memory_curation_worker,
+        )
 
     @Slot(object)
     def _handle_memory_curation_finished(self, result: MemoryCurationResult) -> None:
@@ -4271,16 +4249,6 @@ class PetWindow(QWidget):
 
     @Slot()
     def _cleanup_memory_curation_worker(self) -> None:
-        self._retain_qobject_wrappers_until_deleted(
-            self.memory_curation_thread,
-            self.memory_curation_worker,
-        )
-        if self.memory_curation_worker is not None:
-            self.memory_curation_worker.deleteLater()
-        if self.memory_curation_thread is not None:
-            self.memory_curation_thread.deleteLater()
-        self.memory_curation_worker = None
-        self.memory_curation_thread = None
         self.memory_curation_mode = ""
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
@@ -4545,19 +4513,19 @@ class PetWindow(QWidget):
             debug_log("TTS", "TTS 服务预热已在进行，跳过重复请求")
             return
 
-        thread = QThread(self)
         worker = TTSReadyWarmupWorker(provider)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.succeeded.connect(self._handle_tts_ready_warmup_succeeded)
-        worker.failed.connect(self._handle_tts_ready_warmup_failed)
-        worker.finished.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_tts_ready_warmup_worker)
-        self.tts_ready_warmup_thread = thread
-        self.tts_ready_warmup_worker = worker
-        thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="tts_ready_warmup_thread",
+            worker_attr="tts_ready_warmup_worker",
+            signal_bindings=[
+                (worker.succeeded, self._handle_tts_ready_warmup_succeeded),
+                (worker.failed, self._handle_tts_ready_warmup_failed),
+            ],
+            quit_on=[worker.finished],
+        )
 
     @Slot(str)
     def _handle_tts_ready_warmup_succeeded(self, _message: str) -> None:
@@ -4570,15 +4538,6 @@ class PetWindow(QWidget):
         if getattr(self, "_shutdown_in_progress", False):
             return
         self._show_tts_error(message)
-
-    @Slot()
-    def _cleanup_tts_ready_warmup_worker(self) -> None:
-        self._retain_qobject_wrappers_until_deleted(
-            self.tts_ready_warmup_thread,
-            self.tts_ready_warmup_worker,
-        )
-        self.tts_ready_warmup_thread = None
-        self.tts_ready_warmup_worker = None
 
     def _apply_startup_initializing_state(self) -> None:
         self.input_edit.setPlaceholderText(STARTUP_INITIALIZING_TEXT)

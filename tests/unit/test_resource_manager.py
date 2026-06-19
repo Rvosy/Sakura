@@ -279,3 +279,36 @@ def test_spawn_qt_worker_normal_completion_finalizes() -> None:
     assert business == [True]
     assert res not in mgr._resources
     assert res.is_running() is False
+
+
+def test_spawn_qt_worker_unregistered_is_skipped_by_stop_all() -> None:
+    _qt_app_or_skip()
+
+    class _Owner(QObject):
+        pass
+
+    class _Worker(QObject):
+        finished = Signal()
+
+        @Slot()
+        def run(self) -> None:
+            self.finished.emit()
+
+    owner = _Owner()
+    mgr = ResourceManager()
+    worker = _Worker()
+
+    res = mgr.spawn_qt_worker(
+        worker,
+        parent=owner,
+        owner=owner,
+        thread_attr="mig_thread",
+        worker_attr="mig_worker",
+        quit_on=[worker.finished],
+        register=False,
+        label="mig_thread",
+    )
+    # 不进入 stop_all 清单，但仍会在线程结束时自动 finalize。
+    assert res not in mgr._resources
+    _spin_until(lambda: owner.mig_thread is None)  # type: ignore[attr-defined]
+    assert owner.mig_worker is None  # type: ignore[attr-defined]

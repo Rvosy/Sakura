@@ -5,7 +5,7 @@ import ctypes
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot, QtMsgType, qInstallMessageHandler
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot, QtMsgType, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QPalette, QColor
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QStyleFactory
 
@@ -492,25 +492,24 @@ def _start_tts_migration_or_deferred(base_dir: Path, pet_window: PetWindow) -> N
         return
 
     dialog = TTSBundleMigrationDialog(base_dir, pet_window)
-    thread = QThread(pet_window)
     worker = TTSBundleMigrationWorker(migrations)
-    worker.moveToThread(thread)
     pet_window.tts_migration_dialog = dialog
-    pet_window.tts_migration_thread = thread
-    pet_window.tts_migration_worker = worker
-
-    thread.started.connect(worker.run)
-    worker.current_item.connect(dialog.set_current_item)
-    worker.progress.connect(dialog.set_progress)
-    worker.finished.connect(dialog.finish_migration)
-    worker.finished.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_thread", None))
-    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_worker", None))
-
     dialog.show()
-    thread.start()
+    # register=False：迁移是启动期一次性任务，退出时不应被 stop_all 打断。
+    pet_window.resource_manager.spawn_qt_worker(
+        worker,
+        parent=pet_window,
+        owner=pet_window,
+        thread_attr="tts_migration_thread",
+        worker_attr="tts_migration_worker",
+        signal_bindings=[
+            (worker.current_item, dialog.set_current_item),
+            (worker.progress, dialog.set_progress),
+            (worker.finished, dialog.finish_migration),
+        ],
+        quit_on=[worker.finished],
+        register=False,
+    )
 
 
 def _pending_startup_tts_migrations(base_dir: Path) -> list[TTSBundleMigration]:
@@ -567,22 +566,19 @@ def _normalize_migrated_tts_config(base_dir: Path) -> None:
 
 
 def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:
-    thread = QThread(pet_window)
     worker = DeferredStartupWorker(base_dir, pet_window.context)
-    worker.moveToThread(thread)
-    pet_window.deferred_startup_thread = thread
-    pet_window.deferred_startup_worker = worker
-    thread.started.connect(worker.run)
-    worker.finished.connect(pet_window.apply_deferred_services)
-    worker.failed.connect(pet_window.handle_deferred_startup_failed)
-    worker.finished.connect(thread.quit)
-    worker.failed.connect(thread.quit)
-    worker.cancelled.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.finished.connect(lambda: setattr(pet_window, "deferred_startup_thread", None))
-    thread.finished.connect(lambda: setattr(pet_window, "deferred_startup_worker", None))
-    thread.start()
+    pet_window.resource_manager.spawn_qt_worker(
+        worker,
+        parent=pet_window,
+        owner=pet_window,
+        thread_attr="deferred_startup_thread",
+        worker_attr="deferred_startup_worker",
+        signal_bindings=[
+            (worker.finished, pet_window.apply_deferred_services),
+            (worker.failed, pet_window.handle_deferred_startup_failed),
+        ],
+        quit_on=[worker.finished, worker.failed, worker.cancelled],
+    )
 
 if __name__ == "__main__":
     raise SystemExit(main())
