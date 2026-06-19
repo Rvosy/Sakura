@@ -18,11 +18,12 @@ import pytest
 
 import app.voice.tts as tts_module
 from app.voice.audio_checks import _verify_generated_audio
+import app.voice.tts_playback as tts_playback
 from app.voice.tts import (
     _AUDIO_FINISH_FALLBACK_GRACE_MS,
     _AUDIO_FINISH_FALLBACK_MAX_MS,
-    GPTSoVITSTTSProvider,
 )
+from app.voice.tts_playback import TTSPlaybackEndpoint
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_audio_verification"
@@ -85,12 +86,12 @@ class TestFinishFallback:
         broken.write_bytes(b"not a wav")
         scheduled: list[int] = []
         monkeypatch.setattr(
-            tts_module.QTimer,
+            tts_playback.QTimer,
             "singleShot",
             staticmethod(lambda delay, _fn: scheduled.append(int(delay))),
         )
         stub = self._provider_stub()
-        GPTSoVITSTTSProvider._schedule_current_audio_finish_fallback(stub, broken, 1)
+        TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(stub, broken, 1)
         assert scheduled, "解析失败时未安排兜底，会导致播放流程可能永久挂起"
         assert scheduled[0] == _AUDIO_FINISH_FALLBACK_MAX_MS
 
@@ -100,11 +101,11 @@ class TestFinishFallback:
         _write_wav(wav, frames=16000)  # 1 秒
         scheduled: list[int] = []
         monkeypatch.setattr(
-            tts_module.QTimer,
+            tts_playback.QTimer,
             "singleShot",
             staticmethod(lambda delay, _fn: scheduled.append(int(delay))),
         )
-        GPTSoVITSTTSProvider._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
+        TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
         assert scheduled[0] == 1000 + _AUDIO_FINISH_FALLBACK_GRACE_MS
 
     def test_oversized_duration_clamped_to_max(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,11 +114,11 @@ class TestFinishFallback:
         _write_wav(wav, frames=16000 * 120)  # 120 秒
         scheduled: list[int] = []
         monkeypatch.setattr(
-            tts_module.QTimer,
+            tts_playback.QTimer,
             "singleShot",
             staticmethod(lambda delay, _fn: scheduled.append(int(delay))),
         )
-        GPTSoVITSTTSProvider._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
+        TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
         assert scheduled[0] == _AUDIO_FINISH_FALLBACK_MAX_MS
 
 
@@ -151,9 +152,9 @@ class TestPlayNextSkipsInvalidAudio:
         stub._finish_current_audio = fake_finish
         stub._play_next_with_media_player = lambda: played.append(stub._current_audio)
         stub._play_next_with_sink = lambda: played.append(stub._current_audio)
-        stub._play_next = lambda: GPTSoVITSTTSProvider._play_next(stub)
+        stub._play_next = lambda: TTSPlaybackEndpoint._play_next(stub)
 
-        GPTSoVITSTTSProvider._play_next(stub)
+        TTSPlaybackEndpoint._play_next(stub)
 
         # 坏条目被跳过（invalid_audio），好条目正常进入播放
         assert finished == ["invalid_audio"]

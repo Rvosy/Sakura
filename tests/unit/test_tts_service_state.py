@@ -109,12 +109,12 @@ class TestWaitLocalServiceReady:
         stub._server_process = _AliveProcess()
         # 压缩等待：sleep 跳过、时间快进
         clock = {"now": 0.0}
-        monkeypatch.setattr("app.voice.tts.time.monotonic", lambda: clock["now"])
+        monkeypatch.setattr("app.voice.tts_service.time.monotonic", lambda: clock["now"])
 
         def fast_sleep(seconds: float) -> None:
             clock["now"] += seconds
 
-        monkeypatch.setattr("app.voice.tts.time.sleep", fast_sleep)
+        monkeypatch.setattr("app.voice.tts_service.time.sleep", fast_sleep)
         messages: list[str] = []
         ok = _wait_local_service_ready(
             provider=stub,

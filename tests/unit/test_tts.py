@@ -98,6 +98,7 @@ from app.voice.tts import (
     purge_tts_cache,
 )
 from app.voice.tts_service import GenieServiceSupervisor, TTSServiceSupervisor
+import app.voice.tts_playback as tts_playback
 from app.voice.tts_settings import GPTSoVITSTTSSettings, _load_tone_references
 from app.core.gui_log import GUI_LOG_SCOPE_TTS, clear_gui_logs, get_gui_log_buffer
 from app.voice import VoicePlaybackController
@@ -1085,14 +1086,14 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     # 本测试验证 QMediaPlayer 预热复用；旧版靠"假文件让 sink 失败再 fallback"
     # 隐式走到 media_player，播放前校验引入后显式指定后端
-    provider._playback_backend = "media_player"
+    provider._playback._playback_backend = "media_player"
 
     assert calls == []
 
@@ -1102,8 +1103,8 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
 
     warmup_audio = _runtime_root("warmup_play") / "dummy.wav"
     _write_silence_wav(warmup_audio, frame_count=1600, frame_rate=16000)
-    provider._pending_audio.append((warmup_audio, None, None, None, ""))
-    provider._play_next()
+    provider._playback._pending_audio.append((warmup_audio, None, None, None, ""))
+    provider._playback._play_next()
 
     # 播放后会追加一个播放完成兜底定时器（delay>0，仅记录不执行）
     assert calls == ["timer", "audio", "player", "source", "play", "timer"]
@@ -1152,18 +1153,18 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
         def stop(self) -> None:
             events.append("stop")
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback_backend = "media_player"  # force media_player for this legacy test
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
     stopped_root = _runtime_root("stopped_state_finish")
     first_audio = stopped_root / "first.wav"
     second_audio = stopped_root / "second.wav"
     _write_silence_wav(first_audio, frame_count=1600, frame_rate=16000)
     _write_silence_wav(second_audio, frame_count=1600, frame_rate=16000)
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             first_audio,
             lambda: events.append("first_started"),
@@ -1172,7 +1173,7 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
             "",
         )
     )
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             second_audio,
             lambda: events.append("second_started"),
@@ -1182,13 +1183,13 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
         )
     )
 
-    provider._play_next()
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.StoppedState)
+    provider._playback._play_next()
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.StoppedState)
 
     assert events == ["play", "first_started", "stop", "first_finished", "play"]
     assert cleaned == [first_audio]
-    assert provider._current_audio == second_audio
+    assert provider._playback._current_audio == second_audio
     assert len(sources) == 3
 
 
@@ -1245,14 +1246,14 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
         def stop(self) -> None:
             events.append("stop")
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback_backend = "media_player"  # force media_player for this legacy test
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
-    provider._pending_audio.append(
+    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._playback._pending_audio.append(
         (
             first_audio,
             lambda: events.append("first_started"),
@@ -1261,7 +1262,7 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
             "",
         )
     )
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             second_audio,
             lambda: events.append("second_started"),
@@ -1271,15 +1272,15 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
         )
     )
 
-    provider._play_next()
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    provider._playback._play_next()
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
     assert timers[0][0] == 2000
 
     timers[0][1]()
 
     assert events == ["play", "first_started", "stop", "first_finished", "play"]
     assert cleaned == [first_audio]
-    assert provider._current_audio == second_audio
+    assert provider._playback._current_audio == second_audio
     assert len(timers) == 2
 
 
@@ -1588,8 +1589,8 @@ def test_speak_prepared_cancelled_emits_callbacks(monkeypatch) -> None:  # type:
     finished_calls: list[object] = []
 
     # Replace the whole signal attribute on the instance
-    monkeypatch.setattr(provider, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     handle = TTSPreparedAudio(text="test", tone="neutral")
     handle.cancelled = True
@@ -1611,8 +1612,8 @@ def test_speak_prepared_failed_emits_callbacks(monkeypatch) -> None:  # type: ig
     finished_calls: list[object] = []
 
     # Replace the whole signal attribute on the instance
-    monkeypatch.setattr(provider, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     handle = TTSPreparedAudio(text="test", tone="neutral")
     handle.failed = True
@@ -1664,35 +1665,35 @@ def test_finish_current_audio_is_idempotent(monkeypatch) -> None:  # type: ignor
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     cleanup_calls: list[Path] = []
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleanup_calls.append(path))
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleanup_calls.append(path))
 
     # Replace signal attribute on instance
     finished_calls: list[object] = []
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     root = _runtime_root("finish_idempotent")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._current_audio = audio_path
-    provider._current_finished = lambda: None
-    provider._current_started = lambda: None
-    provider._current_started_emitted = False
+    provider._playback._current_audio = audio_path
+    provider._playback._current_finished = lambda: None
+    provider._playback._current_started = lambda: None
+    provider._playback._current_started_emitted = False
 
     # First finish
-    provider._finish_current_audio("normal")
-    assert provider._current_audio is None
+    provider._playback._finish_current_audio("normal")
+    assert provider._playback._current_audio is None
     assert len(cleanup_calls) == 1
     assert len(finished_calls) == 1
 
     # Second call - _current_audio is None so returns early
-    provider._finish_current_audio("duplicate")
-    assert provider._current_audio is None
+    provider._playback._finish_current_audio("duplicate")
+    assert provider._playback._current_audio is None
 
 def test_enqueue_audio_dispatches_play_next_via_timer(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """_enqueue_audio 应使用 QTimer.singleShot(0, self._play_next) 触发播放。"""
@@ -1705,17 +1706,17 @@ def test_enqueue_audio_dispatches_play_next_via_timer(monkeypatch) -> None:  # t
         def singleShot(delay_ms: int, callback: object) -> None:
             timer_calls.append((delay_ms, callback))
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     play_next_calls: list = []
-    monkeypatch.setattr(provider, "_play_next", lambda: play_next_calls.append(True))
+    monkeypatch.setattr(provider._playback, "_play_next", lambda: play_next_calls.append(True))
 
     root = _runtime_root("enqueue_dispatch")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._enqueue_audio(str(audio_path), None, None)
+    provider._playback._enqueue_audio(str(audio_path), None, None)
 
     assert len(timer_calls) == 1
     assert timer_calls[0][0] == 0
@@ -1762,29 +1763,29 @@ def test_handle_media_status_passes_reason_to_finish(monkeypatch) -> None:  # ty
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     finish_reasons: list[str] = []
-    orig_finish = provider._finish_current_audio
+    orig_finish = provider._playback._finish_current_audio
 
     def capture_finish(reason: str = "normal") -> None:
         finish_reasons.append(reason)
         return orig_finish(reason)
 
-    monkeypatch.setattr(provider, "_finish_current_audio", capture_finish)
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda _path: None)
+    monkeypatch.setattr(provider._playback, "_finish_current_audio", capture_finish)
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda _path: None)
 
     root = _runtime_root("media_status_reason")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._current_audio = audio_path
-    provider._current_finished = lambda: None
-    provider._current_started = lambda: None
+    provider._playback._current_audio = audio_path
+    provider._playback._current_finished = lambda: None
+    provider._playback._current_started = lambda: None
 
-    provider._handle_media_status(MediaPlayerStub.MediaStatus.EndOfMedia)
+    provider._playback._handle_media_status(MediaPlayerStub.MediaStatus.EndOfMedia)
 
     assert finish_reasons == ["end_of_media"]
 
@@ -1801,12 +1802,12 @@ def test_playback_backend_is_configurable() -> None:
     settings = _minimal_tts_settings()
     assert settings.playback_backend == ""
     provider = GPTSoVITSTTSProvider(settings)
-    assert provider._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
+    assert provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
     # Explicitly set audio_sink
     sink_settings = dc_replace(settings, playback_backend=TTS_PLAYBACK_BACKEND_AUDIO_SINK)
     sink_provider = GPTSoVITSTTSProvider(sink_settings)
-    assert sink_provider._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
+    assert sink_provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
 
 # === 新增：TTS 缓存目录（data/cache/tts）测试 ===
