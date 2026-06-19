@@ -58,6 +58,7 @@ class ProbeIntentClassifier:
         self._encoder_factory = encoder_factory
         self._model_name = model_name
         self._model_kwargs = dict(model_kwargs or {"local_files_only": True})
+        self._model_kwargs.setdefault("device", "cpu")
         self._threshold_override = threshold
         self._coef: np.ndarray | None = None
         self._intercept: np.ndarray | None = None

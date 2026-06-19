@@ -30,7 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -81,14 +81,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0
+            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0 xvfb
 
       - name: Install Python dependencies
         timeout-minutes: 8
@@ -100,19 +100,57 @@ jobs:
       - name: Run UI tests
         timeout-minutes: 6
         env:
-          QT_QPA_PLATFORM: offscreen
+          QT_QPA_PLATFORM: xcb
           PYTHONIOENCODING: utf-8
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee /tmp/ui-tests.log
-          EXIT_CODE=${PIPESTATUS[0]}
-          # Qt 在进程退出 teardown 偶发崩溃(134/SIGABRT 或 139/SIGSEGV),与测试结果无关。
-          # 仅当 pytest 汇总确有 passed 且无 failed/error 时,才把退出码崩溃当成功放行;
-          # 真正测试中途崩溃(无汇总/有失败)仍判失败。
-          SUMMARY=$(grep -E "[0-9]+ (passed|failed|error)" /tmp/ui-tests.log | tail -1)
-          if [ $EXIT_CODE -ne 0 ] && echo "$SUMMARY" | grep -qE "[0-9]+ passed" && ! echo "$SUMMARY" | grep -qE "[0-9]+ (failed|error)"; then
-            echo "::warning::UI 测试全部通过,Qt teardown 崩溃(exit $EXIT_CODE)— 视为成功"
-            exit 0
+
+          run_ui_pytest() {
+            local name="$1"
+            shift
+            local log="/tmp/ui-tests-${name}.log"
+            xvfb-run -a python -m pytest "$@" -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee "$log"
+            local exit_code=${PIPESTATUS[0]}
+
+            local collected
+            collected=$(grep -Eo "collected [0-9]+ items?" "$log" | tail -1 | grep -Eo "[0-9]+")
+            local passed
+            passed=$(grep -E " PASSED" "$log" | wc -l | tr -d ' ')
+            local xfailed
+            xfailed=$(grep -E " XFAIL" "$log" | wc -l | tr -d ' ')
+            local skipped
+            skipped=$(grep -E " SKIPPED" "$log" | wc -l | tr -d ' ')
+            local errors
+            errors=$(grep -E " ERROR" "$log" | wc -l | tr -d ' ')
+            local fails
+            fails=$(grep -E " FAILED" "$log" | wc -l | tr -d ' ')
+
+            # If pytest crashed (exit !=0) but we saw that all collected tests finished without failures/errors,
+            # consider that shard successful (common Qt teardown crash).
+            if [ "$exit_code" -ne 0 ] && [ -n "$collected" ]; then
+              local finished
+              finished=$(( ${passed:-0} + ${xfailed:-0} + ${skipped:-0} ))
+              if [ "$finished" -eq "$collected" ] && [ "${fails:-0}" -eq 0 ] && [ "${errors:-0}" -eq 0 ]; then
+                echo "::warning::UI shard ${name} finished (collected=${collected}, passed=${passed}, xfailed=${xfailed}, skipped=${skipped}) but pytest crashed (exit $exit_code). Treating as success due to Qt teardown instability."
+                return 0
+              fi
+            fi
+
+            return "$exit_code"
+          }
+
+          run_ui_pytest history tests/ui/test_history_window.py
+          HISTORY_EXIT=$?
+          run_ui_pytest pet tests/ui/test_pet_window.py
+          PET_EXIT=$?
+          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py --ignore=tests/ui/test_pet_window.py
+          REST_EXIT=$?
+
+          if [ "$HISTORY_EXIT" -ne 0 ]; then
+            exit "$HISTORY_EXIT"
           fi
-          exit $EXIT_CODE
+          if [ "$PET_EXIT" -ne 0 ]; then
+            exit "$PET_EXIT"
+          fi
+          exit "$REST_EXIT"

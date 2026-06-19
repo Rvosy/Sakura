@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 import urllib.error
@@ -79,6 +80,8 @@ from app.voice.tts import (
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
     _format_gpt_sovits_http_error,
+    _find_running_local_tts_process,
+    _is_restartable_local_tts_service_failure,
     _is_soft_synth_failure,
     _is_voiceable_text,
     _local_tts_subprocess_env,
@@ -158,6 +161,10 @@ def test_soft_synth_failure_only_for_tts_failed_400() -> None:
     assert _is_soft_synth_failure(400, body)
     # charmap 编码错误是运行时配置问题，需保留提示
     assert not _is_soft_synth_failure(400, "'charmap' codec can't encode character")
+    # Broken pipe 表示本地服务进程自身坏了，需重启服务而不是静默吞掉本段
+    broken_pipe = '{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}'
+    assert _is_restartable_local_tts_service_failure(400, broken_pipe)
+    assert not _is_soft_synth_failure(400, broken_pipe)
     # 其他 400 与非 400 不按单段静默降级
     assert not _is_soft_synth_failure(400, '{"detail":"bad param"}')
     assert not _is_soft_synth_failure(500, '{"message":"tts failed"}')
@@ -366,6 +373,40 @@ def test_tts_provider_adopts_existing_local_process_on_init(monkeypatch) -> None
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings(work_dir=work_dir))
 
     assert provider._server_process is attached
+
+
+def test_tts_provider_adopts_existing_local_process_on_posix(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    work_dir = _runtime_root("gptsovits_adopt_posix") / "gpt-sovits"
+    python_exe = work_dir / "runtime" / "bin" / "python3.10"
+    api_script = work_dir / "api_v2.py"
+    python_exe.parent.mkdir(parents=True)
+    _write_fake_runtime_python(python_exe)
+    api_script.parent.mkdir(parents=True, exist_ok=True)
+    api_script.write_text("fake", encoding="utf-8")
+    settings = _minimal_tts_settings(
+        work_dir=work_dir,
+        provider="custom-gpt-sovits",
+        python_path=python_exe,
+    )
+
+    def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
+        if args[0] == "lsof":
+            return types.SimpleNamespace(returncode=0, stdout="p24680\n")
+        if args[0] == "ps":
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=f"{python_exe} {api_script} -c config.yaml -p 9880\n",
+            )
+        raise AssertionError(f"未预期的命令：{args}")
+
+    monkeypatch.setattr("app.voice.tts.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.tts.os.getpid", lambda: 1234)
+    monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+
+    process = _find_running_local_tts_process(settings, 9880)
+
+    assert process is not None
+    assert process.pid == 24680
 
 
 def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -859,6 +900,38 @@ def test_tts_provider_stop_local_service_uses_taskkill_tree_on_windows(monkeypat
     assert provider._server_process is None
 
 
+def test_gptsovits_broken_pipe_restart_resets_local_service_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+    work_dir = _runtime_root("gptsovits_restart_broken_pipe") / "gpt-sovits"
+
+    class FakeProcess:
+        pid = 13579
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, timeout: int) -> None:
+            calls.append(f"wait:{timeout}")
+
+    provider = types.SimpleNamespace(
+        settings=_minimal_tts_settings(work_dir=work_dir),
+        _server_process=FakeProcess(),
+        _service_checked=True,
+        _weights_ready=True,
+    )
+    body = '{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}'
+    monkeypatch.setattr("app.voice.tts.sys.platform", "linux")
+
+    assert GPTSoVITSTTSProvider._restart_local_service_after_http_failure(provider, 400, body)
+    assert calls == ["terminate", "wait:5"]
+    assert provider._server_process is None
+    assert provider._service_checked is False
+    assert provider._weights_ready is False
+
+
 def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     provider = types.SimpleNamespace()
     provider.settings = _minimal_tts_settings()
@@ -892,6 +965,19 @@ def test_local_tts_subprocess_env_uses_utf8_stdio_without_forcing_interpreter(
 
     assert "PYTHONUTF8" not in env
     assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_local_tts_subprocess_env_prepends_runtime_bin(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/local/bin", "/usr/bin")))
+    python_exe = tmp_path / "runtime" / "bin" / "python"
+
+    env = _local_tts_subprocess_env(python_exe)
+
+    assert env["PATH"].split(os.pathsep) == [
+        str(python_exe.parent),
+        "/usr/local/bin",
+        "/usr/bin",
+    ]
 
 
 def test_local_tts_output_reader_writes_file_and_gui_log() -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 import zipfile
@@ -176,7 +175,6 @@ def test_activate_renderer_manager_assigns_before_gaze_tracking() -> None:
 
 
 def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -228,7 +226,6 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
 
 
 def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -262,7 +259,6 @@ def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
 
 
 def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QWidget"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -320,7 +316,6 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
 
 
 def test_runtime_log_window_is_non_modal() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtcore = pytest.importorskip("PySide6.QtCore")
     if not hasattr(qtwidgets, "QApplication"):
@@ -345,7 +340,6 @@ def test_runtime_log_window_is_non_modal() -> None:
 
 
 def test_runtime_log_window_collapses_consecutive_duplicate_rows() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtcore = pytest.importorskip("PySide6.QtCore")
     if not hasattr(qtwidgets, "QApplication"):
@@ -387,7 +381,6 @@ def test_runtime_log_window_collapses_consecutive_duplicate_rows() -> None:
 
 
 def test_runtime_log_window_row_shows_category_level_and_detail_summary() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -439,7 +432,6 @@ def test_runtime_log_window_row_shows_category_level_and_detail_summary() -> Non
 
 
 def test_runtime_log_window_shows_tts_text_preview_as_detail() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -473,7 +465,6 @@ def test_runtime_log_window_shows_tts_text_preview_as_detail() -> None:
 
 
 def test_runtime_log_window_updates_progress_rows_in_place() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -516,7 +507,6 @@ def test_runtime_log_window_updates_progress_rows_in_place() -> None:
 
 
 def test_pet_window_status_tray_icon_is_not_empty() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -1489,7 +1479,6 @@ def test_screen_change_event_check_tolerates_missing_qt_enum(monkeypatch) -> Non
 
 
 def test_reply_history_controls_use_capsule_sizing() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QToolButton")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -1550,7 +1539,6 @@ def test_reply_history_controls_use_capsule_sizing() -> None:
 
 
 def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtgui = pytest.importorskip("PySide6.QtGui")
     qtcore = pytest.importorskip("PySide6.QtCore")
@@ -1631,7 +1619,6 @@ def test_portrait_controller_never_resizes_parent_window() -> None:
     会与底边锚点几何相互打架，产生切表情/缩放时的偶发跳闪。此处把宿主尺寸设成与
     stage_size 不同的哨兵值，验证 apply_current 后宿主尺寸保持不变，且 relayout 仍被调用。
     """
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtgui = pytest.importorskip("PySide6.QtGui")
     qtcore = pytest.importorskip("PySide6.QtCore")
@@ -1874,7 +1861,6 @@ def test_pet_window_defaults_autonomous_screen_observation_to_enabled() -> None:
 
 
 def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtgui = pytest.importorskip("PySide6.QtGui")
     qtcore = pytest.importorskip("PySide6.QtCore")
@@ -1916,7 +1902,6 @@ def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) ->
 
 
 def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     qtgui = pytest.importorskip("PySide6.QtGui")
     qtcore = pytest.importorskip("PySide6.QtCore")
@@ -2065,7 +2050,6 @@ def test_deferred_startup_worker_closes_services_when_cancelled_after_move(monke
 
 
 def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabled() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -2118,7 +2102,6 @@ def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabl
 
 
 def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -2181,7 +2164,6 @@ def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
 
 
 def test_settings_dialog_returns_backchannel_settings() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -2793,7 +2775,6 @@ def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
 
 def test_settings_dialog_backchannel_tts_follows_global_tts_toggle() -> None:
     """接话语音复选框须与全局 TTS 总开关联动,避免"设置了但不生效"。"""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -2835,7 +2816,6 @@ def test_settings_dialog_backchannel_tts_follows_global_tts_toggle() -> None:
 
 
 def test_settings_dialog_adds_plugin_settings_panel() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -2881,7 +2861,6 @@ def test_settings_dialog_adds_plugin_settings_panel() -> None:
 
 
 def test_settings_dialog_manages_plugin_enabled_state() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel", "QSplitter")):
@@ -2954,7 +2933,6 @@ permissions:
 
 
 def test_settings_dialog_plugin_detail_switches_settings_panel() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel", "QPushButton")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3037,7 +3015,6 @@ def test_settings_dialog_plugin_detail_switches_settings_panel() -> None:
 
 
 def test_settings_dialog_plugin_detail_shows_disabled_restart_hint() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel", "QPushButton")):
@@ -3090,7 +3067,6 @@ def test_settings_dialog_plugin_detail_shows_disabled_restart_hint() -> None:
 
 
 def test_settings_dialog_plugin_settings_build_failure_has_placeholder() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3142,7 +3118,6 @@ def test_settings_dialog_plugin_settings_build_failure_has_placeholder() -> None
 
 
 def test_settings_dialog_plugin_page_empty_state() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel", "QPushButton")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3184,7 +3159,6 @@ def test_settings_dialog_plugin_page_empty_state() -> None:
 
 
 def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(
         hasattr(qtwidgets, name)
@@ -3269,7 +3243,6 @@ def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
 
 
 def test_settings_dialog_defers_memory_load_until_memory_tab_selected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3345,7 +3318,6 @@ def test_settings_dialog_groupbox_title_indicator_has_vertical_room() -> None:
 
 
 def test_settings_dialog_insets_advanced_params_group() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QGroupBox")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3385,7 +3357,6 @@ def test_settings_dialog_insets_advanced_params_group() -> None:
 
 
 def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QHBoxLayout", "QLineEdit", "QPushButton")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3435,7 +3406,6 @@ def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
 
 
 def test_settings_dialog_exposes_experimental_windows_mcp_restart_setting() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3476,7 +3446,6 @@ def test_settings_dialog_exposes_experimental_windows_mcp_restart_setting() -> N
 
 
 def test_settings_dialog_exposes_tts_bundle_controls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3557,7 +3526,6 @@ def test_settings_dialog_exposes_tts_bundle_controls(monkeypatch) -> None:  # ty
 
 
 def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3612,7 +3580,6 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
 
 
 def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3671,7 +3638,6 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
 
 
 def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3752,7 +3718,6 @@ def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatc
 
 
 def test_settings_dialog_skips_tts_test_when_tts_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3789,7 +3754,6 @@ def test_settings_dialog_skips_tts_test_when_tts_disabled(monkeypatch) -> None: 
 
 
 def test_settings_dialog_enabled_tts_skips_test_when_settings_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3845,7 +3809,6 @@ def test_settings_dialog_enabled_tts_skips_test_when_settings_unchanged(monkeypa
 
 
 def test_settings_dialog_enabled_tts_tests_when_provider_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3888,7 +3851,6 @@ def test_settings_dialog_enabled_tts_tests_when_provider_changes(monkeypatch) ->
 
 
 def test_settings_dialog_enabled_tts_tests_when_character_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3937,7 +3899,6 @@ def test_settings_dialog_enabled_tts_tests_when_character_changes(monkeypatch) -
 
 
 def test_settings_dialog_disables_tts_when_selected_character_has_no_voice(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3988,7 +3949,6 @@ def test_settings_dialog_disables_tts_when_selected_character_has_no_voice(monke
 
 
 def test_settings_dialog_tts_test_failure_keeps_enabled_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4050,7 +4010,6 @@ def test_settings_dialog_tts_test_failure_keeps_enabled_settings(monkeypatch) ->
 
 
 def test_settings_dialog_skips_api_test_when_api_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4088,7 +4047,6 @@ def test_settings_dialog_skips_api_test_when_api_unchanged(monkeypatch) -> None:
 
 
 def test_settings_dialog_tests_api_when_api_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4130,7 +4088,6 @@ def test_settings_dialog_tests_api_when_api_changes(monkeypatch) -> None:  # typ
 
 
 def test_settings_dialog_model_combo_saves_manual_input(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4148,7 +4105,6 @@ def test_settings_dialog_model_combo_saves_manual_input(monkeypatch) -> None:  #
 
 
 def test_settings_dialog_model_probe_populates_candidates_and_selects_first(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4174,7 +4130,6 @@ def test_settings_dialog_model_probe_populates_candidates_and_selects_first(monk
 
 
 def test_settings_dialog_model_popups_follow_current_theme_stylesheet() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4222,7 +4177,6 @@ def test_settings_dialog_model_popups_follow_current_theme_stylesheet() -> None:
 
 
 def test_settings_dialog_model_probe_keeps_current_input(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4241,7 +4195,6 @@ def test_settings_dialog_model_probe_keeps_current_input(monkeypatch) -> None:  
 
 
 def test_settings_dialog_model_probe_failure_keeps_current_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4266,7 +4219,6 @@ def test_settings_dialog_model_probe_failure_keeps_current_model(monkeypatch) ->
 
 
 def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4294,7 +4246,6 @@ def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
 
 
 def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4341,7 +4292,6 @@ def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # t
 
 
 def test_settings_dialog_api_success_continues_to_tts_test(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4397,7 +4347,6 @@ def test_settings_dialog_api_success_continues_to_tts_test(monkeypatch) -> None:
 
 
 def test_settings_dialog_blocks_save_while_tts_test_is_running(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4438,7 +4387,6 @@ def test_settings_dialog_blocks_save_while_tts_test_is_running(monkeypatch) -> N
 
 
 def test_settings_dialog_import_character_archive_refreshes_combo(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4495,7 +4443,6 @@ def test_settings_dialog_import_character_archive_refreshes_combo(monkeypatch) -
 
 
 def test_settings_dialog_import_voice_less_character_archive_disables_tts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4711,7 +4658,6 @@ def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
 
 
 def test_settings_dialog_allows_import_without_existing_character_registry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4773,7 +4719,6 @@ def test_settings_dialog_allows_import_without_existing_character_registry(monke
 
 
 def test_settings_dialog_imports_voice_archive_for_selected_character(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -4831,7 +4776,6 @@ def test_settings_dialog_imports_voice_archive_for_selected_character(monkeypatc
 
 
 def test_settings_dialog_export_button_uses_menu_actions(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -4918,7 +4862,6 @@ def test_settings_dialog_export_button_uses_menu_actions(monkeypatch) -> None:  
 
 
 def test_settings_dialog_exports_character_archive_in_background(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5019,7 +4962,6 @@ def test_settings_dialog_formats_memory_time_as_local_timezone() -> None:
 
 
 def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5073,7 +5015,6 @@ def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() 
 
 
 def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5139,7 +5080,6 @@ def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
 
 
 def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5189,7 +5129,6 @@ def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
 
 
 def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5241,7 +5180,6 @@ def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
 
 
 def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5314,7 +5252,6 @@ def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # t
 
 
 def test_settings_dialog_downloads_memory_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5375,7 +5312,6 @@ def test_settings_dialog_downloads_memory_model(monkeypatch) -> None:  # type: i
 
 
 def test_settings_dialog_imports_backchannel_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5430,7 +5366,6 @@ def test_settings_dialog_imports_backchannel_model_archive(monkeypatch) -> None:
 
 
 def test_settings_dialog_downloads_backchannel_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5482,7 +5417,6 @@ def test_settings_dialog_downloads_backchannel_model(monkeypatch) -> None:  # ty
 
 
 def test_settings_dialog_refreshes_backchannel_setup_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5523,7 +5457,6 @@ def test_settings_dialog_refreshes_backchannel_setup_status(monkeypatch) -> None
 
 
 def test_settings_dialog_filters_memory_locally() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5572,7 +5505,6 @@ def test_settings_dialog_filters_memory_locally() -> None:
 
 
 def test_settings_dialog_deletes_selected_memories(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5637,7 +5569,6 @@ def test_settings_dialog_deletes_selected_memories(monkeypatch) -> None:  # type
 
 
 def test_settings_dialog_reports_partial_memory_delete_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5703,7 +5634,6 @@ def test_settings_dialog_reports_partial_memory_delete_failure(monkeypatch) -> N
 
 
 def test_settings_dialog_selects_all_visible_memories_without_native_selection() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5748,7 +5678,6 @@ def test_settings_dialog_selects_all_visible_memories_without_native_selection()
 
 
 def test_settings_dialog_select_all_only_affects_filtered_results() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5790,7 +5719,6 @@ def test_settings_dialog_select_all_only_affects_filtered_results() -> None:
 
 
 def test_settings_dialog_single_selection_opens_editor_and_updates_memory(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5856,7 +5784,6 @@ def test_settings_dialog_single_selection_opens_editor_and_updates_memory(monkey
 
 
 def test_settings_dialog_content_click_switches_to_single_selection() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5899,7 +5826,6 @@ def test_settings_dialog_content_click_switches_to_single_selection() -> None:
 
 
 def test_settings_dialog_first_column_click_toggles_check_only() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5937,7 +5863,6 @@ def test_settings_dialog_first_column_click_toggles_check_only() -> None:
 
 
 def test_settings_dialog_multiple_checked_rows_keep_current_editor() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -5982,7 +5907,6 @@ def test_settings_dialog_multiple_checked_rows_keep_current_editor() -> None:
 
 
 def test_settings_dialog_collapses_manual_memory_entry_after_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -6479,6 +6403,9 @@ def test_queued_history_clear_starts_after_auto_curation_cleanup(monkeypatch) ->
         def _memory_curation_can_start(self) -> bool:
             return True
 
+        def _retain_qobject_wrappers_until_deleted(self, *_objects) -> None:  # type: ignore[no-untyped-def]
+            pass
+
         def _start_memory_curation(self, entries, *, mode, target_history_count, consumed_turns):  # type: ignore[no-untyped-def]
             self.start_calls.append(
                 {
@@ -6907,7 +6834,6 @@ tts:
 
 
 def test_tts_migration_dialog_shows_concise_copy_and_progress() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -6948,7 +6874,6 @@ def test_tts_migration_dialog_shows_concise_copy_and_progress() -> None:
 
 
 def test_tts_migration_dialog_marks_fast_migration_done() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QPushButton", "QWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7026,7 +6951,6 @@ def test_main_first_run_settings_saves_imported_character_and_builds_context(mon
 
 
 def test_settings_dialog_returns_portrait_scale_percent() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7080,7 +7004,6 @@ def test_settings_dialog_returns_portrait_scale_percent() -> None:
 
 
 def test_settings_dialog_returns_control_panel_layout() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7125,7 +7048,6 @@ def test_settings_dialog_returns_control_panel_layout() -> None:
 
 
 def test_settings_dialog_emits_control_panel_layout_preview() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7177,7 +7099,6 @@ def test_settings_dialog_emits_control_panel_layout_preview() -> None:
 
 
 def test_settings_dialog_returns_subtitle_display_speed() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7216,7 +7137,6 @@ def test_settings_dialog_returns_subtitle_display_speed() -> None:
 
 
 def test_settings_dialog_returns_launch_at_login_setting(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7289,7 +7209,6 @@ def _theme_json() -> str:
 
 
 def test_settings_dialog_returns_theme_settings() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7351,7 +7270,6 @@ def test_settings_dialog_returns_theme_settings() -> None:
 
 
 def test_settings_dialog_downgrades_saved_windows_acrylic_to_gaussian(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7397,7 +7315,6 @@ def test_settings_dialog_downgrades_saved_windows_acrylic_to_gaussian(monkeypatc
 
 
 def test_settings_dialog_character_selection_loads_character_theme() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7454,7 +7371,6 @@ def test_settings_dialog_character_selection_loads_character_theme() -> None:
 
 
 def test_settings_dialog_resets_default_theme_colors() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7496,7 +7412,6 @@ def test_settings_dialog_resets_default_theme_colors() -> None:
 
 
 def test_settings_dialog_resets_to_character_package_theme() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -7577,7 +7492,6 @@ def test_theme_write_rule_persists_manual_and_ai_theme() -> None:
 
 
 def test_theme_ai_worker_sends_portrait_image_and_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     import app.ui.settings_dialog as settings_dialog
 
@@ -7615,7 +7529,6 @@ def test_theme_ai_worker_sends_portrait_image_and_prompt(monkeypatch) -> None:  
 
 
 def test_settings_dialog_ai_theme_success_and_failure_keep_current(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtcore = pytest.importorskip("PySide6.QtCore")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -9599,7 +9512,6 @@ def _minimal_tts_settings() -> GPTSoVITSTTSSettings:
 
 
 def test_tts_ready_warmup_worker_calls_ensure_ready_success() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     from app.ui.pet_window import TTSReadyWarmupWorker
 
@@ -9621,7 +9533,6 @@ def test_tts_ready_warmup_worker_calls_ensure_ready_success() -> None:
 
 
 def test_tts_ready_warmup_worker_reports_failure() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     from app.ui.pet_window import TTSReadyWarmupWorker
 
@@ -9642,7 +9553,6 @@ def test_tts_ready_warmup_worker_reports_failure() -> None:
 
 
 def test_tts_test_worker_keeps_provider_after_success(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     import app.ui.settings_dialog as settings_dialog
 
@@ -9682,7 +9592,6 @@ def test_tts_test_worker_keeps_provider_after_success(monkeypatch) -> None:  # t
 
 
 def test_tts_test_worker_closes_provider_after_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtCore")
     import app.ui.settings_dialog as settings_dialog
 
@@ -10125,7 +10034,6 @@ def test_send_message_injects_runtime_event_context_before_user_message() -> Non
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
     """统一获取/创建 QApplication；stub 环境下跳过。"""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")

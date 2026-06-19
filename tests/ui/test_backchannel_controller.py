@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import random
+import threading
 
 import pytest
 
@@ -19,7 +19,6 @@ from app.config.settings_service import BackchannelSettings  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     return qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
@@ -231,6 +230,38 @@ def test_background_classify_cancel_drops_late_result() -> None:
     from PySide6.QtCore import QCoreApplication
     for _ in range(5):
         QCoreApplication.processEvents()
+    assert displayed == []
+
+
+def test_background_classify_thread_is_managed_and_shutdown_waits() -> None:
+    _qt_app_or_skip()
+    displayed: list[BackchannelChoice] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingClassifier:
+        prefers_background = True
+
+        def classify(self, text: str) -> object:
+            started.set()
+            release.wait(2)
+            return None
+
+    controller = _make_async(displayed, _BlockingClassifier())
+    controller.schedule("随便什么")
+    controller._on_timeout()
+    assert started.wait(1)
+
+    with controller._classify_threads_lock:
+        threads = tuple(controller._classify_threads)
+    assert len(threads) == 1
+    assert threads[0].daemon is False
+    assert controller.shutdown(timeout=0) is False
+
+    release.set()
+    assert controller.shutdown(timeout=1) is True
+    controller.schedule("关闭后不再调度")
+    assert not controller.is_pending
     assert displayed == []
 
 
