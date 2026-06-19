@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -21,6 +22,7 @@ from app.core.resource_manager import (  # noqa: E402
     QtWorkerResource,
     ResourceManager,
     ResourceState,
+    ThreadGroupResource,
     ThreadResource,
 )
 
@@ -396,6 +398,98 @@ def test_thread_resource_stop_timeout_lingers() -> None:
     assert res.thread is None
     block.set()  # 收尾，避免线程残留
     thread.join(2)
+
+
+# --- ThreadGroupResource（并发裸 Python 线程） ----------------------------
+
+
+def test_thread_group_spawn_tracks_non_daemon_thread() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    release = threading.Event()
+    res = mgr.track_thread_group(label="backchannel")
+
+    thread = res.spawn(lambda: release.wait(2), name="backchannel-1")
+
+    assert isinstance(res, ThreadGroupResource)
+    assert res in mgr._resources
+    assert thread is not None
+    assert thread.daemon is False
+    assert res.state is ResourceState.READY
+    assert res.is_running() is True
+    release.set()
+    thread.join(2)
+
+
+def test_thread_group_completed_thread_removes_itself() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    res = mgr.track_thread_group(label="backchannel")
+    thread = res.spawn(lambda: None, name="backchannel-1")
+
+    assert thread is not None
+    thread.join(2)
+    assert res.is_running() is False
+    assert res._threads == set()
+    # 线程自然结束后资源仍可复用，直到显式 stop。
+    assert res in mgr._resources
+
+
+def test_thread_group_stop_cancel_unblocks_all_threads() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    release = threading.Event()
+    cancelled: list[bool] = []
+
+    def cancel() -> None:
+        cancelled.append(True)
+        release.set()
+
+    res = mgr.track_thread_group(cancel=cancel, label="backchannel")
+    first = res.spawn(lambda: release.wait(2), name="backchannel-1")
+    second = res.spawn(lambda: release.wait(2), name="backchannel-2")
+
+    assert first is not None and second is not None
+    assert res.stop(timeout_ms=1000) is True
+    assert cancelled == [True]
+    assert res.state is ResourceState.STOPPED
+    assert res not in mgr._resources
+    assert mgr._lingering_threads == []
+
+
+def test_thread_group_stop_uses_one_deadline_and_lingers() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    release = threading.Event()
+    res = mgr.track_thread_group(label="backchannel")
+    first = res.spawn(lambda: release.wait(2), name="backchannel-1")
+    second = res.spawn(lambda: release.wait(2), name="backchannel-2")
+    assert first is not None and second is not None
+
+    started_at = time.monotonic()
+    assert res.stop(timeout_ms=100) is False
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.25
+    assert res not in mgr._resources
+    assert first in mgr._lingering_threads
+    assert second in mgr._lingering_threads
+    assert res.is_running() is True
+    release.set()
+    first.join(2)
+    second.join(2)
+    assert res.is_running() is False
+    assert res.state is ResourceState.STOPPED
+
+
+def test_thread_group_stop_is_terminal_and_rejects_new_threads() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    res = mgr.track_thread_group(label="backchannel")
+
+    assert res.stop() is True
+    assert res.stop() is True
+    assert res.spawn(lambda: None, name="too-late") is None
 
 
 # --- ProcessResource（本地子进程句柄） ------------------------------------

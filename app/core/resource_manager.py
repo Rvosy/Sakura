@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -268,6 +269,148 @@ class ThreadResource:
         return True
 
 
+class ThreadGroupResource:
+    """托管一组可并发运行的裸 Python 线程。
+
+    与只追踪单个当前线程的 :class:`ThreadResource` 不同，本资源通过
+    :meth:`spawn` 统一完成线程创建、登记和启动，并在线程 target 退出时自动
+    摘除。关闭时所有线程共享同一个等待截止时间，避免线程数量增加后成倍延长
+    UI 退出等待。
+    """
+
+    def __init__(
+        self,
+        manager: "ResourceManager",
+        *,
+        cancel: Callable[[], None] | None = None,
+        label: str = "",
+    ) -> None:
+        self._manager = manager
+        self._cancel = cancel
+        self.label = label
+        self._threads: set[threading.Thread] = set()
+        self._threads_lock = threading.Lock()
+        self.state = ResourceState.NEW
+
+    def spawn(
+        self,
+        target: Callable[[], None],
+        *,
+        name: str,
+        daemon: bool = False,
+    ) -> threading.Thread | None:
+        """创建、登记并启动线程；资源停止后拒绝新线程。
+
+        登记与 ``start`` 在同一把锁内完成，避免关闭恰好发生在两者之间时漏掉
+        已启动线程。target 无论正常返回还是抛出异常，都会在 ``finally`` 中从
+        在飞集合摘除。
+        """
+
+        def run_managed() -> None:
+            try:
+                target()
+            finally:
+                self._on_thread_done(threading.current_thread())
+
+        thread = threading.Thread(target=run_managed, name=name, daemon=daemon)
+        with self._threads_lock:
+            if self.state in (ResourceState.STOPPING, ResourceState.STOPPED):
+                return None
+            self._threads.add(thread)
+            try:
+                thread.start()
+            except Exception:
+                self._threads.discard(thread)
+                raise
+            self.state = ResourceState.READY
+        return thread
+
+    def is_running(self) -> bool:
+        with self._threads_lock:
+            return any(thread.is_alive() for thread in self._threads)
+
+    def stop(
+        self,
+        timeout_ms: int | None = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+    ) -> bool:
+        """取消新任务并等待全部在飞线程，所有线程共享一个截止时间。
+
+        ``timeout_ms=None`` 保留调用方显式无限等待的语义。超时线程不会被强杀，
+        而是登记到 manager 的 lingering 列表中后台自然完成。
+        """
+        with self._threads_lock:
+            if self.state is ResourceState.STOPPED:
+                return True
+            self.state = ResourceState.STOPPING
+
+        if self._cancel is not None:
+            try:
+                self._cancel()
+            except Exception as exc:  # noqa: BLE001
+                debug_log(
+                    "ResourceManager",
+                    "线程组取消回调异常",
+                    {"thread_group": self.label, "error": str(exc)},
+                )
+
+        deadline = (
+            None
+            if timeout_ms is None
+            else time.monotonic() + max(0, timeout_ms) / 1000
+        )
+        current = threading.current_thread()
+        while True:
+            with self._threads_lock:
+                threads = tuple(self._threads)
+            if not threads:
+                self._finalize_stop()
+                return True
+
+            for thread in threads:
+                if thread is current:
+                    continue
+                remaining = (
+                    None
+                    if deadline is None
+                    else max(0.0, deadline - time.monotonic())
+                )
+                thread.join(remaining)
+
+            with self._threads_lock:
+                alive = tuple(thread for thread in self._threads if thread.is_alive())
+            if not alive:
+                self._finalize_stop()
+                return True
+            if current in alive or (deadline is not None and time.monotonic() >= deadline):
+                for thread in alive:
+                    self._manager._keep_lingering_thread(
+                        thread,
+                        f"{self.label}:{thread.name}" if self.label else thread.name,
+                    )
+                self._manager._unregister(self)
+                debug_log(
+                    "ResourceManager",
+                    "Python 线程组未在退出等待时间内结束，转后台自然结束",
+                    {
+                        "thread_group": self.label,
+                        "wait_ms": timeout_ms,
+                        "remaining": len(alive),
+                    },
+                )
+                return False
+
+    def _on_thread_done(self, thread: threading.Thread) -> None:
+        with self._threads_lock:
+            self._threads.discard(thread)
+            if not self._threads and self.state is ResourceState.STOPPING:
+                self.state = ResourceState.STOPPED
+
+    def _finalize_stop(self) -> None:
+        with self._threads_lock:
+            self.state = ResourceState.STOPPED
+        self._manager._unregister(self)
+
+
 class ProcessResource:
     """托管本地子进程句柄（``PROCESS`` 线程域，如 GPT-SoVITS / Genie）。
 
@@ -482,6 +625,19 @@ class ResourceManager(QObject):
         ``resource.track(thread)`` 在每次 spawn 时刷新当前在飞线程。
         """
         resource = ThreadResource(self, cancel=cancel, label=label)
+        if register:
+            self._register(resource)
+        return resource
+
+    def track_thread_group(
+        self,
+        *,
+        cancel: Callable[[], None] | None = None,
+        label: str = "",
+        register: bool = True,
+    ) -> ThreadGroupResource:
+        """创建可并发托管多个裸 Python 线程的资源。"""
+        resource = ThreadGroupResource(self, cancel=cancel, label=label)
         if register:
             self._register(resource)
         return resource
