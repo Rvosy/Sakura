@@ -5621,7 +5621,8 @@ class PetWindow(QWidget):
 
     def _prepare_secondary_window(self, window: QWidget) -> None:
         """配置并登记普通副窗口，使其显示期间统一压低桌宠层级。"""
-        _configure_secondary_window(window)
+        keep_on_top = bool(getattr(self, "always_on_top_enabled", False))
+        _configure_secondary_window(window, keep_on_top=keep_on_top)
         self._register_secondary_window(window)
 
     def _present_registered_secondary_window(self, window: QWidget) -> None:
