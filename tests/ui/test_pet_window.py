@@ -6403,6 +6403,9 @@ def test_queued_history_clear_starts_after_auto_curation_cleanup(monkeypatch) ->
         def _memory_curation_can_start(self) -> bool:
             return True
 
+        def _retain_qobject_wrappers_until_deleted(self, *_objects) -> None:  # type: ignore[no-untyped-def]
+            pass
+
         def _start_memory_curation(self, entries, *, mode, target_history_count, consumed_turns):  # type: ignore[no-untyped-def]
             self.start_calls.append(
                 {

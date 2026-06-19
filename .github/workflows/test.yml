@@ -142,10 +142,15 @@ jobs:
 
           run_ui_pytest history tests/ui/test_history_window.py
           HISTORY_EXIT=$?
-          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py
+          run_ui_pytest pet tests/ui/test_pet_window.py
+          PET_EXIT=$?
+          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py --ignore=tests/ui/test_pet_window.py
           REST_EXIT=$?
 
           if [ "$HISTORY_EXIT" -ne 0 ]; then
             exit "$HISTORY_EXIT"
+          fi
+          if [ "$PET_EXIT" -ne 0 ]; then
+            exit "$PET_EXIT"
           fi
           exit "$REST_EXIT"
