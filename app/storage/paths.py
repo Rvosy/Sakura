@@ -100,6 +100,14 @@ class StoragePaths:
     def visual_observations_for(self, character_id: str) -> Path:
         return self.visual_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
 
+    # ---- 感官观察 ----
+    @property
+    def sensory_observations_dir(self) -> Path:
+        return self._data / "sensory_observations"
+
+    def sensory_observations_for(self, character_id: str) -> Path:
+        return self.sensory_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
+
     # ---- 记忆 ----
     @property
     def memory_dir(self) -> Path:
@@ -203,6 +211,7 @@ class StoragePaths:
             self.chat_history_dir,
             self.runtime_events_dir,
             self.visual_observations_dir,
+            self.sensory_observations_dir,
             self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,

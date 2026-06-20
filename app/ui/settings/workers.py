@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -28,9 +31,23 @@ from app.config.character_loader import CharacterProfile
 from app.core.debug_log import debug_log
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
+from app.sensory.models import SensoryRequest, SensorySource
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+    provider_from_config,
+)
+from app.sensory.settings import SensoryProviderConfig
 from app.ui.theme import parse_ai_theme_response
 from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import GPTSoVITSTTSSettings
+
+
+_SENSORY_TEST_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axK3r8AAAAASUVORK5CYII="
+)
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -84,6 +101,63 @@ class ApiModelListProbeWorker(QObject):
             self.finished.emit()
 
 
+class SensoryModelListProbeWorker(QObject):
+    succeeded = Signal(list)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, config: SensoryProviderConfig) -> None:
+        super().__init__()
+        self.config = config.normalized()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            models = _probe_sensory_models(self.config)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(models)
+        finally:
+            self.finished.emit()
+
+
+class SensoryModelTestWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, config: SensoryProviderConfig, source: SensorySource) -> None:
+        super().__init__()
+        self.config = config.normalized()
+        self.source = source
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            provider = provider_from_config(self.config)
+            request = SensoryRequest(
+                id="settings_test",
+                source=self.source,
+                user_text="设置页测试增强感知模型",
+                event_type="settings_test",
+                text=_sensory_test_text(self.source),
+                media_ref=(
+                    _SENSORY_TEST_IMAGE_DATA_URL
+                    if self.source == SensorySource.VISION
+                    else ""
+                ),
+                metadata={"test": True},
+            )
+            observation = provider.observe(request)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(observation.to_dict())
+        finally:
+            self.finished.emit()
+
+
 class TTSTestWorker(QObject):
     succeeded = Signal(object, str)
     failed = Signal(str)
@@ -121,6 +195,95 @@ class TTSTestWorker(QObject):
                     except Exception as exc:  # noqa: BLE001
                         debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
             self.finished.emit()
+
+
+def _probe_sensory_models(config: SensoryProviderConfig) -> list[str]:
+    backend = str(config.extra.get("backend") or config.extra.get("provider") or "").strip().lower()
+    if backend == "ollama":
+        data = _get_json(
+            _ollama_tags_url(config.endpoint),
+            config.timeout_seconds,
+            api_key=config.api_key,
+        )
+        models = data.get("models")
+        if not isinstance(models, list):
+            return []
+        names: list[str] = []
+        for item in models:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+        return names
+    data = _get_json(
+        _openai_models_url(_default_sensory_endpoint(config)),
+        config.timeout_seconds,
+        api_key=config.api_key,
+    )
+    raw_models = data.get("data")
+    if not isinstance(raw_models, list):
+        return []
+    names = []
+    for item in raw_models:
+        if isinstance(item, dict):
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id.strip():
+                names.append(model_id.strip())
+    return names
+
+
+def _get_json(url: str, timeout_seconds: int, *, api_key: str = "") -> dict[str, object]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+    except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("模型列表接口返回的不是 JSON object。")
+    return data
+
+
+def _default_sensory_endpoint(config: SensoryProviderConfig) -> str:
+    endpoint = config.endpoint.strip()
+    if endpoint:
+        return endpoint
+    backend = str(config.extra.get("backend") or config.extra.get("provider") or "").strip().lower()
+    if backend in {"lmstudio", "lm_studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    if backend == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    return endpoint
+
+
+def _openai_models_url(endpoint: str) -> str:
+    base = endpoint.strip().rstrip("/")
+    if not base:
+        raise RuntimeError("请先填写增强感知服务 Endpoint。")
+    if base.endswith("/models"):
+        return base
+    return f"{base}/models"
+
+
+def _ollama_tags_url(endpoint: str) -> str:
+    base = (endpoint.strip() or DEFAULT_OLLAMA_ENDPOINT).rstrip("/")
+    if base.endswith("/api/tags"):
+        return base
+    return f"{base}/api/tags"
+
+
+def _sensory_test_text(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "用户说：今天先测试一下增强感知。"
+    if source == SensorySource.SOUND:
+        return "环境声音：轻微键盘声和提示音。"
+    return "请识别这张测试图片并返回结构化 JSON。"
 
 
 class MemoryListWorker(QObject):
