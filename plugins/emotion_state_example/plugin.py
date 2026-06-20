@@ -4,17 +4,19 @@
 1. 事件订阅：通过 ``context.events.on(...)`` 监听宿主事件，收到事件时只更新
    内部状态并写日志（不做复杂逻辑）。
 2. 上下文注入：通过 ``register.register_context_provider(...)`` 注册动态上下文
-   提供者，每次构建 prompt 时返回当前桌宠状态文本。
+   提供者，每次构建 prompt 时根据本轮 ``ContextRequest`` 返回当前桌宠状态片段。
 
 注意：这只是验证 SDK 能力的最小示例，不实现完整情绪系统。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from app.plugins import (
+    ContextFragment,
     ContextProviderContribution,
+    ContextRequest,
     PluginBase,
     PluginCapabilityRegistry,
     PluginContext,
@@ -87,7 +89,7 @@ class EmotionStateExamplePlugin(PluginBase):
 
     # ---- 上下文提供者 ----
 
-    def _build_context(self, _request: dict[str, Any]) -> str:
+    def _build_context(self, _request: ContextRequest) -> Sequence[ContextFragment]:
         lines = [
             "当前桌宠状态：",
             f"- 心情：{self._mood}",
@@ -96,7 +98,8 @@ class EmotionStateExamplePlugin(PluginBase):
         ]
         if self._recent_event:
             lines.append(f"- 最近事件：{self._recent_event}")
-        return "\n".join(lines)
+        # 只需提供 content；宿主会统一覆盖 id/source/trust/cache_scope 等元数据。
+        return [ContextFragment(fragment_id="emotion_state", source="plugin", content="\n".join(lines))]
 
     # ---- 事件 handler（仅更新状态 + 写日志） ----
 

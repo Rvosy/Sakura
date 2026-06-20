@@ -5,6 +5,7 @@ from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistr
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.events import PluginEventBus, ScopedEventBus
 from app.plugins.manager import PluginLoadResult, PluginManager
+from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import (
     KNOWN_PLUGIN_PERMISSIONS,
     PERMISSION_CHAT_UI,
@@ -43,7 +44,9 @@ from app.plugins.services import (
 
 __all__ = [
     "ChatUIWidgetContribution",
+    "ContextFragment",
     "ContextProviderContribution",
+    "ContextRequest",
     "KNOWN_PLUGIN_PERMISSIONS",
     "PERMISSION_CHAT_UI",
     "PERMISSION_CONTEXT_PROVIDER",

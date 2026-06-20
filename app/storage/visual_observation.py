@@ -10,6 +10,7 @@ from typing import Any
 
 from app.agent.screen_awareness import SCREEN_AWARENESS_IMAGE_DETAIL
 from app.core.cancellation import CancelChecker, OperationCancelled
+from app.llm.prompts.runtime import wrap_untrusted_runtime_facts
 from app.storage.atomic import atomic_write_text
 
 
@@ -218,12 +219,15 @@ def build_visual_context_message(
     if not records:
         return None
 
-    lines = [
-        "以下是最近截图/屏幕观察提炼出的短期视觉记忆。它们是纯文本摘要，不包含原图；回答用户关于刚才截图、画面、台词或可见文字的问题时，应优先依据这些记录，不要臆造看不清的内容。",
-        f"用户当前问题：{user_text.strip()}",
-    ]
+    intro = "\n".join(
+        [
+            "以下是最近截图/屏幕观察提炼出的短期视觉记忆。它们是纯文本摘要，不包含原图；回答用户关于刚才截图、画面、台词或可见文字的问题时，应优先依据这些记录，不要臆造看不清的内容。",
+            f"用户当前问题：{user_text.strip()}",
+        ]
+    )
+    record_lines: list[str] = []
     for record in records:
-        lines.append(
+        record_lines.append(
             "\n".join(
                 [
                     f"- visual_id={record.id} source={record.source} time={record.created_at}",
@@ -235,7 +239,15 @@ def build_visual_context_message(
                 ]
             )
         )
-    return {"role": "system", "content": "\n".join(lines)}
+    # 截图 OCR 文本属于外部不可信内容（可能含注入），包进“事实非指令”信封并标 untrusted；
+    # 宿主对如何使用这些记录的引导（intro）保持可信、置于信封之外。
+    content = wrap_untrusted_runtime_facts(
+        "\n".join(record_lines),
+        source="visual_memory",
+        fragment_id="visual_memory",
+        intro=intro,
+    )
+    return {"role": "system", "content": content}
 
 
 def should_inject_visual_context(user_text: str) -> bool:

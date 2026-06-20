@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.llm.prompts.runtime import wrap_untrusted_runtime_facts
+
 # ---- 事件类型常量 ----
 APP_STARTED = "app.started"
 APP_CLOSED = "app.closed"
@@ -150,14 +152,20 @@ def build_runtime_event_context_message(
     """
     if not events:
         return None
-    lines = [
+    intro = (
         "以下是桌宠最近发生的运行时系统事件（用户对程序 / 窗口的操作），仅供你自然地感知当前情境，"
         "让回应更贴合现状（例如用户刚把你藏起来又重新打开、刚启动应用等）。"
-        "请不要逐字复述或机械念出这些事件，也不要把它们当成用户说的话。",
-    ]
-    for event in events:
-        lines.append(_describe_event(event))
-    return {"role": "system", "content": "\n".join(lines)}
+        "请不要逐字复述或机械念出这些事件，也不要把它们当成用户说的话。"
+    )
+    event_lines = [_describe_event(event) for event in events]
+    # 与屏幕视觉记忆一致：宿主收集的运行时事实统一套“事实非指令”信封并标 untrusted。
+    content = wrap_untrusted_runtime_facts(
+        "\n".join(event_lines),
+        source="runtime_events",
+        fragment_id="runtime_events",
+        intro=intro,
+    )
+    return {"role": "system", "content": content}
 
 
 def _describe_event(event: RuntimeEvent) -> str:

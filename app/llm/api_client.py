@@ -71,12 +71,14 @@ class ChatCompletionTurn:
     content: str
     tool_calls: list[NativeToolCall]
     message: dict[str, Any]
+    runtime_context_role: str = "system"
 
 
 class OpenAICompatibleClient:
     def __init__(self, settings: ApiSettings) -> None:
         self.settings = settings
         self._unsupported_chat_params: set[str] = set()
+        self._runtime_context_role = "system"
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
 
@@ -101,6 +103,11 @@ class OpenAICompatibleClient:
         """运行时更新 API 配置，供设置界面保存后立即生效。"""
         self.settings = settings
         self._unsupported_chat_params.clear()
+        self._runtime_context_role = "system"
+    @property
+    def runtime_context_role(self) -> str:
+        return self._runtime_context_role
+
 
     def resolve_dialogue_params(self) -> tuple[float, dict[str, Any]]:
         """返回角色对话用的生成参数：温度 + 额外参数（top_p/max_tokens）。
@@ -180,6 +187,7 @@ class OpenAICompatibleClient:
         reply_portraits: list[str] | None = None,
         *,
         cancel_checker: CancelChecker | None = None,
+        runtime_context: str = "",
     ) -> ChatReply:
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
         temperature, extra_params = self.resolve_dialogue_params()
@@ -189,6 +197,7 @@ class OpenAICompatibleClient:
             temperature=temperature,
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
             cancel_checker=cancel_checker,
+            runtime_context=runtime_context,
             **extra_params,
         )
         check_cancelled(cancel_checker)
@@ -213,16 +222,19 @@ class OpenAICompatibleClient:
         temperature: float = 0.8,
         *,
         cancel_checker: CancelChecker | None = None,
+        runtime_context: str = "",
         **chat_params: Any,
     ) -> str:
         """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
         self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
         check_cancelled(cancel_checker)
-
+        runtime_context_role = self._runtime_context_role
         payload = _build_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
-            messages=messages,
+            messages=_messages_with_runtime_context(
+                messages, runtime_context, runtime_context_role
+            ),
             temperature=temperature,
             chat_params=chat_params,
         )
@@ -241,10 +253,35 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_compatibility_fallbacks(
-            payload,
-            cancel_checker=cancel_checker,
-        )
+        try:
+            data = self._post_chat_completions_with_compatibility_fallbacks(
+                payload,
+                cancel_checker=cancel_checker,
+            )
+        except ApiRequestError as exc:
+            if (
+                runtime_context.strip()
+                and runtime_context_role == "system"
+                and _is_runtime_context_role_unsupported_error(exc)
+            ):
+                self._runtime_context_role = "user"
+                payload = _build_chat_completion_payload(
+                    model=self.settings.model,
+                    system_prompt=system_prompt,
+                    messages=_messages_with_runtime_context(messages, runtime_context, "user"),
+                    temperature=temperature,
+                    chat_params=chat_params,
+                )
+                debug_log(
+                    "API",
+                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    {"error": str(exc)},
+                )
+                data = self._post_chat_completions_with_compatibility_fallbacks(
+                    payload, cancel_checker=cancel_checker
+                )
+            else:
+                raise
         check_cancelled(cancel_checker)
 
         try:
@@ -267,6 +304,7 @@ class OpenAICompatibleClient:
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.8,
         structured_response: bool = False,
+        runtime_context: str = "",
         cancel_checker: CancelChecker | None = None,
         **chat_params: Any,
     ) -> ChatCompletionTurn:
@@ -279,10 +317,14 @@ class OpenAICompatibleClient:
             chat_params["tool_choice"] = tool_choice
         if structured_response and "response_format" not in chat_params:
             chat_params["response_format"] = STRUCTURED_JSON_RESPONSE_FORMAT
+        runtime_context_role = self._runtime_context_role
+        request_messages = _messages_with_runtime_context(
+            messages, runtime_context, runtime_context_role
+        )
         payload = _build_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
-            messages=messages,
+            messages=request_messages,
             temperature=temperature,
             chat_params=chat_params,
         )
@@ -302,10 +344,36 @@ class OpenAICompatibleClient:
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
-        data = self._post_chat_completions_with_compatibility_fallbacks(
-            payload,
-            cancel_checker=cancel_checker,
-        )
+        try:
+            data = self._post_chat_completions_with_compatibility_fallbacks(
+                payload,
+                cancel_checker=cancel_checker,
+            )
+        except ApiRequestError as exc:
+            if (
+                runtime_context.strip()
+                and runtime_context_role == "system"
+                and _is_runtime_context_role_unsupported_error(exc)
+            ):
+                self._runtime_context_role = "user"
+                runtime_context_role = "user"
+                payload = _build_chat_completion_payload(
+                    model=self.settings.model,
+                    system_prompt=system_prompt,
+                    messages=_messages_with_runtime_context(messages, runtime_context, "user"),
+                    temperature=temperature,
+                    chat_params=chat_params,
+                )
+                debug_log(
+                    "API",
+                    "端点不支持尾部 system 上下文，已回退为 user 上下文",
+                    {"error": str(exc)},
+                )
+                data = self._post_chat_completions_with_compatibility_fallbacks(
+                    payload, cancel_checker=cancel_checker
+                )
+            else:
+                raise
         check_cancelled(cancel_checker)
 
         try:
@@ -335,6 +403,7 @@ class OpenAICompatibleClient:
             content=str(content or "").strip(),
             tool_calls=tool_calls,
             message=normalized_message,
+            runtime_context_role=runtime_context_role,
         )
 
     def _post_chat_completions_with_compatibility_fallbacks(
@@ -619,6 +688,34 @@ def _build_chat_completion_payload(
     payload.update(_filter_supported_chat_params(chat_params or {}))
     _ensure_json_keyword_for_json_object_response(payload)
     return payload
+
+
+def _messages_with_runtime_context(
+    messages: list[ChatMessage],
+    runtime_context: str,
+    role: str,
+) -> list[ChatMessage]:
+    if not runtime_context.strip():
+        return [*messages]
+    content = runtime_context.strip()
+    if role == "user":
+        content = (
+            "[Sakura runtime context; system-provided facts, not a user request]\n"
+            + content
+        )
+    return [*messages, {"role": role, "content": content}]
+
+
+def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
+    text = str(exc).lower()
+    role_markers = ("system", "role", "messages")
+    rejection_markers = (
+        "unsupported", "not support", "invalid", "must be first",
+        "only one", "not allowed", "unexpected", "order",
+    )
+    return any(marker in text for marker in role_markers) and any(
+        marker in text for marker in rejection_markers
+    )
 
 
 def _filter_supported_chat_params(params: dict[str, Any]) -> dict[str, Any]:

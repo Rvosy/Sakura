@@ -117,20 +117,48 @@ def build_context_acquisition_strategy(*, allow_screen_observation: bool) -> str
     ).body
 
 
-def build_proactive_check_tool_system_prompt(
-    character_prompt: str,
-    reply_tones: list[str] | None,
-    reply_portraits: list[str] | None,
+def build_runtime_context_text(
     *,
     memory_summary: str,
     current_time: str,
     step_index: int,
     remaining_steps: int,
+    dynamic_context: str = "",
+) -> str:
+    """构建注入到消息数组末尾的【运行时状态】易变上下文。
+
+    与静态系统提示前缀分离：前缀（人格、回复协议、工具规则等）在多步与多轮间保持
+    稳定、利于命中自动前缀缓存；本块承载随每步变化的长期记忆摘要、当前时间、循环
+    进度与动态插件上下文。每步重建、放在消息末尾，且不写回对话历史。
+    """
+
+    blocks = [
+        PromptBlock(None, f"长期记忆摘要：\n{memory_summary}"),
+        PromptBlock(None, f"当前本地时间：\n{current_time}"),
+        PromptBlock(
+            None,
+            f"当前进度：这是第 {step_index + 1} 步，之后最多还可以继续 {remaining_steps} 步。",
+        ),
+    ]
+    if dynamic_context.strip():
+        blocks.append(PromptBlock(None, dynamic_context.strip()))
+    return render_blocks(blocks)
+
+
+def build_proactive_check_tool_system_prefix(
+    character_prompt: str,
+    reply_tones: list[str] | None,
+    reply_portraits: list[str] | None,
+    *,
     max_tool_calls_per_step: int,
     max_tool_calls_per_turn: int,
     extra_instructions: str = "",
 ) -> str:
-    """构建主动屏幕感知 tool-loop 使用的系统提示词。"""
+    """构建主动屏幕感知 tool-loop 的【静态系统提示前缀】。
+
+    不含记忆摘要、当前时间、循环步数等易变内容（这些由 build_runtime_context_text
+    在消息数组末尾单独注入），使前缀在多步与多轮间保持稳定。
+    """
 
     reply_protocol = build_proactive_check_reply_protocol(reply_tones, reply_portraits)
     return render_blocks(
@@ -166,14 +194,11 @@ def build_proactive_check_tool_system_prompt(
             proactive_reply_examples_block(),
             PromptBlock(None, reply_protocol),
             PromptBlock(None, extra_instructions.strip()),
-            PromptBlock(None, f"长期记忆摘要：\n{memory_summary}"),
-            PromptBlock(None, f"当前本地时间：\n{current_time}"),
             PromptBlock(
                 None,
                 "\n".join(
                     [
                         "当前 Agent 循环：",
-                        f"- 这是第 {step_index + 1} 步，之后最多还可以继续 {remaining_steps} 步。",
                         "- 如果信息足够或已经完成，不要再发起 tool_calls。",
                         f"- 每步最多请求 {max_tool_calls_per_step} 个工具，整轮最多 {max_tool_calls_per_turn} 个工具。",
                         "",
@@ -185,6 +210,44 @@ def build_proactive_check_tool_system_prompt(
                 ),
             ),
         ]
+    )
+
+
+def build_proactive_check_tool_system_prompt(
+    character_prompt: str,
+    reply_tones: list[str] | None,
+    reply_portraits: list[str] | None,
+    *,
+    memory_summary: str,
+    current_time: str,
+    step_index: int,
+    remaining_steps: int,
+    max_tool_calls_per_step: int,
+    max_tool_calls_per_turn: int,
+    extra_instructions: str = "",
+) -> str:
+    """构建主动屏幕感知 tool-loop 完整系统提示词（静态前缀 + 末尾运行时上下文）。
+
+    新工具循环已改为分别取用 build_proactive_check_tool_system_prefix 与
+    build_runtime_context_text，使前缀可缓存。本函数保留给历史调用点与既有测试。
+    """
+
+    prefix = build_proactive_check_tool_system_prefix(
+        character_prompt,
+        reply_tones,
+        reply_portraits,
+        max_tool_calls_per_step=max_tool_calls_per_step,
+        max_tool_calls_per_turn=max_tool_calls_per_turn,
+        extra_instructions=extra_instructions,
+    )
+    runtime_context = build_runtime_context_text(
+        memory_summary=memory_summary,
+        current_time=current_time,
+        step_index=step_index,
+        remaining_steps=remaining_steps,
+    )
+    return render_blocks(
+        [PromptBlock(None, prefix), PromptBlock(None, runtime_context)]
     )
 
 
@@ -311,6 +374,7 @@ def build_proactive_reply_examples() -> str:
 # 新命名导出；旧 proactive_* 名称保留给历史调用点。
 build_screen_awareness_check_reply_protocol = build_proactive_check_reply_protocol
 build_screen_awareness_check_tool_system_prompt = build_proactive_check_tool_system_prompt
+build_screen_awareness_check_tool_system_prefix = build_proactive_check_tool_system_prefix
 build_screen_awareness_reply_decision_flow = build_proactive_reply_decision_flow
 build_screen_awareness_scene_strategy_rules = build_proactive_scene_strategy_rules
 build_screen_awareness_rules = build_proactive_rules

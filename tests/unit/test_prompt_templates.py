@@ -139,12 +139,13 @@ def test_agent_tool_prompt_length_stays_compact() -> None:
     prompt = AgentRuntime._build_tool_system_prompt(
         runtime,
         allow_screen_observation=True,
-        step_index=0,
-        remaining_steps=3,
     )
 
+    # 静态前缀不再内联记忆/时间/步数（改由运行时上下文消息注入），应更精简。
     assert len(prompt) < 2800
     assert prompt.count("主动屏幕感知核心规则") == 0
+    assert "长期记忆摘要" not in prompt
+    assert "这是第 1 步" not in prompt
 
 
 def test_agent_runtime_prompt_patches_apply_to_prompt_builders() -> None:

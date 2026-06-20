@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
+
+from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
 PLUGIN_API_VERSION = 1
@@ -102,15 +104,19 @@ class ContextProviderContribution:
 
     与 ``PromptPatchContribution`` 区分职责：
     - PromptPatch 用于修改系统提示词、回复协议（相对静态）。
-    - ContextProvider 在每次构建 prompt 时动态生成一段局部上下文（如情绪、
-      屏幕摘要），由宿主统一组装，插件不拼完整 prompt。
+    - ContextProvider 在每次构建 prompt 时，根据本轮 ``ContextRequest`` 动态生成
+      若干 ``ContextFragment``（如情绪、屏幕摘要），由宿主统一做信任分级、预算与
+      组装，插件不拼完整 prompt。
 
-    ``build_context`` 接收宿主传入的上下文字典（本轮预留为空字典），返回字符串。
+    ``build_context`` 接收本轮受限事实 ``ContextRequest``，返回 ``ContextFragment``
+    序列。宿主会强制覆盖每个片段的 id / source / trust / cache_scope 等元数据，
+    插件通常只需提供 ``content``（可选 ``priority`` / ``freshness`` /
+    ``token_budget`` / ``sensitivity`` 等建议值）。返回空序列表示本轮不注入。
     """
 
     provider_id: str
     description: str
-    build_context: Callable[[dict[str, Any]], str]
+    build_context: Callable[[ContextRequest], Sequence[ContextFragment]]
     order: float = 100.0
     enabled: bool = True
 

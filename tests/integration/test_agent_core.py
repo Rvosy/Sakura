@@ -1708,8 +1708,10 @@ def test_agent_runtime_can_continue_tool_loop_after_tool_results() -> None:
     assert [action.payload["tool_name"] for action in result.actions] == ["first_tool", "second_tool"]
     assert len(client.prompts) == 3
     assert not client.final_chat_called
-    assert "这是第 1 步" in client.prompts[0]
-    assert "这是第 2 步" in client.prompts[1]
+    # 步数等易变状态已移出系统提示，改由 api_client 注入 runtime_context；
+    # 因此静态系统提示在多步之间保持一致（利于前缀缓存与角色稳定）。
+    assert "这是第 1 步" not in client.prompts[0]
+    assert client.prompts[0] == client.prompts[1] == client.prompts[2]
 
 
 def test_agent_runtime_stops_tool_loop_at_turn_limit() -> None:
