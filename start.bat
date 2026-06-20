@@ -14,18 +14,14 @@ if errorlevel 1 (
 )
 
 REM ============================================================
-REM 检测 Python：优先使用 runtime/python.exe，其次系统 Python
+REM 检测 Python：只使用 runtime/python.exe
 REM ============================================================
 if exist "%PRJ_ROOT%\runtime\python.exe" (
     set "PYTHON_EXE=%PRJ_ROOT%\runtime\python.exe"
 ) else (
-    where python > nul 2>&1
-    if errorlevel 1 (
-        echo [错误] 未检测到 Python，请先运行 install.bat 安装依赖
-        pause
-        exit /b 1
-    )
-    set "PYTHON_EXE=python"
+    echo [错误] 未找到 runtime\python.exe，请先准备 runtime 目录
+    pause
+    exit /b 1
 )
 
 REM ============================================================

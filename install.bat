@@ -9,22 +9,17 @@ echo ========================================
 echo.
 
 REM ============================================================
-REM 检测 Python：优先使用 runtime/python.exe，其次系统 Python
+REM 检测 Python：只使用 runtime/python.exe
 REM ============================================================
 if exist "%PRJ_ROOT%\runtime\python.exe" (
     set "PYTHON_EXE=%PRJ_ROOT%\runtime\python.exe"
     echo [OK] 找到 runtime\python.exe
 ) else (
-    echo [提示] 未找到内置 Python，尝试查找系统 Python...
-    where python > nul 2>&1
-    if errorlevel 1 (
-        echo [错误] 未检测到 Python，请安装 Python 或下载完整 release 包
-        echo         https://www.python.org/downloads/
-        pause
-        exit /b 1
-    )
-    set "PYTHON_EXE=python"
-    echo [OK] 使用系统 Python
+    echo [错误] 未找到 runtime\python.exe
+    echo         请前往 GitHub Releases 下载包含 runtime 的完整包:
+    echo         https://github.com/Rvosy/sakura/releases
+    pause
+    exit /b 1
 )
 
 REM ============================================================
@@ -53,11 +48,7 @@ echo.
 echo [1/2] 安装 Python 依赖...
 echo.
 
-"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" ^
-    -i https://mirrors.aliyun.com/pypi/simple ^
-    --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple ^
-    --extra-index-url https://pypi.org/simple ^
-    --no-warn-script-location
+"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple --no-warn-script-location
 
 if errorlevel 1 (
     echo.
