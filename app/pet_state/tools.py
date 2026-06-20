@@ -26,8 +26,9 @@ def create_pet_state_tools(store: PetStateStore) -> list[Tool]:
         Tool(
             name="pet_state_update",
             description=(
-                "提交 Sakura 跨轮次桌宠状态的局部修改建议。只允许修改 mood、affect、evidence；"
-                "当本轮互动明显影响长期心情时，在最终回复前调用。不要传 display，display 由宿主根据状态派生。"
+                "正式写入 Sakura 跨轮次桌宠状态的局部 delta。只允许修改 mood、affect、evidence；"
+                "当 LLM、事件、屏幕、TTS 或插件输入明显影响长期心情时调用。"
+                "不要传 display，display 由宿主根据状态派生。"
             ),
             parameters=_pet_state_update_schema(),
             handler=store.update_from_tool,

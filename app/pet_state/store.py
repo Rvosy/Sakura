@@ -35,17 +35,18 @@ class PetStateStore(QObject):
         with self._lock:
             return self._record.to_dict()
 
-    def update_from_tool(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(arguments, dict):
-            raise ValueError("pet_state_update 参数必须是 JSON object。")
-        delta = arguments.get("delta")
+    def update(
+        self,
+        delta: dict[str, Any],
+        *,
+        forced: bool = False,
+        force_fields: list[Any] | None = None,
+        force_reason: str = "",
+    ) -> dict[str, Any]:
         if not isinstance(delta, dict):
             raise ValueError("pet_state_update.delta 必须是 JSON object。")
-        force_fields = arguments.get("force_fields")
         if force_fields is not None and not isinstance(force_fields, list):
             raise ValueError("pet_state_update.force_fields 必须是字符串数组。")
-        forced = bool(arguments.get("forced", False))
-        force_reason = str(arguments.get("force_reason") or "")
         with self._lock:
             next_record, decision = apply_pet_state_delta(
                 self._record,
@@ -63,6 +64,16 @@ class PetStateStore(QObject):
             "accepted": True,
             "harness_decision": decision,
         }
+
+    def update_from_tool(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(arguments, dict):
+            raise ValueError("pet_state_update 参数必须是 JSON object。")
+        return self.update(
+            arguments.get("delta"),
+            forced=bool(arguments.get("forced", False)),
+            force_fields=arguments.get("force_fields"),
+            force_reason=str(arguments.get("force_reason") or ""),
+        )
 
     def _load(self) -> PetStateRecord:
         if not self.path.exists():

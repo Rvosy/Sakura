@@ -9102,7 +9102,7 @@ def test_consume_agent_result_shows_segments_for_tts_flow() -> None:
     assert applied_results == [result]
 
 
-def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> None:
+def test_consume_agent_result_keeps_pet_state_delta_as_optional_audit(tmp_path) -> None:
     from app.agent import AgentResult
     from app.llm.chat_reply import ChatReply
     from app.pet_state.store import PetStateStore
@@ -9134,13 +9134,14 @@ def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> No
         )
     )
 
+    before = window.pet_state_store.snapshot()
+
     window._consume_agent_result(result)
 
     snapshot = window.pet_state_store.snapshot()
-    assert snapshot["state"]["mood"] == "happy"
-    assert snapshot["state"]["affect"]["valence"] == 0.5
-    assert snapshot["state"]["evidence"]["last_trigger"] == "assistant_reply"
-    assert snapshot["last_model_delta"]["delta"]["mood"] == "happy"
+    assert snapshot == before
+    assert snapshot["state"]["mood"] == "neutral"
+    assert snapshot["last_model_delta"] is None
 
 
 def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
@@ -9160,7 +9161,10 @@ def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
 
     assert event.payload["text"] == "喝水"
     assert event.payload["pet_state_context"]["snapshot"]["state"]["mood"] == "neutral"
-    assert "pet_state_delta" in event.payload["pet_state_context"]["reply_contract"]
+    contract = event.payload["pet_state_context"]["reply_contract"]
+    assert "pet_state_update" in contract
+    assert "PetStateStore.update" in contract
+    assert "可以省略 pet_state_delta" in contract
 
 
 def test_reply_history_buttons_disable_while_busy_or_playing() -> None:

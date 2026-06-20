@@ -1,6 +1,6 @@
 # 桌宠状态 Pet State 开发文档
 
-本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。当前实现已经从“依赖模型主动调用 `pet_state_update` 工具”调整为“结构化回复每次携带 `pet_state_delta`，本地自动校验、落盘并同步 UI”。
+本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。当前实现把 `pet_state_update` / `PetStateStore.update()` 定为正式写路径；`pet_state_delta` 保留为最终回复中的可选建议、debug 或审计字段，不再作为每轮必填字段，也不作为主写入路径。
 
 ## 目标
 
@@ -16,29 +16,26 @@
 
 ## 当前 MVP 链路
 
-当前主路径不再依赖模型主动 tool call：
+当前主路径收敛到一个正式写入口：
 
 ```text
 PetStateStore.snapshot()
   -> PetWindow 注入 pet_state system context / event context
-  -> 模型最终回复 JSON 同时输出 segments + pet_state_delta
-  -> ChatReply 解析并保留 pet_state_delta
-  -> AgentRuntime / API 层发现缺失 pet_state_delta 时触发一次结构修复
-  -> PetWindow 收到 AgentResult 后应用 reply.pet_state_delta
-  -> PetStateStore.update_from_tool() 校验、钳制、审计、落盘
+  -> LLM / Event / Screen / TTS / Plugin 判断需要改长期状态
+  -> pet_state_update 或宿主内部 PetStateStore.update()
+  -> 统一校验、钳制、审计、派生 display、落盘
   -> state_changed signal 更新右键状态气泡
 ```
 
-工具路径仍然保留：
-
 - `pet_state_get`: 读取当前状态和最近审计。
-- `pet_state_update`: 兼容旧工具调用、调试或模型主动修正。
+- `pet_state_update`: 正式状态写工具，供 LLM 在本轮互动明显影响长期心情时调用。
+- `PetStateStore.update()`: 宿主事件、TTS、插件或后续 harness 可复用的内部写入口。
 
-但普通回复的状态更新以顶层 `pet_state_delta` 为准。
+最终回复可选携带 `pet_state_delta`，但它只用于建议、debug 或审计，不会替代 `pet_state_update` / `PetStateStore.update()`。
 
 ## 回复 JSON 合约
 
-启用情绪模块后，最终回复 JSON 必须在 `segments` 同级包含 `pet_state_delta`。
+启用情绪模块后，最终回复 JSON 只要求包含 `segments`。如需落盘长期状态变化，模型应在最终回复前调用 `pet_state_update`。最终回复可以在 `segments` 同级携带可选的 `pet_state_delta`，用于表达本轮状态建议或审计信息。
 
 示例：
 
@@ -72,16 +69,15 @@ PetStateStore.snapshot()
 
 - `segments[].tone` 控制当前段落语气和 TTS 参考。
 - `segments[].portrait` 控制当前段落显示立绘。
-- `pet_state_delta.mood` / `affect` 控制跨轮次整体状态。
-- `pet_state_delta.evidence` 记录这次状态判断依据。
-- `pet_state_delta` 只允许 `mood`、`affect`、`evidence`。
+- `pet_state_update.delta.mood` / `affect` 控制跨轮次整体状态。
+- `pet_state_update.delta.evidence` 记录这次状态判断依据。
+- 可选 `pet_state_delta` 只允许 `mood`、`affect`、`evidence`，并且只作为建议、debug 或审计字段。
 - `display` 只能由宿主派生，模型不能写。
 
 如果模型漏掉 `pet_state_delta`：
 
-- `AgentRuntime._parse_final_reply_with_retry()` 会把它视为结构缺失并修复一次。
-- `OpenAICompatibleClient.chat()` 的工具总结路径也会尝试补齐一次。
-- 修复失败时保留原回复，不阻断对话，但不会产生状态更新。
+- 这是合法输出，不触发结构修复。
+- 如果本轮确实需要状态落盘，应通过 `pet_state_update` 或宿主内部 `PetStateStore.update()` 完成。
 
 ## 数据结构
 
@@ -167,7 +163,8 @@ PetStateStore.snapshot()
 
 - `PetStateStore(QObject)` 是本地状态权威。
 - `snapshot()` 返回当前完整记录。
-- `update_from_tool(arguments)` 接受 `{"delta": ...}`，调用模型层校验后落盘。
+- `update(delta, ...)` 是宿主内部正式写入口，调用模型层校验后落盘。
+- `update_from_tool(arguments)` 是 `pet_state_update` 的适配层，最终复用 `update()`。
 - 写入成功后发出 `state_changed` signal。
 - 读取失败或文件损坏时回退默认状态。
 
@@ -175,7 +172,7 @@ PetStateStore.snapshot()
 
 - 注册工具组 `pet_state`。
 - `pet_state_get` 读取当前快照。
-- `pet_state_update` 保留为兼容和调试入口。
+- `pet_state_update` 是 LLM 可调用的正式状态写入口。
 
 ### `app/pet_state/prompting.py`
 
@@ -183,8 +180,9 @@ PetStateStore.snapshot()
 - 上下文明确说明：
   - `pet_state` 是跨轮次状态。
   - `tone` / `portrait` 是当前回复段表现。
-  - 最终 JSON 必须包含 `pet_state_delta`。
-  - `pet_state_delta` 不允许写 `display`。
+  - 状态落盘必须走 `pet_state_update` / `PetStateStore.update()`。
+  - 最终 JSON 可以省略 `pet_state_delta`；如果携带，它只是可选建议、debug 或审计字段。
+  - 状态 delta 不允许写 `display`。
 
 ### `app/llm/chat_reply.py`
 
@@ -194,15 +192,15 @@ PetStateStore.snapshot()
 
 ### `app/llm/api_client.py`
 
-- `OpenAICompatibleClient.chat(..., require_pet_state_delta=True)` 在工具总结路径要求补齐状态 delta。
-- 如果首次回复缺少 `pet_state_delta`，会以低温度请求模型修复一次 JSON。
+- `OpenAICompatibleClient.chat()` 保留 `require_pet_state_delta` 参数以兼容旧调用面，但不再因为缺少 `pet_state_delta` 触发修复。
+- `pet_state_delta` 仍会被解析和保留，供 debug / 审计使用。
 
 ### `app/agent/runtime.py`
 
 - 常规 tool loop 最终回复走 `_parse_final_reply_with_retry()`。
-- 当 working messages 中包含 `pet_state_delta` 契约时，缺失 delta 会触发一次结构修复。
-- `_build_tool_system_prompt()` 仍保留 `pet_state_get/update` 工具说明，方便模型读取状态或调试。
-- 主动事件的 `event_messages` 也会检测 `pet_state_delta` 契约。
+- `_parse_final_reply_with_retry()` 只修复坏 JSON、缺翻译等回复结构问题，不因缺少 `pet_state_delta` 修复。
+- `_build_tool_system_prompt()` 明确 `pet_state_update` 是长期状态正式写路径。
+- 主动事件也复用同一工具写路径，不依赖 final reply。
 
 ### `app/ui/pet_window.py`
 
@@ -211,8 +209,8 @@ PetStateStore.snapshot()
 - 主动事件路径：
   - `_event_with_pet_state_context()` 将状态快照和回复契约放入 event payload。
 - 回复消费路径：
-  - `_apply_reply_pet_state_delta()` 在记录历史和显示前应用 `reply.pet_state_delta`。
-  - 应用失败只写 debug log，不阻断回复展示。
+  - `_apply_reply_pet_state_delta()` 只把 final reply 中的可选 `pet_state_delta` 写入 debug 审计日志，不落盘。
+  - 状态落盘由 `pet_state_update` 工具或宿主内部 `PetStateStore.update()` 完成。
 - UI：
   - 右键菜单“桌宠状态”为 checkable action。
   - `ui.pet_state_popup_pinned` 控制状态气泡常显。
@@ -281,7 +279,7 @@ Schema：
 
 ### `pet_state_update`
 
-用途：兼容工具调用路径，提交状态修改建议。
+用途：正式状态写路径，提交状态修改 delta。
 
 Schema：
 
@@ -310,8 +308,8 @@ Schema：
 
 注意：
 
-- 普通回复不依赖这个工具更新状态。
-- 工具入口和结构化回复入口最终都复用 `PetStateStore.update_from_tool()`。
+- 普通回复不需要每次更新状态；需要更新长期状态时必须走这个工具或宿主内部 `PetStateStore.update()`。
+- 工具入口最终复用 `PetStateStore.update()`。
 - `forced` 只记录请求，不绕过 schema、范围、长度和只读字段校验。
 
 ## 插件边界
@@ -346,18 +344,18 @@ Schema：
   - store 更新、钳制、持久化。
   - `display` 只读保护。
   - `pet_state_get/update` 工具路径。
-  - pet state context 包含 `pet_state_delta` 契约。
+  - pet state context 说明正式写路径和可选 `pet_state_delta` 边界。
 - `tests/unit/test_api_client.py`
   - `ChatReply.pet_state_delta` 解析。
   - tone 清洗保留 pet_state delta。
 - `tests/unit/test_agent_runtime.py`
   - 固定工具提示包含 pet_state 路由。
-  - 缺少 `pet_state_delta` 时触发最终回复修复。
+  - 缺少可选 `pet_state_delta` 时不触发最终回复修复。
 - `tests/ui/test_pet_window.py`
   - 右键菜单 checkable “桌宠状态”。
   - 状态气泡持久化显示/解除。
   - 状态气泡置顶跟随主窗口。
-  - 结构化 `pet_state_delta` 应用到 store。
+  - 结构化 `pet_state_delta` 仅作为可选审计信息，不自动应用到 store。
   - 主动事件注入 `pet_state_context`。
 - `tests/unit/test_bootstrap.py`
   - `AppContext` 创建 pet state store。

@@ -214,18 +214,15 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
+        _ = require_pet_state_delta
         check_cancelled(cancel_checker)
         parsed = parse_chat_reply_result(raw_content)
         retry_reason = parsed.reason if parsed.needs_retry else ""
         has_required_translation = _reply_has_display_translation(parsed.reply)
-        has_required_pet_state = _reply_has_required_pet_state_delta(
-            parsed.reply,
-            required=require_pet_state_delta,
-        )
-        if not parsed.needs_retry and has_required_translation and has_required_pet_state:
+        if not parsed.needs_retry and has_required_translation:
             return parsed.reply
         if not retry_reason:
-            retry_reason = "missing_translation" if not has_required_translation else "missing_pet_state_delta"
+            retry_reason = "missing_translation"
 
         debug_log(
             "AgentRuntime",
@@ -241,20 +238,11 @@ class AgentRuntime:
                     "上一条 assistant 输出不是合格的 Sakura 回复 JSON。"
                     "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
                     "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
-                    "\"tone\":\"中性\",\"portrait\":\"站立待机\"}]"
-                    + (
-                        ",\"pet_state_delta\":{\"mood\":\"neutral\","
-                        "\"affect\":{\"valence\":0.0,\"arousal\":0.2,\"confidence\":0.7},"
-                        "\"evidence\":{\"last_user_signal\":\"最近用户或事件信号\","
-                        "\"last_trigger\":\"assistant_reply\",\"reason\":\"状态判断理由\"}}"
-                        if require_pet_state_delta
-                        else ""
-                    )
-                    + "}。"
+                    "\"tone\":\"中性\",\"portrait\":\"站立待机\"}]}。"
                     "ja 字段只能写自然日语，不能包含中文。"
                     "如果 ja 中有中文，请把它的意思翻译成自然日语，不要用固定兜底句替代。"
                     "zh 保留或补充与 ja 对应的中文译文。"
-                    "如果要求 pet_state_delta，它只能写 mood、affect、evidence，不要写 display。"
+                    "不要为了格式补写 pet_state_delta；需要落盘的长期状态变化应通过 pet_state_update 完成。"
                 ),
             },
         ]
@@ -274,15 +262,12 @@ class AgentRuntime:
 
         check_cancelled(cancel_checker)
         repaired = parse_chat_reply_result(repaired_turn.content)
-        if repaired.needs_retry or not _reply_has_required_pet_state_delta(
-            repaired.reply,
-            required=require_pet_state_delta,
-        ):
+        if repaired.needs_retry:
             debug_log(
                 "AgentRuntime",
                 "最终回复修复后仍不合格，使用安全兜底",
                 {
-                    "reason": repaired.reason or "missing_pet_state_delta",
+                    "reason": repaired.reason,
                     "raw_content": repaired_turn.content,
                 },
             )
@@ -460,7 +445,6 @@ class AgentRuntime:
                 },
             )
             if not turn.tool_calls:
-                require_pet_state_delta = _messages_require_pet_state_delta(working_messages)
                 debug_log(
                     "AgentRuntime",
                     "多步循环完成，返回模型回复",
@@ -476,7 +460,6 @@ class AgentRuntime:
                             prompt_build.system_prompt,
                             working_messages,
                             turn.content,
-                            require_pet_state_delta=require_pet_state_delta,
                             cancel_checker=cancel_checker,
                         ),
                         self.reply_tones,
@@ -774,7 +757,6 @@ class AgentRuntime:
                 working_messages,
                 self.reply_tones,
                 self.reply_portraits,
-                require_pet_state_delta=_messages_require_pet_state_delta(working_messages),
                 cancel_checker=cancel_checker,
             )
             check_cancelled(cancel_checker)
@@ -988,7 +970,6 @@ class AgentRuntime:
                 self.reply_tones,
                 self.reply_portraits,
                 runtime_context=prompt_build.runtime_context,
-                require_pet_state_delta=_messages_require_pet_state_delta(event_messages),
                 cancel_checker=cancel_checker,
             )
             self._record_runtime_role(prompt_build.inspection)
@@ -1092,6 +1073,7 @@ class AgentRuntime:
                 "- 用户询问 Sakura 当前心情、状态、感觉如何、是否开心/难过/累等桌宠状态时，必须先调用 pet_state_get，再根据工具结果回答。",
                 "- 本轮互动会改变跨轮次心情时，必须在最终回复前调用 pet_state_update；若只是询问当前状态且状态不变，只调用 pet_state_get，不要为了形式调用 pet_state_update。",
                 "- pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。",
+                "- 最终回复不需要每次携带 pet_state_delta；如果携带，它只是可选建议/debug/审计信息，不能替代 pet_state_update。",
                 "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
                 "- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。",
                 screen_observation_rule,
@@ -1260,27 +1242,6 @@ def _reply_has_display_translation(reply: ChatReply) -> bool:
         segment.text.strip() and segment.translation.strip()
         for segment in reply.segments
     )
-
-
-def _reply_has_required_pet_state_delta(reply: ChatReply, *, required: bool) -> bool:
-    if not required:
-        return True
-    delta = getattr(reply, "pet_state_delta", None)
-    return isinstance(delta, dict) and bool(delta)
-
-
-def _messages_require_pet_state_delta(messages: list[ChatMessage]) -> bool:
-    return any(_value_contains_pet_state_delta_marker(message.get("content")) for message in messages)
-
-
-def _value_contains_pet_state_delta_marker(value: Any) -> bool:
-    if isinstance(value, str):
-        return "pet_state_delta" in value
-    if isinstance(value, list):
-        return any(_value_contains_pet_state_delta_marker(item) for item in value)
-    if isinstance(value, dict):
-        return any(_value_contains_pet_state_delta_marker(item) for item in value.values())
-    return False
 
 
 def _native_tool_call_to_policy_call(

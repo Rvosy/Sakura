@@ -3751,22 +3751,10 @@ class PetWindow(QWidget):
         delta = getattr(reply, "pet_state_delta", None)
         if not isinstance(delta, dict) or not delta:
             return
-        store = getattr(self, "pet_state_store", None)
-        if store is None:
-            return
-        try:
-            result = store.update_from_tool({"delta": _normalize_reply_pet_state_delta(delta)})
-        except (OSError, ValueError) as exc:
-            debug_log(
-                "PetState",
-                "应用结构化回复中的桌宠状态 delta 失败",
-                {"error": str(exc), "delta": delta},
-            )
-            return
         debug_log(
             "PetState",
-            "结构化回复中的桌宠状态 delta 已应用",
-            {"harness_decision": result.get("harness_decision")},
+            "最终回复携带 pet_state_delta，仅记录为可选审计信息；未作为正式写路径落盘",
+            {"delta": _normalize_reply_pet_state_delta(delta)},
         )
 
     def _apply_pending_action_from_result(self, result: AgentResult) -> None:
@@ -4241,8 +4229,9 @@ class PetWindow(QWidget):
         payload["pet_state_context"] = {
             "snapshot": snapshot,
             "reply_contract": (
-                "情绪模块已启用；最终回复 JSON 必须在 segments 同级包含 pet_state_delta。"
-                "pet_state_delta 只能写 mood、affect、evidence，不要写 display。"
+                "情绪模块已启用；长期状态正式写路径是 pet_state_update 或宿主内部 PetStateStore.update。"
+                "最终回复可以省略 pet_state_delta；如果携带，它只作为可选建议/debug/审计信息，不能替代正式写路径。"
+                "状态 delta 只能写 mood、affect、evidence，不要写 display。"
             ),
         }
         return AgentEvent(type=event.type, payload=payload)

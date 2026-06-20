@@ -91,6 +91,7 @@ def test_pet_state_context_keeps_display_readonly_boundary(tmp_path) -> None:
     assert "ChatSegment.portrait" in content
     assert "pet_state_get" in content
     assert "pet_state_delta" in content
-    assert "必须" in content
+    assert "正式写路径" in content
+    assert "不需要每次携带" in content
     assert "当前心情" in content
     assert "不要写 display" in content
