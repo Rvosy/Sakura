@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -51,6 +52,22 @@ def test_sensory_settings_defaults_are_conservative() -> None:
     assert settings.sources[SensorySource.SOUND].mode == SensoryProviderMode.OFF
     assert settings.context_budget_chars == 1200
     assert settings.retention_days == 7
+
+
+def test_settings_sensory_test_image_is_decodable_png() -> None:
+    from PySide6.QtGui import QImage
+
+    from app.ui.settings.workers import _SENSORY_TEST_IMAGE_DATA_URL
+
+    prefix, payload = _SENSORY_TEST_IMAGE_DATA_URL.split(",", 1)
+    raw = base64.b64decode(payload, validate=True)
+    image = QImage()
+
+    assert prefix == "data:image/png;base64"
+    assert image.loadFromData(raw, "PNG")
+    assert not image.isNull()
+    assert image.width() > 0
+    assert image.height() > 0
 
 
 def test_sensory_settings_normalizes_source_and_provider_config() -> None:
