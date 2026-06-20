@@ -732,11 +732,7 @@ class SettingsDialog(QDialog):
         )
         self._set_form_widgets_enabled(
             getattr(self, "_tts_form_layout", None),
-            (
-                self.ref_lang_edit,
-                self.text_lang_edit,
-                self.tts_timeout_spin,
-            ),
+            (self.tts_timeout_spin,),
             enabled,
         )
         self.tts_bundle_download_button.setEnabled(True)
