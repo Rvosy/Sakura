@@ -107,6 +107,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.plugins_config() == self.data / "config" / "plugins.yaml"
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
         assert self.paths.legacy_chat_history() == self.data / "chat_history.jsonl"
+        assert self.paths.sensory_observations_for("sakura") == self.data / "sensory_observations" / "sakura.jsonl"
         assert self.paths.memory_store() == self.data / "memory.json"
         assert self.paths.memory_core_profiles() == self.data / "memory" / "core_profiles.json"
         assert self.paths.memory_curation_state() == self.data / "memory_curation_state.json"
@@ -123,6 +124,10 @@ class TestStoragePathsSnapshot:
         assert (
             self.paths.visual_observations_for("N.A.V.I.")
             == self.data / "visual_observations" / "N.A.V.I..jsonl"
+        )
+        assert (
+            self.paths.sensory_observations_for("N.A.V.I.")
+            == self.data / "sensory_observations" / "N.A.V.I..jsonl"
         )
         assert (
             self.paths.runtime_events_for("N.A.V.I.")
@@ -179,6 +184,7 @@ class TestEnsureDirs:
             paths.chat_history_dir,
             paths.runtime_events_dir,
             paths.visual_observations_dir,
+            paths.sensory_observations_dir,
             paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
