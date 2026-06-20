@@ -14,7 +14,13 @@ import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
-from app.config.settings_service import BackchannelSettings, DebugLogSettings, StartupSettings
+from app.config.settings_service import (
+    BackchannelSettings,
+    DebugLogSettings,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+    ScreenObservationSettings,
+    StartupSettings,
+)
 from app.llm.api_client import ApiSettings
 from app.agent import AgentEvent, AgentResult
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -9098,6 +9104,22 @@ def test_manual_screenshot_text_input_records_marker_without_image_data() -> Non
     assert "data:image/jpeg;base64" not in history[0][1]
 
 
+def test_manual_screenshot_summary_delivery_sends_text_only_to_main_model() -> None:
+    window, requests, _history = _build_minimal_manual_screenshot_window("帮我看这里")
+    window.screen_observation_settings = ScreenObservationSettings(
+        delivery_mode=SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+    )
+
+    window.send_message("test")
+
+    assert len(requests) == 1
+    content = requests[0][-1]["content"]
+    assert content == "帮我看这里"
+    assert window.pending_visual_observation_jobs[0].use_sensory_provider is True
+    assert window.pending_visual_observation_jobs[0].inject_as_context is True
+    assert "data:image/jpeg;base64" not in json.dumps(requests[0], ensure_ascii=False)
+
+
 def test_visual_context_is_injected_for_screenshot_followup() -> None:
     from app.ui.pet_window import _add_visual_context_to_messages
 
@@ -10043,6 +10065,48 @@ def test_screen_observation_followup_keeps_large_image_after_progress(monkeypatc
     content = window.pending_screen_observation_messages[0]["content"]
     assert isinstance(content, list)
     assert content[1]["type"] == "image_url"
+
+
+def test_screen_observation_followup_summary_delivery_uses_text_message() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalScreenFollowupWindow:
+        _finish_chat_screen_observation_followup = PetWindow._finish_chat_screen_observation_followup
+        _resume_screen_observation_followup_cleanup = lambda self: None
+
+    window = MinimalScreenFollowupWindow()
+    history = []
+    window.messages = [{"role": "user", "content": "看看屏幕"}]
+    window.pending_visual_observation_jobs = []
+    window.screen_observation_settings = ScreenObservationSettings(
+        delivery_mode=SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+    )
+    window._record_history = lambda *args: history.append(args)
+    window._consume_agent_result = lambda _result: None
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    observation = ScreenObservation(
+        data_url="data:image/jpeg;base64,screen",
+        width=640,
+        height=360,
+        captured_at="2026-05-31T12:00:00+08:00",
+        screen_name="DISPLAY1",
+    )
+
+    window._finish_chat_screen_observation_followup(
+        {"user_message_index": 0, "text": "看看屏幕"},
+        observation,
+    )
+
+    assert window.pending_screen_observation_messages == [
+        {"role": "user", "content": "看看屏幕"}
+    ]
+    assert window.pending_visual_observation_jobs[0].use_sensory_provider is True
+    assert window.pending_visual_observation_jobs[0].inject_as_context is True
+    assert "data:image/jpeg;base64" not in json.dumps(
+        window.pending_screen_observation_messages,
+        ensure_ascii=False,
+    )
+    assert history
 
 
 def _build_minimal_manual_screenshot_window(text: str):

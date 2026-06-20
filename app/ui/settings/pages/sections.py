@@ -74,6 +74,9 @@ from app.config.settings_service import (
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BubbleSettings,
     DebugLogSettings,
+    SCREEN_OBSERVATION_DELIVERY_IMAGE,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+    ScreenObservationSettings,
     StartupSettings,
 )
 from app.llm.api_client import ApiSettings
@@ -877,13 +880,36 @@ class PrivacySettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
 
-    def build(self, screen_awareness_settings: ScreenAwarenessSettings) -> QWidget:
+    def build(
+        self,
+        screen_awareness_settings: ScreenAwarenessSettings,
+        screen_observation_settings: ScreenObservationSettings | None = None,
+    ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
         owner.proactive_screen_context_enabled_check = QCheckBox("启用主动屏幕感知（会定期获取屏幕信息）", tab)
         normalized_screen_awareness_settings = screen_awareness_settings.normalized()
+        normalized_screen_observation_settings = (
+            screen_observation_settings or ScreenObservationSettings()
+        ).normalized()
         owner.proactive_screen_context_enabled_check.setChecked(
             normalized_screen_awareness_settings.allows_screen_context()
+        )
+        owner.screen_observation_delivery_combo = _NoWheelComboBox(tab)
+        owner.screen_observation_delivery_combo.addItem(
+            "直接发送图片给主模型（需要视觉能力）",
+            SCREEN_OBSERVATION_DELIVERY_IMAGE,
+        )
+        owner.screen_observation_delivery_combo.addItem(
+            "先用增强视觉模型转成文字摘要",
+            SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+        )
+        delivery_index = owner.screen_observation_delivery_combo.findData(
+            normalized_screen_observation_settings.delivery_mode
+        )
+        owner.screen_observation_delivery_combo.setCurrentIndex(max(0, delivery_index))
+        owner.screen_observation_delivery_combo.setToolTip(
+            "文字摘要模式会把截图交给增强视觉模型处理，再把结构化文本交给主模型；主模型不会收到原图。"
         )
         owner.proactive_check_interval_spin = _NoWheelSpinBox(tab)
         owner.proactive_check_interval_spin.setRange(
@@ -929,6 +955,7 @@ class PrivacySettingsPage:
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", owner.proactive_screen_context_enabled_check)
+        form_layout.addRow("截图交付方式", owner.screen_observation_delivery_combo)
         form_layout.addRow("主动检查间隔", owner.proactive_check_interval_spin)
         form_layout.addRow("主动发言冷却", owner.proactive_cooldown_spin)
         form_layout.addRow("单次最多发送截图", owner.proactive_batch_limit_spin)

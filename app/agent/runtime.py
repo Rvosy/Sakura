@@ -145,6 +145,7 @@ class AgentRuntime:
         self._last_prompt_inspection: PromptInspection | None = None
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
+        self.screen_observation_text_bridge_enabled = False
         self.autonomous_screen_observation_enabled = True
         self.sensory_pipeline: Any | None = None
 
@@ -328,9 +329,18 @@ class AgentRuntime:
         """允许模型在需要时请求一次当前屏幕截图。"""
         self.model_vision_enabled = enabled
 
+    def set_screen_observation_text_bridge_enabled(self, enabled: bool) -> None:
+        """允许 observe_screen 通过增强视觉模型转成文字摘要后再交给主模型。"""
+        self.screen_observation_text_bridge_enabled = bool(enabled)
+
     def set_autonomous_screen_observation_enabled(self, enabled: bool) -> None:
         """允许模型在对话或主动事件中自主决定是否观察屏幕。"""
         self.autonomous_screen_observation_enabled = enabled
+
+    def _screen_observation_input_available(self) -> bool:
+        return bool(getattr(self, "model_vision_enabled", True)) or bool(
+            getattr(self, "screen_observation_text_bridge_enabled", False)
+        )
 
     def set_runtime_loop_settings(self, settings: RuntimeLoopSettings | None) -> None:
         """同步工具循环限制，后续对话从新设置开始生效。"""
@@ -475,7 +485,7 @@ class AgentRuntime:
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
         allow_screen_observation = (
-            self.model_vision_enabled
+            self._screen_observation_input_available()
             and self.autonomous_screen_observation_enabled
             and not messages_contain_image(messages)
             and tool_routing._should_offer_screen_observation(messages)
@@ -487,6 +497,7 @@ class AgentRuntime:
                 "message_count": len(messages),
                 "allow_screen_observation": allow_screen_observation,
                 "model_vision_enabled": self.model_vision_enabled,
+                "screen_observation_text_bridge_enabled": self.screen_observation_text_bridge_enabled,
                 "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 "messages": summarize_messages(messages),
             },
@@ -1033,7 +1044,7 @@ class AgentRuntime:
                 *confirmed_messages,
             ]
             allow_screen_observation = (
-                self.model_vision_enabled
+                self._screen_observation_input_available()
                 and self.autonomous_screen_observation_enabled
                 and not messages_contain_image(working_messages)
                 and tool_routing._should_offer_screen_observation(working_messages)
@@ -1135,15 +1146,32 @@ class AgentRuntime:
             },
         )
         if event.type in {"screen_awareness_check", "proactive_check"}:
+            proactive_started_at = time.perf_counter()
             screen_context_allowed = bool(event.payload.get("screen_context_allowed"))
             allow_screen_observation = (
                 screen_context_allowed
+                and self._screen_observation_input_available()
+                and not bool(event.payload.get("screen_observation_requested_by_model"))
+                and not isinstance(event.payload.get("visual_contexts"), list)
                 and not messages_contain_image(event_messages)
             )
-            return self._run_tool_loop(
+            debug_log(
+                "ProactiveModel",
+                "主动模型开始工作",
+                {
+                    "event_type": event.type,
+                    "allow_screen_observation": allow_screen_observation,
+                    "model_vision_enabled": bool(getattr(self, "model_vision_enabled", True)),
+                    "screen_observation_text_bridge_enabled": bool(
+                        getattr(self, "screen_observation_text_bridge_enabled", False)
+                    ),
+                    "has_screen_image": messages_contain_image(event_messages),
+                },
+            )
+            result = self._run_tool_loop(
                 event_messages,
                 allow_screen_observation=allow_screen_observation,
-                turn_started_at=time.perf_counter(),
+                turn_started_at=proactive_started_at,
                 proactive_mode=True,
                 context_source="event",
                 event_type=event.type,
@@ -1153,6 +1181,17 @@ class AgentRuntime:
                 progress_callback=progress_callback,
                 cancel_checker=cancel_checker,
             )
+            debug_log(
+                "ProactiveModel",
+                "主动模型调用完成",
+                {
+                    "event_type": event.type,
+                    "segments": len(result.reply.segments),
+                    "actions": [action.type for action in result.actions],
+                    "elapsed_ms": int((time.perf_counter() - proactive_started_at) * 1000),
+                },
+            )
+            return result
 
         snapshot = self._build_single_context_snapshot(
             event_messages,
@@ -1163,6 +1202,15 @@ class AgentRuntime:
         )
         prompt_build = self._build_event_reply_result(event.type, snapshot)
         self._record_prompt_inspection(prompt_build.inspection)
+        event_started_at = time.perf_counter()
+        debug_log(
+            "ProactiveModel",
+            "主动模型开始工作",
+            {
+                "event_type": event.type,
+                "has_screen_image": messages_contain_image(event_messages),
+            },
+        )
         try:
             check_cancelled(cancel_checker)
             reply = self._client_for_messages(event_messages).chat(
@@ -1180,6 +1228,15 @@ class AgentRuntime:
                 debug_log("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
                 return AgentResult(reply=_build_proactive_vision_unsupported_reply())
             raise
+        debug_log(
+            "ProactiveModel",
+            "主动模型调用完成",
+            {
+                "event_type": event.type,
+                "segments": len(reply.segments),
+                "elapsed_ms": int((time.perf_counter() - event_started_at) * 1000),
+            },
+        )
         return AgentResult(
             reply=reply,
             actions=[event_action],

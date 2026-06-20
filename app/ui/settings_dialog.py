@@ -64,6 +64,7 @@ from app.config.settings_service import (
     BackchannelSettings,
     BubbleSettings,
     DebugLogSettings,
+    ScreenObservationSettings,
     StartupSettings,
 )
 from app.platforms.launch_at_login import is_launch_at_login_supported
@@ -200,6 +201,7 @@ class SettingsDialog(QDialog):
         backchannel_settings: BackchannelSettings | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
         sensory_settings: SensorySettings | None = None,
+        screen_observation_settings: ScreenObservationSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
         memory_curation_settings=None,
@@ -217,6 +219,9 @@ class SettingsDialog(QDialog):
         self.tts_settings = tts_settings
         self.startup_settings = startup_settings or StartupSettings()
         self.bubble_settings = bubble_settings or BubbleSettings()
+        self.screen_observation_settings = (
+            screen_observation_settings or ScreenObservationSettings()
+        ).normalized()
         self.backchannel_settings = (backchannel_settings or BackchannelSettings()).normalized()
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         # 延迟导入避免与 app.agent 形成导入环（与 settings_service 一致）。
@@ -284,6 +289,7 @@ class SettingsDialog(QDialog):
         self.result_subtitle_typing_interval_ms: int | None = None
         self.result_reply_segment_pause_ms: int | None = None
         self.result_screen_awareness_settings: ScreenAwarenessSettings | None = None
+        self.result_screen_observation_settings: ScreenObservationSettings | None = None
         self.result_proactive_care_settings: ScreenAwarenessSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
         self.result_runtime_loop_settings: RuntimeLoopSettings | None = None
@@ -372,7 +378,10 @@ class SettingsDialog(QDialog):
             (
                 "隐私",
                 self._build_scrollable_tab(
-                    PrivacySettingsPage(self).build(screen_awareness_settings or ScreenAwarenessSettings())
+                    PrivacySettingsPage(self).build(
+                        screen_awareness_settings or ScreenAwarenessSettings(),
+                        self.screen_observation_settings,
+                    )
                 ),
             ),
             (
@@ -2724,6 +2733,12 @@ class SettingsDialog(QDialog):
                 cooldown_minutes=self.proactive_cooldown_spin.value(),
                 screen_context_batch_limit=self.proactive_batch_limit_spin.value(),
             ),
+            "screen_observation_settings": ScreenObservationSettings(
+                delivery_mode=str(
+                    self.screen_observation_delivery_combo.currentData()
+                    or self.screen_observation_settings.delivery_mode
+                )
+            ).normalized(),
             "mcp_settings": MCPRuntimeSettings(
                 windows_enabled=self.windows_mcp_enabled_check.isChecked(),
             ),
@@ -2782,6 +2797,7 @@ class SettingsDialog(QDialog):
         reply_segment_pause_ms = values["reply_segment_pause_ms"]
         theme_settings = values["theme_settings"]
         screen_awareness_settings = values["screen_awareness_settings"]
+        screen_observation_settings = values["screen_observation_settings"]
         mcp_settings = values["mcp_settings"]
         runtime_loop_settings = values["runtime_loop_settings"]
         debug_log_settings = values["debug_log_settings"]
@@ -2809,6 +2825,8 @@ class SettingsDialog(QDialog):
         if not isinstance(theme_settings, ThemeSettings):
             return
         if not isinstance(screen_awareness_settings, ScreenAwarenessSettings):
+            return
+        if not isinstance(screen_observation_settings, ScreenObservationSettings):
             return
         if not isinstance(mcp_settings, MCPRuntimeSettings):
             return
@@ -2867,6 +2885,7 @@ class SettingsDialog(QDialog):
         self.result_theme_settings = theme_settings
         self.result_theme_write_mode = self._theme_write_mode
         self.result_screen_awareness_settings = screen_awareness_settings
+        self.result_screen_observation_settings = screen_observation_settings.normalized()
         self.result_proactive_care_settings = screen_awareness_settings
         self.result_mcp_settings = mcp_settings
         self.result_runtime_loop_settings = runtime_loop_settings

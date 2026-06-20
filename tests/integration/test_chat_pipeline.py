@@ -12,6 +12,7 @@ from app.llm.chat_reply import parse_chat_reply
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import SensoryObservation, SensoryProviderMode, SensorySource
 from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import FakeSensoryProvider
 from app.sensory.settings import SensorySettings, SensorySourceSettings
 from app.sensory.store import SensoryObservationStore
 from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
@@ -23,11 +24,13 @@ class RuntimeStub:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.events: list[AgentEvent] = []
+        self.user_messages: list[list[dict[str, object]]] = []
 
     def handle_user_message(self, messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
         if cancel_checker is not None:
             cancel_checker()
         self.calls.append(f"user:{len(messages)}")
+        self.user_messages.append(messages)
         if progress_callback is not None:
             progress_callback
         return AgentResult(parse_chat_reply("はい"), [])
@@ -305,6 +308,75 @@ def test_chat_pipeline_does_not_mirror_visual_contexts_when_sensory_default_off(
 
         assert sensory_store.recent(limit=1) == []
         assert not sensory_path.exists()
+    finally:
+        visual_path.unlink(missing_ok=True)
+        sensory_path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_uses_sensory_provider_for_visual_summary_bridge() -> None:
+    class MainClient:
+        def complete_raw(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("summary bridge must not send images to the main model")
+
+    runtime = RuntimeStub()
+    runtime.api_client = MainClient()
+    visual_path = Path("__pycache__") / "test_runtime" / f"visual_bridge_{uuid.uuid4().hex}.jsonl"
+    sensory_path = Path("__pycache__") / "test_runtime" / f"sensory_bridge_{uuid.uuid4().hex}.jsonl"
+    try:
+        settings = SensorySettings(
+            enabled=True,
+            sources={
+                SensorySource.VISION: SensorySourceSettings(
+                    mode=SensoryProviderMode.LOCAL,
+                    provider_id="fake_vision",
+                )
+            },
+        ).normalized()
+        pipeline = ChatPipeline(
+            runtime,  # type: ignore[arg-type]
+            visual_observation_store=VisualObservationStore(visual_path),
+            sensory_pipeline=SensoryPipeline(
+                settings=settings,
+                store=SensoryObservationStore(sensory_path),
+                providers={
+                    "fake_vision": FakeSensoryProvider(
+                        provider_id="fake_vision",
+                        source=SensorySource.VISION,
+                        summary="截图中显示 LM Studio 正在运行 qwen3-vl。",
+                        confidence=0.91,
+                    )
+                },
+            ),
+        )
+
+        pipeline.run_user_message(
+            [{"role": "user", "content": "帮我看看当前屏幕"}],
+            visual_observation_jobs=[
+                VisualObservationJob(
+                    id="vis_bridge",
+                    source="autonomous_screen",
+                    user_text="帮我看看当前屏幕",
+                    screen_contexts=[
+                        {
+                            "data_url": "data:image/jpeg;base64,bridge",
+                            "width": 1440,
+                            "height": 900,
+                            "captured_at": "2026-06-20T18:00:00+08:00",
+                            "screen_name": "Built-in Display",
+                        }
+                    ],
+                    use_sensory_provider=True,
+                    inject_as_context=True,
+                )
+            ],
+        )
+
+        assert runtime.calls == ["user:2"]
+        injected_message = runtime.user_messages[-1][-1]
+        injected_json = json.dumps(injected_message, ensure_ascii=False)
+        assert injected_message["role"] == "system"
+        assert "截图中显示 LM Studio 正在运行 qwen3-vl。" in injected_json
+        assert "data:image" not in injected_json
     finally:
         visual_path.unlink(missing_ok=True)
         sensory_path.unlink(missing_ok=True)

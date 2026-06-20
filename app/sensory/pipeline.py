@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,19 @@ class SensoryPipeline:
             )
             return None
         provider = self.providers.get(source_settings.provider_id) or DisabledProvider()
+        started_at = time.perf_counter()
+        debug_log(
+            "Sensory",
+            "开始调用感官 provider",
+            {
+                "source": normalized_request.source.value,
+                "provider_id": source_settings.provider_id,
+                "request_id": normalized_request.id,
+                "event_type": normalized_request.event_type,
+                "has_media": bool(normalized_request.media_ref)
+                or bool(normalized_request.metadata.get("image_urls")),
+            },
+        )
         try:
             observation = provider.observe(normalized_request).normalized()
         except SensoryProviderUnavailable as exc:
@@ -45,6 +59,7 @@ class SensoryPipeline:
                     "source": normalized_request.source.value,
                     "provider_id": source_settings.provider_id,
                     "error": str(exc),
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                 },
             )
             return None
@@ -58,6 +73,7 @@ class SensoryPipeline:
                 "provider_id": recorded.provider_id,
                 "confidence": recorded.confidence,
                 "sensitive_redacted": recorded.sensitive_redacted,
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
             },
         )
         return recorded

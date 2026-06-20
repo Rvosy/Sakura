@@ -11,6 +11,8 @@ from app.config.settings_service import (
     AppSettingsService,
     BubbleSettings,
     DebugLogSettings,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+    ScreenObservationSettings,
     StartupSettings,
 )
 from app.config.model_slots import resolve_model_slot
@@ -351,6 +353,22 @@ def test_settings_service_defaults_sensory_to_disabled() -> None:
     assert loaded.enabled is False
     assert loaded.sources[SensorySource.VISION].mode == SensoryProviderMode.OFF
     assert loaded.providers == {}
+
+
+def test_screen_observation_delivery_mode_round_trips() -> None:
+    service = AppSettingsService(_runtime_root("yaml_screen_observation_delivery"))
+
+    assert service.load_screen_observation_settings() == ScreenObservationSettings()
+
+    service.save_screen_observation_settings(
+        ScreenObservationSettings(delivery_mode=SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY)
+    )
+
+    loaded = service.load_screen_observation_settings()
+    system = load_yaml_mapping(service.system_config_path)
+    assert loaded.delivery_mode == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+    assert loaded.uses_sensory_summary is True
+    assert system["screen_observation"]["delivery_mode"] == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
 
 
 def test_save_bubble_settings_preserves_other_ui_keys() -> None:

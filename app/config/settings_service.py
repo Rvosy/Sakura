@@ -72,6 +72,31 @@ class StartupSettings:
     launch_at_login: bool = False
 
 
+SCREEN_OBSERVATION_DELIVERY_IMAGE = "image"
+SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY = "sensory_summary"
+SCREEN_OBSERVATION_DELIVERY_MODES = (
+    SCREEN_OBSERVATION_DELIVERY_IMAGE,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+)
+
+
+@dataclass(frozen=True)
+class ScreenObservationSettings:
+    """截图交付给主模型的方式。"""
+
+    delivery_mode: str = SCREEN_OBSERVATION_DELIVERY_IMAGE
+
+    @property
+    def uses_sensory_summary(self) -> bool:
+        return self.normalized().delivery_mode == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+
+    def normalized(self) -> "ScreenObservationSettings":
+        delivery_mode = str(self.delivery_mode or "").strip().lower()
+        if delivery_mode not in SCREEN_OBSERVATION_DELIVERY_MODES:
+            delivery_mode = SCREEN_OBSERVATION_DELIVERY_IMAGE
+        return ScreenObservationSettings(delivery_mode=delivery_mode)
+
+
 BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS = 1
 BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS = 120
 BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS = 5
@@ -572,6 +597,21 @@ class AppSettingsService:
         self.save_system_values(
             "startup",
             {"launch_at_login": bool(settings.launch_at_login)},
+        )
+
+    def load_screen_observation_settings(self) -> ScreenObservationSettings:
+        section = self._system_section("screen_observation")
+        return ScreenObservationSettings(
+            delivery_mode=str(
+                section.get("delivery_mode", SCREEN_OBSERVATION_DELIVERY_IMAGE)
+            )
+        ).normalized()
+
+    def save_screen_observation_settings(self, settings: ScreenObservationSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "screen_observation",
+            {"delivery_mode": normalized.delivery_mode},
         )
 
     def load_theme_settings(self) -> ThemeSettings:
