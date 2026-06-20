@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from app.agent.actions import AgentEvent, AgentResult
 from app.agent.runtime import AgentRuntime
+from app.agent.runtime_limits import RuntimeLoopSettings
 from app.llm.chat_reply import parse_chat_reply
 from app.llm.prompt_templates import (
     build_event_system_prompt,
@@ -135,6 +136,7 @@ def test_agent_tool_prompt_length_stays_compact() -> None:
     runtime.reply_tones = ["中性"]
     runtime.reply_portraits = ["站立待机"]
     runtime.memory = SimpleNamespace(summary=lambda: "无")
+    runtime.runtime_loop_settings = RuntimeLoopSettings()
 
     prompt = AgentRuntime._build_tool_system_prompt(
         runtime,
@@ -154,6 +156,7 @@ def test_agent_runtime_prompt_patches_apply_to_prompt_builders() -> None:
     runtime.reply_tones = ["中性"]
     runtime.reply_portraits = ["站立待机"]
     runtime.memory = SimpleNamespace(summary=lambda: "无")
+    runtime.runtime_loop_settings = RuntimeLoopSettings()
     runtime.prompt_patches = [
         PromptPatchContribution(
             patch_id="demo",

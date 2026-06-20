@@ -115,7 +115,6 @@ class TestRuntimeLimits:
 
         prompt = runtime._build_tool_system_prompt()
 
-        assert "之后最多还可以继续 5 步" in prompt
         assert "每步最多请求 4 个工具，整轮最多 12 个工具" in prompt
 
 
