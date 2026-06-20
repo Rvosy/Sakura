@@ -4,6 +4,8 @@ from PySide6.QtCore import QPoint, QRect, Signal, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
+from app.ui.screen_capture import logical_to_device_rect
+
 
 MANUAL_SCREENSHOT_MIN_SIZE = 8
 
@@ -38,7 +40,9 @@ class ManualScreenshotOverlay(QWidget):
 
         selection = self._selection_rect()
         if not selection.isNull():
-            painter.drawPixmap(selection, self.desktop_pixmap, selection)
+            # 覆盖层按逻辑坐标布局，但 desktop_pixmap 是物理像素缓冲，
+            # drawPixmap 的源矩形按物理像素取址，故须把逻辑选区换算成物理像素。
+            painter.drawPixmap(selection, self.desktop_pixmap, self._device_rect(selection))
             painter.fillRect(selection, QColor(255, 255, 255, 28))
             painter.setPen(QColor(74, 170, 214, 245))
             painter.drawRect(selection.adjusted(0, 0, -1, -1))
@@ -71,7 +75,8 @@ class ManualScreenshotOverlay(QWidget):
         ):
             self._cancel()
             return
-        self.selected.emit(self.desktop_pixmap.copy(selection))
+        # copy() 按物理像素取址，须用换算后的物理选区，否则截到的是缩半且左上偏移的错误区域。
+        self.selected.emit(self.desktop_pixmap.copy(self._device_rect(selection)))
         self.close()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -79,6 +84,14 @@ class ManualScreenshotOverlay(QWidget):
             self._cancel()
             return
         super().keyPressEvent(event)
+
+    def _device_rect(self, rect: QRect) -> QRect:
+        """把覆盖层逻辑坐标矩形换算成 desktop_pixmap 的物理像素矩形。
+
+        高 DPI 下 desktop_pixmap 按物理像素分配并设了 devicePixelRatio，
+        copy()/drawPixmap 源矩形都以物理像素为单位，须乘以该比例。
+        """
+        return logical_to_device_rect(self.desktop_pixmap, rect)
 
     def _selection_rect(self) -> QRect:
         if self.selection_start is None or self.selection_end is None:

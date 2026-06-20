@@ -21,18 +21,25 @@ def make_blurred_pixmap(
         return src if src is not None else QPixmap()
 
     dpr = src.devicePixelRatio()
-    base_w = max(1, src.width())
-    base_h = max(1, src.height())
+    # 关键：高 DPI 桌面截图的 src 带 devicePixelRatio>1。scaled() 与 QGraphicsScene 会按
+    # 「逻辑尺寸」解释带 dpr 的 pixmap，而 _blur_pixmap 用的是 size()/width() 这类「物理像素」，
+    # 两者混用会把模糊结果缩到 1/dpr 并锚定到左上角，表现为输入栏背景随位置漂移的错位。
+    # 因此整段处理都在物理像素尺度（dpr=1）上做，最后再把 dpr 设回去，位置与尺寸即对齐。
+    work = QPixmap(src)
+    work.setDevicePixelRatio(1.0)  # 仅改副本（setDevicePixelRatio 会 detach），不影响调用方 src
+    base_w = max(1, work.width())
+    base_h = max(1, work.height())
     factor = max(1, int(downscale))
     small_w = max(1, base_w // factor)
     small_h = max(1, base_h // factor)
     try:
-        small = src.scaled(
+        small = work.scaled(
             small_w,
             small_h,
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        small.setDevicePixelRatio(1.0)  # scaled() 可能保留 dpr，确保中间图按物理像素处理
         blurred_small = _blur_pixmap(small, radius)
         result = blurred_small.scaled(
             base_w,

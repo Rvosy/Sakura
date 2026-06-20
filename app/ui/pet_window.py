@@ -200,6 +200,7 @@ from app.ui import (
     ToolConfirmationPanel,
     build_pet_tray_menu,
     capture_virtual_desktop_pixmap,
+    crop_logical_region,
 )
 from app.ui.styles import pet_window_stylesheet
 from app.ui.theme import (
@@ -2476,18 +2477,28 @@ class PetWindow(QWidget):
     def _build_blurred_background(self, global_rect: QRect) -> QPixmap | None:
         """截取虚拟桌面，裁出 global_rect（逻辑全局坐标）对应区域并做高斯模糊。
 
-        capture_virtual_desktop_pixmap 已把各屏物理像素归一化贴入「逻辑尺寸」的虚拟桌面图，
-        故这里直接按逻辑坐标裁剪即可，无需再做 devicePixelRatio 换算。
+        capture_virtual_desktop_pixmap 返回的是「物理像素缓冲 + devicePixelRatio」的虚拟桌面图：
+        其 rect()/copy() 都按物理像素取址（width()=物理宽，非逻辑宽）。因此必须把逻辑全局坐标
+        乘以 devicePixelRatio 换算成物理像素再裁剪，否则裁出的区域会随坐标增大而向左上偏移，
+        在屏幕边缘表现为模糊背景与真实桌面错位。
         """
         desktop_pixmap, virtual_geometry = self._capture_virtual_desktop_pixmap()
         if desktop_pixmap.isNull():
             return None
-        offset = global_rect.topLeft() - virtual_geometry.topLeft()
-        crop = QRect(offset.x(), offset.y(), global_rect.width(), global_rect.height())
-        crop = crop.intersected(desktop_pixmap.rect())
-        if crop.isEmpty():
+        cropped = crop_logical_region(desktop_pixmap, virtual_geometry, global_rect)
+        if cropped.isNull():
             return None
-        cropped = desktop_pixmap.copy(crop)
+        debug_log(
+            "UI",
+            "输入栏模糊背景裁剪",
+            {
+                "global_rect": f"{global_rect.x()},{global_rect.y()} {global_rect.width()}x{global_rect.height()}",
+                "virtual_geometry": f"{virtual_geometry.x()},{virtual_geometry.y()} {virtual_geometry.width()}x{virtual_geometry.height()}",
+                "desktop_px": f"{desktop_pixmap.width()}x{desktop_pixmap.height()}",
+                "dpr": f"{desktop_pixmap.devicePixelRatio():.2f}",
+                "cropped_px": f"{cropped.width()}x{cropped.height()}",
+            },
+        )
         # 模糊力度：radius 作用在降采样后的小图上，downscale 越大放大回来越糊。
         return make_blurred_pixmap(cropped, radius=4.0, downscale=2)
 

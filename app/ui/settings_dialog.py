@@ -675,7 +675,13 @@ class SettingsDialog(QDialog):
             screen = app.primaryScreen() if app is not None else None
         if screen is not None:
             geometry = screen.geometry()
-            return max(1, geometry.width()), max(1, geometry.height())
+            # geometry() 是逻辑尺寸；实际截图按物理像素采样，故乘 devicePixelRatio
+            # 还原真实「原始屏幕」分辨率（如 200% 缩放下 1600x1000 → 3200x2000）。
+            dpr = screen.devicePixelRatio() or 1.0
+            return (
+                max(1, round(geometry.width() * dpr)),
+                max(1, round(geometry.height() * dpr)),
+            )
 
         return 1280, 720
 
