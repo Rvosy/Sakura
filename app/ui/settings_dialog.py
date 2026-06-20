@@ -781,7 +781,7 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder(loading_text)
 
         thread = QThread()
-        worker = settings_workers.MemoryListWorker(self.memory_store, limit=200)
+        worker = settings_workers.MemoryListWorker(self.memory_store)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_memory_load_success)

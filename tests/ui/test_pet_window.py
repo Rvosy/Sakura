@@ -5172,9 +5172,11 @@ def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() 
     class MemoryStoreStub:
         def __init__(self) -> None:
             self.list_calls = 0
+            self.last_limit: int | None = 20
 
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
+        def list_memories(self, *, limit: int | None = 20):  # type: ignore[no-untyped-def]
             self.list_calls += 1
+            self.last_limit = limit
             return [
                 {
                     "id": "memory-001",
@@ -5214,6 +5216,7 @@ def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() 
     assert _process_events_until(app, lambda: memory_store.list_calls == 1)
     assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
     assert dialog.memory_status_label.text() == "已加载 1 条记忆"
+    assert memory_store.last_limit is None
     assert dialog.memory_table.columnCount() == 4
     assert [
         dialog.memory_table.horizontalHeaderItem(column).text()

@@ -865,6 +865,19 @@ def test_memory_store_create_update_search_and_delete() -> None:
     assert store.list_memories() == []
 
 
+def test_memory_store_lists_all_memories_without_limit() -> None:
+    fake = FakeMem0()
+    fake.records = [
+        {"id": str(index), "memory": f"memory-{index}", "user_id": "sakura", "metadata": {}}
+        for index in range(201)
+    ]
+    store = MemoryStore(
+        base_dir=_runtime_root_path("memory_list_all"), scope_id="sakura", memory_client=fake
+    )
+
+    assert len(store.list_memories(limit=None)) == 201
+
+
 def test_memory_store_forget_missing_id_is_idempotent() -> None:
     fake = FakeMem0RaisesOnMissingDelete()
     store = MemoryStore(base_dir=_runtime_root_path("memory_missing_forget"), scope_id="sakura", memory_client=fake)
