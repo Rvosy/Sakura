@@ -144,6 +144,10 @@ from app.agent.screen_observation import (
     capture_screen_image,
 )
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.tts_bundle_dialog import (
+    cancel_active_tts_bundle_downloads_for_shutdown,
+    has_active_tts_bundle_download,
+)
 from app.ui.portrait_controller import (
     PORTRAIT_BASE_MAX_HEIGHT,
     PORTRAIT_BASE_MAX_WIDTH,
@@ -1269,6 +1273,25 @@ class PetWindow(QWidget):
             suppress()
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if has_active_tts_bundle_download():
+            reply = QMessageBox.question(
+                self,
+                "TTS 下载中",
+                "TTS 整合包正在后台下载。退出 Sakura 会暂停本次下载，已下载部分会保留，下次可继续。\n\n确定要退出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            if not cancel_active_tts_bundle_downloads_for_shutdown():
+                QMessageBox.information(
+                    self,
+                    "TTS 下载中",
+                    "下载线程仍在停止，请稍后再退出 Sakura。",
+                )
+                event.ignore()
+                return
         self.close_external_tools()
         super().closeEvent(event)
 
@@ -4950,6 +4973,9 @@ class PetWindow(QWidget):
             ),
             on_layout_preview=self._preview_layout,
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            on_prepare_secondary_window=self._prepare_secondary_window,
+            on_present_secondary_window=self._present_registered_secondary_window,
+            on_release_secondary_window=self._release_secondary_window,
         )
         self.settings_dialog = dialog
         # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
@@ -5408,7 +5434,7 @@ class PetWindow(QWidget):
         self._apply_window_flags()
         if checked and not bool(getattr(self, "_secondary_windows_suppress_topmost", False)):
             self.raise_()
-        # 已打开的设置/历史/日志窗口需跟随桌宠置顶状态更新，否则桌宠置顶后会反盖住它们。
+        # 已打开的副窗口需跟随桌宠置顶状态更新，否则桌宠置顶后会反盖住它们。
         self._sync_secondary_windows_topmost()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
@@ -5416,12 +5442,8 @@ class PetWindow(QWidget):
     def _sync_secondary_windows_topmost(self) -> None:
         """桌宠置顶状态切换时，让已打开的副窗口跟随更新置顶，保持在桌宠之上。"""
         keep_on_top = bool(getattr(self, "always_on_top_enabled", False))
-        for window in (
-            getattr(self, "settings_dialog", None),
-            getattr(self, "history_window", None),
-            getattr(self, "runtime_log_window", None),
-        ):
-            if window is None or not window.isVisible():
+        for window in tuple(getattr(self, "_registered_secondary_windows", set())):
+            if not self._is_secondary_window_visible(window):
                 continue
             _configure_secondary_window(window, keep_on_top=keep_on_top)
             _present_secondary_window(window)
@@ -5781,6 +5803,10 @@ class PetWindow(QWidget):
                 remove_event_filter(self)
             except RuntimeError:
                 pass
+
+    def _release_secondary_window(self, window: QWidget) -> None:
+        self._unregister_secondary_window(window)
+        self._sync_secondary_window_state()
 
     def _is_registered_secondary_window(self, window: object) -> bool:
         registered = getattr(self, "_registered_secondary_windows", None)

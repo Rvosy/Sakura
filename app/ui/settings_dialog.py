@@ -106,7 +106,7 @@ from app.voice.tts_settings import (
     GPTSoVITSTTSSettings,
     TTSConfigError,
 )
-from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
+from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog, active_tts_bundle_download_dialog
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
     THEME_COLOR_FIELDS,
@@ -171,6 +171,9 @@ class SettingsDialog(QDialog):
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
         memory_curation_settings=None,
+        on_prepare_secondary_window: Callable[[QWidget], None] | None = None,
+        on_present_secondary_window: Callable[[QWidget], None] | None = None,
+        on_release_secondary_window: Callable[[QWidget], None] | None = None,
     ) -> None:
         super().__init__(parent)
         if screen_awareness_settings is None:
@@ -217,6 +220,9 @@ class SettingsDialog(QDialog):
             reply_segment_pause_ms,
         )
         self.memory_store = memory_store
+        self._on_prepare_secondary_window = on_prepare_secondary_window
+        self._on_present_secondary_window = on_present_secondary_window
+        self._on_release_secondary_window = on_release_secondary_window
         self._all_memories: list[dict[str, object]] = []
         self._visible_memories: list[dict[str, object]] = []
         self._selected_memory_ids: set[str] = set()
@@ -251,6 +257,7 @@ class SettingsDialog(QDialog):
         self._api_model_probe_worker: settings_workers.ApiModelListProbeWorker | None = None
         self._tts_test_thread: QThread | None = None
         self._tts_test_worker: settings_workers.TTSTestWorker | None = None
+        self._tts_bundle_download_dialog: TTSBundleDownloadDialog | None = None
         self._pending_api_accept_values: dict[str, object] | None = None
         self._pending_accept_values: dict[str, object] | None = None
         self._save_button_text: str | None = None
@@ -1754,8 +1761,11 @@ class SettingsDialog(QDialog):
             return
         self._applied_dialog_stylesheet = stylesheet
         self.setStyleSheet(stylesheet)
+        if self._tts_bundle_download_dialog is not None:
+            self._style_tts_bundle_download_dialog(self._tts_bundle_download_dialog)
         inline_styles = {
             "theme_status_label": f"color: {theme.muted_text_color};",
+            "tts_bundle_status_label": f"color: {theme.muted_text_color};",
             "memory_status_label": f"color: {theme.muted_text_color};",
             "memory_selection_label": f"color: {theme.secondary_text_color};",
             "memory_preview_label": f"color: {theme.text_color};",
@@ -2561,27 +2571,92 @@ class SettingsDialog(QDialog):
             cancel_button.setEnabled(not busy)
 
     def _download_gpt_sovits_bundle(self) -> None:
-        dialog = TTSBundleDownloadDialog(self.base_dir, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.downloaded_work_dir is None:
+        dialog = self._tts_bundle_download_dialog or active_tts_bundle_download_dialog()
+        if dialog is not None:
+            if self._tts_bundle_download_dialog is None:
+                self._attach_tts_bundle_download_dialog(dialog)
+            self._present_tts_bundle_download_dialog(dialog)
             return
-        provider = getattr(dialog, "downloaded_provider", None) or TTS_PROVIDER_GPT_SOVITS
-        python_path = getattr(dialog, "downloaded_python_path", None)
-        tts_config_path = getattr(dialog, "downloaded_tts_config_path", None)
+
+        dialog = TTSBundleDownloadDialog(self.base_dir)
+        self._attach_tts_bundle_download_dialog(dialog)
+        if hasattr(self, "tts_bundle_status_label"):
+            self.tts_bundle_status_label.setText("TTS 整合包下载窗口已打开，可隐藏到后台。")
+        self.tts_bundle_download_button.setText("查看 TTS 下载")
+        self._present_tts_bundle_download_dialog(dialog)
+
+    def _attach_tts_bundle_download_dialog(self, dialog: TTSBundleDownloadDialog) -> None:
+        self._tts_bundle_download_dialog = dialog
+        self._style_tts_bundle_download_dialog(dialog)
+        prepare_secondary_window = self._on_prepare_secondary_window
+        if prepare_secondary_window is not None:
+            prepare_secondary_window(dialog)
+        dialog.succeeded.connect(self._handle_tts_bundle_download_success)
+        dialog.finished.connect(lambda _result, d=dialog: self._clear_tts_bundle_download_dialog(d))
+        if hasattr(self, "tts_bundle_download_button"):
+            self.tts_bundle_download_button.setText("查看 TTS 下载")
+
+    def _style_tts_bundle_download_dialog(self, dialog: TTSBundleDownloadDialog) -> None:
+        set_style_sheet = getattr(dialog, "setStyleSheet", None)
+        if callable(set_style_sheet):
+            set_style_sheet(self.styleSheet())
+
+    def _present_tts_bundle_download_dialog(self, dialog: TTSBundleDownloadDialog) -> None:
+        present_secondary_window = self._on_present_secondary_window
+        if present_secondary_window is not None:
+            present_secondary_window(dialog)
+            return
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    @Slot(object)
+    def _handle_tts_bundle_download_success(self, result: object) -> None:
+        self._apply_tts_bundle_install_result(result)
+        if hasattr(self, "tts_bundle_status_label"):
+            work_dir = getattr(result, "work_dir", None)
+            self.tts_bundle_status_label.setText(f"TTS 整合包已安装：{work_dir}")
+
+    def _apply_tts_bundle_install_result(self, result: object) -> None:
+        work_dir = getattr(result, "work_dir", None)
+        if work_dir is None:
+            return
+        provider = getattr(result, "provider", None) or TTS_PROVIDER_GPT_SOVITS
+        python_path = getattr(result, "python_path", None)
+        tts_config_path = getattr(result, "tts_config_path", None)
         provider_index = self.tts_provider_combo.findData(provider)
         if provider_index >= 0:
             self.tts_provider_combo.setCurrentIndex(provider_index)
-        self.tts_work_dir_edit.setText(str(dialog.downloaded_work_dir))
+        self.tts_work_dir_edit.setText(str(work_dir))
         if python_path is not None:
             self.tts_python_path_edit.setText(str(python_path))
         else:
-            self.tts_python_path_edit.setText(_bundle_python_path_display(provider, dialog.downloaded_work_dir))
+            self.tts_python_path_edit.setText(_bundle_python_path_display(provider, Path(work_dir)))
         if tts_config_path is not None:
             self.tts_config_path_edit.setText(str(tts_config_path))
         else:
-            self.tts_config_path_edit.setText(_bundle_tts_config_display(provider, dialog.downloaded_work_dir))
+            self.tts_config_path_edit.setText(_bundle_tts_config_display(provider, Path(work_dir)))
         self.tts_api_url_edit.setText(_default_tts_api_url(provider))
         self.tts_enabled_check.setChecked(True)
         self._sync_tts_provider_controls()
+
+    def _clear_tts_bundle_download_dialog(self, dialog: TTSBundleDownloadDialog) -> None:
+        if self._tts_bundle_download_dialog is dialog:
+            self._tts_bundle_download_dialog = None
+            self.tts_bundle_download_button.setText("一键下载 TTS 整合包")
+            release_secondary_window = self._on_release_secondary_window
+            if release_secondary_window is not None:
+                release_secondary_window(dialog)
+
+    def has_active_tts_bundle_download(self) -> bool:
+        dialog = self._tts_bundle_download_dialog
+        return bool(dialog is not None and dialog.is_download_running())
+
+    def cancel_tts_bundle_download_for_shutdown(self, timeout_ms: int = 3000) -> bool:
+        dialog = self._tts_bundle_download_dialog
+        if dialog is None:
+            return True
+        return dialog.cancel_for_shutdown(timeout_ms)
 
     @Slot()
     def _sync_tts_provider_controls(self, *, apply_defaults: bool = False) -> None:

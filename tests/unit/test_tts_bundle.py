@@ -23,9 +23,10 @@ from app.voice.tts_bundle import (
 
 
 class FakeResponse:
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, status: int = 200) -> None:
         self._data = data
         self._offset = 0
+        self._status = status
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -41,6 +42,9 @@ class FakeResponse:
         chunk = self._data[self._offset : self._offset + size]
         self._offset += len(chunk)
         return chunk
+
+    def getcode(self) -> int:
+        return self._status
 
 
 def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
@@ -109,7 +113,106 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
     assert progress[-1] == 100
 
 
-def test_tts_bundle_download_removes_part_on_verification_failure() -> None:
+def test_tts_bundle_resumes_part_download_with_range_request() -> None:
+    root = _runtime_root("bundle_resume")
+    payload = b"sakura-resumable-tts-bundle" * 32
+    prefix = payload[:128]
+    suffix = payload[128:]
+    entry = _entry(payload)
+    archive = root / "tts" / "_dl" / entry.filename
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.with_name(f"{archive.name}.part").write_bytes(prefix)
+    progress: list[tts_bundle.TTSBundleDownloadProgress] = []
+    seen_range: list[str | None] = []
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        assert timeout == 600
+        seen_range.append(request.get_header("Range"))
+        return FakeResponse(suffix, status=206)
+
+    def fake_extract(_archive: Path, out_dir: Path) -> str | None:
+        (out_dir / "api_v2.py").write_text("fake", encoding="utf-8")
+        return None
+
+    work_dir = download_and_extract_bundle(
+        entry,
+        root,
+        on_download_progress=progress.append,
+        urlopen=fake_urlopen,
+        extractor=fake_extract,
+    )
+
+    assert work_dir == (root / "tts" / entry.key).resolve()
+    assert seen_range == [f"bytes={len(prefix)}-"]
+    assert any(item.resumed for item in progress)
+    assert not archive.exists()
+    assert not archive.with_name(f"{archive.name}.part").exists()
+
+
+def test_tts_bundle_falls_back_to_full_download_when_range_is_ignored() -> None:
+    root = _runtime_root("bundle_resume_fallback")
+    payload = b"sakura-full-redownload" * 32
+    stale_part = b"stale-partial"
+    entry = _entry(payload)
+    archive = root / "tts" / "_dl" / entry.filename
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.with_name(f"{archive.name}.part").write_bytes(stale_part)
+    progress: list[tts_bundle.TTSBundleDownloadProgress] = []
+    seen_range: list[str | None] = []
+
+    def fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        assert timeout == 600
+        seen_range.append(request.get_header("Range"))
+        return FakeResponse(payload, status=200)
+
+    def fake_extract(_archive: Path, out_dir: Path) -> str | None:
+        (out_dir / "api_v2.py").write_text("fake", encoding="utf-8")
+        return None
+
+    work_dir = download_and_extract_bundle(
+        entry,
+        root,
+        on_download_progress=progress.append,
+        urlopen=fake_urlopen,
+        extractor=fake_extract,
+    )
+
+    assert work_dir == (root / "tts" / entry.key).resolve()
+    assert seen_range == [f"bytes={len(stale_part)}-"]
+    assert any(not item.resumed and item.downloaded_bytes == 0 for item in progress)
+    assert not archive.with_name(f"{archive.name}.part").exists()
+
+
+def test_tts_bundle_cancel_preserves_part_for_resume() -> None:
+    root = _runtime_root("bundle_cancel_preserve_part")
+    payload = b"sakura-cancel-resume" * 64
+    entry = _entry(payload)
+    checks = 0
+
+    def fake_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
+        assert timeout == 600
+        return FakeResponse(payload)
+
+    def check_cancel() -> None:
+        nonlocal checks
+        checks += 1
+        raise tts_bundle.DownloadCancelledError("pause")
+
+    with pytest.raises(tts_bundle.DownloadCancelledError):
+        download_and_extract_bundle(
+            entry,
+            root,
+            check_cancel=check_cancel,
+            urlopen=fake_urlopen,
+            extractor=lambda *_args: None,
+        )
+
+    archive = root / "tts" / "_dl" / entry.filename
+    assert checks == 1
+    assert archive.with_name(f"{archive.name}.part").read_bytes() == payload
+
+
+def test_tts_bundle_download_preserves_part_on_short_download() -> None:
     root = _runtime_root("bundle_verify_failure")
     payload = b"too-short"
     entry = TTSBundleEntry(
@@ -126,6 +229,30 @@ def test_tts_bundle_download_removes_part_on_verification_failure() -> None:
         return FakeResponse(payload)
 
     with pytest.raises(RuntimeError, match="文件大小不匹配"):
+        download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=lambda *_args: None)
+
+    archive = root / "tts" / "_dl" / entry.filename
+    assert not archive.exists()
+    assert archive.with_name(f"{archive.name}.part").read_bytes() == payload
+
+
+def test_tts_bundle_download_removes_part_on_sha256_failure() -> None:
+    root = _runtime_root("bundle_sha_failure")
+    payload = b"wrong-hash"
+    entry = TTSBundleEntry(
+        key="demo",
+        label="Demo",
+        filename="demo.7z",
+        download_url="https://example.test/demo.7z",
+        size=len(payload),
+        sha256=hashlib.sha256(b"expected").hexdigest(),
+    )
+
+    def fake_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
+        assert timeout == 600
+        return FakeResponse(payload)
+
+    with pytest.raises(RuntimeError, match="SHA256 不匹配"):
         download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=lambda *_args: None)
 
     archive = root / "tts" / "_dl" / entry.filename

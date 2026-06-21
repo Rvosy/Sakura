@@ -561,6 +561,8 @@ class TtsSettingsPage:
             "Windows 可一键下载内置整合包；macOS/Linux 请使用自定义 GPT-SoVITS 接入源码版运行环境。"
         )
         owner.tts_bundle_download_button.clicked.connect(owner._download_gpt_sovits_bundle)
+        owner.tts_bundle_status_label = QLabel("", tab)
+        owner.tts_bundle_status_label.setWordWrap(True)
         owner.tts_provider_combo.currentIndexChanged.connect(
             lambda _index: owner._sync_tts_provider_controls(apply_defaults=True)
         )
@@ -590,6 +592,7 @@ class TtsSettingsPage:
         form_layout.addRow("TTS Python", owner.tts_python_path_edit)
         form_layout.addRow("推理配置", owner.tts_config_path_edit)
         form_layout.addRow("超时", owner.tts_timeout_spin)
+        form_layout.addRow("整合包下载", owner.tts_bundle_status_label)
         owner._tts_form_layout = form_layout
         tab.setLayout(form_layout)
         owner._sync_tts_provider_controls(apply_defaults=_is_bundled_tts_provider(settings.provider))

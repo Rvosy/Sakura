@@ -24,6 +24,7 @@ from app.ui.theme import (
     ThemeSettings,
     build_message_box_stylesheet,
     build_pet_window_stylesheet,
+    build_settings_dialog_stylesheet,
 )
 from app.agent.proactive_care import ProactiveCareSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
@@ -3699,6 +3700,70 @@ def test_settings_dialog_exposes_tts_bundle_controls(monkeypatch) -> None:  # ty
     app.processEvents()
 
 
+class _SignalStub:
+    def __init__(self) -> None:
+        self._callbacks = []
+
+    def connect(self, callback) -> None:  # type: ignore[no-untyped-def]
+        self._callbacks.append(callback)
+
+    def emit(self, *args) -> None:  # type: ignore[no-untyped-def]
+        for callback in list(self._callbacks):
+            callback(*args)
+
+
+class _TTSBundleResultStub:
+    def __init__(
+        self,
+        work_dir: Path,
+        provider: str = "gpt-sovits",
+        python_path: Path | None = None,
+        tts_config_path: Path | None = None,
+    ) -> None:
+        self.work_dir = work_dir
+        self.provider = provider
+        self.python_path = python_path
+        self.tts_config_path = tts_config_path
+
+
+def _make_tts_bundle_dialog_stub():
+    class DialogStub:
+        last = None
+        instances = []
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.args = _args
+            self.kwargs = _kwargs
+            self.succeeded = _SignalStub()
+            self.finished = _SignalStub()
+            self.show_count = 0
+            self.raised = False
+            self.activated = False
+            self.stylesheets: list[str] = []
+            DialogStub.last = self
+            DialogStub.instances.append(self)
+
+        def setStyleSheet(self, stylesheet: str) -> None:  # noqa: N802 - 匹配 Qt 接口名
+            self.stylesheets.append(stylesheet)
+
+        def styleSheet(self) -> str:  # noqa: N802 - 匹配 Qt 接口名
+            return self.stylesheets[-1] if self.stylesheets else ""
+
+        def show(self) -> None:
+            self.show_count += 1
+
+        def raise_(self) -> None:
+            self.raised = True
+
+        def activateWindow(self) -> None:
+            self.activated = True
+
+        def is_download_running(self) -> bool:
+            return False
+
+    return DialogStub
+
+
 def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -3710,13 +3775,7 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
     root = _ui_runtime_root("tts_bundle_ui")
     root.mkdir(parents=True, exist_ok=True)
 
-    class DialogStub:
-        def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "tts" / "gpt"
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return settings_dialog_module.QDialog.DialogCode.Accepted
-
+    DialogStub = _make_tts_bundle_dialog_stub()
     monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
 
     QApplication = qtwidgets.QApplication
@@ -3735,6 +3794,8 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
     )
 
     dialog._download_gpt_sovits_bundle()
+    assert DialogStub.last is not None
+    DialogStub.last.succeeded.emit(_TTSBundleResultStub(root / "tts" / "gpt"))
 
     assert dialog.tts_enabled_check.isChecked()
     assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
@@ -3753,7 +3814,7 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
     app.processEvents()
 
 
-def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_dialog_download_reuses_active_tts_bundle_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
@@ -3761,17 +3822,9 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     import app.ui.settings_dialog as settings_dialog_module
     from app.ui.settings_dialog import SettingsDialog
 
-    root = _ui_runtime_root("tts_bundle_ui")
+    root = _ui_runtime_root("tts_bundle_reuse")
     root.mkdir(parents=True, exist_ok=True)
-
-    class DialogStub:
-        def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "tts" / "cpu"
-            self.downloaded_provider = "genie-tts"
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return settings_dialog_module.QDialog.DialogCode.Accepted
-
+    DialogStub = _make_tts_bundle_dialog_stub()
     monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
 
     QApplication = qtwidgets.QApplication
@@ -3790,6 +3843,251 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     )
 
     dialog._download_gpt_sovits_bundle()
+    first = DialogStub.last
+    dialog._download_gpt_sovits_bundle()
+
+    assert DialogStub.instances == [first]
+    assert first.show_count == 2
+    assert first.raised
+    assert first.activated
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_styles_tts_bundle_download_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_theme")
+    root.mkdir(parents=True, exist_ok=True)
+    DialogStub = _make_tts_bundle_dialog_stub()
+    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    theme = ThemeSettings(
+        primary_color="#123456",
+        accent_color="#654321",
+        text_color="#111111",
+    )
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        theme_settings=theme,
+    )
+
+    dialog._download_gpt_sovits_bundle()
+    download_dialog = DialogStub.last
+    assert download_dialog is not None
+    assert download_dialog.stylesheets[-1] == dialog.styleSheet()
+    assert "QProgressBar::chunk" in download_dialog.stylesheets[-1]
+    assert "#123456" in download_dialog.stylesheets[-1]
+
+    next_theme = ThemeSettings(
+        primary_color="#abcdef",
+        accent_color="#fedcba",
+        text_color="#222222",
+    )
+    dialog._apply_theme_stylesheet(next_theme)
+
+    assert download_dialog.stylesheets[-1] == build_settings_dialog_stylesheet(next_theme)
+    assert "#abcdef" in download_dialog.stylesheets[-1]
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_tts_bundle_download_uses_secondary_window_callbacks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_secondary_callbacks")
+    root.mkdir(parents=True, exist_ok=True)
+    DialogStub = _make_tts_bundle_dialog_stub()
+    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+    events: list[tuple[str, object]] = []
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        on_prepare_secondary_window=lambda window: events.append(("prepare", window)),
+        on_present_secondary_window=lambda window: events.append(("present", window)),
+        on_release_secondary_window=lambda window: events.append(("release", window)),
+    )
+
+    dialog._download_gpt_sovits_bundle()
+    download_dialog = DialogStub.last
+    assert download_dialog is not None
+    assert events == [("prepare", download_dialog), ("present", download_dialog)]
+    assert download_dialog.show_count == 0
+
+    dialog._download_gpt_sovits_bundle()
+    assert events == [
+        ("prepare", download_dialog),
+        ("present", download_dialog),
+        ("present", download_dialog),
+    ]
+
+    download_dialog.finished.emit(settings_dialog_module.QDialog.DialogCode.Rejected)
+
+    assert events[-1] == ("release", download_dialog)
+    assert dialog._tts_bundle_download_dialog is None
+    assert dialog.tts_bundle_download_button.text() == "一键下载 TTS 整合包"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_reuses_active_tts_bundle_window_with_secondary_callbacks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_active_reuse")
+    root.mkdir(parents=True, exist_ok=True)
+    DialogStub = _make_tts_bundle_dialog_stub()
+    active_dialog = DialogStub(root)
+    monkeypatch.setattr(settings_dialog_module, "active_tts_bundle_download_dialog", lambda: active_dialog)
+    monkeypatch.setattr(
+        settings_dialog_module,
+        "TTSBundleDownloadDialog",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应新建下载窗口")),
+    )
+    events: list[tuple[str, object]] = []
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        on_prepare_secondary_window=lambda window: events.append(("prepare", window)),
+        on_present_secondary_window=lambda window: events.append(("present", window)),
+    )
+
+    dialog._download_gpt_sovits_bundle()
+
+    assert dialog._tts_bundle_download_dialog is active_dialog
+    assert events == [("prepare", active_dialog), ("present", active_dialog)]
+    assert active_dialog.stylesheets[-1] == dialog.styleSheet()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_can_close_while_tts_bundle_download_runs(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_close_settings")
+    root.mkdir(parents=True, exist_ok=True)
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    class RunningDownloadStub:
+        def is_download_running(self) -> bool:
+            return True
+
+    dialog._tts_bundle_download_dialog = RunningDownloadStub()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        settings_dialog_module.QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("设置窗口不应阻止关闭")),
+    )
+    finished: list[int] = []
+    dialog.finished.connect(finished.append)
+
+    dialog.reject()
+
+    assert finished == [settings_dialog_module.QDialog.DialogCode.Rejected]
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.settings_dialog import SettingsDialog
+
+    root = _ui_runtime_root("tts_bundle_ui")
+    root.mkdir(parents=True, exist_ok=True)
+
+    DialogStub = _make_tts_bundle_dialog_stub()
+    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    dialog._download_gpt_sovits_bundle()
+    assert DialogStub.last is not None
+    DialogStub.last.succeeded.emit(
+        _TTSBundleResultStub(root / "tts" / "cpu", provider="genie-tts")
+    )
 
     assert dialog.tts_enabled_check.isChecked()
     assert dialog.tts_provider_combo.currentData() == "genie-tts"
@@ -3840,16 +4138,7 @@ def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatc
     tts_config_path.parent.mkdir(parents=True, exist_ok=True)
     tts_config_path.write_text("custom: {}", encoding="utf-8")
 
-    class DialogStub:
-        def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = work_dir
-            self.downloaded_provider = "custom-gpt-sovits"
-            self.downloaded_python_path = python_path
-            self.downloaded_tts_config_path = tts_config_path
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return settings_dialog_module.QDialog.DialogCode.Accepted
-
+    DialogStub = _make_tts_bundle_dialog_stub()
     monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
 
     QApplication = qtwidgets.QApplication
@@ -3868,6 +4157,15 @@ def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatc
     )
 
     dialog._download_gpt_sovits_bundle()
+    assert DialogStub.last is not None
+    DialogStub.last.succeeded.emit(
+        _TTSBundleResultStub(
+            work_dir,
+            provider="custom-gpt-sovits",
+            python_path=python_path,
+            tts_config_path=tts_config_path,
+        )
+    )
 
     assert dialog.tts_enabled_check.isChecked()
     assert dialog.tts_provider_combo.currentData() == "custom-gpt-sovits"
@@ -6827,6 +7125,53 @@ def test_registered_secondary_window_suppresses_topmost_and_input_until_hidden()
     assert input_hidden_events == [True, False]
     assert native_sync_events == [True, False]
     assert raise_events == ["raise"]
+
+
+def test_pet_window_syncs_topmost_for_all_registered_secondary_windows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    calls: list[tuple[str, str, bool | None]] = []
+
+    class SecondaryWindowStub:
+        def __init__(self, name: str, visible: bool = True) -> None:
+            self.name = name
+            self.visible = visible
+
+        def isVisible(self) -> bool:  # noqa: N802 - 匹配 Qt 接口名
+            return self.visible
+
+    class Host:
+        _sync_secondary_windows_topmost = PetWindow._sync_secondary_windows_topmost
+        _is_secondary_window_visible = PetWindow._is_secondary_window_visible
+
+        always_on_top_enabled = True
+
+        def __init__(self) -> None:
+            self.first = SecondaryWindowStub("first")
+            self.second = SecondaryWindowStub("second")
+            self.hidden = SecondaryWindowStub("hidden", visible=False)
+            self._registered_secondary_windows = [self.first, self.second, self.hidden]
+
+    monkeypatch.setattr(
+        pet_window_module,
+        "_configure_secondary_window",
+        lambda window, *, keep_on_top: calls.append(("configure", window.name, keep_on_top)),
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "_present_secondary_window",
+        lambda window: calls.append(("present", window.name, None)),
+    )
+
+    Host()._sync_secondary_windows_topmost()
+
+    assert calls == [
+        ("configure", "first", True),
+        ("present", "first", None),
+        ("configure", "second", True),
+        ("present", "second", None),
+    ]
 
 
 def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -10139,6 +10484,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _preview_layout = pet_window_cls._preview_layout
         _prepare_secondary_window = pet_window_cls._prepare_secondary_window
         _present_registered_secondary_window = pet_window_cls._present_registered_secondary_window
+        _release_secondary_window = pet_window_cls._release_secondary_window
         _register_secondary_window = pet_window_cls._register_secondary_window
         _unregister_secondary_window = pet_window_cls._unregister_secondary_window
         _sync_secondary_window_state = pet_window_cls._sync_secondary_window_state

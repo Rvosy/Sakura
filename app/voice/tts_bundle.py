@@ -24,6 +24,7 @@ from app.voice.runtime_compat import current_platform_label, current_system_name
 ProgressCallback = Callable[[int], None]
 StatusCallback = Callable[[str], None]
 MigrationProgressCallback = Callable[["TTSBundleMigrationProgress"], None]
+DownloadProgressCallback = Callable[["TTSBundleDownloadProgress"], None]
 
 class DownloadCancelledError(Exception):
     """用户主动取消下载时抛出此异常，调用方据此判断是用户取消而非真正的错误。"""
@@ -91,6 +92,18 @@ class TTSBundleMigrationProgress:
     total_files: int
     copied_bytes: int
     total_bytes: int
+
+
+@dataclass(frozen=True)
+class TTSBundleDownloadProgress:
+    """TTS 整合包下载阶段的详细进度。"""
+
+    status: str
+    downloaded_bytes: int
+    total_bytes: int
+    percent: int
+    resumed: bool = False
+    bytes_per_second: float = 0.0
 
 
 GENIE_TTS = TTSBundleEntry(
@@ -482,6 +495,7 @@ def install_tts_bundle(
     check_cancel: Callable[[], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_status: StatusCallback | None = None,
+    on_download_progress: DownloadProgressCallback | None = None,
     urlopen: UrlOpenCallable = urllib.request.urlopen,
     extractor: Callable[[Path, Path], str | None] | None = None,
 ) -> TTSBundleInstallResult:
@@ -492,6 +506,7 @@ def install_tts_bundle(
             check_cancel=check_cancel,
             on_progress=on_progress,
             on_status=on_status,
+            on_download_progress=on_download_progress,
             urlopen=urlopen,
             extractor=extractor,
         )
@@ -514,6 +529,7 @@ def download_and_extract_bundle(
     check_cancel: Callable[[], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_status: StatusCallback | None = None,
+    on_download_progress: DownloadProgressCallback | None = None,
     urlopen: UrlOpenCallable = urllib.request.urlopen,
     extractor: Callable[[Path, Path], str | None] | None = None,
 ) -> Path:
@@ -536,7 +552,14 @@ def download_and_extract_bundle(
     _emit_progress(on_progress, 0)
     if _archive_verification_error(archive, entry, on_progress=on_progress) is not None:
         _emit_status(on_status, "download")
-        _download_archive(entry, archive, on_progress=on_progress, urlopen=urlopen, check_cancel=check_cancel)
+        _download_archive(
+            entry,
+            archive,
+            on_progress=on_progress,
+            on_download_progress=on_download_progress,
+            urlopen=urlopen,
+            check_cancel=check_cancel,
+        )
     _emit_progress(on_progress, _DOWNLOAD_PROGRESS_END)
 
     _emit_status(on_status, "extract")
@@ -991,6 +1014,23 @@ def _emit_status(callback: StatusCallback | None, value: str) -> None:
         callback(value)
 
 
+def _emit_download_progress(
+    callback: DownloadProgressCallback | None,
+    progress: TTSBundleDownloadProgress,
+) -> None:
+    if callback is not None:
+        callback(progress)
+
+
+def _download_percent(downloaded: int, total: int) -> int:
+    if total <= 0:
+        return _DOWNLOAD_PROGRESS_END
+    downloaded = max(0, min(downloaded, total))
+    return _VERIFY_PROGRESS_END + int(
+        (_DOWNLOAD_PROGRESS_END - _VERIFY_PROGRESS_END) * downloaded / total
+    )
+
+
 def _archive_verification_error(
     archive: Path,
     entry: TTSBundleEntry,
@@ -1017,45 +1057,107 @@ def _download_archive(
     archive: Path,
     *,
     on_progress: ProgressCallback | None,
+    on_download_progress: DownloadProgressCallback | None,
     urlopen: UrlOpenCallable,
     check_cancel: Callable[[], None] | None = None,
 ) -> None:
     part = archive.with_name(f"{archive.name}.part")
-    if part.exists():
-        part.unlink()
-    request = urllib.request.Request(
-        entry.download_url,
-        headers={"User-Agent": "Sakura-Desktop-Pet/1.0"},
-    )
-    hasher = hashlib.sha256()
-    downloaded = 0
+    resume_from = part.stat().st_size if part.is_file() else 0
+    if entry.size > 0 and resume_from > entry.size:
+        part.unlink(missing_ok=True)
+        resume_from = 0
+    if resume_from == entry.size and entry.size > 0:
+        actual_sha256 = _sha256_file(part)
+        if actual_sha256.lower() == entry.sha256.lower():
+            replace_with_retry(part, archive)
+            return
+        part.unlink(missing_ok=True)
+        resume_from = 0
+
+    headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
+    if resume_from > 0:
+        headers["Range"] = f"bytes={resume_from}-"
+    request = urllib.request.Request(entry.download_url, headers=headers)
+
+    transfer_start = time.monotonic()
+    transfer_start_bytes = resume_from
+    downloaded = resume_from
+    resumed = resume_from > 0
     try:
         with urlopen(request, timeout=600) as response:  # type: ignore[attr-defined]
-            with part.open("wb") as file:
+            status_code = _response_status_code(response)
+            if resumed and status_code != 206:
+                part.unlink(missing_ok=True)
+                downloaded = 0
+                transfer_start_bytes = 0
+                resumed = False
+            mode = "ab" if resumed else "wb"
+            _emit_download_progress(
+                on_download_progress,
+                TTSBundleDownloadProgress(
+                    status="download",
+                    downloaded_bytes=downloaded,
+                    total_bytes=entry.size,
+                    percent=_download_percent(downloaded, entry.size),
+                    resumed=resumed,
+                ),
+            )
+            _emit_progress(on_progress, _download_percent(downloaded, entry.size))
+            with part.open(mode) as file:
                 while True:
                     chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     file.write(chunk)
-                    hasher.update(chunk)
                     if check_cancel is not None:
                         check_cancel()
                     downloaded += len(chunk)
-                    _emit_progress(
-                        on_progress,
-                        _VERIFY_PROGRESS_END
-                        + int((_DOWNLOAD_PROGRESS_END - _VERIFY_PROGRESS_END) * downloaded / entry.size),
+                    progress = _download_percent(downloaded, entry.size)
+                    elapsed = max(0.001, time.monotonic() - transfer_start)
+                    speed = max(0.0, (downloaded - transfer_start_bytes) / elapsed)
+                    _emit_progress(on_progress, progress)
+                    _emit_download_progress(
+                        on_download_progress,
+                        TTSBundleDownloadProgress(
+                            status="download",
+                            downloaded_bytes=downloaded,
+                            total_bytes=entry.size,
+                            percent=progress,
+                            resumed=resumed,
+                            bytes_per_second=speed,
+                        ),
                     )
         if downloaded != entry.size:
             raise RuntimeError(f"文件大小不匹配：期望 {entry.size}，实际 {downloaded}")
-        actual_sha256 = hasher.hexdigest()
+        actual_sha256 = _sha256_file(part)
         if actual_sha256.lower() != entry.sha256.lower():
+            part.unlink(missing_ok=True)
             raise RuntimeError(f"SHA256 不匹配：期望 {entry.sha256}，实际 {actual_sha256}")
         replace_with_retry(part, archive)
+    except DownloadCancelledError:
+        raise
     except Exception:
-        if part.exists():
+        if part.is_file() and entry.size > 0 and part.stat().st_size >= entry.size:
             part.unlink()
         raise
+
+
+def _response_status_code(response: object) -> int | None:
+    getcode = getattr(response, "getcode", None)
+    if callable(getcode):
+        try:
+            code = getcode()
+        except Exception:
+            return None
+        try:
+            return int(code) if code is not None else None
+        except (TypeError, ValueError):
+            return None
+    status = getattr(response, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _sha256_file(

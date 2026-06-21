@@ -534,6 +534,19 @@ QSlider::handle:horizontal:disabled {{
     background: {rgba(theme.muted_text_color, 130)};
     border: 2px solid {rgba(theme.border_color, 92)};
 }}
+QProgressBar {{
+    background: {rgba(theme.input_background_color, 214)};
+    border: 1px solid {rgba(theme.border_color, 132)};
+    border-radius: 7px;
+    color: {theme.secondary_text_color};
+    min-height: 18px;
+    text-align: center;
+}}
+QProgressBar::chunk {{
+    background: {theme.primary_color};
+    border-radius: 6px;
+    margin: 1px;
+}}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QTextEdit:disabled, QComboBox:disabled {{
     background: {rgba(mix(theme.panel_background_color, "#808080", 0.16), 172)};
     border: 1px solid {rgba(mix(theme.border_color, "#808080", 0.28), 102)};
