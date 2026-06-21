@@ -145,6 +145,44 @@ class PluginInputService:
             debug_log("PluginInputService", "set_input_text 失败", {"error": str(exc)})
 
 
+class PluginMobileService:
+    """供远程聊天入口复用宿主对话、历史与记忆的受控门面。"""
+
+    def __init__(self) -> None:
+        self._characters_sink: Callable[[], list[dict[str, str]]] | None = None
+        self._history_sink: Callable[[str, int], list[dict[str, str]]] | None = None
+        self._chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None
+
+    def set_backends(
+        self,
+        *,
+        characters_sink: Callable[[], list[dict[str, str]]] | None = None,
+        history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
+        chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
+    ) -> None:
+        if characters_sink is not None:
+            self._characters_sink = characters_sink
+        if history_sink is not None:
+            self._history_sink = history_sink
+        if chat_sink is not None:
+            self._chat_sink = chat_sink
+
+    def characters(self) -> list[dict[str, str]]:
+        if self._characters_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._characters_sink()
+
+    def history(self, character_id: str, *, limit: int = 50) -> list[dict[str, str]]:
+        if self._history_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._history_sink(character_id, limit)
+
+    def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
+        if self._chat_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._chat_sink(character_id, text, image_data_url)
+
+
 class PluginResourceService:
     """插件可登记的资源门面，由宿主 ResourceRegistry 统一关闭。"""
 
@@ -308,6 +346,7 @@ class ScopedPluginServices:
         self.tts = services.tts
         self.agent = services.agent
         self.input = services.input
+        self.mobile = services.mobile
         self.resources = services.resources.for_plugin(plugin_id)
 
 
@@ -319,6 +358,7 @@ class PluginServices:
         self.tts = PluginTTSService()
         self.agent = PluginAgentService()
         self.input = PluginInputService()
+        self.mobile = PluginMobileService()
         self.resources = PluginResourceService()
 
     def set_backends(
@@ -328,6 +368,9 @@ class PluginServices:
         tts_sink: Callable[[str, bool], None] | None = None,
         passive_reply_sink: Callable[[str, dict[str, Any] | None], None] | None = None,
         input_text_sink: Callable[[str], None] | None = None,
+        mobile_characters_sink: Callable[[], list[dict[str, str]]] | None = None,
+        mobile_history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
+        mobile_chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
     ) -> None:
         """宿主装配时一次性注入真实后端（任意项可省略）。"""
         if bubble_sink is not None:
@@ -338,6 +381,11 @@ class PluginServices:
             self.agent.set_passive_reply_sink(passive_reply_sink)
         if input_text_sink is not None:
             self.input.set_input_text_sink(input_text_sink)
+        self.mobile.set_backends(
+            characters_sink=mobile_characters_sink,
+            history_sink=mobile_history_sink,
+            chat_sink=mobile_chat_sink,
+        )
 
     def set_resource_registry(self, registry: ResourceRegistry) -> None:
         """宿主注入 App 级资源域。"""

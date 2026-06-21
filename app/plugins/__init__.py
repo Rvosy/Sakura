@@ -37,6 +37,7 @@ from app.plugins.models import (
 from app.plugins.services import (
     PluginAgentService,
     PluginInputService,
+    PluginMobileService,
     PluginServices,
     PluginTTSService,
     PluginUIService,
@@ -70,6 +71,7 @@ __all__ = [
     "PluginEvent",
     "PluginEventBus",
     "PluginInputService",
+    "PluginMobileService",
     "PluginLoadResult",
     "PluginManager",
     "PluginManifest",

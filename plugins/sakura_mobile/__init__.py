@@ -1,0 +1,1 @@
+"""Sakura mobile web plugin."""

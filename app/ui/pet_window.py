@@ -98,6 +98,7 @@ from app.backchannel.eval_log import BackchannelEvalLogger
 from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice
 from app.core.interaction import clear_interaction_id, set_interaction_id
+from app.core.mobile_chat_bridge import MobileChatBridge
 from app.core.resource_manager import ResourceManager
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
@@ -472,6 +473,7 @@ class PetWindow(QWidget):
     memory_status_changed = Signal(str, str)
     # 插件请求把文本填入输入框；用信号 marshal 回 UI 线程（ASR 等可能在后台线程触发）。
     plugin_input_text_requested = Signal(str)
+    mobile_chat_completed = Signal(str)
 
     def __init__(
         self,
@@ -480,6 +482,7 @@ class PetWindow(QWidget):
         super().__init__()
         # 插件填充输入框的信号在此连接，确保后台线程触发时 marshal 回 UI 线程。
         self.plugin_input_text_requested.connect(self._apply_plugin_input_text)
+        self.mobile_chat_completed.connect(self._handle_mobile_chat_completed)
         self.context = context
         self.base_dir = context.base_dir
         self.startup_initializing = context.startup_initializing
@@ -509,6 +512,7 @@ class PetWindow(QWidget):
         self.tts_provider = context.tts_provider
         self.retired_tts_providers: list[TTSProvider] = []
         self.history_store = context.history_store
+        self.mobile_chat_bridge = MobileChatBridge(self)
         self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
         self.mcp_settings = context.mcp_settings
@@ -4223,6 +4227,14 @@ class PetWindow(QWidget):
         if pending_turns >= self.memory_curation_settings.trigger_turns:
             QTimer.singleShot(0, self._maybe_start_auto_memory_curation)
 
+    @Slot(str)
+    def _handle_mobile_chat_completed(self, character_id: str) -> None:
+        """手机端完成一轮对话后，复用当前角色的新版自动记忆整理节奏。"""
+        if character_id != self.character_profile.id:
+            return
+        self._record_completed_memory_turn()
+        self._maybe_start_auto_memory_curation()
+
     def _maybe_start_auto_memory_curation(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
@@ -4477,9 +4489,23 @@ class PetWindow(QWidget):
         if services is None:
             return
         try:
-            services.set_backends(input_text_sink=self._request_fill_input_text)
+            services.set_backends(
+                input_text_sink=self._request_fill_input_text,
+                mobile_characters_sink=self._mobile_characters,
+                mobile_history_sink=self._mobile_history,
+                mobile_chat_sink=self._mobile_chat,
+            )
         except Exception as exc:  # noqa: BLE001 — 装配失败不得阻断启动
             debug_log("PetWindow", "注入插件服务后端失败", {"error": str(exc)})
+
+    def _mobile_characters(self) -> list[dict[str, str]]:
+        return self.mobile_chat_bridge.characters()
+
+    def _mobile_history(self, character_id: str, limit: int) -> list[dict[str, str]]:
+        return self.mobile_chat_bridge.history(character_id, limit=limit)
+
+    def _mobile_chat(self, character_id: str, text: str, image_data_url: str) -> dict[str, Any]:
+        return self.mobile_chat_bridge.chat(character_id, text, image_data_url)
 
     def _request_fill_input_text(self, text: str) -> None:
         """插件侧入口：请求把文本填入输入框。
