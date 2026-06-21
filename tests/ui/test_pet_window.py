@@ -297,7 +297,6 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
 
     class Host(qtwidgets.QWidget):
         show_runtime_log = pet_window_module.PetWindow.show_runtime_log
-        _any_dialog_open = pet_window_module.PetWindow._any_dialog_open
         _prepare_secondary_window = pet_window_module.PetWindow._prepare_secondary_window
         _present_registered_secondary_window = (
             pet_window_module.PetWindow._present_registered_secondary_window
@@ -305,9 +304,6 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
         _register_secondary_window = pet_window_module.PetWindow._register_secondary_window
         _sync_secondary_window_state = pet_window_module.PetWindow._sync_secondary_window_state
         _is_secondary_window_visible = pet_window_module.PetWindow._is_secondary_window_visible
-        _set_secondary_windows_input_bar_hidden = (
-            pet_window_module.PetWindow._set_secondary_windows_input_bar_hidden
-        )
         _set_secondary_windows_topmost_suppressed = (
             pet_window_module.PetWindow._set_secondary_windows_topmost_suppressed
         )
@@ -325,7 +321,6 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
 
     assert events == ["theme", "refresh:True", "show", "raise", "activate"]
     assert host.runtime_log_window.kwargs["parent"] is host
-    assert host._any_dialog_open() is True
 
     host.deleteLater()
     app.processEvents()
@@ -6999,13 +6994,12 @@ def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # t
     assert getattr(window, "settings_dialog", None) is not None
 
 
-def test_show_settings_hides_input_bar_and_temporarily_suppresses_topmost_without_reapplying_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_show_settings_temporarily_suppresses_topmost_without_reapplying_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
 
     api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
     tts_settings = _minimal_tts_settings()
-    input_hidden_events: list[bool] = []
     native_sync_events: list[bool] = []
     apply_flag_events: list[str] = []
     raise_events: list[str] = []
@@ -7020,10 +7014,6 @@ def test_show_settings_hides_input_bar_and_temporarily_suppresses_topmost_withou
     class MemoryStoreStub:
         pass
 
-    class InputBarAnimatorStub:
-        def set_force_hidden(self, value: bool) -> None:
-            input_hidden_events.append(value)
-
     class DialogStub(_NonModalSettingsDialogStub):
         _dialog_result = pet_window_module.QDialog.DialogCode.Rejected
 
@@ -7034,7 +7024,6 @@ def test_show_settings_hides_input_bar_and_temporarily_suppresses_topmost_withou
         MemoryStoreStub(),
     )
     window.always_on_top_enabled = True
-    window.input_bar_animator = InputBarAnimatorStub()
     window._sync_native_topmost_state = (
         lambda: native_sync_events.append(window._secondary_windows_suppress_topmost)
     )
@@ -7045,24 +7034,18 @@ def test_show_settings_hides_input_bar_and_temporarily_suppresses_topmost_withou
 
     window.show_settings()
 
-    assert input_hidden_events == [True, False]
     assert native_sync_events == [True, False]
     assert apply_flag_events == []
     assert raise_events == ["raise"]
     assert window._secondary_windows_suppress_topmost is False
 
 
-def test_registered_secondary_window_suppresses_topmost_and_input_until_hidden() -> None:
+def test_registered_secondary_window_suppresses_topmost_until_hidden() -> None:
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
 
-    input_hidden_events: list[bool] = []
     native_sync_events: list[bool] = []
     raise_events: list[str] = []
-
-    class InputBarAnimatorStub:
-        def set_force_hidden(self, value: bool) -> None:
-            input_hidden_events.append(value)
 
     class SecondaryWindowStub:
         visible = False
@@ -7090,16 +7073,13 @@ def test_registered_secondary_window_suppresses_topmost_and_input_until_hidden()
         _register_secondary_window = PetWindow._register_secondary_window
         _sync_secondary_window_state = PetWindow._sync_secondary_window_state
         _is_secondary_window_visible = PetWindow._is_secondary_window_visible
-        _set_secondary_windows_input_bar_hidden = PetWindow._set_secondary_windows_input_bar_hidden
         _set_secondary_windows_topmost_suppressed = PetWindow._set_secondary_windows_topmost_suppressed
 
         always_on_top_enabled = True
-        input_bar_animator = InputBarAnimatorStub()
 
         def __init__(self) -> None:
             self._registered_secondary_windows = set()
             self._secondary_windows_suppress_topmost = False
-            self._secondary_windows_hide_input_bar = False
 
         def _sync_native_topmost_state(self) -> None:
             native_sync_events.append(self._secondary_windows_suppress_topmost)
@@ -7116,13 +7096,11 @@ def test_registered_secondary_window_suppresses_topmost_and_input_until_hidden()
     host._register_secondary_window(window)  # type: ignore[arg-type]
     host._present_registered_secondary_window(window)  # type: ignore[arg-type]
 
-    assert input_hidden_events == [True]
     assert native_sync_events == [True]
 
     window.visible = False
     host._sync_secondary_window_state()
 
-    assert input_hidden_events == [True, False]
     assert native_sync_events == [True, False]
     assert raise_events == ["raise"]
 
@@ -7172,6 +7150,38 @@ def test_pet_window_syncs_topmost_for_all_registered_secondary_windows(monkeypat
         ("configure", "second", True),
         ("present", "second", None),
     ]
+
+
+def test_secondary_window_quiesce_leaves_input_bar_polling_enabled() -> None:
+    from app.ui.pet_window import PetWindow
+
+    input_polling_events: list[bool] = []
+    bubble_polling_events: list[bool] = []
+
+    class ControllerStub:
+        def __init__(self, events: list[bool]) -> None:
+            self._events = events
+
+        def set_polling_enabled(self, enabled: bool) -> None:
+            self._events.append(enabled)
+
+    class Host:
+        _set_secondary_windows_background_quiesced = (
+            PetWindow._set_secondary_windows_background_quiesced
+        )
+
+        def __init__(self) -> None:
+            self._secondary_windows_background_quiesced = False
+            self.input_bar_animator = ControllerStub(input_polling_events)
+            self.bubble_auto_hide = ControllerStub(bubble_polling_events)
+
+    host = Host()
+
+    host._set_secondary_windows_background_quiesced(True)
+    host._set_secondary_windows_background_quiesced(False)
+
+    assert input_polling_events == []
+    assert bubble_polling_events == [False, True]
 
 
 def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -9163,7 +9173,6 @@ def test_input_bar_not_pinned_just_because_reply_is_waiting() -> None:
 
     class MinimalInputBarWindow:
         _input_bar_pinned = PetWindow._input_bar_pinned
-        _any_dialog_open = lambda _self: False
         _input_bar_foreground_allowed = lambda _self: True
 
     window = MinimalInputBarWindow()
@@ -9176,6 +9185,27 @@ def test_input_bar_not_pinned_just_because_reply_is_waiting() -> None:
     window.reply_waiting_ui_active = True
 
     assert not window._input_bar_pinned()
+
+
+def test_input_bar_pinned_ignores_visible_secondary_window() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalInputBarWindow:
+        _input_bar_pinned = PetWindow._input_bar_pinned
+        _input_bar_foreground_allowed = lambda _self: True
+        settings_dialog = object()
+        history_window = None
+        runtime_log_window = None
+
+        def _is_secondary_window_visible(self, _window) -> bool:  # type: ignore[no-untyped-def]
+            return True
+
+    window = MinimalInputBarWindow()
+    window.input_edit = _DummyEditableInput("未发送文本")
+    window.pending_tool_action = None
+    window.reply_waiting_ui_active = False
+
+    assert window._input_bar_pinned()
 
 
 def test_progress_reply_displays_and_records_assistant_message() -> None:
@@ -10489,9 +10519,6 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _unregister_secondary_window = pet_window_cls._unregister_secondary_window
         _sync_secondary_window_state = pet_window_cls._sync_secondary_window_state
         _is_secondary_window_visible = pet_window_cls._is_secondary_window_visible
-        _set_secondary_windows_input_bar_hidden = (
-            pet_window_cls._set_secondary_windows_input_bar_hidden
-        )
         _set_secondary_windows_topmost_suppressed = (
             pet_window_cls._set_secondary_windows_topmost_suppressed
         )
@@ -11128,9 +11155,6 @@ def test_cursor_in_pet_region_requires_exposed_pet_window(monkeypatch) -> None: 
         _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
         always_on_top_enabled = True
 
-        def _any_dialog_open(self) -> bool:
-            return False
-
         def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
             return True
 
@@ -11163,9 +11187,12 @@ def test_cursor_in_pet_region_accepts_exposed_child_widget(monkeypatch) -> None:
         _cursor_over_exposed_pet_window = PetWindow._cursor_over_exposed_pet_window
         _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
         always_on_top_enabled = True
+        settings_dialog = object()
+        history_window = None
+        runtime_log_window = None
 
-        def _any_dialog_open(self) -> bool:
-            return False
+        def _is_secondary_window_visible(self, _window) -> bool:  # type: ignore[no-untyped-def]
+            return True
 
         def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
             return True
@@ -11203,9 +11230,6 @@ def test_cursor_in_pet_region_blocks_non_topmost_background_window(monkeypatch) 
         _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
         _is_pet_foreground_window = PetWindow._is_pet_foreground_window
         always_on_top_enabled = False
-
-        def _any_dialog_open(self) -> bool:
-            return False
 
         def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
             return True
@@ -11248,9 +11272,6 @@ def test_cursor_in_pet_region_allows_non_topmost_foreground_window(monkeypatch) 
         _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
         _is_pet_foreground_window = PetWindow._is_pet_foreground_window
         always_on_top_enabled = False
-
-        def _any_dialog_open(self) -> bool:
-            return False
 
         def isVisible(self) -> bool:  # noqa: N802 - Qt API 兼容命名。
             return True
@@ -11296,9 +11317,6 @@ def test_input_bar_pinned_requires_foreground_when_not_topmost() -> None:
         input_edit = InputStub()
         reply_waiting_ui_active = False
         pending_tool_action = None
-
-        def _any_dialog_open(self) -> bool:
-            return False
 
         def _is_pet_foreground_window(self) -> bool:
             return False

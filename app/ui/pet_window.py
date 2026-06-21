@@ -541,8 +541,7 @@ class PetWindow(QWidget):
         self.always_on_top_enabled = self._load_always_on_top_enabled()
         # 普通副窗口打开期间临时压低桌宠的实际置顶层级，避免副窗口被桌宠盖住；不改变用户配置。
         self._secondary_windows_suppress_topmost = False
-        self._secondary_windows_hide_input_bar = False
-        # 副窗口可见期间暂停桌宠后台 hover 轮询，减少与副窗口下拉弹层抢占合成器。
+        # 副窗口可见期间暂停桌宠气泡后台 hover 轮询，减少与副窗口下拉弹层抢占合成器。
         self._secondary_windows_background_quiesced = False
         self._registered_secondary_windows: set[QWidget] = set()
         self.history_window: HistoryWindow | None = None
@@ -1544,11 +1543,11 @@ class PetWindow(QWidget):
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.handle_pet_clicked()
-        # 无副窗口/对话框占用且模型未在思考时，让输入栏现身并把焦点移入输入框。
+        # 模型未在思考时，让输入栏现身并把焦点移入输入框。
         # 先 set_force_visible(True) 使 input_card 同步 show()（hidden widget 无法接收焦点），
         # 设完焦点后立即释放 force_visible——_input_bar_pinned 会通过焦点继续维持可见。
         # 思考中不浮现：避免用户点击桌宠时反而让输入栏被焦点固定、无法随思考态收起。
-        if not self._any_dialog_open() and not getattr(self, "reply_waiting_ui_active", False):
+        if not getattr(self, "reply_waiting_ui_active", False):
             animator = getattr(self, "input_bar_animator", None)
             input_edit = getattr(self, "input_edit", None)
             if animator is not None:
@@ -2251,16 +2250,6 @@ class PetWindow(QWidget):
             if self._is_secondary_window_visible(dialog):
                 dialog.raise_()
 
-    def _any_dialog_open(self) -> bool:
-        for dialog in (
-            getattr(self, "settings_dialog", None),
-            getattr(self, "history_window", None),
-            getattr(self, "runtime_log_window", None),
-        ):
-            if self._is_secondary_window_visible(dialog):
-                return True
-        return False
-
     def _update_tray_icon_pixmap(self, pixmap: QPixmap) -> None:
         _ = pixmap
         if hasattr(self, "tray_icon"):
@@ -2532,9 +2521,6 @@ class PetWindow(QWidget):
         return make_blurred_pixmap(cropped, radius=4.0, downscale=2)
 
     def _cursor_in_pet_region(self) -> bool:
-        # 普通副窗口打开时禁用输入栏浮现，避免盖住对话框。
-        if self._any_dialog_open():
-            return False
         if not self._input_bar_foreground_allowed():
             return False
         # 单窗口重构后气泡/输入栏已并入主窗口，主窗口几何即桌宠整体区域；
@@ -2601,9 +2587,6 @@ class PetWindow(QWidget):
         注意：不把「对话进行中(active_interaction_id)」和「等待模型回复」算进来；
         思考中只更新输入区状态，不强制输入栏常显。
         """
-        # 设置/历史窗口打开时不固定输入栏，配合 hover 禁用一起彻底收起。
-        if self._any_dialog_open():
-            return False
         if not self._input_bar_foreground_allowed():
             return False
         return (
@@ -5777,7 +5760,6 @@ class PetWindow(QWidget):
     def _present_registered_secondary_window(self, window: QWidget) -> None:
         """打开已登记的普通副窗口，并在显示前临时取消桌宠实际置顶。"""
         self._set_secondary_windows_topmost_suppressed(True)
-        self._set_secondary_windows_input_bar_hidden(True)
         _present_secondary_window(window)
         self._sync_secondary_window_state()
 
@@ -5818,7 +5800,6 @@ class PetWindow(QWidget):
             for window in tuple(getattr(self, "_registered_secondary_windows", set()))
         )
         self._set_secondary_windows_topmost_suppressed(has_visible_secondary_window)
-        self._set_secondary_windows_input_bar_hidden(has_visible_secondary_window)
         set_background_quiesced = getattr(
             self,
             "_set_secondary_windows_background_quiesced",
@@ -5828,22 +5809,19 @@ class PetWindow(QWidget):
             set_background_quiesced(has_visible_secondary_window)
 
     def _set_secondary_windows_background_quiesced(self, quiesced: bool) -> None:
-        """副窗口可见期间暂停桌宠后台 hover 轮询，关闭后恢复。
+        """副窗口可见期间暂停气泡后台 hover 轮询，关闭后恢复。
 
-        设置/历史/日志窗口打开时输入栏已被强制隐藏、hover 也不生效，此时轮询纯属
-        无谓的原生命中测试与重绘，会与副窗口（尤其设置里的下拉弹层）抢占合成器。
-        仅停/起轮询计时器，零视觉变化。
+        输入栏不能被副窗口占用，仍需持续 hover 轮询；这里只让气泡自动隐藏控制器安静。
         """
         quiesced = bool(quiesced)
         if quiesced == bool(getattr(self, "_secondary_windows_background_quiesced", False)):
             return
         self._secondary_windows_background_quiesced = quiesced
         polling_enabled = not quiesced
-        for controller_attr in ("input_bar_animator", "bubble_auto_hide"):
-            controller = getattr(self, controller_attr, None)
-            set_polling_enabled = getattr(controller, "set_polling_enabled", None)
-            if callable(set_polling_enabled):
-                set_polling_enabled(polling_enabled)
+        controller = getattr(self, "bubble_auto_hide", None)
+        set_polling_enabled = getattr(controller, "set_polling_enabled", None)
+        if callable(set_polling_enabled):
+            set_polling_enabled(polling_enabled)
 
     def _is_secondary_window_visible(self, window: object | None) -> bool:
         if window is None:
@@ -5855,17 +5833,6 @@ class PetWindow(QWidget):
             except RuntimeError:
                 return False
         return bool(getattr(window, "visible", False))
-
-    def _set_secondary_windows_input_bar_hidden(self, hidden: bool) -> None:
-        """副窗口打开期间强制隐藏输入栏，避免输入区挡住副窗口。"""
-        hidden = bool(hidden)
-        if hidden == bool(getattr(self, "_secondary_windows_hide_input_bar", False)):
-            return
-        self._secondary_windows_hide_input_bar = hidden
-        input_bar_animator = getattr(self, "input_bar_animator", None)
-        set_force_hidden = getattr(input_bar_animator, "set_force_hidden", None)
-        if callable(set_force_hidden):
-            set_force_hidden(hidden)
 
     def _set_secondary_windows_topmost_suppressed(self, suppressed: bool) -> None:
         """副窗口存活期间临时取消桌宠原生置顶，关闭后按用户配置恢复。"""
