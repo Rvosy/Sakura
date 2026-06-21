@@ -5,11 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.debug_log import debug_log
+from app.sensory.audio_capture import SystemAudioCapture, SystemAudioCaptureError
 from app.sensory.models import (
     SensoryObservation,
     SensoryProviderMode,
     SensoryRequest,
     SensorySource,
+    coerce_sensory_source,
     generate_sensory_id,
     now_iso,
 )
@@ -23,6 +25,7 @@ class SensoryPipeline:
     settings: SensorySettings
     store: SensoryObservationStore
     providers: dict[str, SensoryProvider]
+    audio_capture: SystemAudioCapture | None = None
 
     def observe(self, request: SensoryRequest) -> SensoryObservation | None:
         settings = self.settings.normalized()
@@ -46,7 +49,8 @@ class SensoryPipeline:
                 "request_id": normalized_request.id,
                 "event_type": normalized_request.event_type,
                 "has_media": bool(normalized_request.media_ref)
-                or bool(normalized_request.metadata.get("image_urls")),
+                or bool(normalized_request.metadata.get("image_urls"))
+                or bool(normalized_request.metadata.get("audio_urls")),
             },
         )
         try:
@@ -101,6 +105,58 @@ class SensoryPipeline:
             return None
         observation = sensory_observation_from_visual_record(record)
         return self.record_observation(observation)
+
+    def observe_system_audio(
+        self,
+        *,
+        source: SensorySource = SensorySource.SPEECH,
+        user_text: str = "",
+        event_type: str = "",
+        text: str = "",
+        duration_seconds: float = 3.0,
+    ) -> SensoryObservation | None:
+        normalized_source = coerce_sensory_source(source)
+        if normalized_source not in {SensorySource.SPEECH, SensorySource.SOUND}:
+            raise SystemAudioCaptureError("系统音频采集只支持 speech 或 sound 感官源。")
+        settings = self.settings.normalized()
+        source_settings = settings.sources[normalized_source]
+        if not settings.enabled or source_settings.mode == SensoryProviderMode.OFF:
+            debug_log(
+                "Sensory",
+                "系统音频采集源已关闭，跳过",
+                {"source": normalized_source.value},
+            )
+            return None
+        if settings.provider_for_source(normalized_source) is None:
+            debug_log(
+                "Sensory",
+                "系统音频采集 provider 未配置，跳过",
+                {"source": normalized_source.value, "provider_id": source_settings.provider_id},
+            )
+            return None
+        if self.audio_capture is None:
+            raise SystemAudioCaptureError("系统音频采集接口不可用。")
+
+        captured = self.audio_capture.capture(duration_seconds=duration_seconds)
+        try:
+            return self.observe(
+                SensoryRequest(
+                    id=generate_sensory_id("system_audio"),
+                    source=normalized_source,
+                    user_text=user_text,
+                    event_type=event_type or "system_audio_capture",
+                    text=text,
+                    media_ref=str(captured.path),
+                    metadata={
+                        "capture_source": captured.source,
+                        "duration_seconds": captured.duration_seconds,
+                        "sample_rate": captured.sample_rate,
+                        "channel_count": captured.channel_count,
+                    },
+                )
+            )
+        finally:
+            captured.cleanup()
 
 
 def sensory_observation_from_visual_record(record: Any) -> SensoryObservation:

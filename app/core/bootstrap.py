@@ -38,6 +38,7 @@ from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
+from app.sensory.audio_capture import create_system_audio_capture
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
 from app.sensory.providers import build_provider_registry
@@ -182,6 +183,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     sensory_pipeline = create_sensory_pipeline(
         sensory_settings,
         sensory_observation_store,
+        base_dir=base_dir,
+        resource_registry=resource_registry,
     )
     sensory_context_provider = SensoryContextProvider(
         sensory_settings,
@@ -469,10 +472,18 @@ def create_sensory_observation_store(
 def create_sensory_pipeline(
     settings: SensorySettings,
     store: SensoryObservationStore,
+    *,
+    base_dir: Path | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> SensoryPipeline:
     normalized = settings.normalized()
     return SensoryPipeline(
         settings=normalized,
         store=store,
         providers=build_provider_registry(normalized.providers),
+        audio_capture=(
+            create_system_audio_capture(base_dir, resource_registry=resource_registry)
+            if base_dir is not None
+            else None
+        ),
     )

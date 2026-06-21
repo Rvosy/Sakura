@@ -210,6 +210,7 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
+from app.sensory.audio_capture import create_system_audio_capture
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
 from app.sensory.providers import build_provider_registry
@@ -5642,6 +5643,10 @@ class PetWindow(QWidget):
             settings=normalized,
             store=store,
             providers=build_provider_registry(normalized.providers),
+            audio_capture=create_system_audio_capture(
+                self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
         )
         self.sensory_settings = normalized
         self.sensory_observation_store = store

@@ -114,6 +114,11 @@ class TestStoragePathsSnapshot:
         assert self.paths.reminders_store() == self.data / "reminders.json"
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
+        assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert (
+            self.paths.system_audio_capture_helper()
+            == self.data / "cache" / "system_audio" / "macos_system_audio_capture"
+        )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
         # 现网存在 "N.A.V.I." 形态角色，历史文件为 N.A.V.I..jsonl，映射不得改变
@@ -137,6 +142,7 @@ class TestStoragePathsSnapshot:
     def test_new_directories(self) -> None:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
+        assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
         assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
@@ -188,6 +194,7 @@ class TestEnsureDirs:
             paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
+            paths.system_audio_cache_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()

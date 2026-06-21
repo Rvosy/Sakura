@@ -25,6 +25,7 @@ DEFAULT_LMSTUDIO_ENDPOINT = "http://127.0.0.1:1234/v1"
 DEFAULT_LLAMA_CPP_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
 DEFAULT_SENSORY_TEMPERATURE = 0.2
+_AUDIO_SOURCES = {SensorySource.SPEECH, SensorySource.SOUND}
 
 
 class SensoryProviderUnavailable(RuntimeError):
@@ -107,6 +108,14 @@ class OllamaSensoryProvider:
         model = self.config.model.strip()
         if not model:
             raise SensoryProviderUnavailable(f"Ollama sensory provider {self.provider_id} has no model")
+        if normalized_request.source in _AUDIO_SOURCES:
+            if not _request_media_refs(normalized_request):
+                raise SensoryProviderUnavailable(
+                    f"Ollama sensory provider {self.provider_id} requires an audio media_ref"
+                )
+            raise SensoryProviderUnavailable(
+                f"Ollama sensory provider {self.provider_id} does not support audio input"
+            )
         images = _request_image_base64s(normalized_request)
         payload: dict[str, Any] = {
             "model": model,
@@ -219,7 +228,17 @@ class _OpenAICompatibleTransport:
             raise SensoryProviderUnavailable(f"Sensory provider {self.provider_id} has no endpoint")
         if not self.config.model:
             raise SensoryProviderUnavailable(f"Sensory provider {self.provider_id} has no model")
+        media_refs = _request_media_refs(normalized_request)
+        if normalized_request.source in _AUDIO_SOURCES and not media_refs:
+            raise SensoryProviderUnavailable(
+                f"Sensory provider {self.provider_id} requires an audio media_ref"
+            )
         image_urls = _request_image_urls(normalized_request)
+        audio_inputs = _request_audio_inputs(normalized_request)
+        if normalized_request.source in _AUDIO_SOURCES and not audio_inputs:
+            raise SensoryProviderUnavailable(
+                f"Sensory provider {self.provider_id} received no supported audio media"
+            )
         content: list[dict[str, Any]] = [
             {"type": "text", "text": _build_sensory_user_prompt(normalized_request)}
         ]
@@ -232,6 +251,10 @@ class _OpenAICompatibleTransport:
                 },
             }
             for image_url in image_urls
+        )
+        content.extend(
+            {"type": "input_audio", "input_audio": audio_input}
+            for audio_input in audio_inputs
         )
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -376,6 +399,8 @@ def _load_json_object(content: str) -> dict[str, Any] | None:
 
 
 def _request_image_urls(request: SensoryRequest) -> list[str]:
+    if request.source != SensorySource.VISION:
+        return []
     refs = _request_media_refs(request)
     urls: list[str] = []
     for ref in refs:
@@ -386,6 +411,8 @@ def _request_image_urls(request: SensoryRequest) -> list[str]:
 
 
 def _request_image_base64s(request: SensoryRequest) -> list[str]:
+    if request.source != SensorySource.VISION:
+        return []
     images: list[str] = []
     for ref in _request_media_refs(request):
         image = _media_ref_to_base64(ref)
@@ -394,13 +421,24 @@ def _request_image_base64s(request: SensoryRequest) -> list[str]:
     return images[:4]
 
 
+def _request_audio_inputs(request: SensoryRequest) -> list[dict[str, str]]:
+    if request.source not in _AUDIO_SOURCES:
+        return []
+    audio_inputs: list[dict[str, str]] = []
+    for ref in _request_media_refs(request):
+        audio_input = _media_ref_to_input_audio(ref)
+        if audio_input:
+            audio_inputs.append(audio_input)
+    return audio_inputs[:2]
+
+
 def _request_media_refs(request: SensoryRequest) -> list[str]:
     refs: list[str] = []
     _append_text_ref(refs, request.media_ref)
     metadata = request.metadata
-    for key in ("data_url", "image_url", "media_ref", "path"):
+    for key in ("data_url", "image_url", "audio_url", "media_ref", "path"):
         _append_text_ref(refs, metadata.get(key))
-    for key in ("image_urls", "images", "media_refs"):
+    for key in ("image_urls", "audio_urls", "images", "audios", "media_refs"):
         value = metadata.get(key)
         if isinstance(value, list):
             for item in value:
@@ -422,7 +460,10 @@ def _media_ref_to_image_url(ref: str) -> str:
         return ref
     path = Path(ref).expanduser()
     if path.is_file():
-        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        mime = mimetypes.guess_type(path.name)[0]
+        if mime and not mime.startswith("image/"):
+            return ""
+        mime = mime or "image/png"
         return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
     return ""
 
@@ -433,8 +474,50 @@ def _media_ref_to_base64(ref: str) -> str:
         return payload.strip()
     path = Path(ref).expanduser()
     if path.is_file():
+        mime = mimetypes.guess_type(path.name)[0]
+        if mime and not mime.startswith("image/"):
+            return ""
         return base64.b64encode(path.read_bytes()).decode("ascii")
     return ""
+
+
+def _media_ref_to_input_audio(ref: str) -> dict[str, str] | None:
+    if ref.startswith("data:audio/"):
+        header, separator, payload = ref.partition(",")
+        if not separator or not payload.strip():
+            return None
+        audio_format = _audio_format_from_mime(header.removeprefix("data:").split(";", 1)[0])
+        return {"data": payload.strip(), "format": audio_format}
+    path = Path(ref).expanduser()
+    if path.is_file():
+        mime = mimetypes.guess_type(path.name)[0]
+        if mime and not mime.startswith("audio/"):
+            return None
+        audio_format = _audio_format_from_mime(mime or "", path)
+        return {
+            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "format": audio_format,
+        }
+    return None
+
+
+def _audio_format_from_mime(mime: str, path: Path | None = None) -> str:
+    normalized = mime.strip().lower()
+    if normalized in {"audio/wav", "audio/x-wav", "audio/wave"}:
+        return "wav"
+    if normalized in {"audio/mpeg", "audio/mp3"}:
+        return "mp3"
+    if normalized in {"audio/mp4", "audio/x-m4a"}:
+        return "m4a"
+    if normalized == "audio/ogg":
+        return "ogg"
+    if normalized == "audio/flac":
+        return "flac"
+    if path is not None and path.suffix:
+        return path.suffix.lstrip(".").lower()
+    if normalized.startswith("audio/"):
+        return normalized.split("/", 1)[1].split(";", 1)[0] or "wav"
+    return "wav"
 
 
 def _safe_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

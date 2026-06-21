@@ -147,6 +147,13 @@ class StoragePaths:
     def tts_cache_dir(self) -> Path:
         return self.cache_dir / "tts"
 
+    @property
+    def system_audio_cache_dir(self) -> Path:
+        return self.cache_dir / "system_audio"
+
+    def system_audio_capture_helper(self) -> Path:
+        return self.system_audio_cache_dir / "macos_system_audio_capture"
+
     # ---- 日志 ----
     @property
     def logs_dir(self) -> Path:
@@ -215,6 +222,7 @@ class StoragePaths:
             self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,
+            self.system_audio_cache_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,11 @@
 """Sensory middleware framework for multimodal observations."""
 
+from app.sensory.audio_capture import (
+    CapturedAudio,
+    SystemAudioCapture,
+    SystemAudioCaptureError,
+    create_system_audio_capture,
+)
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
     SensoryObservation,
@@ -33,6 +39,7 @@ from app.sensory.tools import (
 
 __all__ = [
     "ApiSensoryProvider",
+    "CapturedAudio",
     "DisabledProvider",
     "FakeSensoryProvider",
     "LlamaCppSensoryProvider",
@@ -51,7 +58,10 @@ __all__ = [
     "SensorySettings",
     "SensorySource",
     "SensorySourceSettings",
+    "SystemAudioCapture",
+    "SystemAudioCaptureError",
     "SENSORY_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_TOOL_NAME",
     "create_sensory_observation_tool",
+    "create_system_audio_capture",
 ]

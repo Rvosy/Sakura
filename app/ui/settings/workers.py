@@ -8,10 +8,14 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import math
 import mimetypes
+import struct
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -49,6 +53,28 @@ _SENSORY_TEST_IMAGE_DATA_URL = (
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAA9hAAAPYQGoP6dp"
     "AAAAGUlEQVQokWO84+DAQApgIkn1qIZRDUNKAwBb8AF8KOWdWAAAAABJRU5ErkJggg=="
 )
+_SENSORY_TEST_AUDIO_DATA_URL = ""
+
+
+def _build_sensory_test_audio_data_url() -> str:
+    sample_rate = 16000
+    duration_seconds = 0.35
+    frequency = 880.0
+    amplitude = 0.28
+    frame_count = int(sample_rate * duration_seconds)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        for index in range(frame_count):
+            value = int(32767 * amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
+            wav.writeframesraw(struct.pack("<h", value))
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:audio/wav;base64,{encoded}"
+
+
+_SENSORY_TEST_AUDIO_DATA_URL = _build_sensory_test_audio_data_url()
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -143,11 +169,7 @@ class SensoryModelTestWorker(QObject):
                 user_text="设置页测试增强感知模型",
                 event_type="settings_test",
                 text=_sensory_test_text(self.source),
-                media_ref=(
-                    _SENSORY_TEST_IMAGE_DATA_URL
-                    if self.source == SensorySource.VISION
-                    else ""
-                ),
+                media_ref=_sensory_test_media_ref(self.source),
                 metadata={"test": True},
             )
             observation = provider.observe(request)
@@ -281,10 +303,18 @@ def _ollama_tags_url(endpoint: str) -> str:
 
 def _sensory_test_text(source: SensorySource) -> str:
     if source == SensorySource.SPEECH:
-        return "用户说：今天先测试一下增强感知。"
+        return "请判断这段短测试音频中是否有人声，并返回结构化 JSON。"
     if source == SensorySource.SOUND:
-        return "环境声音：轻微键盘声和提示音。"
+        return "请识别这段短测试音频中的声音类型，并返回结构化 JSON。"
     return "请识别这张测试图片并返回结构化 JSON。"
+
+
+def _sensory_test_media_ref(source: SensorySource) -> str:
+    if source == SensorySource.VISION:
+        return _SENSORY_TEST_IMAGE_DATA_URL
+    if source in {SensorySource.SPEECH, SensorySource.SOUND}:
+        return _SENSORY_TEST_AUDIO_DATA_URL
+    return ""
 
 
 class MemoryListWorker(QObject):

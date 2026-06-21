@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import sys
+import wave
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,8 @@ from app.agent.runtime import AgentRuntime
 from app.llm.api_client import ChatMessage
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
+from app.sensory import audio_capture as audio_capture_module
+from app.sensory.audio_capture import CapturedAudio
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
     SensoryObservation,
@@ -68,6 +73,19 @@ def test_settings_sensory_test_image_is_decodable_png() -> None:
     assert not image.isNull()
     assert image.width() > 0
     assert image.height() > 0
+
+
+def test_settings_sensory_test_audio_is_decodable_wav() -> None:
+    from app.ui.settings.workers import _SENSORY_TEST_AUDIO_DATA_URL
+
+    prefix, payload = _SENSORY_TEST_AUDIO_DATA_URL.split(",", 1)
+    raw = base64.b64decode(payload, validate=True)
+
+    assert prefix == "data:audio/wav;base64"
+    with wave.open(io.BytesIO(raw), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getframerate() == 16000
+        assert wav.getnframes() > 0
 
 
 def test_sensory_settings_normalizes_source_and_provider_config() -> None:
@@ -159,6 +177,96 @@ def test_sensory_pipeline_disabled_source_fails_closed(tmp_path: Path) -> None:
 
     assert observation is None
     assert not store.path.exists()
+
+
+def test_sensory_pipeline_does_not_capture_system_audio_when_source_disabled(tmp_path: Path) -> None:
+    capture = _FakeSystemAudioCapture(tmp_path)
+    pipeline = SensoryPipeline(
+        settings=SensorySettings().normalized(),
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={},
+        audio_capture=capture,
+    )
+
+    observation = pipeline.observe_system_audio(source=SensorySource.SPEECH)
+
+    assert observation is None
+    assert capture.count == 0
+    assert not pipeline.store.path.exists()
+
+
+def test_system_audio_capture_factory_selects_platform_backend(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    registry = _FakeProcessRegistry()
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "darwin")
+    macos_capture = audio_capture_module.create_system_audio_capture(
+        tmp_path,
+        resource_registry=registry,  # type: ignore[arg-type]
+    )
+    assert isinstance(macos_capture, audio_capture_module.MacOSSystemAudioCapture)
+    assert macos_capture.resource_registry is registry
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "win32")
+    windows_capture = audio_capture_module.create_system_audio_capture(
+        tmp_path,
+        resource_registry=registry,  # type: ignore[arg-type]
+    )
+    assert isinstance(windows_capture, audio_capture_module.WindowsSystemAudioCapture)
+    assert windows_capture.resource_registry is registry
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "linux")
+    linux_capture = audio_capture_module.create_system_audio_capture(
+        tmp_path,
+        resource_registry=registry,  # type: ignore[arg-type]
+    )
+    assert isinstance(linux_capture, audio_capture_module.LinuxSystemAudioCapture)
+    assert linux_capture.resource_registry is registry
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "freebsd")
+    assert audio_capture_module.create_system_audio_capture(tmp_path) is None
+
+
+def test_managed_command_registers_and_detaches_process() -> None:
+    registry = _FakeProcessRegistry()
+
+    result = audio_capture_module._run_managed_command(
+        [sys.executable, "-c", "print('ok')"],
+        timeout_seconds=5,
+        label="sensory_test_process",
+        resource_registry=registry,  # type: ignore[arg-type]
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "ok"
+    assert len(registry.resources) == 1
+    assert registry.resources[0].label == "sensory_test_process"
+    assert registry.resources[0].detached is True
+    assert registry.resources[0].stopped is False
+
+
+def test_linux_audio_capture_builds_pipewire_and_pulse_monitor_candidates(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    binaries = {
+        "pw-record": "/usr/bin/pw-record",
+        "parec": "/usr/bin/parec",
+        "pactl": "/usr/bin/pactl",
+    }
+    monkeypatch.setattr(audio_capture_module.shutil, "which", lambda name: binaries.get(name))
+    monkeypatch.setattr(
+        audio_capture_module,
+        "_default_pulse_monitor_source",
+        lambda _pactl: "alsa_output.pci.monitor",
+    )
+    capture = audio_capture_module.LinuxSystemAudioCapture(cache_dir=tmp_path)
+
+    commands = capture._candidate_commands(sample_rate=16000, channel_count=1)
+
+    labels = [label for label, _command in commands]
+    assert labels == ["pipewire", "pulseaudio"]
+    pipewire_command = commands[0][1]
+    pulse_command = commands[1][1]
+    assert "{ stream.capture.sink=true }" in pipewire_command
+    assert "alsa_output.pci.monitor" in pulse_command
+    assert "--file-format=wav" in pulse_command
 
 
 def test_provider_from_config_routes_supported_backends() -> None:
@@ -273,6 +381,110 @@ def test_observe_sensory_tool_routes_to_provider_and_records_observation(tmp_pat
     assert result["status"] == "ok"
     assert result["observation"]["summary"] == "用户说测试增强感知。"
     assert pipeline.store.recent(limit=1)[0].summary == "用户说测试增强感知。"
+
+
+def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            )
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-asr",
+            )
+        },
+    ).normalized()
+    capture = _FakeSystemAudioCapture(tmp_path)
+    observed_paths: list[Path] = []
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        audio_path = Path(request.media_ref)
+        assert audio_path.is_file()
+        assert request.metadata["capture_source"] == "system_audio"
+        assert request.metadata["duration_seconds"] == 1.25
+        observed_paths.append(audio_path)
+        return SensoryObservation(
+            id="obs_system_audio",
+            source=request.source,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="系统音频中有人说 hello。",
+            confidence=0.88,
+            provider_id="speech_fake",
+            mode=SensoryProviderMode.LOCAL,
+            event_type=request.event_type,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                factory=factory,
+            )
+        },
+        audio_capture=capture,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler(
+        {"source": "speech", "duration_seconds": 1.25, "event_type": "user_message"}
+    ) if tool.handler is not None else {}
+
+    assert result["status"] == "ok"
+    assert result["observation"]["summary"] == "系统音频中有人说 hello。"
+    assert len(observed_paths) == 1
+    assert not observed_paths[0].exists()
+    assert pipeline.store.recent(limit=1)[0].summary == "系统音频中有人说 hello。"
+
+
+def test_observe_sensory_tool_fails_closed_when_system_audio_capture_unavailable(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SOUND: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="sound_fake",
+            )
+        },
+        providers={
+            "sound_fake": SensoryProviderConfig(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="audio-model",
+            )
+        },
+    ).normalized()
+    provider = FakeSensoryProvider(
+        provider_id="sound_fake",
+        source=SensorySource.SOUND,
+        factory=lambda _request: (_ for _ in ()).throw(AssertionError("provider should not be called")),
+    )
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={"sound_fake": provider},
+        audio_capture=None,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler({"source": "sound"}) if tool.handler is not None else {}
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "audio_capture_unavailable"
+    assert result["source"] == "sound"
+    assert not pipeline.store.path.exists()
 
 
 def test_observe_sensory_vision_requests_media_before_provider_call(tmp_path: Path) -> None:
@@ -431,6 +643,108 @@ def test_lmstudio_provider_posts_openai_compatible_vision_payload(monkeypatch) -
     assert observation.confidence == 0.91
 
 
+def test_api_provider_posts_openai_compatible_audio_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "检测到短促提示音。",
+                                    "details": {"notable_elements": ["tone"]},
+                                    "confidence": 0.82,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.sensory.providers.urllib.request.urlopen", fake_urlopen)
+    provider = ApiSensoryProvider(
+        SensoryProviderConfig(
+            provider_id="api_sound",
+            source=SensorySource.SOUND,
+            mode=SensoryProviderMode.API,
+            endpoint="https://api.example/v1",
+            model="audio-model",
+        )
+    )
+
+    observation = provider.observe(
+        SensoryRequest(
+            id="req_audio",
+            source=SensorySource.SOUND,
+            text="请识别音频。",
+            media_ref="data:audio/wav;base64,abc123",
+        )
+    )
+
+    assert captured["url"] == "https://api.example/v1/chat/completions"
+    assert captured["timeout"] == 20
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert user_content[0]["type"] == "text"
+    assert user_content[1] == {
+        "type": "input_audio",
+        "input_audio": {"data": "abc123", "format": "wav"},
+    }
+    assert not any(part.get("type") == "image_url" for part in user_content)
+    assert observation.summary == "检测到短促提示音。"
+    assert observation.details["notable_elements"] == ["tone"]
+    assert observation.confidence == 0.82
+
+
+def test_openai_provider_does_not_treat_wav_path_as_image(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    audio_path = tmp_path / "sound.wav"
+    audio_path.write_bytes(b"RIFFxxxxWAVEfmt ")
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"summary": "音频已处理。", "confidence": 0.7},
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.sensory.providers.urllib.request.urlopen", fake_urlopen)
+    provider = LmStudioSensoryProvider(
+        SensoryProviderConfig(
+            provider_id="lmstudio_sound",
+            source=SensorySource.SOUND,
+            mode=SensoryProviderMode.LOCAL,
+            model="audio-model",
+        )
+    )
+
+    provider.observe(
+        SensoryRequest(id="req_audio_path", source=SensorySource.SOUND, media_ref=str(audio_path))
+    )
+
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert user_content[1]["type"] == "input_audio"
+    assert user_content[1]["input_audio"]["format"] == "wav"
+    assert not any(part.get("type") == "image_url" for part in user_content)
+
+
 def test_llama_provider_uses_openai_compatible_default_endpoint() -> None:
     provider = LlamaCppSensoryProvider(
         SensoryProviderConfig(
@@ -492,6 +806,57 @@ def test_ollama_provider_posts_native_chat_images_payload(monkeypatch) -> None: 
     assert observation.summary == "图中有按钮。"
     assert observation.details["notable_elements"] == ["button"]
     assert observation.confidence == 0.77
+
+
+def test_ollama_provider_fails_closed_for_audio_sources(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def should_not_call(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("HTTP should not be called")
+
+    monkeypatch.setattr("app.sensory.providers.urllib.request.urlopen", should_not_call)
+    provider = OllamaSensoryProvider(
+        SensoryProviderConfig(
+            provider_id="ollama_sound",
+            source=SensorySource.SOUND,
+            mode=SensoryProviderMode.LOCAL,
+            model="audio-model",
+        )
+    )
+
+    try:
+        provider.observe(
+            SensoryRequest(
+                id="req_audio",
+                source=SensorySource.SOUND,
+                media_ref="data:audio/wav;base64,abc123",
+            )
+        )
+    except SensoryProviderUnavailable as exc:
+        assert "does not support audio input" in str(exc)
+    else:
+        raise AssertionError("expected SensoryProviderUnavailable")
+
+
+def test_audio_provider_requires_audio_media(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def should_not_call(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("HTTP should not be called")
+
+    monkeypatch.setattr("app.sensory.providers.urllib.request.urlopen", should_not_call)
+    provider = ApiSensoryProvider(
+        SensoryProviderConfig(
+            provider_id="api_sound",
+            source=SensorySource.SOUND,
+            mode=SensoryProviderMode.API,
+            endpoint="https://api.example/v1",
+            model="audio-model",
+        )
+    )
+
+    try:
+        provider.observe(SensoryRequest(id="req_audio", source=SensorySource.SOUND))
+    except SensoryProviderUnavailable as exc:
+        assert "requires an audio media_ref" in str(exc)
+    else:
+        raise AssertionError("expected SensoryProviderUnavailable")
 
 
 def test_api_provider_fails_closed_without_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -681,6 +1046,64 @@ class _FakeHTTPResponse:
 
     def read(self) -> bytes:
         return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+
+class _FakeSystemAudioCapture:
+    def __init__(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+        self.count = 0
+
+    def capture(
+        self,
+        *,
+        duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        exclude_current_process: bool = True,
+    ) -> CapturedAudio:
+        del exclude_current_process
+        self.count += 1
+        path = self.tmp_path / f"captured_system_audio_{self.count}.wav"
+        with wave.open(str(path), "wb") as wav_file:
+            wav_file.setnchannels(channel_count)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(b"\x00\x00" * max(1, int(sample_rate * min(duration_seconds, 0.01))))
+        return CapturedAudio(
+            path=path,
+            duration_seconds=duration_seconds,
+            sample_rate=sample_rate,
+            channel_count=channel_count,
+        )
+
+
+class _FakeProcessRegistry:
+    def __init__(self) -> None:
+        self.resources: list[_FakeProcessResource] = []
+
+    def adopt_process(self, process, *, label: str = "", **_kwargs):  # type: ignore[no-untyped-def]
+        resource = _FakeProcessResource(process=process, label=label)
+        self.resources.append(resource)
+        return resource
+
+
+class _FakeProcessResource:
+    def __init__(self, *, process, label: str) -> None:  # type: ignore[no-untyped-def]
+        self.process = process
+        self.label = label
+        self.detached = False
+        self.stopped = False
+
+    def detach(self):  # type: ignore[no-untyped-def]
+        self.detached = True
+        return self.process
+
+    def stop(self, _timeout_ms: int = 1000) -> bool:
+        self.stopped = True
+        if self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait(timeout=2)
+        return True
 
 
 class _CaptureToolClient:
