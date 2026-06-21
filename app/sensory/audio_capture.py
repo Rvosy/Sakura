@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -182,6 +183,7 @@ class MacOSSystemAudioCapture:
         )
 
     def _ensure_helper(self) -> Path:
+        _ensure_macos_supported()
         if not self.source_path.exists():
             raise SystemAudioCaptureError(f"系统音频采集 helper 源码不存在：{self.source_path}")
         needs_compile = not self.helper_path.exists()
@@ -596,6 +598,18 @@ def _subprocess_platform_options() -> dict[str, int]:
     if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW")}
     return {}
+
+
+def _ensure_macos_supported() -> None:
+    if sys.platform != "darwin":
+        return
+    version_text = platform.mac_ver()[0]
+    try:
+        major = int((version_text.split(".", 1)[0] or "0"))
+    except ValueError:
+        major = 0
+    if major and major < 13:
+        raise SystemAudioCaptureError("ScreenCaptureKit 系统音频采集需要 macOS 13 或更新版本。")
 
 
 def _clamp_float(value: float, minimum: float, maximum: float) -> float:

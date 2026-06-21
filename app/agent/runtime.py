@@ -2069,7 +2069,26 @@ def _describe_pending_action(action: PendingToolAction) -> str:
         return f"执行浏览器操作 {action.tool_name.removeprefix('playwright_')}"
     if action.tool_name.startswith("windows__"):
         return f"执行 Windows 桌面 MCP 操作 {action.tool_name.removeprefix('windows__')}"
+    if action.tool_name == "observe_sensory" and _is_pending_sensory_audio_capture(action):
+        source = str(action.arguments.get("source") or "sound")
+        duration = action.arguments.get("duration_seconds") or 3
+        return f"录制约 {duration} 秒电脑系统声音并交给已配置的 {source} 感知模型分析"
     return f"执行 {action.tool_name}"
+
+
+def _is_pending_sensory_audio_capture(action: PendingToolAction) -> bool:
+    source = str(action.arguments.get("source") or "").strip().lower()
+    if source not in {"speech", "sound"}:
+        return False
+    if action.arguments.get("media_ref"):
+        return False
+    metadata = action.arguments.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("media_ref", "path", "data_url", "audio_url", "media_refs", "audios", "audio_urls"):
+            value = metadata.get(key)
+            if value:
+                return False
+    return True
 
 
 def _build_screen_observation_request_reply() -> ChatReply:

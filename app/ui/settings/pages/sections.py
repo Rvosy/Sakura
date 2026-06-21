@@ -744,6 +744,12 @@ class ApiSettingsPage:
         owner.sensory_status_label = QLabel("未测试", group)
         owner.sensory_status_label.setObjectName("secondaryText")
         owner.sensory_status_label.setWordWrap(True)
+        owner.sensory_privacy_label = QLabel(
+            "语音/环境声音可在确认后采集电脑系统声音；本机模式不出网，局域网/远端 API 会发送到配置的 Endpoint。",
+            group,
+        )
+        owner.sensory_privacy_label.setObjectName("secondaryText")
+        owner.sensory_privacy_label.setWordWrap(True)
 
         action_row = QWidget(group)
         action_layout = QHBoxLayout(action_row)
@@ -765,6 +771,7 @@ class ApiSettingsPage:
         form.setContentsMargins(16, 10, 16, 12)
         form.setSpacing(12)
         form.addRow("", toggles)
+        form.addRow("", owner.sensory_privacy_label)
         form.addRow("上下文预算", owner.sensory_context_budget_spin)
         form.addRow("感官源", owner.sensory_source_combo)
         form.addRow("模式", owner.sensory_mode_combo)

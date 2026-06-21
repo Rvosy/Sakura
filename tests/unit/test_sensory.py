@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.agent.actions import PendingToolAction
 from app.agent.tools import ToolRegistry
 from app.agent.runtime import AgentRuntime
 from app.llm.api_client import ChatMessage
@@ -342,6 +343,52 @@ def test_observe_sensory_tool_fails_closed_when_source_disabled(tmp_path: Path) 
     assert not pipeline.store.path.exists()
 
 
+def test_observe_sensory_audio_capture_requires_confirmation_even_with_free_access(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            )
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-asr",
+            )
+        },
+    ).normalized()
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                summary="用户说测试增强感知。",
+            )
+        },
+        audio_capture=_FakeSystemAudioCapture(tmp_path),
+    )
+    registry = ToolRegistry([create_sensory_observation_tool(lambda: pipeline)])
+    registry.set_free_access_enabled(True)
+
+    pending = registry.prepare_or_execute("observe_sensory", {"source": "speech"})
+    direct = registry.prepare_or_execute(
+        "observe_sensory",
+        {"source": "speech", "media_ref": "data:audio/wav;base64,abc123"},
+    )
+
+    assert isinstance(pending, PendingToolAction)
+    assert pending.tool_name == "observe_sensory"
+    assert not isinstance(direct, PendingToolAction)
+    assert direct.success
+
+
 def test_observe_sensory_tool_routes_to_provider_and_records_observation(tmp_path: Path) -> None:
     settings = SensorySettings(
         enabled=True,
@@ -375,12 +422,74 @@ def test_observe_sensory_tool_routes_to_provider_and_records_observation(tmp_pat
     tool = create_sensory_observation_tool(lambda: pipeline)
 
     result = tool.handler(
-        {"source": "speech", "text": "测试增强感知", "event_type": "user_message"}
+        {
+            "source": "speech",
+            "text": "测试增强感知",
+            "event_type": "user_message",
+            "media_ref": "data:audio/wav;base64,abc123",
+        }
     ) if tool.handler is not None else {}
 
     assert result["status"] == "ok"
     assert result["observation"]["summary"] == "用户说测试增强感知。"
     assert pipeline.store.recent(limit=1)[0].summary == "用户说测试增强感知。"
+
+
+def test_observe_sensory_tool_captures_system_audio_when_text_has_no_audio_media(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            )
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-asr",
+            )
+        },
+    ).normalized()
+    capture = _FakeSystemAudioCapture(tmp_path)
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        assert Path(request.media_ref).is_file()
+        assert request.text == "刚才似乎有人说 hello"
+        return SensoryObservation(
+            id="obs_text_audio",
+            source=request.source,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="结合系统音频确认有人说 hello。",
+            confidence=0.9,
+            provider_id="speech_fake",
+            mode=SensoryProviderMode.LOCAL,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                factory=factory,
+            )
+        },
+        audio_capture=capture,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler(
+        {"source": "speech", "text": "刚才似乎有人说 hello"}
+    ) if tool.handler is not None else {}
+
+    assert result["status"] == "ok"
+    assert result["observation"]["summary"] == "结合系统音频确认有人说 hello。"
+    assert capture.count == 1
 
 
 def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp_path: Path) -> None:

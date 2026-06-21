@@ -58,6 +58,10 @@ class ToolPermissionPolicy:
         if not tool.requires_confirmation:
             return False
 
+        # 系统音频采集会录制电脑输出声音；即使 free_access 开启，也必须先确认。
+        if tool.confirmation_risk == "sensory_audio_capture" and _is_sensory_audio_capture_request(arguments):
+            return True
+
         # free_access 模式下的豁免
         if self.free_access_enabled and self._can_execute_with_free_access(tool):
             return False
@@ -88,3 +92,26 @@ class ToolPermissionPolicy:
     def is_browser_free_access_tool(self, name: str) -> bool:
         """检查是否属于 free_access 可豁免的浏览器工具。"""
         return name in self.BROWSER_FREE_ACCESS_TOOLS
+
+
+def _is_sensory_audio_capture_request(arguments: dict[str, Any] | None) -> bool:
+    if not isinstance(arguments, dict):
+        return False
+    source = str(arguments.get("source") or "").strip().lower()
+    if source not in {"speech", "sound"}:
+        return False
+    if _has_media_ref(arguments):
+        return False
+    metadata = arguments.get("metadata")
+    return not _has_media_ref(metadata if isinstance(metadata, dict) else {})
+
+
+def _has_media_ref(data: dict[str, Any]) -> bool:
+    for key in ("media_ref", "path", "data_url", "audio_url"):
+        if data.get(key):
+            return True
+    for key in ("media_refs", "audios", "audio_urls"):
+        value = data.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False

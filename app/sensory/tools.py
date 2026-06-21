@@ -29,6 +29,7 @@ def create_sensory_observation_tool(
         description=(
             "调用已配置的增强感知中间件，把视觉、语音或环境声音输入整理成结构化观察证据。"
             "只在对应感官模型已配置并且确实需要补充感官证据时使用。"
+            "speech/sound 不带媒体输入时会短暂采集电脑系统声音；local 为本机处理，lan/api 会发送到配置的 endpoint。"
         ),
         parameters={
             "type": "object",
@@ -69,9 +70,10 @@ def create_sensory_observation_tool(
             "required": ["source"],
         },
         handler=lambda arguments: observe_sensory(arguments, pipeline_getter),
-        requires_confirmation=False,
+        requires_confirmation=True,
+        confirmation_risk="sensory_audio_capture",
         group="sensory",
-        risk="low",
+        risk="medium",
         capability=SENSORY_OBSERVATION_CAPABILITY,
     )
 
@@ -119,8 +121,7 @@ def observe_sensory(
 
     if (
         source in {SensorySource.SPEECH, SensorySource.SOUND}
-        and not _request_has_media(request)
-        and not request.text.strip()
+        and not _request_has_audio_media(request)
     ):
         try:
             observation = pipeline.observe_system_audio(
@@ -171,7 +172,8 @@ def build_sensory_tool_prompt(sources: tuple[Any, ...]) -> str:
             f"- 增强感知：已配置 {labels} 感官中间件，需要额外感官证据时可调用 observe_sensory。",
             "- observe_sensory 返回的是中间件整理过的证据，不是角色回复；最终判断仍需结合用户问题和已有上下文。",
             "- 对 vision：如果需要当前屏幕且本轮还没有图片，先调用 observe_screen 获取截图；不要让 observe_sensory 凭空描述屏幕。",
-            "- 对 speech/sound：如果用户问刚才电脑里说了什么、播放了什么或当前系统声音很关键，可不带 media_ref 调用 observe_sensory，它会短暂采集系统输出音频。",
+            "- 对 speech/sound：如果用户问刚才电脑里说了什么、播放了什么或当前系统声音很关键，可不带 media_ref 调用 observe_sensory；这会短暂采集系统输出音频并需要用户确认。",
+            "- speech/sound 使用 local 时音频交给本机服务；使用 lan/api 时音频会发送到用户配置的 endpoint。",
             "- 不要把密码、token、密钥、身份证、银行卡等敏感内容传入 metadata；工具结果中出现敏感内容时按 [REDACTED] 处理。",
         ]
     )
@@ -202,6 +204,19 @@ def _request_has_media(request: SensoryRequest) -> bool:
         if request.metadata.get(key):
             return True
     for key in ("image_urls", "audio_urls", "images", "audios", "media_refs"):
+        value = request.metadata.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _request_has_audio_media(request: SensoryRequest) -> bool:
+    if request.media_ref:
+        return True
+    for key in ("data_url", "audio_url", "media_ref", "path"):
+        if request.metadata.get(key):
+            return True
+    for key in ("audio_urls", "audios", "media_refs"):
         value = request.metadata.get(key)
         if isinstance(value, list) and value:
             return True
