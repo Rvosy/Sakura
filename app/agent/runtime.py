@@ -89,8 +89,10 @@ class AgentRuntime:
         prompt_patches: list[PromptPatchContribution] | None = None,
         context_providers: list[ContextProviderContribution] | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
+        vision_api_client: OpenAICompatibleClient | None = None,
     ) -> None:
         self.api_client = api_client
+        self._vision_api_client = vision_api_client
         self.system_prompt = system_prompt
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
@@ -109,6 +111,24 @@ class AgentRuntime:
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+
+    @property
+    def vision_api_client(self) -> OpenAICompatibleClient | None:
+        return self._vision_api_client
+
+    @vision_api_client.setter
+    def vision_api_client(self, client: OpenAICompatibleClient | None) -> None:
+        self._vision_api_client = client
+
+    def _client_for_messages(self, messages: list[ChatMessage]) -> OpenAICompatibleClient:
+        """根据消息是否含图片，返回 vision 或 text API client。
+
+        当有图片时优先使用 vision client；若 vision client 未设置，回退到主 client。
+        无图片时始终使用主 client（text 模型）。
+        """
+        if messages_contain_image(messages) and self._vision_api_client is not None:
+            return self._vision_api_client
+        return self.api_client
 
     def update_character(
         self,
@@ -284,7 +304,7 @@ class AgentRuntime:
             },
         ]
         try:
-            repaired_turn = self.api_client.complete_with_tools(
+            repaired_turn = self._client_for_messages(repair_messages).complete_with_tools(
                 system_prompt,
                 repair_messages,
                 tools=[],
@@ -439,7 +459,7 @@ class AgentRuntime:
                 )
                 self._record_prompt_inspection(prompt_build.inspection)
                 dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
-                turn = self.api_client.complete_with_tools(
+                turn = self._client_for_messages(working_messages).complete_with_tools(
                     prompt_build.system_prompt,
                     working_messages,
                     tools=tool_defs,
@@ -787,7 +807,7 @@ class AgentRuntime:
         try:
             check_cancelled(cancel_checker)
             final_started_at = time.perf_counter()
-            final_reply = self.api_client.chat(
+            final_reply = self._client_for_messages(working_messages).chat(
                 self._build_final_reply_prompt(),
                 working_messages,
                 self.reply_tones,
@@ -895,7 +915,7 @@ class AgentRuntime:
         self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
-            reply = self.api_client.chat(
+            reply = self._client_for_messages(final_messages).chat(
                 prompt_build.system_prompt,
                 final_messages,
                 self.reply_tones,
@@ -908,16 +928,12 @@ class AgentRuntime:
         except OperationCancelled:
             raise
         except Exception as exc:
-            debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
+            debug_log(
+                "AgentRuntime",
+                "确认动作总结失败，使用本地兜底回复",
+                {"error": str(exc)},
+            )
             reply = _build_fallback_tool_reply(results)
-        debug_log(
-            "AgentRuntime",
-            "已确认动作处理完成",
-            {
-                "results": [_redact_tool_result_for_model(item) for item in results],
-                "segments": len(reply.segments),
-            },
-        )
         return AgentResult(
             reply=reply,
             actions=emitted_actions,
@@ -999,7 +1015,7 @@ class AgentRuntime:
         self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
-            reply = self.api_client.chat(
+            reply = self._client_for_messages(event_messages).chat(
                 prompt_build.system_prompt,
                 event_messages,
                 self.reply_tones,

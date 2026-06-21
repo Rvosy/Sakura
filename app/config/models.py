@@ -21,6 +21,35 @@ class ApiSettings:
     api_key: str = ""
     model: str = "gpt-4.1-mini"
     timeout_seconds: int = 60
+    # 角色对话生成参数；None 表示沿用内置默认/不发送该参数，保持历史行为。
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class ApiConfigProfile:
+    """单条 API 配置集，包含 base_url、api_key 及可选的别名。
+
+    与模型名称分离：profile 只描述"连到哪个服务"，不包含模型名。
+    model_names 全局维护，由用户自由编辑。
+    """
+
+    id: str
+    alias: str
+    base_url: str
+    api_key: str = ""
+
+
+@dataclass(frozen=True)
+class ModelSelectionSettings:
+    """视觉/文本模型的全局选择配置。"""
+
+    vision_profile_id: str = ""
+    vision_model: str = ""
+    text_enabled: bool = True
+    text_profile_id: str = ""
+    text_model: str = ""
 
 
 # ---- 调试日志 ----

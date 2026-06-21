@@ -88,7 +88,9 @@ from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.debug_log import debug_log, summarize_messages
+from app.config.models import ApiConfigProfile, ModelSelectionSettings
 from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
 from app.backchannel.controller import BackchannelController
@@ -4959,6 +4961,9 @@ class PetWindow(QWidget):
             on_prepare_secondary_window=self._prepare_secondary_window,
             on_present_secondary_window=self._present_registered_secondary_window,
             on_release_secondary_window=self._release_secondary_window,
+            api_profiles=self.settings_service.load_api_profiles(),
+            model_selection=self.settings_service.load_model_selection(),
+            global_model_names=self.settings_service.load_global_model_names(),
         )
         self.settings_dialog = dialog
         # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
@@ -5129,6 +5134,16 @@ class PetWindow(QWidget):
         try:
             if api_changed:
                 self.settings_service.save_api_settings(dialog.result_api_settings)
+            # 保存 API 配置集和模型选择（新格式）
+            api_profiles = getattr(dialog, "result_api_profiles", None)
+            global_model_names = getattr(dialog, "result_global_model_names", None)
+            model_selection = getattr(dialog, "result_model_selection", None)
+            if api_profiles is not None:
+                self.settings_service.save_api_profiles(api_profiles)
+            if global_model_names is not None:
+                self.settings_service.save_global_model_names(global_model_names)
+            if model_selection is not None:
+                self.settings_service.save_model_selection(model_selection)
             self.settings_service.save_tts_settings(dialog.result_tts_settings)
             if should_write_character_theme:
                 save_character_theme(
@@ -5200,7 +5215,16 @@ class PetWindow(QWidget):
             )
             return
 
-        if api_changed:
+        # 更新 API client（新格式统一处理，替代旧 api_changed 块）
+        if api_profiles is not None and model_selection is not None:
+            _update_runtime_api_clients(
+                self,
+                api_profiles=api_profiles,
+                model_selection=model_selection,
+                timeout_seconds=dialog.result_api_settings.timeout_seconds,
+            )
+        elif api_changed:
+            # 旧格式回退
             self.api_client.update_settings(dialog.result_api_settings)
             self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
         self.agent_runtime.set_runtime_loop_settings(result_runtime_loop_settings)
@@ -6916,3 +6940,62 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
         ctypes.c_void_p(selector(b"setCollectionBehavior:")),
         collection_behavior,
     )
+
+
+def _update_runtime_api_clients(
+    window: Any,
+    *,
+    api_profiles: list[ApiConfigProfile],
+    model_selection: ModelSelectionSettings,
+    timeout_seconds: int,
+) -> None:
+    """运行时更新主 api_client 和 vision_api_client。
+
+    主 api_client 用于不含图片的请求；vision_api_client 用于含图片的请求。
+    - 启用文本模型时：主 client = 文本模型配置，vision client = 视觉模型配置
+    - 未启用文本模型时：主 client = 视觉模型配置，vision client = None
+    """
+    vision_profile = _find_profile(api_profiles, model_selection.vision_profile_id)
+
+    if model_selection.text_enabled:
+        # 文本 client 作为主 client
+        text_profile = _find_profile(api_profiles, model_selection.text_profile_id)
+        if text_profile:
+            text_settings = ApiSettings(
+                base_url=text_profile.base_url,
+                api_key=text_profile.api_key,
+                model=model_selection.text_model,
+                timeout_seconds=timeout_seconds,
+            )
+            window.api_client.update_settings(text_settings)
+        # 视觉 client 作为 vision_api_client
+        if vision_profile:
+            vision_settings = ApiSettings(
+                base_url=vision_profile.base_url,
+                api_key=vision_profile.api_key,
+                model=model_selection.vision_model,
+                timeout_seconds=timeout_seconds,
+            )
+            vision_client = OpenAICompatibleClient(vision_settings)
+            window.agent_runtime.vision_api_client = vision_client
+        else:
+            window.agent_runtime.vision_api_client = None
+    else:
+        # 未启用文本模型：全部使用视觉模型配置
+        if vision_profile:
+            vision_settings = ApiSettings(
+                base_url=vision_profile.base_url,
+                api_key=vision_profile.api_key,
+                model=model_selection.vision_model,
+                timeout_seconds=timeout_seconds,
+            )
+            window.api_client.update_settings(vision_settings)
+        window.memory_store.reload_api_settings(window.api_client.settings, wait=False)
+        window.agent_runtime.vision_api_client = None
+
+
+def _find_profile(profiles: list[ApiConfigProfile], profile_id: str) -> ApiConfigProfile | None:
+    for p in profiles:
+        if p.id == profile_id:
+            return p
+    return None

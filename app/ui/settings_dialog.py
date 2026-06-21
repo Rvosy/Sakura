@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QDialog,
@@ -17,10 +18,12 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -72,6 +75,7 @@ from app.config.character_loader import (
     THEME_SOURCE_COMPAT_DEFAULT,
     THEME_SOURCE_PACKAGE,
 )
+from app.config.models import ApiConfigProfile, ModelSelectionSettings
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
     normalize_portrait_scale_percent,
@@ -174,6 +178,9 @@ class SettingsDialog(QDialog):
         on_prepare_secondary_window: Callable[[QWidget], None] | None = None,
         on_present_secondary_window: Callable[[QWidget], None] | None = None,
         on_release_secondary_window: Callable[[QWidget], None] | None = None,
+        api_profiles: list[ApiConfigProfile] | None = None,
+        model_selection: ModelSelectionSettings | None = None,
+        global_model_names: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         if screen_awareness_settings is None:
@@ -190,6 +197,9 @@ class SettingsDialog(QDialog):
         self.memory_curation_settings = memory_curation_settings or _MemoryCurationSettings()
         self._initial_api_settings = api_settings
         self._initial_tts_settings = tts_settings
+        self._api_profiles = list(api_profiles or [])
+        self._initial_model_selection = model_selection or ModelSelectionSettings()
+        self._global_model_names = list(global_model_names or [])
         self._initial_character_id = current_character.id if current_character is not None else None
         self.theme_settings = merge_theme_with_character(
             theme_settings or DEFAULT_THEME_SETTINGS,
@@ -251,6 +261,9 @@ class SettingsDialog(QDialog):
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
+        self.result_api_profiles: list[ApiConfigProfile] | None = None
+        self.result_global_model_names: list[str] | None = None
+        self.result_model_selection: ModelSelectionSettings | None = None
         self._api_test_thread: QThread | None = None
         self._api_test_worker: settings_workers.ApiConnectionTestWorker | None = None
         self._api_model_probe_thread: QThread | None = None
@@ -302,7 +315,7 @@ class SettingsDialog(QDialog):
                 ),
             ),
             ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
-            ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings))),
+            ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings, self._api_profiles, self._global_model_names, self._initial_model_selection))),
             ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
             (
                 "隐私",
@@ -2133,6 +2146,15 @@ class SettingsDialog(QDialog):
                 timeout_ms=self.backchannel_settings.timeout_ms,
             ),
             "memory_curation_settings": self._collect_memory_curation_settings(),
+            "api_profiles": list(self._api_profiles),
+            "global_model_names": list(self._global_model_names),
+            "model_selection": ModelSelectionSettings(
+                vision_profile_id=str(self.vision_profile_combo.currentData() or ""),
+                vision_model=self.vision_model_combo.text().strip(),
+                text_enabled=self.text_enabled_check.isChecked(),
+                text_profile_id=str(self.text_profile_combo.currentData() or ""),
+                text_model=self.text_model_combo.text().strip(),
+            ),
         }
 
     def _complete_accept(self, values: dict[str, object]) -> None:
@@ -2155,6 +2177,9 @@ class SettingsDialog(QDialog):
         bubble_settings = values["bubble_settings"]
         backchannel_settings = values["backchannel_settings"]
         memory_curation_settings = values["memory_curation_settings"]
+        api_profiles = values.get("api_profiles", [])
+        global_model_names = values.get("global_model_names", [])
+        model_selection = values.get("model_selection")
 
         if not isinstance(api_settings, ApiSettings):
             return
@@ -2235,6 +2260,9 @@ class SettingsDialog(QDialog):
         self.result_bubble_settings = bubble_settings
         self.result_backchannel_settings = backchannel_settings.normalized()
         self.result_memory_curation_settings = memory_curation_settings
+        self.result_api_profiles = list(api_profiles) if isinstance(api_profiles, list) else []
+        self.result_global_model_names = list(global_model_names) if isinstance(global_model_names, list) else []
+        self.result_model_selection = model_selection if isinstance(model_selection, ModelSelectionSettings) else self._initial_model_selection
         self.result_plugin_config_changed = plugin_config_changed
         super().accept()
 
@@ -2445,7 +2473,15 @@ class SettingsDialog(QDialog):
                 ),
             )
             return
-        self.model_edit.set_model_names(model_names)
+        # 将探测结果合并到全局模型名称列表并更新下拉框
+        existing = set(self._global_model_names)
+        added = [m for m in model_names if m not in existing]
+        if added:
+            self._global_model_names.extend(added)
+            if hasattr(self, "vision_model_combo"):
+                self.vision_model_combo.addItems(added)
+            if hasattr(self, "text_model_combo"):
+                self.text_model_combo.addItems(added)
         QMessageBox.information(self, "探测成功", f"已发现 {len(model_names)} 个模型。")
 
     @Slot(str)
@@ -2465,6 +2501,268 @@ class SettingsDialog(QDialog):
         self._api_model_probe_thread = None
         self._api_model_probe_worker = None
         self._set_api_model_probe_busy(False)
+
+    # ── API 配置集编辑器 ──
+
+    def _open_api_profile_editor(self) -> None:
+        """打开 API 配置集管理对话框（模态）。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("API 配置管理")
+        dialog.setMinimumSize(520, 380)
+        dialog.setObjectName("apiProfileEditor")
+        if self.styleSheet():
+            dialog.setStyleSheet(self.styleSheet())
+
+        table = QTableWidget(0, 3, dialog)
+        table.setObjectName("apiProfileTable")
+        table.setHorizontalHeaderLabels(["别名", "Base URL", "API Key"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        alias_edit = QLineEdit(dialog)
+        alias_edit.setPlaceholderText("配置别名")
+        url_edit = QLineEdit(dialog)
+        url_edit.setPlaceholderText("https://api.openai.com/v1")
+        key_edit = QLineEdit(dialog)
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        key_edit.setPlaceholderText("API Key（本地模型可留空）")
+        show_key_check = QCheckBox("显示 Key", dialog)
+
+        def toggle_key_visibility(checked: bool) -> None:
+            key_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
+        show_key_check.toggled.connect(toggle_key_visibility)
+
+        save_row_btn = QPushButton("保存到选中行", dialog)
+        add_row_btn = QPushButton("添加新行", dialog)
+        delete_btn = QPushButton("删除选中", dialog)
+        probe_btn = QPushButton("探测该配置的模型列表", dialog)
+
+        profiles = list(self._api_profiles)
+        _selected_id_for_edit: str | None = None
+
+        def refresh_table() -> None:
+            table.setRowCount(len(profiles))
+            for i, p in enumerate(profiles):
+                table.setItem(i, 0, QTableWidgetItem(p.alias or p.id))
+                table.setItem(i, 1, QTableWidgetItem(p.base_url))
+                key_display = "********" if p.api_key else "（空）"
+                table.setItem(i, 2, QTableWidgetItem(key_display))
+                table.item(i, 0).setData(Qt.ItemDataRole.UserRole, p.id)
+            _clear_edit()
+
+        def _clear_edit() -> None:
+            nonlocal _selected_id_for_edit
+            _selected_id_for_edit = None
+            alias_edit.clear()
+            url_edit.clear()
+            key_edit.clear()
+
+        def on_table_selection_changed() -> None:
+            nonlocal _selected_id_for_edit
+            row = table.currentRow()
+            if row < 0 or row >= len(profiles):
+                _clear_edit()
+                return
+            p = profiles[row]
+            _selected_id_for_edit = p.id
+            alias_edit.setText(p.alias)
+            url_edit.setText(p.base_url)
+            key_edit.setText(p.api_key)
+
+        def on_save_row() -> None:
+            nonlocal _selected_id_for_edit
+            alias = alias_edit.text().strip()
+            base_url = url_edit.text().strip()
+            api_key = key_edit.text().strip()
+            if not alias:
+                QMessageBox.warning(dialog, "校验失败", "别名不能为空。")
+                return
+            if not base_url:
+                QMessageBox.warning(dialog, "校验失败", "Base URL 不能为空。")
+                return
+            if _selected_id_for_edit:
+                for i, p in enumerate(profiles):
+                    if p.id == _selected_id_for_edit:
+                        profiles[i] = ApiConfigProfile(id=p.id, alias=alias, base_url=base_url, api_key=api_key)
+                        break
+            else:
+                new_id = f"profile_{len(profiles) + 1}"
+                profiles.append(ApiConfigProfile(id=new_id, alias=alias, base_url=base_url, api_key=api_key))
+                _selected_id_for_edit = new_id
+            refresh_table()
+            for i, p in enumerate(profiles):
+                if p.id == _selected_id_for_edit:
+                    table.setCurrentCell(i, 0)
+                    break
+
+        def on_add_row() -> None:
+            nonlocal _selected_id_for_edit
+            _selected_id_for_edit = None
+            alias_edit.clear()
+            url_edit.clear()
+            key_edit.clear()
+            alias_edit.setFocus()
+
+        def on_delete_row() -> None:
+            row = table.currentRow()
+            if row < 0 or row >= len(profiles):
+                return
+            p = profiles[row]
+            # 检查是否正在被使用（使用当前下拉值）
+            vision_id = str(getattr(self, "vision_profile_combo", _NoWheelComboBox()).currentData() or "")
+            text_id = str(getattr(self, "text_profile_combo", _NoWheelComboBox()).currentData() or "")
+            text_enabled = getattr(self, "text_enabled_check", QCheckBox()).isChecked()
+            in_use = []
+            if p.id == vision_id:
+                in_use.append("视觉模型")
+            if p.id == text_id and text_enabled:
+                in_use.append("文本模型")
+            if in_use:
+                QMessageBox.warning(dialog, "无法删除", f"此配置集正在被{'、'.join(in_use)}使用，请先切换到其他配置集再删除。")
+                return
+            profiles.pop(row)
+            refresh_table()
+
+        def on_probe_models() -> None:
+            row = table.currentRow()
+            if row < 0 or row >= len(profiles):
+                QMessageBox.warning(dialog, "提示", "请先选中一个配置行。")
+                return
+            p = profiles[row]
+            from app.ui.settings.workers import ApiModelListProbeWorker
+            from PySide6.QtCore import QThread
+            probe_settings = ApiSettings(base_url=p.base_url, api_key=p.api_key, model="", timeout_seconds=60)
+            probe_btn.setEnabled(False)
+            probe_btn.setText("探测中...")
+            thread = QThread()
+            worker = ApiModelListProbeWorker(probe_settings)
+            worker.moveToThread(thread)
+
+            def on_probe_success(models: list[str]) -> None:
+                existing = set(self._global_model_names)
+                added = [m for m in models if m not in existing]
+                if added:
+                    self._global_model_names.extend(added)
+                    if hasattr(self, "vision_model_combo"):
+                        self.vision_model_combo.addItems(added)
+                    if hasattr(self, "text_model_combo"):
+                        self.text_model_combo.addItems(added)
+                    QMessageBox.information(dialog, "探测成功", f"已添加 {len(added)} 个新模型名。")
+                else:
+                    QMessageBox.information(dialog, "探测完成", "模型列表已是最新，没有新模型。")
+
+            def on_probe_failed(msg: str) -> None:
+                QMessageBox.warning(dialog, "探测失败", msg)
+
+            def on_probe_finished() -> None:
+                probe_btn.setEnabled(True)
+                probe_btn.setText("探测该配置的模型列表")
+                thread.quit()
+                thread.wait()
+                worker.deleteLater()
+                thread.deleteLater()
+
+            worker.succeeded.connect(on_probe_success)
+            worker.failed.connect(on_probe_failed)
+            worker.finished.connect(on_probe_finished)
+            thread.started.connect(worker.run)
+            thread.start()
+
+        table.itemSelectionChanged.connect(on_table_selection_changed)
+
+        btn_row = QWidget(dialog)
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.addWidget(add_row_btn)
+        btn_layout.addWidget(delete_btn)
+        btn_layout.addWidget(probe_btn)
+        btn_layout.addStretch(1)
+
+        edit_layout = QHBoxLayout()
+        edit_layout.setSpacing(8)
+        edit_layout.addWidget(alias_edit, 2)
+        edit_layout.addWidget(url_edit, 3)
+        edit_layout.addWidget(key_edit, 2)
+        edit_layout.addWidget(show_key_check)
+        edit_layout.addWidget(save_row_btn)
+
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+        main_layout.addWidget(QLabel("配置列表（点击行编辑）：", dialog))
+        main_layout.addWidget(table, 1)
+        main_layout.addWidget(btn_row)
+        main_layout.addWidget(QLabel("编辑选中的配置行：", dialog))
+        main_layout.addLayout(edit_layout)
+
+        close_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        close_btn.rejected.connect(dialog.reject)
+        main_layout.addWidget(close_btn)
+
+        refresh_table()
+        if profiles:
+            table.setCurrentCell(0, 0)
+
+        if dialog.exec():
+            self._api_profiles = profiles
+
+    # ── 模型名称编辑器 ──
+
+    def _open_model_names_editor(self) -> None:
+        """打开模型名称管理对话框（模态）。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("模型名称管理")
+        dialog.setMinimumSize(420, 340)
+        dialog.setObjectName("modelNamesEditor")
+        if self.styleSheet():
+            dialog.setStyleSheet(self.styleSheet())
+
+        editor = QPlainTextEdit(dialog)
+        editor.setPlaceholderText("每行输入一个模型名称，例如：\ngpt-4o\ngpt-4.1-mini\nqwen2.5:7b\nllama3:8b")
+        editor.setPlainText("\n".join(self._global_model_names))
+
+        def on_organize() -> None:
+            lines = editor.toPlainText().splitlines()
+            cleaned = sorted({line.strip() for line in lines if line.strip()}, key=str.casefold)
+            editor.setPlainText("\n".join(cleaned))
+
+        organize_btn = QPushButton("整理（去重排序）", dialog)
+        btn_row = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("每行一个模型名称，可直接编辑：", dialog))
+        layout.addWidget(editor, 1)
+        layout.addWidget(organize_btn)
+        layout.addWidget(btn_row)
+
+        organize_btn.clicked.connect(on_organize)
+        btn_row.accepted.connect(dialog.accept)
+        btn_row.rejected.connect(dialog.reject)
+
+        if dialog.exec():
+            lines = editor.toPlainText().splitlines()
+            self._global_model_names = sorted({line.strip() for line in lines if line.strip()}, key=str.casefold)
+            if hasattr(self, "vision_model_combo"):
+                current_vision = self.vision_model_combo.text()
+                self.vision_model_combo.blockSignals(True)
+                self.vision_model_combo.clear()
+                self.vision_model_combo.addItems(self._global_model_names)
+                self.vision_model_combo.setText(current_vision)
+                self.vision_model_combo.blockSignals(False)
+            if hasattr(self, "text_model_combo"):
+                current_text = self.text_model_combo.text()
+                self.text_model_combo.blockSignals(True)
+                self.text_model_combo.clear()
+                self.text_model_combo.addItems(self._global_model_names)
+                self.text_model_combo.setText(current_text)
+                self.text_model_combo.blockSignals(False)
 
     def _set_api_model_probe_busy(self, busy: bool) -> None:
         self.api_model_probe_button.setEnabled(not busy)
@@ -2913,9 +3211,24 @@ class SettingsDialog(QDialog):
             self.character_export_voice_action.setToolTip("当前角色没有可导出的语音模型。")
 
     def _validated_api_settings(self) -> ApiSettings | None:
-        base_url = self.base_url_edit.text().strip().rstrip("/")
-        api_key = self.api_key_edit.text().strip()
-        model = self.model_edit.text().strip()
+        # 从视觉模型配置中获取 base_url / api_key / model
+        vision_profile_id = str(self.vision_profile_combo.currentData() or "")
+        vision_model = self.vision_model_combo.text().strip()
+        profile = _find_profile(self._api_profiles, vision_profile_id)
+
+        if profile is None:
+            QMessageBox.warning(self, "配置无效", "请先添加 API 配置集。")
+            return None
+        base_url = profile.base_url.strip().rstrip("/")
+        api_key = profile.api_key.strip()
+
+        if not base_url:
+            QMessageBox.warning(self, "配置无效", "当前视觉模型配置的 Base URL 不能为空。")
+            return None
+        if not vision_model:
+            QMessageBox.warning(self, "配置无效", "视觉模型名称不能为空。")
+            return None
+
         temperature = self.llm_temperature_spin.value()
         if (
             self._initial_api_settings.temperature is None
@@ -2923,20 +3236,10 @@ class SettingsDialog(QDialog):
         ):
             temperature = None
 
-        if not _is_http_url(base_url):
-            QMessageBox.warning(self, "配置无效", "Base URL 必须是有效的 http 或 https 地址。")
-            return None
-        if not api_key:
-            QMessageBox.warning(self, "配置无效", "API Key 不能为空。")
-            return None
-        if not model:
-            QMessageBox.warning(self, "配置无效", "模型不能为空。")
-            return None
-
         return ApiSettings(
             base_url=base_url,
             api_key=api_key,
-            model=model,
+            model=vision_model,
             timeout_seconds=self.api_timeout_spin.value(),
             temperature=temperature,
             top_p=(
@@ -2952,20 +3255,23 @@ class SettingsDialog(QDialog):
         )
 
     def _validated_api_model_probe_settings(self) -> ApiSettings | None:
-        base_url = self.base_url_edit.text().strip().rstrip("/")
-        api_key = self.api_key_edit.text().strip()
+        vision_profile_id = str(self.vision_profile_combo.currentData() or "")
+        profile = _find_profile(self._api_profiles, vision_profile_id)
 
-        if not _is_http_url(base_url):
-            QMessageBox.warning(self, "配置无效", "Base URL 必须是有效的 http 或 https 地址。")
+        if profile is None:
+            QMessageBox.warning(self, "配置无效", "请先添加 API 配置集。")
             return None
-        if not api_key:
-            QMessageBox.warning(self, "配置无效", "API Key 不能为空。")
+        base_url = profile.base_url.strip().rstrip("/")
+        api_key = profile.api_key.strip()
+
+        if not base_url:
+            QMessageBox.warning(self, "配置无效", "当前配置的 Base URL 不能为空。")
             return None
 
         return ApiSettings(
             base_url=base_url,
             api_key=api_key,
-            model=self.model_edit.text().strip(),
+            model=self.vision_model_combo.text().strip(),
             timeout_seconds=self.api_timeout_spin.value(),
         )
 
@@ -3269,3 +3575,11 @@ def _set_combo_current_data(combo: object, value: str) -> None:
         return
     index = finder(value)
     setter(index if index >= 0 else 0)
+
+
+def _find_profile(profiles: list[ApiConfigProfile], profile_id: str) -> ApiConfigProfile | None:
+    """在 API 配置集列表中按 id 查找配置集。"""
+    for p in profiles:
+        if p.id == profile_id:
+            return p
+    return None

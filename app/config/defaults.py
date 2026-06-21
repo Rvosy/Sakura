@@ -13,6 +13,12 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_API_TIMEOUT_SECONDS = 60
 
+# ---- API 配置文件默认值 ----
+DEFAULT_PROFILE_ID = "default"
+DEFAULT_PROFILE_ALIAS = "默认"
+DEFAULT_VISION_MODEL = "gpt-4o"
+DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
+
 # ---- TTS 默认值 ----
 DEFAULT_TTS_ENABLED = False
 DEFAULT_TTS_PROVIDER = "none"

@@ -8,6 +8,14 @@ from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_set
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
+from app.config.defaults import (
+    DEFAULT_BASE_URL,
+    DEFAULT_PROFILE_ALIAS,
+    DEFAULT_PROFILE_ID,
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VISION_MODEL,
+)
+from app.config.models import ApiConfigProfile, ModelSelectionSettings
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
@@ -181,6 +189,100 @@ class AppSettingsService:
         if settings.max_tokens is not None:
             llm_data["max_tokens"] = int(settings.max_tokens)
         data["llm"] = llm_data
+        save_yaml_mapping(self.api_config_path, data)
+
+    def load_api_profiles(self) -> list[ApiConfigProfile]:
+        """从 api.yaml 读取 api_profiles 列表；自动迁移旧格式。"""
+        data = load_yaml_mapping(self.api_config_path)
+        raw_profiles = data.get("api_profiles")
+        if isinstance(raw_profiles, list) and raw_profiles:
+            profiles: list[ApiConfigProfile] = []
+            for raw in raw_profiles:
+                if not isinstance(raw, dict):
+                    continue
+                profiles.append(
+                    ApiConfigProfile(
+                        id=str(raw.get("id", "")).strip(),
+                        alias=str(raw.get("alias", "")).strip(),
+                        base_url=str(raw.get("base_url", DEFAULT_BASE_URL)).strip(),
+                        api_key=str(raw.get("api_key", "")).strip(),
+                    )
+                )
+            return profiles
+
+        # 旧格式迁移：从 llm 键读取单条配置
+        llm = _mapping(data.get("llm"))
+        if llm.get("base_url"):
+            profile = ApiConfigProfile(
+                id=DEFAULT_PROFILE_ID,
+                alias=DEFAULT_PROFILE_ALIAS,
+                base_url=str(llm.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
+                api_key=str(llm.get("api_key", "")).strip(),
+            )
+            # 写入新格式
+            self.save_api_profiles([profile])
+            # 同时提取旧模型名
+            old_model = str(llm.get("model", "")).strip()
+            if old_model:
+                existing_names = self.load_global_model_names()
+                if old_model not in existing_names:
+                    existing_names.append(old_model)
+                    self.save_global_model_names(existing_names)
+            # 设置 model_selection 指向迁移后的默认配置
+            self.save_model_selection(
+                ModelSelectionSettings(
+                    vision_profile_id=DEFAULT_PROFILE_ID,
+                    vision_model=old_model or DEFAULT_VISION_MODEL,
+                    text_enabled=True,
+                    text_profile_id=DEFAULT_PROFILE_ID,
+                    text_model=old_model or DEFAULT_TEXT_MODEL,
+                )
+            )
+            return [profile]
+        return []
+
+    def save_api_profiles(self, profiles: list[ApiConfigProfile]) -> None:
+        data = load_yaml_mapping(self.api_config_path)
+        data["api_profiles"] = [
+            {
+                "id": p.id,
+                "alias": p.alias,
+                "base_url": p.base_url.strip().rstrip("/"),
+                "api_key": p.api_key.strip(),
+            }
+            for p in profiles
+        ]
+        save_yaml_mapping(self.api_config_path, data)
+
+    def load_global_model_names(self) -> list[str]:
+        data = load_yaml_mapping(self.api_config_path)
+        raw = data.get("model_names")
+        if isinstance(raw, list):
+            return [str(m).strip() for m in raw if isinstance(m, str) and m.strip()]
+        return []
+
+    def save_global_model_names(self, names: list[str]) -> None:
+        data = load_yaml_mapping(self.api_config_path)
+        data["model_names"] = [n.strip() for n in names if n.strip()]
+        save_yaml_mapping(self.api_config_path, data)
+
+    def load_model_selection(self) -> ModelSelectionSettings:
+        data = load_yaml_mapping(self.api_config_path)
+        return ModelSelectionSettings(
+            vision_profile_id=str(data.get("vision_profile_id", "")).strip(),
+            vision_model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+            text_enabled=_bool_value(data.get("text_enabled"), True),
+            text_profile_id=str(data.get("text_profile_id", "")).strip(),
+            text_model=str(data.get("text_model", DEFAULT_TEXT_MODEL)).strip(),
+        )
+
+    def save_model_selection(self, settings: ModelSelectionSettings) -> None:
+        data = load_yaml_mapping(self.api_config_path)
+        data["vision_profile_id"] = settings.vision_profile_id.strip()
+        data["vision_model"] = settings.vision_model.strip()
+        data["text_enabled"] = bool(settings.text_enabled)
+        data["text_profile_id"] = settings.text_profile_id.strip()
+        data["text_model"] = settings.text_model.strip()
         save_yaml_mapping(self.api_config_path, data)
 
     def load_tts_settings(

@@ -56,6 +56,7 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
 )
 from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.models import ApiConfigProfile, ModelSelectionSettings
 from app.config.settings_service import (
     BACKCHANNEL_MAX_DELAY_MS,
     BACKCHANNEL_MIN_DELAY_MS,
@@ -411,55 +412,136 @@ class ApiSettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
 
-    def build(self, settings: ApiSettings) -> QWidget:
+    def build(
+        self,
+        settings: ApiSettings,
+        api_profiles: list | None = None,
+        model_names: list[str] | None = None,
+        model_selection: Any = None,
+    ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
-        owner.base_url_edit = QLineEdit(settings.base_url, tab)
-        owner.base_url_edit.setPlaceholderText("https://api.openai.com/v1")
-        owner.api_key_edit = QLineEdit(settings.api_key, tab)
-        owner.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        owner.api_key_edit.setPlaceholderText("请输入 API Key")
 
-        owner.model_edit = ModelComboBox(tab)
-        owner.model_edit.setText(settings.model)
-        owner.model_edit.setPlaceholderText("gpt-4.1-mini")
+        # ── 管理按钮行 ──
+        owner.api_profile_edit_button = QPushButton("编辑 API 配置集", tab)
+        owner.api_profile_edit_button.clicked.connect(owner._open_api_profile_editor)
+        owner.model_names_edit_button = QPushButton("编辑模型名称列表", tab)
+        owner.model_names_edit_button.clicked.connect(owner._open_model_names_editor)
 
-        owner.api_timeout_spin = _NoWheelSpinBox(tab)
+        edit_actions = QWidget(tab)
+        edit_actions_layout = QHBoxLayout(edit_actions)
+        edit_actions_layout.setContentsMargins(0, 0, 0, 0)
+        edit_actions_layout.setSpacing(8)
+        edit_actions_layout.addWidget(owner.api_profile_edit_button)
+        edit_actions_layout.addWidget(owner.model_names_edit_button)
+        edit_actions_layout.addStretch(1)
+
+        # ── 存储引用供下拉框填充 ──
+        owner._api_profiles = list(api_profiles or [])
+        owner._model_names = list(model_names or [])
+        owner._model_selection = model_selection
+
+        # ── 视觉模型配置 ──
+        vision_group = QGroupBox("视觉模型配置", tab)
+        owner.vision_profile_combo = _NoWheelComboBox(vision_group)
+        owner.vision_model_combo = ModelComboBox(vision_group)
+        owner.vision_model_combo.setPlaceholderText("gpt-4o")
+        self._populate_profile_combo(owner.vision_profile_combo, owner._api_profiles)
+        self._populate_model_combo(owner.vision_model_combo, owner._model_names)
+        self._set_profile_combo_value(owner.vision_profile_combo, owner._model_selection.vision_profile_id)
+        owner.vision_model_combo.setText(owner._model_selection.vision_model)
+
+        vision_form = QFormLayout()
+        vision_form.setContentsMargins(12, 8, 12, 8)
+        vision_form.setSpacing(8)
+        vision_form.addRow("API 配置集", owner.vision_profile_combo)
+        vision_form.addRow("模型名称", owner.vision_model_combo)
+        vision_group.setLayout(vision_form)
+
+        # ── 文本模型配置 ──
+        text_group = QGroupBox("文本模型配置", tab)
+        owner.text_enabled_check = QCheckBox("启用文本模型", text_group)
+        owner.text_enabled_check.setChecked(owner._model_selection.text_enabled)
+        owner.text_profile_combo = _NoWheelComboBox(text_group)
+        owner.text_model_combo = ModelComboBox(text_group)
+        owner.text_model_combo.setPlaceholderText("gpt-4.1-mini")
+        self._populate_profile_combo(owner.text_profile_combo, owner._api_profiles)
+        self._populate_model_combo(owner.text_model_combo, owner._model_names)
+        self._set_profile_combo_value(owner.text_profile_combo, owner._model_selection.text_profile_id)
+        owner.text_model_combo.setText(owner._model_selection.text_model)
+
+        text_form = QFormLayout()
+        text_form.setContentsMargins(12, 8, 12, 8)
+        text_form.setSpacing(8)
+        text_form.addRow("", owner.text_enabled_check)
+        text_form.addRow("API 配置集", owner.text_profile_combo)
+        text_form.addRow("模型名称", owner.text_model_combo)
+        text_group.setLayout(text_form)
+
+        owner.text_enabled_check.toggled.connect(lambda enabled: self._sync_text_model_enabled(owner, enabled))
+        self._sync_text_model_enabled(owner, owner._model_selection.text_enabled)
+
+        # ── 基础设置 ──
+        basic_group = QGroupBox("基础设置", tab)
+        owner.api_timeout_spin = _NoWheelSpinBox(basic_group)
         owner.api_timeout_spin.setRange(1, 600)
         owner.api_timeout_spin.setSuffix(" 秒")
         owner.api_timeout_spin.setValue(settings.timeout_seconds)
 
-        owner.api_model_probe_button = QPushButton("检测模型", tab)
+        owner.api_model_probe_button = QPushButton("探测模型列表", basic_group)
         owner.api_model_probe_button.clicked.connect(owner._probe_api_models)
-        owner.api_test_button = QPushButton("测试 API", tab)
+        owner.api_test_button = QPushButton("测试 API", basic_group)
         owner.api_test_button.clicked.connect(owner._test_api_settings)
 
-        api_actions = QWidget(tab)
+        api_actions = QWidget(basic_group)
         api_actions_layout = QHBoxLayout(api_actions)
         api_actions_layout.setContentsMargins(0, 0, 0, 0)
         api_actions_layout.setSpacing(8)
         api_actions_layout.addWidget(owner.api_model_probe_button)
         api_actions_layout.addWidget(owner.api_test_button)
 
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(12)
-        form_layout.addRow("Base URL", owner.base_url_edit)
-        form_layout.addRow("API Key", owner.api_key_edit)
-        form_layout.addRow("模型", owner.model_edit)
-        form_layout.addRow("超时", owner.api_timeout_spin)
-        form_layout.addRow("", api_actions)
-        form_container = QWidget(tab)
-        form_container.setLayout(form_layout)
+        basic_form = QFormLayout()
+        basic_form.setContentsMargins(12, 8, 12, 8)
+        basic_form.setSpacing(8)
+        basic_form.addRow("超时", owner.api_timeout_spin)
+        basic_form.addRow("", api_actions)
+        basic_group.setLayout(basic_form)
 
+        # ── 组装 ──
         outer_layout = QVBoxLayout()
         outer_layout.setContentsMargins(16, 18, 16, 16)
         outer_layout.setSpacing(12)
-        outer_layout.addWidget(form_container)
+        outer_layout.addWidget(edit_actions)
+        outer_layout.addWidget(vision_group)
+        outer_layout.addWidget(text_group)
+        outer_layout.addWidget(basic_group)
         outer_layout.addWidget(self._build_advanced_llm_params_group(settings, tab))
         outer_layout.addStretch(1)
         tab.setLayout(outer_layout)
         return tab
+
+    def _populate_profile_combo(self, combo: QComboBox, profiles: list) -> None:
+        combo.clear()
+        for p in profiles:
+            alias = p.alias if p.alias else p.id
+            combo.addItem(alias, p.id)
+        if combo.count() == 0:
+            combo.addItem("（无配置）", "")
+
+    def _populate_model_combo(self, combo: ModelComboBox, model_names: list[str]) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(model_names)
+        combo.blockSignals(False)
+
+    def _set_profile_combo_value(self, combo: QComboBox, profile_id: str) -> None:
+        index = combo.findData(profile_id)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _sync_text_model_enabled(self, owner: Any, enabled: bool) -> None:
+        owner.text_profile_combo.setEnabled(enabled)
+        owner.text_model_combo.setEnabled(enabled)
 
     def _build_advanced_llm_params_group(self, settings: ApiSettings, parent: QWidget) -> QGroupBox:
         owner = self.dialog
