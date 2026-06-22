@@ -288,11 +288,21 @@ class HuggingFaceSensoryModelDialog(QDialog):
         if not models:
             self.status_label.setText("没有找到匹配的 Hugging Face 模型。")
             return
+        clear_count = 0
+        possible_count = 0
         for model in models:
             repo_id = str(model.get("repo_id") or "").strip()
             if not repo_id:
                 continue
             details: list[str] = [repo_id]
+            compatibility_label = str(model.get("compatibility_label") or "").strip()
+            if compatibility_label:
+                details.append(compatibility_label)
+            compatibility = str(model.get("compatibility") or "").strip()
+            if compatibility == "clear":
+                clear_count += 1
+            elif compatibility == "possible":
+                possible_count += 1
             pipeline_tag = str(model.get("pipeline_tag") or "").strip()
             if pipeline_tag:
                 details.append(pipeline_tag)
@@ -304,10 +314,16 @@ class HuggingFaceSensoryModelDialog(QDialog):
                 details.append(f"{likes} likes")
             item = QListWidgetItem("  ·  ".join(details))
             item.setData(Qt.ItemDataRole.UserRole, model)
+            reason = str(model.get("compatibility_reason") or "").strip()
+            if reason:
+                item.setToolTip(reason)
             self.results_list.addItem(item)
         if self.results_list.count() > 0:
             self.results_list.setCurrentRow(0)
-        self.status_label.setText(f"已找到 {self.results_list.count()} 个模型。")
+        self.status_label.setText(
+            f"已找到 {self.results_list.count()} 个模型；"
+            f"明显兼容 {clear_count} 个，可能兼容 {possible_count} 个。"
+        )
 
     @Slot(str)
     def _handle_search_failed(self, message: str) -> None:

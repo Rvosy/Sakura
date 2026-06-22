@@ -64,6 +64,9 @@ HF_CLI_INSTALL_HINT = (
 )
 HF_MODEL_SEARCH_LIMIT = 20
 HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
+HF_COMPATIBILITY_CLEAR = "clear"
+HF_COMPATIBILITY_POSSIBLE = "possible"
+HF_COMPATIBILITY_UNKNOWN = "unknown"
 
 
 def _build_sensory_test_audio_data_url() -> str:
@@ -349,6 +352,14 @@ def default_huggingface_query_for_source(source: SensorySource) -> str:
     return "vision-language qwen vl instruct"
 
 
+def primary_huggingface_task_filter_for_source(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "automatic-speech-recognition"
+    if source == SensorySource.SOUND:
+        return "audio-classification"
+    return "image-text-to-text"
+
+
 def search_huggingface_models(
     source: SensorySource,
     query: str,
@@ -358,19 +369,51 @@ def search_huggingface_models(
 ) -> list[dict[str, object]]:
     text = query.strip() or default_huggingface_query_for_source(source)
     count = max(1, min(int(limit), 50))
-    completed = _run_hf_command(
-        [
-            "models",
-            "list",
-            "--search",
-            text,
-            "--limit",
-            str(count),
-            "--format",
-            "json",
-        ],
+    strict_models = _run_huggingface_model_search(
+        text,
+        count,
         timeout_seconds=timeout_seconds,
+        task_filter=primary_huggingface_task_filter_for_source(source),
     )
+    strict_marked = _mark_huggingface_model_compatibility(source, strict_models)
+    clear_models = [
+        model
+        for model in strict_marked
+        if model.get("compatibility") == HF_COMPATIBILITY_CLEAR
+    ]
+    if clear_models:
+        return clear_models
+    broad_models = _run_huggingface_model_search(
+        text,
+        count,
+        timeout_seconds=timeout_seconds,
+        task_filter="",
+    )
+    return _sort_huggingface_model_results(
+        _mark_huggingface_model_compatibility(source, broad_models)
+    )
+
+
+def _run_huggingface_model_search(
+    text: str,
+    limit: int,
+    *,
+    timeout_seconds: int,
+    task_filter: str = "",
+) -> list[dict[str, object]]:
+    args = [
+        "models",
+        "list",
+        "--search",
+        text,
+        "--limit",
+        str(limit),
+        "--format",
+        "json",
+    ]
+    if task_filter:
+        args.extend(["--filter", task_filter])
+    completed = _run_hf_command(args, timeout_seconds=timeout_seconds)
     return _parse_huggingface_model_results(completed.stdout)
 
 
@@ -450,11 +493,134 @@ def _parse_huggingface_model_results(raw_text: str) -> list[dict[str, object]]:
         if not isinstance(repo_id, str) or "/" not in repo_id:
             continue
         result: dict[str, object] = {"repo_id": repo_id.strip()}
-        for key in ("pipeline_tag", "downloads", "likes", "lastModified", "tags"):
+        for key in ("pipeline_tag", "downloads", "likes", "lastModified", "tags", "library_name"):
             if key in item:
                 result[key] = item[key]
         results.append(result)
     return results
+
+
+def _mark_huggingface_model_compatibility(
+    source: SensorySource,
+    models: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            **model,
+            **_huggingface_model_compatibility(source, model),
+        }
+        for model in models
+    ]
+
+
+def _huggingface_model_compatibility(
+    source: SensorySource,
+    model: dict[str, object],
+) -> dict[str, str]:
+    pipeline_tag = str(model.get("pipeline_tag") or "").strip().lower()
+    tags = _normalized_huggingface_tags(model)
+    haystack = " ".join(
+        [
+            str(model.get("repo_id") or ""),
+            pipeline_tag,
+            " ".join(tags),
+            str(model.get("library_name") or ""),
+        ]
+    ).lower()
+    clear_tasks = _clear_huggingface_tasks(source)
+    possible_markers = _possible_huggingface_markers(source)
+    if pipeline_tag in clear_tasks:
+        return {
+            "compatibility": HF_COMPATIBILITY_CLEAR,
+            "compatibility_label": "明显兼容",
+            "compatibility_reason": f"主任务 {pipeline_tag}",
+        }
+    if not pipeline_tag and tags.intersection(clear_tasks):
+        task = sorted(tags.intersection(clear_tasks))[0]
+        return {
+            "compatibility": HF_COMPATIBILITY_CLEAR,
+            "compatibility_label": "明显兼容",
+            "compatibility_reason": f"任务标签 {task}",
+        }
+    if any(marker in haystack for marker in possible_markers):
+        if pipeline_tag:
+            reason = f"命名/标签匹配，主任务 {pipeline_tag}"
+        else:
+            reason = "命名/标签匹配，未声明主任务"
+        return {
+            "compatibility": HF_COMPATIBILITY_POSSIBLE,
+            "compatibility_label": "可能兼容",
+            "compatibility_reason": reason,
+        }
+    return {
+        "compatibility": HF_COMPATIBILITY_UNKNOWN,
+        "compatibility_label": "类型未验证",
+        "compatibility_reason": "未发现明确任务标签",
+    }
+
+
+def _normalized_huggingface_tags(model: dict[str, object]) -> set[str]:
+    raw_tags = model.get("tags")
+    if not isinstance(raw_tags, list):
+        return set()
+    return {
+        str(tag).strip().lower()
+        for tag in raw_tags
+        if str(tag).strip()
+    }
+
+
+def _clear_huggingface_tasks(source: SensorySource) -> set[str]:
+    if source == SensorySource.SPEECH:
+        return {"automatic-speech-recognition", "audio-text-to-text"}
+    if source == SensorySource.SOUND:
+        return {"audio-classification"}
+    return {
+        "image-text-to-text",
+        "visual-question-answering",
+        "image-to-text",
+        "document-question-answering",
+    }
+
+
+def _possible_huggingface_markers(source: SensorySource) -> tuple[str, ...]:
+    if source == SensorySource.SPEECH:
+        return ("whisper", "faster-whisper", "asr", "speech", "sensevoice", "wav2vec")
+    if source == SensorySource.SOUND:
+        return ("audio-classification", "sound-event", "yamnet", "audio-spectrogram", "panns")
+    return (
+        "vision-language",
+        "vlm",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "qwen2_5_vl",
+        "qwen3-vl",
+        "qwen3_vl",
+        "llava",
+        "internvl",
+        "minicpm-v",
+        "molmo",
+        "image-text-to-text",
+    )
+
+
+def _sort_huggingface_model_results(models: list[dict[str, object]]) -> list[dict[str, object]]:
+    order = {
+        HF_COMPATIBILITY_CLEAR: 0,
+        HF_COMPATIBILITY_POSSIBLE: 1,
+        HF_COMPATIBILITY_UNKNOWN: 2,
+    }
+    return sorted(
+        models,
+        key=lambda model: (
+            order.get(str(model.get("compatibility") or ""), 3),
+            -int(model.get("downloads") or 0)
+            if isinstance(model.get("downloads"), int)
+            else 0,
+            str(model.get("repo_id") or "").lower(),
+        ),
+    )
 
 
 def _get_json(url: str, timeout_seconds: int, *, api_key: str = "") -> dict[str, object]:
