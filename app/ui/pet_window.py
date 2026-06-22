@@ -88,7 +88,12 @@ from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.debug_log import debug_log, summarize_messages
-from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.config.settings_service import (
+    BackchannelSettings,
+    BubbleSettings,
+    CharacterBehaviorSettings,
+    StartupSettings,
+)
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
 from app.backchannel.controller import BackchannelController
@@ -594,10 +599,14 @@ class PetWindow(QWidget):
         self.screen_awareness_settings = getattr(context, "screen_awareness_settings", None)
         if self.screen_awareness_settings is None:
             self.screen_awareness_settings = context.proactive_care_settings
+        self.character_behavior_settings = self.settings_service.load_character_behavior_settings()
         self.model_vision_enabled = self.screen_observation_enabled
         self.agent_runtime.set_model_vision_enabled(self.model_vision_enabled)
         self.agent_runtime.set_autonomous_screen_observation_enabled(
             self.autonomous_screen_observation_enabled
+        )
+        self.agent_runtime.set_pet_state_enabled(
+            self.character_behavior_settings.mood_enabled
         )
         self.free_access_enabled = self._load_free_access_enabled()
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
@@ -1088,6 +1097,10 @@ class PetWindow(QWidget):
             return
         for tool in create_pet_state_tools(store):
             self.tool_registry.register(tool)
+
+    def _pet_state_behavior_enabled(self) -> bool:
+        settings = getattr(self, "character_behavior_settings", None)
+        return bool(getattr(settings, "mood_enabled", False))
 
     @Slot(object)
     def _handle_pet_state_changed(self, snapshot: object) -> None:
@@ -3125,10 +3138,11 @@ class PetWindow(QWidget):
             store=getattr(self, "visual_observation_store", None),
             has_current_image=manual_observation is not None,
         )
-        request_messages = _add_pet_state_context_to_messages(
-            request_messages,
-            getattr(self, "pet_state_store", None),
-        )
+        if self._pet_state_behavior_enabled():
+            request_messages = _add_pet_state_context_to_messages(
+                request_messages,
+                getattr(self, "pet_state_store", None),
+            )
         # 注入运行时事件上下文：与视觉上下文同样只进 request_messages，不写入 self.messages、不持久化。
         runtime_event_queue = getattr(self, "runtime_event_queue", None)
         if runtime_event_queue is not None:
@@ -4217,6 +4231,8 @@ class PetWindow(QWidget):
         self._log_interaction_stage("event_worker_started")
 
     def _event_with_pet_state_context(self, event: AgentEvent) -> AgentEvent:
+        if not self._pet_state_behavior_enabled():
+            return event
         store = getattr(self, "pet_state_store", None)
         if store is None:
             return event

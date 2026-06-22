@@ -100,6 +100,7 @@ class AgentRuntime:
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+        self.pet_state_enabled = False
 
     def update_character(
         self,
@@ -196,6 +197,10 @@ class AgentRuntime:
     def set_runtime_loop_settings(self, settings: RuntimeLoopSettings | None) -> None:
         """同步工具循环限制，后续对话从新设置开始生效。"""
         self.runtime_loop_settings = normalize_runtime_loop_settings(settings)
+
+    def set_pet_state_enabled(self, enabled: bool) -> None:
+        """控制桌宠状态工具是否对模型可见。"""
+        self.pet_state_enabled = bool(enabled)
 
     def _resolve_dialogue_params(self) -> tuple[float, dict[str, Any]]:
         """读取角色对话生成参数，兼容测试桩和外部传入的旧客户端实现。"""
@@ -330,7 +335,9 @@ class AgentRuntime:
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory", "pet_state"}
+        active_groups: set[str] = {"default", "mcp", "memory"}
+        if self.pet_state_enabled:
+            active_groups.add("pet_state")
         turn_memory_fragments = ()
         memory_status = "unknown"
         memory_needs_refresh = True
@@ -1054,26 +1061,35 @@ class AgentRuntime:
         browser_page_rule = tool_routing._build_browser_page_mode_rule(browser_page_mode)
         visible_browser_rule = tool_routing._build_visible_browser_mode_rule(visible_browser_mode)
         web_tool_capability_rule = tool_routing._build_web_tool_capability_rule(visible_browser_mode)
-        capability_rules = "\n".join(
-            [
-                "可用工具能力领域：",
-                web_tool_capability_rule,
-                "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
-                "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
-                "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
-                "- 桌宠状态：读取当前心情/状态用 pet_state_get；长期心情变化用 pet_state_update。",
-            ]
-        )
+        capability_lines = [
+            "可用工具能力领域：",
+            web_tool_capability_rule,
+            "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
+            "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
+            "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
+        ]
+        tool_rule_lines = [
+            "- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。",
+            "- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。",
+            "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
+            "- 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。",
+        ]
+        if self.pet_state_enabled:
+            capability_lines.append(
+                "- 桌宠状态：读取当前心情/状态用 pet_state_get；长期心情变化用 pet_state_update。"
+            )
+            tool_rule_lines.extend(
+                [
+                    "- 用户询问 Sakura 当前心情、状态、感觉如何、是否开心/难过/累等桌宠状态时，必须先调用 pet_state_get，再根据工具结果回答。",
+                    "- 本轮互动会改变跨轮次心情时，必须在最终回复前调用 pet_state_update；若只是询问当前状态且状态不变，只调用 pet_state_get，不要为了形式调用 pet_state_update。",
+                    "- pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。",
+                    "- 最终回复不需要每次携带 pet_state_delta；如果携带，它只是可选建议/debug/审计信息，不能替代 pet_state_update。",
+                ]
+            )
+        capability_rules = "\n".join(capability_lines)
         tool_rules = "\n".join(
             [
-                "- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。",
-                "- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。",
-                "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
-                "- 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。",
-                "- 用户询问 Sakura 当前心情、状态、感觉如何、是否开心/难过/累等桌宠状态时，必须先调用 pet_state_get，再根据工具结果回答。",
-                "- 本轮互动会改变跨轮次心情时，必须在最终回复前调用 pet_state_update；若只是询问当前状态且状态不变，只调用 pet_state_get，不要为了形式调用 pet_state_update。",
-                "- pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。",
-                "- 最终回复不需要每次携带 pet_state_delta；如果携带，它只是可选建议/debug/审计信息，不能替代 pet_state_update。",
+                *tool_rule_lines,
                 "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
                 "- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。",
                 screen_observation_rule,
