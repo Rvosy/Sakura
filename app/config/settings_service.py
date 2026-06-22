@@ -15,7 +15,17 @@ from app.config.defaults import (
     DEFAULT_TEXT_MODEL,
     DEFAULT_VISION_MODEL,
 )
-from app.config.models import ApiConfigProfile, ModelSelectionSettings
+from app.config.model_slots import normalize_provider_models
+from app.config.models import (
+    MODEL_SLOT_CHAT,
+    MODEL_SLOT_MEMORY_CURATION,
+    MODEL_SLOT_THEME_AI,
+    MODEL_SLOT_VISION_CHAT,
+    MODEL_SLOT_VISUAL_CONTEXT,
+    ApiConfigProfile,
+    ModelSelectionSettings,
+    ModelSlotSelection,
+)
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
 from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
@@ -196,46 +206,47 @@ class AppSettingsService:
         data = load_yaml_mapping(self.api_config_path)
         raw_profiles = data.get("api_profiles")
         if isinstance(raw_profiles, list) and raw_profiles:
+            legacy_models = _legacy_model_names(data)
             profiles: list[ApiConfigProfile] = []
             for raw in raw_profiles:
                 if not isinstance(raw, dict):
                     continue
+                models = normalize_provider_models(raw.get("models"))
+                if not models:
+                    models = tuple(legacy_models)
                 profiles.append(
                     ApiConfigProfile(
                         id=str(raw.get("id", "")).strip(),
                         alias=str(raw.get("alias", "")).strip(),
-                        base_url=str(raw.get("base_url", DEFAULT_BASE_URL)).strip(),
+                        base_url=str(raw.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
                         api_key=str(raw.get("api_key", "")).strip(),
+                        models=models,
                     )
                 )
+            if any("models" not in raw for raw in raw_profiles if isinstance(raw, dict)):
+                self.save_api_profiles(profiles)
             return profiles
 
         # 旧格式迁移：从 llm 键读取单条配置
         llm = _mapping(data.get("llm"))
+        old_model = str(llm.get("model", "")).strip()
         if llm.get("base_url"):
             profile = ApiConfigProfile(
                 id=DEFAULT_PROFILE_ID,
                 alias=DEFAULT_PROFILE_ALIAS,
                 base_url=str(llm.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
                 api_key=str(llm.get("api_key", "")).strip(),
+                models=tuple(_dedupe([old_model or DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL])),
             )
             # 写入新格式
             self.save_api_profiles([profile])
-            # 同时提取旧模型名
-            old_model = str(llm.get("model", "")).strip()
-            if old_model:
-                existing_names = self.load_global_model_names()
-                if old_model not in existing_names:
-                    existing_names.append(old_model)
-                    self.save_global_model_names(existing_names)
             # 设置 model_selection 指向迁移后的默认配置
             self.save_model_selection(
                 ModelSelectionSettings(
-                    vision_profile_id=DEFAULT_PROFILE_ID,
-                    vision_model=old_model or DEFAULT_VISION_MODEL,
-                    text_enabled=True,
-                    text_profile_id=DEFAULT_PROFILE_ID,
-                    text_model=old_model or DEFAULT_TEXT_MODEL,
+                    chat=ModelSlotSelection(
+                        profile_id=DEFAULT_PROFILE_ID,
+                        model=old_model or DEFAULT_TEXT_MODEL,
+                    ),
                 )
             )
             return [profile]
@@ -249,6 +260,7 @@ class AppSettingsService:
                 "alias": p.alias,
                 "base_url": p.base_url.strip().rstrip("/"),
                 "api_key": p.api_key.strip(),
+                "models": [{"name": name} for name in _dedupe(p.models)],
             }
             for p in profiles
         ]
@@ -256,6 +268,14 @@ class AppSettingsService:
 
     def load_global_model_names(self) -> list[str]:
         data = load_yaml_mapping(self.api_config_path)
+        profiles = data.get("api_profiles")
+        if isinstance(profiles, list):
+            names: list[str] = []
+            for raw in profiles:
+                if isinstance(raw, dict):
+                    names.extend(normalize_provider_models(raw.get("models")))
+            if names:
+                return _dedupe(names)
         raw = data.get("model_names")
         if isinstance(raw, list):
             return [str(m).strip() for m in raw if isinstance(m, str) and m.strip()]
@@ -263,26 +283,83 @@ class AppSettingsService:
 
     def save_global_model_names(self, names: list[str]) -> None:
         data = load_yaml_mapping(self.api_config_path)
-        data["model_names"] = [n.strip() for n in names if n.strip()]
+        data["model_names"] = _dedupe(names)
         save_yaml_mapping(self.api_config_path, data)
 
     def load_model_selection(self) -> ModelSelectionSettings:
         data = load_yaml_mapping(self.api_config_path)
+        raw_slots = data.get("model_slots")
+        if isinstance(raw_slots, dict):
+            return ModelSelectionSettings(
+                chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
+                vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
+                visual_context=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISUAL_CONTEXT)),
+                memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
+                theme_ai=_optional_slot_selection(raw_slots.get(MODEL_SLOT_THEME_AI)),
+            )
+
+        # #110 旧格式迁移：视觉/文本模型两槽位。
+        if any(
+            key in data
+            for key in (
+                "vision_profile_id",
+                "vision_model",
+                "text_enabled",
+                "text_profile_id",
+                "text_model",
+            )
+        ):
+            text_enabled = _bool_value(data.get("text_enabled"), True)
+            if text_enabled:
+                settings = ModelSelectionSettings(
+                    chat=ModelSlotSelection(
+                        profile_id=str(data.get("text_profile_id", "")).strip(),
+                        model=str(data.get("text_model", DEFAULT_TEXT_MODEL)).strip(),
+                    ),
+                    vision_chat=ModelSlotSelection(
+                        profile_id=str(data.get("vision_profile_id", "")).strip(),
+                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                    ),
+                )
+            else:
+                settings = ModelSelectionSettings(
+                    chat=ModelSlotSelection(
+                        profile_id=str(data.get("vision_profile_id", "")).strip(),
+                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                    ),
+                )
+            self.save_model_selection(settings)
+            return settings
+
+        llm = _mapping(data.get("llm"))
+        old_model = str(llm.get("model", "")).strip()
         return ModelSelectionSettings(
-            vision_profile_id=str(data.get("vision_profile_id", "")).strip(),
-            vision_model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
-            text_enabled=_bool_value(data.get("text_enabled"), True),
-            text_profile_id=str(data.get("text_profile_id", "")).strip(),
-            text_model=str(data.get("text_model", DEFAULT_TEXT_MODEL)).strip(),
+            chat=ModelSlotSelection(
+                profile_id=DEFAULT_PROFILE_ID if llm.get("base_url") else "",
+                model=old_model or DEFAULT_TEXT_MODEL,
+            ),
         )
 
     def save_model_selection(self, settings: ModelSelectionSettings) -> None:
         data = load_yaml_mapping(self.api_config_path)
-        data["vision_profile_id"] = settings.vision_profile_id.strip()
-        data["vision_model"] = settings.vision_model.strip()
-        data["text_enabled"] = bool(settings.text_enabled)
-        data["text_profile_id"] = settings.text_profile_id.strip()
-        data["text_model"] = settings.text_model.strip()
+        slots: dict[str, dict[str, str]] = {}
+        for slot in (
+            MODEL_SLOT_CHAT,
+            MODEL_SLOT_VISION_CHAT,
+            MODEL_SLOT_VISUAL_CONTEXT,
+            MODEL_SLOT_MEMORY_CURATION,
+            MODEL_SLOT_THEME_AI,
+        ):
+            selection = settings.get(slot)
+            if selection is None:
+                continue
+            if slot != MODEL_SLOT_CHAT and not selection.configured:
+                continue
+            slots[slot] = {
+                "profile_id": selection.profile_id.strip(),
+                "model": selection.model.strip(),
+            }
+        data["model_slots"] = slots
         save_yaml_mapping(self.api_config_path, data)
 
     def load_tts_settings(
@@ -657,6 +734,45 @@ class AppSettingsService:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _slot_selection(raw: object) -> ModelSlotSelection:
+    if not isinstance(raw, dict):
+        return ModelSlotSelection()
+    return ModelSlotSelection(
+        profile_id=str(raw.get("profile_id", "")).strip(),
+        model=str(raw.get("model", "")).strip(),
+    )
+
+
+def _optional_slot_selection(raw: object) -> ModelSlotSelection | None:
+    selection = _slot_selection(raw)
+    return selection if selection.configured else None
+
+
+def _legacy_model_names(data: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    raw_names = data.get("model_names")
+    if isinstance(raw_names, list):
+        names.extend(str(item).strip() for item in raw_names if isinstance(item, str))
+    for key in ("vision_model", "text_model"):
+        names.append(str(data.get(key, "")).strip())
+    llm = _mapping(data.get("llm"))
+    names.append(str(llm.get("model", "")).strip())
+    return _dedupe(names)
+
+
+def _dedupe(values: object) -> list[str]:
+    result: list[str] = []
+    if isinstance(values, (str, bytes)):
+        candidates = [str(values)]
+    else:
+        candidates = list(values or [])  # type: ignore[arg-type]
+    for value in candidates:
+        text = str(value).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _optional_path(value: Any, base_dir: Path) -> Path | None:
