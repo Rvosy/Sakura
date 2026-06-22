@@ -581,6 +581,7 @@ class SettingsDialog(QDialog):
             "\n".join(
                 [
                     f"版本：{spec.version}",
+                    f"作者：{spec.author or '未声明'}",
                     f"优先级：{spec.priority}",
                     f"来源：{source}",
                     f"状态：{status}",

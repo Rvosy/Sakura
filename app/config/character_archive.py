@@ -216,9 +216,11 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
             path.is_file()
             and _resolved(path) != _resolved(destination)
             and path.name != "character.json"
-            and (include_voice or not _is_voice_package_file(profile.package_dir, path))
+            and not _is_voice_package_file(profile.package_dir, path)
         )
     ]
+    if include_voice:
+        package_files.extend(_referenced_voice_package_files(profile.package_dir, profile.voice))
     package_archive_names = {
         _archive_path_for_package_file(profile.package_dir, path).as_posix()
         for path in package_files
@@ -312,8 +314,8 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
 
     voice_files = [
         path
-        for path in (profile.package_dir / VOICE_ARCHIVE_ROOT.as_posix()).rglob("*")
-        if path.is_file() and _resolved(path) != _resolved(destination)
+        for path in _referenced_voice_package_files(profile.package_dir, profile.voice)
+        if _resolved(path) != _resolved(destination)
     ]
     voice_archive_names = {
         _voice_archive_path_for_package_file(profile.package_dir, path).as_posix()
@@ -571,6 +573,53 @@ def _validate_voice_referenced_files(package_dir: Path, voice_data: dict[str, st
         if not path.is_file():
             raise CharacterArchiveError(f"{label}不存在：{path}")
 
+
+
+def _referenced_voice_package_files(package_dir: Path, voice: Any) -> list[Path]:
+    if voice is None:
+        return []
+
+    candidates = [
+        getattr(voice, "gpt_model_path", None),
+        getattr(voice, "sovits_model_path", None),
+        getattr(voice, "tone_ref_path", None),
+    ]
+    candidates.extend(_tone_ref_audio_files(package_dir, getattr(voice, "tone_ref_path", None)))
+
+    package_root = _resolved(package_dir)
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = _resolved(Path(candidate))
+        try:
+            rel = path.relative_to(package_root)
+        except ValueError:
+            continue
+        if not rel.parts or rel.parts[0] != VOICE_ARCHIVE_ROOT.as_posix():
+            continue
+        if path.is_file() and path not in seen:
+            result.append(path)
+            seen.add(path)
+    return result
+
+
+def _tone_ref_audio_files(package_dir: Path, tone_ref_path: Path | None) -> list[Path]:
+    if tone_ref_path is None or not tone_ref_path.is_file():
+        return []
+    try:
+        lines = tone_ref_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CharacterArchiveError(f"语气参考表无法读取：{tone_ref_path}") from exc
+
+    paths: list[Path] = []
+    for raw in lines:
+        audio_text = raw.split("|", 1)[0].strip()
+        if not audio_text:
+            continue
+        paths.append(package_dir / _safe_package_path(audio_text, "参考音频"))
+    return paths
 
 def _write_character_manifest(package_dir: Path, character_data: dict[str, Any]) -> None:
     (package_dir / "character.json").write_text(

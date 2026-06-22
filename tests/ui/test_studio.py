@@ -28,6 +28,43 @@ def _studio_runtime_root(name: str) -> Path:
     return root
 
 
+
+def test_workspace_rejects_package_paths_outside_directory() -> None:
+    import json
+
+    from tools.studio.workspace import Workspace, WorkspaceError
+
+    root = _studio_runtime_root("studio_workspace_paths")
+    source = root / "source"
+    source.mkdir()
+    (root / "secret.md").write_text("secret", encoding="utf-8")
+    (source / "portrait.png").write_bytes(b"png")
+    (source / "character.json").write_text(
+        json.dumps(
+            {
+                "id": "source",
+                "display_name": "Source",
+                "card": "../secret.md",
+                "portrait": {"default": "portrait.png"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkspaceError, match="角色卡不能指向角色包外"):
+        Workspace(root / "workspace").open_directory(source)
+
+
+def test_workspace_refuses_overwrite_when_disabled() -> None:
+    from tools.studio.workspace import Workspace, WorkspaceError
+
+    root = _studio_runtime_root("studio_workspace_overwrite")
+    workspace = Workspace(root / "workspace")
+    workspace.new_character("demo")
+
+    with pytest.raises(WorkspaceError, match="工作区已存在角色草稿"):
+        workspace.new_character("demo", overwrite=False)
+
 def test_studio_uses_eight_step_wizard_without_toolbar_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -54,6 +91,28 @@ def test_studio_uses_eight_step_wizard_without_toolbar_actions(
     assert not hasattr(window, "new_button")
     assert not hasattr(window, "export_button")
 
+
+
+def test_studio_cancel_workspace_overwrite_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from tools.studio.app_studio import StudioWindow
+
+    window = StudioWindow(project_root=_studio_runtime_root("studio_overwrite_confirm"))
+    existing = window.workspace.package_dir("demo")
+    existing.mkdir(parents=True)
+    monkeypatch.setattr(
+        "tools.studio.app_studio.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+
+    assert not window._confirm_overwrite_workspace("demo")
+    assert existing.exists()
 
 def test_studio_stepper_and_footer_switch_pages(
     monkeypatch: pytest.MonkeyPatch,
@@ -119,6 +178,25 @@ def test_reference_audio_writes_ref_file_and_reply_tones(
     )
 
 
+
+def test_reference_audio_keeps_existing_reply_tones_when_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.panels.voice_panel import ReferenceAudioPanel
+
+    package_dir = _studio_runtime_root("studio_reference_audio_keep_tones") / "character"
+    panel = ReferenceAudioPanel()
+    panel.bind_package_dir(package_dir)
+    doc = CharacterDoc(id="test", display_name="测试", reply_tones=["温柔", "严肃"])
+
+    panel.write_to(doc)
+
+    assert doc.reply_tones == ["温柔", "严肃"]
+    assert not (package_dir / DEFAULT_TONE_REFS).exists()
+
 def test_voice_model_and_reference_audio_merge_one_voice_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,6 +236,103 @@ def test_voice_model_and_reference_audio_merge_one_voice_draft(
     assert doc.reply_tones == ["中性"]
     assert ref_panel.validate(doc) == []
     assert ref_panel.ref_table.verticalHeader().defaultSectionSize() >= 38
+
+
+
+def test_voice_model_picker_removes_previous_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.panels import voice_panel
+    from tools.studio.panels.voice_panel import VoiceModelPanel
+
+    package_dir = _studio_runtime_root("studio_voice_replace") / "character"
+    models_dir = package_dir / "voice" / "models"
+    models_dir.mkdir(parents=True)
+    old_model = models_dir / "old.ckpt"
+    old_model.write_bytes(b"old")
+    source_model = _studio_runtime_root("studio_voice_replace_source") / "new.ckpt"
+    source_model.write_bytes(b"new")
+
+    panel = VoiceModelPanel()
+    panel.bind_package_dir(package_dir)
+    panel.gpt_edit.setText("voice/models/old.ckpt")
+    copy_states = []
+    real_copy2 = voice_panel.shutil.copy2
+
+    def fake_copy2(src, dst):  # type: ignore[no-untyped-def]
+        copy_states.append(panel.isEnabled())
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(voice_panel.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(
+        voice_panel.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(source_model), ""),
+    )
+
+    panel._pick_gpt()
+
+    assert copy_states == [False]
+    assert panel.isEnabled()
+    assert panel.gpt_edit.text() == "voice/models/new.ckpt"
+    assert not old_model.exists()
+    assert (models_dir / "new.ckpt").read_bytes() == b"new"
+
+
+def test_voice_model_panel_validates_model_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.panels.voice_panel import VoiceModelPanel
+
+    panel = VoiceModelPanel()
+    panel.enable_check.setChecked(True)
+    panel.gpt_edit.setText("voice/models/wrong.pth")
+    panel.sovits_edit.setText("voice/models/wrong.ckpt")
+
+    errors = panel.validate(CharacterDoc(id="test", display_name="测试"))
+
+    assert "GPT 模型 必须是 .ckpt 文件" in errors
+    assert "SoVITS 模型 必须是 .pth 文件" in errors
+
+
+def test_voice_model_picker_rejects_wrong_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.panels import voice_panel
+    from tools.studio.panels.voice_panel import VoiceModelPanel
+
+    package_dir = _studio_runtime_root("studio_voice_wrong_ext") / "character"
+    source_model = _studio_runtime_root("studio_voice_wrong_ext_source") / "bad.pth"
+    source_model.write_bytes(b"bad")
+    warnings = []
+
+    panel = VoiceModelPanel()
+    panel.bind_package_dir(package_dir)
+    monkeypatch.setattr(
+        voice_panel.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(source_model), ""),
+    )
+    monkeypatch.setattr(
+        voice_panel.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: warnings.append(True),
+    )
+
+    panel._pick_gpt()
+
+    assert warnings == [True]
+    assert panel.gpt_edit.text() == ""
+    assert not (package_dir / "voice" / "models" / "bad.pth").exists()
 
 
 def test_portrait_panel_edits_portrait_description_tags() -> None:
@@ -205,6 +380,76 @@ def test_portrait_panel_edits_portrait_description_tags() -> None:
     }
     assert doc.default_portrait == "portraits/A010.png"
 
+
+
+def test_export_step_preview_does_not_write_reference_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.app_studio import StudioWindow
+    from tools.studio.character_doc import VoiceDraft
+
+    project_root = _studio_runtime_root("studio_export_preview")
+    package_dir = project_root / "tools" / "studio" / "workspace" / "characters" / "demo"
+    (package_dir / "voice" / "refs" / "tone_refs").mkdir(parents=True)
+    (package_dir / "voice" / "refs" / "tone_refs" / "neutral.wav").write_bytes(b"wav")
+    window = StudioWindow(project_root=project_root)
+    window._set_doc(
+        CharacterDoc(id="demo", display_name="Demo", voice=VoiceDraft()),
+        package_dir,
+    )
+    ref_panel = window._panels["reference_audio"]
+    ref_panel._add_ref_row("voice/refs/tone_refs/neutral.wav", "JA", "hello", "中性")
+
+    window._go_to_step(7)
+
+    assert not (package_dir / DEFAULT_TONE_REFS).exists()
+    assert "Demo" in window._panels["export"].summary_label.text()
+
+
+def test_studio_export_uses_busy_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from tools.studio.app_studio import StudioWindow
+
+    project_root = _studio_runtime_root("studio_export_busy")
+    package_dir = project_root / "tools" / "studio" / "workspace" / "characters" / "demo"
+    (package_dir / "portraits").mkdir(parents=True)
+    (package_dir / "portraits" / "default.png").write_bytes(b"png")
+    window = StudioWindow(project_root=project_root)
+    window._set_doc(
+        CharacterDoc(
+            id="demo",
+            display_name="Demo",
+            default_portrait="portraits/default.png",
+            expressions={"默认": "portraits/default.png"},
+        ),
+        package_dir,
+    )
+    export_states = []
+
+    def fake_export(doc, package, output):  # type: ignore[no-untyped-def]
+        export_states.append(window.isEnabled())
+
+    window.workspace.export = fake_export  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "tools.studio.app_studio.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(project_root / "demo.char"), ""),
+    )
+    monkeypatch.setattr(
+        "tools.studio.app_studio.QMessageBox.information",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window._on_export()
+
+    assert export_states == [False]
+    assert window.isEnabled()
 
 def test_theme_swatches_keep_individual_colors() -> None:
     _qt_app()

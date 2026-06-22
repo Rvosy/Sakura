@@ -113,11 +113,15 @@ class AgentRuntime:
         runtime_loop_settings: RuntimeLoopSettings | None = None,
         vision_api_client: OpenAICompatibleClient | None = None,
         visual_context_api_client: OpenAICompatibleClient | None = None,
+        character_id: str = "",
+        character_name: str = "",
     ) -> None:
         self.api_client = api_client
         self._vision_api_client = vision_api_client
         self._visual_context_api_client = visual_context_api_client
         self.system_prompt = system_prompt
+        self.character_id = character_id.strip()
+        self.character_name = character_name.strip()
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
@@ -172,9 +176,15 @@ class AgentRuntime:
         system_prompt: str,
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
+        character_id: str = "",
+        character_name: str = "",
     ) -> None:
         """角色切换后同步系统提示词、可用语气和可用立绘列表。"""
         self.system_prompt = system_prompt
+        if character_id:
+            self.character_id = character_id.strip()
+        if character_name:
+            self.character_name = character_name.strip()
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
 
@@ -266,6 +276,8 @@ class AgentRuntime:
             available_tools=(),
             event_payload=event_payload,
             service_status={"memory": "unknown"},
+            character_id=self.character_id,
+            character_name=self.character_name,
         )
         recall = self.memory_recall.recall(request)
         request = replace(request, service_status={"memory": recall.status})
@@ -527,6 +539,8 @@ class AgentRuntime:
                     available_tools=tool_names,
                     event_payload=event_payload,
                     service_status={"memory": memory_status},
+                    character_id=self.character_id,
+                    character_name=self.character_name,
                 )
                 if memory_needs_refresh:
                     recall = self.memory_recall.recall(request)

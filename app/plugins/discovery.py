@@ -106,6 +106,7 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         entry=entry,
         plugin_id=plugin_id,
         name=_string_value(raw.get("name")) or plugin_id,
+        author=_string_value(raw.get("author")),
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
         api_version=_int_value(raw.get("api_version"), 0),

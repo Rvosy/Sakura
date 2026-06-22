@@ -155,7 +155,10 @@ class PluginManager:
                 self.base_dir,
                 manifest,
                 event_bus=self._event_bus,
-                services=self._services.for_plugin(manifest.plugin_id),
+                services=self._services.for_plugin(
+                    manifest.plugin_id,
+                    manifest.permissions,
+                ),
             )
             _initialize_plugin(plugin, capability_registry, context)
             all_tool_contributions = list(capability_registry.tools)
@@ -441,6 +444,7 @@ def _build_manifest(plugin: PluginBase, spec: PluginSpec) -> PluginManifest:
     return PluginManifest(
         plugin_id=plugin_id,
         name=spec.name or plugin_id,
+        author=spec.author,
         description=spec.description,
         version=version or "0.0.0",
         api_version=spec.api_version,
@@ -505,6 +509,7 @@ def _build_plugin_context(
     manifest_view = PluginManifestView(
         plugin_id=manifest.plugin_id,
         name=manifest.name,
+        author=manifest.author,
         description=manifest.description,
         version=manifest.version,
         api_version=manifest.api_version,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -254,7 +255,7 @@ class StudioWindow(QMainWindow):
         if self._doc is None or self._package_dir is None:
             export_panel.set_ready(False)
             return
-        doc = self._write_panels_to_doc()
+        doc = self._write_panels_to_doc(write_files=False)
         if doc is not None:
             export_panel.bind_package_dir(self._package_dir)
             export_panel.load_from(doc)
@@ -310,11 +311,15 @@ class StudioWindow(QMainWindow):
         self._go_to_step(1)
         self._status_label.setText(f"已打开：{package_dir}")
 
-    def _write_panels_to_doc(self) -> CharacterDoc | None:
+    def _write_panels_to_doc(self, *, write_files: bool = True) -> CharacterDoc | None:
         if self._doc is None:
             return None
         for key, _label in STUDIO_STEPS:
-            self._panels[key].write_to(self._doc)
+            panel = self._panels[key]
+            if isinstance(panel, ReferenceAudioPanel):
+                panel.write_to(self._doc, write_files=write_files)
+            else:
+                panel.write_to(self._doc)
         return self._doc
 
     def _collect_validation_errors(self, doc: CharacterDoc) -> list[str]:
@@ -322,6 +327,18 @@ class StudioWindow(QMainWindow):
         for key, _label in STUDIO_STEPS:
             errors.extend(self._panels[key].validate(doc))
         return errors
+
+    def _confirm_overwrite_workspace(self, char_id: str) -> bool:
+        if not self.workspace.package_dir(char_id).exists():
+            return True
+        reply = QMessageBox.question(
+            self,
+            "覆盖草稿",
+            f"工作区已存在角色「{char_id}」的草稿，继续会删除旧草稿。是否覆盖？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     # ---- 按钮处理 ---------------------------------------------------------
 
@@ -335,6 +352,8 @@ class StudioWindow(QMainWindow):
         if not char_id or not ID_PATTERN.match(char_id):
             QMessageBox.warning(self, "无效的角色 ID", "角色 ID 只能包含字母、数字、_ . -")
             return
+        if not self._confirm_overwrite_workspace(char_id):
+            return
         pkg, doc = self.workspace.new_character(char_id)
         self._set_doc(doc, pkg)
         self._status_label.setText(f"已新建：{char_id}（请补充立绘并指定默认立绘后再导出）")
@@ -344,8 +363,11 @@ class StudioWindow(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "选择角色包目录", start)
         if not directory:
             return
+        src_dir = Path(directory)
+        if not self._confirm_overwrite_workspace(src_dir.name):
+            return
         try:
-            pkg, doc = self.workspace.open_directory(Path(directory))
+            pkg, doc = self.workspace.open_directory(src_dir)
         except Exception as exc:  # noqa: BLE001 - 统一弹窗反馈
             QMessageBox.critical(self, "打开失败", str(exc))
             return
@@ -393,7 +415,14 @@ class StudioWindow(QMainWindow):
         if not path:
             return
         try:
-            self.workspace.export(doc, self._package_dir, Path(path))
+            self.setEnabled(False)
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
+            try:
+                self.workspace.export(doc, self._package_dir, Path(path))
+            finally:
+                QApplication.restoreOverrideCursor()
+                self.setEnabled(True)
         except CharacterConfigError as exc:
             QMessageBox.warning(self, "校验未通过", f"角色包存在问题，无法导出：\n\n{exc}")
             return

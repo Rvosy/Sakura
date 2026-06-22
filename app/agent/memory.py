@@ -271,6 +271,21 @@ class MemoryStore:
 
         self.scope_id = _normalize_scope_id(scope_id)
 
+    def scoped(self, scope_id: str) -> "MemoryStore":
+        """Return an independent, fixed-scope view of this store.
+
+        Callers that need another character's memories must not temporarily
+        mutate ``scope_id`` on the shared host store: desktop workers may be
+        reading it at the same time. The view can share an already-created
+        mem0 client, while keeping all scope selection local to the caller.
+        """
+        return MemoryStore(
+            base_dir=self.base_dir,
+            api_settings=self.api_settings,
+            scope_id=scope_id,
+            memory_client=self._memory or self.memory_client,
+        )
+
     def set_api_settings(self, api_settings: "ApiSettings") -> None:
         """API 设置变更后重置 mem0，下次使用新配置重新初始化。"""
 

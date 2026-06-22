@@ -22,6 +22,7 @@ PERMISSION_SETTINGS_PANEL = "settings_panel"
 PERMISSION_CHAT_UI = "chat_ui"
 PERMISSION_PROMPT_PATCH = "prompt_patch"
 PERMISSION_CONTEXT_PROVIDER = "context_provider"
+PERMISSION_MOBILE_CHAT = "mobile_chat"
 PERMISSION_RENDERER = "renderer"
 PERMISSION_EVENT_APP = "event.app"
 PERMISSION_EVENT_MESSAGE = "event.message"
@@ -36,6 +37,7 @@ KNOWN_PLUGIN_PERMISSIONS = frozenset(
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
         PERMISSION_CONTEXT_PROVIDER,
+        PERMISSION_MOBILE_CHAT,
         PERMISSION_RENDERER,
         PERMISSION_EVENT_APP,
         PERMISSION_EVENT_MESSAGE,
@@ -155,6 +157,7 @@ class PluginManifestView:
     plugin_id: str
     name: str
     version: str
+    author: str = ""
     description: str = ""
     api_version: int = PLUGIN_API_VERSION
     priority: int = 100
@@ -178,6 +181,7 @@ class PluginManifest:
 
     plugin_id: str
     name: str = ""
+    author: str = ""
     description: str = ""
     version: str = "0.0.0"
     api_version: int = PLUGIN_API_VERSION
@@ -198,6 +202,7 @@ class PluginSpec:
     priority: int = 100
     plugin_id: str = ""
     name: str = ""
+    author: str = ""
     description: str = ""
     version: str = "0.0.0"
     api_version: int = PLUGIN_API_VERSION

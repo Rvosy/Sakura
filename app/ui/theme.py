@@ -557,7 +557,8 @@ QLineEdit[readOnly="true"] {{
     background: {rgba(mix(theme.panel_background_color, "#808080", 0.14), 188)};
     border: 1px solid {rgba(mix(theme.border_color, "#808080", 0.22), 118)};
     color: {rgba(theme.muted_text_color, 172)};
-    selection-background-color: transparent;
+    selection-background-color: {rgba(theme.primary_color, 71)};
+    selection-color: {theme.text_color};
 }}
 QComboBox {{
     combobox-popup: 0;

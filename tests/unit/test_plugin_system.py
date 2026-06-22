@@ -148,6 +148,7 @@ class TestPluginDiscovery:
         assert len(specs) == 1
         assert specs[0].plugin_id == "demo"
         assert specs[0].entry == "plugin:DemoPlugin"
+        assert specs[0].author == "Demo Author"
         assert specs[0].description == "demo 插件介绍"
         assert specs[0].priority == 200
         assert specs[0].enabled is False
@@ -238,6 +239,8 @@ class TestPluginManager:
         results = mgr.load_all(registry)
 
         assert results[0].loaded
+        assert results[0].manifest is not None
+        assert results[0].manifest.author == "Demo Author"
         assert registry.get("demo_echo") is not None
         assert registry.execute("demo_echo", {"text": "hi"}).content == {"text": "hi"}
         assert [tab.title for tab in mgr.tools_tabs] == ["Demo 工具"]
@@ -476,6 +479,7 @@ def _write_plugin_manifest(
 api_version: 1
 id: {plugin_id}
 name: {plugin_id}
+author: Demo Author
 description: demo 插件介绍
 version: 1.0.0
 entry: plugin:DemoPlugin

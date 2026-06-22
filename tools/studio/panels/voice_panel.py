@@ -5,8 +5,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QFileDialog,
@@ -26,7 +27,10 @@ from PySide6.QtWidgets import (
 from tools.studio.character_doc import DEFAULT_TONE_REFS, CharacterDoc, VoiceDraft
 from tools.studio.panels.base import StudioPanel
 
-MODEL_EXTS = "GPT-SoVITS 模型 (*.ckpt *.pth);;所有文件 (*)"
+GPT_MODEL_EXT = ".ckpt"
+SOVITS_MODEL_EXT = ".pth"
+GPT_MODEL_FILTER = "GPT 模型 (*.ckpt);;所有文件 (*)"
+SOVITS_MODEL_FILTER = "SoVITS 模型 (*.pth);;所有文件 (*)"
 AUDIO_FILTER = "音频 (*.ogg *.wav *.mp3 *.flac);;所有文件 (*)"
 MODELS_SUBDIR = "voice/models"
 TONE_REFS_SUBDIR = "voice/refs/tone_refs"
@@ -53,6 +57,18 @@ def _copy_into(package_dir: Path, src: Path, subdir: str) -> str:
     return f"{subdir}/{src.name}"
 
 
+
+def _remove_previous_model(package_dir: Path, old_rel: str, keep_rel: str) -> None:
+    if not old_rel or old_rel == keep_rel:
+        return
+    models_dir = (package_dir / MODELS_SUBDIR).resolve()
+    old_path = (package_dir / old_rel).resolve()
+    try:
+        old_path.relative_to(models_dir)
+    except ValueError:
+        return
+    if old_path.is_file():
+        old_path.unlink(missing_ok=True)
 def _with_button(edit: QLineEdit, text: str, slot) -> QWidget:
     wrap = QWidget()
     wrap.setObjectName("studioInlineField")
@@ -115,17 +131,30 @@ class VoiceModelPanel(StudioPanel):
         self.body.setEnabled(enabled)
 
     def _pick_gpt(self) -> None:
-        self._pick_model(self.gpt_edit)
+        self._pick_model(self.gpt_edit, GPT_MODEL_EXT, GPT_MODEL_FILTER, "GPT 模型")
 
     def _pick_sovits(self) -> None:
-        self._pick_model(self.sovits_edit)
+        self._pick_model(self.sovits_edit, SOVITS_MODEL_EXT, SOVITS_MODEL_FILTER, "SoVITS 模型")
 
-    def _pick_model(self, edit: QLineEdit) -> None:
+    def _pick_model(self, edit: QLineEdit, expected_ext: str, file_filter: str, label: str) -> None:
         if self._package_dir is None:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "选择模型文件", "", MODEL_EXTS)
+        path, _ = QFileDialog.getOpenFileName(self, "选择模型文件", "", file_filter)
         if path:
-            edit.setText(_copy_into(self._package_dir, Path(path), MODELS_SUBDIR))
+            if Path(path).suffix.lower() != expected_ext:
+                QMessageBox.warning(self, "模型类型不匹配", f"{label} 请选择 {expected_ext} 文件。")
+                return
+            old_rel = edit.text().strip()
+            self.setEnabled(False)
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
+            try:
+                new_rel = _copy_into(self._package_dir, Path(path), MODELS_SUBDIR)
+                _remove_previous_model(self._package_dir, old_rel, new_rel)
+            finally:
+                QApplication.restoreOverrideCursor()
+                self.setEnabled(True)
+            edit.setText(new_rel)
 
     def load_from(self, doc: CharacterDoc) -> None:
         voice = doc.voice
@@ -135,6 +164,19 @@ class VoiceModelPanel(StudioPanel):
         self.sovits_edit.setText(voice.sovits_model or "" if voice else "")
         self.ref_lang_edit.setText(voice.ref_lang if voice else "ja")
         self.text_lang_edit.setText(voice.text_lang if voice else "ja")
+
+    def validate(self, doc: CharacterDoc) -> list[str]:
+        if not self.enable_check.isChecked():
+            return []
+        errors: list[str] = []
+        for label, edit, expected_ext in (
+            ("GPT 模型", self.gpt_edit, GPT_MODEL_EXT),
+            ("SoVITS 模型", self.sovits_edit, SOVITS_MODEL_EXT),
+        ):
+            path_text = edit.text().strip()
+            if path_text and Path(path_text).suffix.lower() != expected_ext:
+                errors.append(f"{label} 必须是 {expected_ext} 文件")
+        return errors
 
     def write_to(self, doc: CharacterDoc) -> None:
         if not self.enable_check.isChecked():
@@ -254,11 +296,13 @@ class ReferenceAudioPanel(StudioPanel):
                 parts.append("")
             self._add_ref_row(parts[0], parts[1], parts[2], parts[3])
 
-    def write_to(self, doc: CharacterDoc) -> None:
+    def write_to(self, doc: CharacterDoc, *, write_files: bool = True) -> None:
         rows = self._rows()
-        doc.reply_tones = self._tone_labels(rows)
+        tones = self._tone_labels(rows)
+        if tones:
+            doc.reply_tones = tones
 
-        if self._package_dir is not None and (doc.voice is not None or rows):
+        if write_files and self._package_dir is not None and (doc.voice is not None or rows):
             ref_path = self._package_dir / DEFAULT_TONE_REFS
             ref_path.parent.mkdir(parents=True, exist_ok=True)
             lines = ["|".join(row) for row in rows if any(row)]

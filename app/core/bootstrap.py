@@ -178,6 +178,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         memory=memory_store,
         history_store=history_store,
         runtime_loop_settings=runtime_loop_settings,
+        character_id=character_profile.id,
+        character_name=character_profile.display_name,
     )
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = create_visual_observation_store(base_dir, character_profile)
