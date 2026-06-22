@@ -10,10 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agent.actions import AgentResult
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterProfile
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
+from app.llm.chat_reply import ChatReply, ChatSegment
+from app.storage.chat_history import ChatHistoryEntry
 from plugins.sakura_mobile import server as mobile_server
 
 
@@ -115,7 +118,6 @@ def test_mobile_session_keeps_empty_tool_registry(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(bridge_module, "AgentRuntime", FakeRuntime)
     monkeypatch.setattr(bridge_module, "OpenAICompatibleClient", lambda _settings: object())
     monkeypatch.setattr(bridge_module, "load_character_system_prompt", lambda _profile: "")
-    monkeypatch.setattr(bridge_module, "MemoryCurator", lambda *_args, **_kwargs: object())
 
     host_tools = ToolRegistry(
         [
@@ -145,6 +147,104 @@ def test_mobile_session_keeps_empty_tool_registry(monkeypatch: pytest.MonkeyPatc
     session = MobileChatBridge(host)._session("demo")
 
     assert session.runtime.tools.get("host_tool") is None
+
+
+def test_mobile_chat_returns_without_inline_memory_curation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.core.mobile_chat_bridge as bridge_module
+    base_dir = _runtime_root("no_inline_curation")
+
+    class FakeRuntime:
+        def __init__(self, *args: object, tools: ToolRegistry, **kwargs: object) -> None:
+            self.tools = tools
+            self.api_client = SimpleNamespace(update_settings=lambda _settings: None)
+            self.system_prompt = ""
+
+        def set_autonomous_screen_observation_enabled(self, _enabled: bool) -> None:
+            pass
+
+        def set_prompt_patches(self, _patches: list[object]) -> None:
+            pass
+
+        def set_context_providers(self, _providers: list[object]) -> None:
+            pass
+
+        def handle_user_message(self, _messages: list[object]) -> AgentResult:
+            return AgentResult(ChatReply([ChatSegment("返事。", translation="回复。")]))
+
+    class HistoryStore:
+        def __init__(self) -> None:
+            self.entries: list[ChatHistoryEntry] = []
+
+        def append(
+            self,
+            role: str,
+            content: str,
+            translation: str = "",
+            tone: str = "",
+            portrait: str = "",
+            _debug: dict | None = None,
+        ) -> None:
+            self.entries.append(ChatHistoryEntry("now", role, content, translation, tone, portrait))
+
+        def load(self) -> list[ChatHistoryEntry]:
+            return list(self.entries)
+
+    profile = CharacterProfile(
+        id="demo",
+        display_name="Demo",
+        package_dir=base_dir,
+        card_path=base_dir / "character.yaml",
+        initial_message="",
+        default_portrait_path=base_dir / "portrait.png",
+    )
+
+    class Registry:
+        def get(self, _character_id: str) -> CharacterProfile:
+            return profile
+
+        def all(self) -> list[CharacterProfile]:
+            return [profile]
+
+    class Memory:
+        scope_id = "host"
+
+        def scoped(self, _scope_id: str) -> "Memory":
+            return self
+
+        def set_scope(self, scope_id: str) -> None:
+            self.scope_id = scope_id
+
+    class Signal:
+        payload: dict[str, object] | None = None
+
+        def emit(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+    history_store = HistoryStore()
+    completed = Signal()
+    monkeypatch.setattr(bridge_module, "AgentRuntime", FakeRuntime)
+    monkeypatch.setattr(bridge_module, "OpenAICompatibleClient", lambda _settings: object())
+    monkeypatch.setattr(bridge_module, "load_character_system_prompt", lambda _profile: "")
+    host = SimpleNamespace(
+        character_profile=profile,
+        character_registry=Registry(),
+        _create_history_store=lambda _profile: history_store,
+        memory_store=Memory(),
+        api_client=SimpleNamespace(settings=object()),
+        agent_runtime=SimpleNamespace(
+            prompt_patches=[],
+            context_providers=[],
+            runtime_loop_settings=RuntimeLoopSettings(),
+        ),
+        base_dir=base_dir,
+        mobile_chat_completed=completed,
+    )
+
+    result = MobileChatBridge(host).execute_chat("demo", "hello")
+
+    assert result["reply"] == "回复。"
+    assert completed.payload is not None
+    assert [entry.role for entry in history_store.load()] == ["user", "assistant"]
 
 
 def _runtime_root(name: str) -> Path:

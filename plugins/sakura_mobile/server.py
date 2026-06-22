@@ -201,6 +201,8 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                     self._send_json({"history": service.history(character_id, limit=limit)})
                     return
                 self._send_error(HTTPStatus.NOT_FOUND, "Not found")
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                self._log_client_disconnected()
             except Exception as exc:  # noqa: BLE001
                 self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -225,6 +227,8 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                     {"ok": False, "busy": True, "error": str(exc)},
                     HTTPStatus.CONFLICT,
                 )
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                self._log_client_disconnected()
             except Exception as exc:  # noqa: BLE001
                 self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -253,6 +257,9 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 "HTTP request received",
                 request_info,
             )
+
+        def _log_client_disconnected(self) -> None:
+            debug_log("Mobile", "HTTP client disconnected", {"client": _client_address_text(self.client_address)})
 
         def _read_json_body(self) -> dict[str, Any]:
             length = _safe_int(self.headers.get("Content-Length"), 0)

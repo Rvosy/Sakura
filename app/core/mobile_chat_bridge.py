@@ -6,8 +6,6 @@ from typing import Any
 
 from app.agent.runtime import AgentRuntime
 from app.agent.tools.registry import ToolRegistry
-from app.agent.memory_curator import MemoryCurator, MemoryCurationState
-from app.core.debug_log import debug_log
 from app.config.character_loader import CharacterProfile, load_character_system_prompt
 from app.llm.api_client import ChatMessage, OpenAICompatibleClient
 from app.llm.context_trimming import trim_messages_for_model
@@ -27,8 +25,6 @@ class _MobileCharacterSession:
     profile: CharacterProfile
     runtime: AgentRuntime
     history_store: ChatHistoryStore
-    memory_curation_state: MemoryCurationState
-    memory_curator: MemoryCurator
 
 
 class MobileChatBridge:
@@ -110,8 +106,6 @@ class MobileChatBridge:
                     segment.portrait,
                 )
 
-            self._maybe_curate_memory(session)
-
         self._notify_host_chat_completed(
             {
                 "character_id": session.profile.id,
@@ -154,37 +148,13 @@ class MobileChatBridge:
             runtime_loop_settings=self._host.agent_runtime.runtime_loop_settings,
         )
         runtime.set_autonomous_screen_observation_enabled(False)
-        state_path = self._host.base_dir / "data" / f"memory_curation_state.{profile.id}.json"
         session = _MobileCharacterSession(
             profile,
             runtime,
             history_store,
-            MemoryCurationState(state_path),
-            MemoryCurator(runtime.api_client, memory_store, system_prompt=runtime.system_prompt),
         )
         self._sessions[profile.id] = session
         return session
-
-    def _maybe_curate_memory(self, session: _MobileCharacterSession) -> None:
-        """Apply the turn-based curation policy to every mobile character."""
-        settings = self._host.memory_curation_settings
-        if not settings.enabled:
-            return
-        pending_turns = session.memory_curation_state.increment_pending_turns()
-        if pending_turns < settings.trigger_turns:
-            return
-        entries = session.memory_curation_state.unprocessed_entries(session.history_store.load())
-        if not entries:
-            return
-        try:
-            result = session.memory_curator.curate_entries(entries)
-            session.memory_curation_state.mark_processed(
-                len(session.history_store.load()),
-                consumed_turns=pending_turns,
-            )
-            debug_log("Memory", "移动端角色记忆整理完成", {"character_id": session.profile.id, "processed": result.processed_entries})
-        except Exception as exc:  # noqa: BLE001
-            debug_log("Memory", "移动端角色记忆整理失败", {"character_id": session.profile.id, "error": str(exc)})
 
     def _notify_host_chat_completed(self, payload: dict[str, Any]) -> None:
         """让 UI 线程安全地同步当前角色手机对话到桌面状态。"""

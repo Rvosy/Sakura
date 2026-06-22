@@ -66,6 +66,9 @@ def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
         _can_review_reply_history = PetWindow._can_review_reply_history
         _update_reply_history_buttons = PetWindow._update_reply_history_buttons
 
+        def _record_completed_memory_turn(self) -> None:
+            self.memory_turns += 1
+
     class Button:
         def __init__(self) -> None:
             self.enabled = False
@@ -92,6 +95,7 @@ def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
     window.reply_history_previous_button = Button()
     window.reply_history_next_button = Button()
     window.history_window = HistoryWindow()
+    window.memory_turns = 0
 
     segment = ChatSegment("返事。", "中性", "回复。", "站立待机")
     window._handle_mobile_chat_completed(
@@ -113,6 +117,7 @@ def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
     assert not window.reply_history_previous_button.enabled
     assert window.reply_history_next_button.enabled
     assert window.history_window.refreshes == 1
+    assert window.memory_turns == 1
 
 
 def test_mobile_chat_finish_refreshes_reply_history_buttons() -> None:

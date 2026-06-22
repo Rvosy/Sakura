@@ -4262,6 +4262,9 @@ class PetWindow(QWidget):
         request_refresh = getattr(getattr(self, "history_window", None), "request_refresh", None)
         if callable(request_refresh):
             request_refresh()
+        record_completed_memory_turn = getattr(self, "_record_completed_memory_turn", None)
+        if callable(record_completed_memory_turn):
+            record_completed_memory_turn()
 
     def _maybe_start_auto_memory_curation(self) -> None:
         if getattr(self, "startup_initializing", False):
