@@ -39,6 +39,11 @@ def test_mobile_settings_panel_shows_token_and_links() -> None:
     assert panel.local_url.text() == "http://127.0.0.1:8765/?token=secret"
     assert panel.lan_url.text() == "http://192.168.1.23:8765/?token=secret"
 
+    panel._copy(panel.local_url.text(), panel.copy_local_button)
+
+    assert QApplication.clipboard().text() == "http://127.0.0.1:8765/?token=secret"
+    assert panel.copy_local_button.text() == "已复制"
+
 
 def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
     from app.ui.pet_window import PetWindow

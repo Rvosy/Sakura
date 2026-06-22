@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QCheckBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from plugins.sakura_mobile.server import DEFAULT_HOST
@@ -46,8 +47,8 @@ class SakuraMobileSettingsPanel(QWidget):
         self.setLayout(layout)
 
         self.enabled.toggled.connect(self._sync_controls)
-        self.copy_local_button.clicked.connect(lambda: self._copy(self.local_url.text()))
-        self.copy_lan_button.clicked.connect(lambda: self._copy(self.lan_url.text()))
+        self.copy_local_button.clicked.connect(lambda: self._copy(self.local_url.text(), self.copy_local_button))
+        self.copy_lan_button.clicked.connect(lambda: self._copy(self.lan_url.text(), self.copy_lan_button))
         self.save_button.clicked.connect(self._save)
         self._sync_controls(self.enabled.isChecked())
         self._refresh_status()
@@ -109,8 +110,14 @@ class SakuraMobileSettingsPanel(QWidget):
         lan_text = "\n".join(lan_urls) if lan_urls else "未发现内网地址"
         return f"本机链接：\n{status.get('local_url', '')}\n\n内网链接：\n{lan_text}"
 
-    def _copy(self, text: str) -> None:
+    def _copy(self, text: str, button: QPushButton) -> None:
         clean = text.strip()
+        original_text = str(button.property("originalText") or button.text())
+        button.setProperty("originalText", original_text)
         if not clean or clean == "未发现内网地址":
+            button.setText("无链接")
+            QTimer.singleShot(1200, lambda: button.setText(original_text))
             return
         QApplication.clipboard().setText(clean)
+        button.setText("已复制")
+        QTimer.singleShot(1200, lambda: button.setText(original_text))
