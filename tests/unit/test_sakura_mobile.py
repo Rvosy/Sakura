@@ -43,6 +43,9 @@ def test_mobile_access_urls_include_local_and_lan(monkeypatch: pytest.MonkeyPatc
 def test_mobile_page_scrolls_to_bottom_after_history_load() -> None:
     html = mobile_server._mobile_html("secret")
 
+    assert "grid-template-rows: auto minmax(0, 1fr) auto" in html
+    assert "#chat { min-height: 0;" in html
+    assert "page.scrollTop = page.scrollHeight" in html
     assert "function scrollChatToBottom()" in html
     assert "scrollChatToBottom();" in html[html.index("async function loadHistory()") : html.index("function readImage")]
 

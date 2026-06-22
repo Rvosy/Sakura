@@ -362,14 +362,14 @@ def _mobile_html(token: str) -> str:
   <title>Sakura Mobile</title>
   <style>
     :root {{ color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; background: #f7f4fb; color: #172033; }}
-    main {{ min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }}
+    body {{ margin: 0; background: #f7f4fb; color: #172033; overflow: hidden; }}
+    main {{ height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }}
     header {{ display: flex; gap: 10px; align-items: center; padding: 12px; background: #b9c4ff; position: sticky; top: 0; }}
     h1 {{ font-size: 18px; margin: 0; flex: 1; }}
     select, button, textarea {{ font: inherit; }}
     select, textarea {{ border: 1px solid #9facdf; border-radius: 8px; background: white; }}
     select {{ padding: 8px; max-width: 48vw; }}
-    #chat {{ padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }}
+    #chat {{ min-height: 0; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }}
     .msg {{ max-width: 82%; padding: 10px 12px; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; box-shadow: 0 1px 2px #0001; }}
     .user {{ align-self: flex-end; background: #c8eef4; }}
     .assistant {{ align-self: flex-start; background: white; }}
@@ -456,7 +456,11 @@ function cleanAssistantText(value) {{
   return String(value || '').trim().replace(/^[.．…]+\\s*/, '').trimStart();
 }}
 function scrollChatToBottom() {{
-  requestAnimationFrame(() => {{ chat.scrollTop = chat.scrollHeight; }});
+  requestAnimationFrame(() => requestAnimationFrame(() => {{
+    chat.scrollTop = chat.scrollHeight;
+    const page = document.scrollingElement || document.documentElement;
+    if (page) page.scrollTop = page.scrollHeight;
+  }}));
 }}
 function addMessage(role, content, options = {{}}) {{
   const node = document.createElement('div');
