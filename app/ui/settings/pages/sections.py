@@ -708,6 +708,25 @@ class ApiSettingsPage:
         owner.sensory_source_combo.addItem("视觉", SensorySource.VISION.value)
         owner.sensory_source_combo.addItem("语音", SensorySource.SPEECH.value)
         owner.sensory_source_combo.addItem("环境声音", SensorySource.SOUND.value)
+        owner.sensory_source_combo.setVisible(False)
+
+        owner.sensory_source_table = QTableWidget(3, 3, group)
+        owner.sensory_source_table.setObjectName("sensorySourceTable")
+        owner.sensory_source_table.setHorizontalHeaderLabels(["视觉", "语音", "环境声音"])
+        owner.sensory_source_table.setVerticalHeaderLabels(["模式", "后端", "模型"])
+        owner.sensory_source_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        owner.sensory_source_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        owner.sensory_source_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        owner.sensory_source_table.setAlternatingRowColors(False)
+        owner.sensory_source_table.setWordWrap(False)
+        owner.sensory_source_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        owner.sensory_source_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        owner.sensory_source_table.setMinimumHeight(118)
+        source_header = owner.sensory_source_table.horizontalHeader()
+        source_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        owner.sensory_source_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
 
         owner.sensory_mode_combo = _NoWheelComboBox(group)
         owner.sensory_mode_combo.addItem("关闭该感官模型", "off")
@@ -752,6 +771,12 @@ class ApiSettingsPage:
         )
         owner.sensory_privacy_label.setObjectName("secondaryText")
         owner.sensory_privacy_label.setWordWrap(True)
+        owner.sensory_vision_relation_label = QLabel(
+            "视觉说明：常规截图摘要使用上方“视觉上下文”模型槽位；选择文字摘要交付或调用增强感知工具时，才使用这里的视觉 provider。",
+            group,
+        )
+        owner.sensory_vision_relation_label.setObjectName("secondaryText")
+        owner.sensory_vision_relation_label.setWordWrap(True)
 
         action_row = QWidget(group)
         action_layout = QHBoxLayout(action_row)
@@ -774,9 +799,10 @@ class ApiSettingsPage:
         form.setContentsMargins(16, 10, 16, 12)
         form.setSpacing(12)
         form.addRow("", toggles)
+        form.addRow("", owner.sensory_vision_relation_label)
         form.addRow("", owner.sensory_privacy_label)
         form.addRow("上下文预算", owner.sensory_context_budget_spin)
-        form.addRow("感官源", owner.sensory_source_combo)
+        form.addRow("感官配置", owner.sensory_source_table)
         form.addRow("模式", owner.sensory_mode_combo)
         form.addRow("后端", owner.sensory_backend_combo)
         form.addRow("Endpoint", owner.sensory_endpoint_edit)
@@ -791,6 +817,7 @@ class ApiSettingsPage:
         owner.sensory_enabled_check.toggled.connect(owner._sync_sensory_controls)
         owner.sensory_context_enabled_check.toggled.connect(owner._sync_sensory_controls)
         owner.sensory_source_combo.currentIndexChanged.connect(owner._handle_sensory_source_changed)
+        owner.sensory_source_table.currentCellChanged.connect(owner._handle_sensory_source_table_changed)
         owner.sensory_mode_combo.currentIndexChanged.connect(owner._handle_sensory_control_changed)
         owner.sensory_backend_combo.currentIndexChanged.connect(owner._handle_sensory_backend_changed)
         owner.sensory_endpoint_edit.textChanged.connect(owner._handle_sensory_control_changed)
@@ -919,7 +946,7 @@ class PrivacySettingsPage:
         )
         owner.screen_observation_delivery_combo.setCurrentIndex(max(0, delivery_index))
         owner.screen_observation_delivery_combo.setToolTip(
-            "文字摘要模式会把截图交给增强视觉模型处理，再把结构化文本交给主模型；主模型不会收到原图。"
+            "直接发送图片时使用模型配置里的视觉上下文/视觉模型能力；文字摘要模式会把截图交给增强感知视觉 provider，再把结构化文本交给主模型。"
         )
         owner.proactive_check_interval_spin = _NoWheelSpinBox(tab)
         owner.proactive_check_interval_spin.setRange(

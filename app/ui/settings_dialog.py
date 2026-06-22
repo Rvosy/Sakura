@@ -1113,10 +1113,31 @@ class SettingsDialog(QDialog):
         self._load_sensory_source_controls(next_source, mark_dirty=False)
         self._sync_sensory_controls()
 
+    def _handle_sensory_source_table_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        table = getattr(self, "sensory_source_table", None)
+        if table is None:
+            return
+        source = _sensory_source_for_column(int(table.currentColumn()))
+        if source is None:
+            return
+        previous_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        if source.value == previous_source:
+            self._refresh_sensory_source_table()
+            return
+        self._capture_sensory_current_source(previous_source)
+        self._load_sensory_source_controls(source.value, mark_dirty=False)
+        self._sync_sensory_controls()
+
     def _handle_sensory_control_changed(self, *_args: object) -> None:
         if getattr(self, "_syncing_sensory_controls", False):
             return
         self._capture_sensory_current_source()
+        self._refresh_sensory_source_table()
         if hasattr(self, "sensory_status_label"):
             self.sensory_status_label.setText(self._sensory_status_hint())
         self._sync_sensory_controls()
@@ -1214,8 +1235,54 @@ class SettingsDialog(QDialog):
                 self.sensory_status_label.setText(self._sensory_status_hint())
         finally:
             self._syncing_sensory_controls = False
+        self._refresh_sensory_source_table()
         if mark_dirty:
             self._handle_sensory_control_changed()
+
+    def _refresh_sensory_source_table(self) -> None:
+        table = getattr(self, "sensory_source_table", None)
+        if table is None or not hasattr(self, "_sensory_source_state"):
+            return
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        previous_syncing = bool(getattr(self, "_syncing_sensory_controls", False))
+        self._syncing_sensory_controls = True
+        try:
+            for column, source in enumerate(_sensory_source_order()):
+                state = dict(
+                    self._sensory_source_state.get(
+                        source.value,
+                        _default_sensory_state(source),
+                    )
+                )
+                mode_ui = str(state.get("mode_ui") or "off")
+                backend = str(state.get("backend") or "lmstudio")
+                model = str(state.get("model") or "").strip()
+                values = (
+                    _sensory_mode_label(mode_ui),
+                    _sensory_backend_label(backend) if mode_ui != "off" else "-",
+                    model or "-",
+                )
+                for row, value in enumerate(values):
+                    item = table.item(row, column)
+                    if item is None:
+                        item = QTableWidgetItem("")
+                        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                        item.setTextAlignment(
+                            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+                        )
+                        table.setItem(row, column, item)
+                    item.setText(value)
+                    item.setToolTip(value)
+                    item.setData(Qt.ItemDataRole.UserRole, source.value)
+            active_column = _sensory_source_column(active_source)
+            if active_column >= 0:
+                table.setCurrentCell(0, active_column)
+                table.selectColumn(active_column)
+            table.resizeRowsToContents()
+        finally:
+            self._syncing_sensory_controls = previous_syncing
 
     @Slot(bool)
     def _sync_sensory_controls(self, *_args: object) -> None:
@@ -1314,7 +1381,9 @@ class SettingsDialog(QDialog):
         if not hasattr(self, "sensory_mode_combo"):
             return None
         self._capture_sensory_current_source()
-        source = coerce_sensory_source(self.sensory_source_combo.currentData())
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
         state = self._sensory_current_state()
         mode_ui = str(state.get("mode_ui") or "off")
         if mode_ui == "off":
@@ -1470,9 +1539,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "处理中", "请等待当前检测或测试完成后再下载模型。")
             return
         source = coerce_sensory_source(
-            getattr(self, "sensory_source_combo", None).currentData()
-            if hasattr(self, "sensory_source_combo")
-            else SensorySource.VISION.value
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
         )
         dialog = HuggingFaceSensoryModelDialog(
             base_dir=self.base_dir,
@@ -4783,6 +4850,24 @@ def _set_combo_data(combo: object, value: object) -> None:
         set_current_index(index)
 
 
+def _sensory_source_order() -> tuple[SensorySource, ...]:
+    return (SensorySource.VISION, SensorySource.SPEECH, SensorySource.SOUND)
+
+
+def _sensory_source_for_column(column: int) -> SensorySource | None:
+    sources = _sensory_source_order()
+    if column < 0 or column >= len(sources):
+        return None
+    return sources[column]
+
+
+def _sensory_source_column(source: SensorySource) -> int:
+    try:
+        return _sensory_source_order().index(source)
+    except ValueError:
+        return -1
+
+
 def _sensory_source_label(source: SensorySource) -> str:
     return {
         SensorySource.VISION: "视觉",
@@ -4793,10 +4878,24 @@ def _sensory_source_label(source: SensorySource) -> str:
 
 def _sensory_mode_label(mode_ui: str) -> str:
     return {
+        "off": "关闭",
         "local": "本机运行框架",
         "lan": "局域网连接分布式计算",
         "api": "远端 API",
     }.get(mode_ui, mode_ui)
+
+
+def _sensory_backend_label(backend: str) -> str:
+    return {
+        "lmstudio": "LM Studio",
+        "lm_studio": "LM Studio",
+        "ollama": "Ollama",
+        "llama": "llama.cpp",
+        "llama.cpp": "llama.cpp",
+        "llama_cpp": "llama.cpp",
+        "llamacpp": "llama.cpp",
+        "openai_compatible": "OpenAI 兼容 API",
+    }.get(backend.strip().lower(), backend)
 
 
 def _default_tts_api_url(provider: str) -> str:

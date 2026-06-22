@@ -4739,6 +4739,69 @@ def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_explains_visual_context_and_sensory_vision_relation() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_vision_relation_text")
+
+    relation_text = dialog.sensory_vision_relation_label.text()
+    assert "视觉上下文" in relation_text
+    assert "增强感知工具" in relation_text
+    delivery_tooltip = dialog.screen_observation_delivery_combo.toolTip()
+    assert "增强感知视觉 provider" in delivery_tooltip
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_sensory_source_table_preserves_parallel_source_configs() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensoryProviderMode, SensorySource
+
+    dialog, app = _build_api_settings_dialog("sensory_source_table")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+
+    assert table is not None
+    assert table.columnCount() == 3
+    assert [table.horizontalHeaderItem(index).text() for index in range(3)] == [
+        "视觉",
+        "语音",
+        "环境声音",
+    ]
+
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_model_edit.setText("vision-model")
+    app.processEvents()
+
+    table.setCurrentCell(0, 1)
+    app.processEvents()
+
+    assert getattr(dialog, "_active_sensory_source") == SensorySource.SPEECH.value
+    assert dialog.sensory_model_edit.text() == ""
+
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_model_edit.setText("speech-model")
+    app.processEvents()
+
+    selected = dialog._selected_sensory_settings()
+
+    assert selected is not None
+    assert selected.sources[SensorySource.VISION].mode == SensoryProviderMode.LOCAL
+    assert selected.sources[SensorySource.SPEECH].mode == SensoryProviderMode.LOCAL
+    assert selected.providers["vision_local"].model == "vision-model"
+    assert selected.providers["speech_local"].model == "speech-model"
+    assert table.item(2, 0).text() == "vision-model"
+    assert table.item(2, 1).text() == "speech-model"
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
