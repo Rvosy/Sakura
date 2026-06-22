@@ -75,6 +75,46 @@ def test_character_archive_manifest_uses_sakura_format() -> None:
     assert "character/voice/refs/tone_refs/neutral.wav" in names
 
 
+
+def test_character_archive_export_only_includes_referenced_voice_files() -> None:
+    root = _runtime_root("referenced_voice_export")
+    profile = _build_character_package(root / "source")
+    (profile.package_dir / "voice" / "models" / "old.ckpt").write_bytes(b"old-gpt")
+    (profile.package_dir / "voice" / "refs" / "tone_refs" / "old.wav").write_bytes(b"old-wav")
+    archive_path = root / "demo.char"
+
+    export_character_archive(profile, archive_path)
+
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        names = set(zf.namelist())
+
+    assert "character/voice/models/gpt.ckpt" in names
+    assert "character/voice/models/sovits.pth" in names
+    assert "character/voice/refs/ref.txt" in names
+    assert "character/voice/refs/tone_refs/neutral.wav" in names
+    assert "character/voice/models/old.ckpt" not in names
+    assert "character/voice/refs/tone_refs/old.wav" not in names
+
+
+def test_character_voice_archive_export_only_includes_referenced_files() -> None:
+    root = _runtime_root("referenced_voice_only_export")
+    profile = _build_character_package(root / "source")
+    (profile.package_dir / "voice" / "models" / "old.ckpt").write_bytes(b"old-gpt")
+    (profile.package_dir / "voice" / "refs" / "tone_refs" / "old.wav").write_bytes(b"old-wav")
+    archive_path = root / "demo.voice"
+
+    export_character_voice_archive(profile, archive_path)
+
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        names = set(zf.namelist())
+
+    assert "voice/models/gpt.ckpt" in names
+    assert "voice/models/sovits.pth" in names
+    assert "voice/refs/ref.txt" in names
+    assert "voice/refs/tone_refs/neutral.wav" in names
+    assert "voice/models/old.ckpt" not in names
+    assert "voice/refs/tone_refs/old.wav" not in names
+
 def test_character_archive_card_only_export_excludes_voice() -> None:
     root = _runtime_root("card_only_export")
     profile = _build_character_package(root / "source")
