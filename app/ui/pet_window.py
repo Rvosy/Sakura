@@ -1102,11 +1102,38 @@ class PetWindow(QWidget):
         settings = getattr(self, "character_behavior_settings", None)
         return bool(getattr(settings, "mood_enabled", False))
 
+    def _apply_character_behavior_settings(
+        self,
+        settings: CharacterBehaviorSettings,
+        *,
+        pet_state_popup_pinned: bool | None = None,
+    ) -> None:
+        if not isinstance(settings, CharacterBehaviorSettings):
+            settings = CharacterBehaviorSettings()
+        normalized = settings.normalized()
+        self.character_behavior_settings = normalized
+        agent_runtime = getattr(self, "agent_runtime", None)
+        set_pet_state_enabled = getattr(agent_runtime, "set_pet_state_enabled", None)
+        if callable(set_pet_state_enabled):
+            set_pet_state_enabled(normalized.mood_enabled)
+        if pet_state_popup_pinned is not None:
+            self.pet_state_popup_pinned = bool(pet_state_popup_pinned)
+
+        if not normalized.mood_enabled or not bool(
+            getattr(self, "pet_state_popup_pinned", False)
+        ):
+            self.hide_pet_state_popup()
+        else:
+            self.show_pet_state_popup()
+
     @Slot(object)
     def _handle_pet_state_changed(self, snapshot: object) -> None:
         self._apply_pet_state_snapshot(snapshot if isinstance(snapshot, dict) else None)
 
     def _apply_pet_state_snapshot(self, snapshot: dict[str, Any] | None) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
         popup = getattr(self, "pet_state_popup", None)
         if popup is None or not popup.isVisible():
             return
@@ -1114,6 +1141,9 @@ class PetWindow(QWidget):
 
     @Slot()
     def show_pet_state_popup(self) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
         popup = self._ensure_pet_state_popup()
         self._update_pet_state_popup()
         popup.adjustSize()
@@ -1129,6 +1159,9 @@ class PetWindow(QWidget):
             popup.hide()
 
     def _maybe_show_pinned_pet_state_popup(self) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
         if not bool(getattr(self, "pet_state_popup_pinned", False)):
             return
         popup = getattr(self, "pet_state_popup", None)
@@ -2816,12 +2849,15 @@ class PetWindow(QWidget):
         self.tray_icon.show()
 
     def _build_menu(self) -> QMenu:
+        pet_state_enabled = self._pet_state_behavior_enabled()
         return build_pet_tray_menu(
             self,
             chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
             free_access_checked=self.free_access_enabled,
             always_on_top_checked=self.always_on_top_enabled,
-            pet_state_popup_checked=bool(getattr(self, "pet_state_popup_pinned", False)),
+            pet_state_popup_checked=pet_state_enabled
+            and bool(getattr(self, "pet_state_popup_pinned", False)),
+            pet_state_popup_enabled=pet_state_enabled,
             interactions_enabled=not getattr(self, "startup_initializing", False),
             window_visible=self.isVisible(),
             on_hide=self._hide_to_tray,
@@ -5275,6 +5311,25 @@ class PetWindow(QWidget):
                 "result_proactive_care_settings",
                 None,
             )
+        result_character_behavior_settings = getattr(
+            dialog,
+            "result_character_behavior_settings",
+            getattr(self, "character_behavior_settings", CharacterBehaviorSettings()),
+        )
+        if not isinstance(result_character_behavior_settings, CharacterBehaviorSettings):
+            result_character_behavior_settings = getattr(
+                self,
+                "character_behavior_settings",
+                CharacterBehaviorSettings(),
+            )
+        result_character_behavior_settings = result_character_behavior_settings.normalized()
+        result_pet_state_popup_pinned = bool(
+            getattr(
+                dialog,
+                "result_pet_state_popup_pinned",
+                getattr(self, "pet_state_popup_pinned", False),
+            )
+        )
         result_control_panel_width = getattr(
             dialog, "result_control_panel_width", self.control_panel_width
         )
@@ -5378,9 +5433,13 @@ class PetWindow(QWidget):
                     "portrait_scale_percent": dialog.result_portrait_scale_percent,
                     "subtitle_typing_interval_ms": result_subtitle_typing_interval_ms,
                     "reply_segment_pause_ms": result_reply_segment_pause_ms,
+                    "pet_state_popup_pinned": result_pet_state_popup_pinned,
                 },
             )
             self.settings_service.save_bubble_settings(result_bubble_settings)
+            self.settings_service.save_character_behavior_settings(
+                result_character_behavior_settings
+            )
             save_backchannel_settings = getattr(
                 self.settings_service,
                 "save_backchannel_settings",
@@ -5500,6 +5559,10 @@ class PetWindow(QWidget):
             apply_backchannel_settings(result_backchannel_settings)
         else:
             self.backchannel_settings = result_backchannel_settings
+        self._apply_character_behavior_settings(
+            result_character_behavior_settings,
+            pet_state_popup_pinned=result_pet_state_popup_pinned,
+        )
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
@@ -5616,6 +5679,11 @@ class PetWindow(QWidget):
 
     @Slot(bool)
     def _toggle_pet_state_popup_pinned(self, checked: bool) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.setContextMenu(self._build_menu())
+            return
         if checked == self.pet_state_popup_pinned:
             return
         previous_enabled = self.pet_state_popup_pinned
