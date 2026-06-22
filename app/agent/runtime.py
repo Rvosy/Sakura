@@ -614,7 +614,10 @@ class AgentRuntime:
                     )
                 )
                 if call.name == "search_tools":
-                    active_groups.update(_groups_from_search_tools_result(prepared))
+                    for group in _groups_from_search_tools_result(prepared):
+                        if group == "pet_state" and not self.pet_state_enabled:
+                            continue
+                        active_groups.add(group)
                 emitted_actions.append(
                     AgentAction(
                         type="tool_call",
