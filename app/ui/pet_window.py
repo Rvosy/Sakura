@@ -4253,10 +4253,11 @@ class PetWindow(QWidget):
             for segment in payload.get("segments") or []
             if isinstance(segment, ChatSegment) and segment.text.strip()
         ]
+        previous_count = len(self.reply_history_segments)
         was_reviewing = self.reply_history_review_active
         self._remember_reply_history_segments(segments)
-        if not was_reviewing and self.reply_history_segments:
-            self.reply_history_index = len(self.reply_history_segments) - 1
+        if not was_reviewing and previous_count > 0 and len(self.reply_history_segments) > previous_count:
+            self.reply_history_index = previous_count - 1
             self._update_reply_history_buttons()
         request_refresh = getattr(getattr(self, "history_window", None), "request_refresh", None)
         if callable(request_refresh):

@@ -83,8 +83,9 @@ def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
     window = MinimalWindow()
     window.character_profile = SimpleNamespace(id="demo")
     window.messages = [{"role": "user", "content": "桌面旧消息"}]
-    window.reply_history_segments = []
-    window.reply_history_index = None
+    old_segment = ChatSegment("旧回复。")
+    window.reply_history_segments = [old_segment]
+    window.reply_history_index = 0
     window.reply_history_review_active = False
     window.worker_thread = None
     window.subtitle_controller = SimpleNamespace(is_reply_sequence_active=lambda: False)
@@ -107,8 +108,10 @@ def test_mobile_chat_completion_syncs_current_desktop_context() -> None:
         {"role": "user", "content": "手机消息"},
         {"role": "assistant", "content": "返事。"},
     ]
-    assert window.reply_history_segments == [segment]
+    assert window.reply_history_segments == [old_segment, segment]
     assert window.reply_history_index == 0
+    assert not window.reply_history_previous_button.enabled
+    assert window.reply_history_next_button.enabled
     assert window.history_window.refreshes == 1
 
 
