@@ -154,6 +154,18 @@ class StoragePaths:
     def system_audio_capture_helper(self) -> Path:
         return self.system_audio_cache_dir / "macos_system_audio_capture"
 
+    @property
+    def sensory_models_cache_dir(self) -> Path:
+        return self.cache_dir / "sensory_models"
+
+    def sensory_model_cache_for(self, source: object, repo_id: str) -> Path:
+        source_value = str(getattr(source, "value", source)).strip() or "unknown"
+        return (
+            self.sensory_models_cache_dir
+            / sanitize_file_stem(source_value)
+            / sanitize_file_stem(repo_id)
+        )
+
     # ---- 日志 ----
     @property
     def logs_dir(self) -> Path:
@@ -223,6 +235,7 @@ class StoragePaths:
             self.notes_dir,
             self.tts_cache_dir,
             self.system_audio_cache_dir,
+            self.sensory_models_cache_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

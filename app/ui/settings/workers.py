@@ -12,7 +12,9 @@ import io
 import json
 import math
 import mimetypes
+import shutil
 import struct
+import subprocess
 import urllib.error
 import urllib.request
 import wave
@@ -43,6 +45,7 @@ from app.sensory.providers import (
     provider_from_config,
 )
 from app.sensory.settings import SensoryProviderConfig
+from app.storage.paths import StoragePaths
 from app.ui.theme import parse_ai_theme_response
 from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import GPTSoVITSTTSSettings
@@ -54,6 +57,13 @@ _SENSORY_TEST_IMAGE_DATA_URL = (
     "AAAAGUlEQVQokWO84+DAQApgIkn1qIZRDUNKAwBb8AF8KOWdWAAAAABJRU5ErkJggg=="
 )
 _SENSORY_TEST_AUDIO_DATA_URL = ""
+HF_CLI_INSTALL_HINT = (
+    "未找到 Hugging Face CLI `hf`。请先安装："
+    "macOS/Linux 运行 `curl -LsSf https://hf.co/cli/install.sh | bash`；"
+    "Windows 运行 `powershell -ExecutionPolicy ByPass -c \"irm https://hf.co/cli/install.ps1 | iex\"`。"
+)
+HF_MODEL_SEARCH_LIMIT = 20
+HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
 
 
 def _build_sensory_test_audio_data_url() -> str:
@@ -181,6 +191,82 @@ class SensoryModelTestWorker(QObject):
             self.finished.emit()
 
 
+class HuggingFaceModelSearchWorker(QObject):
+    succeeded = Signal(list)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        source: SensorySource,
+        query: str,
+        *,
+        limit: int = HF_MODEL_SEARCH_LIMIT,
+        timeout_seconds: int = 60,
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.query = query
+        self.limit = limit
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            models = search_huggingface_models(
+                self.source,
+                self.query,
+                limit=self.limit,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(models)
+        finally:
+            self.finished.emit()
+
+
+class HuggingFaceModelDownloadWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        source: SensorySource,
+        repo_id: str,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.source = source
+        self.repo_id = repo_id
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            local_dir = StoragePaths(self.base_dir).sensory_model_cache_for(
+                self.source.value,
+                self.repo_id,
+            )
+            result = download_huggingface_model(
+                self.repo_id,
+                local_dir,
+                timeout_seconds=self.timeout_seconds,
+            )
+            result["source"] = self.source.value
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
 class TTSTestWorker(QObject):
     succeeded = Signal(object, str)
     failed = Signal(str)
@@ -253,6 +339,122 @@ def _probe_sensory_models(config: SensoryProviderConfig) -> list[str]:
             if isinstance(model_id, str) and model_id.strip():
                 names.append(model_id.strip())
     return names
+
+
+def default_huggingface_query_for_source(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "automatic-speech-recognition whisper qwen audio"
+    if source == SensorySource.SOUND:
+        return "audio-classification sound event"
+    return "vision-language qwen vl instruct"
+
+
+def search_huggingface_models(
+    source: SensorySource,
+    query: str,
+    *,
+    limit: int = HF_MODEL_SEARCH_LIMIT,
+    timeout_seconds: int = 60,
+) -> list[dict[str, object]]:
+    text = query.strip() or default_huggingface_query_for_source(source)
+    count = max(1, min(int(limit), 50))
+    completed = _run_hf_command(
+        [
+            "models",
+            "list",
+            "--search",
+            text,
+            "--limit",
+            str(count),
+            "--format",
+            "json",
+        ],
+        timeout_seconds=timeout_seconds,
+    )
+    return _parse_huggingface_model_results(completed.stdout)
+
+
+def download_huggingface_model(
+    repo_id: str,
+    local_dir: Path,
+    *,
+    timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    normalized_repo_id = repo_id.strip()
+    if not normalized_repo_id or "/" not in normalized_repo_id:
+        raise RuntimeError("请选择有效的 Hugging Face 模型仓库 ID。")
+    target = Path(local_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    completed = _run_hf_command(
+        [
+            "download",
+            normalized_repo_id,
+            "--local-dir",
+            str(target),
+        ],
+        timeout_seconds=timeout_seconds,
+    )
+    return {
+        "repo_id": normalized_repo_id,
+        "local_dir": str(target),
+        "message": (completed.stdout or completed.stderr or "").strip(),
+    }
+
+
+def _run_hf_command(
+    args: list[str],
+    *,
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which("hf")
+    if not executable:
+        raise RuntimeError(HF_CLI_INSTALL_HINT)
+    command = [executable, *args]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Hugging Face 操作超时，请检查网络或稍后重试。") from exc
+    except OSError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(detail or f"`hf {' '.join(args)}` 执行失败。")
+    return completed
+
+
+def _parse_huggingface_model_results(raw_text: str) -> list[dict[str, object]]:
+    text = raw_text.strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Hugging Face CLI 返回的模型列表不是 JSON。") from exc
+    if isinstance(payload, dict):
+        raw_items = payload.get("models") or payload.get("data") or payload.get("items") or []
+    elif isinstance(payload, list):
+        raw_items = payload
+    else:
+        raw_items = []
+    results: list[dict[str, object]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        repo_id = item.get("id") or item.get("modelId") or item.get("name")
+        if not isinstance(repo_id, str) or "/" not in repo_id:
+            continue
+        result: dict[str, object] = {"repo_id": repo_id.strip()}
+        for key in ("pipeline_tag", "downloads", "likes", "lastModified", "tags"):
+            if key in item:
+                result[key] = item[key]
+        results.append(result)
+    return results
 
 
 def _get_json(url: str, timeout_seconds: int, *, api_key: str = "") -> dict[str, object]:

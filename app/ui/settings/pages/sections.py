@@ -741,6 +741,8 @@ class ApiSettingsPage:
         owner.sensory_probe_button.clicked.connect(owner._probe_sensory_models)
         owner.sensory_test_button = QPushButton("测试模型", group)
         owner.sensory_test_button.clicked.connect(owner._test_sensory_model)
+        owner.sensory_hf_download_button = QPushButton("从 Hugging Face 下载", group)
+        owner.sensory_hf_download_button.clicked.connect(owner._download_sensory_model_from_huggingface)
         owner.sensory_status_label = QLabel("未测试", group)
         owner.sensory_status_label.setObjectName("secondaryText")
         owner.sensory_status_label.setWordWrap(True)
@@ -757,6 +759,7 @@ class ApiSettingsPage:
         action_layout.setSpacing(8)
         action_layout.addWidget(owner.sensory_probe_button)
         action_layout.addWidget(owner.sensory_test_button)
+        action_layout.addWidget(owner.sensory_hf_download_button)
         action_layout.addStretch(1)
 
         toggles = QWidget(group)

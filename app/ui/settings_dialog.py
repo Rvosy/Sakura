@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
@@ -171,6 +172,225 @@ from app.ui.settings.pages import (
     ToolsSettingsPage,
     TtsSettingsPage,
 )
+
+
+class HuggingFaceSensoryModelDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        base_dir: Path,
+        source: SensorySource,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.base_dir = base_dir
+        self.source = source
+        self.selected_repo_id = ""
+        self.selected_local_dir = ""
+        self._search_thread: QThread | None = None
+        self._search_worker: settings_workers.HuggingFaceModelSearchWorker | None = None
+        self._download_thread: QThread | None = None
+        self._download_worker: settings_workers.HuggingFaceModelDownloadWorker | None = None
+        self._accept_after_download = False
+
+        self.setWindowTitle("从 Hugging Face 下载")
+        self.setMinimumSize(560, 420)
+
+        self.query_edit = QLineEdit(self)
+        self.query_edit.setText(settings_workers.default_huggingface_query_for_source(source))
+        self.search_button = QPushButton("搜索", self)
+        self.search_button.clicked.connect(self._start_search)
+
+        search_row = QWidget(self)
+        search_layout = QHBoxLayout(search_row)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(8)
+        search_layout.addWidget(self.query_edit, 1)
+        search_layout.addWidget(self.search_button)
+
+        self.results_list = QListWidget(self)
+        self.results_list.itemSelectionChanged.connect(self._sync_download_button)
+        self.status_label = QLabel("输入关键词后搜索模型。", self)
+        self.status_label.setObjectName("secondaryText")
+        self.status_label.setWordWrap(True)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        self.download_button = self.button_box.addButton(
+            "下载选中模型",
+            QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        self.download_button.clicked.connect(self._start_download)
+        self.button_box.rejected.connect(self.reject)
+        self.download_button.setEnabled(False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("Hugging Face 模型搜索", self))
+        layout.addWidget(search_row)
+        layout.addWidget(self.results_list, 1)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.button_box)
+
+    def _operation_running(self) -> bool:
+        return self._search_thread is not None or self._download_thread is not None
+
+    def _set_busy(self, busy: bool, text: str) -> None:
+        self.query_edit.setEnabled(not busy)
+        self.search_button.setEnabled(not busy)
+        self.results_list.setEnabled(not busy)
+        self.download_button.setEnabled(not busy and self._selected_repo_id() != "")
+        close_button = self.button_box.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setEnabled(not busy)
+        if busy:
+            self.status_label.setText(text)
+
+    def _sync_download_button(self) -> None:
+        self.download_button.setEnabled(not self._operation_running() and self._selected_repo_id() != "")
+
+    def _selected_repo_id(self) -> str:
+        item = self.results_list.currentItem()
+        if item is None:
+            return ""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(data, dict):
+            repo_id = data.get("repo_id")
+            if isinstance(repo_id, str):
+                return repo_id.strip()
+        return item.text().split()[0].strip()
+
+    def _start_search(self) -> None:
+        if self._operation_running():
+            return
+        self._set_busy(True, "正在搜索 Hugging Face 模型...")
+        thread = QThread()
+        worker = settings_workers.HuggingFaceModelSearchWorker(
+            self.source,
+            self.query_edit.text().strip(),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_search_success)
+        worker.failed.connect(self._handle_search_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_search_worker)
+
+        self._search_thread = thread
+        self._search_worker = worker
+        thread.start()
+
+    @Slot(list)
+    def _handle_search_success(self, models: list[dict[str, object]]) -> None:
+        self.results_list.clear()
+        if not models:
+            self.status_label.setText("没有找到匹配的 Hugging Face 模型。")
+            return
+        for model in models:
+            repo_id = str(model.get("repo_id") or "").strip()
+            if not repo_id:
+                continue
+            details: list[str] = [repo_id]
+            pipeline_tag = str(model.get("pipeline_tag") or "").strip()
+            if pipeline_tag:
+                details.append(pipeline_tag)
+            downloads = model.get("downloads")
+            if isinstance(downloads, int):
+                details.append(f"{downloads} downloads")
+            likes = model.get("likes")
+            if isinstance(likes, int):
+                details.append(f"{likes} likes")
+            item = QListWidgetItem("  ·  ".join(details))
+            item.setData(Qt.ItemDataRole.UserRole, model)
+            self.results_list.addItem(item)
+        if self.results_list.count() > 0:
+            self.results_list.setCurrentRow(0)
+        self.status_label.setText(f"已找到 {self.results_list.count()} 个模型。")
+
+    @Slot(str)
+    def _handle_search_failed(self, message: str) -> None:
+        self.status_label.setText(f"搜索失败：{message}")
+        QMessageBox.warning(self, "搜索失败", message)
+
+    @Slot()
+    def _reset_search_worker(self) -> None:
+        self._search_thread = None
+        self._search_worker = None
+        self._set_busy(False, "")
+        self._sync_download_button()
+
+    def _start_download(self) -> None:
+        if self._operation_running():
+            return
+        repo_id = self._selected_repo_id()
+        if not repo_id:
+            QMessageBox.information(self, "未选择模型", "请先选择一个 Hugging Face 模型。")
+            return
+        self._set_busy(True, f"正在下载 {repo_id} ...")
+        thread = QThread()
+        worker = settings_workers.HuggingFaceModelDownloadWorker(
+            self.base_dir,
+            self.source,
+            repo_id,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_download_success)
+        worker.failed.connect(self._handle_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_download_worker)
+
+        self._download_thread = thread
+        self._download_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_download_success(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self.status_label.setText("下载完成。")
+            self._accept_after_download = True
+            return
+        self.selected_repo_id = str(result.get("repo_id") or "").strip()
+        self.selected_local_dir = str(result.get("local_dir") or "").strip()
+        self.status_label.setText(f"下载完成：{self.selected_local_dir}")
+        self._accept_after_download = bool(self.selected_repo_id)
+        QMessageBox.information(
+            self,
+            "下载完成",
+            f"模型已下载到：{self.selected_local_dir}",
+        )
+
+    @Slot(str)
+    def _handle_download_failed(self, message: str) -> None:
+        self.status_label.setText(f"下载失败：{message}")
+        QMessageBox.warning(self, "下载失败", message)
+
+    @Slot()
+    def _reset_download_worker(self) -> None:
+        self._download_thread = None
+        self._download_worker = None
+        self._set_busy(False, "")
+        self._sync_download_button()
+        if self._accept_after_download:
+            self._accept_after_download = False
+            super().accept()
+
+    def reject(self) -> None:
+        if self._operation_running():
+            QMessageBox.information(self, "处理中", "Hugging Face 操作仍在进行，请等待完成后再关闭。")
+            return
+        super().reject()
+
+    def closeEvent(self, event):  # type: ignore[no-untyped-def]
+        if self._operation_running():
+            QMessageBox.information(self, "处理中", "Hugging Face 操作仍在进行，请等待完成后再关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class SettingsDialog(QDialog):
@@ -1011,6 +1231,10 @@ class SettingsDialog(QDialog):
         self.sensory_test_button.setEnabled(
             configured and self._sensory_model_probe_thread is None and self._sensory_model_test_thread is None
         )
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(
+                self._sensory_model_probe_thread is None and self._sensory_model_test_thread is None
+            )
         if not configured and hasattr(self, "sensory_status_label"):
             self.sensory_status_label.setText("该感官源已关闭。")
 
@@ -1152,6 +1376,8 @@ class SettingsDialog(QDialog):
             self.sensory_probe_button.setText("检测中..." if busy else "检测模型")
         if hasattr(self, "sensory_test_button"):
             self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "检测感知模型...")
 
     def _test_sensory_model(self) -> None:
@@ -1213,7 +1439,51 @@ class SettingsDialog(QDialog):
             self.sensory_test_button.setText("测试中..." if busy else "测试模型")
         if hasattr(self, "sensory_probe_button"):
             self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "测试感知模型...")
+
+    def _download_sensory_model_from_huggingface(self) -> None:
+        if (
+            self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            QMessageBox.information(self, "处理中", "请等待当前检测或测试完成后再下载模型。")
+            return
+        source = coerce_sensory_source(
+            getattr(self, "sensory_source_combo", None).currentData()
+            if hasattr(self, "sensory_source_combo")
+            else SensorySource.VISION.value
+        )
+        dialog = HuggingFaceSensoryModelDialog(
+            base_dir=self.base_dir,
+            source=source,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        repo_id = dialog.selected_repo_id.strip()
+        if not repo_id:
+            return
+        existing_models = [
+            self.sensory_model_edit.itemText(index)
+            for index in range(self.sensory_model_edit.count())
+            if self.sensory_model_edit.itemText(index).strip()
+        ]
+        next_models = [repo_id, *[name for name in existing_models if name != repo_id]]
+        self.sensory_model_edit.set_model_names(next_models)
+        self.sensory_model_edit.setText(repo_id)
+        self._capture_sensory_current_source()
+        self._sync_sensory_controls()
+        if hasattr(self, "sensory_status_label"):
+            local_dir = dialog.selected_local_dir.strip()
+            if local_dir:
+                self.sensory_status_label.setText(f"已从 Hugging Face 下载到：{local_dir}")
+            else:
+                self.sensory_status_label.setText("已从 Hugging Face 下载模型。")
 
     def _set_save_buttons_busy(self, busy: bool, text: str) -> None:
         if not hasattr(self, "button_box"):

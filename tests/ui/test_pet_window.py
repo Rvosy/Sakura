@@ -4725,6 +4725,20 @@ def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_hf_download_action")
+
+    assert dialog.sensory_hf_download_button.text() == "从 Hugging Face 下载"
+    assert dialog.sensory_hf_download_button.isEnabled()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):

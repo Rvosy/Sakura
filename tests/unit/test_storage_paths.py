@@ -119,6 +119,11 @@ class TestStoragePathsSnapshot:
             self.paths.system_audio_capture_helper()
             == self.data / "cache" / "system_audio" / "macos_system_audio_capture"
         )
+        assert self.paths.sensory_models_cache_dir == self.data / "cache" / "sensory_models"
+        assert (
+            self.paths.sensory_model_cache_for("vision", "Qwen/Qwen3-VL-4B-Instruct")
+            == self.data / "cache" / "sensory_models" / "vision" / "Qwen_Qwen3-VL-4B-Instruct"
+        )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
         # 现网存在 "N.A.V.I." 形态角色，历史文件为 N.A.V.I..jsonl，映射不得改变
@@ -195,6 +200,7 @@ class TestEnsureDirs:
             paths.notes_dir,
             paths.tts_cache_dir,
             paths.system_audio_cache_dir,
+            paths.sensory_models_cache_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()
