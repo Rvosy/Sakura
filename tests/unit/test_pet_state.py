@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -8,6 +10,20 @@ from app.agent.tools import ToolRegistry
 from app.pet_state.prompting import build_pet_state_context_message
 from app.pet_state.store import PetStateStore
 from app.pet_state.tools import create_pet_state_tools
+
+
+def test_pet_state_submodules_import_in_fresh_process() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import app.pet_state.models; import app.pet_state.tools",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_pet_state_store_updates_clamps_and_persists(tmp_path) -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
-from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.memory import MemoryStore
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
 from app.agent.reminders import ReminderStore, ScheduledReminder
@@ -36,6 +35,5 @@ __all__ = [
     "ToolMetadata",
     "ToolPermissionPolicy",
     "ToolRegistry",
-    "create_builtin_tool_registry",
     "register_mcp_tools_from_config",
 ]
