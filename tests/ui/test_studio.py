@@ -54,6 +54,17 @@ def test_workspace_rejects_package_paths_outside_directory() -> None:
     with pytest.raises(WorkspaceError, match="角色卡不能指向角色包外"):
         Workspace(root / "workspace").open_directory(source)
 
+
+def test_workspace_refuses_overwrite_when_disabled() -> None:
+    from tools.studio.workspace import Workspace, WorkspaceError
+
+    root = _studio_runtime_root("studio_workspace_overwrite")
+    workspace = Workspace(root / "workspace")
+    workspace.new_character("demo")
+
+    with pytest.raises(WorkspaceError, match="工作区已存在角色草稿"):
+        workspace.new_character("demo", overwrite=False)
+
 def test_studio_uses_eight_step_wizard_without_toolbar_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -80,6 +91,28 @@ def test_studio_uses_eight_step_wizard_without_toolbar_actions(
     assert not hasattr(window, "new_button")
     assert not hasattr(window, "export_button")
 
+
+
+def test_studio_cancel_workspace_overwrite_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _qt_app()
+    _disable_audio_player(monkeypatch)
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from tools.studio.app_studio import StudioWindow
+
+    window = StudioWindow(project_root=_studio_runtime_root("studio_overwrite_confirm"))
+    existing = window.workspace.package_dir("demo")
+    existing.mkdir(parents=True)
+    monkeypatch.setattr(
+        "tools.studio.app_studio.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+
+    assert not window._confirm_overwrite_workspace("demo")
+    assert existing.exists()
 
 def test_studio_stepper_and_footer_switch_pages(
     monkeypatch: pytest.MonkeyPatch,

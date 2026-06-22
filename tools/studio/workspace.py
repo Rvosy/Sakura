@@ -72,19 +72,19 @@ class Workspace:
 
     # ---- 创建 / 打开 ------------------------------------------------------
 
-    def new_character(self, char_id: str) -> tuple[Path, CharacterDoc]:
+    def new_character(self, char_id: str, *, overwrite: bool = True) -> tuple[Path, CharacterDoc]:
         """新建空白角色包骨架。character.json 在首次保存时才写出。"""
-        pkg = self._prepare_empty_dir(char_id)
+        pkg = self._prepare_empty_dir(char_id, overwrite=overwrite)
         (pkg / "portraits").mkdir(exist_ok=True)
         (pkg / CARD_FILENAME).write_text("", encoding="utf-8")
         return pkg, CharacterDoc(id=char_id, display_name=char_id)
 
-    def open_directory(self, src_dir: Path) -> tuple[Path, CharacterDoc]:
+    def open_directory(self, src_dir: Path, *, overwrite: bool = True) -> tuple[Path, CharacterDoc]:
         """把现有角色包目录复制到工作区后打开（不改动源目录）。"""
         src_dir = Path(src_dir)
         if not (src_dir / "character.json").exists():
             raise WorkspaceError(f"目录不是角色包（缺 character.json）：{src_dir}")
-        pkg = self._prepare_empty_dir(src_dir.name)
+        pkg = self._prepare_empty_dir(src_dir.name, overwrite=overwrite)
         shutil.copytree(src_dir, pkg, dirs_exist_ok=True)
         _validate_package_local_paths(pkg)
         return pkg, CharacterDoc.from_package_dir(pkg)
@@ -125,9 +125,11 @@ class Workspace:
 
     # ---- 内部 -------------------------------------------------------------
 
-    def _prepare_empty_dir(self, char_id: str) -> Path:
+    def _prepare_empty_dir(self, char_id: str, *, overwrite: bool = True) -> Path:
         pkg = self.package_dir(char_id)
         if pkg.exists():
+            if not overwrite:
+                raise WorkspaceError(f"工作区已存在角色草稿：{pkg}")
             shutil.rmtree(pkg)
         pkg.mkdir(parents=True, exist_ok=True)
         return pkg
