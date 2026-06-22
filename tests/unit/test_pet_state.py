@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from app.agent.tools import ToolRegistry
+from app.pet_state.models import apply_pet_state_delta, default_pet_state_record
 from app.pet_state.prompting import build_pet_state_context_message
 from app.pet_state.store import PetStateStore
 from app.pet_state.tools import create_pet_state_tools
@@ -56,6 +57,17 @@ def test_pet_state_store_updates_clamps_and_persists(tmp_path) -> None:
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["state"]["mood"] == "happy"
     assert PetStateStore(path).snapshot()["state"]["display"]["label"] == "开心"
+
+
+def test_pet_state_noop_delta_keeps_updated_at(monkeypatch) -> None:
+    record = default_pet_state_record()
+    original_updated_at = record.state.updated_at
+    monkeypatch.setattr("app.pet_state.models._now_iso", lambda: "2099-01-01T00:00:00+08:00")
+
+    next_record, decision = apply_pet_state_delta(record, {"mood": record.state.mood})
+
+    assert decision["status"] == "noop"
+    assert next_record.state.updated_at == original_updated_at
 
 
 def test_pet_state_update_rejects_readonly_display(tmp_path) -> None:
