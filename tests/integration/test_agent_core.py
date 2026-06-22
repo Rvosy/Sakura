@@ -63,6 +63,30 @@ from app.agent.screen_observation import (
 
 
 def _legacy_complete_with_tools(self, system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
+    if _kwargs.get("tool_choice") == "none" and hasattr(self, "chat"):
+        reply = self.chat(system_prompt, messages)
+        if isinstance(reply, str):
+            content = reply
+        else:
+            content = json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ja": getattr(segment, "text", ""),
+                            "zh": getattr(segment, "translation", ""),
+                            "tone": getattr(segment, "tone", "中性"),
+                            "portrait": getattr(segment, "portrait", ""),
+                        }
+                        for segment in getattr(reply, "segments", [])
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        return ChatCompletionTurn(
+            content=content,
+            tool_calls=[],
+            message={"role": "assistant", "content": content},
+        )
     tools = _kwargs.get("tools") or []
     tool_names = [
         tool["function"]["name"]

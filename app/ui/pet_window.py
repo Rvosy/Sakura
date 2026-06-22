@@ -4402,11 +4402,10 @@ class PetWindow(QWidget):
         self.agent_runtime.set_context_providers(services.plugin_manager.context_providers)
         # 把插件事件总线接到工具执行与 LLM 请求链路，供插件订阅 tool.* / llm.request.*。
         emit_bus_event = getattr(services.plugin_manager, "emit_bus_event", None)
+        self._llm_event_emitter = emit_bus_event if callable(emit_bus_event) else None
         if callable(emit_bus_event):
             services.tool_registry.set_event_emitter(emit_bus_event)
-            api_client = getattr(self.agent_runtime, "api_client", None)
-            if api_client is not None and hasattr(api_client, "set_event_emitter"):
-                api_client.set_event_emitter(emit_bus_event)
+        _wire_runtime_llm_event_emitters(self, self._llm_event_emitter)
         self.mcp_tool_provider = services.mcp_tool_provider
         self.plugin_manager = services.plugin_manager
         self._wire_plugin_service_backends()
@@ -7016,6 +7015,7 @@ def _update_runtime_api_clients(
             if memory_slot is not None
             else window.api_client
         )
+    _wire_runtime_llm_event_emitters(window, getattr(window, "_llm_event_emitter", None))
 
 
 def _client_for_explicit_slot(
@@ -7025,3 +7025,28 @@ def _client_for_explicit_slot(
     if resolved is None or resolved.source_slot != slot:
         return None
     return OpenAICompatibleClient(resolved.settings)
+
+
+def _wire_runtime_llm_event_emitters(
+    window: Any,
+    emitter: Callable[[str, dict[str, Any] | None], None] | None,
+) -> None:
+    runtime = getattr(window, "agent_runtime", None)
+    if runtime is not None:
+        for client in (
+            getattr(runtime, "api_client", None),
+            getattr(runtime, "vision_api_client", None),
+            getattr(runtime, "visual_context_api_client", None),
+        ):
+            _set_llm_event_emitter(client, emitter)
+    memory_curator = getattr(window, "memory_curator", None)
+    _set_llm_event_emitter(getattr(memory_curator, "api_client", None), emitter)
+
+
+def _set_llm_event_emitter(
+    client: Any,
+    emitter: Callable[[str, dict[str, Any] | None], None] | None,
+) -> None:
+    set_event_emitter = getattr(client, "set_event_emitter", None)
+    if callable(set_event_emitter):
+        set_event_emitter(emitter)
