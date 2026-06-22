@@ -2,6 +2,12 @@
 
 本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。当前实现把 `pet_state_update` / `PetStateStore.update()` 定为正式写路径；`pet_state_delta` 保留为最终回复中的可选建议、debug 或审计字段，不再作为每轮必填字段，也不作为主写入路径。
 
+## 配置归属
+
+`pet_state` 是“设置 -> 角色行为 -> 心情机制”的受控能力，默认关闭。关闭时 Sakura 不向聊天或主动事件注入 `pet_state` 上下文，`AgentRuntime` 也不会向模型暴露 `pet_state_get` / `pet_state_update` 工具，状态气泡入口会隐藏或禁用。
+
+当前实现不是 Active Perception 事件中心基座，也不引入 Watcher、PerceptionBus、隐私黑名单或全局主动感知事件编排。主动屏幕感知可以和心情机制共存，但 v1 只通过设置页归口和运行时 gating 连接两者。
+
 ## 目标
 
 为 Sakura 增加一个模型可见、宿主可校验、前端可同步的跨轮次状态层。

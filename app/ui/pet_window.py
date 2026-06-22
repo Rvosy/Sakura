@@ -3174,7 +3174,8 @@ class PetWindow(QWidget):
             store=getattr(self, "visual_observation_store", None),
             has_current_image=manual_observation is not None,
         )
-        if self._pet_state_behavior_enabled():
+        pet_state_behavior_enabled = getattr(self, "_pet_state_behavior_enabled", None)
+        if callable(pet_state_behavior_enabled) and pet_state_behavior_enabled():
             request_messages = _add_pet_state_context_to_messages(
                 request_messages,
                 getattr(self, "pet_state_store", None),
@@ -5437,9 +5438,13 @@ class PetWindow(QWidget):
                 },
             )
             self.settings_service.save_bubble_settings(result_bubble_settings)
-            self.settings_service.save_character_behavior_settings(
-                result_character_behavior_settings
+            save_character_behavior_settings = getattr(
+                self.settings_service,
+                "save_character_behavior_settings",
+                None,
             )
+            if callable(save_character_behavior_settings):
+                save_character_behavior_settings(result_character_behavior_settings)
             save_backchannel_settings = getattr(
                 self.settings_service,
                 "save_backchannel_settings",
@@ -5559,10 +5564,19 @@ class PetWindow(QWidget):
             apply_backchannel_settings(result_backchannel_settings)
         else:
             self.backchannel_settings = result_backchannel_settings
-        self._apply_character_behavior_settings(
-            result_character_behavior_settings,
-            pet_state_popup_pinned=result_pet_state_popup_pinned,
+        apply_character_behavior_settings = getattr(
+            self,
+            "_apply_character_behavior_settings",
+            None,
         )
+        if callable(apply_character_behavior_settings):
+            apply_character_behavior_settings(
+                result_character_behavior_settings,
+                pet_state_popup_pinned=result_pet_state_popup_pinned,
+            )
+        else:
+            self.character_behavior_settings = result_character_behavior_settings
+            self.pet_state_popup_pinned = result_pet_state_popup_pinned
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"

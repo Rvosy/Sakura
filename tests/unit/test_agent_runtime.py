@@ -123,6 +123,7 @@ class TestToolSystemPrompt:
 
     def test_pet_state_tools_are_explicitly_routed(self) -> None:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
+        runtime.set_pet_state_enabled(True)
         prompt = runtime._build_tool_system_prompt()
 
         assert "pet_state_get" in prompt
@@ -130,6 +131,44 @@ class TestToolSystemPrompt:
         assert "当前心情" in prompt
         assert "必须先调用 pet_state_get" in prompt
         assert "不要提交 display" in prompt
+
+    def test_pet_state_tools_are_hidden_by_default(self) -> None:
+        client = _dummy_api_client()
+        registry = ToolRegistry(
+            [
+                _dummy_tool("pet_state_get", group="pet_state"),
+                _dummy_tool("pet_state_update", group="pet_state"),
+            ]
+        )
+        runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry)
+
+        prompt = runtime._build_tool_system_prompt()
+        runtime.handle_user_message([ChatMessage(role="user", content="心情如何？")])
+        tool_defs = client.complete_with_tools.call_args.kwargs["tools"]
+        tool_names = {tool["function"]["name"] for tool in tool_defs}
+
+        assert "pet_state_get" not in prompt
+        assert "pet_state_update" not in prompt
+        assert "pet_state_get" not in tool_names
+        assert "pet_state_update" not in tool_names
+
+    def test_pet_state_tools_are_exposed_when_enabled(self) -> None:
+        client = _dummy_api_client()
+        registry = ToolRegistry(
+            [
+                _dummy_tool("pet_state_get", group="pet_state"),
+                _dummy_tool("pet_state_update", group="pet_state"),
+            ]
+        )
+        runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry)
+        runtime.set_pet_state_enabled(True)
+
+        runtime.handle_user_message([ChatMessage(role="user", content="心情如何？")])
+        tool_defs = client.complete_with_tools.call_args.kwargs["tools"]
+        tool_names = {tool["function"]["name"] for tool in tool_defs}
+
+        assert "pet_state_get" in tool_names
+        assert "pet_state_update" in tool_names
 
 
 class TestToolCallCountLimits:

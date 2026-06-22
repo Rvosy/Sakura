@@ -761,6 +761,9 @@ class SettingsDialog(QDialog):
         )
         self.tts_bundle_download_button.setEnabled(True)
         self._sync_voice_import_controls()
+        backchannel_check = getattr(self, "backchannel_enabled_check", None)
+        if backchannel_check is not None:
+            self._sync_backchannel_controls(backchannel_check.isChecked())
 
     def _sync_voice_import_controls(self) -> None:
         if hasattr(self, "tts_voice_import_button"):

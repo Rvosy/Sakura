@@ -14,7 +14,12 @@ import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
-from app.config.settings_service import BackchannelSettings, DebugLogSettings, StartupSettings
+from app.config.settings_service import (
+    BackchannelSettings,
+    CharacterBehaviorSettings,
+    DebugLogSettings,
+    StartupSettings,
+)
 from app.llm.api_client import ApiSettings
 from app.agent import AgentEvent, AgentResult
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -191,6 +196,7 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     host.free_access_enabled = True
     host.always_on_top_enabled = False
     host.pet_state_popup_pinned = True
+    host._pet_state_behavior_enabled = lambda: True
     host._hide_to_tray = lambda: None
     host._show_from_tray = lambda: None
     host._toggle_chinese_subtitles = lambda _checked: None
@@ -232,6 +238,45 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     app.processEvents()
 
 
+def test_pet_window_menu_disables_pet_state_when_mood_disabled() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.pet_window import PetWindow, SUBTITLE_LANGUAGE_ZH
+
+    QApplication = qtwidgets.QApplication
+    QWidget = qtwidgets.QWidget
+    app = QApplication.instance() or QApplication([])
+    host = QWidget()
+    host.subtitle_language = SUBTITLE_LANGUAGE_ZH
+    host.free_access_enabled = True
+    host.always_on_top_enabled = False
+    host.pet_state_popup_pinned = True
+    host._pet_state_behavior_enabled = lambda: False
+    host._hide_to_tray = lambda: None
+    host._show_from_tray = lambda: None
+    host._toggle_chinese_subtitles = lambda _checked: None
+    host._toggle_free_access = lambda _checked: None
+    host._toggle_always_on_top = lambda _checked: None
+    host._toggle_pet_state_popup_pinned = lambda _checked: None
+    host.show_history = lambda: None
+    host.show_runtime_log = lambda: None
+    host.show_settings = lambda: None
+
+    menu = PetWindow._build_menu(host)  # type: ignore[arg-type]
+    pet_state_action = next(
+        action for action in menu.actions() if action.text() == "桌宠状态"
+    )
+
+    assert not pet_state_action.isEnabled()
+    assert not pet_state_action.isChecked()
+
+    menu.deleteLater()
+    host.deleteLater()
+    app.processEvents()
+
+
 def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication") or not hasattr(qtwidgets, "QWidget"):
@@ -247,6 +292,7 @@ def test_pet_window_menu_shows_restore_action_when_hidden() -> None:
     host.free_access_enabled = True
     host.always_on_top_enabled = False
     host.pet_state_popup_pinned = False
+    host._pet_state_behavior_enabled = lambda: True
     host._hide_to_tray = lambda: None
     host._show_from_tray = lambda: None
     host._toggle_chinese_subtitles = lambda _checked: None
@@ -2142,6 +2188,42 @@ def test_deferred_startup_worker_closes_services_when_cancelled_after_move(monke
     assert services.plugin_manager.shutdowns == 1
 
 
+def test_settings_dialog_has_character_behavior_category() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("character_behavior_category")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        character_behavior_settings=CharacterBehaviorSettings(mood_enabled=True),
+        pet_state_popup_pinned=True,
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    assert dialog._settings_nav_titles[:2] == ["角色", "角色行为"]
+    assert "隐私" not in dialog._settings_nav_titles
+    assert dialog.mood_enabled_check.text() == "启用心情机制"
+    assert dialog.pet_state_popup_pinned_check.isEnabled()
+    assert dialog.backchannel_enabled_check.text() == "启用本地快速接话"
+    assert dialog.proactive_screen_context_enabled_check.text() == "启用主动屏幕感知（会定期获取屏幕信息）"
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabled() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -2189,6 +2271,61 @@ def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabl
     assert not dialog.proactive_cooldown_spin.isEnabled()
     assert not dialog.proactive_batch_limit_spin.isEnabled()
     assert not dialog.proactive_token_estimate_label.isEnabled()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_returns_character_behavior_and_screen_awareness_settings() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("character_behavior_accept")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        character_behavior_settings=CharacterBehaviorSettings(mood_enabled=False),
+        pet_state_popup_pinned=True,
+        proactive_care_settings=ProactiveCareSettings(
+            screen_context_enabled=False,
+            check_interval_minutes=20,
+            cooldown_minutes=10,
+            screen_context_batch_limit=6,
+        ),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    dialog.mood_enabled_check.setChecked(True)
+    dialog.pet_state_popup_pinned_check.setChecked(True)
+    dialog.proactive_screen_context_enabled_check.setChecked(True)
+    dialog.proactive_check_interval_spin.setValue(15)
+    dialog.proactive_cooldown_spin.setValue(8)
+    dialog.proactive_batch_limit_spin.setValue(4)
+    dialog.accept()
+
+    assert dialog.result_character_behavior_settings == CharacterBehaviorSettings(
+        mood_enabled=True
+    )
+    assert dialog.result_pet_state_popup_pinned is True
+    assert dialog.result_screen_awareness_settings == ScreenAwarenessSettings(
+        enabled=True,
+        screen_context_enabled=True,
+        check_interval_minutes=15,
+        cooldown_minutes=8,
+        screen_context_batch_limit=4,
+    )
+    assert dialog.result_proactive_care_settings == dialog.result_screen_awareness_settings
 
     dialog.deleteLater()
     app.processEvents()
@@ -3287,14 +3424,15 @@ def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
     assert stack is not None
     assert [nav.item(index).text() for index in range(nav.count())] == [
         "角色",
+        "角色行为",
         "外观",
         "模型",
         "语音",
-        "隐私",
         "工具",
         "插件",
         "系统",
     ]
+    assert "隐私" not in [nav.item(index).text() for index in range(nav.count())]
     assert stack.count() == nav.count()
     assert dialog.minimumWidth() >= 680
     assert dialog.minimumHeight() >= 500
@@ -6839,6 +6977,7 @@ def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> 
         "portrait_scale_percent": 100,
         "subtitle_typing_interval_ms": 80,
         "reply_segment_pause_ms": 900,
+        "pet_state_popup_pinned": False,
     }
     assert window.subtitle_typing_interval_ms == 80
     assert window.reply_segment_pause_ms == 900
@@ -9151,8 +9290,10 @@ def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
 
     class MinimalWindow:
         _event_with_pet_state_context = PetWindow._event_with_pet_state_context
+        _pet_state_behavior_enabled = PetWindow._pet_state_behavior_enabled
 
     window = MinimalWindow()
+    window.character_behavior_settings = CharacterBehaviorSettings(mood_enabled=True)
     window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
 
     event = window._event_with_pet_state_context(
@@ -9165,6 +9306,26 @@ def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
     assert "pet_state_update" in contract
     assert "PetStateStore.update" in contract
     assert "可以省略 pet_state_delta" in contract
+
+
+def test_event_with_pet_state_context_skips_when_mood_disabled(tmp_path) -> None:
+    from app.agent import AgentEvent
+    from app.pet_state.store import PetStateStore
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _event_with_pet_state_context = PetWindow._event_with_pet_state_context
+        _pet_state_behavior_enabled = PetWindow._pet_state_behavior_enabled
+
+    window = MinimalWindow()
+    window.character_behavior_settings = CharacterBehaviorSettings(mood_enabled=False)
+    window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
+
+    event = window._event_with_pet_state_context(
+        AgentEvent(type="reminder_due", payload={"text": "喝水"})
+    )
+
+    assert event.payload == {"text": "喝水"}
 
 
 def test_reply_history_buttons_disable_while_busy_or_playing() -> None:
@@ -9277,8 +9438,10 @@ def test_pet_window_toggle_pet_state_popup_pinned_saves_and_shows_or_hides() -> 
 
     class MinimalWindow:
         _toggle_pet_state_popup_pinned = PetWindow._toggle_pet_state_popup_pinned
+        _pet_state_behavior_enabled = PetWindow._pet_state_behavior_enabled
 
         def __init__(self) -> None:
+            self.character_behavior_settings = CharacterBehaviorSettings(mood_enabled=True)
             self.pet_state_popup_pinned = False
             self.saved_values: list[tuple[str, dict[str, bool]]] = []
             self.show_count = 0
@@ -9308,6 +9471,76 @@ def test_pet_window_toggle_pet_state_popup_pinned_saves_and_shows_or_hides() -> 
     assert window.saved_values[-1] == ("ui", {"pet_state_popup_pinned": False})
     assert window.show_count == 1
     assert window.hide_count == 1
+
+
+def test_pet_window_toggle_pet_state_popup_ignored_when_mood_disabled() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _toggle_pet_state_popup_pinned = PetWindow._toggle_pet_state_popup_pinned
+        _pet_state_behavior_enabled = PetWindow._pet_state_behavior_enabled
+
+        def __init__(self) -> None:
+            self.character_behavior_settings = CharacterBehaviorSettings(mood_enabled=False)
+            self.pet_state_popup_pinned = True
+            self.saved_values: list[tuple[str, dict[str, bool]]] = []
+            self.hide_count = 0
+
+        def _save_system_config_values(self, section: str, values: dict[str, bool]) -> None:
+            self.saved_values.append((section, values))
+
+        def hide_pet_state_popup(self) -> None:
+            self.hide_count += 1
+
+    window = MinimalWindow()
+
+    window._toggle_pet_state_popup_pinned(False)
+
+    assert window.pet_state_popup_pinned is True
+    assert window.saved_values == []
+    assert window.hide_count == 1
+
+
+def test_pet_window_applies_character_behavior_settings_to_runtime_and_popup() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class RuntimeStub:
+        def __init__(self) -> None:
+            self.values: list[bool] = []
+
+        def set_pet_state_enabled(self, enabled: bool) -> None:
+            self.values.append(enabled)
+
+    class MinimalWindow:
+        _apply_character_behavior_settings = PetWindow._apply_character_behavior_settings
+
+        def __init__(self) -> None:
+            self.agent_runtime = RuntimeStub()
+            self.pet_state_popup_pinned = True
+            self.show_count = 0
+            self.hide_count = 0
+
+        def show_pet_state_popup(self) -> None:
+            self.show_count += 1
+
+        def hide_pet_state_popup(self) -> None:
+            self.hide_count += 1
+
+    window = MinimalWindow()
+
+    window._apply_character_behavior_settings(
+        CharacterBehaviorSettings(mood_enabled=False),
+        pet_state_popup_pinned=True,
+    )
+    window._apply_character_behavior_settings(
+        CharacterBehaviorSettings(mood_enabled=True),
+        pet_state_popup_pinned=True,
+    )
+
+    assert window.agent_runtime.values == [False, True]
+    assert window.pet_state_popup_pinned is True
+    assert window.hide_count == 1
+    assert window.show_count == 1
 
 
 def test_pet_window_apply_window_flags_syncs_native_topmost_state() -> None:
