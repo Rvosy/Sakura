@@ -2219,6 +2219,8 @@ def test_settings_dialog_has_character_behavior_category() -> None:
     assert dialog.pet_state_popup_pinned_check.isEnabled()
     assert dialog.backchannel_enabled_check.text() == "启用本地快速接话"
     assert dialog.proactive_screen_context_enabled_check.text() == "启用主动屏幕感知（会定期获取屏幕信息）"
+    group_titles = [group.title() for group in dialog.findChildren(qtwidgets.QGroupBox)]
+    assert group_titles.index("主动屏幕感知") < group_titles.index("接话")
 
     dialog.deleteLater()
     app.processEvents()

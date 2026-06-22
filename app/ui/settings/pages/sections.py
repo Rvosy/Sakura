@@ -836,8 +836,8 @@ class CharacterBehaviorSettingsPage:
         layout.setSpacing(12)
         for title, group_form in (
             ("心情机制", mood_form),
-            ("接话", backchannel_form),
             ("主动屏幕感知", proactive_form),
+            ("接话", backchannel_form),
         ):
             group = QGroupBox(title, tab)
             group.setLayout(group_form)
