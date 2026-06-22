@@ -59,6 +59,7 @@ from app.config.character_archive import (
 from app.config.settings_service import (
     BackchannelSettings,
     BubbleSettings,
+    CharacterBehaviorSettings,
     DebugLogSettings,
     StartupSettings,
 )
@@ -129,6 +130,7 @@ from app.ui.settings import workers as settings_workers
 from app.ui.settings import widgets as settings_widgets
 from app.ui.settings.pages import (
     ApiSettingsPage,
+    CharacterBehaviorSettingsPage,
     CharacterSettingsPage,
     MemorySettingsPage,
     PluginSettingsPage,
@@ -166,6 +168,8 @@ class SettingsDialog(QDialog):
         startup_settings: StartupSettings | None = None,
         bubble_settings: BubbleSettings | None = None,
         backchannel_settings: BackchannelSettings | None = None,
+        character_behavior_settings: CharacterBehaviorSettings | None = None,
+        pet_state_popup_pinned: bool = False,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
@@ -179,6 +183,10 @@ class SettingsDialog(QDialog):
         self.startup_settings = startup_settings or StartupSettings()
         self.bubble_settings = bubble_settings or BubbleSettings()
         self.backchannel_settings = (backchannel_settings or BackchannelSettings()).normalized()
+        self.character_behavior_settings = (
+            character_behavior_settings or CharacterBehaviorSettings()
+        ).normalized()
+        self.pet_state_popup_pinned = bool(pet_state_popup_pinned)
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         # 延迟导入避免与 app.agent 形成导入环（与 settings_service 一致）。
         from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
@@ -240,6 +248,8 @@ class SettingsDialog(QDialog):
         self.result_startup_settings: StartupSettings | None = None
         self.result_bubble_settings: BubbleSettings | None = None
         self.result_backchannel_settings: BackchannelSettings | None = None
+        self.result_character_behavior_settings: CharacterBehaviorSettings | None = None
+        self.result_pet_state_popup_pinned: bool | None = None
         self.result_memory_curation_settings = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
@@ -293,15 +303,20 @@ class SettingsDialog(QDialog):
                     CharacterSettingsPage(self).build(character_registry, current_character)
                 ),
             ),
+            (
+                "角色行为",
+                self._build_scrollable_tab(
+                    CharacterBehaviorSettingsPage(self).build(
+                        self.character_behavior_settings,
+                        self.backchannel_settings,
+                        screen_awareness_settings or ScreenAwarenessSettings(),
+                        pet_state_popup_pinned=self.pet_state_popup_pinned,
+                    )
+                ),
+            ),
             ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
             ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings))),
             ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
-            (
-                "隐私",
-                self._build_scrollable_tab(
-                    PrivacySettingsPage(self).build(screen_awareness_settings or ScreenAwarenessSettings())
-                ),
-            ),
             (
                 "工具",
                 self._build_scrollable_tab(
@@ -325,7 +340,6 @@ class SettingsDialog(QDialog):
                         debug_log_settings or DebugLogSettings(),
                         self.startup_settings,
                         self.bubble_settings,
-                        self.backchannel_settings,
                     )
                 ),
             ),
@@ -708,6 +722,12 @@ class SettingsDialog(QDialog):
             enabled and tts_on,
         )
         self._refresh_backchannel_setup_status()
+
+    @Slot(bool)
+    def _sync_mood_behavior_controls(self, enabled: bool) -> None:
+        popup_check = getattr(self, "pet_state_popup_pinned_check", None)
+        if popup_check is not None:
+            popup_check.setEnabled(bool(enabled))
 
     def _sync_tts_enabled_controls(self, enabled: bool) -> None:
         """同步 TTS 总开关和整合包模式下的从属控件可交互状态。"""
@@ -2057,6 +2077,10 @@ class SettingsDialog(QDialog):
                 # timeout_ms 设置页不暴露，保存时保留 YAML 已配置值，避免覆盖回默认。
                 timeout_ms=self.backchannel_settings.timeout_ms,
             ),
+            "character_behavior_settings": CharacterBehaviorSettings(
+                mood_enabled=self.mood_enabled_check.isChecked(),
+            ),
+            "pet_state_popup_pinned": self.pet_state_popup_pinned_check.isChecked(),
             "memory_curation_settings": self._collect_memory_curation_settings(),
         }
 
@@ -2079,6 +2103,8 @@ class SettingsDialog(QDialog):
         startup_settings = values["startup_settings"]
         bubble_settings = values["bubble_settings"]
         backchannel_settings = values["backchannel_settings"]
+        character_behavior_settings = values["character_behavior_settings"]
+        pet_state_popup_pinned = values["pet_state_popup_pinned"]
         memory_curation_settings = values["memory_curation_settings"]
 
         if not isinstance(api_settings, ApiSettings):
@@ -2108,6 +2134,10 @@ class SettingsDialog(QDialog):
         if not isinstance(bubble_settings, BubbleSettings):
             return
         if not isinstance(backchannel_settings, BackchannelSettings):
+            return
+        if not isinstance(character_behavior_settings, CharacterBehaviorSettings):
+            return
+        if not isinstance(pet_state_popup_pinned, bool):
             return
         from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
         if not isinstance(memory_curation_settings, _MemoryCurationSettings):
@@ -2151,6 +2181,8 @@ class SettingsDialog(QDialog):
         self.result_startup_settings = startup_settings
         self.result_bubble_settings = bubble_settings
         self.result_backchannel_settings = backchannel_settings.normalized()
+        self.result_character_behavior_settings = character_behavior_settings.normalized()
+        self.result_pet_state_popup_pinned = pet_state_popup_pinned
         self.result_memory_curation_settings = memory_curation_settings
         self.result_plugin_config_changed = plugin_config_changed
         super().accept()

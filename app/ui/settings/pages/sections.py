@@ -63,6 +63,7 @@ from app.config.settings_service import (
     BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BubbleSettings,
+    CharacterBehaviorSettings,
     DebugLogSettings,
     StartupSettings,
 )
@@ -670,6 +671,190 @@ class PrivacySettingsPage:
         return tab
 
 
+class CharacterBehaviorSettingsPage:
+    def __init__(self, dialog: Any) -> None:
+        self.dialog = dialog
+
+    def build(
+        self,
+        behavior_settings: CharacterBehaviorSettings,
+        backchannel_settings: BackchannelSettings,
+        screen_awareness_settings: ScreenAwarenessSettings,
+        *,
+        pet_state_popup_pinned: bool = False,
+    ) -> QWidget:
+        owner = self.dialog
+        tab = QWidget(owner)
+        normalized_behavior = behavior_settings.normalized()
+
+        owner.mood_enabled_check = QCheckBox("启用心情机制", tab)
+        owner.mood_enabled_check.setChecked(normalized_behavior.mood_enabled)
+        owner.mood_enabled_check.setToolTip(
+            "开启后模型才能读取和更新 Sakura 的跨轮次心情状态。"
+        )
+        owner.pet_state_popup_pinned_check = QCheckBox("显示桌宠状态气泡", tab)
+        owner.pet_state_popup_pinned_check.setChecked(bool(pet_state_popup_pinned))
+
+        mood_form = QFormLayout()
+        mood_form.setContentsMargins(16, 12, 16, 12)
+        mood_form.setSpacing(12)
+        mood_form.addRow("", owner.mood_enabled_check)
+        mood_form.addRow("", owner.pet_state_popup_pinned_check)
+        owner._mood_behavior_form_layout = mood_form
+
+        normalized_backchannel = backchannel_settings.normalized()
+        owner.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
+        owner.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
+        owner.backchannel_enabled_check.setToolTip(
+            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
+        )
+        owner.backchannel_mode_combo = _NoWheelComboBox(tab)
+        owner.backchannel_mode_combo.addItem("规则模式", "rules")
+        owner.backchannel_mode_combo.addItem("模型增强", "hybrid")
+        mode_index = owner.backchannel_mode_combo.findData(normalized_backchannel.mode)
+        owner.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
+        owner.backchannel_mode_combo.setToolTip(
+            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
+        )
+        owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
+        owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
+        owner.backchannel_tts_enabled_check.setToolTip(
+            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
+        )
+        owner.backchannel_delay_spin = _NoWheelSpinBox(tab)
+        owner.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
+        owner.backchannel_delay_spin.setSuffix(" 毫秒")
+        owner.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
+        owner.backchannel_probability_spin = QDoubleSpinBox(tab)
+        owner.backchannel_probability_spin.setRange(0.0, 1.0)
+        owner.backchannel_probability_spin.setSingleStep(0.05)
+        owner.backchannel_probability_spin.setDecimals(2)
+        owner.backchannel_probability_spin.setValue(normalized_backchannel.probability)
+        owner.backchannel_setup_hint_label = QLabel(owner._backchannel_setup_hint_text(), tab)
+        owner.backchannel_setup_hint_label.setWordWrap(True)
+        owner.backchannel_model_status_label = QLabel(owner._backchannel_model_status_text(), tab)
+        owner.backchannel_model_status_label.setWordWrap(True)
+        owner.backchannel_download_model_button = QPushButton("在线安装", tab)
+        owner.backchannel_download_model_button.setToolTip(
+            f"从 {backchannel_model_endpoint()} 安装 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL} 到本地缓存。"
+        )
+        owner.backchannel_download_model_button.clicked.connect(owner._download_backchannel_model)
+        owner.backchannel_import_model_button = QPushButton("导入接话模型", tab)
+        owner.backchannel_import_model_button.setToolTip(
+            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
+        )
+        owner.backchannel_import_model_button.clicked.connect(owner._import_backchannel_model_archive)
+        owner.backchannel_refresh_status_button = QPushButton("重新检测", tab)
+        owner.backchannel_refresh_status_button.setToolTip("重新检测接话模型状态。")
+        owner.backchannel_refresh_status_button.clicked.connect(owner._refresh_backchannel_setup_status)
+        owner.backchannel_enabled_check.toggled.connect(owner._sync_backchannel_controls)
+        owner.backchannel_mode_combo.currentIndexChanged.connect(
+            lambda _index: owner._refresh_backchannel_setup_status()
+        )
+        tts_enabled_check = getattr(owner, "tts_enabled_check", None)
+        if tts_enabled_check is not None:
+            tts_enabled_check.toggled.connect(
+                lambda _checked: owner._sync_backchannel_controls(
+                    owner.backchannel_enabled_check.isChecked()
+                )
+            )
+
+        backchannel_form = QFormLayout()
+        backchannel_form.setContentsMargins(16, 12, 16, 12)
+        backchannel_form.setSpacing(12)
+        backchannel_form.addRow("", owner.backchannel_enabled_check)
+        backchannel_form.addRow("接话模式", owner.backchannel_mode_combo)
+        backchannel_form.addRow("配置状态", owner.backchannel_setup_hint_label)
+        backchannel_form.addRow("", owner.backchannel_tts_enabled_check)
+        backchannel_form.addRow("接话延迟", owner.backchannel_delay_spin)
+        backchannel_form.addRow("接话触发概率", owner.backchannel_probability_spin)
+        backchannel_model_layout = QHBoxLayout()
+        backchannel_model_layout.addWidget(owner.backchannel_model_status_label, 1)
+        backchannel_model_layout.addWidget(owner.backchannel_download_model_button)
+        backchannel_model_layout.addWidget(owner.backchannel_import_model_button)
+        backchannel_model_layout.addWidget(owner.backchannel_refresh_status_button)
+        backchannel_form.addRow("接话模型", backchannel_model_layout)
+        owner._backchannel_form_layout = backchannel_form
+
+        owner.proactive_screen_context_enabled_check = QCheckBox("启用主动屏幕感知（会定期获取屏幕信息）", tab)
+        normalized_screen_awareness_settings = screen_awareness_settings.normalized()
+        owner.proactive_screen_context_enabled_check.setChecked(
+            normalized_screen_awareness_settings.allows_screen_context()
+        )
+        owner.proactive_check_interval_spin = _NoWheelSpinBox(tab)
+        owner.proactive_check_interval_spin.setRange(
+            SCREEN_AWARENESS_MIN_CHECK_INTERVAL_MINUTES,
+            SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
+        )
+        owner.proactive_check_interval_spin.setSuffix(" 分钟")
+        owner.proactive_check_interval_spin.setValue(
+            normalized_screen_awareness_settings.check_interval_minutes
+        )
+        owner.proactive_cooldown_spin = _NoWheelSpinBox(tab)
+        owner.proactive_cooldown_spin.setRange(
+            SCREEN_AWARENESS_MIN_COOLDOWN_MINUTES,
+            SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
+        )
+        owner.proactive_cooldown_spin.setSuffix(" 分钟")
+        owner.proactive_cooldown_spin.setValue(
+            normalized_screen_awareness_settings.cooldown_minutes
+        )
+        owner.proactive_batch_limit_spin = _NoWheelSpinBox(tab)
+        owner.proactive_batch_limit_spin.setRange(
+            SCREEN_AWARENESS_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
+            SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
+        )
+        owner.proactive_batch_limit_spin.setSuffix(" 张")
+        owner.proactive_batch_limit_spin.setValue(
+            normalized_screen_awareness_settings.screen_context_batch_limit
+        )
+        owner.proactive_token_estimate_label = QLabel(tab)
+        owner.proactive_token_estimate_label.setWordWrap(True)
+        owner.proactive_token_estimate_label.setObjectName("secondaryText")
+        owner.proactive_token_estimate_label.setToolTip(
+            "按当前屏幕原始尺寸和高细节图像规则估算，不包含文字、工具协议和非 OpenAI 兼容方差异。"
+        )
+        owner.proactive_screen_context_enabled_check.toggled.connect(
+            owner._sync_proactive_screen_context_controls
+        )
+        owner.proactive_batch_limit_spin.valueChanged.connect(
+            owner._sync_proactive_token_estimate
+        )
+
+        proactive_form = QFormLayout()
+        proactive_form.setContentsMargins(16, 12, 16, 12)
+        proactive_form.setSpacing(12)
+        proactive_form.addRow("", owner.proactive_screen_context_enabled_check)
+        proactive_form.addRow("主动检查间隔", owner.proactive_check_interval_spin)
+        proactive_form.addRow("主动发言冷却", owner.proactive_cooldown_spin)
+        proactive_form.addRow("单次最多发送截图", owner.proactive_batch_limit_spin)
+        proactive_form.addRow("预计图像 token", owner.proactive_token_estimate_label)
+        owner._proactive_form_layout = proactive_form
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(12)
+        for title, group_form in (
+            ("心情机制", mood_form),
+            ("接话", backchannel_form),
+            ("主动屏幕感知", proactive_form),
+        ):
+            group = QGroupBox(title, tab)
+            group.setLayout(group_form)
+            layout.addWidget(group)
+        layout.addStretch(1)
+
+        owner.mood_enabled_check.toggled.connect(owner._sync_mood_behavior_controls)
+        owner._sync_mood_behavior_controls(owner.mood_enabled_check.isChecked())
+        owner._sync_backchannel_controls(owner.backchannel_enabled_check.isChecked())
+        owner._sync_proactive_token_estimate()
+        owner._sync_proactive_screen_context_controls(
+            owner.proactive_screen_context_enabled_check.isChecked()
+        )
+        tab.setLayout(layout)
+        return tab
+
+
 class ToolsSettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
@@ -902,7 +1087,6 @@ class SystemSettingsPage:
         debug_settings: DebugLogSettings,
         startup_settings: StartupSettings,
         bubble_settings: BubbleSettings,
-        backchannel_settings: BackchannelSettings,
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
@@ -967,63 +1151,6 @@ class SystemSettingsPage:
         )
         owner.bubble_auto_hide_check.toggled.connect(owner._sync_bubble_auto_hide_controls)
 
-        normalized_backchannel = backchannel_settings.normalized()
-        owner.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
-        owner.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
-        owner.backchannel_enabled_check.setToolTip(
-            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
-        )
-        owner.backchannel_mode_combo = _NoWheelComboBox(tab)
-        owner.backchannel_mode_combo.addItem("规则模式", "rules")
-        owner.backchannel_mode_combo.addItem("模型增强", "hybrid")
-        mode_index = owner.backchannel_mode_combo.findData(normalized_backchannel.mode)
-        owner.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
-        owner.backchannel_mode_combo.setToolTip(
-            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
-        )
-        owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
-        owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
-        owner.backchannel_tts_enabled_check.setToolTip(
-            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
-        )
-        owner.backchannel_delay_spin = _NoWheelSpinBox(tab)
-        owner.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
-        owner.backchannel_delay_spin.setSuffix(" 毫秒")
-        owner.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
-        owner.backchannel_probability_spin = QDoubleSpinBox(tab)
-        owner.backchannel_probability_spin.setRange(0.0, 1.0)
-        owner.backchannel_probability_spin.setSingleStep(0.05)
-        owner.backchannel_probability_spin.setDecimals(2)
-        owner.backchannel_probability_spin.setValue(normalized_backchannel.probability)
-        owner.backchannel_setup_hint_label = QLabel(owner._backchannel_setup_hint_text(), tab)
-        owner.backchannel_setup_hint_label.setWordWrap(True)
-        owner.backchannel_model_status_label = QLabel(owner._backchannel_model_status_text(), tab)
-        owner.backchannel_model_status_label.setWordWrap(True)
-        owner.backchannel_download_model_button = QPushButton("在线安装", tab)
-        owner.backchannel_download_model_button.setToolTip(
-            f"从 {backchannel_model_endpoint()} 安装 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL} 到本地缓存。"
-        )
-        owner.backchannel_download_model_button.clicked.connect(owner._download_backchannel_model)
-        owner.backchannel_import_model_button = QPushButton("导入接话模型", tab)
-        owner.backchannel_import_model_button.setToolTip(
-            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
-        )
-        owner.backchannel_import_model_button.clicked.connect(owner._import_backchannel_model_archive)
-        owner.backchannel_refresh_status_button = QPushButton("重新检测", tab)
-        owner.backchannel_refresh_status_button.setToolTip("重新检测接话模型状态。")
-        owner.backchannel_refresh_status_button.clicked.connect(owner._refresh_backchannel_setup_status)
-        owner.backchannel_enabled_check.toggled.connect(owner._sync_backchannel_controls)
-        owner.backchannel_mode_combo.currentIndexChanged.connect(
-            lambda _index: owner._refresh_backchannel_setup_status()
-        )
-        tts_enabled_check = getattr(owner, "tts_enabled_check", None)
-        if tts_enabled_check is not None:
-            tts_enabled_check.toggled.connect(
-                lambda _checked: owner._sync_backchannel_controls(
-                    owner.backchannel_enabled_check.isChecked()
-                )
-            )
-
         startup_form = QFormLayout()
         startup_form.setContentsMargins(16, 12, 16, 12)
         startup_form.setSpacing(12)
@@ -1047,23 +1174,6 @@ class SystemSettingsPage:
         bubble_form.addRow("", owner.bubble_auto_hide_check)
         bubble_form.addRow("气泡无操作时长", owner.bubble_auto_hide_delay_spin)
         owner._system_form_layout = bubble_form
-        backchannel_form = QFormLayout()
-        backchannel_form.setContentsMargins(16, 12, 16, 12)
-        backchannel_form.setSpacing(12)
-        backchannel_form.addRow("", owner.backchannel_enabled_check)
-        backchannel_form.addRow("接话模式", owner.backchannel_mode_combo)
-        backchannel_form.addRow("配置状态", owner.backchannel_setup_hint_label)
-        backchannel_form.addRow("", owner.backchannel_tts_enabled_check)
-        backchannel_form.addRow("接话延迟", owner.backchannel_delay_spin)
-        backchannel_form.addRow("接话触发概率", owner.backchannel_probability_spin)
-        backchannel_model_layout = QHBoxLayout()
-        backchannel_model_layout.addWidget(owner.backchannel_model_status_label, 1)
-        backchannel_model_layout.addWidget(owner.backchannel_download_model_button)
-        backchannel_model_layout.addWidget(owner.backchannel_import_model_button)
-        backchannel_model_layout.addWidget(owner.backchannel_refresh_status_button)
-        backchannel_form.addRow("接话模型", backchannel_model_layout)
-        owner._backchannel_form_layout = backchannel_form
-
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(12)
@@ -1072,14 +1182,12 @@ class SystemSettingsPage:
             ("调试日志", debug_form),
             ("字幕与回复", subtitle_form),
             ("气泡", bubble_form),
-            ("接话", backchannel_form),
         ):
             group = QGroupBox(title, tab)
             group.setLayout(group_form)
             layout.addWidget(group)
         layout.addStretch(1)
         owner._sync_bubble_auto_hide_controls(owner.bubble_auto_hide_check.isChecked())
-        owner._sync_backchannel_controls(owner.backchannel_enabled_check.isChecked())
         tab.setLayout(layout)
         return tab
 

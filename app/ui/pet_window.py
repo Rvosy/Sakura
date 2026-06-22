@@ -5165,6 +5165,12 @@ class PetWindow(QWidget):
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
+            character_behavior_settings=getattr(
+                self,
+                "character_behavior_settings",
+                CharacterBehaviorSettings(),
+            ),
+            pet_state_popup_pinned=bool(getattr(self, "pet_state_popup_pinned", False)),
             runtime_loop_settings=getattr(
                 self.agent_runtime,
                 "runtime_loop_settings",
