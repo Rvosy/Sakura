@@ -8531,6 +8531,36 @@ def test_proactive_care_event_includes_recent_conversation() -> None:
     )
 
 
+def test_screen_awareness_visual_job_uses_recent_conversation_as_focus() -> None:
+    from app.ui.pet_window import _build_screen_awareness_visual_observation_jobs
+
+    event = AgentEvent(
+        type="screen_awareness_check",
+        payload={
+            "recent_conversation": [
+                {"role": "user", "content": "第一条太旧"},
+                {"role": "assistant", "content": "我在看设置页。"},
+                {"role": "user", "content": "帮我看看模型配置哪里不对"},
+            ],
+            "screen_contexts": [
+                {
+                    "data_url": "data:image/jpeg;base64,abc",
+                    "width": 800,
+                    "height": 600,
+                    "captured_at": "2026-06-01T08:20:19+08:00",
+                    "screen_name": "DISPLAY1",
+                }
+            ],
+        },
+    )
+
+    jobs = _build_screen_awareness_visual_observation_jobs(event)
+
+    assert len(jobs) == 1
+    assert "最近对话" in jobs[0].user_text
+    assert "帮我看看模型配置哪里不对" in jobs[0].user_text
+
+
 def test_proactive_care_event_reads_recent_conversation_from_history_store() -> None:
     from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
     from app.storage.chat_history import ChatHistoryStore

@@ -6508,7 +6508,7 @@ def _build_screen_awareness_visual_observation_jobs(event: AgentEvent) -> list[V
         VisualObservationJob(
             id=generate_visual_observation_id(),
             source=SCREEN_AWARENESS_VISUAL_SOURCE,
-            user_text="主动屏幕感知上下文批次",
+            user_text=_screen_awareness_visual_user_text(event),
             screen_contexts=[
                 dict(context)
                 for context in screen_contexts
@@ -6516,6 +6516,25 @@ def _build_screen_awareness_visual_observation_jobs(event: AgentEvent) -> list[V
             ],
         )
     ]
+
+
+def _screen_awareness_visual_user_text(event: AgentEvent) -> str:
+    reason = _screen_awareness_text_value(event.payload.get("screen_observation_reason"))
+    if reason:
+        return reason
+    recent = event.payload.get("recent_conversation")
+    if not isinstance(recent, list):
+        return "主动屏幕感知上下文批次"
+    lines = ["主动屏幕感知上下文批次；最近对话："]
+    for item in recent[-4:]:
+        if not isinstance(item, dict):
+            continue
+        role = _screen_awareness_text_value(item.get("role"))
+        content = _screen_awareness_text_value(item.get("content"))
+        if role not in {"user", "assistant"} or not content:
+            continue
+        lines.append(f"- {role}: {_truncate_screen_awareness_recent_conversation_content(content, 160)}")
+    return "\n".join(lines) if len(lines) > 1 else "主动屏幕感知上下文批次"
 
 
 def _build_screen_awareness_recent_conversation(
