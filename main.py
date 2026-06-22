@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgr
 
 from app.config.app_version import record_app_version
 from app.config.default_configs import ensure_default_configs
-from app.config.migration_runner import MigrationRunner
+from app.config.migration_runner import MigrationReport, MigrationRunner
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
 from app.core.cancellation import CancellationToken, OperationCancelled
@@ -33,6 +33,7 @@ from app.platforms.launch_at_login import (
     set_launch_at_login_enabled,
 )
 from app.ui.pet_window import PetWindow
+from app.ui.error_messages import format_failure_message
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.portrait_controller import PORTRAIT_SCALE_DEFAULT_PERCENT
 from app.ui.subtitle_controller import (
@@ -359,6 +360,19 @@ class TTSBundleMigrationDialog(QDialog):
         _finish_tts_migration(self.base_dir, self.pet_window, self, self._finish_errors)
 
 
+def _format_data_migration_failure(report: MigrationReport) -> str:
+    errors = "\n".join(
+        f"{result.name}: {result.error}"
+        for result in report.results
+        if result.status == "failed"
+    )
+    return format_failure_message(
+        "部分旧数据迁移失败，Sakura 将以兼容模式继续运行，原数据没有被修改。",
+        "请保留原数据，查看 data/logs/sakura-runtime.log；下次启动会再次尝试迁移。",
+        errors,
+    )
+
+
 def main() -> int:
     _enable_crash_diagnostics(BASE_DIR)
     qInstallMessageHandler(_qt_message_handler)
@@ -372,7 +386,15 @@ def main() -> int:
     # 应给出明确 fatal，而不是在锁文件目录创建阶段提前失败。
     self_check = run_startup_self_check(BASE_DIR)
     if self_check.fatal_issues:
-        QMessageBox.critical(None, "启动检查未通过", self_check.fatal_message())
+        QMessageBox.critical(
+            None,
+            "启动检查未通过",
+            format_failure_message(
+                "Sakura 的运行环境未通过启动检查。",
+                "请按诊断信息修复缺失文件或目录权限后重新启动。",
+                self_check.fatal_message(),
+            ),
+        )
         return 1
 
     # 单实例锁：防止双开并发写历史/配置、争抢记忆库锁。
@@ -399,8 +421,7 @@ def main() -> int:
         QMessageBox.warning(
             None,
             "数据迁移未完成",
-            "部分旧数据迁移失败，Sakura 将以兼容模式继续运行。\n"
-            "原数据未被修改，详情见运行日志（data/logs/sakura-runtime.log）。",
+            _format_data_migration_failure(migration_report),
         )
 
     try:
@@ -412,7 +433,15 @@ def main() -> int:
         try:
             context = _open_first_run_settings(BASE_DIR)
         except (CharacterConfigError, OSError, TTSConfigError, ValueError) as first_run_exc:
-            QMessageBox.critical(None, "启动失败", str(first_run_exc))
+            QMessageBox.critical(
+                None,
+                "启动失败",
+                format_failure_message(
+                    "首次启动配置没有完成，Sakura 无法继续启动。",
+                    "请检查角色包、TTS 配置和 data 目录权限后重试。",
+                    first_run_exc,
+                ),
+            )
             _write_startup_error("Character", f"配置无效：{first_run_exc}")
             return 1
         if context is None:
@@ -610,9 +639,11 @@ def _finish_tts_migration(base_dir: Path, pet_window: PetWindow, dialog: QDialog
         QMessageBox.warning(
             pet_window,
             "TTS 整合包迁移失败",
-            "迁移失败，Sakura 会继续使用旧目录启动。旧模型文件不会被删除，"
-            "下次启动会继续迁移。\n\n"
-            + "\n".join(errors),
+            format_failure_message(
+                "TTS 整合包迁移失败，Sakura 会继续使用旧目录启动，旧模型不会被删除。",
+                "请检查目标目录的空间、权限和文件占用；下次启动会继续迁移。",
+                "\n".join(errors),
+            ),
         )
     _start_deferred_startup(base_dir, pet_window)
 

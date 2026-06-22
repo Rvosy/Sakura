@@ -19,6 +19,10 @@ from app.agent.screen_tools import (
     SCREEN_OBSERVATION_REQUEST_ACTION,
 )
 from app.agent.screen_policy import ScreenPolicy
+from app.agent.session_state_context import (
+    SESSION_DIGEST_INJECT_MAX_RECENT_MESSAGES,
+    build_session_state_fragment,
+)
 from app.agent.tool_policy import (
     BROWSER_NAVIGATE_TOOL_NAME,
     BROWSER_SNAPSHOT_TOOL_NAME,
@@ -29,6 +33,7 @@ from app.agent.tool_policy import (
 )
 import app.agent.tool_routing as tool_routing
 from app.agent.tools import ToolExecutionResult, ToolRegistry
+from app.storage.chat_history import ChatHistoryStore
 from app.llm.api_client import (
     ApiRequestError,
     ChatMessage,
@@ -37,6 +42,7 @@ from app.llm.api_client import (
     is_vision_unsupported_error,
     messages_contain_image,
 )
+from app.config.models import MODEL_SLOT_VISUAL_CONTEXT
 from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.debug_log import debug_body_enabled, debug_log, summarize_messages
@@ -55,16 +61,39 @@ from app.llm.prompt_templates import (
     build_context_acquisition_strategy,
     build_event_system_prompt,
     build_proactive_check_tool_system_prefix,
+    build_segmented_reply_instruction,
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+from app.storage.visual_observation import extract_visual_observation_summary
 
 from app.llm.prompts.runtime import PromptRuntime
 from app.llm.prompts.types import (
+    ContextFragment,
+    ContextRequest,
     ContextSnapshot,
     PromptInspection,
     PromptRecipe,
     PromptSection,
 )
+
+
+_VISUAL_OBSERVATION_REPLY_INSTRUCTION = """
+本轮消息包含图片时，最终 JSON 除 segments 外，必须额外包含顶层 visual_observation。
+visual_observation 只给系统保存短期视觉记忆，不会展示给用户；请用事实摘要，不要用角色口吻。
+格式：
+{
+  "segments": [{"ja":"日文原文","zh":"中文译文","tone":"中性","portrait":"站立待机"}],
+  "visual_observation": {
+    "summary": "一句到三句话概括画面",
+    "visible_texts": ["明确可见文字或台词"],
+    "uncertain_texts": ["不确定或部分可见文字"],
+    "notable_elements": ["关键窗口、控件、人物、状态"],
+    "confidence": 0.0,
+    "sensitive_redacted": false
+  }
+}
+遇到 API Key、token、密码、身份证、银行卡等敏感内容，必须打码为 [REDACTED]，并把 sensitive_redacted 设为 true。
+""".strip()
 
 
 class AgentRuntime:
@@ -78,16 +107,26 @@ class AgentRuntime:
         reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
         memory: MemoryStore | None = None,
+        history_store: ChatHistoryStore | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
         context_providers: list[ContextProviderContribution] | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
+        vision_api_client: OpenAICompatibleClient | None = None,
+        visual_context_api_client: OpenAICompatibleClient | None = None,
+        character_id: str = "",
+        character_name: str = "",
     ) -> None:
         self.api_client = api_client
+        self._vision_api_client = vision_api_client
+        self._visual_context_api_client = visual_context_api_client
         self.system_prompt = system_prompt
+        self.character_id = character_id.strip()
+        self.character_name = character_name.strip()
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
         self.memory = memory or MemoryStore()
+        self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
         self.context_providers = (
             [*context_providers] if context_providers is not None else []
@@ -102,14 +141,51 @@ class AgentRuntime:
         self.autonomous_screen_observation_enabled = True
         self.pet_state_enabled = False
 
+    @property
+    def vision_api_client(self) -> OpenAICompatibleClient | None:
+        return self._vision_api_client
+
+    @vision_api_client.setter
+    def vision_api_client(self, client: OpenAICompatibleClient | None) -> None:
+        self._vision_api_client = client
+
+    @property
+    def visual_context_api_client(self) -> OpenAICompatibleClient | None:
+        return self._visual_context_api_client
+
+    @visual_context_api_client.setter
+    def visual_context_api_client(self, client: OpenAICompatibleClient | None) -> None:
+        self._visual_context_api_client = client
+
+    def api_client_for_slot(self, slot: str) -> OpenAICompatibleClient:
+        if slot == MODEL_SLOT_VISUAL_CONTEXT:
+            return self._visual_context_api_client or self._vision_api_client or self.api_client
+        return self.api_client
+
+    def _client_for_messages(self, messages: list[ChatMessage]) -> OpenAICompatibleClient:
+        """根据消息是否含图片，返回 vision 或 text API client。
+
+        当有图片时优先使用 vision client；若 vision client 未设置，回退到主 client。
+        无图片时始终使用主 client（text 模型）。
+        """
+        if messages_contain_image(messages) and self._vision_api_client is not None:
+            return self._vision_api_client
+        return self.api_client
+
     def update_character(
         self,
         system_prompt: str,
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
+        character_id: str = "",
+        character_name: str = "",
     ) -> None:
         """角色切换后同步系统提示词、可用语气和可用立绘列表。"""
         self.system_prompt = system_prompt
+        if character_id:
+            self.character_id = character_id.strip()
+        if character_name:
+            self.character_name = character_name.strip()
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
 
@@ -125,6 +201,37 @@ class AgentRuntime:
         self.context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+
+    def set_history_store(
+        self,
+        history_store: ChatHistoryStore | None,
+    ) -> None:
+        """同步当前角色的聊天历史存储（跨会话续接的数据来源）。"""
+        self.history_store = history_store
+
+    def _session_state_fragments(
+        self,
+        request: ContextRequest,
+    ) -> tuple[ContextFragment, ...]:
+        store = self.history_store
+        if store is None:
+            return ()
+        # 仅在会话刚开始（实时窗口尚浅）时才回看历史，避免每轮全量读盘与重复注入。
+        if len(request.recent_messages) >= SESSION_DIGEST_INJECT_MAX_RECENT_MESSAGES:
+            return ()
+        try:
+            entries = store.load()
+            fragment = build_session_state_fragment(
+                entries,
+                recent_message_count=len(request.recent_messages),
+                freshness=entries[-1].created_at if entries else "",
+                current_input=request.current_input,
+            )
+        except Exception as exc:  # noqa: BLE001
+            debug_log("SessionState", "最近会话状态读取失败，已跳过", {"error": str(exc)})
+            return ()
+        return (fragment,) if fragment is not None else ()
+
     def get_last_prompt_inspection(self) -> dict[str, Any] | None:
         """返回最近一次 Prompt 构建的脱敏检查结果。"""
 
@@ -170,12 +277,15 @@ class AgentRuntime:
             available_tools=(),
             event_payload=event_payload,
             service_status={"memory": "unknown"},
+            character_id=self.character_id,
+            character_name=self.character_name,
         )
         recall = self.memory_recall.recall(request)
         request = replace(request, service_status={"memory": recall.status})
         return self.context_orchestrator.build_snapshot(
             request,
             providers=self.context_providers,
+            session_fragments=self._session_state_fragments(request),
             memory_fragments=recall.fragments,
         )
 
@@ -252,7 +362,7 @@ class AgentRuntime:
             },
         ]
         try:
-            repaired_turn = self.api_client.complete_with_tools(
+            repaired_turn = self._client_for_messages(repair_messages).complete_with_tools(
                 system_prompt,
                 repair_messages,
                 tools=[],
@@ -279,6 +389,65 @@ class AgentRuntime:
             return parsed.reply
         debug_log("AgentRuntime", "最终回复结构修复成功", {"repaired": repaired.repaired})
         return repaired.reply
+
+    def _parse_reply_and_visual_observation(
+        self,
+        system_prompt: str,
+        working_messages: list[ChatMessage],
+        raw_content: str,
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> tuple[ChatReply, dict[str, Any] | None]:
+        visual_observation = (
+            extract_visual_observation_summary(raw_content)
+            if messages_contain_image(working_messages)
+            else None
+        )
+        return (
+            self._parse_final_reply_with_retry(
+                system_prompt,
+                working_messages,
+                raw_content,
+                cancel_checker=cancel_checker,
+            ),
+            visual_observation,
+        )
+
+    def _complete_final_reply(
+        self,
+        system_prompt: str,
+        working_messages: list[ChatMessage],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> tuple[ChatReply, dict[str, Any] | None]:
+        dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
+        prompt = "\n\n".join(
+            part
+            for part in (
+                system_prompt.strip(),
+                build_segmented_reply_instruction(self.reply_tones, self.reply_portraits),
+                _VISUAL_OBSERVATION_REPLY_INSTRUCTION
+                if messages_contain_image(working_messages)
+                else "",
+            )
+            if part
+        )
+        turn = self._client_for_messages(working_messages).complete_with_tools(
+            prompt,
+            working_messages,
+            tools=[],
+            tool_choice="none",
+            temperature=dialogue_temperature,
+            structured_response=True,
+            cancel_checker=cancel_checker,
+            **dialogue_extra_params,
+        )
+        return self._parse_reply_and_visual_observation(
+            prompt,
+            working_messages,
+            turn.content,
+            cancel_checker=cancel_checker,
+        )
 
     def handle_user_message(
         self,
@@ -344,6 +513,7 @@ class AgentRuntime:
         loop_settings = self.runtime_loop_settings
         for step_index in range(loop_settings.max_agent_steps_per_turn):
             check_cancelled(cancel_checker)
+            include_visual_observation = messages_contain_image(working_messages)
             browser_page_mode = tool_routing._should_prefer_browser_page_tools(working_messages)
             browser_page_guard_active = (
                 browser_page_mode
@@ -383,6 +553,8 @@ class AgentRuntime:
                     available_tools=tool_names,
                     event_payload=event_payload,
                     service_status={"memory": memory_status},
+                    character_id=self.character_id,
+                    character_name=self.character_name,
                 )
                 if memory_needs_refresh:
                     recall = self.memory_recall.recall(request)
@@ -393,12 +565,14 @@ class AgentRuntime:
                 snapshot = self.context_orchestrator.build_snapshot(
                     request,
                     providers=self.context_providers,
+                    session_fragments=self._session_state_fragments(request),
                     memory_fragments=turn_memory_fragments,
                 )
                 prompt_build = (
                     self._build_proactive_tool_prompt_result(
                         snapshot,
                         extra_instructions=planning_extra_instructions,
+                        include_visual_observation=include_visual_observation,
                     )
                     if proactive_mode
                     else self._build_tool_prompt_result(
@@ -407,11 +581,12 @@ class AgentRuntime:
                         extra_instructions=planning_extra_instructions,
                         browser_page_mode=browser_page_guard_active,
                         visible_browser_mode=visible_browser_guard_active,
+                        include_visual_observation=include_visual_observation,
                     )
                 )
                 self._record_prompt_inspection(prompt_build.inspection)
                 dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
-                turn = self.api_client.complete_with_tools(
+                turn = self._client_for_messages(working_messages).complete_with_tools(
                     prompt_build.system_prompt,
                     working_messages,
                     tools=tool_defs,
@@ -461,22 +636,21 @@ class AgentRuntime:
                         "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
                     },
                 )
+                reply, visual_observation = self._parse_reply_and_visual_observation(
+                    prompt_build.system_prompt,
+                    working_messages,
+                    turn.content,
+                    cancel_checker=cancel_checker,
+                )
                 return AgentResult(
-                    reply=sanitize_reply_tones(
-                        self._parse_final_reply_with_retry(
-                            prompt_build.system_prompt,
-                            working_messages,
-                            turn.content,
-                            cancel_checker=cancel_checker,
-                        ),
-                        self.reply_tones,
-                    ),
+                    reply=sanitize_reply_tones(reply, self.reply_tones),
                     _debug=_build_debug_meta(
                         self.api_client, execution_results,
                         total_tool_calls, turn_started_at,
                         self.get_last_prompt_inspection(),
                     ),
                     actions=emitted_actions,
+                    visual_observation=visual_observation,
                 )
 
             _emit_progress_from_content(
@@ -762,11 +936,9 @@ class AgentRuntime:
         try:
             check_cancelled(cancel_checker)
             final_started_at = time.perf_counter()
-            final_reply = self.api_client.chat(
+            final_reply, final_visual_observation = self._complete_final_reply(
                 self._build_final_reply_prompt(),
                 working_messages,
-                self.reply_tones,
-                self.reply_portraits,
                 cancel_checker=cancel_checker,
             )
             check_cancelled(cancel_checker)
@@ -775,6 +947,7 @@ class AgentRuntime:
         except Exception as exc:
             debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
             final_reply = _build_fallback_tool_reply(execution_results)
+            final_visual_observation = None
         debug_log(
             "AgentRuntime",
             "最终回复生成完成",
@@ -788,6 +961,7 @@ class AgentRuntime:
         return AgentResult(
             reply=final_reply,
             actions=emitted_actions,
+            visual_observation=final_visual_observation,
         )
 
     def handle_confirmed_action(
@@ -870,7 +1044,7 @@ class AgentRuntime:
         self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
-            reply = self.api_client.chat(
+            reply = self._client_for_messages(final_messages).chat(
                 prompt_build.system_prompt,
                 final_messages,
                 self.reply_tones,
@@ -883,16 +1057,12 @@ class AgentRuntime:
         except OperationCancelled:
             raise
         except Exception as exc:
-            debug_log("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
+            debug_log(
+                "AgentRuntime",
+                "确认动作总结失败，使用本地兜底回复",
+                {"error": str(exc)},
+            )
             reply = _build_fallback_tool_reply(results)
-        debug_log(
-            "AgentRuntime",
-            "已确认动作处理完成",
-            {
-                "results": [_redact_tool_result_for_model(item) for item in results],
-                "segments": len(reply.segments),
-            },
-        )
         return AgentResult(
             reply=reply,
             actions=emitted_actions,
@@ -974,7 +1144,7 @@ class AgentRuntime:
         self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
-            reply = self.api_client.chat(
+            reply = self._client_for_messages(event_messages).chat(
                 prompt_build.system_prompt,
                 event_messages,
                 self.reply_tones,
@@ -1053,6 +1223,7 @@ class AgentRuntime:
         extra_instructions: str = "",
         browser_page_mode: bool = False,
         visible_browser_mode: bool = False,
+        include_visual_observation: bool = False,
     ):
         reply_protocol = self._apply_reply_protocol_patches(
             build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
@@ -1120,6 +1291,11 @@ class AgentRuntime:
                 f"当前 Agent 循环：\n- 每步最多请求 {self.runtime_loop_settings.max_tool_calls_per_step} 个工具，整轮最多 {self.runtime_loop_settings.max_tool_calls_per_turn} 个工具。\n- 工具结果足够、受限、需要确认或同参数失败时，停止循环并自然说明状态。",
             ),
             PromptSection("reply.protocol", reply_protocol),
+            *(
+                [PromptSection("reply.visual_observation", _VISUAL_OBSERVATION_REPLY_INSTRUCTION)]
+                if include_visual_observation
+                else []
+            ),
             PromptSection("context.acquisition", context_strategy),
             PromptSection("tools.capabilities", capability_rules),
             PromptSection("tools.rules", tool_rules),
@@ -1146,6 +1322,7 @@ class AgentRuntime:
         snapshot: ContextSnapshot | None,
         *,
         extra_instructions: str = "",
+        include_visual_observation: bool = False,
     ):
         proactive_rules = build_proactive_check_tool_system_prefix(
             "",
@@ -1158,6 +1335,11 @@ class AgentRuntime:
         sections = [
             *self._persona_sections(),
             PromptSection("agent.proactive", proactive_rules),
+            *(
+                [PromptSection("reply.visual_observation", _VISUAL_OBSERVATION_REPLY_INSTRUCTION)]
+                if include_visual_observation
+                else []
+            ),
         ]
         return self._prompt_runtime().build(
             PromptRecipe("proactive_tool_loop", sections), snapshot

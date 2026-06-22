@@ -56,6 +56,16 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
 )
 from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.models import (
+    MODEL_SLOT_CHAT,
+    MODEL_SLOT_DESCRIPTIONS,
+    MODEL_SLOT_LABELS,
+    MODEL_SLOT_UI_ORDER,
+    MODEL_SLOT_VISION_CHAT,
+    ApiConfigProfile,
+    ModelSelectionSettings,
+    ModelSlotSelection,
+)
 from app.config.settings_service import (
     BACKCHANNEL_MAX_DELAY_MS,
     BACKCHANNEL_MIN_DELAY_MS,
@@ -412,55 +422,180 @@ class ApiSettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
 
-    def build(self, settings: ApiSettings) -> QWidget:
+    def build(
+        self,
+        settings: ApiSettings,
+        api_profiles: list | None = None,
+        model_names: list[str] | None = None,
+        model_selection: Any = None,
+    ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
-        owner.base_url_edit = QLineEdit(settings.base_url, tab)
-        owner.base_url_edit.setPlaceholderText("https://api.openai.com/v1")
-        owner.api_key_edit = QLineEdit(settings.api_key, tab)
-        owner.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        owner.api_key_edit.setPlaceholderText("请输入 API Key")
 
-        owner.model_edit = ModelComboBox(tab)
-        owner.model_edit.setText(settings.model)
-        owner.model_edit.setPlaceholderText("gpt-4.1-mini")
+        owner._api_profiles = list(api_profiles or [])
+        owner._model_selection = model_selection or ModelSelectionSettings()
+        if not owner._model_selection.chat.configured and owner._api_profiles:
+            first_profile = owner._api_profiles[0]
+            first_model = first_profile.models[0] if first_profile.models else settings.model
+            owner._model_selection = ModelSelectionSettings(
+                chat=ModelSlotSelection(profile_id=first_profile.id, model=first_model)
+            )
 
-        owner.api_timeout_spin = _NoWheelSpinBox(tab)
+        provider_group = QGroupBox("供应商配置", tab)
+        owner.api_profile_edit_button = QPushButton("编辑供应商和模型", provider_group)
+        owner.api_profile_edit_button.clicked.connect(owner._open_api_profile_editor)
+        owner.provider_summary_label = QLabel(self._provider_summary(owner._api_profiles), provider_group)
+        owner.provider_summary_label.setWordWrap(True)
+        provider_layout = QVBoxLayout()
+        provider_layout.setContentsMargins(12, 8, 12, 8)
+        provider_layout.setSpacing(8)
+        provider_layout.addWidget(owner.provider_summary_label)
+        provider_layout.addWidget(owner.api_profile_edit_button, 0, Qt.AlignmentFlag.AlignLeft)
+        provider_group.setLayout(provider_layout)
+
+        slot_group = QGroupBox("实际使用的模型配置", tab)
+        slot_form = QFormLayout()
+        slot_form.setContentsMargins(12, 8, 12, 8)
+        slot_form.setSpacing(8)
+        owner._slot_profile_combos = {}
+        owner._slot_model_combos = {}
+        owner._slot_inherit_checks = {}
+        owner._slot_test_buttons = {}
+        owner._slot_probe_buttons = {}
+        for slot in MODEL_SLOT_UI_ORDER:
+            row = self._build_slot_row(slot, slot_group)
+            slot_form.addRow(MODEL_SLOT_LABELS[slot], row)
+        slot_group.setLayout(slot_form)
+
+        # ── 基础设置 ──
+        basic_group = QGroupBox("基础设置", tab)
+        owner.api_timeout_spin = _NoWheelSpinBox(basic_group)
         owner.api_timeout_spin.setRange(1, 600)
         owner.api_timeout_spin.setSuffix(" 秒")
         owner.api_timeout_spin.setValue(settings.timeout_seconds)
 
-        owner.api_model_probe_button = QPushButton("检测模型", tab)
-        owner.api_model_probe_button.clicked.connect(owner._probe_api_models)
-        owner.api_test_button = QPushButton("测试 API", tab)
-        owner.api_test_button.clicked.connect(owner._test_api_settings)
+        basic_form = QFormLayout()
+        basic_form.setContentsMargins(12, 8, 12, 8)
+        basic_form.setSpacing(8)
+        basic_form.addRow("超时", owner.api_timeout_spin)
+        basic_group.setLayout(basic_form)
 
-        api_actions = QWidget(tab)
-        api_actions_layout = QHBoxLayout(api_actions)
-        api_actions_layout.setContentsMargins(0, 0, 0, 0)
-        api_actions_layout.setSpacing(8)
-        api_actions_layout.addWidget(owner.api_model_probe_button)
-        api_actions_layout.addWidget(owner.api_test_button)
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(12)
-        form_layout.addRow("Base URL", owner.base_url_edit)
-        form_layout.addRow("API Key", owner.api_key_edit)
-        form_layout.addRow("模型", owner.model_edit)
-        form_layout.addRow("超时", owner.api_timeout_spin)
-        form_layout.addRow("", api_actions)
-        form_container = QWidget(tab)
-        form_container.setLayout(form_layout)
-
+        # ── 组装 ──
         outer_layout = QVBoxLayout()
         outer_layout.setContentsMargins(16, 18, 16, 16)
         outer_layout.setSpacing(12)
-        outer_layout.addWidget(form_container)
+        outer_layout.addWidget(provider_group)
+        outer_layout.addWidget(slot_group)
+        outer_layout.addWidget(basic_group)
         outer_layout.addWidget(self._build_advanced_llm_params_group(settings, tab))
         outer_layout.addStretch(1)
         tab.setLayout(outer_layout)
+
+        # 兼容旧测试/调用点中直接访问的控件名。
+        owner.vision_profile_combo = owner._slot_profile_combos[MODEL_SLOT_CHAT]
+        owner.vision_model_combo = owner._slot_model_combos[MODEL_SLOT_CHAT]
+        owner.vision_probe_btn = owner._slot_probe_buttons[MODEL_SLOT_CHAT]
+        owner.vision_test_btn = owner._slot_test_buttons[MODEL_SLOT_CHAT]
+        owner.text_enabled_check = owner._slot_inherit_checks[MODEL_SLOT_VISION_CHAT]
+        owner.text_profile_combo = owner._slot_profile_combos[MODEL_SLOT_CHAT]
+        owner.text_model_combo = owner._slot_model_combos[MODEL_SLOT_CHAT]
+        owner.text_probe_btn = owner._slot_probe_buttons[MODEL_SLOT_CHAT]
+        owner.text_test_btn = owner._slot_test_buttons[MODEL_SLOT_CHAT]
         return tab
+
+    def _build_slot_row(self, slot: str, parent: QWidget) -> QWidget:
+        owner = self.dialog
+        container = QWidget(parent)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        desc = QLabel(MODEL_SLOT_DESCRIPTIONS[slot], container)
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(desc)
+
+        controls = QWidget(container)
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        inherit_check = QCheckBox("继承", controls)
+        inherit_check.setVisible(slot != MODEL_SLOT_CHAT)
+        profile_combo = _NoWheelComboBox(controls)
+        model_combo = ModelComboBox(controls)
+        probe_btn = QPushButton("检测模型", controls)
+        test_btn = QPushButton("测试", controls)
+
+        self._populate_profile_combo(profile_combo, owner._api_profiles)
+        selection = owner._model_selection.get(slot)
+        inherited = slot != MODEL_SLOT_CHAT and (selection is None or not selection.configured)
+        inherit_check.setChecked(inherited)
+        if selection is not None and selection.configured:
+            self._set_profile_combo_value(profile_combo, selection.profile_id)
+        self._populate_model_combo_for_profile(model_combo, owner._api_profiles, str(profile_combo.currentData() or ""))
+        if selection is not None and selection.model:
+            model_combo.setText(selection.model)
+
+        owner._slot_profile_combos[slot] = profile_combo
+        owner._slot_model_combos[slot] = model_combo
+        owner._slot_inherit_checks[slot] = inherit_check
+        owner._slot_probe_buttons[slot] = probe_btn
+        owner._slot_test_buttons[slot] = test_btn
+
+        profile_combo.currentIndexChanged.connect(
+            lambda _index, slot_name=slot: owner._sync_slot_model_combo(slot_name, keep_current=False)
+        )
+        inherit_check.toggled.connect(
+            lambda _checked, slot_name=slot: owner._sync_slot_inherit_state(slot_name)
+        )
+        probe_btn.clicked.connect(lambda _checked=False, slot_name=slot: owner._probe_api_models(slot_name))
+        test_btn.clicked.connect(lambda _checked=False, slot_name=slot: owner._test_api_settings(slot_name))
+
+        controls_layout.addWidget(inherit_check)
+        controls_layout.addWidget(profile_combo, 2)
+        controls_layout.addWidget(model_combo, 3)
+        controls_layout.addWidget(probe_btn)
+        controls_layout.addWidget(test_btn)
+        layout.addWidget(controls)
+        owner._sync_slot_inherit_state(slot)
+        return container
+
+    def _populate_profile_combo(self, combo: QComboBox, profiles: list) -> None:
+        combo.clear()
+        for p in profiles:
+            alias = p.alias if p.alias else p.id
+            combo.addItem(alias, p.id)
+        if combo.count() == 0:
+            combo.addItem("（无配置）", "")
+
+    def _populate_model_combo_for_profile(
+        self,
+        combo: ModelComboBox,
+        profiles: list,
+        profile_id: str,
+    ) -> None:
+        model_names: list[str] = []
+        for profile in profiles:
+            if getattr(profile, "id", "") == profile_id:
+                model_names = list(getattr(profile, "models", ()))
+                break
+        combo.blockSignals(True)
+        combo.set_model_names(model_names)
+        combo.blockSignals(False)
+
+    def _set_profile_combo_value(self, combo: QComboBox, profile_id: str) -> None:
+        index = combo.findData(profile_id)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _provider_summary(self, profiles: list) -> str:
+        if not profiles:
+            return "暂无供应商。"
+        return "；".join(
+            f"{getattr(p, 'alias', '') or getattr(p, 'id', '')}：{len(getattr(p, 'models', ()))} 个模型"
+            for p in profiles
+        )
 
     def _build_advanced_llm_params_group(self, settings: ApiSettings, parent: QWidget) -> QGroupBox:
         owner = self.dialog
@@ -562,13 +697,13 @@ class TtsSettingsPage:
             "Windows 可一键下载内置整合包；macOS/Linux 请使用自定义 GPT-SoVITS 接入源码版运行环境。"
         )
         owner.tts_bundle_download_button.clicked.connect(owner._download_gpt_sovits_bundle)
+        owner.tts_bundle_status_label = QLabel("", tab)
+        owner.tts_bundle_status_label.setWordWrap(True)
         owner.tts_provider_combo.currentIndexChanged.connect(
             lambda _index: owner._sync_tts_provider_controls(apply_defaults=True)
         )
         owner.tts_enabled_check.toggled.connect(owner._sync_tts_enabled_controls)
 
-        owner.ref_lang_edit = QLineEdit(settings.ref_lang, tab)
-        owner.text_lang_edit = QLineEdit(settings.text_lang, tab)
         owner.tts_timeout_spin = _NoWheelSpinBox(tab)
         owner.tts_timeout_spin.setRange(1, 600)
         owner.tts_timeout_spin.setSuffix(" 秒")
@@ -592,9 +727,8 @@ class TtsSettingsPage:
         form_layout.addRow("TTS 工作目录", owner.tts_work_dir_edit)
         form_layout.addRow("TTS Python", owner.tts_python_path_edit)
         form_layout.addRow("推理配置", owner.tts_config_path_edit)
-        form_layout.addRow("参考语言", owner.ref_lang_edit)
-        form_layout.addRow("文本语言", owner.text_lang_edit)
         form_layout.addRow("超时", owner.tts_timeout_spin)
+        form_layout.addRow("整合包下载", owner.tts_bundle_status_label)
         owner._tts_form_layout = form_layout
         tab.setLayout(form_layout)
         owner._sync_tts_provider_controls(apply_defaults=_is_bundled_tts_provider(settings.provider))

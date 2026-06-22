@@ -6,9 +6,11 @@ from pathlib import Path
 import uuid
 
 from app.agent.tools import ToolRegistry
+from app.plugins.models import PERMISSION_MOBILE_CHAT
 from app.plugins.manager import PluginManager
 from app.plugins.services import PluginInputService, PluginServices
 from app.core.resource_manager import ResourceRegistry
+from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
 
 
 def test_set_input_text_without_sink_is_noop() -> None:
@@ -41,6 +43,33 @@ def test_set_backends_wires_input_text_sink() -> None:
     services.set_backends(input_text_sink=received.append)
     services.input.set_input_text("从 services 进")
     assert received == ["从 services 进"]
+
+
+def test_mobile_theme_defaults_to_sakura_theme() -> None:
+    assert PluginServices().mobile.theme() == theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
+
+
+def test_set_backends_wires_mobile_theme_sink() -> None:
+    services = PluginServices()
+    services.set_backends(
+        mobile_theme_sink=lambda: {
+            "primary_color": "#112233",
+            "accent_color": "#445566",
+        }
+    )
+
+    theme = services.mobile.theme()
+
+    assert theme["primary_color"] == "#112233"
+    assert theme["accent_color"] == "#445566"
+    assert theme["text_color"] == DEFAULT_THEME_SETTINGS.text_color
+
+
+def test_mobile_service_requires_permission() -> None:
+    services = PluginServices()
+
+    assert services.for_plugin("plain").mobile is None
+    assert services.for_plugin("mobile", (PERMISSION_MOBILE_CHAT,)).mobile is services.mobile
 
 
 def test_plugin_reaches_input_sink_end_to_end() -> None:

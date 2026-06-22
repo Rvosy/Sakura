@@ -114,9 +114,6 @@ def test_plugin_config_manifest_is_read(tmp_path: Path) -> None:
     playwright = next(spec for spec in specs if spec.plugin_id == "playwright_browser")
     assert playwright.entry == "plugin:PlaywrightBrowserPlugin"
     assert playwright.enabled
-    example_plugin = next(spec for spec in specs if spec.plugin_id == "example_plugin")
-    assert example_plugin.entry == "plugin:ExamplePlugin"
-    assert not example_plugin.enabled
 
 
 def test_tool_registry_exports_openai_function_schema() -> None:

@@ -4,43 +4,32 @@
 
 A desktop companion Agent — chats, changes expressions, speaks, remembers what you allow, and helps with tasks after confirmation.
 
-![Sakura Preview](../assets/sakura_01.png)
+![Sakura Preview](../assets/sakura_01.webp)
 
 ## Quick Start
 
 > **On macOS?** See [MACOS_SETUP.md](MACOS_SETUP.md) before you begin.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+1. Download `sakura-v0.9.8-windows-x64.zip` from [Releases](https://github.com/Rvosy/sakura/releases).
+2. Extract it to a path containing only ASCII characters.
+3. Run `install.bat`, then `start.bat`.
+4. Enter your OpenAI-compatible API details in the first-run setup.
 
-# Fill in your API Key
-notepad data/config/api.yaml
-
-python main.py
-```
-
-Minimal `data/config/api.yaml`:
-
-```yaml
-llm:
-  base_url: https://api.openai.com/v1
-  api_key: your_api_key_here
-  model: gpt-4.1-mini
-  timeout_seconds: 60
-```
+For source installs, macOS/Linux instructions, TTS, and upgrades, see the [Setup Guide](SETUP.md).
 
 ## Features
 
 - **Character-pack driven.** Personality card, portraits, voice references, and GPT-SoVITS weights are all bundled per character.
 - **Proactive.** Sakura observes context on a timer and speaks up on her own — you don't have to always start the conversation.
 - **Bilingual replies.** Model outputs Japanese dialogue + Chinese subtitle + mood tag; UI drives subtitles, expressions, and voice in sync.
+- **Fast local reactions.** Sakura can respond with a short in-character line while the full model reply is still being generated.
 - **Screen observation.** On-demand screenshots and autonomous visual summaries fed into the conversation context.
+- **Selected screenshots.** Capture a specific screen region from the input bar and attach it to the next message.
 - **Tool use.** Browser control, desktop actions, file read, web search, reminders, notes, and memory.
 - **Permission gate.** High-risk tool calls ask for user confirmation before executing.
-- **Long-term memory.** Candidate → confirmed pipeline with automatic curation.
+- **Long-term memory.** Layered memories, relevant recall, automatic curation, and manual editing.
 - **Plugins & MCP.** Local plugins, MCP servers, and a built-in web-search MCP server.
+- **Character Studio.** Create, edit, validate, and export `.char` packages from a graphical editor.
 
 ## Docs
 

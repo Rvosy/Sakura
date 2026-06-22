@@ -10,6 +10,13 @@ from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.memory_curator import MemoryCurator, MemoryCurationState
 from app.config.settings_service import AppSettingsService
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+from app.config.model_slots import ResolvedModelSlot, resolve_model_slot
+from app.config.models import (
+    MODEL_SLOT_CHAT,
+    MODEL_SLOT_MEMORY_CURATION,
+    MODEL_SLOT_VISION_CHAT,
+    MODEL_SLOT_VISUAL_CONTEXT,
+)
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.extensions import ExtensionRegistry
@@ -71,6 +78,12 @@ def load_startup_state(base_dir: Path) -> StartupState:
 
     settings_service = AppSettingsService(base_dir=base_dir)
     settings = settings_service.load_api_settings()
+    # 使用新格式配置覆盖单条 settings
+    api_profiles = settings_service.load_api_profiles()
+    model_selection = settings_service.load_model_selection()
+    chat_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_CHAT, settings)
+    if chat_slot is not None:
+        settings = chat_slot.settings
     debug_log(
         "Startup",
         "API 配置已加载",
@@ -124,6 +137,18 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     character_profile = startup_state.character_profile
     system_prompt = startup_state.system_prompt
     api_client = OpenAICompatibleClient(settings)
+
+    # 加载 API 配置集和模型选择，构建按功能分流的 API client。
+    api_profiles = settings_service.load_api_profiles()
+    model_selection = settings_service.load_model_selection()
+    vision_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISION_CHAT, settings)
+    vision_api_client = _client_for_explicit_slot(vision_slot, MODEL_SLOT_VISION_CHAT)
+    visual_context_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISUAL_CONTEXT, settings)
+    visual_context_api_client = _client_for_explicit_slot(
+        visual_context_slot,
+        MODEL_SLOT_VISUAL_CONTEXT,
+    )
+
     resource_registry = ResourceRegistry()
     memory_store = MemoryStore(
         base_dir=base_dir,
@@ -145,16 +170,21 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     plugin_manager = PluginManager(base_dir=base_dir, resource_registry=resource_registry)
     mcp_settings = settings_service.load_mcp_runtime_settings()
     runtime_loop_settings = settings_service.load_runtime_loop_settings()
+    history_store = create_history_store(base_dir, character_profile)
     agent_runtime = AgentRuntime(
         api_client=api_client,
+        vision_api_client=vision_api_client,
+        visual_context_api_client=visual_context_api_client,
         system_prompt=system_prompt,
         reply_tones=character_profile.reply_tones,
         reply_portraits=character_profile.portrait_choices,
         tools=tool_registry,
         memory=memory_store,
+        history_store=history_store,
         runtime_loop_settings=runtime_loop_settings,
+        character_id=character_profile.id,
+        character_name=character_profile.display_name,
     )
-    history_store = create_history_store(base_dir, character_profile)
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
@@ -163,7 +193,18 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     memory_curation_state = MemoryCurationState(
         StoragePaths(base_dir).memory_curation_state()
     )
-    memory_curator = MemoryCurator(api_client, memory_store, system_prompt=system_prompt)
+    memory_curation_slot = resolve_model_slot(
+        api_profiles,
+        model_selection,
+        MODEL_SLOT_MEMORY_CURATION,
+        settings,
+    )
+    memory_curator_client = (
+        OpenAICompatibleClient(memory_curation_slot.settings)
+        if memory_curation_slot is not None
+        else api_client
+    )
+    memory_curator = MemoryCurator(memory_curator_client, memory_store, system_prompt=system_prompt)
     screen_awareness_settings = settings_service.load_screen_awareness_settings()
 
     debug_log(
@@ -375,3 +416,12 @@ def create_visual_observation_store(
 def create_pet_state_store(base_dir: Path, profile: CharacterProfile) -> PetStateStore:
     state_path = StoragePaths(base_dir).pet_state_for(profile.id)
     return PetStateStore(state_path)
+
+
+def _client_for_explicit_slot(
+    resolved: ResolvedModelSlot | None,
+    slot: str,
+) -> OpenAICompatibleClient | None:
+    if resolved is None or resolved.source_slot != slot:
+        return None
+    return OpenAICompatibleClient(resolved.settings)

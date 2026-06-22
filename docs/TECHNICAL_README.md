@@ -4,46 +4,49 @@
 
 ## 设计思路
 
-Sakura 采用直接的运行时结构：UI 负责收集用户输入、截图、确认面板和主动事件，`ChatWorker` / `ChatPipeline` 负责把这些上下文整理成一次运行请求，真正的对话决策和工具循环交给 `AgentRuntime`。
+Sakura 采用直接的运行时结构：UI 负责收集用户输入、截图、确认面板和主动事件，`ChatWorker` / `ChatPipeline` 负责把它们整理成运行请求，`ContextOrchestrator` 按优先级、信任级别和 token 预算选择上下文，真正的对话决策与工具循环交给 `AgentRuntime`。
 
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 
-最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。桌宠状态由 `PetStateStore` 持有，正式写路径是 `pet_state_update` 工具或宿主内部 `PetStateStore.update()`；`display` 由宿主根据状态派生，不接受模型直接写。回复 JSON 可以在 `segments` 同级携带可选的 `pet_state_delta` 作为建议、debug 或审计信息，但它不是每轮必填字段，也不是状态落盘主路径。UI 只消费解析后的结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。
+最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。桌宠状态由 `PetStateStore` 持有，正式写路径是 `pet_state_update` 工具或宿主内部 `PetStateStore.update()`；`display` 由宿主根据状态派生，不接受模型直接写。回复 JSON 可以在 `segments` 同级携带可选的 `pet_state_delta` 作为建议、debug 或审计信息，但它不是每轮必填字段，也不是状态落盘主路径。UI 只消费解析后的结构，同步驱动字幕、表情切换、接话和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。耗时线程、子进程和外部服务统一交给 `ResourceManager`，退出时按依赖顺序关闭。
 
 ## 启动流程
 
 运行 `python main.py` 后：
 
-1. 创建 `QApplication`
-2. `AppSettingsService` 从 `data/config/api.yaml` 加载 API 配置
-3. `CharacterRegistry` 扫描角色包
-4. 加载角色人格卡和可用语气/立绘
-5. `bootstrap.py` 组装 `AppContext`，包括工具注册表、记忆库、提醒库、MCP、插件、TTS
-6. 后台线程装配耗时服务（MCP 工具、插件、TTS Provider）
-7. 显示 `PetWindow`
+1. 创建 `QApplication`，取得单实例锁
+2. 生成缺失的默认配置，执行版本化迁移并记录应用版本
+3. 检查数据目录写权限、配置文件、磁盘空间和记忆库锁
+4. `AppSettingsService` 加载 `data/config/*.yaml`
+5. `CharacterRegistry` 扫描角色包并加载人格卡、语气和立绘
+6. `bootstrap.py` 组装 `AppContext`、`ResourceManager`、工具、记忆、MCP、插件和 TTS
+7. 后台装配耗时服务，显示 `PetWindow`
 
 ```mermaid
 flowchart LR
-    A["main.py"] --> B["data/config/*.yaml<br/>配置"]
-    A --> C["CharacterRegistry"]
+    A["main.py"] --> X["默认配置 / 迁移 / 自检"]
+    X --> B["data/config/*.yaml<br/>配置"]
+    X --> C["CharacterRegistry"]
     C --> D["characters/sakura/character.json<br/>角色包"]
     A --> E["OpenAICompatibleClient<br/>API 客户端"]
     B --> E
-    A --> I["TTSProvider"]
-    A --> J["bootstrap.py"]
+    X --> J["bootstrap.py"]
     J --> K["AppContext"]
+    J --> R["ResourceManager"]
     K --> L["PetWindow"]
-    I --> L
     L --> M["ChatWorker<br/>后台线程"]
     M --> N["ChatPipeline<br/>运行管线"]
-    N --> S["AgentRuntime<br/>原生 tool_calls 循环"]
+    N --> O["ContextOrchestrator<br/>上下文预算与选择"]
+    O --> S["AgentRuntime<br/>原生 tool_calls 循环"]
     S --> T["ToolRegistry"]
     T --> U["内置工具 + MCP 工具 + 插件工具"]
     S --> V["ChatReply<br/>segments + optional pet_state_delta"]
     V --> L
-    T --> X
-    L --> X["PetStateStore<br/>跨轮次状态"]
-    L --> W["字幕 / 立绘 / TTS"]
+    L --> W["字幕 / 立绘 / TTS / 接话"]
+    T --> P["PetStateStore<br/>跨轮次状态"]
+    L --> P
+    R --> M
+    R --> W
 ```
 
 ## 项目结构
@@ -55,12 +58,13 @@ flowchart LR
 │   ├── agent/                          # Agent 决策层
 │   │   ├── actions.py                  # 动作/事件/待确认数据结构
 │   │   ├── builtin_tools.py            # 内置工具（待办/提醒/笔记/记忆等）
-│   │   ├── memory.py / reminders.py    # 长期记忆 / 提醒
-│   │   ├── memory_curator.py           # 自动记忆整理（含后台 Worker）
-│   │   ├── memory_curation_worker.py   # 自动记忆整理 Qt Worker
+│   │   ├── context_orchestrator.py      # 上下文收集与选择
+│   │   ├── session_state_context.py     # 最近会话续接上下文
+│   │   ├── memory.py / memory_recall.py # 分层长期记忆与相关召回
+│   │   ├── memory_curator.py            # 自动记忆整理
 │   │   ├── runtime.py                  # AgentRuntime（决策/工具循环）
-│   │   ├── runtime_limits.py           # 运行时限制常量
-│   │   ├── screen_policy.py            # 屏幕观察策略
+│   │   ├── runtime_limits.py           # 可配置工具循环限制
+│   │   ├── screen_awareness.py         # 主动屏幕感知策略
 │   │   ├── screen_tools.py             # 屏幕观察工具
 │   │   ├── screen_observation.py       # 屏幕观察入口
 │   │   ├── proactive_care.py           # 主动关怀
@@ -76,9 +80,16 @@ flowchart LR
 │   │   ├── bootstrap.py                # 启动装配
 │   │   ├── chat_pipeline.py            # ChatPipeline 对话编排
 │   │   ├── chat_worker.py              # Qt 后台线程 Worker
+│   │   ├── instance.py                 # 单实例锁
+│   │   ├── resource_manager.py          # 线程、进程与服务生命周期
+│   │   ├── selfcheck.py                 # 启动环境自检
 │   │   ├── debug_log.py                # 调试日志（自动脱敏）
 │   │   └── extensions.py               # 扩展注册表
+│   ├── backchannel/                     # 等待期本地快速接话
 │   ├── config/                         # 配置管理
+│   │   ├── app_version.py               # 应用版本记录
+│   │   ├── default_configs.py           # 缺失配置生成
+│   │   ├── migration_runner.py          # 版本化迁移执行器
 │   │   ├── models.py                   # 配置数据模型
 │   │   ├── defaults.py                 # 默认值
 │   │   ├── settings_service.py         # YAML 配置读写
@@ -101,7 +112,9 @@ flowchart LR
 │   │   ├── base.py                     # PluginBase / PluginContext
 │   │   ├── discovery.py                # PluginDiscovery
 │   │   ├── capabilities.py             # PluginCapabilityRegistry
+│   │   ├── events.py / services.py      # 事件与受限服务门面
 │   │   └── manager.py                  # PluginManager
+│   ├── renderers/                       # 可扩展角色渲染器
 │   ├── storage/                        # 存储层
 │   │   ├── paths.py                    # StoragePaths 统一路径
 │   │   ├── chat_history.py             # 聊天历史（JSONL）
@@ -116,11 +129,14 @@ flowchart LR
 │   │   ├── portrait_utils.py           # 立绘工具函数
 │   │   └── ...（其余 UI 组件）
 │   └── voice/                          # 语音
-│       ├── tts.py                      # GPT-SoVITS / Null Provider
-│       └── playback_controller.py      # 语音播放控制器
+│       ├── tts.py / tts_settings.py     # Provider 与配置
+│       ├── tts_service.py               # 服务监管
+│       ├── tts_synthesis.py             # 合成队列
+│       └── tts_playback.py              # 播放端点
 ├── plugins/                            # 本地插件
 │   └── playwright_browser/             # Playwright 浏览器插件
 ├── characters/sakura/                  # 角色资源
+├── assets/backchannels/                # 角色接话清单与开发说明
 ├── data/                               # 本地数据
 │   ├── config/                         # YAML 配置（api.yaml / system_config.yaml 等）
 │   ├── chat_history/                   # 聊天记录
@@ -135,6 +151,8 @@ flowchart LR
 │   ├── TECHNICAL_README.md             # 技术讲解 README
 │   ├── PET_STATE_IMPLEMENTATION_PLAN.md # 桌宠状态开发文档
 │   └── SAKURA_PLUGIN_SDK.md            # 插件开发指南
+├── tools/studio/                       # SakuraCharacterStudio
+├── tools/cleanup.py                    # 安全清理工具（默认 dry-run）
 └── tools/mcp/                          # MCP Server 运行时
 ```
 
@@ -174,11 +192,13 @@ python -m pytest tests/unit
 | `api.yaml: tts.gpt_sovits.api_url` | TTS 接口 | `http://127.0.0.1:9880/tts` |
 | `api.yaml: tts.gpt_sovits.python_path` | 自定义 GPT-SoVITS Python | 空 |
 | `api.yaml: tts.gpt_sovits.tts_config_path` | 自定义 GPT-SoVITS 推理配置 | 空 |
-| `system_config.yaml: ui.subtitle_language` | 气泡语言 `ja`/`zh` | `ja` |
+| `system_config.yaml: ui.subtitle_language` | 气泡语言 `ja`/`zh` | `zh` |
 | `system_config.yaml: ui.portrait_scale_percent` | 立绘缩放 | `100` |
-| `system_config.yaml: proactive_care.enabled` | 主动关怀 | `false` |
-| `system_config.yaml: proactive_care.check_interval_minutes` | 检查间隔 | `20` |
-| `system_config.yaml: proactive_care.cooldown_minutes` | 冷却时间 | `10` |
+| `system_config.yaml: screen_awareness.enabled` | 主动屏幕感知 | `true` |
+| `system_config.yaml: screen_awareness.check_interval_minutes` | 检查间隔 | `20` |
+| `system_config.yaml: screen_awareness.cooldown_minutes` | 发言冷却 | `10` |
+| `system_config.yaml: tool_loop.*` | Agent 步数和工具调用上限 | `4 / 3 / 8` |
+| `system_config.yaml: backchannel.enabled` | 本地快速接话 | `false` |
 | `system_config.yaml: memory_curation.enabled` | 自动记忆整理 | `true` |
 | `system_config.yaml: mcp.windows_enabled` | Windows MCP | `false` |
 | `system_config.yaml: debug.enabled` | 调试日志 | `false` |

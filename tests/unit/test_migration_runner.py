@@ -21,11 +21,29 @@ from app.config.migration_runner import (
     CONFIG_VERSION_KEY,
     CURRENT_CONFIG_VERSION,
     MigrationContext,
+    MigrationReport,
+    MigrationResult,
     MigrationRunner,
     MigrationStep,
 )
 from app.config.yaml_config import load_yaml_mapping
 from app.storage.paths import StoragePaths
+
+
+def test_data_migration_failure_message_keeps_step_error() -> None:
+    from main import _format_data_migration_failure
+
+    report = MigrationReport(
+        from_version=1,
+        to_version=1,
+        results=(MigrationResult(name="v1_to_v2", status="failed", error="WinError 5"),),
+    )
+
+    message = _format_data_migration_failure(report)
+
+    assert "处理建议" in message
+    assert "data/logs/sakura-runtime.log" in message
+    assert "诊断信息（截图时请保留）：\nv1_to_v2: WinError 5" in message
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_migration_runner"

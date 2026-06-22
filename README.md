@@ -5,7 +5,7 @@
 ### 一个能主动感知屏幕内容与系统事件的通用桌宠 Agent 框架
 
 [![Release](https://img.shields.io/github/v/release/Rvosy/sakura)](https://github.com/Rvosy/sakura/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/SETUP.md)
 [![Downloads](https://img.shields.io/github/downloads/Rvosy/sakura/total)](https://github.com/Rvosy/sakura/releases)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/github/license/Rvosy/sakura)](LICENSE)
@@ -43,9 +43,9 @@ Sakura 最大的特点：**她会主动来找你**。
 
 > **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/SETUP.md)。
 
-1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载最新 `sakura-v0.9.x-windows-x64.zip`
+1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载 `sakura-v0.9.8-windows-x64.zip`
 2. 解压后双击 `install.bat` 安装依赖
-4. 双击 `start.bat` 启动
+3. 双击 `start.bat` 启动
 
 遇到问题、使用 Mac/Linux、或想了解更多配置项，请看 **[完整安装指南](docs/SETUP.md)**。
 
@@ -53,21 +53,24 @@ Sakura 最大的特点：**她会主动来找你**。
 
 **角色与外观**
 - 角色包驱动 — `.char` 一键导入，角色卡、立绘、GPT-SoVITS 语音权重一体打包；UI 主题色跟随角色
+- 角色工作室 — Windows 可运行 `start_studio.bat`，用图形界面新建、编辑并导出 `.char` 角色包
 - 外观效果 — 支持纯色 / 高斯模糊 / 亚克力 / macOS 原生毛玻璃（NSVisualEffectView），气泡与输入栏位置、大小可调
 
 **主动感知**
 - 屏幕观察 — 定期截图生成视觉摘要并纳入上下文，也可随时按需截图；间隔与冷却时间可配置
+- 框选截图 — 可从输入栏截取指定区域，随下一条消息一起发送；支持高 DPI 和多显示器
 - 主动发言 — 周期性评估是否需要开口，不用你先说话她就会自己凑过来
 
 **对话体验**
 
 - 分段双语回复 — 模型输出日文原文 + 中文字幕 + 语气标签 + 立绘指令，字幕、表情、语音同步驱动
+- 本地快速接话 — 正式回复生成期间先给出符合角色语气的短回应，可选本地模型增强和语音
 - 打字机动效 — 逐字渲染，气泡高度随长回复自适应扩展，不截断
 - 输入框动效 — 胶囊形高斯模糊背景，发送等待期间有状态提示
 
 **工具能力**
 - 内置工具 — 屏幕截图、打开网页、待办、提醒（支持「3 分钟后」等相对时间）、笔记读写
-- 长期记忆 — 候选区 → 用户确认 → 正式写入，支持自动整理；本地向量模型离线运行
+- 长期记忆 — 分层保存人物信息、经历、任务和操作习惯；支持自动整理、相关记忆召回和手动编辑
 - 权限确认 — 高风险工具（打开网页、文件操作等）执行前弹出确认面板
 
 **语音（TTS）**
@@ -91,6 +94,7 @@ Sakura 最大的特点：**她会主动来找你**。
 | [macOS 安装指南](docs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
 | [技术讲解 README](docs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
 | [插件 SDK 文档](docs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
+| [更新日志](CHANGELOG.md) | 各版本的用户可见变化与升级提醒 |
 
 ## 致谢与开源许可说明
 

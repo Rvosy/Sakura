@@ -190,6 +190,7 @@ def summarize_visual_observation(
                 }
             ],
             temperature=0.2,
+            response_format={"type": "json_object"},
             cancel_checker=cancel_checker,
         )
     except OperationCancelled:
@@ -202,6 +203,31 @@ def summarize_visual_observation(
         return _fallback_record(job, metadata, "视觉摘要返回格式无法解析。")
 
     record, redacted = _record_from_summary(job, metadata, parsed)
+    if redacted:
+        return VisualObservationRecord(
+            **{
+                **asdict(record),
+                "sensitive_redacted": True,
+            }
+        )
+    return record
+
+
+def extract_visual_observation_summary(content: str) -> dict[str, Any] | None:
+    data = _load_json_object(content)
+    if data is None:
+        return None
+    summary = data.get("visual_observation")
+    return summary if isinstance(summary, dict) else None
+
+
+def visual_observation_record_from_summary(
+    job: VisualObservationJob,
+    summary: dict[str, Any],
+) -> VisualObservationRecord | None:
+    if not _summary_has_content(summary):
+        return None
+    record, redacted = _record_from_summary(job, _job_metadata(job), summary)
     if redacted:
         return VisualObservationRecord(
             **{
@@ -261,6 +287,7 @@ def _build_visual_summary_prompt() -> str:
 不要输出 Markdown，不要解释，不要生成角色回复。
 
 提取重点：
+- 优先围绕 user_text 判断用户最可能关心的区域、文字和状态；但不要因此丢掉明显可见的错误、标题、按钮文字和台词。
 - 屏幕里明确可见的台词、字幕、聊天气泡、窗口标题、按钮文字、错误信息、代码片段。
 - 用户可能追问的对象、位置、状态和关键界面元素。
 - 看不清或不确定的文字放入 uncertain_texts，不要强行猜。
@@ -397,6 +424,15 @@ def _record_from_summary(
     )
 
 
+def _summary_has_content(summary: dict[str, Any]) -> bool:
+    return bool(
+        _text_value(summary.get("summary"))
+        or _string_list(summary.get("visible_texts"))
+        or _string_list(summary.get("uncertain_texts"))
+        or _string_list(summary.get("notable_elements"))
+    )
+
+
 def _fallback_record(
     job: VisualObservationJob,
     metadata: dict[str, Any],
@@ -477,6 +513,10 @@ def _redact_text(text: str) -> tuple[str, bool]:
 
 def _load_json_object(content: str) -> dict[str, Any] | None:
     text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
     try:
         data = json.loads(text)
     except json.JSONDecodeError:

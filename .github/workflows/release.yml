@@ -95,6 +95,7 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64.zip
+            update_artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64-update.zip
             runtime_artifact: runtime-windows-x64.zip
             embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
     runs-on: ${{ matrix.os }}
@@ -198,12 +199,77 @@ jobs:
       - name: Create bundle archive (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
-        run: Compress-Archive -Path * -DestinationPath "${{ matrix.artifact }}" -Force
+        run: |
+          $items = @(
+            'app',
+            'plugins',
+            'runtime',
+            'third_party',
+            'tools',
+            'install.bat',
+            'LICENSE',
+            'main.py',
+            'requirements.txt',
+            'start.bat',
+            'start_studio.bat',
+            'update.bat',
+            'VERSION'
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
+          foreach ($item in $items) {
+            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
+          }
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
+
+      - name: Create update archive (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $items = @(
+            'app',
+            'plugins',
+            'third_party',
+            'tools',
+            'install.bat',
+            'LICENSE',
+            'main.py',
+            'requirements.txt',
+            'start.bat',
+            'start_studio.bat',
+            'update.bat',
+            'VERSION'
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $stage = New-Item -ItemType Directory -Path "update-stage" -Force
+          foreach ($item in $items) {
+            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
+          }
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
 
       - name: Create runtime archive (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
         run: Compress-Archive -Path runtime -DestinationPath "${{ matrix.runtime_artifact }}" -Force
+
+      - name: Create update manifest (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -First 1).Trim().TrimStart('v')
+          $sha256 = (Get-FileHash "${{ matrix.update_artifact }}" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifest = [ordered]@{
+            version = $version
+            tag = "${{ needs.tag.outputs.TAG }}"
+            prerelease = [System.Boolean]::Parse("${{ needs.tag.outputs.PRERELEASE }}")
+            windows_x64_update_url = "https://github.com/Rvosy/sakura/releases/download/${{ needs.tag.outputs.TAG }}/${{ matrix.update_artifact }}"
+            sha256 = $sha256
+          }
+          $manifest | ConvertTo-Json | Set-Content -Path sakura-update.json -Encoding utf8NoBOM
 
       - name: Create runtime archive (macOS)
         if: matrix.platform != 'windows-x64'
@@ -214,10 +280,11 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
-          zip -rq "${{ matrix.artifact }}" . \
-            -x '.git/*' '*.pyc' '__pycache__/*' \
-            'data/tts_bundles/*' '*.egg-info/*' '*.dist-info/*' \
-            'tests/*' 'pytest.ini'
+          zip -rq "${{ matrix.artifact }}" \
+            app plugins runtime third_party tools \
+            LICENSE main.py requirements.txt VERSION \
+            scripts/install.sh scripts/start.sh install.command start.command \
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
@@ -225,7 +292,23 @@ jobs:
           tag_name: ${{ needs.tag.outputs.TAG }}
           files: |
             ${{ matrix.artifact }}
+            ${{ matrix.update_artifact }}
             ${{ matrix.runtime_artifact }}
+
+      - name: Upload update manifest to sakura-assets
+        if: matrix.platform == 'windows-x64'
+        env:
+          GH_TOKEN: ${{ secrets.SAKURA_ASSETS_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SAKURA_ASSETS_TOKEN is required to publish sakura-update.json"
+            exit 1
+          fi
+          gh release upload assets-latest \
+            sakura-update.json \
+            --repo Rvosy/sakura-assets \
+            --clobber
 
   attach-assets:
     needs: [tag, release, bundle]

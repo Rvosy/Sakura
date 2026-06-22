@@ -26,10 +26,13 @@ characters/
 .mypy_cache/
 .ruff_cache/
 temp/
+tools/studio/workspace/
 
 *.log
+data/backchannel_eval.jsonl
 data/chat_history.jsonl
 data/chat_history/
+data/tasks.json
 data/memory/
 data/memory.json
 data/memory_curation_state.json
@@ -51,7 +54,7 @@ data/config/plugins.yaml
 task.md
 log.txt
 
-# Plugin安装目录（只保留仓库内置插件，其他本地安装插件继续忽略）
+# Plugin安装目录（只保留浏览器插件，其他插件继续忽略）
 plugins/*
 !plugins/__init__.py
 !plugins/playwright_browser/
@@ -60,18 +63,6 @@ plugins/playwright_browser/__pycache__/
 plugins/playwright_browser/**/*.py[cod]
 # 用户态运行配置：发布包不携带，覆盖升级不冲掉（必须位于上方 ! 白名单之后）
 plugins/playwright_browser/config.json
-!plugins/example_plugin/
-!plugins/example_plugin/**
-plugins/example_plugin/__pycache__/
-plugins/example_plugin/**/*.py[cod]
-!plugins/emotion_state_example/
-!plugins/emotion_state_example/**
-plugins/emotion_state_example/__pycache__/
-plugins/emotion_state_example/**/*.py[cod]
-!plugins/mmd_renderer/
-!plugins/mmd_renderer/**
-plugins/mmd_renderer/__pycache__/
-plugins/mmd_renderer/**/*.py[cod]
 
 # 备份文件
 *.bak

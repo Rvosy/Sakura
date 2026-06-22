@@ -1,6 +1,7 @@
 api_version: 1
 id: playwright_browser
 name: Playwright Browser
+author: Chihiro
 description: 提供网页打开、搜索、读取文本、截图、点击、输入和页面脚本执行能力。
 version: 1.0.0
 entry: plugin:PlaywrightBrowserPlugin

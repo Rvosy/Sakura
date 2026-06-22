@@ -69,10 +69,31 @@ jobs:
 
       - name: Create bundle archive
         shell: pwsh
-        # 显式排除 data/：发布包绝不携带用户数据目录，覆盖解压才不会冲掉用户配置
+        # 白名单打包：只放运行软件需要的内容，不带测试、文档、仓库配置和示例图片。
         run: |
-          $items = Get-ChildItem -Exclude 'data', '*.zip' | ForEach-Object { $_.Name }
-          Compress-Archive -Path $items -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
+          $items = @(
+            'app',
+            'plugins',
+            'runtime',
+            'third_party',
+            'tools',
+            'install.bat',
+            'LICENSE',
+            'main.py',
+            'requirements.txt',
+            'start.bat',
+            'start_studio.bat',
+            'update.bat',
+            'VERSION'
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
+          foreach ($item in $items) {
+            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
+          }
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v7

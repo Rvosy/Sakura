@@ -98,7 +98,7 @@ class InputBarAnimator(QObject):
 
     def sync(self) -> None:
         """外部 pinned 状态（如待确认动作出现）变化时，立即重算可见性。"""
-        self._sync()
+        self._sync(refresh_hover=True)
 
     def set_force_visible(self, value: bool) -> None:
         """外部强制常显开关：开启立即现身，关闭后按常规可见性重算。"""
@@ -107,7 +107,7 @@ class InputBarAnimator(QObject):
             return
         self._force_visible = value
         if self._started and not self._suspended:
-            self._sync()
+            self._sync(refresh_hover=True)
 
     def set_force_hidden(self, value: bool) -> None:
         """外部强制隐藏开关：开启后忽略 hover、焦点和 pinned，关闭后恢复常规显隐。"""
@@ -116,7 +116,7 @@ class InputBarAnimator(QObject):
             return
         self._force_hidden = value
         if self._started and not self._suspended:
-            self._sync()
+            self._sync(refresh_hover=True)
 
     def set_polling_enabled(self, enabled: bool) -> None:
         """临时停/起 hover 轮询（如副窗口打开期间），减少后台无谓的命中测试与重绘。
@@ -162,17 +162,22 @@ class InputBarAnimator(QObject):
 
     # --- 内部逻辑 -----------------------------------------------------------
     def _on_poll(self) -> None:
-        self._hover = bool(self._is_hover_active())
+        self._refresh_hover()
         self._sync()
+
+    def _refresh_hover(self) -> None:
+        self._hover = bool(self._is_hover_active())
 
     def _target_visible(self) -> bool:
         if self._force_hidden:
             return False
         return self._force_visible or self._hover or bool(self._is_pinned())
 
-    def _sync(self) -> None:
+    def _sync(self, *, refresh_hover: bool = False) -> None:
         if self._suspended:
             return
+        if refresh_hover:
+            self._refresh_hover()
         target = self._target_visible()
         if target == self._shown:
             return

@@ -177,7 +177,16 @@ class OpenAICompatibleClient:
         except json.JSONDecodeError as exc:
             raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
 
-        return _parse_model_ids(data)
+        model_ids = _parse_model_ids(data)
+        debug_log(
+            "API",
+            "模型列表探测完成",
+            {
+                "total_count": len(model_ids),
+                "models": model_ids,
+            },
+        )
+        return model_ids
 
     def chat(
         self,

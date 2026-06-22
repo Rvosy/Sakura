@@ -128,7 +128,7 @@ class MemoryListWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, memory_store: MemoryStore, limit: int = 200) -> None:
+    def __init__(self, memory_store: MemoryStore, limit: int | None = None) -> None:
         super().__init__()
         self.memory_store = memory_store
         self.limit = limit

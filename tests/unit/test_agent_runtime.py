@@ -40,6 +40,7 @@ from app.agent.runtime_limits import (
 from app.agent.tools import Tool, ToolRegistry
 from app.llm.api_client import ApiRequestError, ChatMessage, NativeToolCall, OpenAICompatibleClient
 from app.llm.chat_reply import ChatReply, ChatSegment
+from app.storage.chat_history import ChatHistoryEntry
 
 
 def _dummy_system_prompt() -> str:
@@ -74,6 +75,14 @@ def _dummy_api_client() -> MagicMock:
     # 角色对话入口会读取生成参数；返回内置默认温度与空额外参数，保持原有调用行为。
     client.resolve_dialogue_params.return_value = (0.8, {})
     return client
+
+
+class _FakeHistoryStore:
+    def __init__(self, entries: list[ChatHistoryEntry]) -> None:
+        self.entries = entries
+
+    def load(self) -> list[ChatHistoryEntry]:
+        return self.entries
 
 
 class TestRuntimeLimits:
@@ -116,6 +125,70 @@ class TestRuntimeLimits:
         prompt = runtime._build_tool_system_prompt()
 
         assert "每步最多请求 4 个工具，整轮最多 12 个工具" in prompt
+
+    def test_session_state_is_rendered_into_runtime_context(self) -> None:
+        client = _dummy_api_client()
+        runtime = AgentRuntime(
+            client,
+            _dummy_system_prompt(),
+            history_store=_FakeHistoryStore(
+                [
+                    ChatHistoryEntry(
+                        created_at="2026-06-20T12:00:00+08:00",
+                        role="user",
+                        content="帮我继续执行计划",
+                    ),
+                    ChatHistoryEntry(
+                        created_at="2026-06-20T12:00:05+08:00",
+                        role="assistant",
+                        content="好的，已经记下计划的下一步。",
+                    ),
+                    ChatHistoryEntry(
+                        created_at="2026-06-20T12:00:10+08:00",
+                        role="user",
+                        content="本轮问题",
+                    ),
+                ]
+            ),
+        )
+
+        runtime.handle_user_message([ChatMessage(role="user", content="本轮问题")])
+
+        call = client.complete_with_tools.call_args
+        runtime_context = call.kwargs["runtime_context"]
+        request_messages = call.args[1]
+        assert "最近会话状态" in runtime_context
+        assert "继续执行计划" in runtime_context
+        assert "用户：本轮问题" not in runtime_context
+        assert all("最近会话状态" not in str(message.get("content", "")) for message in request_messages)
+
+    def test_session_state_skipped_when_live_window_is_deep(self) -> None:
+        client = _dummy_api_client()
+        runtime = AgentRuntime(
+            client,
+            _dummy_system_prompt(),
+            history_store=_FakeHistoryStore(
+                [
+                    ChatHistoryEntry(
+                        created_at="2026-06-20T12:00:00+08:00",
+                        role="user",
+                        content="帮我继续执行计划",
+                    ),
+                ]
+            ),
+        )
+
+        # 实时窗口已经够深时不再注入跨会话历史切片，避免重复 token。
+        runtime.handle_user_message(
+            [
+                ChatMessage(role="user", content="第一句"),
+                ChatMessage(role="assistant", content="第一句回复"),
+                ChatMessage(role="user", content="继续"),
+            ]
+        )
+
+        runtime_context = client.complete_with_tools.call_args.kwargs["runtime_context"]
+        assert "最近会话状态" not in runtime_context
 
 
 class TestToolSystemPrompt:
@@ -308,6 +381,45 @@ class TestVisionFallback:
                 result = runtime.handle_user_message(messages)
                 assert isinstance(result, AgentResult)
                 assert len(result.reply.segments) > 0
+
+    def test_visual_reply_extracts_observation_from_same_response(self) -> None:
+        client = _dummy_api_client()
+        client.complete_with_tools.return_value = MagicMock(
+            content=json.dumps(
+                {
+                    "segments": [{"ja": "見えたよ。", "zh": "我看到了。", "tone": "中性"}],
+                    "visual_observation": {
+                        "summary": "截图里是模型设置页。",
+                        "visible_texts": ["模型设置"],
+                        "uncertain_texts": [],
+                        "notable_elements": ["设置卡片"],
+                        "confidence": 0.9,
+                        "sensitive_redacted": False,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            tool_calls=[],
+            runtime_context_role="system",
+        )
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看图"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+                ],
+            }
+        ]
+
+        result = runtime.handle_user_message(messages)
+
+        prompt = client.complete_with_tools.call_args.args[0]
+        assert "visual_observation" in prompt
+        assert result.reply.translation == "我看到了。"
+        assert result.visual_observation is not None
+        assert result.visual_observation["summary"] == "截图里是模型设置页。"
 
 
 class TestProactiveEventFlow:

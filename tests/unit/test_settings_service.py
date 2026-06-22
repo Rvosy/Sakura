@@ -14,6 +14,15 @@ from app.config.settings_service import (
     DebugLogSettings,
     StartupSettings,
 )
+from app.config.model_slots import resolve_model_slot
+from app.config.models import (
+    MODEL_SLOT_CHAT,
+    MODEL_SLOT_MEMORY_CURATION,
+    MODEL_SLOT_VISION_CHAT,
+    MODEL_SLOT_VISUAL_CONTEXT,
+    ModelSelectionSettings,
+    ModelSlotSelection,
+)
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
@@ -60,6 +69,104 @@ llm:
         model="yaml-model",
         timeout_seconds=12,
     )
+
+
+def test_api_model_slots_migrate_legacy_llm_config() -> None:
+    root = _runtime_root("model_slots_legacy_llm")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+llm:
+  base_url: https://legacy.example/v1
+  api_key: legacy-key
+  model: legacy-chat
+  timeout_seconds: 20
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    profiles = service.load_api_profiles()
+    selection = service.load_model_selection()
+
+    assert profiles[0].base_url == "https://legacy.example/v1"
+    assert profiles[0].models == ("legacy-chat",)
+    assert selection.chat.profile_id == "default"
+    assert selection.chat.model == "legacy-chat"
+    assert load_yaml_mapping(service.api_config_path)["model_slots"]["chat"]["model"] == "legacy-chat"
+
+
+def test_api_model_slots_migrate_pr110_selection() -> None:
+    root = _runtime_root("model_slots_pr110")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+api_profiles:
+  - id: p1
+    alias: 主供应商
+    base_url: https://api.example/v1
+    api_key: key
+model_names:
+  - text-model
+  - vision-model
+text_enabled: true
+text_profile_id: p1
+text_model: text-model
+vision_profile_id: p1
+vision_model: vision-model
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    profiles = service.load_api_profiles()
+    selection = service.load_model_selection()
+
+    assert profiles[0].models == ("text-model", "vision-model")
+    assert selection.chat.model == "text-model"
+    assert selection.vision_chat is not None
+    assert selection.vision_chat.model == "vision-model"
+
+
+def test_model_slot_resolver_uses_configured_fallbacks() -> None:
+    root = _runtime_root("model_slot_resolver")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+llm:
+  base_url: https://api.example/v1
+  api_key: key
+  model: chat-model
+api_profiles:
+  - id: p1
+    alias: 主供应商
+    base_url: https://api.example/v1
+    api_key: key
+    models:
+      - name: chat-model
+      - name: vision-model
+model_slots:
+  chat:
+    profile_id: p1
+    model: chat-model
+  vision_chat:
+    profile_id: p1
+    model: vision-model
+""".lstrip(),
+        encoding="utf-8",
+    )
+    profiles = service.load_api_profiles()
+    selection = service.load_model_selection()
+    base = service.load_api_settings()
+
+    assert resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, base).settings.model == "chat-model"  # type: ignore[union-attr]
+    assert resolve_model_slot(profiles, selection, MODEL_SLOT_VISUAL_CONTEXT, base).settings.model == "vision-model"  # type: ignore[union-attr]
+    assert resolve_model_slot(profiles, selection, MODEL_SLOT_MEMORY_CURATION, base).settings.model == "chat-model"  # type: ignore[union-attr]
+    bad_selection = ModelSelectionSettings(
+        chat=ModelSlotSelection(profile_id="p1", model="missing-model"),
+    )
+    assert resolve_model_slot(profiles, bad_selection, MODEL_SLOT_CHAT, base) is None
 
 
 def test_settings_service_saves_runtime_config_to_yaml() -> None:

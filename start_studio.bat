@@ -13,13 +13,9 @@ if errorlevel 1 (
 if exist "%PRJ_ROOT%runtime\python.exe" (
     set "PYTHON_EXE=%PRJ_ROOT%runtime\python.exe"
 ) else (
-    where python > nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Python not found. Please run install.bat first.
-        pause
-        exit /b 1
-    )
-    set "PYTHON_EXE=python"
+    echo [ERROR] runtime\python.exe not found. Please prepare the runtime directory first.
+    pause
+    exit /b 1
 )
 
 set "HF_HOME=%PRJ_ROOT%runtime\hf-cache"

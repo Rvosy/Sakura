@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QMessageBox, QWidg
 from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import ChatSegment
 from app.ui.portrait_utils import should_crossfade_portrait
+from app.ui.error_messages import format_failure_message
 
 
 PORTRAIT_TRANSITION_MS = 300
@@ -135,7 +136,11 @@ class PortraitController(QObject):
             QMessageBox.critical(
                 self.parent_widget,
                 "立绘加载失败",
-                f"无法加载立绘：{target_path}",
+                format_failure_message(
+                    "当前角色的立绘无法读取或解码。",
+                    "请确认图片存在、格式受支持且文件没有损坏。",
+                    f"立绘路径：{target_path}",
+                ),
             )
         self.pixmap_cache[target_path] = pixmap
         return pixmap
