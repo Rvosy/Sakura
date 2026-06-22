@@ -6,6 +6,13 @@ from typing import Any
 
 from app.core.debug_log import debug_log
 from app.sensory.audio_capture import SystemAudioCapture, SystemAudioCaptureError
+from app.sensory.audio_inference import (
+    AudioInferenceEngine,
+    AudioInferenceRequest,
+    BUILTIN_AUDIO_RUNTIME,
+    OFFICIAL_AUDIO_FRAMEWORK_ID,
+    create_default_audio_inference_engine,
+)
 from app.sensory.models import (
     SensoryObservation,
     SensoryProviderMode,
@@ -26,6 +33,7 @@ class SensoryPipeline:
     store: SensoryObservationStore
     providers: dict[str, SensoryProvider]
     audio_capture: SystemAudioCapture | None = None
+    audio_inference_engine: AudioInferenceEngine | None = None
 
     def observe(self, request: SensoryRequest) -> SensoryObservation | None:
         settings = self.settings.normalized()
@@ -127,10 +135,19 @@ class SensoryPipeline:
                 {"source": normalized_source.value},
             )
             return None
-        if settings.provider_for_source(normalized_source) is None:
+        provider_config = settings.provider_for_source(normalized_source)
+        if provider_config is None:
             debug_log(
                 "Sensory",
                 "系统音频采集 provider 未配置，跳过",
+                {"source": normalized_source.value, "provider_id": source_settings.provider_id},
+            )
+            return None
+        provider = self.providers.get(source_settings.provider_id)
+        if provider is None:
+            debug_log(
+                "Sensory",
+                "系统音频推理 provider 未注册，跳过",
                 {"source": normalized_source.value, "provider_id": source_settings.provider_id},
             )
             return None
@@ -139,22 +156,58 @@ class SensoryPipeline:
 
         captured = self.audio_capture.capture(duration_seconds=duration_seconds)
         try:
-            return self.observe(
-                SensoryRequest(
+            engine = self.audio_inference_engine or create_default_audio_inference_engine()
+            framework_id = str(
+                provider_config.extra.get("audio_framework") or OFFICIAL_AUDIO_FRAMEWORK_ID
+            ).strip() or OFFICIAL_AUDIO_FRAMEWORK_ID
+            runtime_kind = str(
+                provider_config.extra.get("audio_runtime") or BUILTIN_AUDIO_RUNTIME
+            ).strip() or BUILTIN_AUDIO_RUNTIME
+            inference_result = engine.infer(
+                AudioInferenceRequest(
                     id=generate_sensory_id("system_audio"),
                     source=normalized_source,
+                    audio_ref=str(captured.path),
                     user_text=user_text,
                     event_type=event_type or "system_audio_capture",
                     text=text,
-                    media_ref=str(captured.path),
+                    duration_seconds=captured.duration_seconds,
+                    sample_rate=captured.sample_rate,
+                    channel_count=captured.channel_count,
+                    provider_id=source_settings.provider_id,
+                    provider_mode=source_settings.mode,
+                    framework_id=framework_id,
+                    runtime_kind=runtime_kind,
                     metadata={
                         "capture_source": captured.source,
-                        "duration_seconds": captured.duration_seconds,
-                        "sample_rate": captured.sample_rate,
-                        "channel_count": captured.channel_count,
                     },
-                )
+                ),
+                provider,
             )
+            recorded = self.store.append(inference_result.to_observation())
+            debug_log(
+                "Sensory",
+                "短音频推理观察已保存",
+                {
+                    "sensory_id": recorded.id,
+                    "source": recorded.source.value,
+                    "provider_id": recorded.provider_id,
+                    "framework_id": framework_id,
+                    "runtime_kind": runtime_kind,
+                },
+            )
+            return recorded
+        except SensoryProviderUnavailable as exc:
+            debug_log(
+                "Sensory",
+                "短音频推理 provider 不可用，已关闭本次请求",
+                {
+                    "source": normalized_source.value,
+                    "provider_id": source_settings.provider_id,
+                    "error": str(exc),
+                },
+            )
+            return None
         finally:
             captured.cleanup()
 

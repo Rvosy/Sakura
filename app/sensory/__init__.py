@@ -6,6 +6,20 @@ from app.sensory.audio_capture import (
     SystemAudioCaptureError,
     create_system_audio_capture,
 )
+from app.sensory.audio_inference import (
+    BUILTIN_AUDIO_RUNTIME,
+    OFFICIAL_AUDIO_FRAMEWORK_ID,
+    OFFICIAL_AUDIO_FRAMEWORK_LABEL,
+    SIDECAR_AUDIO_RUNTIME,
+    AudioInferenceEngine,
+    AudioInferenceFrameworkSpec,
+    AudioInferenceRequest,
+    AudioInferenceResult,
+    AudioInferenceTask,
+    ShortAudioInferenceEngine,
+    create_default_audio_inference_engine,
+    official_audio_inference_framework,
+)
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
     SensoryObservation,
@@ -39,6 +53,12 @@ from app.sensory.tools import (
 
 __all__ = [
     "ApiSensoryProvider",
+    "AudioInferenceEngine",
+    "AudioInferenceFrameworkSpec",
+    "AudioInferenceRequest",
+    "AudioInferenceResult",
+    "AudioInferenceTask",
+    "BUILTIN_AUDIO_RUNTIME",
     "CapturedAudio",
     "DisabledProvider",
     "FakeSensoryProvider",
@@ -46,6 +66,8 @@ __all__ = [
     "LmStudioSensoryProvider",
     "LocalSensoryProvider",
     "OllamaSensoryProvider",
+    "OFFICIAL_AUDIO_FRAMEWORK_ID",
+    "OFFICIAL_AUDIO_FRAMEWORK_LABEL",
     "SensoryContextProvider",
     "SensoryObservation",
     "SensoryObservationStore",
@@ -58,10 +80,14 @@ __all__ = [
     "SensorySettings",
     "SensorySource",
     "SensorySourceSettings",
+    "ShortAudioInferenceEngine",
+    "SIDECAR_AUDIO_RUNTIME",
     "SystemAudioCapture",
     "SystemAudioCaptureError",
     "SENSORY_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_TOOL_NAME",
+    "create_default_audio_inference_engine",
     "create_sensory_observation_tool",
     "create_system_audio_capture",
+    "official_audio_inference_framework",
 ]

@@ -211,6 +211,7 @@ from app.storage.visual_observation import (
     should_inject_visual_context,
 )
 from app.sensory.audio_capture import create_system_audio_capture
+from app.sensory.audio_inference import create_default_audio_inference_engine
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
 from app.sensory.providers import build_provider_registry
@@ -5647,6 +5648,7 @@ class PetWindow(QWidget):
                 self.base_dir,
                 resource_registry=self.resource_manager.registry,
             ),
+            audio_inference_engine=create_default_audio_inference_engine(self.base_dir),
         )
         self.sensory_settings = normalized
         self.sensory_observation_store = store

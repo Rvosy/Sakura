@@ -39,6 +39,7 @@ from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.sensory.audio_capture import create_system_audio_capture
+from app.sensory.audio_inference import create_default_audio_inference_engine
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
 from app.sensory.providers import build_provider_registry
@@ -486,4 +487,5 @@ def create_sensory_pipeline(
             if base_dir is not None
             else None
         ),
+        audio_inference_engine=create_default_audio_inference_engine(base_dir),
     )

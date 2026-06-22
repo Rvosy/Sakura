@@ -17,6 +17,12 @@ from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.sensory import audio_capture as audio_capture_module
 from app.sensory.audio_capture import CapturedAudio
+from app.sensory.audio_inference import (
+    BUILTIN_AUDIO_RUNTIME,
+    OFFICIAL_AUDIO_FRAMEWORK_ID,
+    SIDECAR_AUDIO_RUNTIME,
+    official_audio_inference_framework,
+)
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
     SensoryObservation,
@@ -87,6 +93,18 @@ def test_settings_sensory_test_audio_is_decodable_wav() -> None:
         assert wav.getnchannels() == 1
         assert wav.getframerate() == 16000
         assert wav.getnframes() > 0
+
+
+def test_official_audio_inference_framework_is_optional_and_packaged_under_data(tmp_path: Path) -> None:
+    framework = official_audio_inference_framework(tmp_path)
+
+    assert framework.framework_id == OFFICIAL_AUDIO_FRAMEWORK_ID
+    assert framework.runtime_kind == BUILTIN_AUDIO_RUNTIME
+    assert framework.package_optional is True
+    assert (
+        Path(framework.package_dir)
+        == tmp_path / "data" / "audio_inference" / "frameworks" / "sakura_official_short"
+    )
 
 
 def test_sensory_settings_normalizes_source_and_provider_config() -> None:
@@ -459,6 +477,9 @@ def test_observe_sensory_tool_captures_system_audio_when_text_has_no_audio_media
     def factory(request: SensoryRequest) -> SensoryObservation:
         assert Path(request.media_ref).is_file()
         assert request.text == "刚才似乎有人说 hello"
+        assert request.metadata["audio_inference"]["framework_id"] == OFFICIAL_AUDIO_FRAMEWORK_ID
+        assert request.metadata["audio_inference"]["runtime_kind"] == BUILTIN_AUDIO_RUNTIME
+        assert request.metadata["audio_inference"]["task"] == "speech"
         return SensoryObservation(
             id="obs_text_audio",
             source=request.source,
@@ -490,6 +511,10 @@ def test_observe_sensory_tool_captures_system_audio_when_text_has_no_audio_media
     assert result["status"] == "ok"
     assert result["observation"]["summary"] == "结合系统音频确认有人说 hello。"
     assert capture.count == 1
+    stored = pipeline.store.recent(limit=1)[0]
+    assert stored.metadata["audio_inference"]["framework_id"] == OFFICIAL_AUDIO_FRAMEWORK_ID
+    assert stored.metadata["audio_inference"]["runtime_kind"] == BUILTIN_AUDIO_RUNTIME
+    assert stored.metadata["audio_inference"]["sample_rate"] == 16000
 
 
 def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp_path: Path) -> None:
@@ -519,6 +544,9 @@ def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp
         assert audio_path.is_file()
         assert request.metadata["capture_source"] == "system_audio"
         assert request.metadata["duration_seconds"] == 1.25
+        assert request.metadata["audio_inference"]["duration_seconds"] == 1.25
+        assert request.metadata["audio_inference"]["sample_rate"] == 16000
+        assert request.metadata["audio_inference"]["channel_count"] == 1
         observed_paths.append(audio_path)
         return SensoryObservation(
             id="obs_system_audio",
@@ -554,6 +582,118 @@ def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp
     assert len(observed_paths) == 1
     assert not observed_paths[0].exists()
     assert pipeline.store.recent(limit=1)[0].summary == "系统音频中有人说 hello。"
+
+
+def test_observe_sensory_system_audio_uses_provider_audio_framework_overrides(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SOUND: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="sound_fake",
+            )
+        },
+        providers={
+            "sound_fake": SensoryProviderConfig(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-audio",
+                extra={
+                    "audio_framework": "sakura_official_sidecar",
+                    "audio_runtime": SIDECAR_AUDIO_RUNTIME,
+                },
+            )
+        },
+    ).normalized()
+    capture = _FakeSystemAudioCapture(tmp_path)
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        assert request.metadata["audio_inference"]["framework_id"] == "sakura_official_sidecar"
+        assert request.metadata["audio_inference"]["runtime_kind"] == SIDECAR_AUDIO_RUNTIME
+        assert request.metadata["audio_inference"]["task"] == "sound"
+        return SensoryObservation(
+            id="obs_sidecar_audio",
+            source=request.source,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="检测到系统提示音。",
+            details={"sound_events": ["notification"]},
+            confidence=0.77,
+            provider_id="sound_fake",
+            mode=SensoryProviderMode.LOCAL,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "sound_fake": FakeSensoryProvider(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                factory=factory,
+            )
+        },
+        audio_capture=capture,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler({"source": "sound"}) if tool.handler is not None else {}
+
+    assert result["status"] == "ok"
+    stored = pipeline.store.recent(limit=1)[0]
+    assert stored.metadata["audio_inference"]["framework_id"] == "sakura_official_sidecar"
+    assert stored.metadata["audio_inference"]["runtime_kind"] == SIDECAR_AUDIO_RUNTIME
+    assert stored.metadata["audio_inference"]["duration_seconds"] == 3.0
+    assert stored.details["sound_events"] == ["notification"]
+    assert capture.count == 1
+
+
+def test_observe_sensory_system_audio_provider_unavailable_fails_closed(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            )
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-asr",
+            )
+        },
+    ).normalized()
+    capture = _FakeSystemAudioCapture(tmp_path)
+
+    def factory(_request: SensoryRequest) -> SensoryObservation:
+        raise SensoryProviderUnavailable("provider down")
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                factory=factory,
+            )
+        },
+        audio_capture=capture,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler({"source": "speech"}) if tool.handler is not None else {}
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "provider_unavailable"
+    assert capture.count == 1
+    assert not pipeline.store.path.exists()
+    assert not list(tmp_path.glob("captured_system_audio_*.wav"))
 
 
 def test_observe_sensory_tool_fails_closed_when_system_audio_capture_unavailable(tmp_path: Path) -> None:

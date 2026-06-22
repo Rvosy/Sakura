@@ -124,6 +124,12 @@ class TestStoragePathsSnapshot:
             self.paths.sensory_model_cache_for("vision", "Qwen/Qwen3-VL-4B-Instruct")
             == self.data / "cache" / "sensory_models" / "vision" / "Qwen_Qwen3-VL-4B-Instruct"
         )
+        assert self.paths.audio_inference_dir == self.data / "audio_inference"
+        assert self.paths.audio_inference_frameworks_dir == self.data / "audio_inference" / "frameworks"
+        assert (
+            self.paths.audio_inference_framework_for("sakura_official_short")
+            == self.data / "audio_inference" / "frameworks" / "sakura_official_short"
+        )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
         # 现网存在 "N.A.V.I." 形态角色，历史文件为 N.A.V.I..jsonl，映射不得改变
@@ -201,6 +207,7 @@ class TestEnsureDirs:
             paths.tts_cache_dir,
             paths.system_audio_cache_dir,
             paths.sensory_models_cache_dir,
+            paths.audio_inference_frameworks_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()
