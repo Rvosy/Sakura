@@ -6,13 +6,10 @@ from typing import Any
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.cancellation import CancelChecker, check_cancelled
 from app.core.debug_log import debug_log, summarize_messages
-from app.config.models import MODEL_SLOT_VISUAL_CONTEXT
 from app.storage.visual_observation import (
     VisualObservationJob,
-    VisualObservationRecord,
     VisualObservationStore,
-    build_visual_context_message,
-    summarize_visual_observation,
+    visual_observation_record_from_summary,
 )
 
 
@@ -38,35 +35,26 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        # 步骤 1: 视觉模型预处理 → 结构化 JSON 摘要
-        visual_records = self._record_visual_observations(
-            "ChatWorker",
-            visual_observation_jobs or [],
-            cancel_checker=cancel_checker,
-        )
-        check_cancelled(cancel_checker)
-
-        # 步骤 2: 视觉摘要只作为额外上下文，原图仍交给最终回复模型。
-        if visual_records:
-            user_text = _extract_user_text(messages)
-            context_message = build_visual_context_message(user_text, visual_records)
-            if context_message is not None:
-                messages = _inject_context_message(messages, context_message)
-
         debug_log(
             "ChatWorker",
             "开始处理用户消息",
             {
                 "message_count": len(messages),
-                "visual_records": len(visual_records),
+                "visual_jobs": len(visual_observation_jobs or []),
                 "messages": summarize_messages(messages),
             },
         )
-        return self.agent_runtime.handle_user_message(
+        result = self.agent_runtime.handle_user_message(
             messages,
             progress_callback=progress_callback,
             cancel_checker=cancel_checker,
         )
+        self._record_visual_observation_from_result(
+            "ChatWorker",
+            visual_observation_jobs or [],
+            result,
+        )
+        return result
 
     def run_confirmed_action(
         self,
@@ -100,23 +88,6 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        visual_records = self._record_visual_observations(
-            "EventWorker",
-            visual_observation_jobs or [],
-            cancel_checker=cancel_checker,
-        )
-        check_cancelled(cancel_checker)
-        if visual_records:
-            event = AgentEvent(
-                type=event.type,
-                payload={
-                    **event.payload,
-                    "visual_contexts": [
-                        _visual_record_to_event_context(record)
-                        for record in visual_records
-                    ],
-                },
-            )
         debug_log(
             "EventWorker",
             "开始处理主动事件",
@@ -125,85 +96,45 @@ class ChatPipeline:
                 "payload": event.payload,
             },
         )
-        return self.agent_runtime.handle_event(
+        result = self.agent_runtime.handle_event(
             event,
             progress_callback=progress_callback,
             cancel_checker=cancel_checker,
         )
+        self._record_visual_observation_from_result(
+            "EventWorker",
+            visual_observation_jobs or [],
+            result,
+        )
+        return result
 
-    def _record_visual_observations(
+    def _record_visual_observation_from_result(
         self,
         log_scope: str,
         visual_observation_jobs: list[VisualObservationJob],
-        *,
-        cancel_checker: CancelChecker | None = None,
-    ) -> list[VisualObservationRecord]:
+        result: AgentResult,
+    ) -> None:
         if self.visual_observation_store is None or not visual_observation_jobs:
-            return []
-        records: list[VisualObservationRecord] = []
-        for job in visual_observation_jobs:
-            check_cancelled(cancel_checker)
-            client_for_slot = getattr(self.agent_runtime, "api_client_for_slot", None)
-            vision_client = (
-                client_for_slot(MODEL_SLOT_VISUAL_CONTEXT)
-                if callable(client_for_slot)
-                else self.agent_runtime.api_client
-            )
-            record = summarize_visual_observation(
-                vision_client,
-                job,
-                cancel_checker=cancel_checker,
-            )
-            check_cancelled(cancel_checker)
-            records.append(record)
-            self.visual_observation_store.append(record)
-            debug_log(
-                log_scope,
-                "视觉观察记录已保存",
-                {
-                    "visual_id": record.id,
-                    "source": record.source,
-                    "summary": record.summary,
-                    "visible_text_count": len(record.visible_texts),
-                    "sensitive_redacted": record.sensitive_redacted,
-                },
-            )
-        return records
-
-
-def _visual_record_to_event_context(record: VisualObservationRecord) -> dict[str, Any]:
-    return {
-        "visual_id": record.id,
-        "source": record.source,
-        "created_at": record.created_at,
-        "screen_name": record.screen_name,
-        "summary": record.summary,
-        "visible_texts": record.visible_texts[:12],
-        "uncertain_texts": record.uncertain_texts[:6],
-        "notable_elements": record.notable_elements[:10],
-        "confidence": record.confidence,
-        "sensitive_redacted": record.sensitive_redacted,
-    }
-
-
-def _extract_user_text(messages: list[dict[str, Any]]) -> str:
-    """从消息列表中提取最后一条 user 消息的纯文本。"""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                return " ".join(parts)
-    return ""
-
-
-def _inject_context_message(
-    messages: list[dict[str, Any]],
-    context_message: dict[str, str],
-) -> list[dict[str, Any]]:
-    """将视觉摘要作为 system 上下文注入消息列表，插在历史与最后一条用户消息之间。"""
-    if not messages:
-        return [context_message]
-    return [*messages[:-1], context_message, messages[-1]]
+            return
+        if result.visual_observation is None:
+            debug_log(log_scope, "视觉观察摘要缺失，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
+            return
+        record = visual_observation_record_from_summary(
+            visual_observation_jobs[0],
+            result.visual_observation,
+        )
+        if record is None:
+            debug_log(log_scope, "视觉观察摘要为空，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
+            return
+        self.visual_observation_store.append(record)
+        debug_log(
+            log_scope,
+            "视觉观察记录已保存",
+            {
+                "visual_id": record.id,
+                "source": record.source,
+                "summary": record.summary,
+                "visible_text_count": len(record.visible_texts),
+                "sensitive_redacted": record.sensitive_redacted,
+            },
+        )

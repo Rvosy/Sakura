@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from pathlib import Path
@@ -85,7 +84,7 @@ def test_chat_worker_forwards_progress_signal() -> None:
     assert finished_replies == ["完成了。"]
 
 
-def test_chat_worker_records_visual_observation_before_reply() -> None:
+def test_chat_worker_records_visual_observation_after_reply() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -100,10 +99,15 @@ def test_chat_worker_records_visual_observation_before_reply() -> None:
     from app.agent.screen_observation import ScreenObservation
     from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
-    class Client:
-        def complete_raw(self, _system_prompt, _messages, **_kwargs):  # type: ignore[no-untyped-def]
-            return json.dumps(
-                {
+    class Runtime:
+        def handle_user_message(self, _messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
+            return AgentResult(
+                reply=parse_chat_reply(
+                    '{"segments":[{"ja":"覚えたよ。","zh":"我记下来了。","tone":"中性"}]}'
+                ),
+                visual_observation={
                     "summary": "截图里是一段聊天。",
                     "visible_texts": ["可以追问的台词"],
                     "uncertain_texts": [],
@@ -111,19 +115,6 @@ def test_chat_worker_records_visual_observation_before_reply() -> None:
                     "confidence": 0.9,
                     "sensitive_redacted": False,
                 },
-                ensure_ascii=False,
-            )
-
-    class Runtime:
-        api_client = Client()
-
-        def handle_user_message(self, _messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
-            if cancel_checker is not None:
-                cancel_checker()
-            return AgentResult(
-                reply=parse_chat_reply(
-                    '{"segments":[{"ja":"覚えたよ。","zh":"我记下来了。","tone":"中性"}]}'
-                )
             )
 
     app = QApplication.instance() or QApplication([])

@@ -213,6 +213,31 @@ def summarize_visual_observation(
     return record
 
 
+def extract_visual_observation_summary(content: str) -> dict[str, Any] | None:
+    data = _load_json_object(content)
+    if data is None:
+        return None
+    summary = data.get("visual_observation")
+    return summary if isinstance(summary, dict) else None
+
+
+def visual_observation_record_from_summary(
+    job: VisualObservationJob,
+    summary: dict[str, Any],
+) -> VisualObservationRecord | None:
+    if not _summary_has_content(summary):
+        return None
+    record, redacted = _record_from_summary(job, _job_metadata(job), summary)
+    if redacted:
+        return VisualObservationRecord(
+            **{
+                **asdict(record),
+                "sensitive_redacted": True,
+            }
+        )
+    return record
+
+
 def build_visual_context_message(
     user_text: str,
     records: list[VisualObservationRecord],
@@ -396,6 +421,15 @@ def _record_from_summary(
         or uncertain_redacted
         or notable_redacted
         or user_text_redacted,
+    )
+
+
+def _summary_has_content(summary: dict[str, Any]) -> bool:
+    return bool(
+        _text_value(summary.get("summary"))
+        or _string_list(summary.get("visible_texts"))
+        or _string_list(summary.get("uncertain_texts"))
+        or _string_list(summary.get("notable_elements"))
     )
 
 

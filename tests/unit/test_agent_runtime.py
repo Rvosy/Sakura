@@ -329,6 +329,45 @@ class TestVisionFallback:
                 assert isinstance(result, AgentResult)
                 assert len(result.reply.segments) > 0
 
+    def test_visual_reply_extracts_observation_from_same_response(self) -> None:
+        client = _dummy_api_client()
+        client.complete_with_tools.return_value = MagicMock(
+            content=json.dumps(
+                {
+                    "segments": [{"ja": "見えたよ。", "zh": "我看到了。", "tone": "中性"}],
+                    "visual_observation": {
+                        "summary": "截图里是模型设置页。",
+                        "visible_texts": ["模型设置"],
+                        "uncertain_texts": [],
+                        "notable_elements": ["设置卡片"],
+                        "confidence": 0.9,
+                        "sensitive_redacted": False,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            tool_calls=[],
+            runtime_context_role="system",
+        )
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看图"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+                ],
+            }
+        ]
+
+        result = runtime.handle_user_message(messages)
+
+        prompt = client.complete_with_tools.call_args.args[0]
+        assert "visual_observation" in prompt
+        assert result.reply.translation == "我看到了。"
+        assert result.visual_observation is not None
+        assert result.visual_observation["summary"] == "截图里是模型设置页。"
+
 
 class TestProactiveEventFlow:
     """主动事件流程验证"""

@@ -11,6 +11,7 @@ from app.storage.visual_observation import (
     VisualObservationRecord,
     VisualObservationStore,
     build_visual_context_message,
+    visual_observation_record_from_summary,
     summarize_visual_observation,
 )
 
@@ -127,6 +128,39 @@ def test_summarize_visual_observation_accepts_fenced_json() -> None:
 
     assert record.summary == "桌面上有调试日志。"
     assert record.visible_texts == ["Debug"]
+
+
+def test_visual_observation_record_from_summary_redacts_sensitive_text() -> None:
+    record = visual_observation_record_from_summary(
+        VisualObservationJob(
+            id="vis_hidden",
+            source="manual_screenshot",
+            user_text="看看 token=sk-abc123456789012345",
+            screen_contexts=[
+                {
+                    "data_url": "data:image/jpeg;base64,screen",
+                    "width": 1280,
+                    "height": 720,
+                    "captured_at": "2026-05-31T12:00:00+08:00",
+                    "screen_name": "DISPLAY1",
+                }
+            ],
+        ),
+        {
+            "summary": "页面里有 api_key: secret-value",
+            "visible_texts": ["sk-abcdefghijklmnop"],
+            "uncertain_texts": [],
+            "notable_elements": ["设置页"],
+            "confidence": 0.8,
+            "sensitive_redacted": False,
+        },
+    )
+
+    assert record is not None
+    serialized = json.dumps(record.__dict__, ensure_ascii=False)
+    assert "secret-value" not in serialized
+    assert "sk-abcdefghijklmnop" not in serialized
+    assert record.sensitive_redacted is True
 
 
 def test_visual_observation_store_redacts_sensitive_text_and_omits_images() -> None:
