@@ -4940,6 +4940,39 @@ def test_settings_dialog_llama_audio_test_confirms_unknown_hf_model_download(mon
     app.processEvents()
 
 
+def test_settings_dialog_sensory_status_guides_local_llama_setup() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_status_hint")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_enabled_check.setChecked(True)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_model_edit.setText("ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0")
+    app.processEvents()
+
+    assert "配置 llama.cpp 运行时" in dialog.sensory_status_label.text()
+
+    llama_binary = dialog.base_dir / "llama-server"
+    _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")
+    getattr(dialog, "_sensory_source_state")["speech"].update(
+        {
+            "managed_runtime": "llama.cpp",
+            "llama_binary_path": str(llama_binary),
+        }
+    )
+    dialog._handle_sensory_control_changed()
+
+    assert "首次测试会确认预计下载 约 1.0 GB" in dialog.sensory_status_label.text()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):

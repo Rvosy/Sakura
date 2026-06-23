@@ -1795,11 +1795,37 @@ class SettingsDialog(QDialog):
     def _sensory_status_hint(self) -> str:
         if not hasattr(self, "sensory_mode_combo"):
             return "未测试"
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
         mode_ui = str(self.sensory_mode_combo.currentData() or "off")
         if mode_ui == "off":
             return "该感官源已关闭。"
         if not self.sensory_model_edit.text().strip():
             return "请填写模型，或先检测模型列表。"
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        if (
+            source in {SensorySource.SPEECH, SensorySource.SOUND}
+            and mode_ui == "local"
+            and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+        ):
+            state = self._sensory_current_state()
+            provider_id = _sensory_provider_id(source, backend, mode_ui)
+            config = _sensory_provider_config_from_state(source, provider_id, state)
+            if not _sensory_provider_is_managed_llama(config):
+                return "可点击“配置 llama.cpp 运行时”，或填写已运行的本机 llama-server Endpoint。"
+            plan = build_sensory_audio_smoke_plan(
+                config,
+                base_dir=self.base_dir,
+                source=source,
+            )
+            if plan.requires_runtime_download:
+                return "未找到可用的 llama-server，请先配置 llama.cpp 运行时。"
+            if plan.requires_model_download:
+                hint = f"预计下载 {plan.model_download_hint}" if plan.model_download_hint else "可能下载远端 GGUF 模型"
+                return f"运行时已准备好；首次测试会确认{hint}。"
+            if plan.model_location == "local":
+                return "本机 llama.cpp 运行时和本地模型路径已准备好，尚未测试。"
         return "配置已修改，尚未测试。"
 
     def _load_memory_entries(self) -> None:
