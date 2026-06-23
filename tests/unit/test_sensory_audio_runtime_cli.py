@@ -29,6 +29,11 @@ def test_audio_runtime_cli_plan_uses_managed_llama_defaults(tmp_path: Path, caps
     assert payload["managed_runtime"] is True
     assert payload["binary_path"] == str(binary)
     assert payload["model"] == "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
+    assert payload["runtime_requirement"] == "cached"
+    assert payload["model_location"] == "huggingface"
+    assert payload["requires_model_download"] is True
+    assert payload["requires_runtime_download"] is False
+    assert payload["platform_key"]
 
 
 def test_audio_runtime_cli_smoke_refuses_remote_llama_model_without_explicit_allow(
@@ -59,6 +64,7 @@ def test_audio_runtime_cli_smoke_refuses_remote_llama_model_without_explicit_all
     assert payload["ok"] is False
     assert "--allow-model-download" in payload["message"]
     assert payload["plan"]["model_download_hint"] == "约 1.0 GB"
+    assert payload["plan"]["requires_model_download"] is True
 
 
 def test_audio_runtime_cli_install_runtime_requires_yes_before_download(

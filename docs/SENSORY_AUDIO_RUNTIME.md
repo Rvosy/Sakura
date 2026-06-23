@@ -79,6 +79,13 @@ data/logs/sensory-llama-server.log
 .venv/bin/python -m app.sensory.audio_runtime_cli plan --source speech --managed-llama-defaults --pretty
 ```
 
+`plan` 输出中几个字段用于发布预检：
+
+- `runtime_requirement`: `cached` 表示已找到本机 `llama-server`，`download_required` 表示需要安装官方运行时，`external_service` 表示该 provider 依赖外部 LM Studio/Ollama/API 服务。
+- `requires_runtime_download`: 是否需要 Sakura 下载官方 llama.cpp 运行时。
+- `model_location`: `local` 表示本地 GGUF，`huggingface` 表示 managed llama.cpp 首次运行可能通过 `-hf` 拉取模型，`provider` 表示模型由外部服务管理。
+- `requires_model_download`: 真实 smoke 是否可能触发模型下载。
+
 本机运行时安装验证。没有可用 `llama-server` 时，必须显式传入 `--yes` 才会下载官方 llama.cpp 运行时：
 
 ```bash

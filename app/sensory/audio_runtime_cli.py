@@ -242,18 +242,7 @@ def _managed_llama_default_config(
 
 
 def _remote_managed_llama_model(plan: SensoryAudioSmokePlan) -> bool:
-    if not plan.managed_runtime:
-        return False
-    model = plan.model.strip()
-    if not model or _looks_like_local_path(model):
-        return False
-    return "/" in model
-
-
-def _looks_like_local_path(value: str) -> bool:
-    path_text = value.split(":", 1)[0] if len(value) > 1 and value[1] != ":" else value
-    path = Path(path_text).expanduser()
-    return path.exists() or path.is_absolute() or value.startswith((".", "~"))
+    return bool(plan.managed_runtime and plan.requires_model_download)
 
 
 def _print_payload(payload: MappingPayload, *, pretty: bool) -> None:

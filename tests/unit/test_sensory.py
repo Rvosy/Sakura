@@ -192,7 +192,18 @@ def test_sensory_audio_smoke_plan_reports_managed_runtime_and_download_hint(tmp_
     assert plan.ok is True
     assert plan.managed_runtime is True
     assert plan.binary_path == str(binary)
+    assert plan.runtime_requirement == "cached"
+    assert plan.requires_runtime_download is False
+    assert plan.model_location == "huggingface"
+    assert plan.requires_model_download is True
     assert plan.model_download_hint == "约 1.0 GB"
+    assert plan.framework_id == OFFICIAL_AUDIO_FRAMEWORK_ID
+    assert Path(plan.framework_package_dir).parts[-4:] == (
+        "data",
+        "audio_inference",
+        "frameworks",
+        "sakura_official_short",
+    )
 
 
 def test_sensory_audio_smoke_plan_reports_missing_runtime(tmp_path: Path) -> None:
@@ -210,7 +221,40 @@ def test_sensory_audio_smoke_plan_reports_missing_runtime(tmp_path: Path) -> Non
     )
 
     assert plan.ok is False
+    assert plan.runtime_requirement == "download_required"
+    assert plan.requires_runtime_download is True
     assert "runtime binary" in plan.message
+
+
+def test_sensory_audio_smoke_plan_treats_local_managed_llama_model_as_no_download(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    if sys.platform != "win32":
+        binary.chmod(0o755)
+    model = tmp_path / "models" / "speech.gguf"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_text("gguf", encoding="utf-8")
+
+    plan = build_sensory_audio_smoke_plan(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model=str(model),
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+        source=SensorySource.SPEECH,
+    )
+
+    assert plan.ok is True
+    assert plan.model_location == "local"
+    assert plan.requires_model_download is False
+    assert plan.model_download_hint == ""
 
 
 def test_official_audio_inference_framework_is_optional_and_packaged_under_data(tmp_path: Path) -> None:
