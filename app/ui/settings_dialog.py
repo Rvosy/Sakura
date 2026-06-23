@@ -5275,6 +5275,15 @@ def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
             lines.append(f"runtime manifest：已找到 {len(existing)} 个。")
         else:
             lines.append("runtime manifest：未找到。")
+    model_cache = report.get("model_cache")
+    if isinstance(model_cache, dict):
+        cached_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict) and bool(state.get("used_for_plan"))
+        ]
+        if cached_sources:
+            lines.append(f"本地模型缓存：{', '.join(sorted(cached_sources))}。")
     actions = report.get("next_actions")
     if isinstance(actions, list) and actions:
         lines.append("")

@@ -16,6 +16,7 @@ from app.sensory.llama_cpp_runtime import (
 )
 from app.sensory.models import SensoryProviderMode, SensorySource
 from app.sensory.settings import SensoryProviderConfig
+from app.storage.paths import StoragePaths
 
 
 def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
@@ -24,9 +25,13 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
     root = Path(base_dir)
     binary_path = discover_llama_server_binary(root)
     manifest_candidates = _manifest_candidates(root)
+    model_cache = {
+        source.value: _model_cache_state(root, source)
+        for source in (SensorySource.SPEECH, SensorySource.SOUND)
+    }
     plans = {
         source.value: build_sensory_audio_smoke_plan(
-            _managed_llama_default_config(source),
+            _managed_llama_default_config(source, model_cache[source.value]),
             base_dir=root,
             source=source,
         ).to_mapping()
@@ -41,6 +46,7 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
             "binary_path": binary_path,
             "manifest_candidates": manifest_candidates,
         },
+        "model_cache": model_cache,
         "plans": plans,
         "ready_for_smoke": ready_for_smoke,
         "next_actions": _next_actions(
@@ -51,9 +57,14 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
     }
 
 
-def _managed_llama_default_config(source: SensorySource) -> SensoryProviderConfig:
+def _managed_llama_default_config(
+    source: SensorySource,
+    cache_state: dict[str, Any] | None = None,
+) -> SensoryProviderConfig:
     recommendation = recommended_llama_cpp_audio_model(source)
-    model = recommendation.model if recommendation is not None else ""
+    model = str((cache_state or {}).get("path") or "").strip()
+    if not model:
+        model = recommendation.model if recommendation is not None else ""
     return SensoryProviderConfig(
         provider_id=f"{source.value}_local",
         source=source,
@@ -65,6 +76,36 @@ def _managed_llama_default_config(source: SensorySource) -> SensoryProviderConfi
             "managed_runtime": LLAMA_CPP_MANAGED_RUNTIME_MARKER,
         },
     ).normalized()
+
+
+def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
+    recommendation = recommended_llama_cpp_audio_model(source)
+    repo_id = _recommendation_repo_id(recommendation.model) if recommendation is not None else ""
+    path = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id) if repo_id else Path()
+    gguf_count = 0
+    exists = False
+    if repo_id:
+        try:
+            exists = path.is_dir()
+            gguf_count = len(list(path.rglob("*.gguf"))) if exists else 0
+        except OSError:
+            exists = False
+            gguf_count = 0
+    return {
+        "repo_id": repo_id,
+        "path": str(path) if exists and gguf_count > 0 else "",
+        "candidate_path": str(path) if repo_id else "",
+        "exists": exists,
+        "gguf_count": gguf_count,
+        "used_for_plan": exists and gguf_count > 0,
+    }
+
+
+def _recommendation_repo_id(model: str) -> str:
+    text = str(model or "").strip()
+    if ":" in text and "/" in text.split(":", 1)[0]:
+        return text.split(":", 1)[0]
+    return text
 
 
 def _manifest_candidates(base_dir: Path) -> list[dict[str, Any]]:

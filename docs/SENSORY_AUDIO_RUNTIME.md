@@ -159,7 +159,7 @@ data/logs/sensory-llama-server.log
 .venv/bin/python -m app.sensory.audio_runtime_cli doctor --pretty
 ```
 
-`doctor` 会汇总当前平台、`llama-server` 是否可用、本地 runtime manifest 候选、语音/声音默认模型 smoke plan、以及下一步动作建议。
+`doctor` 会汇总当前平台、`llama-server` 是否可用、本地 runtime manifest 候选、本地推荐模型缓存、语音/声音默认模型 smoke plan、以及下一步动作建议。
 
 设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断 llama.cpp”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
 

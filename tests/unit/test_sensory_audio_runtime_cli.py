@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from app.sensory import audio_runtime_cli
 from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec
+from app.storage.paths import StoragePaths
 
 
 def test_audio_runtime_cli_plan_uses_managed_llama_defaults(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -498,6 +499,31 @@ def test_audio_runtime_cli_doctor_lists_manifest_candidate_platforms(
     assert candidates[0]["exists"] is True
     assert candidates[0]["package_count"] == 1
     assert candidates[0]["platforms"] == ["macos-arm64"]
+
+
+def test_audio_runtime_cli_doctor_uses_cached_recommended_speech_model(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _executable(tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server")
+    cache_dir = StoragePaths(tmp_path).sensory_model_cache_for(
+        "speech",
+        "ggml-org/Qwen3-ASR-0.6B-GGUF",
+    )
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "qwen3-asr.gguf").write_text("gguf", encoding="utf-8")
+    (cache_dir / "mmproj-qwen3-asr.gguf").write_text("gguf", encoding="utf-8")
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["model_cache"]["speech"]["used_for_plan"] is True
+    assert payload["model_cache"]["speech"]["gguf_count"] == 2
+    assert payload["plans"]["speech"]["model"] == str(cache_dir)
+    assert payload["plans"]["speech"]["model_location"] == "local"
+    assert payload["plans"]["speech"]["requires_model_download"] is False
+    assert payload["plans"]["sound"]["requires_model_download"] is True
 
 
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
