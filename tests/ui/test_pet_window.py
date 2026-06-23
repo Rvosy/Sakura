@@ -4156,6 +4156,7 @@ def _build_tauri_settings_result(
     from app.ui.tauri_settings import (
         TauriApiResult,
         TauriCharacterResult,
+        TauriPluginResult,
         TauriSettingsResult,
         TauriSystemBasicResult,
         TauriSystemExtraResult,
@@ -4229,6 +4230,7 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
     saved_startup: list[StartupSettings] = []
     saved_backchannel: list[BackchannelSettings] = []
     saved_memory: list[MemoryCurationSettings] = []
+    saved_plugins: list[dict[str, bool]] = []
     synced: list[str] = []
     applied_startup: list[StartupSettings] = []
 
@@ -4296,6 +4298,11 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
         pet_window_module,
         "SettingsDialog",
         lambda *_args, **_kwargs: pytest.fail("PySide 设置页不应打开"),
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "save_plugin_enabled_overrides",
+        lambda _base_dir, enabled_by_id: saved_plugins.append(dict(enabled_by_id)) or False,
     )
 
     window = _minimal_settings_window(
@@ -4391,6 +4398,7 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
             backchannel=backchannel,
         ),
         memory_curation=memory,
+        plugins=TauriPluginResult(enabled_by_id={"demo": False, "required": True}),
     )
     instances[0].completed.emit(result)
 
@@ -4424,6 +4432,7 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
     assert saved_startup == [startup]
     assert saved_backchannel == [backchannel]
     assert saved_memory == [memory]
+    assert saved_plugins == [{"demo": False, "required": True}]
     assert window.api_client.settings == api_settings
     assert window.screen_awareness_settings == screen_awareness
     assert window.mcp_settings == mcp
@@ -5012,6 +5021,7 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                 "backfill_limit": 200,
             }
         },
+        "plugins": {"enabled_by_id": {}},
     }
 
 
@@ -5056,6 +5066,18 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
     assert result.api.settings.timeout_seconds == 600
     assert result.system_extra.backchannel.delay_ms == 5000
     assert result.memory_curation.trigger_turns == 50
+
+
+def test_tauri_settings_result_parser_reads_plugin_enabled_overrides() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["plugins"] = {"enabled_by_id": {"demo": False, "required": True}}
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.plugins.enabled_by_id == {"demo": False, "required": True}
 
 
 def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
@@ -5116,6 +5138,30 @@ def test_tauri_settings_request_includes_theme_colors() -> None:
     assert request["theme_defaults"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
     assert {"id": "primary_color", "label": "主题色"} in request["theme_fields"]
     assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
+
+
+def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    root = _ui_runtime_root("tauri_request_plugins")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        base_dir=root,
+        nonce="nonce",
+    )
+
+    plugin = request["plugins"]["items"][0]
+    assert plugin["id"] == "demo"
+    assert plugin["name"] == "Demo 插件"
+    assert plugin["enabled"] is False
+    assert plugin["permissions"] == ["settings_panel"]
+    assert plugin["entry"] == "plugin:DemoPlugin"
+    assert request["plugins"]["permission_labels"]["settings_panel"]["group"] == "UI"
+    assert {"id": "core_profile", "label": "常驻档案"} in request["memory"]["layers"]
+    assert request["memory"]["defaults"]["layer"] == "semantic"
+    assert request["memory"]["defaults"]["source"] == "manual"
 
 
 def test_tauri_settings_request_includes_per_character_theme() -> None:
@@ -5193,6 +5239,113 @@ def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
     process._handle_stdout(flush=True)
     assert len(completed) == 1
     assert completed[0].screen_awareness.enabled is True
+
+
+def test_tauri_settings_process_dispatches_memory_rpc_methods() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    class FakeMemoryStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object], bool, bool | None]] = []
+
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("search", dict(arguments), wait, None))
+            return {"status": "loading", "memories": []}
+
+        def create_memory(self, arguments, *, allow_sensitive=False, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("create", dict(arguments), wait, allow_sensitive))
+            return {"memory": {"id": "new", "content": arguments["content"]}, "ok": True}
+
+        def update_memory(self, arguments, *, allow_sensitive=False, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("update", dict(arguments), wait, allow_sensitive))
+            return {"memory": {"id": arguments["id"], "content": arguments["content"]}, "ok": True}
+
+        def forget_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("delete", dict(arguments), wait, None))
+            if arguments["id"] == "bad":
+                return {"status": "failed", "error": "boom", "memories": []}
+            return {"memory": {"id": arguments["id"], "content": ""}}
+
+    store = FakeMemoryStore()
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=store,
+    )
+
+    assert process._dispatch_rpc("memory.search", {"query": "x"})["status"] == "loading"
+    assert process._dispatch_rpc("memory.upsert", {"content": "new"})["memory"]["id"] == "new"
+    assert process._dispatch_rpc("memory.upsert", {"id": "m1", "content": "edit"})["memory"]["id"] == "m1"
+    deleted = process._dispatch_rpc("memory.delete", {"ids": ["m1", "bad"]})
+
+    assert deleted["deleted"] == [{"id": "m1", "content": ""}]
+    assert deleted["failed"] == [{"id": "bad", "error": "boom"}]
+    assert store.calls == [
+        ("search", {"query": "x", "limit": 120}, False, None),
+        ("create", {"content": "new"}, False, True),
+        ("update", {"id": "m1", "content": "edit"}, False, True),
+        ("delete", {"id": "m1"}, False, None),
+        ("delete", {"id": "bad"}, False, None),
+    ]
+
+
+def test_tauri_settings_process_writes_memory_rpc_response_line() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import (
+        TAURI_SETTINGS_RPC_MARKER,
+        TAURI_SETTINGS_RPC_RESULT_MARKER,
+        TauriSettingsProcess,
+    )
+
+    class FakeMemoryStore:
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            return {
+                "status": "ready",
+                "count": 1,
+                "memories": [{"id": "m1", "content": arguments["query"], "layer": "semantic"}],
+            }
+
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+            self.writes: list[bytes] = []
+
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    request = {"id": "rpc-1", "method": "memory.search", "params": {"query": "主人"}}
+    fake = FakeQProcess(
+        (TAURI_SETTINGS_RPC_MARKER + json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=FakeMemoryStore(),
+    )
+    process._process = fake
+
+    process._handle_stdout()
+
+    line = b"".join(fake.writes).decode("utf-8").strip()
+    assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
+    payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])
+    assert payload["id"] == "rpc-1"
+    assert payload["ok"] is True
+    assert payload["result"]["memories"][0]["content"] == "主人"
 
 
 def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]

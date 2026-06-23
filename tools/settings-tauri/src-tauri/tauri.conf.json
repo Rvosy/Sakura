@@ -12,10 +12,10 @@
       {
         "label": "main",
         "title": "Sakura 设置",
-        "width": 720,
-        "height": 720,
-        "minWidth": 560,
-        "minHeight": 560,
+        "width": 1040,
+        "height": 760,
+        "minWidth": 900,
+        "minHeight": 640,
         "resizable": true,
         "maximizable": true,
         "center": true

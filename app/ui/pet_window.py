@@ -124,6 +124,7 @@ from app.plugins.manager import (
     PLUGIN_EVENT_TTS_START,
     PLUGIN_EVENT_USER_MESSAGE,
 )
+from app.plugins.discovery import save_plugin_enabled_overrides
 from app.plugins.events import (
     EVENT_APP_CLOSING,
     EVENT_APP_STARTED,
@@ -5246,6 +5247,7 @@ class PetWindow(QWidget):
             launch_at_login_supported=is_launch_at_login_supported(),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            memory_store=getattr(self, "memory_store", None),
             model=getattr(api_settings, "model", None),
             parent_widget=self if isinstance(self, QWidget) else None,
             parent=self if isinstance(self, QObject) else None,
@@ -5331,6 +5333,7 @@ class PetWindow(QWidget):
         )
         startup_settings_changed = result_startup_settings != current_startup_settings
         api_changed = result.api.settings != self.api_client.settings
+        plugin_config_changed = False
         try:
             if api_changed:
                 self.settings_service.save_api_settings(result.api.settings)
@@ -5393,6 +5396,11 @@ class PetWindow(QWidget):
             )
             if callable(save_memory_curation_settings):
                 save_memory_curation_settings(result.memory_curation)
+            if result.plugins.enabled_by_id:
+                plugin_config_changed = save_plugin_enabled_overrides(
+                    self.base_dir,
+                    result.plugins.enabled_by_id,
+                )
             self._apply_layout_settings(
                 portrait_scale_percent=result.character.portrait_scale_percent,
                 control_panel_width=result.character.control_panel_width,
@@ -5507,6 +5515,12 @@ class PetWindow(QWidget):
         self._tauri_initial_tts_settings = None
         # 已应用并持久化最终布局，丢弃回滚基准。
         self._tauri_original_layout = None
+        if plugin_config_changed:
+            show_themed_information(
+                self,
+                "设置已保存",
+                "插件启用状态需要重启 Sakura 后才会生效。",
+            )
 
     def _abort_tauri_settings_apply(self, new_tts_provider: object | None = None) -> None:
         self._tauri_initial_tts_settings = None

@@ -51,6 +51,29 @@ const fields = {
   backchannelTtsEnabled: document.getElementById("backchannelTtsEnabled"),
   memoryCurationEnabled: document.getElementById("memoryCurationEnabled"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
+  memoryStatusStrip: document.getElementById("memoryStatusStrip"),
+  memorySearch: document.getElementById("memorySearch"),
+  memoryLayerFilter: document.getElementById("memoryLayerFilter"),
+  memorySort: document.getElementById("memorySort"),
+  memoryAddButton: document.getElementById("memoryAddButton"),
+  memoryRefreshButton: document.getElementById("memoryRefreshButton"),
+  memoryList: document.getElementById("memoryList"),
+  memoryContent: document.getElementById("memoryContent"),
+  memoryLayer: document.getElementById("memoryLayer"),
+  memoryCategory: document.getElementById("memoryCategory"),
+  memorySource: document.getElementById("memorySource"),
+  memoryImportance: document.getElementById("memoryImportance"),
+  memoryConfidence: document.getElementById("memoryConfidence"),
+  memoryMeta: document.getElementById("memoryMeta"),
+  memorySaveButton: document.getElementById("memorySaveButton"),
+  memoryRevertButton: document.getElementById("memoryRevertButton"),
+  memoryDeleteButton: document.getElementById("memoryDeleteButton"),
+  pluginStatusStrip: document.getElementById("pluginStatusStrip"),
+  pluginSearch: document.getElementById("pluginSearch"),
+  pluginStatusFilter: document.getElementById("pluginStatusFilter"),
+  pluginPermissionFilter: document.getElementById("pluginPermissionFilter"),
+  pluginList: document.getElementById("pluginList"),
+  pluginDetail: document.getElementById("pluginDetail"),
   tokenEstimate: document.getElementById("tokenEstimate"),
   errorText: document.getElementById("errorText"),
   saveButton: document.getElementById("saveButton"),
@@ -65,6 +88,7 @@ const fields = {
     model: document.getElementById("page-model"),
     voice: document.getElementById("page-voice"),
     tools: document.getElementById("page-tools"),
+    plugins: document.getElementById("page-plugins"),
     system: document.getElementById("page-system"),
     memory: document.getElementById("page-memory"),
   },
@@ -72,6 +96,21 @@ const fields = {
 
 let request = null;
 let themeChanged = false;
+let memoryRetryTimer = null;
+const memoryState = {
+  entries: [],
+  selectedId: "",
+  loading: false,
+  loaded: false,
+  status: "idle",
+  message: "",
+  draft: null,
+};
+const pluginState = {
+  selectedId: "",
+  enabledById: {},
+  initialEnabledById: {},
+};
 
 const themeVars = {
   primary_color: "--sakura-primary",
@@ -89,6 +128,73 @@ const themeVars = {
 
 function setError(message) {
   fields.errorText.textContent = message || "";
+}
+
+function clearMemoryRetry() {
+  window.clearTimeout(memoryRetryTimer);
+  memoryRetryTimer = null;
+}
+
+function scheduleMemoryRetry() {
+  clearMemoryRetry();
+  if (!fields.pages.memory.classList.contains("is-active")) {
+    return;
+  }
+  memoryRetryTimer = window.setTimeout(loadMemories, 1500);
+}
+
+function confirmAction(
+  message,
+  { title = "确认操作", confirmText = "确认", cancelText = "取消", danger = false } = {},
+) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    const dialog = document.createElement("section");
+    dialog.className = "confirm-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+    const body = document.createElement("p");
+    body.textContent = message;
+    const actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary-button";
+    cancel.textContent = cancelText;
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    if (danger) {
+      confirm.className = "danger-button";
+    }
+    confirm.textContent = confirmText;
+    actions.append(cancel, confirm);
+    dialog.append(heading, body, actions);
+    overlay.append(dialog);
+
+    function close(value) {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      resolve(value);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") {
+        close(false);
+      }
+    }
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(false);
+      }
+    });
+    cancel.addEventListener("click", () => close(false));
+    confirm.addEventListener("click", () => close(true));
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    confirm.focus();
+  });
 }
 
 function isHexColor(value) {
@@ -263,8 +369,9 @@ const pageMeta = {
   voice: { title: "语音", subtitle: "TTS 提供器与语音参数" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
+  plugins: { title: "插件", subtitle: "启停状态、权限、来源与重启生效预览" },
   system: { title: "系统", subtitle: "启动、日志、字幕、气泡与接话" },
-  memory: { title: "记忆", subtitle: "记忆自动整理" },
+  memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
 
 function showPage(page) {
@@ -274,10 +381,21 @@ function showPage(page) {
   fields.navItems.forEach((item) => {
     item.classList.toggle("is-active", item.dataset.page === page);
   });
+  document.querySelector(".page-scroll")?.classList.toggle("is-admin-active", page === "memory" || page === "plugins");
+  if (page !== "memory") {
+    clearMemoryRetry();
+  }
   const meta = pageMeta[page];
   if (meta) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = meta.subtitle;
+  }
+  if (
+    page === "memory"
+    && !memoryState.loading
+    && (!memoryState.loaded || memoryState.status === "loading")
+  ) {
+    loadMemories();
   }
 }
 
@@ -614,6 +732,625 @@ function renderTtsProviders() {
   });
 }
 
+async function hostCall(method, params = {}) {
+  return invoke("host_call", { method, params });
+}
+
+function memoryLayers() {
+  return request?.memory?.layers || [];
+}
+
+function memoryDefaults() {
+  return request?.memory?.defaults || {
+    layer: "semantic",
+    source: "manual",
+    importance: 0.5,
+    confidence: 0.75,
+  };
+}
+
+function memoryLayerLabel(layer) {
+  return memoryLayers().find((item) => item.id === layer)?.label || layer || "未分层";
+}
+
+function memoryContent(record) {
+  return String(record?.content || record?.memory || "");
+}
+
+function compactText(value, max = 110) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= max) {
+    return text;
+  }
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function renderStrip(container, items) {
+  container.textContent = "";
+  items.forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "status-chip";
+    chip.textContent = `${item.label} ${item.value}`;
+    container.append(chip);
+  });
+}
+
+function renderMemoryControls() {
+  fields.memoryLayerFilter.textContent = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "全部层级";
+  fields.memoryLayerFilter.append(all);
+  memoryLayers().forEach((layer) => {
+    const option = document.createElement("option");
+    option.value = layer.id;
+    option.textContent = layer.label;
+    fields.memoryLayerFilter.append(option);
+  });
+
+  fields.memoryLayer.textContent = "";
+  memoryLayers().forEach((layer) => {
+    const option = document.createElement("option");
+    option.value = layer.id;
+    option.textContent = layer.label;
+    fields.memoryLayer.append(option);
+  });
+}
+
+function selectedMemory() {
+  if (memoryState.selectedId === "__draft__") {
+    return memoryState.draft;
+  }
+  return memoryState.entries.find((entry) => entry.id === memoryState.selectedId) || null;
+}
+
+function sortedMemories() {
+  const entries = [...memoryState.entries];
+  const sort = fields.memorySort.value;
+  entries.sort((a, b) => {
+    if (a.layer === "core_profile" && b.layer !== "core_profile") {
+      return -1;
+    }
+    if (b.layer === "core_profile" && a.layer !== "core_profile") {
+      return 1;
+    }
+    if (sort === "importance_desc") {
+      return Number(b.importance || 0) - Number(a.importance || 0);
+    }
+    if (sort === "confidence_desc") {
+      return Number(b.confidence || 0) - Number(a.confidence || 0);
+    }
+    return String(b.updated_at || b.created_at || "").localeCompare(
+      String(a.updated_at || a.created_at || ""),
+    );
+  });
+  return entries;
+}
+
+function setMemoryEditorDisabled(disabled) {
+  [
+    fields.memoryContent,
+    fields.memoryLayer,
+    fields.memoryCategory,
+    fields.memorySource,
+    fields.memoryImportance,
+    fields.memoryConfidence,
+    fields.memorySaveButton,
+    fields.memoryRevertButton,
+    fields.memoryDeleteButton,
+  ].forEach((field) => {
+    field.disabled = disabled;
+  });
+  refreshSelect(fields.memoryLayer);
+}
+
+function fillMemoryEditor(record) {
+  const readOnly = memoryState.status === "loading" || memoryState.status === "failed";
+  if (!record) {
+    fields.memoryContent.value = "";
+    fields.memoryCategory.value = "";
+    fields.memorySource.value = "";
+    fields.memoryImportance.value = "";
+    fields.memoryConfidence.value = "";
+    fields.memoryMeta.textContent = "";
+    setMemoryEditorDisabled(true);
+    return;
+  }
+  fields.memoryContent.value = memoryContent(record);
+  fields.memoryLayer.value = record.layer || memoryDefaults().layer;
+  fields.memoryCategory.value = record.category || "";
+  fields.memorySource.value = record.source || memoryDefaults().source;
+  fields.memoryImportance.value = Number(record.importance ?? memoryDefaults().importance);
+  fields.memoryConfidence.value = Number(record.confidence ?? memoryDefaults().confidence);
+  refreshSelect(fields.memoryLayer);
+  fields.memoryMeta.textContent = "";
+  [
+    ["ID", record.id || "新记忆"],
+    ["创建", record.created_at || "未保存"],
+    ["更新", record.updated_at || "未保存"],
+  ].forEach(([label, value]) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    fields.memoryMeta.append(dt, dd);
+  });
+  setMemoryEditorDisabled(readOnly);
+  fields.memoryDeleteButton.disabled = readOnly || memoryState.selectedId === "__draft__";
+  fields.memoryRevertButton.disabled = readOnly || memoryState.selectedId === "__draft__";
+}
+
+function renderMemoryStatus() {
+  const counts = {
+    all: memoryState.entries.length,
+    core_profile: 0,
+    semantic: 0,
+    episodic: 0,
+    procedural: 0,
+    session: 0,
+  };
+  memoryState.entries.forEach((entry) => {
+    if (counts[entry.layer] !== undefined) {
+      counts[entry.layer] += 1;
+    }
+  });
+  renderStrip(fields.memoryStatusStrip, [
+    { label: "总数", value: counts.all },
+    { label: "常驻档案", value: counts.core_profile },
+    { label: "长期事实", value: counts.semantic },
+    { label: "事件总结", value: counts.episodic },
+    { label: "协作规则", value: counts.procedural },
+    { label: "当前任务", value: counts.session },
+    {
+      label: "自动整理",
+      value: fields.memoryCurationEnabled.checked ? "启用" : "关闭",
+    },
+  ]);
+}
+
+function renderMemoryList() {
+  fields.memoryList.textContent = "";
+  if (memoryState.loading) {
+    const item = document.createElement("p");
+    item.className = "empty-state";
+    item.textContent = "记忆系统正在加载。";
+    fields.memoryList.append(item);
+    return;
+  }
+  if (memoryState.status === "failed") {
+    const item = document.createElement("p");
+    item.className = "empty-state";
+    item.textContent = memoryState.message || "记忆系统加载失败。";
+    fields.memoryList.append(item);
+    return;
+  }
+  const entries = sortedMemories();
+  if (!entries.length) {
+    const item = document.createElement("p");
+    item.className = "empty-state";
+    item.textContent = memoryState.message || "暂无记忆。";
+    fields.memoryList.append(item);
+    return;
+  }
+  entries.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "memory-card";
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    row.classList.toggle("is-selected", entry.id === memoryState.selectedId);
+    row.classList.toggle("is-core", entry.layer === "core_profile");
+    const selectRow = () => {
+      memoryState.selectedId = entry.id;
+      renderMemoryPage();
+    };
+    row.addEventListener("click", selectRow);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectRow();
+      }
+    });
+    const title = document.createElement("strong");
+    title.textContent = compactText(memoryContent(entry) || "(空记忆)");
+    const meta = document.createElement("span");
+    meta.className = "card-meta";
+    meta.textContent = [
+      memoryLayerLabel(entry.layer),
+      entry.category || "未分类",
+      entry.source || "未知来源",
+      entry.updated_at || entry.created_at || "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const chips = document.createElement("span");
+    chips.className = "chip-row";
+    [
+      `重要 ${Number(entry.importance ?? 0).toFixed(2)}`,
+      `置信 ${Number(entry.confidence ?? 0).toFixed(2)}`,
+    ].forEach((text) => {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip";
+      chip.textContent = text;
+      chips.append(chip);
+    });
+    row.append(title, meta, chips);
+    fields.memoryList.append(row);
+  });
+}
+
+function renderMemoryPage() {
+  renderMemoryStatus();
+  renderMemoryList();
+  fillMemoryEditor(selectedMemory());
+  fields.memoryAddButton.disabled = memoryState.status === "loading" || memoryState.status === "failed";
+  fields.memoryRefreshButton.disabled = memoryState.loading;
+}
+
+async function loadMemories() {
+  if (!request) {
+    return;
+  }
+  clearMemoryRetry();
+  memoryState.loading = true;
+  memoryState.status = "loading";
+  memoryState.message = "记忆系统正在加载。";
+  let shouldRetry = false;
+  renderMemoryPage();
+  try {
+    const params = {
+      query: fields.memorySearch.value.trim(),
+      limit: request.memory.page_size || 120,
+    };
+    if (fields.memoryLayerFilter.value) {
+      params.layer = fields.memoryLayerFilter.value;
+    }
+    const result = await hostCall("memory.search", params);
+    memoryState.status = result.status || "ready";
+    memoryState.message = result.message || result.error || "";
+    shouldRetry = memoryState.status === "loading";
+    memoryState.entries = Array.isArray(result.memories)
+      ? result.memories.filter((entry) => entry && entry.id)
+      : [];
+    memoryState.loaded = true;
+    if (!memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
+      memoryState.selectedId = memoryState.entries[0]?.id || "";
+    }
+  } catch (error) {
+    memoryState.status = "failed";
+    memoryState.message = String(error);
+    memoryState.entries = [];
+  } finally {
+    memoryState.loading = false;
+    renderMemoryPage();
+    if (shouldRetry) {
+      scheduleMemoryRetry();
+    }
+  }
+}
+
+function newMemoryDraft() {
+  const defaults = memoryDefaults();
+  memoryState.draft = {
+    id: "",
+    content: "",
+    layer: defaults.layer,
+    category: "",
+    source: defaults.source,
+    importance: defaults.importance,
+    confidence: defaults.confidence,
+  };
+  memoryState.selectedId = "__draft__";
+  renderMemoryPage();
+  fields.memoryContent.focus();
+}
+
+function collectMemoryEditor() {
+  const payload = {
+    content: fields.memoryContent.value.trim(),
+    layer: fields.memoryLayer.value || memoryDefaults().layer,
+    category: fields.memoryCategory.value.trim(),
+    source: fields.memorySource.value.trim() || memoryDefaults().source,
+    importance: clampFloat(fields.memoryImportance.value, [0, 1]),
+    confidence: clampFloat(fields.memoryConfidence.value, [0, 1]),
+  };
+  if (memoryState.selectedId && memoryState.selectedId !== "__draft__") {
+    payload.id = memoryState.selectedId;
+  }
+  return payload;
+}
+
+async function saveMemoryEditor() {
+  const payload = collectMemoryEditor();
+  if (!payload.content) {
+    setError("记忆内容不能为空。");
+    return;
+  }
+  setError("");
+  try {
+    const result = await hostCall("memory.upsert", payload);
+    if (result.status === "loading" || result.status === "failed") {
+      setError(result.error || result.message || "记忆系统暂不可用。");
+      return;
+    }
+    const saved = result.memory || {};
+    memoryState.selectedId = saved.id || payload.id || "";
+    memoryState.draft = null;
+    await loadMemories();
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+async function deleteSelectedMemory() {
+  const record = selectedMemory();
+  if (!record || !record.id) {
+    return;
+  }
+  const confirmed = await confirmAction("确认删除这条记忆？", {
+    title: "删除记忆",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!confirmed) {
+    return;
+  }
+  setError("");
+  try {
+    const result = await hostCall("memory.delete", { id: record.id });
+    if (Array.isArray(result.failed) && result.failed.length) {
+      setError(result.failed[0].error || "记忆删除失败。");
+      return;
+    }
+    memoryState.selectedId = "";
+    await loadMemories();
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+function permissionInfo(permission) {
+  return request?.plugins?.permission_labels?.[permission] || {
+    group: "其他",
+    label: permission,
+  };
+}
+
+function initializePluginState() {
+  pluginState.enabledById = {};
+  pluginState.initialEnabledById = {};
+  (request.plugins?.items || []).forEach((plugin) => {
+    pluginState.enabledById[plugin.id] = Boolean(plugin.enabled || plugin.required);
+    pluginState.initialEnabledById[plugin.id] = Boolean(plugin.enabled || plugin.required);
+  });
+  pluginState.selectedId = request.plugins?.items?.[0]?.id || "";
+}
+
+function renderPluginPermissionFilter() {
+  const current = fields.pluginPermissionFilter.value;
+  fields.pluginPermissionFilter.textContent = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "全部权限";
+  fields.pluginPermissionFilter.append(all);
+  const permissions = new Set();
+  (request.plugins?.items || []).forEach((plugin) => {
+    (plugin.permissions || []).forEach((permission) => permissions.add(permission));
+  });
+  [...permissions].sort().forEach((permission) => {
+    const option = document.createElement("option");
+    option.value = permission;
+    option.textContent = permissionInfo(permission).label;
+    fields.pluginPermissionFilter.append(option);
+  });
+  fields.pluginPermissionFilter.value = current;
+}
+
+function pluginChanged(plugin) {
+  return pluginState.enabledById[plugin.id] !== pluginState.initialEnabledById[plugin.id];
+}
+
+function filteredPlugins() {
+  const query = fields.pluginSearch.value.trim().toLowerCase();
+  const status = fields.pluginStatusFilter.value;
+  const permission = fields.pluginPermissionFilter.value;
+  return (request.plugins?.items || []).filter((plugin) => {
+    const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+    const text = [plugin.id, plugin.name, plugin.author, plugin.description]
+      .join(" ")
+      .toLowerCase();
+    if (query && !text.includes(query)) {
+      return false;
+    }
+    if (permission && !(plugin.permissions || []).includes(permission)) {
+      return false;
+    }
+    if (status === "enabled" && !enabled) {
+      return false;
+    }
+    if (status === "disabled" && enabled) {
+      return false;
+    }
+    if (status === "required" && !plugin.required) {
+      return false;
+    }
+    if (status === "changed" && !pluginChanged(plugin)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function renderPluginStatus() {
+  const items = request.plugins?.items || [];
+  const enabled = items.filter((plugin) => pluginState.enabledById[plugin.id] || plugin.required).length;
+  const changed = items.filter(pluginChanged).length;
+  renderStrip(fields.pluginStatusStrip, [
+    { label: "全部", value: items.length },
+    { label: "已启用", value: enabled },
+    { label: "已禁用", value: Math.max(0, items.length - enabled) },
+    { label: "必需", value: items.filter((plugin) => plugin.required).length },
+    { label: "有改动", value: changed },
+  ]);
+}
+
+function setPluginEnabled(plugin, enabled) {
+  pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
+  renderPluginPage();
+}
+
+function renderPluginList() {
+  fields.pluginList.textContent = "";
+  const plugins = filteredPlugins();
+  if (!plugins.length) {
+    const item = document.createElement("p");
+    item.className = "empty-state";
+    item.textContent = "没有匹配的插件。";
+    fields.pluginList.append(item);
+    return;
+  }
+  plugins.forEach((plugin) => {
+    const row = document.createElement("div");
+    row.className = "plugin-card";
+    row.classList.toggle("is-selected", plugin.id === pluginState.selectedId);
+    row.classList.toggle("is-changed", pluginChanged(plugin));
+    row.addEventListener("click", () => {
+      pluginState.selectedId = plugin.id;
+      renderPluginPage();
+    });
+    const top = document.createElement("div");
+    top.className = "plugin-card-top";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+    toggle.disabled = Boolean(plugin.required);
+    toggle.addEventListener("click", (event) => event.stopPropagation());
+    toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
+    const title = document.createElement("strong");
+    title.textContent = plugin.name || plugin.id;
+    const version = document.createElement("span");
+    version.className = "card-meta";
+    version.textContent = `${plugin.author || "未知作者"} · ${plugin.version || "0.0.0"}`;
+    top.append(toggle, title, version);
+    const desc = document.createElement("p");
+    desc.className = "card-desc";
+    desc.textContent = compactText(plugin.description || "无描述", 96);
+    const chips = document.createElement("span");
+    chips.className = "chip-row";
+    (plugin.permissions || []).slice(0, 4).forEach((permission) => {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip";
+      chip.textContent = permissionInfo(permission).label;
+      chips.append(chip);
+    });
+    if (plugin.required) {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip is-locked";
+      chip.textContent = "必需";
+      chips.append(chip);
+    }
+    if (pluginChanged(plugin)) {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip is-pending";
+      chip.textContent = "需重启生效";
+      chips.append(chip);
+    }
+    row.append(top, desc, chips);
+    fields.pluginList.append(row);
+  });
+}
+
+function renderPluginDetail() {
+  const plugin = (request.plugins?.items || []).find((item) => item.id === pluginState.selectedId);
+  fields.pluginDetail.textContent = "";
+  if (!plugin) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "选择左侧插件查看详情。";
+    fields.pluginDetail.append(empty);
+    return;
+  }
+  const title = document.createElement("h2");
+  title.textContent = plugin.name || plugin.id;
+  const desc = document.createElement("p");
+  desc.className = "detail-desc";
+  desc.textContent = plugin.description || "无描述。";
+  const meta = document.createElement("dl");
+  meta.className = "detail-meta";
+  [
+    ["ID", plugin.id],
+    ["入口", plugin.entry || "未声明"],
+    ["来源", plugin.source || "未知"],
+    ["优先级", String(plugin.priority ?? "")],
+    ["版本", plugin.version || "0.0.0"],
+    ["作者", plugin.author || "未知"],
+    [
+      "当前状态",
+      pluginState.initialEnabledById[plugin.id] ? "已启用" : "已禁用",
+    ],
+    [
+      "保存后状态",
+      pluginState.enabledById[plugin.id] || plugin.required ? "已启用" : "已禁用",
+    ],
+  ].forEach(([label, value]) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    meta.append(dt, dd);
+  });
+
+  const groups = new Map();
+  (plugin.permissions || []).forEach((permission) => {
+    const info = permissionInfo(permission);
+    const list = groups.get(info.group) || [];
+    list.push(info.label);
+    groups.set(info.group, list);
+  });
+  const permissions = document.createElement("div");
+  permissions.className = "permission-groups";
+  if (!groups.size) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "未声明权限。";
+    permissions.append(none);
+  }
+  groups.forEach((labels, group) => {
+    const block = document.createElement("section");
+    const heading = document.createElement("h3");
+    heading.textContent = group;
+    const chips = document.createElement("div");
+    chips.className = "chip-row";
+    labels.forEach((label) => {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip";
+      chip.textContent = label;
+      chips.append(chip);
+    });
+    block.append(heading, chips);
+    permissions.append(block);
+  });
+  const note = document.createElement("p");
+  note.className = "page-note";
+  note.textContent = plugin.required
+    ? "必需插件由宿主锁定，不能关闭。"
+    : "此插件设置暂未迁移到 Tauri。启停变化保存后重启 Sakura 生效。";
+  fields.pluginDetail.append(title, desc, meta, permissions, note);
+}
+
+function renderPluginPage() {
+  renderPluginStatus();
+  renderPluginList();
+  renderPluginDetail();
+}
+
+function collectPluginSettings() {
+  const enabledById = {};
+  (request.plugins?.items || []).forEach((plugin) => {
+    enabledById[plugin.id] = plugin.required ? true : Boolean(pluginState.enabledById[plugin.id]);
+  });
+  return { enabled_by_id: enabledById };
+}
+
 function collectCharacterSettings() {
   const limits = request.limits;
   return {
@@ -809,6 +1546,7 @@ function collectSettings() {
     tts: collectTtsSettings(),
     system_extra: collectSystemExtraSettings(),
     memory: collectMemorySettings(),
+    plugins: collectPluginSettings(),
   };
 }
 
@@ -820,10 +1558,18 @@ async function load() {
   renderApiProfiles(request.api.profiles);
   renderModelSlots(request.api.model_selection);
   renderTtsProviders();
+  renderMemoryControls();
+  initializePluginState();
+  renderPluginPermissionFilter();
   enhanceSelect(fields.characterSelect);
   enhanceSelect(fields.visualEffectMode);
   enhanceSelect(fields.ttsProvider);
   enhanceSelect(fields.backchannelMode);
+  enhanceSelect(fields.memoryLayerFilter);
+  enhanceSelect(fields.memorySort);
+  enhanceSelect(fields.memoryLayer);
+  enhanceSelect(fields.pluginStatusFilter);
+  enhanceSelect(fields.pluginPermissionFilter);
 
   setNumericBounds(fields.checkInterval, request.limits.check_interval_minutes);
   setNumericBounds(fields.cooldown, request.limits.cooldown_minutes);
@@ -910,6 +1656,8 @@ async function load() {
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.ttsProvider);
   refreshSelect(fields.backchannelMode);
+  renderMemoryPage();
+  renderPluginPage();
 }
 
 fields.navItems.forEach((item) => {
@@ -947,6 +1695,23 @@ fields.resetThemeButton.addEventListener("click", () => {
 });
 fields.debugLogEnabled.addEventListener("change", syncDebugLogState);
 fields.bubbleAutoHide.addEventListener("change", syncBubbleState);
+let memorySearchTimer = null;
+fields.memorySearch.addEventListener("input", () => {
+  clearMemoryRetry();
+  window.clearTimeout(memorySearchTimer);
+  memorySearchTimer = window.setTimeout(loadMemories, 180);
+});
+fields.memoryLayerFilter.addEventListener("change", loadMemories);
+fields.memorySort.addEventListener("change", renderMemoryPage);
+fields.memoryAddButton.addEventListener("click", newMemoryDraft);
+fields.memoryRefreshButton.addEventListener("click", loadMemories);
+fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
+fields.memoryRevertButton.addEventListener("click", () => fillMemoryEditor(selectedMemory()));
+fields.memoryDeleteButton.addEventListener("click", deleteSelectedMemory);
+fields.memoryCurationEnabled.addEventListener("change", renderMemoryStatus);
+fields.pluginSearch.addEventListener("input", renderPluginPage);
+fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
+fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
 fields.saveButton.addEventListener("click", async () => {
   if (!request) {
     return;

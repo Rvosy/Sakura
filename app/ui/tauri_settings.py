@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import sys
+import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,14 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from app.agent.memory_curator import MemoryCurationSettings
+from app.agent.memory import (
+    DEFAULT_MEMORY_CONFIDENCE,
+    DEFAULT_MEMORY_IMPORTANCE,
+    DEFAULT_MEMORY_LAYER,
+    DEFAULT_MEMORY_SOURCE,
+    MEMORY_LAYER_LABELS,
+    MEMORY_LAYERS,
+)
 from app.agent.mcp import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import (
     MAX_CONFIGURABLE_AGENT_STEPS_PER_TURN,
@@ -62,6 +71,21 @@ from app.config.settings_service import (
     StartupSettings,
 )
 from app.llm.api_client import ApiSettings
+from app.plugins.discovery import PluginDiscovery
+from app.plugins.models import (
+    PERMISSION_CHAT_UI,
+    PERMISSION_CONTEXT_PROVIDER,
+    PERMISSION_EVENT_APP,
+    PERMISSION_EVENT_CHARACTER,
+    PERMISSION_EVENT_MESSAGE,
+    PERMISSION_EVENT_TTS,
+    PERMISSION_MOBILE_CHAT,
+    PERMISSION_PROMPT_PATCH,
+    PERMISSION_RENDERER,
+    PERMISSION_SETTINGS_PANEL,
+    PERMISSION_TOOL,
+    PERMISSION_TOOLS_TAB,
+)
 from app.ui.control_panel_layout import (
     DEFAULT_BUBBLE_HEIGHT,
     DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
@@ -120,6 +144,23 @@ TAURI_SETTINGS_PROTOCOL_VERSION = 2
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
 TAURI_LAYOUT_PREVIEW_MARKER = "@@SAKURA_LAYOUT_PREVIEW@@"
 TAURI_SETTINGS_RESULT_MARKER = "@@SAKURA_SETTINGS_RESULT@@"
+TAURI_SETTINGS_RPC_MARKER = "@@SAKURA_SETTINGS_RPC@@"
+TAURI_SETTINGS_RPC_RESULT_MARKER = "@@SAKURA_SETTINGS_RPC_RESULT@@"
+
+PLUGIN_PERMISSION_LABELS: dict[str, dict[str, str]] = {
+    PERMISSION_TOOL: {"group": "工具", "label": "Agent 工具"},
+    PERMISSION_TOOLS_TAB: {"group": "UI", "label": "工具页"},
+    PERMISSION_SETTINGS_PANEL: {"group": "UI", "label": "Qt 设置面板"},
+    PERMISSION_CHAT_UI: {"group": "UI", "label": "聊天 UI"},
+    PERMISSION_PROMPT_PATCH: {"group": "上下文", "label": "提示词补丁"},
+    PERMISSION_CONTEXT_PROVIDER: {"group": "上下文", "label": "动态上下文"},
+    PERMISSION_MOBILE_CHAT: {"group": "移动端", "label": "移动聊天"},
+    PERMISSION_RENDERER: {"group": "渲染器", "label": "角色渲染器"},
+    PERMISSION_EVENT_APP: {"group": "事件", "label": "应用事件"},
+    PERMISSION_EVENT_MESSAGE: {"group": "事件", "label": "消息事件"},
+    PERMISSION_EVENT_TTS: {"group": "事件", "label": "语音事件"},
+    PERMISSION_EVENT_CHARACTER: {"group": "事件", "label": "角色事件"},
+}
 
 
 def _default_api_settings() -> ApiSettings:
@@ -174,6 +215,11 @@ class TauriSystemExtraResult:
 
 
 @dataclass(frozen=True)
+class TauriPluginResult:
+    enabled_by_id: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class TauriSettingsResult:
     screen_awareness: ScreenAwarenessSettings
     mcp: MCPRuntimeSettings
@@ -185,6 +231,7 @@ class TauriSettingsResult:
     tts: TauriTtsResult = field(default_factory=TauriTtsResult)
     system_extra: TauriSystemExtraResult = field(default_factory=TauriSystemExtraResult)
     memory_curation: MemoryCurationSettings = field(default_factory=MemoryCurationSettings)
+    plugins: TauriPluginResult = field(default_factory=TauriPluginResult)
 
 
 def tauri_settings_trial_enabled(environ: Mapping[str, str] | None = None) -> bool:
@@ -245,6 +292,7 @@ def build_tauri_screen_awareness_request(
 def build_tauri_settings_request(
     screen_awareness_settings: ScreenAwarenessSettings,
     *,
+    base_dir: Path | None = None,
     mcp_settings: MCPRuntimeSettings | None = None,
     runtime_loop_settings: RuntimeLoopSettings | None = None,
     debug_log_settings: DebugLogSettings | None = None,
@@ -314,6 +362,7 @@ def build_tauri_settings_request(
             backchannel_settings or BackchannelSettings(),
         ),
         "memory": _memory_to_mapping(memory_curation_settings or MemoryCurationSettings()),
+        "plugins": _plugins_to_mapping(base_dir),
         "theme_defaults": _theme_to_mapping(DEFAULT_THEME_SETTINGS),
         "theme_fields": [
             {"id": field, "label": label}
@@ -479,6 +528,11 @@ def parse_tauri_settings_payload(
     memory = raw.get("memory")
     if not isinstance(memory, dict):
         raise ValueError("Tauri 设置结果缺少记忆配置。")
+    plugins = raw.get("plugins")
+    if plugins is None:
+        plugins = {}
+    if not isinstance(plugins, dict):
+        raise ValueError("Tauri 设置结果字段无效：plugins")
     subtitle_typing_interval_ms, reply_segment_pause_ms = normalize_subtitle_display_speed(
         _required_int(ui, "subtitle_typing_interval_ms"),
         _required_int(ui, "reply_segment_pause_ms"),
@@ -515,6 +569,7 @@ def parse_tauri_settings_payload(
         tts=_tts_from_mapping_required(tts),
         system_extra=_system_extra_from_mapping_required(system_extra),
         memory_curation=_memory_from_mapping_required(memory),
+        plugins=_plugins_from_mapping_required(plugins),
     )
 
 
@@ -551,6 +606,7 @@ class TauriSettingsProcess(QObject):
         launch_at_login_supported: bool = True,
         backchannel_settings: BackchannelSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
+        memory_store: Any | None = None,
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
@@ -580,6 +636,7 @@ class TauriSettingsProcess(QObject):
         self.launch_at_login_supported = bool(launch_at_login_supported)
         self.backchannel_settings = backchannel_settings or BackchannelSettings()
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
+        self.memory_store = memory_store
         self.model = model
         self.parent_widget = parent_widget
         self._process: QProcess | None = None
@@ -649,6 +706,7 @@ class TauriSettingsProcess(QObject):
     def _build_request(self) -> dict[str, Any]:
         return build_tauri_settings_request(
             self.settings,
+            base_dir=self.base_dir,
             mcp_settings=self.mcp_settings,
             runtime_loop_settings=self.runtime_loop_settings,
             debug_log_settings=self.debug_log_settings,
@@ -680,9 +738,9 @@ class TauriSettingsProcess(QObject):
         if process is None or self._done:
             return
         try:
-            if process.write(self._request_payload) < 0:
+            payload = self._request_payload + b"\n"
+            if process.write(payload) < 0:
                 raise OSError("write returned a negative byte count")
-            process.closeWriteChannel()
         except (OSError, RuntimeError) as exc:
             self._done = True
             self.failed.emit(f"Tauri 设置请求发送失败：{exc}")
@@ -733,6 +791,10 @@ class TauriSettingsProcess(QObject):
                 if isinstance(data, dict):
                     self.layout_preview.emit(data)
                 continue
+            if stripped.startswith(TAURI_SETTINGS_RPC_MARKER):
+                payload = stripped[len(TAURI_SETTINGS_RPC_MARKER):]
+                self._handle_rpc_request(payload)
+                continue
             if not stripped.startswith(TAURI_SETTINGS_RESULT_MARKER):
                 continue
             payload = stripped[len(TAURI_SETTINGS_RESULT_MARKER):]
@@ -747,6 +809,108 @@ class TauriSettingsProcess(QObject):
                 continue
             self._done = True
             self.completed.emit(result)
+
+    def _handle_rpc_request(self, payload: str) -> None:
+        try:
+            request = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            self._send_rpc_response("", ok=False, error=f"RPC 请求格式无效：{exc}")
+            return
+        if not isinstance(request, dict):
+            self._send_rpc_response("", ok=False, error="RPC 请求必须是对象。")
+            return
+        request_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params", {})
+        if not isinstance(request_id, str) or not request_id:
+            self._send_rpc_response("", ok=False, error="RPC 请求缺少 id。")
+            return
+        if not isinstance(method, str) or not method:
+            self._send_rpc_response(request_id, ok=False, error="RPC 请求缺少 method。")
+            return
+        if not isinstance(params, dict):
+            self._send_rpc_response(request_id, ok=False, error="RPC params 必须是对象。")
+            return
+        try:
+            result = self._dispatch_rpc(method, params)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+        self._send_rpc_response(request_id, ok=True, result=result)
+
+    def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if not method.startswith("memory."):
+            raise ValueError(f"未知 Tauri RPC 方法：{method}")
+        memory_store = self.memory_store
+        if memory_store is None:
+            return {
+                "status": "failed",
+                "message": "长期记忆系统不可用。",
+                "error": "memory store is not available",
+                "memories": [],
+            }
+        if method == "memory.search":
+            arguments = dict(params)
+            arguments.setdefault("limit", 120)
+            return memory_store.search_memory(arguments, wait=False)
+        if method == "memory.upsert":
+            arguments = dict(params)
+            memory_id = str(arguments.get("id") or "").strip()
+            if memory_id:
+                arguments["id"] = memory_id
+                return memory_store.update_memory(arguments, allow_sensitive=True, wait=False)
+            return memory_store.create_memory(arguments, allow_sensitive=True, wait=False)
+        if method == "memory.delete":
+            ids = params.get("ids")
+            if ids is None and params.get("id") is not None:
+                ids = [params.get("id")]
+            if not isinstance(ids, list):
+                raise ValueError("memory.delete 需要 id 或 ids。")
+            deleted: list[dict[str, Any]] = []
+            failed: list[dict[str, str]] = []
+            for raw_id in ids:
+                memory_id = str(raw_id or "").strip()
+                if not memory_id:
+                    continue
+                result = memory_store.forget_memory({"id": memory_id}, wait=False)
+                if result.get("status") in {"loading", "failed"}:
+                    failed.append(
+                        {
+                            "id": memory_id,
+                            "error": str(result.get("error") or result.get("message") or "删除失败"),
+                        }
+                    )
+                    continue
+                deleted.append(result.get("memory") or result.get("forgotten") or {"id": memory_id})
+            return {"deleted": deleted, "failed": failed, "ok": not failed}
+        raise ValueError(f"未知 Tauri RPC 方法：{method}")
+
+    def _send_rpc_response(
+        self,
+        request_id: str,
+        *,
+        ok: bool,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        process = self._process
+        if process is None or self._done:
+            return
+        payload = {"id": request_id, "ok": bool(ok)}
+        if ok:
+            payload["result"] = result or {}
+        else:
+            payload["error"] = error or "RPC 请求失败。"
+        line = (
+            TAURI_SETTINGS_RPC_RESULT_MARKER
+            + json.dumps(payload, ensure_ascii=False, default=str)
+            + "\n"
+        )
+        try:
+            process.write(line.encode("utf-8"))
+        except RuntimeError:
+            return
 
     def _handle_error(self, error: QProcess.ProcessError) -> None:
         if self._done:
@@ -1017,7 +1181,46 @@ def _memory_to_mapping(settings: MemoryCurationSettings) -> dict[str, object]:
             "enabled": bool(settings.enabled),
             "trigger_turns": _clamp_int_value(settings.trigger_turns, 1, 50),
             "backfill_limit": max(1, int(settings.backfill_limit)),
-        }
+        },
+        "layers": [
+            {"id": layer, "label": MEMORY_LAYER_LABELS.get(layer, layer)}
+            for layer in MEMORY_LAYERS
+        ],
+        "defaults": {
+            "layer": DEFAULT_MEMORY_LAYER,
+            "source": DEFAULT_MEMORY_SOURCE,
+            "importance": DEFAULT_MEMORY_IMPORTANCE,
+            "confidence": DEFAULT_MEMORY_CONFIDENCE,
+        },
+        "page_size": 120,
+    }
+
+
+def _plugins_to_mapping(base_dir: Path | None) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    if base_dir is not None:
+        for spec in PluginDiscovery(Path(base_dir)).discover():
+            plugin_id = str(spec.plugin_id or "").strip()
+            if not plugin_id:
+                continue
+            items.append(
+                {
+                    "id": plugin_id,
+                    "name": str(spec.name or plugin_id),
+                    "author": str(spec.author or ""),
+                    "version": str(spec.version or "0.0.0"),
+                    "description": str(spec.description or ""),
+                    "enabled": bool(spec.enabled),
+                    "required": bool(spec.required),
+                    "permissions": list(spec.permissions),
+                    "source": str(spec.source or ""),
+                    "priority": int(spec.priority),
+                    "entry": str(spec.entry or ""),
+                }
+            )
+    return {
+        "items": items,
+        "permission_labels": PLUGIN_PERMISSION_LABELS,
     }
 
 
@@ -1163,6 +1366,22 @@ def _memory_from_mapping_required(mapping: dict[str, Any]) -> MemoryCurationSett
         trigger_turns=_clamp_int_value(_required_int(curation, "trigger_turns"), 1, 50),
         backfill_limit=max(1, _required_int(curation, "backfill_limit")),
     )
+
+
+def _plugins_from_mapping_required(mapping: dict[str, Any]) -> TauriPluginResult:
+    raw = mapping.get("enabled_by_id", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("Tauri 设置结果字段无效：plugins.enabled_by_id")
+    enabled_by_id: dict[str, bool] = {}
+    for plugin_id, enabled in raw.items():
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise ValueError("Tauri 设置结果字段无效：plugins.enabled_by_id")
+        if not isinstance(enabled, bool):
+            raise ValueError(f"Tauri 设置结果字段无效：plugins.enabled_by_id.{plugin_id}")
+        enabled_by_id[plugin_id.strip()] = enabled
+    return TauriPluginResult(enabled_by_id=enabled_by_id)
 
 
 def _normalized_request_api_profiles(

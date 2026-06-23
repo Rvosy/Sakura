@@ -20,7 +20,7 @@
           <button class="nav-item" type="button" data-page="voice">语音</button>
           <button class="nav-item" type="button" data-page="privacy">隐私</button>
           <button class="nav-item" type="button" data-page="tools">工具</button>
-          <button class="nav-item is-disabled" type="button" disabled>插件</button>
+          <button class="nav-item" type="button" data-page="plugins">插件</button>
           <button class="nav-item" type="button" data-page="system">系统</button>
           <button class="nav-item" type="button" data-page="memory">记忆</button>
         </nav>
@@ -124,6 +124,27 @@
           <div class="form-row">
             <label for="toolCallsPerTurn">整轮工具数</label>
             <input id="toolCallsPerTurn" type="number" step="1" />
+          </div>
+        </section>
+
+        <section id="page-plugins" class="settings-page admin-page">
+          <div id="pluginStatusStrip" class="admin-strip"></div>
+          <div class="admin-toolbar">
+            <input id="pluginSearch" class="admin-search" type="text" placeholder="搜索插件、作者、ID" />
+            <select id="pluginStatusFilter">
+              <option value="all">全部状态</option>
+              <option value="enabled">已启用</option>
+              <option value="disabled">已禁用</option>
+              <option value="required">必需</option>
+              <option value="changed">有改动</option>
+            </select>
+            <select id="pluginPermissionFilter">
+              <option value="">全部权限</option>
+            </select>
+          </div>
+          <div class="admin-workbench">
+            <div id="pluginList" class="admin-list"></div>
+            <aside id="pluginDetail" class="admin-detail"></aside>
           </div>
         </section>
 
@@ -328,21 +349,65 @@
           </fieldset>
         </section>
 
-        <section id="page-memory" class="settings-page">
-          <fieldset class="settings-group">
-            <legend>自动整理</legend>
-            <div class="form-row">
-              <label>状态</label>
+        <section id="page-memory" class="settings-page admin-page">
+          <div class="admin-topline">
+            <div id="memoryStatusStrip" class="admin-strip"></div>
+            <div class="admin-mini-panel">
               <label class="check-control">
                 <input id="memoryCurationEnabled" type="checkbox" />
-                <span>启用自动整理</span>
+                <span>自动整理</span>
+              </label>
+              <label class="compact-number" for="memoryTriggerTurns">
+                <span>频率</span>
+                <input id="memoryTriggerTurns" type="number" step="1" />
               </label>
             </div>
-            <div class="form-row">
-              <label for="memoryTriggerTurns">整理频率</label>
-              <input id="memoryTriggerTurns" type="number" step="1" />
-            </div>
-          </fieldset>
+          </div>
+          <div class="admin-toolbar">
+            <input id="memorySearch" class="admin-search" type="text" placeholder="搜索内容、ID、分类、来源" />
+            <select id="memoryLayerFilter"></select>
+            <select id="memorySort">
+              <option value="updated_desc">最近更新</option>
+              <option value="importance_desc">重要性</option>
+              <option value="confidence_desc">置信度</option>
+            </select>
+            <button id="memoryAddButton" class="secondary-button" type="button">新增记忆</button>
+            <button id="memoryRefreshButton" class="secondary-button" type="button">刷新</button>
+          </div>
+          <div class="admin-workbench">
+            <div id="memoryList" class="admin-list"></div>
+            <aside class="admin-detail">
+              <textarea id="memoryContent" class="memory-editor" placeholder="选择左侧记忆后编辑"></textarea>
+              <div class="detail-grid">
+                <label>
+                  <span>层级</span>
+                  <select id="memoryLayer"></select>
+                </label>
+                <label>
+                  <span>分类</span>
+                  <input id="memoryCategory" type="text" />
+                </label>
+                <label>
+                  <span>来源</span>
+                  <input id="memorySource" type="text" />
+                </label>
+                <label>
+                  <span>重要性</span>
+                  <input id="memoryImportance" type="number" min="0" max="1" step="0.05" />
+                </label>
+                <label>
+                  <span>置信度</span>
+                  <input id="memoryConfidence" type="number" min="0" max="1" step="0.05" />
+                </label>
+              </div>
+              <dl id="memoryMeta" class="detail-meta"></dl>
+              <div class="detail-actions">
+                <button id="memorySaveButton" type="button">保存记忆</button>
+                <button id="memoryRevertButton" class="secondary-button" type="button">还原</button>
+                <button id="memoryDeleteButton" class="danger-button" type="button">删除</button>
+              </div>
+            </aside>
+          </div>
         </section>
         </div>
 

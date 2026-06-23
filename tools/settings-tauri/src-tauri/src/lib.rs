@@ -1,17 +1,92 @@
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{State, Window};
 
 /// Lines on stdout that start with this marker carry a live layout preview for
 /// the host (Python) to apply immediately. Anything else on stdout is ignored.
 const PREVIEW_MARKER: &str = "@@SAKURA_LAYOUT_PREVIEW@@";
 const RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RESULT@@";
+const RPC_MARKER: &str = "@@SAKURA_SETTINGS_RPC@@";
+const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
 const PROTOCOL_VERSION: u8 = 2;
+static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct AppState {
     request: Value,
+    rpc: HostRpc,
+}
+
+#[derive(Clone)]
+struct HostRpc {
+    pending: Arc<Mutex<HashMap<String, mpsc::Sender<RpcResponse>>>>,
+}
+
+struct RpcResponse {
+    id: String,
+    ok: bool,
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+impl HostRpc {
+    fn new() -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        let id = next_rpc_id();
+        let (tx, rx) = mpsc::channel();
+        self.pending
+            .lock()
+            .map_err(|_| "RPC pending map is poisoned".to_string())?
+            .insert(id.clone(), tx);
+
+        let payload = json!({
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let line = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+        let write_result = (|| -> Result<(), String> {
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "{RPC_MARKER}{line}").map_err(|error| error.to_string())?;
+            out.flush().map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            self.remove_pending(&id);
+            return Err(error);
+        }
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(response) if response.ok => Ok(response.result.unwrap_or(Value::Null)),
+            Ok(response) => Err(response
+                .error
+                .unwrap_or_else(|| "host RPC returned an error".to_string())),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.remove_pending(&id);
+                Err("host RPC timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.remove_pending(&id);
+                Err("host RPC channel disconnected".to_string())
+            }
+        }
+    }
+
+    fn remove_pending(&self, id: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(id);
+        }
+    }
 }
 
 /// Hand the request JSON to the frontend verbatim.
@@ -69,13 +144,22 @@ fn preview_layout(layout: Value) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn host_call(
+    method: String,
+    params: Value,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    state.rpc.call(&method, params)
+}
+
+#[tauri::command]
 fn cancel_settings(window: Window) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
 
 pub fn run() {
-    let request = match read_request_from_stdin() {
-        Ok(request) => request,
+    let (request, rpc) = match read_request_and_spawn_rpc_reader() {
+        Ok(state) => state,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(2);
@@ -83,25 +167,112 @@ pub fn run() {
     };
 
     tauri::Builder::default()
-        .manage(AppState { request })
+        .manage(AppState { request, rpc })
         .invoke_handler(tauri::generate_handler![
             load_request,
             save_settings,
             preview_layout,
+            host_call,
             cancel_settings
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Sakura settings window");
 }
 
-fn read_request_from_stdin() -> Result<Value, String> {
+fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
+    let mut reader = BufReader::new(std::io::stdin());
     let mut data = String::new();
-    std::io::stdin()
-        .read_to_string(&mut data)
+    let bytes = reader
+        .read_line(&mut data)
         .map_err(|error| error.to_string())?;
-    let value: Value = serde_json::from_str(&data).map_err(|error| error.to_string())?;
+    if bytes == 0 {
+        return Err("request payload is empty".to_string());
+    }
+    let value: Value = serde_json::from_str(data.trim_end()).map_err(|error| error.to_string())?;
     if !matches!(value, Value::Object(_)) {
         return Err("request payload must be a JSON object".to_string());
     }
-    Ok(value)
+    let rpc = HostRpc::new();
+    let pending = rpc.pending.clone();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Some(response) = parse_rpc_response_line(line.trim_end()) {
+                        if let Ok(mut pending) = pending.lock() {
+                            if let Some(sender) = pending.remove(&response.id) {
+                                let _ = sender.send(response);
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok((value, rpc))
+}
+
+fn parse_rpc_response_line(line: &str) -> Option<RpcResponse> {
+    let payload = line.strip_prefix(RPC_RESULT_MARKER)?;
+    let value: Value = serde_json::from_str(payload).ok()?;
+    let id = value.get("id")?.as_str()?.to_string();
+    let ok = value.get("ok")?.as_bool()?;
+    let result = value.get("result").cloned();
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Some(RpcResponse {
+        id,
+        ok,
+        result,
+        error,
+    })
+}
+
+fn next_rpc_id() -> String {
+    let counter = RPC_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("settings-{nanos}-{counter}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_jsonl_rpc_response_with_matching_id() {
+        let line = r#"@@SAKURA_SETTINGS_RPC_RESULT@@{"id":"rpc-1","ok":true,"result":{"count":1}}"#;
+
+        let response = parse_rpc_response_line(line).expect("response should parse");
+
+        assert_eq!(response.id, "rpc-1");
+        assert!(response.ok);
+        assert_eq!(response.result.unwrap()["count"], 1);
+    }
+
+    #[test]
+    fn ignores_invalid_rpc_response_lines() {
+        assert!(parse_rpc_response_line("plain log").is_none());
+        assert!(parse_rpc_response_line("@@SAKURA_SETTINGS_RPC_RESULT@@not-json").is_none());
+        assert!(parse_rpc_response_line(r#"@@SAKURA_SETTINGS_RPC_RESULT@@{"id":"rpc-1"}"#).is_none());
+    }
+
+    #[test]
+    fn parses_jsonl_rpc_error_response() {
+        let line = r#"@@SAKURA_SETTINGS_RPC_RESULT@@{"id":"rpc-2","ok":false,"error":"failed"}"#;
+
+        let response = parse_rpc_response_line(line).expect("response should parse");
+
+        assert_eq!(response.id, "rpc-2");
+        assert!(!response.ok);
+        assert_eq!(response.error.as_deref(), Some("failed"));
+    }
 }

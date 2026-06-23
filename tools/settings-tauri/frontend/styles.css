@@ -223,6 +223,10 @@ body {
   scrollbar-color: var(--sakura-border) transparent;
 }
 
+.page-scroll.is-admin-active {
+  overflow: hidden;
+}
+
 .page-scroll::-webkit-scrollbar {
   width: 10px;
 }
@@ -244,6 +248,16 @@ body {
   display: none;
   gap: 14px;
   max-width: 720px;
+}
+
+.settings-page.admin-page {
+  max-width: none;
+}
+
+.settings-page.admin-page.is-active {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-page.is-active {
@@ -674,6 +688,344 @@ input[type="checkbox"]:disabled + span {
   color: var(--sakura-muted-text);
 }
 
+/* ---------- 记忆 / 插件管理台 ---------- */
+
+.admin-page {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.admin-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.admin-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.status-chip,
+.permission-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--tint-faint);
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.permission-chip.is-locked {
+  color: var(--sakura-accent);
+  background: color-mix(in srgb, var(--sakura-accent) 10%, var(--surface-raised));
+}
+
+.permission-chip.is-pending {
+  color: var(--sakura-primary);
+  border-color: color-mix(in srgb, var(--sakura-primary) 50%, var(--sakura-border));
+}
+
+.admin-mini-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.compact-number {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.compact-number input {
+  width: 72px;
+  max-width: 72px;
+  padding: 7px 8px;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-search {
+  flex: 1 1 260px;
+  max-width: none !important;
+}
+
+.admin-toolbar .custom-select {
+  flex: 0 0 160px;
+}
+
+.admin-workbench {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.1fr);
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.admin-list,
+.admin-detail {
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--sakura-panel-bg));
+}
+
+.admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.admin-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.memory-card,
+.plugin-card {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  padding: 11px 12px;
+  text-align: left;
+  box-shadow: none;
+}
+
+.memory-card {
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.35;
+  overflow: visible;
+  white-space: normal;
+}
+
+.plugin-card {
+  cursor: pointer;
+}
+
+.memory-card:hover,
+.plugin-card:hover {
+  border-color: color-mix(in srgb, var(--sakura-primary) 45%, var(--sakura-border));
+  box-shadow: var(--shadow-pop);
+}
+
+.memory-card.is-selected,
+.plugin-card.is-selected {
+  border-color: var(--sakura-primary);
+  background: color-mix(in srgb, var(--sakura-primary) 9%, var(--surface-raised));
+}
+
+.memory-card.is-core {
+  border-color: color-mix(in srgb, var(--sakura-accent) 55%, var(--sakura-border));
+}
+
+.plugin-card.is-changed {
+  border-style: dashed;
+}
+
+.plugin-card-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+
+.plugin-card-top input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--sakura-primary);
+}
+
+.memory-card strong,
+.plugin-card strong {
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+}
+
+.card-meta,
+.card-desc {
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.card-desc {
+  margin: 0;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memory-editor {
+  width: 100%;
+  max-width: none;
+  height: clamp(160px, 28vh, 240px);
+  min-height: 160px;
+  resize: none;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.detail-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-grid input,
+.detail-grid select,
+.detail-grid .custom-select {
+  max-width: none;
+}
+
+.detail-meta {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 0;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+}
+
+.detail-meta dt {
+  color: var(--sakura-secondary-text);
+  font-weight: 700;
+}
+
+.detail-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.danger-button {
+  border-color: color-mix(in srgb, var(--sakura-accent) 55%, var(--sakura-border));
+  color: var(--sakura-accent);
+}
+
+.admin-detail h2 {
+  margin: 0;
+  color: var(--sakura-text);
+  font-size: 17px;
+}
+
+.detail-desc {
+  margin: 0;
+  color: var(--sakura-muted-text);
+  font-size: 13px;
+}
+
+.permission-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.permission-groups section {
+  display: grid;
+  gap: 7px;
+}
+
+.permission-groups h3 {
+  margin: 0;
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+}
+
+.empty-state {
+  margin: 0;
+  padding: 12px;
+  color: var(--sakura-muted-text);
+  font-size: 13px;
+}
+
+/* ---------- 内置确认弹窗 ---------- */
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--sakura-text) 22%, transparent);
+}
+
+.confirm-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(360px, 100%);
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-card);
+  padding: 18px;
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  color: var(--sakura-text);
+  font-size: 16px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--sakura-secondary-text);
+  font-size: 13.5px;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* ---------- 提示与错误 ---------- */
 
 .hint,
@@ -818,5 +1170,30 @@ button:focus-visible,
     grid-template-columns: 1fr;
     gap: 6px;
     align-items: start;
+  }
+
+  .admin-topline,
+  .admin-workbench,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-mini-panel {
+    justify-content: space-between;
+  }
+
+  .admin-list,
+  .admin-detail {
+    max-height: min(420px, 55vh);
+  }
+
+  .page-scroll.is-admin-active {
+    overflow-y: auto;
+  }
+
+  .settings-page.admin-page.is-active,
+  .admin-workbench {
+    height: auto;
+    overflow: visible;
   }
 }
