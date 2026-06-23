@@ -81,7 +81,11 @@ from app.platforms.launch_at_login import (
     is_launch_at_login_supported,
     launch_at_login_platform_text,
 )
-from app.plugins.models import SettingsPanelContribution, ToolsTabContribution
+from app.plugins.models import (
+    PluginSettingsContribution,
+    SettingsPanelContribution,
+    ToolsTabContribution,
+)
 from app.ui.control_panel_layout import (
     DEFAULT_BUBBLE_HEIGHT,
     DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
@@ -909,7 +913,11 @@ class PluginSettingsPage:
     def __init__(self, dialog: Any) -> None:
         self.dialog = dialog
 
-    def build(self, settings_panel_contributions: list[SettingsPanelContribution]) -> QWidget:
+    def build(
+        self,
+        settings_panel_contributions: list[SettingsPanelContribution],
+        plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
+    ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
         tab.setObjectName("settingsPluginTab")
@@ -943,7 +951,11 @@ class PluginSettingsPage:
             owner._populate_plugin_table_row(row, spec)
         owner.plugin_table.resizeRowsToContents()
 
-        detail_panel = self._build_detail_panel(tab, settings_panel_contributions)
+        detail_panel = self._build_detail_panel(
+            tab,
+            settings_panel_contributions,
+            plugin_settings_contributions or [],
+        )
         detail_panel.setMinimumWidth(260)
         splitter = QSplitter(Qt.Orientation.Horizontal, tab)
         splitter.setObjectName("pluginManagerSplitter")
@@ -968,6 +980,7 @@ class PluginSettingsPage:
         self,
         parent: QWidget,
         settings_panel_contributions: list[SettingsPanelContribution],
+        plugin_settings_contributions: list[PluginSettingsContribution],
     ) -> QWidget:
         owner = self.dialog
         panel = QWidget(parent)
@@ -1001,7 +1014,7 @@ class PluginSettingsPage:
         # 详细设置改为按钮触发的独立对话框：启停页保持聚焦，插件设置控件在独立窗口
         # 里整宽展示并可滚动，避免嵌套挤压。这里只按 plugin_id 暂存贡献，按需构建。
         owner._plugin_settings_contributions_by_id = self._group_settings_panels(
-            settings_panel_contributions
+            [*settings_panel_contributions, *plugin_settings_contributions]
         )
         owner.plugin_open_settings_button = QPushButton("打开设置…", panel)
         owner.plugin_open_settings_button.setObjectName("pluginOpenSettingsButton")
@@ -1016,9 +1029,9 @@ class PluginSettingsPage:
 
     @staticmethod
     def _group_settings_panels(
-        contributions: list[SettingsPanelContribution],
-    ) -> dict[str, list[SettingsPanelContribution]]:
-        grouped: dict[str, list[SettingsPanelContribution]] = {}
+        contributions: list[SettingsPanelContribution | PluginSettingsContribution],
+    ) -> dict[str, list[SettingsPanelContribution | PluginSettingsContribution]]:
+        grouped: dict[str, list[SettingsPanelContribution | PluginSettingsContribution]] = {}
         for contribution in contributions:
             plugin_id = contribution.plugin_id.strip()
             if not plugin_id:

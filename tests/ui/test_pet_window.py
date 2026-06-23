@@ -4209,6 +4209,7 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
     from app.ui.tauri_settings import (
         TauriApiResult,
         TauriCharacterResult,
+        TauriPluginResult,
         TauriSettingsResult,
         TauriSystemBasicResult,
         TauriSystemExtraResult,
@@ -5068,16 +5069,42 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
     assert result.memory_curation.trigger_turns == 50
 
 
+def test_tauri_settings_result_parser_accepts_hidden_empty_tts_config_path() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["tts"] = {
+        "enabled": True,
+        "provider": "gpt-sovits",
+        "api_url": "http://127.0.0.1:9880/tts",
+        "work_dir": "tts/g50",
+        "python_path": "",
+        "tts_config_path": "",
+        "timeout_seconds": 60,
+    }
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.tts.provider == "gpt-sovits"
+    assert result.tts.work_dir == "tts/g50"
+    assert result.tts.tts_config_path == ""
+
+
 def test_tauri_settings_result_parser_reads_plugin_enabled_overrides() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
     from app.ui.theme import theme_to_mapping
 
     payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
-    payload["plugins"] = {"enabled_by_id": {"demo": False, "required": True}}
+    payload["plugins"] = {
+        "enabled_by_id": {"demo": False, "required": True},
+        "settings_by_id": {"demo": {"main": {"enabled": True}}},
+    }
 
     result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
 
     assert result.plugins.enabled_by_id == {"demo": False, "required": True}
+    assert result.plugins.settings_by_id == {"demo": {"main": {"enabled": True}}}
 
 
 def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
@@ -5140,11 +5167,48 @@ def test_tauri_settings_request_includes_theme_colors() -> None:
     assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
 
 
-def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
+def test_tauri_settings_request_includes_tts_provider_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings
     from app.ui.tauri_settings import build_tauri_settings_request
 
-    root = _ui_runtime_root("tauri_request_plugins")
-    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
+    root = _ui_runtime_root("tauri_request_tts_defaults")
+    gpt_work_dir = root / "tts" / "g50"
+    genie_work_dir = root / "tts" / "cpu"
+
+    def fake_default_provider_bundle_work_dir(
+        provider: str,
+        base_dir: Path,
+        *,
+        gpus: object = None,
+    ) -> Path | None:
+        assert base_dir == root
+        assert gpus == []
+        return {
+            "gpt-sovits": gpt_work_dir,
+            "genie-tts": genie_work_dir,
+        }.get(provider)
+
+    def fake_default_provider_bundle_notice(
+        provider: str,
+        base_dir: Path,
+        *,
+        gpus: object = None,
+    ) -> str:
+        assert base_dir == root
+        assert gpus == []
+        return "下载错了" if provider == "gpt-sovits" else ""
+
+    monkeypatch.setattr(tauri_settings, "list_nvidia_gpus", lambda: [])
+    monkeypatch.setattr(
+        tauri_settings,
+        "default_provider_bundle_work_dir",
+        fake_default_provider_bundle_work_dir,
+    )
+    monkeypatch.setattr(
+        tauri_settings,
+        "default_provider_bundle_notice",
+        fake_default_provider_bundle_notice,
+    )
 
     request = build_tauri_settings_request(
         ScreenAwarenessSettings(),
@@ -5152,13 +5216,49 @@ def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> 
         nonce="nonce",
     )
 
+    defaults = request["tts"]["provider_defaults"]
+    assert defaults["gpt-sovits"]["api_url"] == "http://127.0.0.1:9880/tts"
+    assert defaults["gpt-sovits"]["work_dir"] == str(gpt_work_dir)
+    assert defaults["gpt-sovits"]["python_path"] == str(gpt_work_dir / "runtime" / "python.exe")
+    assert defaults["gpt-sovits"]["notice"] == "下载错了"
+    assert defaults["genie-tts"]["api_url"] == "http://127.0.0.1:9881/"
+    assert defaults["genie-tts"]["work_dir"] == str(genie_work_dir)
+    assert defaults["genie-tts"]["notice"] == ""
+    assert defaults["custom-gpt-sovits"]["work_dir"] == ""
+    assert defaults["custom-gpt-sovits"]["notice"] == ""
+
+
+def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+    from app.plugins.models import PluginSettingsContribution, PluginSettingsField
+
+    root = _ui_runtime_root("tauri_request_plugins")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        base_dir=root,
+        plugin_settings_contributions=[
+            PluginSettingsContribution(
+                plugin_id="demo",
+                section_id="demo_settings",
+                title="Demo 设置",
+                fields=(PluginSettingsField("enabled", "启用", "boolean", default=True),),
+                load=lambda: {"enabled": False},
+            )
+        ],
+        nonce="nonce",
+    )
+
     plugin = request["plugins"]["items"][0]
     assert plugin["id"] == "demo"
     assert plugin["name"] == "Demo 插件"
     assert plugin["enabled"] is False
-    assert plugin["permissions"] == ["settings_panel"]
+    assert plugin["permissions"] == ["plugin_settings"]
     assert plugin["entry"] == "plugin:DemoPlugin"
-    assert request["plugins"]["permission_labels"]["settings_panel"]["group"] == "UI"
+    assert request["plugins"]["permission_labels"]["plugin_settings"]["label"] == "插件设置"
+    assert plugin["settings"][0]["section_id"] == "demo_settings"
+    assert plugin["settings"][0]["values"]["enabled"] is False
     assert {"id": "core_profile", "label": "常驻档案"} in request["memory"]["layers"]
     assert request["memory"]["defaults"]["layer"] == "semantic"
     assert request["memory"]["defaults"]["source"] == "manual"
@@ -6493,7 +6593,7 @@ entry: plugin:DemoPlugin
 enabled: {str(enabled).lower()}
 priority: {priority}
 permissions:
-  - settings_panel
+  - plugin_settings
 """.strip(),
         encoding="utf-8",
     )

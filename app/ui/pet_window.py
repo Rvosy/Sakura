@@ -164,6 +164,7 @@ from app.ui.settings_dialog import SettingsDialog
 from app.ui.tauri_settings import (
     TauriSettingsProcess,
     TauriSettingsResult,
+    apply_tauri_plugin_settings,
     resolve_tauri_settings_binary,
     tauri_settings_trial_enabled,
 )
@@ -5151,6 +5152,11 @@ class PetWindow(QWidget):
             on_release_secondary_window=self._release_secondary_window,
             api_profiles=self.settings_service.load_api_profiles(),
             model_selection=self.settings_service.load_model_selection(),
+            plugin_settings_contributions=getattr(
+                getattr(self, "plugin_manager", None),
+                "plugin_settings",
+                [],
+            ),
         )
         self.settings_dialog = dialog
         # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
@@ -5248,6 +5254,11 @@ class PetWindow(QWidget):
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
             memory_store=getattr(self, "memory_store", None),
+            plugin_settings_contributions=getattr(
+                getattr(self, "plugin_manager", None),
+                "plugin_settings",
+                [],
+            ),
             model=getattr(api_settings, "model", None),
             parent_widget=self if isinstance(self, QWidget) else None,
             parent=self if isinstance(self, QObject) else None,
@@ -5396,10 +5407,17 @@ class PetWindow(QWidget):
             )
             if callable(save_memory_curation_settings):
                 save_memory_curation_settings(result.memory_curation)
+            plugin_config_changed = apply_tauri_plugin_settings(
+                getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
+                result.plugins.settings_by_id,
+            )
             if result.plugins.enabled_by_id:
-                plugin_config_changed = save_plugin_enabled_overrides(
-                    self.base_dir,
-                    result.plugins.enabled_by_id,
+                plugin_config_changed = (
+                    save_plugin_enabled_overrides(
+                        self.base_dir,
+                        result.plugins.enabled_by_id,
+                    )
+                    or plugin_config_changed
                 )
             self._apply_layout_settings(
                 portrait_scale_percent=result.character.portrait_scale_percent,
@@ -5410,7 +5428,7 @@ class PetWindow(QWidget):
                 persist=True,
                 raise_on_persist_error=True,
             )
-        except (CharacterConfigError, OSError) as exc:
+        except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
             show_themed_critical(
                 self,
                 "保存失败",
@@ -6563,6 +6581,12 @@ class PetWindow(QWidget):
     def _sync_native_topmost_state(self) -> None:
         if not self.isVisible():
             return
+        effective_topmost_fn = getattr(self, "_effective_topmost", None)
+        effective_topmost = (
+            bool(effective_topmost_fn())
+            if callable(effective_topmost_fn)
+            else bool(getattr(self, "always_on_top_enabled", False))
+        )
         if sys.platform == "win32":
             try:
                 import ctypes
@@ -6573,7 +6597,6 @@ class PetWindow(QWidget):
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
-                effective_topmost = self._effective_topmost()
                 insert_after = hwnd_topmost if effective_topmost else hwnd_notopmost
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
@@ -6587,7 +6610,6 @@ class PetWindow(QWidget):
         if sys.platform == "darwin":
             try:
                 for window in self._topmost_sync_windows():
-                    effective_topmost = self._effective_topmost()
                     _set_macos_window_topmost(int(window.winId()), effective_topmost)
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001

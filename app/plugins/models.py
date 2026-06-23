@@ -19,6 +19,7 @@ SUPPORTED_API_VERSIONS = frozenset({PLUGIN_API_VERSION})
 PERMISSION_TOOL = "tool"
 PERMISSION_TOOLS_TAB = "tools_tab"
 PERMISSION_SETTINGS_PANEL = "settings_panel"
+PERMISSION_PLUGIN_SETTINGS = "plugin_settings"
 PERMISSION_CHAT_UI = "chat_ui"
 PERMISSION_PROMPT_PATCH = "prompt_patch"
 PERMISSION_CONTEXT_PROVIDER = "context_provider"
@@ -34,6 +35,7 @@ KNOWN_PLUGIN_PERMISSIONS = frozenset(
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
         PERMISSION_SETTINGS_PANEL,
+        PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
         PERMISSION_CONTEXT_PROVIDER,
@@ -78,6 +80,50 @@ class SettingsPanelContribution:
     section_id: str
     title: str
     build: Callable[[Any], Any]
+    order: float = 100.0
+    plugin_id: str = ""
+
+
+@dataclass(frozen=True)
+class PluginSettingsField:
+    """插件声明式设置字段，由宿主统一渲染和校验。"""
+
+    key: str
+    label: str
+    field_type: str
+    default: Any = None
+    description: str = ""
+    options: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    step: int | float | None = None
+    required: bool = False
+    readonly: bool = False
+    copyable: bool = False
+    restart_required: bool = False
+
+
+@dataclass(frozen=True)
+class PluginSettingsAction:
+    """插件设置页可触发的受控动作。"""
+
+    action_id: str
+    label: str
+    handler: Callable[[dict[str, Any]], Any] | None = None
+    description: str = ""
+    danger: bool = False
+
+
+@dataclass(frozen=True)
+class PluginSettingsContribution:
+    """插件贡献到设置页的声明式设置区块。"""
+
+    section_id: str
+    title: str
+    fields: tuple[PluginSettingsField, ...] = field(default_factory=tuple)
+    load: Callable[[], dict[str, Any]] | None = None
+    save: Callable[[dict[str, Any]], Any] | None = None
+    actions: tuple[PluginSettingsAction, ...] = field(default_factory=tuple)
     order: float = 100.0
     plugin_id: str = ""
 

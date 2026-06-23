@@ -30,6 +30,8 @@ const fields = {
   ttsWorkDir: document.getElementById("ttsWorkDir"),
   ttsPythonPath: document.getElementById("ttsPythonPath"),
   ttsConfigPath: document.getElementById("ttsConfigPath"),
+  ttsBundleNoticeRow: document.getElementById("ttsBundleNoticeRow"),
+  ttsBundleNotice: document.getElementById("ttsBundleNotice"),
   ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
@@ -95,6 +97,7 @@ const fields = {
 };
 
 let request = null;
+let lastTtsProvider = "";
 let themeChanged = false;
 let memoryRetryTimer = null;
 const memoryState = {
@@ -110,6 +113,9 @@ const pluginState = {
   selectedId: "",
   enabledById: {},
   initialEnabledById: {},
+  settingsValues: {},
+  initialSettingsValues: {},
+  actionBusyKey: "",
 };
 
 const themeVars = {
@@ -446,6 +452,68 @@ function applySelectedCharacterTheme() {
   markThemeChanged();
 }
 
+function ttsProviderDefaults(provider) {
+  return request?.tts?.provider_defaults?.[provider] || {};
+}
+
+function ttsDefaultValue(provider, key) {
+  return String(ttsProviderDefaults(provider)[key] || "");
+}
+
+function isBundledTtsProvider(provider) {
+  return provider === "gpt-sovits" || provider === "genie-tts";
+}
+
+function normalizeTtsPathText(value) {
+  return String(value || "").trim().replaceAll("/", "\\").toLowerCase();
+}
+
+function isBundledTtsDefaultPath(value, key) {
+  const normalized = normalizeTtsPathText(value);
+  return Boolean(normalized) && ["gpt-sovits", "genie-tts"].some((provider) => (
+    normalizeTtsPathText(ttsDefaultValue(provider, key)) === normalized
+  ));
+}
+
+function isTtsDefaultApiUrl(value) {
+  const apiUrl = String(value || "").trim();
+  return Boolean(apiUrl) && ["gpt-sovits", "genie-tts", "custom-gpt-sovits"].some((provider) => (
+    ttsDefaultValue(provider, "api_url") === apiUrl
+  ));
+}
+
+function applyTtsProviderDefaults(previousProvider = lastTtsProvider) {
+  const provider = fields.ttsProvider.value;
+  const defaults = ttsProviderDefaults(provider);
+  const apiUrl = fields.ttsApiUrl.value.trim();
+  const oldApiUrl = ttsDefaultValue(previousProvider, "api_url");
+  const newApiUrl = String(defaults.api_url || "");
+  if (newApiUrl && (!apiUrl || apiUrl === oldApiUrl || isTtsDefaultApiUrl(apiUrl))) {
+    fields.ttsApiUrl.value = newApiUrl;
+  }
+  if (isBundledTtsProvider(provider)) {
+    fields.ttsWorkDir.value = String(defaults.work_dir || "");
+    fields.ttsPythonPath.value = String(defaults.python_path || "");
+    fields.ttsConfigPath.value = "";
+  } else if (provider === "custom-gpt-sovits") {
+    if (isBundledTtsDefaultPath(fields.ttsWorkDir.value, "work_dir")) {
+      fields.ttsWorkDir.value = "";
+    }
+    if (isBundledTtsDefaultPath(fields.ttsPythonPath.value, "python_path")) {
+      fields.ttsPythonPath.value = "";
+    }
+    fields.ttsConfigPath.value = "";
+  }
+  lastTtsProvider = provider;
+}
+
+function syncTtsBundleNotice() {
+  const provider = fields.ttsProvider.value;
+  const notice = isBundledTtsProvider(provider) ? String(ttsProviderDefaults(provider).notice || "") : "";
+  fields.ttsBundleNotice.textContent = notice;
+  fields.ttsBundleNoticeRow.hidden = !notice;
+}
+
 function syncTtsState() {
   const character = selectedCharacter();
   const hasVoice = character ? Boolean(character.has_voice) : true;
@@ -454,12 +522,20 @@ function syncTtsState() {
   }
   fields.ttsEnabled.disabled = !hasVoice;
   const active = fields.ttsEnabled.checked && fields.ttsProvider.value !== "none";
-  [fields.ttsApiUrl, fields.ttsWorkDir, fields.ttsTimeout].forEach((input) => {
-    input.disabled = !active;
-  });
-  const customProvider = fields.ttsProvider.value === "custom-gpt-sovits";
-  fields.ttsPythonPath.disabled = !active || !customProvider;
-  fields.ttsConfigPath.disabled = !active || !customProvider;
+  const bundledProvider = isBundledTtsProvider(fields.ttsProvider.value);
+  fields.ttsApiUrl.disabled = !active;
+  fields.ttsTimeout.disabled = !active;
+  fields.ttsWorkDir.disabled = !active || bundledProvider;
+  fields.ttsPythonPath.disabled = !active || bundledProvider;
+  fields.ttsWorkDir.readOnly = false;
+  fields.ttsPythonPath.readOnly = false;
+  fields.ttsConfigPath.disabled = true;
+  syncTtsBundleNotice();
+}
+
+function handleTtsProviderChange() {
+  applyTtsProviderDefaults(lastTtsProvider);
+  syncTtsState();
 }
 
 function syncApiAdvancedState() {
@@ -1115,12 +1191,46 @@ function permissionInfo(permission) {
   };
 }
 
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function pluginSettingsSections(plugin) {
+  return Array.isArray(plugin?.settings) ? plugin.settings : [];
+}
+
+function pluginSectionValues(pluginId, sectionId) {
+  pluginState.settingsValues[pluginId] = pluginState.settingsValues[pluginId] || {};
+  pluginState.settingsValues[pluginId][sectionId] = pluginState.settingsValues[pluginId][sectionId] || {};
+  return pluginState.settingsValues[pluginId][sectionId];
+}
+
+function pluginFieldValue(plugin, section, field) {
+  const values = pluginSectionValues(plugin.id, section.section_id);
+  if (!Object.prototype.hasOwnProperty.call(values, field.key)) {
+    values[field.key] = field.value ?? field.default ?? "";
+  }
+  return values[field.key];
+}
+
+function setPluginFieldValue(plugin, section, field, value) {
+  const values = pluginSectionValues(plugin.id, section.section_id);
+  values[field.key] = value;
+}
+
 function initializePluginState() {
   pluginState.enabledById = {};
   pluginState.initialEnabledById = {};
+  pluginState.settingsValues = {};
+  pluginState.initialSettingsValues = {};
   (request.plugins?.items || []).forEach((plugin) => {
     pluginState.enabledById[plugin.id] = Boolean(plugin.enabled || plugin.required);
     pluginState.initialEnabledById[plugin.id] = Boolean(plugin.enabled || plugin.required);
+    pluginState.settingsValues[plugin.id] = {};
+    pluginSettingsSections(plugin).forEach((section) => {
+      pluginState.settingsValues[plugin.id][section.section_id] = clonePlain(section.values);
+    });
+    pluginState.initialSettingsValues[plugin.id] = clonePlain(pluginState.settingsValues[plugin.id]);
   });
   pluginState.selectedId = request.plugins?.items?.[0]?.id || "";
 }
@@ -1259,6 +1369,175 @@ function renderPluginList() {
   });
 }
 
+function pluginSettingControl(plugin, section, field) {
+  const value = pluginFieldValue(plugin, section, field);
+  if (field.readonly || field.type === "readonly") {
+    const row = document.createElement("div");
+    row.className = "plugin-readonly-control";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.readOnly = true;
+    input.value = Array.isArray(value) ? value.join(" ; ") : String(value ?? "");
+    row.append(input);
+    if (field.copyable) {
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "secondary-button compact-button";
+      copy.textContent = "复制";
+      copy.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(input.value);
+        copy.textContent = "已复制";
+        window.setTimeout(() => {
+          copy.textContent = "复制";
+        }, 1200);
+      });
+      row.append(copy);
+    }
+    return row;
+  }
+  if (field.type === "boolean") {
+    const label = document.createElement("label");
+    label.className = "check-control";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(value);
+    input.addEventListener("change", () => setPluginFieldValue(plugin, section, field, input.checked));
+    const text = document.createElement("span");
+    text.textContent = field.description || field.label;
+    label.append(input, text);
+    return label;
+  }
+  if (field.type === "select") {
+    const select = document.createElement("select");
+    (field.options || []).forEach((option) => {
+      const item = document.createElement("option");
+      item.value = String(option.value);
+      item.textContent = option.label || String(option.value);
+      select.append(item);
+    });
+    select.value = String(value ?? field.default ?? "");
+    select.addEventListener("change", () => setPluginFieldValue(plugin, section, field, select.value));
+    window.setTimeout(() => enhanceSelect(select), 0);
+    return select;
+  }
+  const input = document.createElement("input");
+  input.type = field.type === "integer" || field.type === "number" ? "number" : field.type === "password" ? "password" : "text";
+  if (field.minimum !== undefined) {
+    input.min = String(field.minimum);
+  }
+  if (field.maximum !== undefined) {
+    input.max = String(field.maximum);
+  }
+  if (field.step !== undefined) {
+    input.step = String(field.step);
+  } else if (field.type === "integer") {
+    input.step = "1";
+  }
+  input.value = String(value ?? "");
+  input.addEventListener("input", () => {
+    if (field.type === "integer") {
+      setPluginFieldValue(plugin, section, field, Number.parseInt(input.value, 10));
+    } else if (field.type === "number") {
+      setPluginFieldValue(plugin, section, field, Number.parseFloat(input.value));
+    } else {
+      setPluginFieldValue(plugin, section, field, input.value);
+    }
+  });
+  return input;
+}
+
+function renderPluginSettings(plugin) {
+  const sections = pluginSettingsSections(plugin);
+  const container = document.createElement("div");
+  container.className = "plugin-settings";
+  if (!sections.length) {
+    const empty = document.createElement("p");
+    empty.className = "page-note";
+    empty.textContent = plugin.enabled
+      ? "此插件没有内置详细设置。"
+      : "此插件未启用；启用并保存重启 Sakura 后才会加载内置详细设置。";
+    container.append(empty);
+    return container;
+  }
+  sections.forEach((section) => {
+    const block = document.createElement("section");
+    block.className = "plugin-settings-section";
+    const heading = document.createElement("h3");
+    heading.textContent = section.title || section.section_id;
+    block.append(heading);
+    if (section.error) {
+      const error = document.createElement("p");
+      error.className = "error";
+      error.textContent = section.error;
+      block.append(error);
+    }
+    (section.fields || []).forEach((field) => {
+      const row = document.createElement("div");
+      row.className = "form-row";
+      const label = document.createElement("label");
+      label.textContent = field.label || field.key;
+      const control = pluginSettingControl(plugin, section, field);
+      if (field.type !== "boolean" && field.description) {
+        control.title = field.description;
+      }
+      row.append(label, control);
+      if (field.restart_required) {
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = "保存后重启或下次启动生效。";
+        row.append(hint);
+      }
+      block.append(row);
+    });
+    if (Array.isArray(section.actions) && section.actions.length) {
+      const actions = document.createElement("div");
+      actions.className = "plugin-setting-actions";
+      section.actions.forEach((action) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = action.danger ? "danger-button" : "secondary-button";
+        button.textContent = action.label || action.action_id;
+        const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
+        button.disabled = pluginState.actionBusyKey === busyKey;
+        button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action));
+        actions.append(button);
+      });
+      block.append(actions);
+    }
+    container.append(block);
+  });
+  return container;
+}
+
+async function runPluginSettingsAction(plugin, section, action) {
+  const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
+  pluginState.actionBusyKey = busyKey;
+  renderPluginPage();
+  setError("");
+  try {
+    const result = await hostCall("plugin.settings_action", {
+      plugin_id: plugin.id,
+      section_id: section.section_id,
+      action_id: action.action_id,
+      values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
+    });
+    if (result && typeof result.values === "object" && result.values !== null) {
+      pluginState.settingsValues[plugin.id][section.section_id] = {
+        ...pluginState.settingsValues[plugin.id][section.section_id],
+        ...result.values,
+      };
+    }
+    if (result && result.message) {
+      setError(String(result.message));
+    }
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    pluginState.actionBusyKey = "";
+    renderPluginPage();
+  }
+}
+
 function renderPluginDetail() {
   const plugin = (request.plugins?.items || []).find((item) => item.id === pluginState.selectedId);
   fields.pluginDetail.textContent = "";
@@ -1333,8 +1612,8 @@ function renderPluginDetail() {
   note.className = "page-note";
   note.textContent = plugin.required
     ? "必需插件由宿主锁定，不能关闭。"
-    : "此插件设置暂未迁移到 Tauri。启停变化保存后重启 Sakura 生效。";
-  fields.pluginDetail.append(title, desc, meta, permissions, note);
+    : "启停变化保存后重启 Sakura 生效。";
+  fields.pluginDetail.append(title, desc, meta, permissions, note, renderPluginSettings(plugin));
 }
 
 function renderPluginPage() {
@@ -1345,10 +1624,20 @@ function renderPluginPage() {
 
 function collectPluginSettings() {
   const enabledById = {};
+  const settingsById = {};
   (request.plugins?.items || []).forEach((plugin) => {
     enabledById[plugin.id] = plugin.required ? true : Boolean(pluginState.enabledById[plugin.id]);
+    const sections = pluginSettingsSections(plugin);
+    if (sections.length) {
+      settingsById[plugin.id] = {};
+      sections.forEach((section) => {
+        settingsById[plugin.id][section.section_id] = clonePlain(
+          pluginSectionValues(plugin.id, section.section_id),
+        );
+      });
+    }
   });
-  return { enabled_by_id: enabledById };
+  return { enabled_by_id: enabledById, settings_by_id: settingsById };
 }
 
 function collectCharacterSettings() {
@@ -1623,6 +1912,8 @@ async function load() {
   fields.ttsPythonPath.value = request.tts.python_path;
   fields.ttsConfigPath.value = request.tts.tts_config_path;
   fields.ttsTimeout.value = request.tts.timeout_seconds;
+  lastTtsProvider = fields.ttsProvider.value;
+  applyTtsProviderDefaults(lastTtsProvider);
 
   fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
   fields.launchAtLogin.disabled = !request.system_extra.startup.launch_at_login_supported;
@@ -1687,7 +1978,7 @@ fields.addApiProfileButton.addEventListener("click", () => {
 fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
-fields.ttsProvider.addEventListener("change", syncTtsState);
+fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(request.theme_defaults);

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QGroupBox,
     QLabel,
     QLineEdit,
     QListWidgetItem,
@@ -138,7 +139,13 @@ from app.ui.theme import (
 )
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_work_dir, is_provider_bundle_work_dir
-from app.plugins.models import SettingsPanelContribution, ToolsTabContribution
+from app.plugins.models import (
+    PluginSettingsAction,
+    PluginSettingsContribution,
+    PluginSettingsField,
+    SettingsPanelContribution,
+    ToolsTabContribution,
+)
 
 
 MEMORY_READING_TEXT = "正在读取长期记忆..."
@@ -196,6 +203,7 @@ class SettingsDialog(QDialog):
         api_profiles: list[ApiConfigProfile] | None = None,
         model_selection: ModelSelectionSettings | None = None,
         global_model_names: list[str] | None = None,
+        plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
     ) -> None:
         super().__init__(parent)
         if screen_awareness_settings is None:
@@ -231,6 +239,9 @@ class SettingsDialog(QDialog):
             for spec in self.plugin_specs
             if spec.plugin_id
         }
+        self._plugin_settings_contributions = list(plugin_settings_contributions or [])
+        self._plugin_settings_drafts: dict[tuple[str, str], dict[str, Any]] = {}
+        self._plugin_settings_dirty_keys: set[tuple[str, str]] = set()
         self.character_registry = character_registry
         self.current_character = current_character
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
@@ -358,7 +369,10 @@ class SettingsDialog(QDialog):
             (
                 "插件",
                 self._build_scrollable_tab(
-                    PluginSettingsPage(self).build(settings_panel_contributions or [])
+                    PluginSettingsPage(self).build(
+                        settings_panel_contributions or [],
+                        self._plugin_settings_contributions,
+                    )
                 ),
             ),
             (
@@ -652,7 +666,13 @@ class SettingsDialog(QDialog):
         content_layout.setSpacing(12)
         for contribution in sorted(contributions, key=lambda item: item.order):
             try:
-                widget = contribution.build(content)
+                if isinstance(contribution, PluginSettingsContribution):
+                    widget = self._build_plugin_settings_contribution_widget(
+                        contribution,
+                        content,
+                    )
+                else:
+                    widget = contribution.build(content)
             except Exception as exc:  # noqa: BLE001 — 单个设置面板构建失败降级为提示，不阻断
                 widget = QLabel(f"{contribution.title} 设置加载失败：{exc}", content)
                 widget.setWordWrap(True)
@@ -674,6 +694,232 @@ class SettingsDialog(QDialog):
             min(hint.height() + 72, 600),
         )
         return dialog
+
+    def _build_plugin_settings_contribution_widget(
+        self,
+        contribution: PluginSettingsContribution,
+        parent: QWidget,
+    ) -> QWidget:
+        group = QGroupBox(contribution.title, parent)
+        layout = QFormLayout(group)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        values = self._plugin_settings_values_for(contribution)
+        field_controls: dict[str, QWidget] = {}
+        for field in contribution.fields:
+            label = field.label
+            if field.restart_required:
+                label = f"{label}（保存后重启）"
+            control = self._build_plugin_settings_field_control(
+                contribution,
+                field,
+                values.get(field.key, field.default),
+                group,
+            )
+            if field.description:
+                control.setToolTip(field.description)
+            layout.addRow(label, control)
+            field_controls[str(field.key)] = control
+
+        if contribution.actions:
+            action_row = QWidget(group)
+            action_layout = QHBoxLayout(action_row)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(8)
+            for action in contribution.actions:
+                button = QPushButton(action.label, action_row)
+                button.setToolTip(action.description or "")
+                button.clicked.connect(
+                    lambda _checked=False, current_action=action: self._run_plugin_settings_action(
+                        contribution,
+                        current_action,
+                        field_controls,
+                    )
+                )
+                action_layout.addWidget(button)
+            action_layout.addStretch(1)
+            layout.addRow("", action_row)
+        return group
+
+    def _build_plugin_settings_field_control(
+        self,
+        contribution: PluginSettingsContribution,
+        field: PluginSettingsField,
+        value: Any,
+        parent: QWidget,
+    ) -> QWidget:
+        field_type = str(field.field_type or "text").strip().lower()
+        if field.readonly or field_type == "readonly":
+            label = QLabel(self._format_plugin_setting_value(value), parent)
+            label.setWordWrap(True)
+            if field.copyable:
+                label.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                    | Qt.TextInteractionFlag.TextSelectableByKeyboard
+                )
+            return label
+        if field_type == "boolean":
+            checkbox = QCheckBox(parent)
+            checkbox.setChecked(bool(value))
+            checkbox.stateChanged.connect(
+                lambda _state, current_field=field, current_control=checkbox:
+                self._set_plugin_settings_control_value(
+                    contribution,
+                    current_field,
+                    current_control.isChecked(),
+                )
+            )
+            return checkbox
+        if field_type == "select":
+            combo = QComboBox(parent)
+            for option in field.options:
+                if not isinstance(option, dict):
+                    continue
+                option_value = option.get("value")
+                combo.addItem(str(option.get("label", option_value)), option_value)
+            index = combo.findData(value)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.currentIndexChanged.connect(
+                lambda _index, current_field=field, current_control=combo:
+                self._set_plugin_settings_control_value(
+                    contribution,
+                    current_field,
+                    current_control.currentData(),
+                )
+            )
+            return combo
+
+        line_edit = QLineEdit(parent)
+        line_edit.setText("" if value is None else str(value))
+        if field_type == "password":
+            line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        line_edit.textChanged.connect(
+            lambda text, current_field=field: self._set_plugin_settings_control_value(
+                contribution,
+                current_field,
+                text,
+            )
+        )
+        return line_edit
+
+    def _run_plugin_settings_action(
+        self,
+        contribution: PluginSettingsContribution,
+        action: PluginSettingsAction,
+        field_controls: dict[str, QWidget],
+    ) -> None:
+        from app.ui.tauri_settings import dispatch_tauri_plugin_settings_action
+
+        try:
+            result = dispatch_tauri_plugin_settings_action(
+                self._plugin_settings_contributions,
+                {
+                    "plugin_id": contribution.plugin_id,
+                    "section_id": contribution.section_id,
+                    "action_id": action.action_id,
+                    "values": self._plugin_settings_values_for(contribution),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - action 错误应提示但不关闭设置窗口
+            QMessageBox.warning(
+                self,
+                "插件动作失败",
+                format_failure_message(
+                    "插件设置动作没有执行成功。",
+                    "请检查插件状态后重试。",
+                    exc,
+                ),
+            )
+            return
+
+        values = result.get("values") if isinstance(result, dict) else None
+        if not isinstance(values, dict):
+            return
+        key = self._plugin_settings_key(contribution)
+        draft = self._plugin_settings_drafts.setdefault(
+            key,
+            self._load_plugin_settings_values(contribution),
+        )
+        for field_key, value in values.items():
+            draft[str(field_key)] = value
+            control = field_controls.get(str(field_key))
+            if control is not None:
+                self._update_plugin_settings_control(control, value)
+
+    def _plugin_settings_key(
+        self,
+        contribution: PluginSettingsContribution,
+    ) -> tuple[str, str]:
+        return (
+            str(contribution.plugin_id or "").strip(),
+            str(contribution.section_id or "").strip(),
+        )
+
+    def _plugin_settings_values_for(
+        self,
+        contribution: PluginSettingsContribution,
+    ) -> dict[str, Any]:
+        key = self._plugin_settings_key(contribution)
+        draft = self._plugin_settings_drafts.get(key)
+        if draft is None:
+            draft = self._load_plugin_settings_values(contribution)
+            self._plugin_settings_drafts[key] = draft
+        return dict(draft)
+
+    def _load_plugin_settings_values(
+        self,
+        contribution: PluginSettingsContribution,
+    ) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        if callable(contribution.load):
+            loaded = contribution.load()
+            if isinstance(loaded, dict):
+                values.update(loaded)
+        for field in contribution.fields:
+            values.setdefault(str(field.key), field.default)
+        return values
+
+    def _set_plugin_settings_control_value(
+        self,
+        contribution: PluginSettingsContribution,
+        field: PluginSettingsField,
+        value: Any,
+    ) -> None:
+        key = self._plugin_settings_key(contribution)
+        draft = self._plugin_settings_drafts.setdefault(
+            key,
+            self._load_plugin_settings_values(contribution),
+        )
+        field_key = str(field.key)
+        if draft.get(field_key) != value:
+            self._plugin_settings_dirty_keys.add(key)
+        draft[field_key] = value
+
+    def _update_plugin_settings_control(self, control: QWidget, value: Any) -> None:
+        was_blocked = control.blockSignals(True)
+        try:
+            if isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            elif isinstance(control, QComboBox):
+                index = control.findData(value)
+                if index >= 0:
+                    control.setCurrentIndex(index)
+            elif isinstance(control, QLineEdit):
+                control.setText("" if value is None else str(value))
+            elif isinstance(control, QLabel):
+                control.setText(self._format_plugin_setting_value(value))
+        finally:
+            control.blockSignals(was_blocked)
+
+    @staticmethod
+    def _format_plugin_setting_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            return "\n".join(str(item) for item in value)
+        return str(value)
 
     @Slot(bool)
     def _sync_proactive_screen_context_controls(self, enabled: bool) -> None:
@@ -2394,13 +2640,13 @@ class SettingsDialog(QDialog):
 
         try:
             plugin_config_changed = self._save_plugin_settings_if_needed()
-        except OSError as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.critical(
                 self,
                 "保存失败",
                 format_failure_message(
-                    "插件启用配置没有保存成功。",
-                    "请检查插件配置文件的写入权限和占用情况后重试。",
+                    "插件配置没有保存成功。",
+                    "请检查插件配置文件、设置字段和写入权限后重试。",
                     exc,
                 ),
             )
@@ -2446,10 +2692,32 @@ class SettingsDialog(QDialog):
         super().accept()
 
     def _save_plugin_settings_if_needed(self) -> bool:
+        plugin_settings_changed = False
+        dirty_settings: dict[str, dict[str, dict[str, Any]]] = {}
+        for contribution in self._plugin_settings_contributions:
+            key = self._plugin_settings_key(contribution)
+            if key not in self._plugin_settings_dirty_keys:
+                continue
+            plugin_id, section_id = key
+            if not plugin_id or not section_id:
+                continue
+            values = self._plugin_settings_drafts.get(key)
+            if values is None:
+                continue
+            dirty_settings.setdefault(plugin_id, {})[section_id] = dict(values)
+        if dirty_settings:
+            from app.ui.tauri_settings import apply_tauri_plugin_settings
+
+            plugin_settings_changed = apply_tauri_plugin_settings(
+                self._plugin_settings_contributions,
+                dirty_settings,
+            )
+            self._plugin_settings_dirty_keys.clear()
+
         enabled_by_id = self._selected_plugin_enabled_overrides()
         if not enabled_by_id:
-            return False
-        return save_plugin_enabled_overrides(self.base_dir, enabled_by_id)
+            return plugin_settings_changed
+        return save_plugin_enabled_overrides(self.base_dir, enabled_by_id) or plugin_settings_changed
 
     def reject(self) -> None:
         if self._api_test_thread is not None:

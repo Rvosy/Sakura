@@ -27,12 +27,15 @@ from app.plugins import (
 from app.plugins.models import (
     PERMISSION_CHAT_UI,
     PERMISSION_EVENT_MESSAGE,
+    PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
     PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     ChatUIWidgetContribution,
+    PluginSettingsContribution,
+    PluginSettingsField,
     PromptPatchContribution,
     RendererContribution,
     SettingsPanelContribution,
@@ -82,11 +85,19 @@ class TestPluginCapabilityRegistry:
         reg.register_tool(ToolContribution(name="t1", description="d", parameters={}, handler=None))
         reg.register_tools_tab(ToolsTabContribution(tab_id="tab", title="T", build=lambda p: None))
         reg.register_settings_panel(SettingsPanelContribution(section_id="s", title="S", build=lambda p: None))
+        reg.register_plugin_settings(
+            PluginSettingsContribution(
+                section_id="ps",
+                title="PS",
+                fields=(PluginSettingsField("enabled", "启用", "boolean"),),
+            )
+        )
         reg.register_chat_ui_widget(ChatUIWidgetContribution(widget_id="w", build=lambda p: None))
         reg.register_prompt_patch(PromptPatchContribution(patch_id="p", system_prompt_append="append"))
         assert len(reg.tools) == 1
         assert len(reg.tools_tabs) == 1
         assert len(reg.settings_panels) == 1
+        assert len(reg.plugin_settings) == 1
         assert len(reg.chat_ui_widgets) == 1
         assert len(reg.prompt_patches) == 1
 
@@ -421,6 +432,18 @@ class TestContributionTypes:
         assert sp.section_id == "test"
         assert sp.order == 50.0
 
+    def test_plugin_settings_contribution(self) -> None:
+        contribution = PluginSettingsContribution(
+            section_id="browser",
+            title="Browser",
+            fields=(PluginSettingsField("headless", "无头", "boolean", default=False),),
+            order=40.0,
+        )
+
+        assert contribution.section_id == "browser"
+        assert contribution.fields[0].key == "headless"
+        assert contribution.order == 40.0
+
     def test_prompt_patch_contribution(self) -> None:
         pp = PromptPatchContribution(patch_id="p1", system_prompt_append="extra prompt")
         assert pp.patch_id == "p1"
@@ -461,6 +484,7 @@ def _write_plugin_manifest(
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
         PERMISSION_SETTINGS_PANEL,
+        PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),
@@ -503,6 +527,7 @@ def _write_demo_plugin(
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
         PERMISSION_SETTINGS_PANEL,
+        PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),

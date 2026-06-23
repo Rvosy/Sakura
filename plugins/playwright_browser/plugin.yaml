@@ -9,4 +9,4 @@ enabled: true
 priority: 40
 permissions:
   - tool
-  - settings_panel
+  - plugin_settings

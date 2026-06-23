@@ -28,6 +28,7 @@ from app.plugins.models import (
     PERMISSION_EVENT_CHARACTER,
     PERMISSION_EVENT_MESSAGE,
     PERMISSION_EVENT_TTS,
+    PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
     PERMISSION_SETTINGS_PANEL,
@@ -38,6 +39,7 @@ from app.plugins.models import (
     PluginEvent,
     PluginManifest,
     PluginManifestView,
+    PluginSettingsContribution,
     PluginSpec,
     RendererContribution,
     ToolContribution,
@@ -177,6 +179,10 @@ class PluginManager:
                     replace(panel, plugin_id=manifest.plugin_id)
                     for panel in capability_registry.settings_panels
                 ],
+                plugin_settings=[
+                    replace(settings, plugin_id=manifest.plugin_id)
+                    for settings in capability_registry.plugin_settings
+                ],
                 tools_tabs=list(capability_registry.tools_tabs),
                 chat_ui_widgets=list(capability_registry.chat_ui_widgets),
                 prompt_patches=list(capability_registry.prompt_patches),
@@ -204,6 +210,7 @@ class PluginManager:
                     "tools": len(capabilities.tools),
                     "tools_tabs": len(capabilities.tools_tabs),
                     "settings_panels": len(capabilities.settings_panels),
+                    "plugin_settings": len(capabilities.plugin_settings),
                     "chat_ui_widgets": len(capabilities.chat_ui_widgets),
                     "prompt_patches": len(capabilities.prompt_patches),
                     "context_providers": len(capabilities.context_providers),
@@ -272,6 +279,13 @@ class PluginManager:
                 panels.extend(result.capabilities.settings_panels)
         return panels
 
+    def collect_plugin_settings(self) -> list[PluginSettingsContribution]:
+        settings: list[PluginSettingsContribution] = []
+        for result in self._loaded:
+            if result.capabilities:
+                settings.extend(result.capabilities.plugin_settings)
+        return settings
+
     def collect_tools_tabs(self) -> list:
         tabs: list = []
         for result in self._loaded:
@@ -314,6 +328,10 @@ class PluginManager:
     @property
     def settings_panels(self) -> list:
         return self.collect_settings_panels()
+
+    @property
+    def plugin_settings(self) -> list[PluginSettingsContribution]:
+        return self.collect_plugin_settings()
 
     @property
     def chat_ui_widgets(self) -> list:
@@ -479,6 +497,7 @@ def _validate_capability_permissions(
         (registry.tools, PERMISSION_TOOL, "工具"),
         (registry.tools_tabs, PERMISSION_TOOLS_TAB, "工具页"),
         (registry.settings_panels, PERMISSION_SETTINGS_PANEL, "设置面板"),
+        (registry.plugin_settings, PERMISSION_PLUGIN_SETTINGS, "插件设置"),
         (registry.chat_ui_widgets, PERMISSION_CHAT_UI, "聊天 UI"),
         (registry.prompt_patches, PERMISSION_PROMPT_PATCH, "提示词补丁"),
         (registry.context_providers, PERMISSION_CONTEXT_PROVIDER, "上下文提供者"),

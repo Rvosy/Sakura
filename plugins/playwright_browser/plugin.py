@@ -4,9 +4,15 @@ from pathlib import Path
 from typing import Any
 
 from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
-from app.plugins import SettingsPanelContribution, ToolContribution
+from app.plugins import PluginSettingsContribution, PluginSettingsField, ToolContribution
 
 from plugins.playwright_browser import browser
+from plugins.playwright_browser.config_model import (
+    BROWSER_CHOICES,
+    PlaywrightBrowserConfig,
+    config_from_mapping,
+    config_to_mapping,
+)
 
 
 class PlaywrightBrowserPlugin(PluginBase):
@@ -16,6 +22,7 @@ class PlaywrightBrowserPlugin(PluginBase):
     plugin_version = "1.0.0"
 
     def __init__(self) -> None:
+        self._context: PluginContext | None = None
         self._resource_cleanup_registered = False
 
     def initialize(
@@ -23,19 +30,43 @@ class PlaywrightBrowserPlugin(PluginBase):
         register: PluginCapabilityRegistry,
         context: PluginContext,
     ) -> None:
+        self._context = context
         plugin_root = context.plugin_root
         browser.set_plugin_root(plugin_root)
+        browser.set_config_loader(self.config)
         resources = getattr(getattr(context, "services", None), "resources", None)
         register_cleanup = getattr(resources, "register_cleanup", None)
         if callable(register_cleanup):
             register_cleanup(browser.shutdown_browser, label="browser", shutdown_order=650)
             self._resource_cleanup_registered = True
         _register_tools(register)
-        register.register_settings_panel(
-            SettingsPanelContribution(
+        register.register_plugin_settings(
+            PluginSettingsContribution(
                 section_id="playwright_browser",
                 title="Playwright 浏览器",
-                build=lambda parent=None: _build_settings_panel(plugin_root, parent),
+                fields=(
+                    PluginSettingsField(
+                        key="browser_type",
+                        label="浏览器类型",
+                        field_type="select",
+                        default="msedge",
+                        options=tuple(
+                            {"value": key, "label": _browser_label(key)}
+                            for key in BROWSER_CHOICES
+                        ),
+                        restart_required=True,
+                    ),
+                    PluginSettingsField(
+                        key="headless",
+                        label="无头模式",
+                        field_type="boolean",
+                        default=False,
+                        description="无头模式（Headless）",
+                        restart_required=True,
+                    ),
+                ),
+                load=self.settings_values,
+                save=self.save_settings_values,
                 order=40.0,
             )
         )
@@ -43,6 +74,27 @@ class PlaywrightBrowserPlugin(PluginBase):
     def shutdown(self) -> None:
         if not self._resource_cleanup_registered:
             browser.shutdown_browser()
+
+    def config(self) -> PlaywrightBrowserConfig:
+        return config_from_mapping(self._require_context().get_config())
+
+    def settings_values(self) -> dict[str, Any]:
+        return config_to_mapping(self.config())
+
+    def save_settings_values(self, values: dict[str, Any]) -> None:
+        cfg = PlaywrightBrowserConfig(
+            headless=bool(values.get("headless", False)),
+            browser_type=str(values.get("browser_type") or "msedge").strip().lower(),
+        )
+        cfg.clamp()
+        self._require_context().save_config(config_to_mapping(cfg))
+        browser.shutdown_browser()
+        browser.set_config_loader(self.config)
+
+    def _require_context(self) -> PluginContext:
+        if self._context is None:
+            raise RuntimeError("Playwright 浏览器插件尚未初始化。")
+        return self._context
 
 
 def _register_tools(register: PluginCapabilityRegistry) -> None:
@@ -147,3 +199,14 @@ def _build_settings_panel(plugin_root: Path, parent: Any = None) -> Any:
             return None
         return QLabel("Playwright 浏览器设置加载失败。")
     return PlaywrightBrowserSettingsTab(plugin_root, parent)
+
+
+def _browser_label(key: str) -> str:
+    labels = {
+        "chromium": "Chromium（Playwright 内置，需下载）",
+        "firefox": "Firefox（Playwright 内置，需下载）",
+        "webkit": "WebKit（Playwright 内置，需下载）",
+        "msedge": "Microsoft Edge（使用系统已安装的 Edge）",
+        "chrome": "Google Chrome（使用系统已安装的 Chrome）",
+    }
+    return labels.get(key, key)

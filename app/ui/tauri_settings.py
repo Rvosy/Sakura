@@ -80,11 +80,14 @@ from app.plugins.models import (
     PERMISSION_EVENT_MESSAGE,
     PERMISSION_EVENT_TTS,
     PERMISSION_MOBILE_CHAT,
+    PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
     PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
+    PluginSettingsContribution,
+    PluginSettingsField,
 )
 from app.ui.control_panel_layout import (
     DEFAULT_BUBBLE_HEIGHT,
@@ -127,6 +130,7 @@ from app.ui.theme import (
     theme_to_mapping,
 )
 from app.ui.window_backdrop import VisualEffectMode
+from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
@@ -151,6 +155,7 @@ PLUGIN_PERMISSION_LABELS: dict[str, dict[str, str]] = {
     PERMISSION_TOOL: {"group": "工具", "label": "Agent 工具"},
     PERMISSION_TOOLS_TAB: {"group": "UI", "label": "工具页"},
     PERMISSION_SETTINGS_PANEL: {"group": "UI", "label": "Qt 设置面板"},
+    PERMISSION_PLUGIN_SETTINGS: {"group": "UI", "label": "插件设置"},
     PERMISSION_CHAT_UI: {"group": "UI", "label": "聊天 UI"},
     PERMISSION_PROMPT_PATCH: {"group": "上下文", "label": "提示词补丁"},
     PERMISSION_CONTEXT_PROVIDER: {"group": "上下文", "label": "动态上下文"},
@@ -217,6 +222,7 @@ class TauriSystemExtraResult:
 @dataclass(frozen=True)
 class TauriPluginResult:
     enabled_by_id: dict[str, bool] = field(default_factory=dict)
+    settings_by_id: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -315,6 +321,7 @@ def build_tauri_settings_request(
     launch_at_login_supported: bool = True,
     backchannel_settings: BackchannelSettings | None = None,
     memory_curation_settings: MemoryCurationSettings | None = None,
+    plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
     model: str | None = None,
     parent_widget: QWidget | None = None,
     nonce: str | None = None,
@@ -355,14 +362,14 @@ def build_tauri_settings_request(
             api_profiles,
             model_selection,
         ),
-        "tts": _tts_to_mapping(tts_settings),
+        "tts": _tts_to_mapping(tts_settings, base_dir),
         "system_extra": _system_extra_to_mapping(
             startup_settings or StartupSettings(),
             bool(launch_at_login_supported),
             backchannel_settings or BackchannelSettings(),
         ),
         "memory": _memory_to_mapping(memory_curation_settings or MemoryCurationSettings()),
-        "plugins": _plugins_to_mapping(base_dir),
+        "plugins": _plugins_to_mapping(base_dir, plugin_settings_contributions),
         "theme_defaults": _theme_to_mapping(DEFAULT_THEME_SETTINGS),
         "theme_fields": [
             {"id": field, "label": label}
@@ -607,6 +614,7 @@ class TauriSettingsProcess(QObject):
         backchannel_settings: BackchannelSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
         memory_store: Any | None = None,
+        plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
@@ -637,6 +645,7 @@ class TauriSettingsProcess(QObject):
         self.backchannel_settings = backchannel_settings or BackchannelSettings()
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
         self.memory_store = memory_store
+        self.plugin_settings_contributions = list(plugin_settings_contributions or [])
         self.model = model
         self.parent_widget = parent_widget
         self._process: QProcess | None = None
@@ -729,6 +738,7 @@ class TauriSettingsProcess(QObject):
             launch_at_login_supported=self.launch_at_login_supported,
             backchannel_settings=self.backchannel_settings,
             memory_curation_settings=self.memory_curation_settings,
+            plugin_settings_contributions=self.plugin_settings_contributions,
             model=self.model,
             parent_widget=self.parent_widget,
         )
@@ -840,6 +850,11 @@ class TauriSettingsProcess(QObject):
         self._send_rpc_response(request_id, ok=True, result=result)
 
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "plugin.settings_action":
+            return dispatch_tauri_plugin_settings_action(
+                self.plugin_settings_contributions,
+                params,
+            )
         if not method.startswith("memory."):
             raise ValueError(f"未知 Tauri RPC 方法：{method}")
         memory_store = self.memory_store
@@ -1123,7 +1138,7 @@ def _api_to_mapping(
     }
 
 
-def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None) -> dict[str, object]:
+def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None, base_dir: Path | None) -> dict[str, object]:
     current = settings or GPTSoVITSTTSSettings(
         enabled=False,
         api_url=DEFAULT_GPT_SOVITS_API_URL,
@@ -1149,7 +1164,36 @@ def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None) -> dict[str, object]:
         "work_dir": _path_to_text(current.work_dir),
         "python_path": _path_to_text(current.python_path),
         "tts_config_path": _path_to_text(current.tts_config_path),
+        "provider_defaults": _tts_provider_defaults(base_dir),
         "timeout_seconds": _clamp_int_value(current.timeout_seconds, 1, 600),
+    }
+
+
+def _tts_provider_defaults(base_dir: Path | None) -> dict[str, dict[str, str]]:
+    gpus = list_nvidia_gpus() if base_dir is not None else None
+
+    def bundled(provider: str, api_url: str) -> dict[str, str]:
+        work_dir = (
+            default_provider_bundle_work_dir(provider, base_dir, gpus=gpus)
+            if base_dir is not None
+            else None
+        )
+        return {
+            "api_url": api_url,
+            "work_dir": _path_to_text(work_dir),
+            "python_path": _path_to_text(work_dir / "runtime" / "python.exe" if work_dir is not None else None),
+            "notice": default_provider_bundle_notice(provider, base_dir, gpus=gpus) if base_dir is not None else "",
+        }
+
+    return {
+        TTS_PROVIDER_GPT_SOVITS: bundled(TTS_PROVIDER_GPT_SOVITS, DEFAULT_GPT_SOVITS_API_URL),
+        TTS_PROVIDER_GENIE: bundled(TTS_PROVIDER_GENIE, DEFAULT_GENIE_TTS_API_URL),
+        TTS_PROVIDER_CUSTOM_GPT_SOVITS: {
+            "api_url": DEFAULT_GPT_SOVITS_API_URL,
+            "work_dir": "",
+            "python_path": "",
+            "notice": "",
+        },
     }
 
 
@@ -1196,8 +1240,12 @@ def _memory_to_mapping(settings: MemoryCurationSettings) -> dict[str, object]:
     }
 
 
-def _plugins_to_mapping(base_dir: Path | None) -> dict[str, object]:
+def _plugins_to_mapping(
+    base_dir: Path | None,
+    plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
+) -> dict[str, object]:
     items: list[dict[str, object]] = []
+    settings_by_plugin = _group_plugin_settings(plugin_settings_contributions)
     if base_dir is not None:
         for spec in PluginDiscovery(Path(base_dir)).discover():
             plugin_id = str(spec.plugin_id or "").strip()
@@ -1216,12 +1264,230 @@ def _plugins_to_mapping(base_dir: Path | None) -> dict[str, object]:
                     "source": str(spec.source or ""),
                     "priority": int(spec.priority),
                     "entry": str(spec.entry or ""),
+                    "settings": [
+                        _plugin_settings_to_mapping(contribution)
+                        for contribution in settings_by_plugin.get(plugin_id, [])
+                    ],
                 }
             )
     return {
         "items": items,
         "permission_labels": PLUGIN_PERMISSION_LABELS,
     }
+
+
+def _group_plugin_settings(
+    contributions: list[PluginSettingsContribution] | None,
+) -> dict[str, list[PluginSettingsContribution]]:
+    grouped: dict[str, list[PluginSettingsContribution]] = {}
+    for contribution in contributions or []:
+        plugin_id = str(contribution.plugin_id or "").strip()
+        if not plugin_id:
+            continue
+        grouped.setdefault(plugin_id, []).append(contribution)
+    for values in grouped.values():
+        values.sort(key=lambda item: item.order)
+    return grouped
+
+
+def _plugin_settings_to_mapping(contribution: PluginSettingsContribution) -> dict[str, object]:
+    values: dict[str, Any] = {}
+    error = ""
+    if callable(contribution.load):
+        try:
+            loaded = contribution.load()
+            if isinstance(loaded, dict):
+                values = dict(loaded)
+        except Exception as exc:  # noqa: BLE001 - 单个插件设置读取失败不阻断设置页
+            error = str(exc)
+    fields = [_plugin_settings_field_to_mapping(field, values) for field in contribution.fields]
+    return {
+        "section_id": str(contribution.section_id),
+        "title": str(contribution.title),
+        "order": float(contribution.order),
+        "values": {
+            field["key"]: field["value"]
+            for field in fields
+            if isinstance(field.get("key"), str)
+        },
+        "fields": fields,
+        "actions": [
+            {
+                "action_id": str(action.action_id),
+                "label": str(action.label),
+                "description": str(action.description or ""),
+                "danger": bool(action.danger),
+            }
+            for action in contribution.actions
+        ],
+        "error": error,
+    }
+
+
+def _plugin_settings_field_to_mapping(
+    field: PluginSettingsField,
+    values: dict[str, Any],
+) -> dict[str, object]:
+    key = str(field.key)
+    value = values.get(key, field.default)
+    mapping: dict[str, object] = {
+        "key": key,
+        "label": str(field.label),
+        "type": str(field.field_type or "text"),
+        "value": value,
+        "default": field.default,
+        "description": str(field.description or ""),
+        "options": [
+            {"value": option.get("value"), "label": str(option.get("label", option.get("value", "")))}
+            for option in field.options
+            if isinstance(option, dict)
+        ],
+        "required": bool(field.required),
+        "readonly": bool(field.readonly),
+        "copyable": bool(field.copyable),
+        "restart_required": bool(field.restart_required),
+    }
+    if field.minimum is not None:
+        mapping["minimum"] = field.minimum
+    if field.maximum is not None:
+        mapping["maximum"] = field.maximum
+    if field.step is not None:
+        mapping["step"] = field.step
+    return mapping
+
+
+def apply_tauri_plugin_settings(
+    contributions: list[PluginSettingsContribution] | None,
+    settings_by_id: dict[str, dict[str, dict[str, Any]]],
+) -> bool:
+    """校验并保存 Tauri 返回的插件设置。"""
+    if not settings_by_id:
+        return False
+    by_key = _plugin_settings_by_key(contributions)
+    changed = False
+    for plugin_id, sections in settings_by_id.items():
+        for section_id, values in sections.items():
+            contribution = by_key.get((plugin_id, section_id))
+            if contribution is None:
+                raise ValueError(f"未知插件设置区块：{plugin_id}.{section_id}")
+            normalized = _normalize_plugin_setting_values(contribution, values)
+            if callable(contribution.save):
+                contribution.save(normalized)
+                changed = True
+    return changed
+
+
+def dispatch_tauri_plugin_settings_action(
+    contributions: list[PluginSettingsContribution] | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """执行 Tauri 插件设置页的受控动作。"""
+    plugin_id = _required_plugin_rpc_str(params, "plugin_id")
+    section_id = _required_plugin_rpc_str(params, "section_id")
+    action_id = _required_plugin_rpc_str(params, "action_id")
+    contribution = _plugin_settings_by_key(contributions).get((plugin_id, section_id))
+    if contribution is None:
+        raise ValueError(f"未知插件设置区块：{plugin_id}.{section_id}")
+    action = next(
+        (item for item in contribution.actions if item.action_id == action_id),
+        None,
+    )
+    if action is None or not callable(action.handler):
+        raise ValueError(f"未知插件设置动作：{plugin_id}.{section_id}.{action_id}")
+    raw_values = params.get("values", {})
+    if not isinstance(raw_values, dict):
+        raise ValueError("插件设置动作 values 必须是对象。")
+    values = _normalize_plugin_setting_values(contribution, raw_values)
+    result = action.handler(values)
+    if isinstance(result, dict):
+        return result
+    return {"result": result}
+
+
+def _plugin_settings_by_key(
+    contributions: list[PluginSettingsContribution] | None,
+) -> dict[tuple[str, str], PluginSettingsContribution]:
+    by_key: dict[tuple[str, str], PluginSettingsContribution] = {}
+    for contribution in contributions or []:
+        plugin_id = str(contribution.plugin_id or "").strip()
+        section_id = str(contribution.section_id or "").strip()
+        if not plugin_id or not section_id:
+            continue
+        by_key[(plugin_id, section_id)] = contribution
+    return by_key
+
+
+def _normalize_plugin_setting_values(
+    contribution: PluginSettingsContribution,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    fields_by_key = {str(field.key): field for field in contribution.fields}
+    result: dict[str, Any] = {}
+    for key in values:
+        field = fields_by_key.get(str(key))
+        if field is None:
+            raise ValueError(f"未知插件设置字段：{contribution.plugin_id}.{contribution.section_id}.{key}")
+        if field.readonly:
+            continue
+    for key, field in fields_by_key.items():
+        if field.readonly:
+            continue
+        value = values.get(key, field.default)
+        result[key] = _normalize_plugin_setting_value(contribution, field, value)
+    return result
+
+
+def _normalize_plugin_setting_value(
+    contribution: PluginSettingsContribution,
+    field: PluginSettingsField,
+    value: Any,
+) -> Any:
+    field_type = str(field.field_type or "text").strip().lower()
+    label = f"{contribution.plugin_id}.{contribution.section_id}.{field.key}"
+    if field_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        return value
+    if field_type == "integer":
+        if isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"插件设置字段无效：{label}") from exc
+        if field.minimum is not None:
+            parsed = max(int(field.minimum), parsed)
+        if field.maximum is not None:
+            parsed = min(int(field.maximum), parsed)
+        return parsed
+    if field_type == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        try:
+            parsed_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"插件设置字段无效：{label}") from exc
+        if field.minimum is not None:
+            parsed_float = max(float(field.minimum), parsed_float)
+        if field.maximum is not None:
+            parsed_float = min(float(field.maximum), parsed_float)
+        return parsed_float
+    if field_type == "select":
+        allowed = [option.get("value") for option in field.options if isinstance(option, dict)]
+        if allowed and value not in allowed:
+            raise ValueError(f"插件设置字段无效：{label}")
+        return value
+    text = "" if value is None else str(value)
+    if field.required and not text.strip():
+        raise ValueError(f"插件设置字段不能为空：{label}")
+    return text
+
+
+def _required_plugin_rpc_str(mapping: dict[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"插件设置 RPC 缺少字段：{key}")
+    return value.strip()
 
 
 def _debug_log_from_mapping(mapping: dict[str, Any]) -> DebugLogSettings:
@@ -1381,7 +1647,28 @@ def _plugins_from_mapping_required(mapping: dict[str, Any]) -> TauriPluginResult
         if not isinstance(enabled, bool):
             raise ValueError(f"Tauri 设置结果字段无效：plugins.enabled_by_id.{plugin_id}")
         enabled_by_id[plugin_id.strip()] = enabled
-    return TauriPluginResult(enabled_by_id=enabled_by_id)
+    raw_settings = mapping.get("settings_by_id", {})
+    if raw_settings is None:
+        raw_settings = {}
+    if not isinstance(raw_settings, dict):
+        raise ValueError("Tauri 设置结果字段无效：plugins.settings_by_id")
+    settings_by_id: dict[str, dict[str, dict[str, Any]]] = {}
+    for plugin_id, sections in raw_settings.items():
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise ValueError("Tauri 设置结果字段无效：plugins.settings_by_id")
+        if not isinstance(sections, dict):
+            raise ValueError(f"Tauri 设置结果字段无效：plugins.settings_by_id.{plugin_id}")
+        section_values: dict[str, dict[str, Any]] = {}
+        for section_id, values in sections.items():
+            if not isinstance(section_id, str) or not section_id.strip():
+                raise ValueError(f"Tauri 设置结果字段无效：plugins.settings_by_id.{plugin_id}")
+            if not isinstance(values, dict):
+                raise ValueError(
+                    f"Tauri 设置结果字段无效：plugins.settings_by_id.{plugin_id}.{section_id}"
+                )
+            section_values[section_id.strip()] = dict(values)
+        settings_by_id[plugin_id.strip()] = section_values
+    return TauriPluginResult(enabled_by_id=enabled_by_id, settings_by_id=settings_by_id)
 
 
 def _normalized_request_api_profiles(

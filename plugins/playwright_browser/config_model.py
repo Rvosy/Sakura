@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 
 BROWSER_CHOICES = ("chromium", "firefox", "webkit", "msedge", "chrome")
@@ -37,6 +38,20 @@ def load_config(path: Path) -> PlaywrightBrowserConfig:
         )
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return PlaywrightBrowserConfig()
+
+
+def config_from_mapping(raw: dict[str, Any]) -> PlaywrightBrowserConfig:
+    cfg = PlaywrightBrowserConfig(
+        headless=bool(raw.get("headless", False)),
+        browser_type=str(raw.get("browser_type", "msedge")).strip().lower(),
+    )
+    cfg.clamp()
+    return cfg
+
+
+def config_to_mapping(cfg: PlaywrightBrowserConfig) -> dict[str, Any]:
+    cfg.clamp()
+    return asdict(cfg)
 
 
 def save_config(path: Path, cfg: PlaywrightBrowserConfig) -> None:

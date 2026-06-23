@@ -8,6 +8,6 @@ entry: plugin:SakuraMobilePlugin
 enabled: true
 priority: 70
 permissions:
-  - settings_panel
+  - plugin_settings
   - event.app
   - mobile_chat

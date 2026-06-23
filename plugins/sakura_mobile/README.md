@@ -172,8 +172,7 @@ data/logs/mobile-server.log
   app\core\mobile_chat_bridge.py `
   app\ui\pet_window.py `
   plugins\sakura_mobile\server.py `
-  plugins\sakura_mobile\plugin.py `
-  plugins\sakura_mobile\settings_panel.py
+  plugins\sakura_mobile\plugin.py
 ```
 
 随后启动 Sakura，依次验证：打开 `/api/status`、发送文本、上传或拍摄图片、切换角色，以及检查手机和桌面端是否出现相同的聊天历史。

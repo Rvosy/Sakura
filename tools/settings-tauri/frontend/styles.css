@@ -1109,6 +1109,42 @@ button:active:not(:disabled) {
   min-width: 116px;
 }
 
+.compact-button {
+  min-width: 72px;
+  padding-inline: 12px;
+}
+
+.plugin-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.plugin-settings-section {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+  border-top: 1px solid var(--sakura-border);
+}
+
+.plugin-settings-section h3 {
+  margin: 0;
+  color: var(--sakura-secondary-text);
+  font-size: 15px;
+}
+
+.plugin-readonly-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.plugin-setting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
 button:focus-visible,
 .nav-item:focus-visible {
   outline: none;
