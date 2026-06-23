@@ -181,6 +181,17 @@ class StoragePaths:
     def audio_inference_framework_for(self, framework_id: str) -> Path:
         return self.audio_inference_frameworks_dir / sanitize_file_stem(framework_id)
 
+    @property
+    def local_runtimes_dir(self) -> Path:
+        return self._data / "local_runtimes"
+
+    @property
+    def llama_cpp_runtime_dir(self) -> Path:
+        return self.local_runtimes_dir / "llama_cpp"
+
+    def llama_cpp_runtime_for(self, runtime_id: str) -> Path:
+        return self.llama_cpp_runtime_dir / sanitize_file_stem(runtime_id)
+
     # ---- 日志 ----
     @property
     def logs_dir(self) -> Path:
@@ -253,6 +264,8 @@ class StoragePaths:
             self.microphone_audio_cache_dir,
             self.sensory_models_cache_dir,
             self.audio_inference_frameworks_dir,
+            self.local_runtimes_dir,
+            self.llama_cpp_runtime_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

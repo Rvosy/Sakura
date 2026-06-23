@@ -131,6 +131,12 @@ class TestStoragePathsSnapshot:
             self.paths.audio_inference_framework_for("sakura_official_short")
             == self.data / "audio_inference" / "frameworks" / "sakura_official_short"
         )
+        assert self.paths.local_runtimes_dir == self.data / "local_runtimes"
+        assert self.paths.llama_cpp_runtime_dir == self.data / "local_runtimes" / "llama_cpp"
+        assert (
+            self.paths.llama_cpp_runtime_for("b9763-arm64")
+            == self.data / "local_runtimes" / "llama_cpp" / "b9763-arm64"
+        )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
         # 现网存在 "N.A.V.I." 形态角色，历史文件为 N.A.V.I..jsonl，映射不得改变
@@ -211,6 +217,8 @@ class TestEnsureDirs:
             paths.microphone_audio_cache_dir,
             paths.sensory_models_cache_dir,
             paths.audio_inference_frameworks_dir,
+            paths.local_runtimes_dir,
+            paths.llama_cpp_runtime_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()
