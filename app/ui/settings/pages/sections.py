@@ -762,7 +762,7 @@ class ApiSettingsPage:
         owner.sensory_test_button.clicked.connect(owner._test_sensory_model)
         owner.sensory_hf_download_button = QPushButton("从 Hugging Face 下载", group)
         owner.sensory_hf_download_button.clicked.connect(owner._download_sensory_model_from_huggingface)
-        owner.sensory_llama_runtime_button = QPushButton("配置 llama.cpp 运行时", group)
+        owner.sensory_llama_runtime_button = QPushButton("准备 llama.cpp 音频后端", group)
         owner.sensory_llama_runtime_button.clicked.connect(owner._install_sensory_llama_runtime)
         owner.sensory_llama_doctor_button = QPushButton("诊断 llama.cpp", group)
         owner.sensory_llama_doctor_button.clicked.connect(owner._diagnose_sensory_llama_runtime)

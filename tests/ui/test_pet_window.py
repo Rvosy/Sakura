@@ -4727,18 +4727,21 @@ def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
 
 def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     dialog, app = _build_api_settings_dialog("sensory_hf_download_action")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
 
     assert dialog.sensory_hf_download_button.text() == "从 Hugging Face 下载"
     assert dialog.sensory_hf_download_button.isEnabled()
-    assert dialog.sensory_llama_runtime_button.text() == "配置 llama.cpp 运行时"
+    assert dialog.sensory_llama_runtime_button.text() == "准备 llama.cpp 音频后端"
     assert dialog.sensory_llama_doctor_button.text() == "诊断 llama.cpp"
     assert not dialog.sensory_llama_runtime_button.isEnabled()
     assert not dialog.sensory_llama_doctor_button.isEnabled()
 
+    table.setCurrentCell(0, 1)
     dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
     dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
     app.processEvents()
@@ -4833,14 +4836,22 @@ def test_settings_dialog_llama_runtime_success_fills_audio_model_defaults(monkey
 
     dialog._handle_sensory_llama_runtime_success(
         {
-            "binary_path": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp" / "llama-server"),
-            "install_dir": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp"),
+            "runtime": {
+                "binary_path": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp" / "llama-server"),
+                "install_dir": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp"),
+            },
+            "model": {
+                "local_dir": str(dialog.base_dir / "data" / "sensory_models" / "speech" / "qwen"),
+                "downloaded": True,
+            },
             "message": "已找到可用的 llama-server。",
         }
     )
 
     assert getattr(dialog, "_active_sensory_source") == SensorySource.SPEECH.value
-    assert dialog.sensory_model_edit.text() == "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
+    assert dialog.sensory_model_edit.text() == str(
+        dialog.base_dir / "data" / "sensory_models" / "speech" / "qwen"
+    )
     assert dialog.sensory_endpoint_edit.text() == "http://127.0.0.1:18080/v1"
 
     table.setCurrentCell(0, 0)
@@ -4958,7 +4969,7 @@ def test_settings_dialog_sensory_status_guides_local_llama_setup() -> None:
     dialog.sensory_model_edit.setText("ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0")
     app.processEvents()
 
-    assert "配置 llama.cpp 运行时" in dialog.sensory_status_label.text()
+    assert "准备 llama.cpp 音频后端" in dialog.sensory_status_label.text()
 
     llama_binary = dialog.base_dir / "llama-server"
     _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")

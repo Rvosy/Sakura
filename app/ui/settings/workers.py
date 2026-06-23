@@ -38,6 +38,11 @@ from app.sensory.audio_smoke import (
     run_sensory_audio_smoke_test,
 )
 from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
+from app.sensory.audio_models import (
+    llama_cpp_audio_cache_ready,
+    llama_cpp_audio_model_repo_id,
+    recommended_llama_cpp_audio_model,
+)
 from app.sensory.models import SensoryRequest, SensorySource
 from app.sensory.llama_cpp_runtime import (
     LlamaCppRuntimeError,
@@ -296,31 +301,44 @@ class LlamaCppRuntimeInstallWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            existing = discover_llama_server_binary(self.base_dir)
-            if existing:
-                self.succeeded.emit(
-                    {
-                        "binary_path": existing,
-                        "install_dir": str(Path(existing).parent),
-                        "already_installed": True,
-                        "platform_key": llama_cpp_platform_key(),
-                        "message": "已找到可用的 llama-server。",
-                    }
-                )
-                return
-            catalog = fetch_llama_cpp_runtime_package_catalog(
-                base_dir=self.base_dir,
-                timeout_seconds=30,
-            )
-            package = select_llama_cpp_runtime_package(catalog.packages)
-            result = install_llama_cpp_runtime_package(
+            payload = _ensure_llama_cpp_runtime(
                 self.base_dir,
-                package,
                 timeout_seconds=self.timeout_seconds,
             )
-            payload = result.to_mapping()
-            payload["platform_key"] = llama_cpp_platform_key()
-            payload["package_source"] = catalog.source
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPrepareWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        source: SensorySource,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.source = source
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            payload = prepare_llama_cpp_audio_backend(
+                self.base_dir,
+                self.source,
+                download_model=True,
+                timeout_seconds=self.timeout_seconds,
+            )
         except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
             self.failed.emit(str(exc))
         else:
@@ -501,6 +519,7 @@ def download_huggingface_model(
     repo_id: str,
     local_dir: Path,
     *,
+    include_patterns: tuple[str, ...] = (),
     timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
     normalized_repo_id = repo_id.strip()
@@ -508,20 +527,118 @@ def download_huggingface_model(
         raise RuntimeError("请选择有效的 Hugging Face 模型仓库 ID。")
     target = Path(local_dir)
     target.mkdir(parents=True, exist_ok=True)
-    completed = _run_hf_command(
-        [
-            "download",
-            normalized_repo_id,
-            "--local-dir",
-            str(target),
-        ],
-        timeout_seconds=timeout_seconds,
-    )
+    args = [
+        "download",
+        normalized_repo_id,
+        "--local-dir",
+        str(target),
+    ]
+    for pattern in include_patterns:
+        normalized_pattern = str(pattern or "").strip()
+        if normalized_pattern:
+            args.extend(["--include", normalized_pattern])
+    completed = _run_hf_command(args, timeout_seconds=timeout_seconds)
     return {
         "repo_id": normalized_repo_id,
         "local_dir": str(target),
+        "include_patterns": list(include_patterns),
         "message": (completed.stdout or completed.stderr or "").strip(),
     }
+
+
+def prepare_llama_cpp_audio_backend(
+    base_dir: Path,
+    source: SensorySource,
+    *,
+    download_model: bool,
+    timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    if source not in {SensorySource.SPEECH, SensorySource.SOUND}:
+        raise RuntimeError("llama.cpp 一键准备仅适用于语音和声音事件。")
+    recommendation = recommended_llama_cpp_audio_model(source)
+    if recommendation is None:
+        raise RuntimeError(f"{source.value} 没有内置推荐 llama.cpp 音频模型。")
+    runtime_payload = _ensure_llama_cpp_runtime(
+        Path(base_dir),
+        timeout_seconds=timeout_seconds,
+    )
+    repo_id = llama_cpp_audio_model_repo_id(recommendation.model)
+    local_dir = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id)
+    cached_before = llama_cpp_audio_cache_ready(local_dir, recommendation.include_patterns)
+    download_result: dict[str, object] = {}
+    if not cached_before:
+        if not download_model:
+            raise RuntimeError(
+                f"推荐模型 {recommendation.model} 尚未缓存；确认后才能下载 {recommendation.download_hint}。"
+            )
+        download_result = download_huggingface_model(
+            repo_id,
+            local_dir,
+            include_patterns=recommendation.include_patterns,
+            timeout_seconds=timeout_seconds,
+        )
+    gguf_count = _gguf_count(local_dir)
+    model_payload: dict[str, object] = {
+        "repo_id": repo_id,
+        "model": recommendation.model,
+        "local_dir": str(local_dir),
+        "download_hint": recommendation.download_hint,
+        "estimated_download_bytes": recommendation.estimated_download_bytes,
+        "include_patterns": list(recommendation.include_patterns),
+        "cached_before": cached_before,
+        "downloaded": not cached_before,
+        "gguf_count": gguf_count,
+    }
+    if download_result:
+        model_payload["download_message"] = str(download_result.get("message") or "")
+    if not llama_cpp_audio_cache_ready(local_dir, recommendation.include_patterns):
+        raise RuntimeError(
+            f"推荐模型 {recommendation.model} 下载后未找到 GGUF 文件，请检查 Hugging Face 仓库文件或 include patterns。"
+        )
+    return {
+        "ok": True,
+        "source": source.value,
+        "runtime": runtime_payload,
+        "model": model_payload,
+        "message": "llama.cpp 音频后端已准备好。",
+    }
+
+
+def _ensure_llama_cpp_runtime(
+    base_dir: Path,
+    *,
+    timeout_seconds: int,
+) -> dict[str, object]:
+    existing = discover_llama_server_binary(base_dir)
+    if existing:
+        return {
+            "binary_path": existing,
+            "install_dir": str(Path(existing).parent),
+            "already_installed": True,
+            "platform_key": llama_cpp_platform_key(),
+            "message": "已找到可用的 llama-server。",
+        }
+    catalog = fetch_llama_cpp_runtime_package_catalog(
+        base_dir=base_dir,
+        timeout_seconds=30,
+    )
+    package = select_llama_cpp_runtime_package(catalog.packages)
+    result = install_llama_cpp_runtime_package(
+        base_dir,
+        package,
+        timeout_seconds=timeout_seconds,
+    )
+    payload = result.to_mapping()
+    payload["platform_key"] = llama_cpp_platform_key()
+    payload["package_source"] = catalog.source
+    return payload
+
+
+def _gguf_count(path: Path) -> int:
+    try:
+        return len(list(Path(path).rglob("*.gguf"))) if Path(path).is_dir() else 0
+    except OSError:
+        return 0
 
 
 def _run_hf_command(

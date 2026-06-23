@@ -511,8 +511,8 @@ def test_audio_runtime_cli_doctor_uses_cached_recommended_speech_model(
         "ggml-org/Qwen3-ASR-0.6B-GGUF",
     )
     cache_dir.mkdir(parents=True)
-    (cache_dir / "qwen3-asr.gguf").write_text("gguf", encoding="utf-8")
-    (cache_dir / "mmproj-qwen3-asr.gguf").write_text("gguf", encoding="utf-8")
+    (cache_dir / "Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
+    (cache_dir / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
 
     code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
 

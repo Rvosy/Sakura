@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.sensory.audio_models import recommended_llama_cpp_audio_model
+from app.sensory.audio_models import (
+    llama_cpp_audio_cache_ready,
+    llama_cpp_audio_model_repo_id,
+    recommended_llama_cpp_audio_model,
+)
 from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
@@ -80,7 +84,7 @@ def _managed_llama_default_config(
 
 def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
     recommendation = recommended_llama_cpp_audio_model(source)
-    repo_id = _recommendation_repo_id(recommendation.model) if recommendation is not None else ""
+    repo_id = llama_cpp_audio_model_repo_id(recommendation.model) if recommendation is not None else ""
     path = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id) if repo_id else Path()
     gguf_count = 0
     exists = False
@@ -91,21 +95,21 @@ def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
         except OSError:
             exists = False
             gguf_count = 0
+    ready = (
+        exists
+        and gguf_count > 0
+        and llama_cpp_audio_cache_ready(path, recommendation.include_patterns if recommendation else ())
+    )
     return {
         "repo_id": repo_id,
-        "path": str(path) if exists and gguf_count > 0 else "",
+        "path": str(path) if ready else "",
         "candidate_path": str(path) if repo_id else "",
         "exists": exists,
         "gguf_count": gguf_count,
-        "used_for_plan": exists and gguf_count > 0,
+        "include_patterns": list(recommendation.include_patterns) if recommendation else [],
+        "ready": ready,
+        "used_for_plan": ready,
     }
-
-
-def _recommendation_repo_id(model: str) -> str:
-    text = str(model or "").strip()
-    if ":" in text and "/" in text.split(":", 1)[0]:
-        return text.split(":", 1)[0]
-    return text
 
 
 def _manifest_candidates(base_dir: Path) -> list[dict[str, Any]]:

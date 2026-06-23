@@ -5,7 +5,7 @@
 ## 运行时边界
 
 - 默认不启动、不下载、不采集音频。
-- 只有用户在设置页选择“本机运行框架”与 `llama.cpp` 后端，并点击“配置 llama.cpp 运行时”时，才会准备本机运行时。
+- 只有用户在设置页选择“本机运行框架”与 `llama.cpp` 后端，并点击“准备 llama.cpp 音频后端”且确认下载提示时，才会准备本机运行时与推荐模型缓存。
 - Sakura 优先复用已存在的 `llama-server`：
   - `SAKURA_LLAMA_SERVER`
   - `data/local_runtimes/llama_cpp/`
@@ -100,21 +100,33 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 校验会检查 package 结构、必需平台、相对路径或 `file://` archive 是否存在、`size_bytes` 和 `sha256` 是否匹配。HTTPS URL 不会联网；如需校验镜像文件，配合 `--archive-root` 指向本地 archive 目录。
 
-## 模型默认值
+## 一键准备与模型默认值
 
-配置 llama.cpp 运行时成功后，如果当前音频源没有模型，设置页会填入带量化后缀的 llama.cpp `-hf` 推荐值：
+设置页“准备 llama.cpp 音频后端”会按当前音频源执行：
+
+1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
+2. 检查推荐 GGUF 模型是否已在 `data/sensory_models/<source>/...` 缓存。
+3. 未缓存时，在用户确认后使用 Hugging Face CLI 下载推荐文件。
+4. 成功后把模型字段指向本地缓存目录，避免后续 smoke 或真实调用再让 `llama-server -hf` 拉模型。
+
+如果只安装运行时或命令行使用远端 `-hf`，推荐值为：
 
 - 语音：`ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0`
 - 声音事件：`ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF:Q4_K_M`
 
-这些是推荐值，不覆盖用户已填写的模型。用户也可以从 Hugging Face 下载模型到本地；在本机 llama.cpp 模式下，模型字段会优先使用下载后的本地目录。
+推荐模型下载会限制文件范围，避免拉取完整仓库：
+
+- 语音：`--include Qwen3-ASR-0.6B-Q8_0.gguf --include mmproj-Qwen3-ASR-0.6B-Q8_0.gguf`
+- 声音事件：`--include Llama-3.2-1B-Instruct-Q4_K_M.gguf --include mmproj-*.gguf`
+
+这些是推荐值，不覆盖用户已填写的非一键模型。用户也可以手动从 Hugging Face 下载模型到本地；在本机 llama.cpp 模式下，模型字段会优先使用下载后的本地目录。
 
 截至 2026-06-23，推荐 smoke 下载量约为：
 
 - Qwen3-ASR Q8_0 + mmproj：约 1.0 GB
 - Ultravox Q4_K_M + mmproj：约 2.1 GB
 
-设置页“测试模型”遇到这些推荐远端模型时，会先弹窗确认下载量；用户拒绝时不会启动 sidecar 或下载模型。
+设置页“测试模型”遇到这些推荐远端模型时，会先弹窗确认下载量；用户拒绝时不会启动 sidecar 或下载模型。若已通过“一键准备”缓存到本地目录，测试会直接使用本地路径。
 
 ## 调用链
 
@@ -144,7 +156,7 @@ data/logs/sensory-llama-server.log
 轻量验证：
 
 ```bash
-.venv/bin/python -m pytest tests/unit/test_sensory.py tests/unit/test_sensory_llama_cpp_runtime.py tests/ui/test_pet_window.py -q
+.venv/bin/python -m pytest tests/unit/test_sensory.py tests/unit/test_sensory_llama_cpp_runtime.py tests/unit/test_sensory_huggingface.py tests/ui/test_pet_window.py -q
 ```
 
 命令行 dry-run，不下载模型、不启动 sidecar：

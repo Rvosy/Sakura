@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from app.sensory.audio_models import llama_cpp_audio_cache_ready, recommended_llama_cpp_audio_model
 from app.sensory.models import SensorySource
+from app.storage.paths import StoragePaths
 from app.ui.settings import workers as settings_workers
 
 
@@ -20,6 +22,17 @@ def test_default_huggingface_query_is_source_specific() -> None:
         == "automatic-speech-recognition"
     )
     assert settings_workers.primary_huggingface_task_filter_for_source(SensorySource.SOUND) == "audio-classification"
+
+
+def test_recommended_llama_cache_ready_requires_all_audio_files(tmp_path: Path) -> None:
+    recommendation = recommended_llama_cpp_audio_model(SensorySource.SPEECH)
+    assert recommendation is not None
+
+    (tmp_path / "Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
+    assert llama_cpp_audio_cache_ready(tmp_path, recommendation.include_patterns) is False
+
+    (tmp_path / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
+    assert llama_cpp_audio_cache_ready(tmp_path, recommendation.include_patterns) is True
 
 
 def test_search_huggingface_models_uses_hf_cli_and_parses_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -178,6 +191,137 @@ def test_download_huggingface_model_uses_local_dir(monkeypatch, tmp_path: Path) 
     assert result["repo_id"] == "Qwen/Qwen3-VL-4B-Instruct"
     assert result["local_dir"] == str(target)
     assert result["message"] == "downloaded"
+
+
+def test_download_huggingface_model_passes_include_patterns(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    calls: list[list[str]] = []
+    target = tmp_path / "hf" / "qwen-asr"
+
+    monkeypatch.setattr(settings_workers.shutil, "which", lambda name: "/usr/bin/hf" if name == "hf" else None)
+
+    def fake_run(command, *, check, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="downloaded", stderr="")
+
+    monkeypatch.setattr(settings_workers.subprocess, "run", fake_run)
+
+    result = settings_workers.download_huggingface_model(
+        "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        target,
+        include_patterns=("*Q8_0.gguf", "mmproj-*.gguf"),
+        timeout_seconds=33,
+    )
+
+    assert calls == [
+        [
+            "/usr/bin/hf",
+            "download",
+            "ggml-org/Qwen3-ASR-0.6B-GGUF",
+            "--local-dir",
+            str(target),
+            "--include",
+            "*Q8_0.gguf",
+            "--include",
+            "mmproj-*.gguf",
+        ]
+    ]
+    assert result["include_patterns"] == ["*Q8_0.gguf", "mmproj-*.gguf"]
+
+
+def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    calls: list[tuple[str, Path, tuple[str, ...]]] = []
+
+    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+
+    def fake_download(repo_id, local_dir, *, include_patterns, timeout_seconds):  # type: ignore[no-untyped-def]
+        calls.append((repo_id, Path(local_dir), tuple(include_patterns)))
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        (Path(local_dir) / "Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
+        (Path(local_dir) / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
+        return {"repo_id": repo_id, "local_dir": str(local_dir), "message": "downloaded"}
+
+    monkeypatch.setattr(settings_workers, "download_huggingface_model", fake_download)
+
+    payload = settings_workers.prepare_llama_cpp_audio_backend(
+        tmp_path,
+        SensorySource.SPEECH,
+        download_model=True,
+        timeout_seconds=33,
+    )
+
+    model = payload["model"]
+    assert calls == [
+        (
+            "ggml-org/Qwen3-ASR-0.6B-GGUF",
+            Path(model["local_dir"]),
+            ("Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
+        )
+    ]
+    assert payload["runtime"]["binary_path"] == str(binary)
+    assert model["downloaded"] is True
+    assert model["gguf_count"] == 2
+
+
+def test_prepare_llama_cpp_audio_backend_reuses_cached_recommended_model(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    cache_dir = StoragePaths(tmp_path).sensory_model_cache_for(
+        "sound",
+        "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF",
+    )
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "Llama-3.2-1B-Instruct-Q4_K_M.gguf").write_text("gguf", encoding="utf-8")
+    (cache_dir / "mmproj-ultravox-v0_5-llama-3_2-1b-f16.gguf").write_text("gguf", encoding="utf-8")
+
+    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+
+    def fail_download(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("cached model should not be downloaded")
+
+    monkeypatch.setattr(settings_workers, "download_huggingface_model", fail_download)
+
+    payload = settings_workers.prepare_llama_cpp_audio_backend(
+        tmp_path,
+        SensorySource.SOUND,
+        download_model=True,
+    )
+
+    model = payload["model"]
+    assert model["cached_before"] is True
+    assert model["downloaded"] is False
+    assert model["local_dir"] == str(cache_dir)
+    assert model["include_patterns"] == ["Llama-3.2-1B-Instruct-Q4_K_M.gguf", "mmproj-*.gguf"]
+
+
+def test_prepare_llama_cpp_audio_backend_rejects_empty_model_download(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+
+    def fake_download(repo_id, local_dir, *, include_patterns, timeout_seconds):  # type: ignore[no-untyped-def]
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        return {"repo_id": repo_id, "local_dir": str(local_dir), "message": "downloaded nothing"}
+
+    monkeypatch.setattr(settings_workers, "download_huggingface_model", fake_download)
+
+    with pytest.raises(RuntimeError, match="未找到 GGUF"):
+        settings_workers.prepare_llama_cpp_audio_backend(
+            tmp_path,
+            SensorySource.SPEECH,
+            download_model=True,
+        )
 
 
 def test_huggingface_cli_missing_fails_with_install_hint(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
