@@ -14,10 +14,13 @@ from app.sensory.huggingface import (
 )
 from app.sensory.disk_space import build_disk_space_check, format_bytes
 from app.sensory.llama_cpp_runtime import (
+    LlamaCppRuntimeError,
     discover_llama_server_binary,
     fetch_llama_cpp_runtime_package_catalog,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
+    llama_cpp_runtime_archive_filename,
+    llama_cpp_runtime_install_required_bytes,
     select_llama_cpp_runtime_package,
 )
 from app.sensory.models import SensorySource
@@ -126,9 +129,65 @@ def prepare_llama_cpp_audio_backend(
     }
 
 
+def build_llama_cpp_runtime_download_preflight(
+    base_dir: Path,
+    *,
+    timeout_seconds: int = 30,
+) -> dict[str, object]:
+    root = Path(base_dir)
+    existing = discover_llama_server_binary(root)
+    platform_key = llama_cpp_platform_key()
+    if existing:
+        return {
+            "required": False,
+            "ok": True,
+            "platform_key": platform_key,
+            "binary_path": existing,
+            "message": "已找到可用的 llama-server。",
+        }
+    try:
+        catalog = fetch_llama_cpp_runtime_package_catalog(
+            base_dir=root,
+            timeout_seconds=timeout_seconds,
+        )
+        package = select_llama_cpp_runtime_package(catalog.packages)
+    except (LlamaCppRuntimeError, OSError) as exc:
+        return {
+            "required": True,
+            "ok": False,
+            "platform_key": platform_key,
+            "error": str(exc),
+            "message": f"无法确认当前平台的 llama.cpp 运行时包：{exc}",
+        }
+    archive_path = (
+        StoragePaths(root).llama_cpp_runtime_dir
+        / "_downloads"
+        / llama_cpp_runtime_archive_filename(package)
+    )
+    required_bytes = llama_cpp_runtime_install_required_bytes(package)
+    disk_space = build_disk_space_check(archive_path, required_bytes)
+    download_bytes = int(package.size_bytes or 0)
+    download_hint = format_bytes(download_bytes) if download_bytes > 0 else "大小未知"
+    return {
+        "required": True,
+        "ok": bool(disk_space.get("ok", True)),
+        "platform_key": platform_key,
+        "package_source": catalog.source,
+        "package": package.to_mapping(),
+        "archive_path": str(archive_path),
+        "estimated_download_bytes": download_bytes,
+        "estimated_required_bytes": required_bytes,
+        "download_hint": download_hint,
+        "disk_space": disk_space,
+        "message": f"将下载 {package.label}（{download_hint}）。",
+    }
+
+
 def build_llama_cpp_audio_prepare_requirement(
     report: dict[str, Any],
     source: SensorySource,
+    *,
+    runtime_preflight: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     model_cache = report.get("model_cache") if isinstance(report.get("model_cache"), dict) else {}
@@ -138,7 +197,20 @@ def build_llama_cpp_audio_prepare_requirement(
     disk_space = cache_state.get("disk_space") if isinstance(cache_state, dict) else {}
     actions: list[str] = []
     if needs_runtime_download:
-        actions.append("需要下载或配置 llama.cpp 运行时。")
+        if isinstance(runtime_preflight, dict) and runtime_preflight:
+            if runtime_preflight.get("error"):
+                actions.append(str(runtime_preflight.get("message") or "无法确认当前平台的 llama.cpp 运行时包。"))
+            else:
+                actions.append(str(runtime_preflight.get("message") or "需要下载或配置 llama.cpp 运行时。"))
+            runtime_disk = runtime_preflight.get("disk_space")
+            if isinstance(runtime_disk, dict) and not bool(runtime_disk.get("ok", True)):
+                actions.append(
+                    "运行时磁盘空间不足："
+                    f"需要 {format_bytes(int(runtime_disk.get('needed_bytes') or 0))}，"
+                    f"可用 {format_bytes(int(runtime_disk.get('available_bytes') or 0))}。"
+                )
+        else:
+            actions.append("需要下载或配置 llama.cpp 运行时。")
     if needs_model_download:
         actions.append(f"需要下载 {source.value} 推荐 GGUF 模型。")
     if isinstance(disk_space, dict) and not bool(disk_space.get("ok", True)):
@@ -154,6 +226,7 @@ def build_llama_cpp_audio_prepare_requirement(
         and not (isinstance(disk_space, dict) and not bool(disk_space.get("ok", True))),
         "needs_runtime_download": needs_runtime_download,
         "needs_model_download": needs_model_download,
+        "runtime_preflight": runtime_preflight if isinstance(runtime_preflight, dict) else {},
         "disk_space": disk_space if isinstance(disk_space, dict) else {},
         "actions": actions,
     }

@@ -590,6 +590,17 @@ def test_audio_runtime_cli_prepare_backend_requires_yes_before_download(
         raise AssertionError("prepare should require --yes before downloads")
 
     monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fail_prepare)
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_llama_cpp_runtime_download_preflight",
+        lambda base_dir: {
+            "required": True,
+            "ok": True,
+            "download_hint": "10.0 MB",
+            "message": "将下载 llama.cpp macOS 包（10.0 MB）。",
+            "disk_space": {"ok": True},
+        },
+    )
 
     code = audio_runtime_cli.main(
         ["--base-dir", str(tmp_path), "prepare-backend", "--source", "speech"]
@@ -601,6 +612,8 @@ def test_audio_runtime_cli_prepare_backend_requires_yes_before_download(
     assert "--yes" in payload["message"]
     assert payload["requirement"]["needs_runtime_download"] is True
     assert payload["requirement"]["needs_model_download"] is True
+    assert payload["requirement"]["runtime_preflight"]["download_hint"] == "10.0 MB"
+    assert any("10.0 MB" in action for action in payload["requirement"]["actions"])
 
 
 def test_audio_runtime_cli_prepare_backend_runs_with_yes(

@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.sensory import audio_deployment
 from app.sensory import huggingface as sensory_huggingface
 from app.sensory.audio_models import llama_cpp_audio_cache_ready, recommended_llama_cpp_audio_model
+from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec
 from app.sensory.models import SensorySource
 from app.storage.paths import StoragePaths
 from app.ui.settings import workers as settings_workers
@@ -346,6 +348,56 @@ def test_prepare_llama_cpp_audio_backend_refuses_runtime_download_without_consen
             download_runtime=False,
             download_model=False,
         )
+
+
+def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    package = LlamaCppRuntimePackageSpec(
+        package_id="b1-macos",
+        label="llama.cpp b1 macOS",
+        platform_key="macos-arm64",
+        url="https://example.invalid/llama-b1-bin-macos-arm64.tar.gz",
+        archive_format="tar.gz",
+        binary_relpath="llama-server",
+        size_bytes=1024,
+    )
+    checks: list[tuple[Path, int]] = []
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: "")
+    monkeypatch.setattr(
+        audio_deployment,
+        "fetch_llama_cpp_runtime_package_catalog",
+        lambda **_kwargs: SimpleNamespace(source="manifest:test", packages=(package,)),
+    )
+    monkeypatch.setattr(
+        audio_deployment,
+        "build_disk_space_check",
+        lambda path, required_bytes: checks.append((Path(path), required_bytes))
+        or {
+            "ok": True,
+            "needed_bytes": required_bytes + 512,
+            "available_bytes": 4096,
+        },
+    )
+
+    preflight = audio_deployment.build_llama_cpp_runtime_download_preflight(tmp_path)
+
+    assert preflight["required"] is True
+    assert preflight["ok"] is True
+    assert preflight["package_source"] == "manifest:test"
+    assert preflight["package"]["package_id"] == "b1-macos"
+    assert preflight["estimated_download_bytes"] == 1024
+    assert preflight["estimated_required_bytes"] == 2048
+    assert preflight["download_hint"] == "1.0 KB"
+    assert checks == [
+        (
+            StoragePaths(tmp_path).llama_cpp_runtime_dir
+            / "_downloads"
+            / "llama-b1-bin-macos-arm64.tar.gz",
+            2048,
+        )
+    ]
 
 
 def test_prepare_llama_cpp_audio_backend_refuses_model_download_when_disk_is_low(

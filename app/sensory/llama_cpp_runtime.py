@@ -413,10 +413,10 @@ def install_llama_cpp_runtime_package(
         )
 
     archive_dir = root / "_downloads"
-    archive_path = archive_dir / _archive_filename(normalized)
+    archive_path = archive_dir / llama_cpp_runtime_archive_filename(normalized)
     disk_space = build_disk_space_check(
         archive_path,
-        _runtime_install_required_bytes(normalized),
+        llama_cpp_runtime_install_required_bytes(normalized),
     )
     if not bool(disk_space.get("ok", True)):
         available = format_bytes(int(disk_space.get("available_bytes") or 0))
@@ -821,7 +821,7 @@ def _normalize_archive_format(value: str, url_or_name: str = "") -> str:
     return ""
 
 
-def _archive_filename(package: LlamaCppRuntimePackageSpec) -> str:
+def llama_cpp_runtime_archive_filename(package: LlamaCppRuntimePackageSpec) -> str:
     suffix = ".zip" if package.archive_format == "zip" else ".tar.gz"
     raw_name = Path(package.url.split("?", 1)[0]).name
     if raw_name.endswith((".zip", ".tar.gz", ".tgz")):
@@ -829,7 +829,7 @@ def _archive_filename(package: LlamaCppRuntimePackageSpec) -> str:
     return f"{package.package_id}{suffix}"
 
 
-def _runtime_install_required_bytes(package: LlamaCppRuntimePackageSpec) -> int:
+def llama_cpp_runtime_install_required_bytes(package: LlamaCppRuntimePackageSpec) -> int:
     archive_size = package.normalized().size_bytes
     if archive_size <= 0:
         local_archive = _local_archive_path_from_url(package.url)

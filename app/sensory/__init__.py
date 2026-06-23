@@ -34,6 +34,7 @@ from app.sensory.audio_models import (
 )
 from app.sensory.audio_deployment import (
     build_llama_cpp_audio_prepare_requirement,
+    build_llama_cpp_runtime_download_preflight,
     ensure_llama_cpp_runtime,
     prepare_llama_cpp_audio_backend,
 )
@@ -67,6 +68,8 @@ from app.sensory.llama_cpp_runtime import (
     fetch_llama_cpp_runtime_package_catalog,
     fetch_latest_llama_cpp_runtime_packages,
     install_llama_cpp_runtime_package,
+    llama_cpp_runtime_archive_filename,
+    llama_cpp_runtime_install_required_bytes,
     llama_cpp_platform_key,
     llama_cpp_runtime_manifest_paths,
     llama_cpp_runtime_packages_from_github_release,
@@ -172,6 +175,7 @@ __all__ = [
     "SENSORY_SPEECH_OBSERVATION_CAPABILITY",
     "build_llama_server_command",
     "build_llama_cpp_audio_prepare_requirement",
+    "build_llama_cpp_runtime_download_preflight",
     "build_sensory_audio_runtime_doctor_report",
     "build_sensory_audio_smoke_data_url",
     "build_sensory_audio_smoke_plan",
@@ -192,6 +196,8 @@ __all__ = [
     "LLAMA_CPP_RUNTIME_MANIFEST_ENV",
     "LlamaCppRuntimePackageCatalog",
     "llama_cpp_platform_key",
+    "llama_cpp_runtime_archive_filename",
+    "llama_cpp_runtime_install_required_bytes",
     "llama_cpp_audio_cache_ready",
     "llama_cpp_audio_model_repo_id",
     "llama_cpp_runtime_manifest_paths",

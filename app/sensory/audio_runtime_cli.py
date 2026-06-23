@@ -13,6 +13,7 @@ from urllib.request import url2pathname
 from app.config.settings_service import AppSettingsService
 from app.sensory.audio_deployment import (
     build_llama_cpp_audio_prepare_requirement,
+    build_llama_cpp_runtime_download_preflight,
     prepare_llama_cpp_audio_backend,
 )
 from app.sensory.audio_models import recommended_llama_cpp_audio_model
@@ -378,7 +379,17 @@ def _run_prepare_backend(args: argparse.Namespace) -> int:
     base_dir = Path(args.base_dir)
     source = coerce_sensory_source(args.source)
     report = build_sensory_audio_runtime_doctor_report(base_dir)
-    requirement = build_llama_cpp_audio_prepare_requirement(report, source)
+    runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    runtime_preflight = (
+        build_llama_cpp_runtime_download_preflight(base_dir)
+        if not bool(args.yes) and not bool(runtime.get("binary_found"))
+        else {}
+    )
+    requirement = build_llama_cpp_audio_prepare_requirement(
+        report,
+        source,
+        runtime_preflight=runtime_preflight,
+    )
     if not bool(args.yes) and not bool(requirement.get("ok")):
         _print_payload(
             {

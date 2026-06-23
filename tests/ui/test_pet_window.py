@@ -4753,6 +4753,37 @@ def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_llama_prepare_confirmation_mentions_disk_preflight(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_disk_preflight")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._install_sensory_llama_runtime()
+
+    assert questions
+    assert "运行时包、解压内容和推荐模型所需的磁盘空间" in questions[0]
+    assert dialog._sensory_llama_runtime_thread is None
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_explains_visual_context_and_sensory_vision_relation() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):

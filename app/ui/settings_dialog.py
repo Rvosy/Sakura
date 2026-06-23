@@ -1795,7 +1795,8 @@ class SettingsDialog(QDialog):
                 "准备 llama.cpp 音频后端",
                 (
                     "将优先使用本机已有的 llama-server；若未找到，会从 llama.cpp 官方 GitHub release "
-                    f"下载当前平台的运行时包。\n\n{model_line}\n\n是否继续？"
+                    "下载当前平台的运行时包。下载前会检查运行时包、解压内容和推荐模型所需的磁盘空间。\n\n"
+                    f"{model_line}\n\n是否继续？"
                 ),
             )
             != QMessageBox.StandardButton.Yes
