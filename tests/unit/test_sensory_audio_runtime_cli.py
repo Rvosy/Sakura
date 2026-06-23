@@ -469,6 +469,33 @@ def test_audio_runtime_cli_doctor_reports_missing_hf_cli_for_model_downloads(
     assert any("Hugging Face CLI" in action for action in payload["next_actions"])
 
 
+def test_audio_runtime_cli_doctor_reports_model_disk_space_issue(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    _executable(
+        tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server"
+    )
+    monkeypatch.setattr(
+        audio_runtime_doctor,
+        "build_disk_space_check",
+        lambda path, required_bytes: {
+            "ok": False,
+            "available_bytes": 1024,
+            "needed_bytes": 2048,
+            "required_bytes": required_bytes,
+        },
+    )
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["model_cache"]["speech"]["disk_space"]["ok"] is False
+    assert any("磁盘空间不足" in action for action in payload["next_actions"])
+
+
 def test_audio_runtime_cli_doctor_reports_runtime_next_action_when_missing(
     tmp_path: Path,
     capsys,

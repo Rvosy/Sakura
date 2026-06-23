@@ -46,6 +46,7 @@ from app.sensory.audio_smoke import (
     run_sensory_audio_smoke_test,
 )
 from app.sensory.context import SensoryContextProvider
+from app.sensory.disk_space import build_disk_space_check, format_bytes
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_ALIAS,
     DEFAULT_LLAMA_CPP_HOST,
@@ -174,6 +175,7 @@ __all__ = [
     "build_sensory_audio_runtime_doctor_report",
     "build_sensory_audio_smoke_data_url",
     "build_sensory_audio_smoke_plan",
+    "build_disk_space_check",
     "check_llama_cpp_health",
     "create_default_audio_inference_engine",
     "configured_sensory_capabilities",
@@ -184,6 +186,7 @@ __all__ = [
     "discover_llama_server_binary",
     "fetch_llama_cpp_runtime_package_catalog",
     "fetch_latest_llama_cpp_runtime_packages",
+    "format_bytes",
     "install_llama_cpp_runtime_package",
     "ensure_llama_cpp_runtime",
     "LLAMA_CPP_RUNTIME_MANIFEST_ENV",

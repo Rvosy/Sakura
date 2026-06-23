@@ -12,6 +12,7 @@ from app.sensory.huggingface import (
     HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
     download_huggingface_model,
 )
+from app.sensory.disk_space import build_disk_space_check, format_bytes
 from app.sensory.llama_cpp_runtime import (
     discover_llama_server_binary,
     fetch_llama_cpp_runtime_package_catalog,
@@ -78,11 +79,19 @@ def prepare_llama_cpp_audio_backend(
     local_dir = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id)
     cached_before = llama_cpp_audio_cache_ready(local_dir, recommendation.include_patterns)
     download_result: dict[str, object] = {}
+    disk_space = build_disk_space_check(
+        local_dir,
+        0 if cached_before else recommendation.estimated_download_bytes,
+    )
     if not cached_before:
         if not download_model:
             raise RuntimeError(
                 f"推荐模型 {recommendation.model} 尚未缓存；确认后才能下载 {recommendation.download_hint}。"
             )
+        if not bool(disk_space.get("ok", True)):
+            available = format_bytes(int(disk_space.get("available_bytes") or 0))
+            needed = format_bytes(int(disk_space.get("needed_bytes") or 0))
+            raise RuntimeError(f"磁盘空间不足，无法下载推荐模型：需要 {needed}，可用 {available}。")
         download_result = download_huggingface_model(
             repo_id,
             local_dir,
@@ -100,6 +109,7 @@ def prepare_llama_cpp_audio_backend(
         "cached_before": cached_before,
         "downloaded": not cached_before,
         "gguf_count": gguf_count,
+        "disk_space": disk_space,
     }
     if download_result:
         model_payload["download_message"] = str(download_result.get("message") or "")
@@ -125,16 +135,26 @@ def build_llama_cpp_audio_prepare_requirement(
     cache_state = model_cache.get(source.value) if isinstance(model_cache, dict) else {}
     needs_runtime_download = not bool(runtime.get("binary_found")) if isinstance(runtime, dict) else True
     needs_model_download = not bool(cache_state.get("ready")) if isinstance(cache_state, dict) else True
+    disk_space = cache_state.get("disk_space") if isinstance(cache_state, dict) else {}
     actions: list[str] = []
     if needs_runtime_download:
         actions.append("需要下载或配置 llama.cpp 运行时。")
     if needs_model_download:
         actions.append(f"需要下载 {source.value} 推荐 GGUF 模型。")
+    if isinstance(disk_space, dict) and not bool(disk_space.get("ok", True)):
+        actions.append(
+            "磁盘空间不足："
+            f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+            f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+        )
     return {
         "source": source.value,
-        "ok": not needs_runtime_download and not needs_model_download,
+        "ok": not needs_runtime_download
+        and not needs_model_download
+        and not (isinstance(disk_space, dict) and not bool(disk_space.get("ok", True))),
         "needs_runtime_download": needs_runtime_download,
         "needs_model_download": needs_model_download,
+        "disk_space": disk_space if isinstance(disk_space, dict) else {},
         "actions": actions,
     }
 

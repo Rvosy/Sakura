@@ -106,8 +106,9 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
 2. 检查推荐 GGUF 模型是否已在 `data/sensory_models/<source>/...` 缓存。
-3. 未缓存时，在用户确认后下载推荐文件；有 Hugging Face CLI 时优先使用 `hf`，没有 `hf` 时使用内置 HTTP 直连下载匹配文件。
-4. 成功后把模型字段指向本地缓存目录，避免后续 smoke 或真实调用再让 `llama-server -hf` 拉模型。
+3. 检查本地磁盘空间是否足够容纳推荐模型下载，并保留安全余量。
+4. 未缓存时，在用户确认后下载推荐文件；有 Hugging Face CLI 时优先使用 `hf`，没有 `hf` 时使用内置 HTTP 直连下载匹配文件。
+5. 成功后把模型字段指向本地缓存目录，避免后续 smoke 或真实调用再让 `llama-server -hf` 拉模型。
 
 如果只安装运行时或命令行使用远端 `-hf`，推荐值为：
 
@@ -183,7 +184,7 @@ data/logs/sensory-llama-server.log
 .venv/bin/python -m app.sensory.audio_runtime_cli doctor --pretty
 ```
 
-`doctor` 会汇总当前平台、`llama-server` 是否可用、Hugging Face CLI 是否可用、内置推荐文件下载是否可用、本地 runtime manifest 候选、本地推荐模型缓存、语音/声音默认模型 smoke plan、以及下一步动作建议。
+`doctor` 会汇总当前平台、`llama-server` 是否可用、Hugging Face CLI 是否可用、内置推荐文件下载是否可用、本地 runtime manifest 候选、本地推荐模型缓存、推荐模型磁盘空间预检、语音/声音默认模型 smoke plan、以及下一步动作建议。
 
 设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断 llama.cpp”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
 

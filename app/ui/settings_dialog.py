@@ -5336,6 +5336,15 @@ def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
         ]
         if cached_sources:
             lines.append(f"本地模型缓存：{', '.join(sorted(cached_sources))}。")
+        low_space_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict)
+            and isinstance(state.get("disk_space"), dict)
+            and not bool(state["disk_space"].get("ok", True))
+        ]
+        if low_space_sources:
+            lines.append(f"模型下载空间不足：{', '.join(sorted(low_space_sources))}。")
     actions = report.get("next_actions")
     if isinstance(actions, list) and actions:
         lines.append("")

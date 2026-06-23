@@ -325,6 +325,7 @@ def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
     assert payload["runtime"]["binary_path"] == str(binary)
     assert model["downloaded"] is True
     assert model["gguf_count"] == 2
+    assert model["disk_space"]["ok"] is True
 
 
 def test_prepare_llama_cpp_audio_backend_refuses_runtime_download_without_consent(
@@ -344,6 +345,38 @@ def test_prepare_llama_cpp_audio_backend_refuses_runtime_download_without_consen
             SensorySource.SPEECH,
             download_runtime=False,
             download_model=False,
+        )
+
+
+def test_prepare_llama_cpp_audio_backend_refuses_model_download_when_disk_is_low(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: str(binary))
+    monkeypatch.setattr(
+        audio_deployment,
+        "build_disk_space_check",
+        lambda path, required_bytes: {
+            "ok": False,
+            "available_bytes": 1024,
+            "needed_bytes": 2048,
+            "required_bytes": required_bytes,
+        },
+    )
+
+    def fail_download(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("model download should not start when disk is low")
+
+    monkeypatch.setattr(audio_deployment, "download_huggingface_model", fail_download)
+
+    with pytest.raises(RuntimeError, match="磁盘空间不足"):
+        audio_deployment.prepare_llama_cpp_audio_backend(
+            tmp_path,
+            SensorySource.SPEECH,
+            download_model=True,
         )
 
 

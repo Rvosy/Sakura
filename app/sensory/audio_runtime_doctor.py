@@ -19,6 +19,7 @@ from app.sensory.llama_cpp_runtime import (
     llama_cpp_runtime_packages_from_manifest,
 )
 from app.sensory.huggingface import hf_cli_path
+from app.sensory.disk_space import build_disk_space_check, format_bytes
 from app.sensory.models import SensoryProviderMode, SensorySource
 from app.sensory.settings import SensoryProviderConfig
 from app.storage.paths import StoragePaths
@@ -110,6 +111,10 @@ def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
         and gguf_count > 0
         and llama_cpp_audio_cache_ready(path, recommendation.include_patterns if recommendation else ())
     )
+    disk_space = build_disk_space_check(
+        path,
+        0 if ready or recommendation is None else recommendation.estimated_download_bytes,
+    )
     return {
         "repo_id": repo_id,
         "path": str(path) if ready else "",
@@ -119,6 +124,7 @@ def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
         "include_patterns": list(recommendation.include_patterns) if recommendation else [],
         "ready": ready,
         "used_for_plan": ready,
+        "disk_space": disk_space,
     }
 
 
@@ -168,4 +174,12 @@ def _next_actions(
             actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
     if not hf_cli_found and any(not bool(state.get("ready")) for state in model_cache.values()):
         actions.append("未安装 Hugging Face CLI `hf`；推荐 GGUF 文件会使用内置直连下载，手动下载任意仓库仍需 `hf`。")
+    for source, state in model_cache.items():
+        disk_space = state.get("disk_space") if isinstance(state, dict) else {}
+        if isinstance(disk_space, dict) and not bool(disk_space.get("ok", True)):
+            actions.append(
+                f"{source} 推荐模型磁盘空间不足："
+                f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+                f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+            )
     return actions
