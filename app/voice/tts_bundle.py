@@ -320,7 +320,12 @@ def default_bundle_work_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
     return short_dir
 
 
-def default_provider_bundle_work_dir(provider: str, base_dir: Path) -> Path | None:
+def default_provider_bundle_work_dir(
+    provider: str,
+    base_dir: Path,
+    *,
+    gpus: list[GPUInfo] | None = None,
+) -> Path | None:
     """按 provider 选择整合包默认工作目录，自定义外部 provider 不返回目录。"""
 
     normalized = provider.strip().lower().replace("_", "-")
@@ -331,13 +336,34 @@ def default_provider_bundle_work_dir(provider: str, base_dir: Path) -> Path | No
 
     if not any(is_bundle_supported(entry) for entry in GPT_SOVITS_BUNDLES):
         return None
-    for entry in GPT_SOVITS_BUNDLES:
-        if not is_bundle_supported(entry):
-            continue
-        if _is_bundle_installed(entry, base_dir):
-            return default_bundle_work_dir(entry, base_dir)
-    recommended = recommend_gpt_sovits_bundle()
+    recommended = recommend_gpt_sovits_bundle(gpus)
     return default_bundle_work_dir(recommended, base_dir) if recommended is not None else None
+
+
+def default_provider_bundle_notice(
+    provider: str,
+    base_dir: Path,
+    *,
+    gpus: list[GPUInfo] | None = None,
+) -> str:
+    normalized = provider.strip().lower().replace("_", "-")
+    if normalized not in {"gpt-sovits", "gpt-so-vits", "gptsovits"}:
+        return ""
+    recommended = recommend_gpt_sovits_bundle(gpus)
+    if recommended is None or _is_bundle_installed(recommended, base_dir):
+        return ""
+    installed = [
+        entry
+        for entry in GPT_SOVITS_BUNDLES
+        if entry != recommended and is_bundle_supported(entry) and _is_bundle_installed(entry, base_dir)
+    ]
+    if not installed:
+        return ""
+    installed_labels = "、".join(entry.label for entry in installed)
+    return (
+        f"检测到已安装 {installed_labels}，但当前显卡推荐 {recommended.label}。"
+        "请下载匹配显卡的 GPT-SoVITS 整合包。"
+    )
 
 
 def is_provider_bundle_work_dir(path: Path, base_dir: Path) -> bool:

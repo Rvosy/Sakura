@@ -203,10 +203,6 @@
             <select id="ttsProvider"></select>
           </div>
           <div class="form-row">
-            <label for="ttsApiUrl">API URL</label>
-            <input id="ttsApiUrl" class="wide-input" type="text" />
-          </div>
-          <div class="form-row">
             <label for="ttsWorkDir">工作目录</label>
             <input id="ttsWorkDir" class="wide-input" type="text" />
           </div>
@@ -215,9 +211,14 @@
             <input id="ttsPythonPath" class="wide-input" type="text" />
           </div>
           <div class="form-row">
-            <label for="ttsConfigPath">推理配置</label>
-            <input id="ttsConfigPath" class="wide-input" type="text" />
+            <label for="ttsApiUrl">API URL</label>
+            <input id="ttsApiUrl" class="wide-input" type="text" />
           </div>
+          <div id="ttsBundleNoticeRow" class="form-row" hidden>
+            <label>整合包提示</label>
+            <p id="ttsBundleNotice" class="page-note"></p>
+          </div>
+          <input id="ttsConfigPath" type="hidden" />
           <div class="form-row">
             <label for="ttsTimeout">超时</label>
             <input id="ttsTimeout" type="number" step="1" />
