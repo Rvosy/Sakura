@@ -1401,7 +1401,15 @@ def test_mcp_provider_skips_disabled_server() -> None:
     provider.close()
 
 
-def test_mcp_runtime_settings_force_disables_windows_server() -> None:
+def test_mcp_runtime_settings_force_disables_windows_server(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.mcp import DesktopMCP
+
+    # apply 现在按平台选择 server；固定为 Windows，测试 windows server 的启用路径。
+    monkeypatch.setattr(
+        "app.agent.mcp.settings.resolve_desktop_mcp",
+        lambda platform=None: DesktopMCP(server_name="windows", label="Windows MCP"),
+    )
+
     config_path = _runtime_root_path("mcp_runtime_override") / "mcp.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -1433,7 +1441,15 @@ def test_settings_service_saves_and_loads_experimental_windows_mcp() -> None:
     assert service.load_mcp_runtime_settings().windows_enabled
 
 
-def test_register_mcp_tools_loads_experimental_windows_mcp_when_enabled() -> None:
+def test_register_mcp_tools_loads_experimental_windows_mcp_when_enabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.mcp import DesktopMCP
+
+    # 注册路径内部会调用 apply；固定为 Windows，确保 windows server 被启用并注册。
+    monkeypatch.setattr(
+        "app.agent.mcp.settings.resolve_desktop_mcp",
+        lambda platform=None: DesktopMCP(server_name="windows", label="Windows MCP"),
+    )
+
     root = _runtime_root_path("mcp_register_windows_override")
     config_dir = root / "data" / "config"
     config_dir.mkdir(parents=True)

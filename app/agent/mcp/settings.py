@@ -52,11 +52,14 @@ class MCPRuntimeSettings:
 
 
 def normalize_mcp_runtime_settings(settings: MCPRuntimeSettings) -> MCPRuntimeSettings:
-    """归一化 MCP 运行时开关；当前平台无桌面控制 MCP 时强制关闭。"""
+    """归一化 MCP 运行时开关。
 
-    if resolve_desktop_mcp() is not None:
-        return settings
-    return replace(settings, windows_enabled=False)
+    桌面控制开关是用户偏好，跨平台原样保留（持久化忠实回写）；是否真正启用某个
+    server 由 apply_mcp_runtime_settings 按当前平台决定——不支持的平台不会启用任何
+    server，因此无需在此抹掉用户偏好。
+    """
+
+    return settings
 
 
 def apply_mcp_runtime_settings(
