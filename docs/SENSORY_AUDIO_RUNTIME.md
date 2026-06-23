@@ -174,7 +174,7 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 ## 一键准备与模型默认值
 
-设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后按当前音频源执行：
+设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后会一次准备 `speech` 与 `sound` 两个音频源，并复用同一个本机 llama.cpp runtime：
 
 1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
 2. 检查推荐 GGUF 模型是否已在 `data/cache/sensory_models/<source>/...` 缓存。

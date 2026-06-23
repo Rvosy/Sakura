@@ -175,6 +175,7 @@ _SENSORY_LLAMA_RUNTIME_STATE_KEYS = (
     "llama_runtime_package_id",
     "llama_runtime_install_dir",
 )
+_SENSORY_LLAMA_AUDIO_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
 
 
 from app.ui.settings import workers as settings_workers
@@ -589,7 +590,7 @@ class SettingsDialog(QDialog):
         self._sensory_model_test_worker: settings_workers.SensoryModelTestWorker | None = None
         self._sensory_llama_preflight_thread: QThread | None = None
         self._sensory_llama_preflight_worker: settings_workers.LlamaCppAudioBackendPreflightWorker | None = None
-        self._pending_sensory_llama_prepare_source: SensorySource | None = None
+        self._pending_sensory_llama_prepare_sources: tuple[SensorySource, ...] | None = None
         self._sensory_llama_runtime_thread: QThread | None = None
         self._sensory_llama_runtime_worker: (
             settings_workers.LlamaCppRuntimeInstallWorker
@@ -1775,14 +1776,24 @@ class SettingsDialog(QDialog):
         if active_source not in {SensorySource.SPEECH, SensorySource.SOUND}:
             QMessageBox.information(self, "不可用", "llama.cpp 一键准备仅适用于语音和声音事件。")
             return
-        recommendation = recommended_llama_cpp_audio_model(active_source)
-        if recommendation is None:
-            QMessageBox.warning(self, "缺少推荐模型", f"{active_source.value} 没有内置推荐 llama.cpp 音频模型。")
+        self._capture_sensory_current_source()
+        prepare_sources = _sensory_llama_prepare_sources()
+        missing_recommendations = [
+            _sensory_source_label(source)
+            for source in prepare_sources
+            if recommended_llama_cpp_audio_model(source) is None
+        ]
+        if missing_recommendations:
+            QMessageBox.warning(
+                self,
+                "缺少推荐模型",
+                f"{', '.join(missing_recommendations)} 没有内置推荐 llama.cpp 音频模型。",
+            )
             return
         self._set_sensory_llama_preflight_busy(True)
         self.sensory_status_label.setText("正在检查 llama.cpp 音频后端...")
         thread = QThread()
-        worker = settings_workers.LlamaCppAudioBackendPreflightWorker(self.base_dir, active_source)
+        worker = settings_workers.LlamaCppAudioBackendPreflightWorker(self.base_dir, prepare_sources)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_sensory_llama_preflight_success)
@@ -1799,15 +1810,20 @@ class SettingsDialog(QDialog):
     @Slot(object)
     def _handle_sensory_llama_preflight_success(self, result: object) -> None:
         payload = result if isinstance(result, dict) else {}
-        active_source = coerce_sensory_source(
-            str(payload.get("source") or getattr(self, "_active_sensory_source", SensorySource.VISION.value))
+        prepare_sources = _sensory_llama_sources_from_payload(
+            payload,
+            fallback=(
+                coerce_sensory_source(
+                    getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+                ),
+            ),
         )
         blocking_message = _sensory_llama_prepare_blocking_message(payload)
         if blocking_message:
             self.sensory_status_label.setText(f"准备不可用：{blocking_message}")
             QMessageBox.warning(self, "准备不可用", blocking_message)
             return
-        message = _format_sensory_llama_prepare_confirmation(active_source, payload, self.base_dir)
+        message = _format_sensory_llama_prepare_confirmation(prepare_sources, payload, self.base_dir)
         if (
             QMessageBox.question(
                 self,
@@ -1816,7 +1832,7 @@ class SettingsDialog(QDialog):
             )
             == QMessageBox.StandardButton.Yes
         ):
-            self._pending_sensory_llama_prepare_source = active_source
+            self._pending_sensory_llama_prepare_sources = prepare_sources
 
     @Slot(str)
     def _handle_sensory_llama_preflight_failed(self, message: str) -> None:
@@ -1827,19 +1843,19 @@ class SettingsDialog(QDialog):
     def _reset_sensory_llama_preflight_state(self) -> None:
         self._sensory_llama_preflight_thread = None
         self._sensory_llama_preflight_worker = None
-        pending_source = self._pending_sensory_llama_prepare_source
-        self._pending_sensory_llama_prepare_source = None
-        if pending_source is not None:
-            self._start_sensory_llama_runtime_prepare(pending_source)
+        pending_sources = self._pending_sensory_llama_prepare_sources
+        self._pending_sensory_llama_prepare_sources = None
+        if pending_sources is not None:
+            self._start_sensory_llama_runtime_prepare(pending_sources)
             return
         self._set_sensory_llama_preflight_busy(False)
         self._sync_sensory_controls()
 
-    def _start_sensory_llama_runtime_prepare(self, active_source: SensorySource) -> None:
+    def _start_sensory_llama_runtime_prepare(self, prepare_sources: SensorySource | tuple[SensorySource, ...]) -> None:
         self._set_sensory_llama_runtime_busy(True)
         self.sensory_status_label.setText("正在准备 llama.cpp 音频后端...")
         thread = QThread()
-        worker = settings_workers.LlamaCppAudioBackendPrepareWorker(self.base_dir, active_source)
+        worker = settings_workers.LlamaCppAudioBackendPrepareWorker(self.base_dir, prepare_sources)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.succeeded.connect(self._handle_sensory_llama_runtime_success)
@@ -1856,22 +1872,65 @@ class SettingsDialog(QDialog):
     @Slot(object)
     def _handle_sensory_llama_runtime_success(self, result: object) -> None:
         payload = result if isinstance(result, dict) else {}
+        successful_sources: list[SensorySource] = []
+        result_messages: list[str] = []
+        issues: list[str] = []
+        results = payload.get("results") if isinstance(payload.get("results"), dict) else {}
+        if isinstance(results, dict) and results:
+            for raw_source, raw_result in results.items():
+                source = coerce_sensory_source(raw_source)
+                source_payload = raw_result if isinstance(raw_result, dict) else {}
+                if bool(source_payload.get("ok")):
+                    successful_sources.append(source)
+                    result_messages.append(
+                        self._apply_sensory_llama_prepare_result(source, source_payload)
+                    )
+            issues = [str(issue) for issue in payload.get("issues", []) if str(issue).strip()]
+        else:
+            source = coerce_sensory_source(
+                str(payload.get("source") or getattr(self, "_active_sensory_source", SensorySource.VISION.value))
+            )
+            successful_sources.append(source)
+            result_messages.append(self._apply_sensory_llama_prepare_result(source, payload))
+
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        self._load_sensory_source_controls(active_source.value, mark_dirty=False)
+        self._sync_sensory_controls()
+        message = str(payload.get("message") or "llama.cpp 音频后端已准备。").strip()
+        if successful_sources:
+            labels = "、".join(_sensory_source_label(source) for source in successful_sources)
+            message = f"{message} 已配置：{labels}。"
+        if result_messages:
+            message = f"{message}\n" + "\n".join(result_messages)
+        if issues:
+            message = f"{message}\n失败项：\n" + "\n".join(f"- {issue}" for issue in issues)
+        self.sensory_status_label.setText(message)
+        if issues:
+            QMessageBox.warning(self, "部分配置失败", message)
+        else:
+            QMessageBox.information(self, "配置成功", message)
+
+    def _apply_sensory_llama_prepare_result(
+        self,
+        source: SensorySource,
+        payload: dict[str, Any],
+    ) -> str:
         runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else payload
         model_payload = payload.get("model") if isinstance(payload.get("model"), dict) else {}
         binary_path = str(runtime_payload.get("binary_path") or "").strip()
         install_dir = str(runtime_payload.get("install_dir") or "").strip()
         package = runtime_payload.get("package") if isinstance(runtime_payload.get("package"), dict) else {}
         package_id = str(package.get("package_id") or "").strip() if isinstance(package, dict) else ""
-        active_source = coerce_sensory_source(
-            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
-        )
         state = dict(
             getattr(self, "_sensory_source_state", {}).get(
-                active_source.value,
-                _default_sensory_state(active_source),
+                source.value,
+                _default_sensory_state(source),
             )
         )
-        state.update(self._sensory_current_state())
+        state["mode_ui"] = "local"
+        state["backend"] = "llama"
         state["managed_runtime"] = LLAMA_CPP_MANAGED_RUNTIME_MARKER
         if binary_path:
             state["llama_binary_path"] = binary_path
@@ -1879,30 +1938,25 @@ class SettingsDialog(QDialog):
             state["llama_runtime_install_dir"] = install_dir
         if package_id:
             state["llama_runtime_package_id"] = package_id
-        current_endpoint = str(state.get("endpoint") or "").strip()
-        if not current_endpoint or current_endpoint == DEFAULT_LLAMA_CPP_ENDPOINT:
-            state["endpoint"] = f"http://127.0.0.1:{DEFAULT_LLAMA_CPP_MANAGED_PORT}/v1"
+        state["endpoint"] = f"http://127.0.0.1:{DEFAULT_LLAMA_CPP_MANAGED_PORT}/v1"
         local_model_dir = str(model_payload.get("local_dir") or "").strip() if isinstance(model_payload, dict) else ""
         if local_model_dir:
             state["model"] = local_model_dir
         elif not str(state.get("model") or "").strip():
-            recommended_model = _recommended_llama_cpp_model_for_source(active_source)
+            recommended_model = _recommended_llama_cpp_model_for_source(source)
             if recommended_model:
                 state["model"] = recommended_model
-        self._sensory_source_state[active_source.value] = state
-        self._load_sensory_source_controls(active_source.value, mark_dirty=False)
-        self._sync_sensory_controls()
-        message = str(payload.get("message") or "llama.cpp 音频后端已准备。").strip()
+        self._sensory_source_state[source.value] = state
+        details = [_sensory_source_label(source)]
         if local_model_dir:
             downloaded = bool(model_payload.get("downloaded")) if isinstance(model_payload, dict) else False
             verb = "已下载并填入本地模型缓存" if downloaded else "已填入本地模型缓存"
-            message = f"{message} {verb}：{local_model_dir}。"
+            details.append(f"{verb}：{local_model_dir}")
         elif state.get("model"):
-            message = f"{message} 已填入推荐模型：{state['model']}。"
+            details.append(f"已填入推荐模型：{state['model']}")
         if binary_path:
-            message = f"{message} {binary_path}"
-        self.sensory_status_label.setText(message)
-        QMessageBox.information(self, "配置成功", message)
+            details.append(f"llama-server：{binary_path}")
+        return "；".join(str(part) for part in details if str(part).strip()) + "。"
 
     @Slot(str)
     def _handle_sensory_llama_runtime_failed(self, message: str) -> None:
@@ -5319,6 +5373,44 @@ def _sensory_source_label(source: SensorySource) -> str:
     }.get(source, source.value)
 
 
+def _sensory_llama_prepare_sources() -> tuple[SensorySource, ...]:
+    return _SENSORY_LLAMA_AUDIO_SOURCES
+
+
+def _sensory_llama_sources_from_payload(
+    payload: dict[str, Any],
+    *,
+    fallback: tuple[SensorySource, ...],
+) -> tuple[SensorySource, ...]:
+    raw_sources = payload.get("sources")
+    if isinstance(raw_sources, list):
+        sources = tuple(
+            source
+            for source in (coerce_sensory_source(raw_source) for raw_source in raw_sources)
+            if source in _SENSORY_LLAMA_AUDIO_SOURCES
+        )
+        if sources:
+            return sources
+    raw_source = str(payload.get("source") or "").strip().lower()
+    if raw_source == "all":
+        return _SENSORY_LLAMA_AUDIO_SOURCES
+    if raw_source:
+        source = coerce_sensory_source(raw_source)
+        if source in _SENSORY_LLAMA_AUDIO_SOURCES:
+            return (source,)
+    return fallback
+
+
+def _sensory_llama_requirements(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements = payload.get("requirements")
+    if isinstance(requirements, dict) and requirements:
+        return [requirement for requirement in requirements.values() if isinstance(requirement, dict)]
+    requirement = payload.get("requirement")
+    if isinstance(requirement, dict) and requirement:
+        return [requirement]
+    return []
+
+
 def _sensory_mode_label(mode_ui: str) -> str:
     return {
         "off": "关闭",
@@ -5342,20 +5434,27 @@ def _sensory_backend_label(backend: str) -> str:
 
 
 def _format_sensory_llama_prepare_confirmation(
-    source: SensorySource,
+    source_or_sources: SensorySource | tuple[SensorySource, ...],
     payload: dict[str, Any],
     base_dir: Path,
 ) -> str:
-    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
-    runtime_preflight = (
-        requirement.get("runtime_preflight")
-        if isinstance(requirement.get("runtime_preflight"), dict)
-        else {}
+    sources = (
+        source_or_sources
+        if isinstance(source_or_sources, tuple)
+        else (source_or_sources,)
     )
+    requirements_by_source = payload.get("requirements") if isinstance(payload.get("requirements"), dict) else {}
+    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
+    if not requirement and isinstance(requirements_by_source, dict) and sources:
+        first_requirement = requirements_by_source.get(sources[0].value)
+        requirement = first_requirement if isinstance(first_requirement, dict) else {}
+    runtime_preflight = _runtime_preflight_from_requirements(_sensory_llama_requirements(payload))
     lines = [
         "将准备本机 llama.cpp 音频后端。",
         "",
     ]
+    if len(sources) > 1:
+        lines.append(f"范围：{'、'.join(_sensory_source_label(source) for source in sources)}。")
     if isinstance(runtime_preflight, dict) and runtime_preflight:
         if bool(runtime_preflight.get("required")):
             lines.append(str(runtime_preflight.get("message") or "将下载当前平台的 llama.cpp 运行时包。"))
@@ -5372,30 +5471,38 @@ def _format_sensory_llama_prepare_confirmation(
     else:
         lines.append("运行时：将优先使用本机已有的 llama-server；缺失时下载当前平台官方包。")
 
-    recommendation = recommended_llama_cpp_audio_model(source)
-    if recommendation is not None:
+    for source in sources:
+        source_requirement = requirement
+        if isinstance(requirements_by_source, dict):
+            raw_requirement = requirements_by_source.get(source.value)
+            if isinstance(raw_requirement, dict):
+                source_requirement = raw_requirement
+        recommendation = recommended_llama_cpp_audio_model(source)
+        if recommendation is None:
+            continue
         repo_id = _llama_cpp_audio_repo_id(recommendation.model)
         cache_dir = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id)
         cached = llama_cpp_audio_cache_ready(cache_dir, recommendation.include_patterns)
+        prefix = f"{_sensory_source_label(source)}推荐模型"
         if cached:
-            lines.append(f"推荐模型：已在本地缓存 {cache_dir}。")
+            lines.append(f"{prefix}：已在本地缓存 {cache_dir}。")
         else:
-            model_manifest = requirement.get("model_manifest") if isinstance(requirement, dict) else {}
+            model_manifest = source_requirement.get("model_manifest") if isinstance(source_requirement, dict) else {}
             if isinstance(model_manifest, dict) and model_manifest:
                 manifest_path = str(model_manifest.get("manifest_path") or "").strip()
                 lines.append(
-                    f"推荐模型：将从本地音频模型 manifest 复制 {recommendation.model}"
+                    f"{prefix}：将从本地音频模型 manifest 复制 {recommendation.model}"
                     f"{f'（{manifest_path}）' if manifest_path else ''}。"
                 )
             else:
                 lines.append(
-                    f"推荐模型：将下载 {recommendation.model}（{recommendation.download_hint}），"
+                    f"{prefix}：将下载 {recommendation.model}（{recommendation.download_hint}），"
                     f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
                 )
-            disk_space = requirement.get("disk_space") if isinstance(requirement, dict) else {}
+            disk_space = source_requirement.get("disk_space") if isinstance(source_requirement, dict) else {}
             if isinstance(disk_space, dict):
                 lines.append(
-                    "模型空间："
+                    f"{_sensory_source_label(source)}模型空间："
                     f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
                     f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
                 )
@@ -5404,12 +5511,8 @@ def _format_sensory_llama_prepare_confirmation(
 
 
 def _sensory_llama_prepare_blocking_message(payload: dict[str, Any]) -> str:
-    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
-    runtime_preflight = (
-        requirement.get("runtime_preflight")
-        if isinstance(requirement.get("runtime_preflight"), dict)
-        else {}
-    )
+    requirements = _sensory_llama_requirements(payload)
+    runtime_preflight = _runtime_preflight_from_requirements(requirements)
     if isinstance(runtime_preflight, dict) and runtime_preflight:
         if runtime_preflight.get("error"):
             return str(runtime_preflight.get("message") or runtime_preflight.get("error") or "无法确认 llama.cpp 运行时包。")
@@ -5420,14 +5523,29 @@ def _sensory_llama_prepare_blocking_message(payload: dict[str, Any]) -> str:
                 f"需要 {format_bytes(int(runtime_disk.get('needed_bytes') or 0))}，"
                 f"可用 {format_bytes(int(runtime_disk.get('available_bytes') or 0))}。"
             )
-    model_disk = requirement.get("disk_space") if isinstance(requirement, dict) else {}
-    if isinstance(model_disk, dict) and not bool(model_disk.get("ok", True)):
-        return (
-            "模型下载磁盘空间不足："
-            f"需要 {format_bytes(int(model_disk.get('needed_bytes') or 0))}，"
-            f"可用 {format_bytes(int(model_disk.get('available_bytes') or 0))}。"
-        )
+    for requirement in requirements:
+        model_disk = requirement.get("disk_space") if isinstance(requirement, dict) else {}
+        if isinstance(model_disk, dict) and not bool(model_disk.get("ok", True)):
+            source = coerce_sensory_source(str(requirement.get("source") or SensorySource.SPEECH.value))
+            prefix = "" if len(requirements) == 1 else f"{_sensory_source_label(source)}"
+            return (
+                f"{prefix}模型下载磁盘空间不足："
+                f"需要 {format_bytes(int(model_disk.get('needed_bytes') or 0))}，"
+                f"可用 {format_bytes(int(model_disk.get('available_bytes') or 0))}。"
+            )
     return ""
+
+
+def _runtime_preflight_from_requirements(requirements: list[dict[str, Any]]) -> dict[str, Any]:
+    for requirement in requirements:
+        runtime_preflight = (
+            requirement.get("runtime_preflight")
+            if isinstance(requirement.get("runtime_preflight"), dict)
+            else {}
+        )
+        if runtime_preflight:
+            return runtime_preflight
+    return {}
 
 
 def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:

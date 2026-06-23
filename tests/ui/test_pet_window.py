@@ -4810,6 +4810,61 @@ def test_settings_dialog_llama_prepare_confirmation_mentions_disk_preflight(monk
     app.processEvents()
 
 
+def test_settings_dialog_llama_prepare_confirmation_covers_all_audio_sources(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensorySource
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_all_preflight")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "all",
+            "sources": ["speech", "sound"],
+            "requirements": {
+                "speech": {
+                    "source": "speech",
+                    "runtime_preflight": {},
+                    "disk_space": {"ok": True, "needed_bytes": 1024, "available_bytes": 4096},
+                },
+                "sound": {
+                    "source": "sound",
+                    "runtime_preflight": {},
+                    "disk_space": {"ok": True, "needed_bytes": 2048, "available_bytes": 4096},
+                },
+            },
+        }
+    )
+
+    assert questions
+    assert "范围：语音、声音事件" in questions[0]
+    assert "语音推荐模型" in questions[0]
+    assert "声音事件推荐模型" in questions[0]
+    assert dialog._pending_sensory_llama_prepare_sources == (
+        SensorySource.SPEECH,
+        SensorySource.SOUND,
+    )
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_llama_prepare_blocks_low_disk_preflight(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QMessageBox")):
@@ -4841,7 +4896,7 @@ def test_settings_dialog_llama_prepare_blocks_low_disk_preflight(monkeypatch) ->
 
     assert warnings and "运行时磁盘空间不足" in warnings[0]
     assert questions == []
-    assert dialog._pending_sensory_llama_prepare_source is None
+    assert dialog._pending_sensory_llama_prepare_sources is None
 
     dialog.deleteLater()
     app.processEvents()
@@ -4958,6 +5013,76 @@ def test_settings_dialog_llama_runtime_success_fills_audio_model_defaults(monkey
 
     assert getattr(dialog, "_active_sensory_source") == SensorySource.VISION.value
     assert dialog.sensory_model_edit.text() == ""
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_runtime_success_updates_all_audio_sources(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensorySource
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    dialog, app = _build_api_settings_dialog("sensory_llama_runtime_all_success")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    binary = str(dialog.base_dir / "llama-server")
+    install_dir = str(dialog.base_dir / "runtime")
+    speech_model = str(dialog.base_dir / "models" / "speech")
+    sound_model = str(dialog.base_dir / "models" / "sound")
+
+    dialog._handle_sensory_llama_runtime_success(
+        {
+            "ok": True,
+            "source": "all",
+            "sources": ["speech", "sound"],
+            "message": "prepared",
+            "results": {
+                "speech": {
+                    "ok": True,
+                    "source": "speech",
+                    "runtime": {
+                        "binary_path": binary,
+                        "install_dir": install_dir,
+                        "package": {"package_id": "pkg"},
+                    },
+                    "model": {"local_dir": speech_model, "downloaded": True},
+                },
+                "sound": {
+                    "ok": True,
+                    "source": "sound",
+                    "runtime": {
+                        "binary_path": binary,
+                        "install_dir": install_dir,
+                        "package": {"package_id": "pkg"},
+                    },
+                    "model": {"local_dir": sound_model, "downloaded": True},
+                },
+            },
+        }
+    )
+
+    state = getattr(dialog, "_sensory_source_state")
+    assert state[SensorySource.SPEECH.value]["mode_ui"] == "local"
+    assert state[SensorySource.SPEECH.value]["backend"] == "llama"
+    assert state[SensorySource.SPEECH.value]["model"] == speech_model
+    assert state[SensorySource.SPEECH.value]["endpoint"] == "http://127.0.0.1:18080/v1"
+    assert state[SensorySource.SPEECH.value]["llama_binary_path"] == binary
+    assert state[SensorySource.SOUND.value]["mode_ui"] == "local"
+    assert state[SensorySource.SOUND.value]["backend"] == "llama"
+    assert state[SensorySource.SOUND.value]["model"] == sound_model
+    assert state[SensorySource.SOUND.value]["endpoint"] == "http://127.0.0.1:18080/v1"
+    assert state[SensorySource.SOUND.value]["llama_runtime_install_dir"] == install_dir
+    assert dialog.sensory_model_edit.text() == speech_model
 
     dialog.deleteLater()
     app.processEvents()

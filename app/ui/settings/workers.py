@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 import base64
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -64,6 +64,7 @@ from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import GPTSoVITSTTSSettings
 
 
+_LLAMA_AUDIO_PREPARE_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
 _SENSORY_TEST_IMAGE_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAA9hAAAPYQGoP6dp"
@@ -314,24 +315,32 @@ class LlamaCppAudioBackendPrepareWorker(QObject):
     def __init__(
         self,
         base_dir: Path,
-        source: SensorySource,
+        source: SensorySource | Sequence[SensorySource],
         *,
         timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__()
         self.base_dir = base_dir
-        self.source = source
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
         self.timeout_seconds = timeout_seconds
 
     @Slot()
     def run(self) -> None:
         try:
-            payload = prepare_llama_cpp_audio_backend(
-                self.base_dir,
-                self.source,
-                download_model=True,
-                timeout_seconds=self.timeout_seconds,
-            )
+            if len(self.sources) == 1:
+                payload = prepare_llama_cpp_audio_backend(
+                    self.base_dir,
+                    self.source,
+                    download_model=True,
+                    timeout_seconds=self.timeout_seconds,
+                )
+            else:
+                payload = _prepare_multiple_llama_audio_backends(
+                    self.base_dir,
+                    self.sources,
+                    timeout_seconds=self.timeout_seconds,
+                )
         except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
             self.failed.emit(str(exc))
         else:
@@ -345,10 +354,11 @@ class LlamaCppAudioBackendPreflightWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, base_dir: Path, source: SensorySource) -> None:
+    def __init__(self, base_dir: Path, source: SensorySource | Sequence[SensorySource]) -> None:
         super().__init__()
         self.base_dir = base_dir
-        self.source = source
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
 
     @Slot()
     def run(self) -> None:
@@ -360,19 +370,23 @@ class LlamaCppAudioBackendPreflightWorker(QObject):
                 if not bool(runtime.get("binary_found"))
                 else {}
             )
-            requirement = build_llama_cpp_audio_prepare_requirement(
-                report,
-                self.source,
-                runtime_preflight=runtime_preflight,
-            )
+            requirements = {
+                source.value: build_llama_cpp_audio_prepare_requirement(
+                    report,
+                    source,
+                    runtime_preflight=runtime_preflight,
+                )
+                for source in self.sources
+            }
         except Exception as exc:  # UI 边界统一转成可读错误。
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(
                 {
-                    "source": self.source.value,
+                    "source": "all" if len(self.sources) > 1 else self.source.value,
                     "doctor": report,
-                    "requirement": requirement,
+                    "requirement": requirements[self.source.value] if len(self.sources) == 1 else {},
+                    "requirements": requirements,
                 }
             )
         finally:
@@ -398,6 +412,53 @@ class LlamaCppRuntimeDoctorWorker(QObject):
             self.succeeded.emit(report)
         finally:
             self.finished.emit()
+
+
+def _llama_audio_prepare_sources(source: SensorySource | Sequence[SensorySource]) -> tuple[SensorySource, ...]:
+    if isinstance(source, SensorySource):
+        return (source,)
+    sources: list[SensorySource] = []
+    seen: set[SensorySource] = set()
+    for item in source:
+        if item not in _LLAMA_AUDIO_PREPARE_SOURCES or item in seen:
+            continue
+        seen.add(item)
+        sources.append(item)
+    return tuple(sources) or _LLAMA_AUDIO_PREPARE_SOURCES
+
+
+def _prepare_multiple_llama_audio_backends(
+    base_dir: Path,
+    sources: tuple[SensorySource, ...],
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    issues: list[str] = []
+    for source in sources:
+        try:
+            results[source.value] = prepare_llama_cpp_audio_backend(
+                base_dir,
+                source,
+                download_model=True,
+                timeout_seconds=timeout_seconds,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            message = str(exc)
+            issues.append(f"{source.value}: {message}")
+            results[source.value] = {
+                "ok": False,
+                "source": source.value,
+                "message": message,
+            }
+    return {
+        "ok": not issues,
+        "source": "all",
+        "sources": [source.value for source in sources],
+        "results": results,
+        "issues": issues,
+        "message": "llama.cpp 音频后端已准备好。" if not issues else "部分 llama.cpp 音频后端准备失败。",
+    }
 
 
 class TTSTestWorker(QObject):
