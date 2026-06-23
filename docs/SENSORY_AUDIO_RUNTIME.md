@@ -161,6 +161,8 @@ data/logs/sensory-llama-server.log
 
 `doctor` 会汇总当前平台、`llama-server` 是否可用、本地 runtime manifest 候选、语音/声音默认模型 smoke plan、以及下一步动作建议。
 
+设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断 llama.cpp”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
+
 `plan` 输出中几个字段用于发布预检：
 
 - `runtime_requirement`: `cached` 表示已找到本机 `llama-server`，`download_required` 表示需要安装官方运行时，`external_service` 表示该 provider 依赖外部 LM Studio/Ollama/API 服务。

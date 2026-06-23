@@ -4735,13 +4735,16 @@ def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
     assert dialog.sensory_hf_download_button.text() == "从 Hugging Face 下载"
     assert dialog.sensory_hf_download_button.isEnabled()
     assert dialog.sensory_llama_runtime_button.text() == "配置 llama.cpp 运行时"
+    assert dialog.sensory_llama_doctor_button.text() == "诊断 llama.cpp"
     assert not dialog.sensory_llama_runtime_button.isEnabled()
+    assert not dialog.sensory_llama_doctor_button.isEnabled()
 
     dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
     dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
     app.processEvents()
 
     assert dialog.sensory_llama_runtime_button.isEnabled()
+    assert dialog.sensory_llama_doctor_button.isEnabled()
 
     dialog.deleteLater()
     app.processEvents()
@@ -4968,6 +4971,41 @@ def test_settings_dialog_sensory_status_guides_local_llama_setup() -> None:
     dialog._handle_sensory_control_changed()
 
     assert "首次测试会确认预计下载 约 1.0 GB" in dialog.sensory_status_label.text()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_doctor_success")
+    messages: list[str] = []
+
+    def fake_information(_parent, _title, text):  # type: ignore[no-untyped-def]
+        messages.append(text)
+        return qtwidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "information", fake_information)
+
+    dialog._handle_sensory_llama_doctor_success(
+        {
+            "platform_key": "macos-arm64",
+            "runtime": {
+                "binary_found": True,
+                "binary_path": "/tmp/llama-server",
+                "manifest_candidates": [{"exists": False}],
+            },
+            "ready_for_smoke": True,
+            "next_actions": ["speech 首次真实 smoke 需要确认 GGUF 模型下载：约 1.0 GB。"],
+        }
+    )
+
+    assert "平台：macos-arm64" in messages[0]
+    assert "llama-server：/tmp/llama-server" in messages[0]
+    assert dialog.sensory_status_label.text() == "平台：macos-arm64"
 
     dialog.deleteLater()
     app.processEvents()

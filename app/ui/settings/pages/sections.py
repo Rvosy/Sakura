@@ -764,6 +764,8 @@ class ApiSettingsPage:
         owner.sensory_hf_download_button.clicked.connect(owner._download_sensory_model_from_huggingface)
         owner.sensory_llama_runtime_button = QPushButton("配置 llama.cpp 运行时", group)
         owner.sensory_llama_runtime_button.clicked.connect(owner._install_sensory_llama_runtime)
+        owner.sensory_llama_doctor_button = QPushButton("诊断 llama.cpp", group)
+        owner.sensory_llama_doctor_button.clicked.connect(owner._diagnose_sensory_llama_runtime)
         owner.sensory_status_label = QLabel("未测试", group)
         owner.sensory_status_label.setObjectName("secondaryText")
         owner.sensory_status_label.setWordWrap(True)
@@ -788,6 +790,7 @@ class ApiSettingsPage:
         action_layout.addWidget(owner.sensory_test_button)
         action_layout.addWidget(owner.sensory_hf_download_button)
         action_layout.addWidget(owner.sensory_llama_runtime_button)
+        action_layout.addWidget(owner.sensory_llama_doctor_button)
         action_layout.addStretch(1)
 
         toggles = QWidget(group)

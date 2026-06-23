@@ -586,6 +586,8 @@ class SettingsDialog(QDialog):
         self._sensory_model_test_worker: settings_workers.SensoryModelTestWorker | None = None
         self._sensory_llama_runtime_thread: QThread | None = None
         self._sensory_llama_runtime_worker: settings_workers.LlamaCppRuntimeInstallWorker | None = None
+        self._sensory_llama_doctor_thread: QThread | None = None
+        self._sensory_llama_doctor_worker: settings_workers.LlamaCppRuntimeDoctorWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
@@ -1340,18 +1342,21 @@ class SettingsDialog(QDialog):
             and self._sensory_model_probe_thread is None
             and self._sensory_model_test_thread is None
             and self._sensory_llama_runtime_thread is None
+            and self._sensory_llama_doctor_thread is None
         )
         self.sensory_test_button.setEnabled(
             configured
             and self._sensory_model_probe_thread is None
             and self._sensory_model_test_thread is None
             and self._sensory_llama_runtime_thread is None
+            and self._sensory_llama_doctor_thread is None
         )
         if hasattr(self, "sensory_hf_download_button"):
             self.sensory_hf_download_button.setEnabled(
                 self._sensory_model_probe_thread is None
                 and self._sensory_model_test_thread is None
                 and self._sensory_llama_runtime_thread is None
+                and self._sensory_llama_doctor_thread is None
             )
         if hasattr(self, "sensory_llama_runtime_button"):
             self.sensory_llama_runtime_button.setEnabled(
@@ -1361,6 +1366,17 @@ class SettingsDialog(QDialog):
                 and self._sensory_model_probe_thread is None
                 and self._sensory_model_test_thread is None
                 and self._sensory_llama_runtime_thread is None
+                and self._sensory_llama_doctor_thread is None
+            )
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(
+                configured
+                and mode_ui == "local"
+                and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+                and self._sensory_model_probe_thread is None
+                and self._sensory_model_test_thread is None
+                and self._sensory_llama_runtime_thread is None
+                and self._sensory_llama_doctor_thread is None
             )
         if not configured and hasattr(self, "sensory_status_label"):
             self.sensory_status_label.setText("该感官源已关闭。")
@@ -1452,6 +1468,7 @@ class SettingsDialog(QDialog):
             or self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
             or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1510,6 +1527,8 @@ class SettingsDialog(QDialog):
             self.sensory_hf_download_button.setEnabled(not busy)
         if hasattr(self, "sensory_llama_runtime_button"):
             self.sensory_llama_runtime_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "检测感知模型...")
 
     def _test_sensory_model(self) -> None:
@@ -1519,6 +1538,7 @@ class SettingsDialog(QDialog):
             or self._sensory_model_test_thread is not None
             or self._sensory_model_probe_thread is not None
             or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1578,6 +1598,8 @@ class SettingsDialog(QDialog):
             self.sensory_hf_download_button.setEnabled(not busy)
         if hasattr(self, "sensory_llama_runtime_button"):
             self.sensory_llama_runtime_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "测试感知模型...")
 
     def _confirm_sensory_llama_model_download(
@@ -1621,6 +1643,7 @@ class SettingsDialog(QDialog):
             self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
             or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1665,11 +1688,65 @@ class SettingsDialog(QDialog):
             else:
                 self.sensory_status_label.setText("已从 Hugging Face 下载模型。")
 
+    def _diagnose_sensory_llama_runtime(self) -> None:
+        if (
+            self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            QMessageBox.information(self, "处理中", "请等待当前检测、测试或配置完成后再诊断 llama.cpp。")
+            return
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        if mode_ui != "local" or backend not in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+            QMessageBox.information(self, "不可用", "请先选择“本机运行框架”和 llama.cpp 后端。")
+            return
+        self._set_sensory_llama_doctor_busy(True)
+        self.sensory_status_label.setText("正在诊断 llama.cpp 运行时...")
+        thread = QThread()
+        worker = settings_workers.LlamaCppRuntimeDoctorWorker(self.base_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_llama_doctor_success)
+        worker.failed.connect(self._handle_sensory_llama_doctor_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_llama_doctor_state)
+
+        self._sensory_llama_doctor_thread = thread
+        self._sensory_llama_doctor_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_llama_doctor_success(self, result: object) -> None:
+        report = result if isinstance(result, dict) else {}
+        message = _format_sensory_llama_doctor_message(report)
+        self.sensory_status_label.setText(message.splitlines()[0] if message else "诊断完成。")
+        QMessageBox.information(self, "诊断完成", message or "诊断完成。")
+
+    @Slot(str)
+    def _handle_sensory_llama_doctor_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"诊断失败：{message}")
+        QMessageBox.warning(self, "诊断失败", message)
+
+    @Slot()
+    def _reset_sensory_llama_doctor_state(self) -> None:
+        self._sensory_llama_doctor_thread = None
+        self._sensory_llama_doctor_worker = None
+        self._set_sensory_llama_doctor_busy(False)
+        self._sync_sensory_controls()
+
     def _install_sensory_llama_runtime(self) -> None:
         if (
             self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
             or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1773,7 +1850,25 @@ class SettingsDialog(QDialog):
             self.sensory_test_button.setEnabled(not busy)
         if hasattr(self, "sensory_hf_download_button"):
             self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "配置 llama.cpp...")
+
+    def _set_sensory_llama_doctor_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+            self.sensory_llama_doctor_button.setText(
+                "诊断中..." if busy else "诊断 llama.cpp"
+            )
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "诊断 llama.cpp...")
 
     def _set_save_buttons_busy(self, busy: bool, text: str) -> None:
         if not hasattr(self, "button_box"):
@@ -3515,6 +3610,9 @@ class SettingsDialog(QDialog):
         if self._sensory_llama_runtime_thread is not None:
             QMessageBox.information(self, "配置中", "llama.cpp 运行时仍在配置，请等待完成后再关闭设置。")
             return
+        if self._sensory_llama_doctor_thread is not None:
+            QMessageBox.information(self, "诊断中", "llama.cpp 运行时诊断仍在进行，请等待完成后再关闭设置。")
+            return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
             return
@@ -3558,6 +3656,10 @@ class SettingsDialog(QDialog):
             return
         if self._sensory_llama_runtime_thread is not None:
             QMessageBox.information(self, "配置中", "llama.cpp 运行时仍在配置，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_llama_doctor_thread is not None:
+            QMessageBox.information(self, "诊断中", "llama.cpp 运行时诊断仍在进行，请等待完成后再关闭设置。")
             event.ignore()
             return
         if self._character_export_thread is not None:
@@ -5150,6 +5252,35 @@ def _sensory_backend_label(backend: str) -> str:
         "llamacpp": "llama.cpp",
         "openai_compatible": "OpenAI 兼容 API",
     }.get(backend.strip().lower(), backend)
+
+
+def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
+    platform_key = str(report.get("platform_key") or "unknown")
+    runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    binary_path = str(runtime.get("binary_path") or "").strip() if isinstance(runtime, dict) else ""
+    ready = bool(report.get("ready_for_smoke"))
+    lines = [
+        f"平台：{platform_key}",
+        f"llama-server：{binary_path or '未找到'}",
+        f"音频测试准备：{'已准备' if ready else '未准备'}",
+    ]
+    manifest_candidates = runtime.get("manifest_candidates") if isinstance(runtime, dict) else []
+    if isinstance(manifest_candidates, list):
+        existing = [
+            candidate
+            for candidate in manifest_candidates
+            if isinstance(candidate, dict) and bool(candidate.get("exists"))
+        ]
+        if existing:
+            lines.append(f"runtime manifest：已找到 {len(existing)} 个。")
+        else:
+            lines.append("runtime manifest：未找到。")
+    actions = report.get("next_actions")
+    if isinstance(actions, list) and actions:
+        lines.append("")
+        lines.append("下一步：")
+        lines.extend(f"- {str(action)}" for action in actions[:4])
+    return "\n".join(lines)
 
 
 def _recommended_llama_cpp_model_for_source(source: SensorySource) -> str:

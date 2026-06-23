@@ -30,6 +30,7 @@ from app.sensory.audio_models import (
     recommended_llama_cpp_audio_model,
     sensory_audio_model_download_hint,
 )
+from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory.audio_smoke import (
     SensoryAudioSmokePlan,
     SensoryAudioSmokeResult,
@@ -162,6 +163,7 @@ __all__ = [
     "SENSORY_OBSERVATION_TOOL_NAME",
     "SENSORY_SPEECH_OBSERVATION_CAPABILITY",
     "build_llama_server_command",
+    "build_sensory_audio_runtime_doctor_report",
     "build_sensory_audio_smoke_data_url",
     "build_sensory_audio_smoke_plan",
     "check_llama_cpp_health",

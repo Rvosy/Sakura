@@ -37,6 +37,7 @@ from app.sensory.audio_smoke import (
     build_sensory_audio_smoke_data_url,
     run_sensory_audio_smoke_test,
 )
+from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory.models import SensoryRequest, SensorySource
 from app.sensory.llama_cpp_runtime import (
     LlamaCppRuntimeError,
@@ -324,6 +325,27 @@ class LlamaCppRuntimeInstallWorker(QObject):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppRuntimeDoctorWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(report)
         finally:
             self.finished.emit()
 
