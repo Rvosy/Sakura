@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import replace
@@ -105,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional output JSON path. Omit to print to stdout only.",
+    )
+    manifest.add_argument(
+        "--archive-root",
+        type=Path,
+        default=None,
+        help="Optional local archive directory. Adds sha256 and size_bytes for matching archive filenames.",
     )
 
     parser.set_defaults(
@@ -218,16 +225,20 @@ def _run_runtime_manifest(args: argparse.Namespace) -> int:
         raise SensoryAudioRuntimeCliError("不能同时指定 --mirror-base-url 和 --relative-archive-dir。")
     packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=30)
     entries = []
+    archive_root = Path(args.archive_root).expanduser() if args.archive_root is not None else None
     for package in sorted(
         (package.normalized() for package in packages),
         key=lambda item: (item.platform_key, item.variant, item.package_id),
     ):
         data = package.to_mapping()
+        filename = _url_filename(package.url)
         data["url"] = _runtime_manifest_url(
             package.url,
             mirror_base_url=str(args.mirror_base_url or ""),
             relative_archive_dir=str(args.relative_archive_dir or ""),
         )
+        if archive_root is not None:
+            _add_local_archive_metadata(data, archive_root / filename)
         entries.append(data)
     payload = {
         "manifest_version": 1,
@@ -327,6 +338,21 @@ def _url_filename(url: str) -> str:
     if not name:
         raise SensoryAudioRuntimeCliError(f"无法从 URL 提取 archive 文件名：{url}")
     return name
+
+
+def _add_local_archive_metadata(data: dict[str, Any], archive_path: Path) -> None:
+    if not archive_path.is_file():
+        raise SensoryAudioRuntimeCliError(f"本地 archive 不存在：{archive_path}")
+    data["sha256"] = _sha256_file(archive_path)
+    data["size_bytes"] = archive_path.stat().st_size
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _print_payload(payload: MappingPayload, *, pretty: bool) -> None:

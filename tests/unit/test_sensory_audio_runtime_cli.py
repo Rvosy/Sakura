@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -232,6 +233,80 @@ def test_audio_runtime_cli_runtime_manifest_can_write_mirror_manifest(
     assert capsys.readouterr().out == ""
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["packages"][0]["url"] == "https://mirror.example/llama.cpp/b1/llama-b1-bin-win-cpu-x64.zip"
+
+
+def test_audio_runtime_cli_runtime_manifest_adds_local_archive_metadata(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    archive = archive_root / "llama-b1-bin-macos-arm64.tar.gz"
+    archive.write_bytes(b"runtime archive")
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "fetch_latest_llama_cpp_runtime_packages",
+        lambda timeout_seconds: [
+            LlamaCppRuntimePackageSpec(
+                package_id="b1-macos",
+                label="macOS",
+                platform_key="macos-arm64",
+                url="https://github.com/ggml-org/llama.cpp/releases/download/b1/llama-b1-bin-macos-arm64.tar.gz",
+                archive_format="tar.gz",
+                binary_relpath="llama-server",
+                version="b1",
+                variant="metal",
+            )
+        ],
+    )
+
+    code = audio_runtime_cli.main(
+        [
+            "runtime-manifest",
+            "--relative-archive-dir",
+            "archives",
+            "--archive-root",
+            str(archive_root),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["packages"][0]["size_bytes"] == len(b"runtime archive")
+    assert payload["packages"][0]["sha256"] == hashlib.sha256(b"runtime archive").hexdigest()
+
+
+def test_audio_runtime_cli_runtime_manifest_errors_when_archive_root_is_incomplete(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "fetch_latest_llama_cpp_runtime_packages",
+        lambda timeout_seconds: [
+            LlamaCppRuntimePackageSpec(
+                package_id="b1-macos",
+                label="macOS",
+                platform_key="macos-arm64",
+                url="https://github.com/ggml-org/llama.cpp/releases/download/b1/llama-b1-bin-macos-arm64.tar.gz",
+                archive_format="tar.gz",
+                binary_relpath="llama-server",
+            )
+        ],
+    )
+
+    code = audio_runtime_cli.main(
+        ["runtime-manifest", "--archive-root", str(archive_root)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert "本地 archive 不存在" in payload["message"]
 
 
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
