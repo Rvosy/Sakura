@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -61,6 +62,7 @@ from app.agent.memory_curator import (
     MemoryCurationResult,
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
+from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
 from app.core.app_context import AppContext
@@ -98,7 +100,7 @@ from app.config.models import (
     ApiConfigProfile,
     ModelSelectionSettings,
 )
-from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.config.settings_service import BackchannelSettings, BubbleSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
@@ -134,6 +136,7 @@ from app.ui.state import PetUiState, PetUiStateStore
 from app.ui.error_messages import format_failure_message
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
+    is_launch_at_login_supported,
     set_launch_at_login_enabled,
 )
 from app.ui.history_window import HistoryWindow
@@ -157,6 +160,12 @@ from app.agent.screen_observation import (
     capture_screen_image,
 )
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.tauri_settings import (
+    TauriSettingsProcess,
+    TauriSettingsResult,
+    resolve_tauri_settings_binary,
+    tauri_settings_trial_enabled,
+)
 from app.ui.tts_bundle_dialog import (
     cancel_active_tts_bundle_downloads_for_shutdown,
     has_active_tts_bundle_download,
@@ -191,7 +200,12 @@ from app.ui.subtitle_controller import (
     normalize_subtitle_display_speed,
 )
 from app.voice.factory import create_tts_provider
-from app.voice.tts_settings import DEFAULT_GPT_SOVITS_API_URL, GPTSoVITSTTSSettings, TTSConfigError
+from app.voice.tts_settings import (
+    DEFAULT_GPT_SOVITS_API_URL,
+    GPTSoVITSTTSSettings,
+    TTSConfigError,
+    TTS_PROVIDER_GENIE,
+)
 from app.voice.tts import (
     NullTTSProvider,
     TTSPreparedAudio,
@@ -569,6 +583,8 @@ class PetWindow(QWidget):
         self.history_window: HistoryWindow | None = None
         self.runtime_log_window: RuntimeLogWindow | None = None
         self.settings_dialog: SettingsDialog | None = None
+        self.tauri_settings_process: TauriSettingsProcess | None = None
+        self._tauri_original_layout: tuple[int, int, int, int, int] | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
         self.worker: ChatWorker | EventWorker | None = None
@@ -1268,7 +1284,7 @@ class PetWindow(QWidget):
         top_left = self.mapToGlobal(QPoint(px, py))
         try:
             manager.set_geometry(top_left.x(), top_left.y(), pw, ph)
-            manager.stack_below(self, topmost=bool(getattr(self, "always_on_top_enabled", False)))
+            manager.stack_below(self, topmost=self._effective_topmost())
         except Exception as exc:  # noqa: BLE001 — 渲染后端异常不得影响主窗口
             debug_log("RendererManager", "同步渲染窗口几何失败", {"error": str(exc)})
 
@@ -1321,6 +1337,13 @@ class PetWindow(QWidget):
         if getattr(self, "_shutdown_in_progress", False):
             return
         self._shutdown_in_progress = True
+        close_tauri_settings = getattr(
+            self,
+            "_close_tauri_settings_process_for_shutdown",
+            None,
+        )
+        if callable(close_tauri_settings):
+            close_tauri_settings()
         self._emit_app_closed_event()
         self._stop_speaking_state_watchdog()
         self.messages = _without_transient_progress_messages(self.messages)
@@ -5055,6 +5078,17 @@ class PetWindow(QWidget):
         if active_dialog is not None:
             self._activate_settings_dialog(active_dialog)
             return
+        active_process = getattr(self, "tauri_settings_process", None)
+        if active_process is not None:
+            # 设置页已在独立进程中打开（可能被最小化），右键唤起时还原并前置它，
+            # 而不是静默返回让用户找不回窗口。
+            active_process.focus_window()
+            return
+        if self._try_show_tauri_settings():
+            return
+        self._show_pyside_settings_dialog()
+
+    def _show_pyside_settings_dialog(self) -> None:
         try:
             tts_settings = self.settings_service.load_tts_settings(
                 validate_enabled=False,
@@ -5142,6 +5176,392 @@ class PetWindow(QWidget):
             )
         )
         self._present_registered_secondary_window(dialog)
+
+    def _try_show_tauri_settings(self) -> bool:
+        if not tauri_settings_trial_enabled():
+            return False
+        if resolve_tauri_settings_binary(self.base_dir) is None:
+            return False
+        settings = getattr(self, "screen_awareness_settings", None)
+        if settings is None:
+            settings = getattr(self, "proactive_care_settings", ScreenAwarenessSettings())
+        api_settings = getattr(getattr(self, "api_client", None), "settings", None)
+        try:
+            tts_settings = self.settings_service.load_tts_settings(
+                validate_enabled=False,
+                character_profile=self.character_profile,
+            )
+        except (OSError, TTSConfigError) as exc:
+            show_themed_warning(
+                self,
+                "配置读取失败",
+                format_failure_message(
+                    "TTS 配置无法读取，设置页将使用默认值打开。",
+                    "请检查配置文件是否损坏、被占用或没有读取权限。",
+                    exc,
+                ),
+            )
+            tts_settings = self._default_tts_settings()
+        api_profiles = self.settings_service.load_api_profiles()
+        model_selection = self.settings_service.load_model_selection()
+        runtime_loop_settings = getattr(
+            getattr(self, "agent_runtime", None),
+            "runtime_loop_settings",
+            RuntimeLoopSettings(),
+        )
+        process = TauriSettingsProcess(
+            base_dir=self.base_dir,
+            settings=settings,
+            mcp_settings=getattr(self, "mcp_settings", MCPRuntimeSettings()),
+            runtime_loop_settings=runtime_loop_settings,
+            debug_log_settings=getattr(self, "debug_log_settings", DebugLogSettings()),
+            subtitle_typing_interval_ms=getattr(
+                self,
+                "subtitle_typing_interval_ms",
+                SPEECH_TYPING_INTERVAL_MS,
+            ),
+            reply_segment_pause_ms=getattr(
+                self,
+                "reply_segment_pause_ms",
+                REPLY_SEGMENT_PAUSE_MS,
+            ),
+            bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
+            theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
+            character_registry=getattr(self, "character_registry", None),
+            current_character=getattr(self, "character_profile", None),
+            portrait_scale_percent=getattr(self, "portrait_scale_percent", 100),
+            control_panel_width=getattr(self, "control_panel_width", DEFAULT_CONTROL_PANEL_WIDTH),
+            bubble_height=getattr(self, "bubble_height", DEFAULT_BUBBLE_HEIGHT),
+            control_panel_vertical_offset=getattr(
+                self,
+                "control_panel_vertical_offset",
+                DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
+            ),
+            input_bar_offset=getattr(self, "input_bar_offset", DEFAULT_INPUT_BAR_OFFSET),
+            api_settings=api_settings,
+            api_profiles=api_profiles,
+            model_selection=model_selection,
+            tts_settings=tts_settings,
+            startup_settings=getattr(self, "startup_settings", StartupSettings()),
+            launch_at_login_supported=is_launch_at_login_supported(),
+            backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
+            memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            model=getattr(api_settings, "model", None),
+            parent_widget=self if isinstance(self, QWidget) else None,
+            parent=self if isinstance(self, QObject) else None,
+        )
+        # 记录打开前的立绘缩放与控制组布局，便于取消/失败时回滚实时预览。
+        self._tauri_original_layout = (
+            self.portrait_scale_percent,
+            self.control_panel_width,
+            self.bubble_height,
+            self.control_panel_vertical_offset,
+            self.input_bar_offset,
+        )
+        if not process.start():
+            self._tauri_original_layout = None
+            return False
+        self.tauri_settings_process = process
+        self._tauri_initial_tts_settings = tts_settings
+        process.completed.connect(self._on_tauri_settings_completed)
+        process.cancelled.connect(self._on_tauri_settings_cancelled)
+        process.failed.connect(self._on_tauri_settings_failed)
+        process.layout_preview.connect(self._on_tauri_settings_layout_preview)
+        # Tauri 设置窗口存活期间临时取消桌宠原生置顶，否则置顶立绘会盖住系统取色器的放大预览。
+        self._set_secondary_windows_topmost_suppressed(True)
+        return True
+
+    @Slot(object)
+    def _on_tauri_settings_layout_preview(self, payload: object) -> None:
+        """Tauri 角色页滑块拖动的实时预览：立即应用立绘/控制组布局，不持久化。"""
+        if not isinstance(payload, dict):
+            return
+
+        def _value(key: str, fallback: int) -> int:
+            value = payload.get(key, fallback)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        self._preview_layout(
+            _value("portrait_scale_percent", self.portrait_scale_percent),
+            _value("control_panel_width", self.control_panel_width),
+            _value("bubble_height", self.bubble_height),
+            _value("control_panel_vertical_offset", self.control_panel_vertical_offset),
+            _value("input_bar_offset", self.input_bar_offset),
+        )
+
+    @Slot(object)
+    def _on_tauri_settings_completed(self, result: object) -> None:
+        self.tauri_settings_process = None
+        self._sync_secondary_window_state()
+        if not isinstance(result, TauriSettingsResult):
+            self._on_tauri_settings_failed("Tauri 设置结果类型无效。")
+            return
+        settings = result.screen_awareness
+        system_basic = result.system_basic
+        system_extra = result.system_extra
+        try:
+            selected_profile = self.character_registry.get(result.character.character_id)
+        except CharacterConfigError as exc:
+            show_themed_critical(
+                self,
+                "角色配置无效",
+                format_failure_message(
+                    "无法读取当前选择的角色配置。",
+                    "请重新导入或选择一个完整的角色包。",
+                    exc,
+                ),
+            )
+            self._abort_tauri_settings_apply()
+            return
+
+        tts_settings = self._tts_settings_from_tauri_result(result.tts, selected_profile)
+        new_tts_provider = self._create_tts_provider_from_settings(tts_settings)
+        if new_tts_provider is None:
+            self._abort_tauri_settings_apply()
+            return
+
+        current_startup_settings = getattr(self, "startup_settings", StartupSettings())
+        result_startup_settings = (
+            system_extra.startup
+            if system_extra.launch_at_login_supported
+            else current_startup_settings
+        )
+        startup_settings_changed = result_startup_settings != current_startup_settings
+        api_changed = result.api.settings != self.api_client.settings
+        try:
+            if api_changed:
+                self.settings_service.save_api_settings(result.api.settings)
+            self.settings_service.save_api_profiles(result.api.profiles)
+            self.settings_service.save_model_selection(result.api.model_selection)
+            self.settings_service.save_tts_settings(tts_settings)
+            self.settings_service.save_current_character_id(
+                self.character_registry,
+                selected_profile.id,
+            )
+            save_screen_awareness_settings = getattr(
+                self.settings_service,
+                "save_screen_awareness_settings",
+                None,
+            )
+            if callable(save_screen_awareness_settings):
+                save_screen_awareness_settings(settings)
+            else:
+                self.settings_service.save_proactive_care_settings(settings)
+            save_mcp_runtime_settings = getattr(
+                self.settings_service,
+                "save_mcp_runtime_settings",
+                None,
+            )
+            if callable(save_mcp_runtime_settings):
+                save_mcp_runtime_settings(result.mcp)
+            save_runtime_loop_settings = getattr(
+                self.settings_service,
+                "save_runtime_loop_settings",
+                None,
+            )
+            if callable(save_runtime_loop_settings):
+                save_runtime_loop_settings(result.runtime_loop)
+            if result.theme != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
+                self.settings_service.save_theme_settings(result.theme)
+            self.settings_service.save_debug_log_settings(system_basic.debug_log)
+            if startup_settings_changed:
+                self._apply_launch_at_login_settings(result_startup_settings)
+                self.settings_service.save_startup_settings(result_startup_settings)
+            self._save_system_config_values(
+                "ui",
+                {
+                    "portrait_scale_percent": result.character.portrait_scale_percent,
+                    "subtitle_typing_interval_ms": system_basic.subtitle_typing_interval_ms,
+                    "reply_segment_pause_ms": system_basic.reply_segment_pause_ms,
+                },
+            )
+            self.settings_service.save_bubble_settings(system_basic.bubble)
+            save_backchannel_settings = getattr(
+                self.settings_service,
+                "save_backchannel_settings",
+                None,
+            )
+            if callable(save_backchannel_settings):
+                save_backchannel_settings(system_extra.backchannel)
+            save_memory_curation_settings = getattr(
+                self.settings_service,
+                "save_memory_curation_settings",
+                None,
+            )
+            if callable(save_memory_curation_settings):
+                save_memory_curation_settings(result.memory_curation)
+            self._apply_layout_settings(
+                portrait_scale_percent=result.character.portrait_scale_percent,
+                control_panel_width=result.character.control_panel_width,
+                bubble_height=result.character.bubble_height,
+                vertical_offset=result.character.control_panel_vertical_offset,
+                input_bar_offset=result.character.input_bar_offset,
+                persist=True,
+                raise_on_persist_error=True,
+            )
+        except (CharacterConfigError, OSError) as exc:
+            show_themed_critical(
+                self,
+                "保存失败",
+                format_failure_message(
+                    "Tauri 设置没有保存成功。",
+                    "请检查 data 目录的写入权限和文件占用情况后重试。",
+                    exc,
+                ),
+            )
+            self._abort_tauri_settings_apply(new_tts_provider)
+            return
+
+        _update_runtime_api_clients(
+            self,
+            api_profiles=result.api.profiles,
+            model_selection=result.api.model_selection,
+            base_settings=result.api.settings,
+        )
+        self.screen_awareness_settings = settings
+        self.mcp_settings = result.mcp
+        agent_runtime = getattr(self, "agent_runtime", None)
+        set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
+        if callable(set_runtime_loop_settings):
+            set_runtime_loop_settings(result.runtime_loop)
+        apply_theme_settings = getattr(self, "_apply_theme_settings", None)
+        if callable(apply_theme_settings):
+            apply_theme_settings(result.theme)
+        else:
+            self.theme_settings = result.theme
+        self.debug_log_settings = system_basic.debug_log
+        eval_logger = getattr(self, "backchannel_eval_logger", None)
+        if eval_logger is not None:
+            eval_logger.set_enabled(self.debug_log_settings.enabled)
+        self._apply_stage_debug_overlay(
+            self.debug_log_settings.stage_debug_overlay,
+            refresh=True,
+        )
+        self._apply_stage_collision_mask(
+            self.debug_log_settings.stage_collision_mask,
+            refresh=True,
+        )
+        self._apply_subtitle_display_speed(
+            system_basic.subtitle_typing_interval_ms,
+            system_basic.reply_segment_pause_ms,
+        )
+        self._apply_bubble_settings(system_basic.bubble)
+        self.startup_settings = result_startup_settings
+        self.memory_curation_settings = result.memory_curation
+        sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
+        if callable(sync_screen_awareness_timer):
+            sync_screen_awareness_timer()
+        else:
+            self._sync_proactive_care_timer()
+        discard_backchannel_audio_cache = getattr(
+            self,
+            "_discard_backchannel_audio_cache",
+            None,
+        )
+        if callable(discard_backchannel_audio_cache):
+            discard_backchannel_audio_cache()
+        character_changed = selected_profile.id != getattr(self.character_profile, "id", None)
+        if _tts_provider_needs_rebuild(
+            self.tts_provider,
+            new_tts_provider,
+            character_changed=character_changed,
+        ):
+            disconnect_tts_error_signal = getattr(self, "_disconnect_tts_error_signal", None)
+            if callable(disconnect_tts_error_signal):
+                disconnect_tts_error_signal(self.tts_provider)
+            keep_local_tts_service = _should_keep_tts_local_service(
+                self.tts_provider,
+                new_tts_provider,
+            )
+            self._retire_tts_provider(
+                self.tts_provider,
+                keep_local_service=keep_local_tts_service,
+            )
+            self.tts_provider = new_tts_provider
+            self.voice_playback_controller.set_provider(new_tts_provider)
+            connect_tts_error_signal = getattr(self, "_connect_tts_error_signal", None)
+            if callable(connect_tts_error_signal):
+                connect_tts_error_signal(new_tts_provider)
+            self._warm_up_tts_playback(new_tts_provider)
+            start_tts_ready_warmup = getattr(self, "_start_tts_ready_warmup", None)
+            if callable(start_tts_ready_warmup):
+                start_tts_ready_warmup(new_tts_provider)
+        else:
+            close_unused = getattr(new_tts_provider, "close", None)
+            if callable(close_unused):
+                try:
+                    close_unused()
+                except Exception as exc:  # noqa: BLE001
+                    debug_log("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
+        self._apply_character(selected_profile)
+        apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
+        if callable(apply_backchannel_settings):
+            apply_backchannel_settings(system_extra.backchannel)
+        else:
+            self.backchannel_settings = system_extra.backchannel
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setContextMenu(self._build_menu())
+        self._tauri_initial_tts_settings = None
+        # 已应用并持久化最终布局，丢弃回滚基准。
+        self._tauri_original_layout = None
+
+    def _abort_tauri_settings_apply(self, new_tts_provider: object | None = None) -> None:
+        self._tauri_initial_tts_settings = None
+        if new_tts_provider is not None:
+            self._close_unused_tauri_tts_provider(new_tts_provider)
+        self._restore_tauri_layout_preview()
+        self._sync_secondary_window_state()
+
+    def _close_unused_tauri_tts_provider(self, provider: object) -> None:
+        close_unused = getattr(provider, "close", None)
+        if not callable(close_unused):
+            return
+        try:
+            close_unused()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("TTS", "丢弃未应用的 TTS Provider 失败", {"error": str(exc)})
+
+    def _close_tauri_settings_process_for_shutdown(self) -> None:
+        process = getattr(self, "tauri_settings_process", None)
+        if process is None:
+            return
+        self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_layout_preview()
+        self._sync_secondary_window_state()
+
+    def _restore_tauri_layout_preview(self) -> None:
+        """撤销 Tauri 实时预览对立绘/控制组布局的改动，回到打开设置前的状态。"""
+        original_layout = getattr(self, "_tauri_original_layout", None)
+        self._tauri_original_layout = None
+        if original_layout is not None:
+            self._preview_layout(*original_layout)
+
+    @Slot()
+    def _on_tauri_settings_cancelled(self) -> None:
+        self.tauri_settings_process = None
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_layout_preview()
+        self._sync_secondary_window_state()
+
+    @Slot(str)
+    def _on_tauri_settings_failed(self, message: str) -> None:
+        self.tauri_settings_process = None
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_layout_preview()
+        self._sync_secondary_window_state()
+        show_themed_warning(
+            self,
+            "Tauri 设置页不可用",
+            f"{message}\n\n已回退到原设置页。",
+        )
+        self._show_pyside_settings_dialog()
 
     def _on_settings_dialog_finished(
         self,
@@ -5604,6 +6024,82 @@ class PetWindow(QWidget):
             _configure_secondary_window(window, keep_on_top=keep_on_top)
             _present_secondary_window(window)
 
+    def _tts_settings_from_tauri_result(
+        self,
+        result_tts: object,
+        selected_profile: CharacterProfile,
+    ) -> GPTSoVITSTTSSettings:
+        previous = getattr(self, "_tauri_initial_tts_settings", None)
+        if not isinstance(previous, GPTSoVITSTTSSettings):
+            previous = GPTSoVITSTTSSettings(
+                enabled=False,
+                api_url=DEFAULT_GPT_SOVITS_API_URL,
+                ref_audio_path=self.base_dir / "ref" / "VO01_2210.ogg",
+                ref_text_path=self.base_dir / "ref" / "text.txt",
+                ref_text="",
+                ref_lang="ja",
+                text_lang="ja",
+                timeout_seconds=60,
+            )
+
+        enabled = bool(getattr(result_tts, "enabled", False))
+        provider = str(getattr(result_tts, "provider", previous.provider))
+        api_url = str(getattr(result_tts, "api_url", previous.api_url)).strip()
+        timeout_seconds = int(getattr(result_tts, "timeout_seconds", previous.timeout_seconds))
+        work_dir = _optional_tauri_path(getattr(result_tts, "work_dir", ""), self.base_dir)
+        python_path = _optional_tauri_path(getattr(result_tts, "python_path", ""), self.base_dir)
+        tts_config_path = _optional_tauri_path(
+            getattr(result_tts, "tts_config_path", ""),
+            self.base_dir,
+        )
+        selected_voice = getattr(selected_profile, "voice", None)
+        if enabled and selected_voice is None:
+            enabled = False
+        ref_lang = (getattr(selected_voice, "ref_lang", None) or previous.ref_lang or "ja")
+        text_lang = (getattr(selected_voice, "text_lang", None) or previous.text_lang or "ja")
+        onnx_model_dir = (
+            StoragePaths(self.base_dir).tts_bundle_onnx_for(selected_profile.id)
+            if provider == TTS_PROVIDER_GENIE
+            else None
+        )
+
+        if selected_voice is None or not hasattr(selected_profile, "package_dir"):
+            settings = GPTSoVITSTTSSettings(
+                enabled=False,
+                api_url=api_url,
+                ref_audio_path=previous.ref_audio_path,
+                ref_text_path=previous.ref_text_path,
+                ref_text=previous.ref_text,
+                provider=provider,
+                work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
+                character_name=getattr(selected_profile, "display_name", selected_profile.id),
+                onnx_model_dir=onnx_model_dir,
+                ref_lang=ref_lang,
+                text_lang=text_lang,
+                timeout_seconds=timeout_seconds,
+                tone_references=previous.tone_references,
+            )
+        else:
+            settings = GPTSoVITSTTSSettings.from_character_profile(
+                character_profile=selected_profile,
+                enabled=enabled,
+                api_url=api_url,
+                ref_lang=ref_lang,
+                text_lang=text_lang,
+                timeout_seconds=timeout_seconds,
+                provider=provider,
+                work_dir=work_dir,
+                python_path=python_path,
+                tts_config_path=tts_config_path,
+                onnx_model_dir=onnx_model_dir,
+                validate_enabled=False,
+            )
+        if previous.playback_backend:
+            settings = replace(settings, playback_backend=previous.playback_backend)
+        return settings
+
     def _create_tts_provider_from_settings(
         self,
         settings: GPTSoVITSTTSSettings,
@@ -5972,7 +6468,12 @@ class PetWindow(QWidget):
             self._is_secondary_window_visible(window)
             for window in tuple(getattr(self, "_registered_secondary_windows", set()))
         )
-        self._set_secondary_windows_topmost_suppressed(has_visible_secondary_window)
+        # Tauri 设置是独立进程、不在副窗口登记表里，但它存活期间同样要压低桌宠置顶，
+        # 否则置顶立绘会盖住系统取色器的放大预览。
+        tauri_active = getattr(self, "tauri_settings_process", None) is not None
+        self._set_secondary_windows_topmost_suppressed(
+            has_visible_secondary_window or tauri_active
+        )
         set_background_quiesced = getattr(
             self,
             "_set_secondary_windows_background_quiesced",
@@ -6058,10 +6559,7 @@ class PetWindow(QWidget):
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
-                effective_topmost = bool(
-                    self.always_on_top_enabled
-                    and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
-                )
+                effective_topmost = self._effective_topmost()
                 insert_after = hwnd_topmost if effective_topmost else hwnd_notopmost
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
@@ -6075,10 +6573,7 @@ class PetWindow(QWidget):
         if sys.platform == "darwin":
             try:
                 for window in self._topmost_sync_windows():
-                    effective_topmost = bool(
-                        self.always_on_top_enabled
-                        and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
-                    )
+                    effective_topmost = self._effective_topmost()
                     _set_macos_window_topmost(int(window.winId()), effective_topmost)
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
@@ -6088,12 +6583,23 @@ class PetWindow(QWidget):
         # 单窗口重构后只有主窗口一个顶层窗口，置顶仅作用于它。
         return [self]
 
+    def _effective_topmost(self) -> bool:
+        """实际生效的置顶：用户开启置顶且当前未被副窗口/Tauri 设置临时压低。
+
+        独立渲染窗口（立绘）与主窗口必须共用这一判定，否则压低主窗口置顶时
+        立绘 overlay 仍会保持置顶，盖住系统取色器的放大预览。
+        """
+        return bool(
+            getattr(self, "always_on_top_enabled", False)
+            and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
+        )
+
     def _stack_renderer_overlay_below(self) -> None:
         manager = getattr(self, "renderer_manager", None)
         if manager is None or not getattr(manager, "is_overlay_active", False):
             return
         try:
-            manager.stack_below(self, topmost=bool(getattr(self, "always_on_top_enabled", False)))
+            manager.stack_below(self, topmost=self._effective_topmost())
         except Exception as exc:  # noqa: BLE001
             debug_log("RendererManager", "同步渲染窗口层级失败", {"error": str(exc)})
 
@@ -6106,6 +6612,7 @@ class PetWindow(QWidget):
         vertical_offset: object,
         input_bar_offset: object,
         persist: bool,
+        raise_on_persist_error: bool = False,
     ) -> None:
         """一次性应用「立绘缩放 + 控制组布局」：归一化 → 锁定立绘底边锚点 → 更新状态（含按需重贴立绘）
         → 单次统一布局（一次 setGeometry，全程抑帧）。persist=True 时无条件持久化控制组布局。
@@ -6147,9 +6654,9 @@ class PetWindow(QWidget):
         finally:
             self.setUpdatesEnabled(was_enabled)
         if persist:
-            self._save_control_panel_layout()
+            self._save_control_panel_layout(raise_on_error=raise_on_persist_error)
 
-    def _save_control_panel_layout(self) -> None:
+    def _save_control_panel_layout(self, *, raise_on_error: bool = False) -> None:
         try:
             self._save_system_config_values(
                 "ui",
@@ -6162,6 +6669,8 @@ class PetWindow(QWidget):
             )
         except OSError as exc:
             debug_log("PetWindow", "保存控制组布局失败", {"error": str(exc)})
+            if raise_on_error:
+                raise
 
     def _preview_layout(
         self,
@@ -6916,6 +7425,14 @@ def _tts_provider_needs_rebuild(
     return getattr(old_provider, "settings", None) != getattr(new_provider, "settings", None)
 
 
+def _optional_tauri_path(value: object, base_dir: Path) -> Path | None:
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.is_absolute() else base_dir / path
+
+
 def _should_keep_tts_local_service(old_provider: TTSProvider, new_provider: TTSProvider) -> bool:
     old_settings = getattr(old_provider, "settings", None)
     new_settings = getattr(new_provider, "settings", None)
@@ -7128,8 +7645,14 @@ def _update_runtime_api_clients(
     if chat_slot is None:
         return
 
-    window.api_client.update_settings(chat_slot.settings)
-    window.memory_store.reload_api_settings(chat_slot.settings, wait=False)
+    update_settings = getattr(window.api_client, "update_settings", None)
+    if callable(update_settings):
+        update_settings(chat_slot.settings)
+    else:
+        window.api_client.settings = chat_slot.settings
+    reload_api_settings = getattr(window.memory_store, "reload_api_settings", None)
+    if callable(reload_api_settings):
+        reload_api_settings(chat_slot.settings, wait=False)
 
     vision_slot = resolve_model_slot(
         api_profiles,

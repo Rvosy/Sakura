@@ -17,6 +17,8 @@ runtime/
 /tts/
 env/
 node_modules/
+tools/settings-tauri/src-tauri/target/
+tools/settings-tauri/src-tauri/gen/
 characters/
 
 .pytest_cache/

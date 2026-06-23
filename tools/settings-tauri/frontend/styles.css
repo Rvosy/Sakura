@@ -1,0 +1,822 @@
+/*
+ * Sakura 设置面板样式。
+ *
+ * 整套界面都建立在 --sakura-* 主题变量之上（structural color 全部用 color-mix 从这些
+ * 变量派生），因此用户在「外观」页实时改色时，连同卡片、阴影、导航高亮都会一起换肤。
+ */
+
+:root {
+  --sakura-primary: #d55b91;
+  --sakura-primary-hover: #bf3f7a;
+  --sakura-accent: #b13e73;
+  --sakura-text: #3d2b35;
+  --sakura-secondary-text: #7a3656;
+  --sakura-muted-text: #9b4f72;
+  --sakura-page-bg: #fff6fa;
+  --sakura-panel-bg: #ffe8f1;
+  --sakura-input-bg: #ffffff;
+  --sakura-bubble-bg: #ffe8f1;
+  --sakura-border: #eeacc8;
+
+  /* 从主题变量派生的结构色，保证换肤时整体协调 */
+  --surface-soft: color-mix(in srgb, var(--sakura-input-bg) 88%, var(--sakura-panel-bg));
+  --surface-raised: var(--sakura-input-bg);
+  --hairline: color-mix(in srgb, var(--sakura-border) 70%, transparent);
+  --tint-faint: color-mix(in srgb, var(--sakura-primary) 8%, transparent);
+  --tint-soft: color-mix(in srgb, var(--sakura-primary) 14%, transparent);
+  --ring: color-mix(in srgb, var(--sakura-primary) 30%, transparent);
+  --shadow-card: 0 18px 40px -24px color-mix(in srgb, var(--sakura-accent) 55%, transparent);
+  --shadow-pop: 0 10px 24px -14px color-mix(in srgb, var(--sakura-primary) 60%, transparent);
+
+  --radius-lg: 16px;
+  --radius-md: 11px;
+  --radius-sm: 9px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  color: var(--sakura-text);
+  font-family:
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "PingFang SC",
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--sakura-text);
+  background:
+    radial-gradient(120% 90% at 100% 0%, var(--tint-soft), transparent 55%),
+    radial-gradient(90% 80% at 0% 100%, var(--tint-faint), transparent 50%),
+    var(--sakura-page-bg);
+  overflow: hidden;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ---------- 整体布局 ---------- */
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 14px;
+  height: 100vh;
+  padding: 14px;
+  animation: shell-in 0.45s var(--ease) both;
+}
+
+.nav-card,
+.detail-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 55%, var(--surface-raised));
+  box-shadow: var(--shadow-card);
+}
+
+/* ---------- 侧边导航 ---------- */
+
+.nav-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 12px;
+  background:
+    linear-gradient(180deg, var(--tint-soft), transparent 38%),
+    color-mix(in srgb, var(--sakura-panel-bg) 62%, var(--surface-raised));
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.nav-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--sakura-primary);
+  color: var(--sakura-input-bg);
+  font-size: 14px;
+  box-shadow: var(--shadow-pop);
+}
+
+.nav-brand-text {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--sakura-text);
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.nav-item {
+  position: relative;
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sakura-secondary-text);
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+  padding: 0 14px 0 18px;
+  text-align: left;
+  transition:
+    background-color 0.2s var(--ease),
+    color 0.2s var(--ease),
+    transform 0.2s var(--ease);
+}
+
+.nav-item::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--sakura-primary);
+  transform: translateY(-50%) scaleY(0);
+  transform-origin: center;
+  transition: transform 0.24s var(--ease);
+}
+
+.nav-item:hover:not(:disabled) {
+  background: var(--tint-faint);
+  color: var(--sakura-primary);
+}
+
+.nav-item.is-active {
+  background: var(--tint-soft);
+  color: var(--sakura-primary);
+  font-weight: 600;
+}
+
+.nav-item.is-active::before {
+  transform: translateY(-50%) scaleY(1);
+}
+
+.nav-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* ---------- 详情区：标题 / 滚动内容 / 底栏 ---------- */
+
+.detail-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.page-head {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: linear-gradient(180deg, var(--tint-faint), transparent);
+}
+
+.page-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--sakura-text);
+}
+
+.page-subtitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--sakura-muted-text);
+}
+
+.page-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 22px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sakura-border) transparent;
+}
+
+.page-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.page-scroll::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
+}
+
+.page-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sakura-primary);
+}
+
+/* ---------- 设置页与页面切换动效 ---------- */
+
+.settings-page {
+  display: none;
+  gap: 14px;
+  max-width: 720px;
+}
+
+.settings-page.is-active {
+  display: grid;
+  animation: page-in 0.32s var(--ease) both;
+}
+
+.settings-group {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+}
+
+.settings-group legend {
+  padding: 2px 10px;
+  margin-left: -2px;
+  color: var(--sakura-primary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--tint-soft);
+  border-radius: 999px;
+}
+
+/* ---------- 表单行与控件 ---------- */
+
+.form-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 36px;
+}
+
+.form-row > label:first-child {
+  color: var(--sakura-text);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.check-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--sakura-text);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.check-control input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--sakura-primary);
+  cursor: pointer;
+}
+
+input[type="number"],
+input[type="text"],
+select,
+textarea {
+  width: 100%;
+  max-width: 200px;
+  justify-self: start;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 9px 11px;
+  transition:
+    border-color 0.18s var(--ease),
+    box-shadow 0.18s var(--ease),
+    background-color 0.18s var(--ease);
+}
+
+input[type="text"] {
+  max-width: 320px;
+}
+
+select {
+  max-width: 260px;
+}
+
+textarea {
+  max-width: 460px;
+  min-height: 92px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.wide-input {
+  max-width: 460px;
+}
+
+input[type="number"]:hover:not(:disabled),
+input[type="text"]:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-border));
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--sakura-primary);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+input[type="number"]:disabled,
+input[type="text"]:disabled,
+select:disabled,
+textarea:disabled {
+  background: color-mix(in srgb, var(--sakura-panel-bg) 60%, var(--sakura-border) 18%);
+  color: var(--sakura-muted-text);
+  cursor: not-allowed;
+}
+
+input[type="color"] {
+  width: 44px;
+  height: 36px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+
+/* 让色块铺满整个取色框，不再留内边距的小方块。 */
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+}
+
+input[type="color"]:hover {
+  border-color: var(--sakura-primary);
+  box-shadow: var(--shadow-pop);
+}
+
+/* ---------- 自定义下拉框 ---------- */
+/* WebView2 在 Windows 上的原生 <select> 弹层无法被 CSS 主题化，这里用隐藏的原生
+   <select> 承载取值，仅替换视觉为可控弹层；弹层用 fixed 定位避开滚动容器裁剪。 */
+.custom-select {
+  position: relative;
+  width: 100%;
+  max-width: 260px;
+  justify-self: start;
+}
+
+.custom-select select {
+  display: none;
+}
+
+.custom-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 400;
+  text-align: left;
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+
+.custom-select__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select__caret {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--sakura-muted-text);
+  border-bottom: 2px solid var(--sakura-muted-text);
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 0.2s var(--ease);
+}
+
+.custom-select.is-open .custom-select__caret {
+  transform: rotate(-135deg) translate(-1px, -1px);
+}
+
+.custom-select__trigger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-border));
+}
+
+.custom-select.is-open .custom-select__trigger,
+.custom-select__trigger:focus-visible {
+  outline: none;
+  border-color: var(--sakura-primary);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.custom-select__trigger:disabled {
+  background: color-mix(in srgb, var(--sakura-panel-bg) 60%, var(--sakura-border) 18%);
+  color: var(--sakura-muted-text);
+  cursor: not-allowed;
+}
+
+.custom-select__menu {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-card);
+  scrollbar-width: thin;
+}
+
+/* 弹层打开时挂到 <body>（见 settings.js），因此用自身的 is-open 类控制显隐，
+   不能再依赖 .custom-select 后代选择器。 */
+.custom-select__menu.is-open {
+  display: block;
+  animation: menu-in 0.16s var(--ease) both;
+}
+
+.custom-select__option {
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: var(--sakura-text);
+  font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.custom-select__option:hover {
+  background: var(--tint-faint);
+  color: var(--sakura-primary);
+}
+
+.custom-select__option.is-selected {
+  background: var(--tint-soft);
+  color: var(--sakura-primary);
+  font-weight: 600;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 角色页：实时预览滑块 ---------- */
+
+.page-note {
+  margin: 0;
+  padding: 10px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--tint-faint);
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.slider-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 340px;
+  justify-self: start;
+}
+
+input[type="range"].layout-slider {
+  flex: 1;
+  width: auto;
+  max-width: none;
+  height: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--sakura-primary) 55%, transparent),
+    var(--tint-soft)
+  );
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+
+input[type="range"].layout-slider:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+input[type="range"].layout-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--sakura-primary);
+  border: 2px solid var(--sakura-input-bg);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  transition: transform 0.12s var(--ease);
+}
+
+input[type="range"].layout-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.14);
+}
+
+input[type="range"].layout-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--sakura-primary);
+  border: 2px solid var(--sakura-input-bg);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+}
+
+.slider-value {
+  min-width: 46px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--tint-soft);
+  color: var(--sakura-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 外观页配色 ---------- */
+
+.theme-colors {
+  display: grid;
+  gap: 12px;
+}
+
+.theme-color-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------- 模型页动态列表 ---------- */
+
+.dynamic-list {
+  display: grid;
+  gap: 12px;
+}
+
+.nested-group {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 80%, var(--sakura-panel-bg));
+}
+
+.nested-group legend {
+  padding: 1px 9px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--tint-faint);
+  border-radius: 999px;
+}
+
+.slot-controls,
+.inline-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.slot-controls .custom-select {
+  flex: 1;
+  max-width: none;
+}
+
+.inline-input input[type="number"] {
+  max-width: 150px;
+}
+
+.inline-input input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--sakura-primary);
+  cursor: pointer;
+}
+
+.align-start {
+  align-items: start;
+}
+
+input[type="checkbox"]:disabled + span {
+  color: var(--sakura-muted-text);
+}
+
+/* ---------- 提示与错误 ---------- */
+
+.hint,
+.error {
+  min-height: 20px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.hint {
+  color: var(--sakura-muted-text);
+}
+
+.error {
+  color: var(--sakura-accent);
+  font-weight: 600;
+}
+
+/* ---------- 底栏与按钮 ---------- */
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
+}
+
+footer .error {
+  margin-right: auto;
+}
+
+button {
+  min-width: 96px;
+  min-height: 38px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-secondary-text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 18px;
+  transition:
+    background-color 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    color 0.18s var(--ease),
+    transform 0.12s var(--ease),
+    box-shadow 0.18s var(--ease);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--sakura-primary);
+  color: var(--sakura-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-pop);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+#saveButton {
+  border-color: var(--sakura-primary);
+  background: linear-gradient(180deg, var(--sakura-primary), var(--sakura-primary-hover));
+  color: var(--sakura-input-bg);
+}
+
+#saveButton:hover:not(:disabled) {
+  color: var(--sakura-input-bg);
+  filter: brightness(1.05);
+}
+
+.secondary-button {
+  width: fit-content;
+  min-width: 116px;
+}
+
+button:focus-visible,
+.nav-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+/* ---------- 动效关键帧 ---------- */
+
+@keyframes shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- 窄窗口自适应 ---------- */
+
+@media (max-width: 620px) {
+  .settings-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .nav-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .nav-item {
+    width: auto;
+  }
+
+  .form-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    align-items: start;
+  }
+}

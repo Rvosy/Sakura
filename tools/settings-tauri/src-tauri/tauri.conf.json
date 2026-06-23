@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sakura Settings",
+  "version": "0.1.0",
+  "identifier": "com.rvosy.sakura.settings",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sakura 设置",
+        "width": 720,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 560,
+        "resizable": true,
+        "maximizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}

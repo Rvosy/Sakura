@@ -14,7 +14,7 @@ import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
-from app.config.settings_service import BackchannelSettings, DebugLogSettings, StartupSettings
+from app.config.settings_service import BackchannelSettings, BubbleSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings
 from app.agent import AgentEvent, AgentResult
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -968,6 +968,64 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
     assert window.messages == []
     assert subtitle.cancelled is True
     assert order == ["backchannel_cancel", "stop_all"]
+
+
+def test_close_external_tools_shutdowns_active_tauri_settings() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class ResourceManagerStub:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop_all(self, _timeout_ms: int) -> None:
+            self.stopped = True
+
+    class SubtitleStub:
+        def cancel_reply_flow(self) -> None:
+            pass
+
+    class TauriProcessStub:
+        def __init__(self) -> None:
+            self.shutdown_called = False
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    class MinimalWindow:
+        close_external_tools = PetWindow.close_external_tools
+        _close_tauri_settings_process_for_shutdown = (
+            PetWindow._close_tauri_settings_process_for_shutdown
+        )
+        _restore_tauri_layout_preview = PetWindow._restore_tauri_layout_preview
+
+        def _preview_layout(self, *layout):  # type: ignore[no-untyped-def]
+            self.restored_layout = layout
+
+        def _sync_secondary_window_state(self) -> None:
+            self.synced = True
+
+    process = TauriProcessStub()
+    window = MinimalWindow()
+    window._shutdown_in_progress = False
+    window.tauri_settings_process = process
+    window._tauri_initial_tts_settings = object()
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window.resource_manager = ResourceManagerStub()
+    window.messages = []
+    window.subtitle_controller = SubtitleStub()
+    window.backchannel_controller = None
+    window.worker_thread = None
+    window._emit_app_closed_event = lambda: None
+    window._stop_speaking_state_watchdog = lambda: None
+
+    window.close_external_tools()
+
+    assert process.shutdown_called is True
+    assert window.tauri_settings_process is None
+    assert window._tauri_initial_tts_settings is None
+    assert window.restored_layout == (100, 640, 128, 0, 0)
+    assert window.synced is True
+    assert window.resource_manager.stopped is True
 
 
 def test_pet_window_registers_runtime_services_in_registry_order() -> None:
@@ -4047,6 +4105,1094 @@ def test_settings_dialog_can_close_while_tts_bundle_download_runs(monkeypatch) -
     assert finished == [settings_dialog_module.QDialog.DialogCode.Rejected]
     dialog.deleteLater()
     app.processEvents()
+
+
+class _SignalStub:
+    def __init__(self) -> None:
+        self._slots: list = []
+
+    def connect(self, slot) -> None:  # type: ignore[no-untyped-def]
+        self._slots.append(slot)
+
+    def emit(self, *args) -> None:  # type: ignore[no-untyped-def]
+        for slot in list(self._slots):
+            slot(*args)
+
+
+def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, start_result: bool = True):  # type: ignore[no-untyped-def]
+    instances = []
+
+    class TauriSettingsProcessStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.kwargs = _kwargs
+            self.completed = _SignalStub()
+            self.cancelled = _SignalStub()
+            self.failed = _SignalStub()
+            self.layout_preview = _SignalStub()
+            self.shutdown_called = False
+            instances.append(self)
+
+        def start(self) -> bool:
+            return start_result
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    monkeypatch.setattr(pet_window_module, "TauriSettingsProcess", TauriSettingsProcessStub)
+    return instances
+
+
+def _build_tauri_settings_result(
+    *,
+    api_settings: ApiSettings | None = None,
+    character_id: str = "sakura",
+    portrait_scale_percent: int = 150,
+    control_panel_width: int = 700,
+    bubble_height: int = 180,
+    control_panel_vertical_offset: int = 25,
+    input_bar_offset: int = 10,
+):
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import (
+        TauriApiResult,
+        TauriCharacterResult,
+        TauriSettingsResult,
+        TauriSystemBasicResult,
+        TauriSystemExtraResult,
+        TauriTtsResult,
+    )
+
+    settings = api_settings or ApiSettings(
+        "https://api.changed.example.com/v1",
+        "changed-key",
+        "changed-model",
+    )
+    api_profile = ApiConfigProfile(
+        id="default",
+        alias="默认",
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        models=(settings.model,),
+    )
+    return TauriSettingsResult(
+        screen_awareness=ScreenAwarenessSettings(),
+        mcp=MCPRuntimeSettings(),
+        runtime_loop=RuntimeLoopSettings(max_agent_steps_per_turn=6),
+        system_basic=TauriSystemBasicResult(),
+        theme=DEFAULT_THEME_SETTINGS,
+        character=TauriCharacterResult(
+            character_id=character_id,
+            portrait_scale_percent=portrait_scale_percent,
+            control_panel_width=control_panel_width,
+            bubble_height=bubble_height,
+            control_panel_vertical_offset=control_panel_vertical_offset,
+            input_bar_offset=input_bar_offset,
+        ),
+        api=TauriApiResult(
+            settings=settings,
+            profiles=[api_profile],
+            model_selection=ModelSelectionSettings(
+                chat=ModelSlotSelection(profile_id="default", model=settings.model)
+            ),
+        ),
+        tts=TauriTtsResult(enabled=False, provider="none"),
+        system_extra=TauriSystemExtraResult(),
+    )
+
+
+def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+    from app.agent.memory_curator import MemoryCurationSettings
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import (
+        TauriApiResult,
+        TauriCharacterResult,
+        TauriSettingsResult,
+        TauriSystemBasicResult,
+        TauriSystemExtraResult,
+        TauriTtsResult,
+    )
+
+    saved: list[ScreenAwarenessSettings] = []
+    saved_mcp: list[MCPRuntimeSettings] = []
+    saved_runtime_loop: list[RuntimeLoopSettings] = []
+    saved_api: list[ApiSettings] = []
+    saved_api_profiles: list[list[ApiConfigProfile]] = []
+    saved_model_selection: list[ModelSelectionSettings] = []
+    saved_tts: list[GPTSoVITSTTSSettings] = []
+    saved_character: list[str] = []
+    saved_debug: list[DebugLogSettings] = []
+    saved_ui: list[dict[str, int]] = []
+    saved_bubble: list[BubbleSettings] = []
+    saved_theme: list[ThemeSettings] = []
+    saved_startup: list[StartupSettings] = []
+    saved_backchannel: list[BackchannelSettings] = []
+    saved_memory: list[MemoryCurationSettings] = []
+    synced: list[str] = []
+    applied_startup: list[StartupSettings] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+        def save_api_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_api.append(settings)
+
+        def save_api_profiles(self, profiles):  # type: ignore[no-untyped-def]
+            saved_api_profiles.append(list(profiles))
+
+        def save_model_selection(self, selection):  # type: ignore[no-untyped-def]
+            saved_model_selection.append(selection)
+
+        def save_tts_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_tts.append(settings)
+
+        def save_current_character_id(self, _registry, character_id):  # type: ignore[no-untyped-def]
+            saved_character.append(character_id)
+
+        def save_screen_awareness_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved.append(settings)
+
+        def save_mcp_runtime_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_mcp.append(settings)
+
+        def save_runtime_loop_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_runtime_loop.append(settings)
+
+        def save_debug_log_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_debug.append(settings)
+
+        def save_system_values(self, section, values):  # type: ignore[no-untyped-def]
+            assert section == "ui"
+            saved_ui.append(dict(values))
+
+        def save_bubble_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_bubble.append(settings)
+
+        def save_theme_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_theme.append(settings)
+
+        def save_startup_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_startup.append(settings)
+
+        def save_backchannel_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_backchannel.append(settings)
+
+        def save_memory_curation_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_memory.append(settings)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "SettingsDialog",
+        lambda *_args, **_kwargs: pytest.fail("PySide 设置页不应打开"),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._sync_proactive_care_timer = lambda: synced.append("sync")
+    window._apply_launch_at_login_settings = lambda settings: applied_startup.append(settings)
+
+    window.show_settings()
+    screen_awareness = ScreenAwarenessSettings(
+        enabled=True,
+        screen_context_enabled=True,
+        check_interval_minutes=5,
+        cooldown_minutes=8,
+        screen_context_batch_limit=4,
+    )
+    mcp = MCPRuntimeSettings(windows_enabled=True)
+    runtime_loop = RuntimeLoopSettings(
+        max_agent_steps_per_turn=6,
+        max_tool_calls_per_step=4,
+        max_tool_calls_per_turn=9,
+    )
+    debug_log = DebugLogSettings(
+        enabled=True,
+        body_enabled=True,
+        file_enabled=True,
+        stage_debug_overlay=True,
+        stage_collision_mask=False,
+    )
+    bubble = BubbleSettings(auto_hide_enabled=False, auto_hide_delay_seconds=42)
+    system_basic = TauriSystemBasicResult(
+        debug_log=debug_log,
+        subtitle_typing_interval_ms=80,
+        reply_segment_pause_ms=900,
+        bubble=bubble,
+    )
+    theme = ThemeSettings(primary_color="#123456", visual_effect_mode="solid")
+    api_profile = ApiConfigProfile(
+        id="default",
+        alias="默认",
+        base_url="https://api.changed.example.com/v1",
+        api_key="changed-key",
+        models=("changed-model",),
+    )
+    model_selection = ModelSelectionSettings(
+        chat=ModelSlotSelection(profile_id="default", model="changed-model")
+    )
+    api_settings = ApiSettings(
+        "https://api.changed.example.com/v1",
+        "changed-key",
+        "changed-model",
+        timeout_seconds=30,
+        temperature=0.5,
+        top_p=0.9,
+        max_tokens=2048,
+    )
+    startup = StartupSettings(launch_at_login=True)
+    backchannel = BackchannelSettings(
+        enabled=True,
+        mode="hybrid",
+        delay_ms=700,
+        probability=0.6,
+        tts_enabled=True,
+        timeout_ms=400,
+    )
+    memory = MemoryCurationSettings(enabled=True, trigger_turns=12, backfill_limit=200)
+    result = TauriSettingsResult(
+        screen_awareness,
+        mcp,
+        runtime_loop,
+        system_basic,
+        theme,
+        character=TauriCharacterResult(
+            character_id="sakura",
+            portrait_scale_percent=120,
+            control_panel_width=700,
+            bubble_height=140,
+            control_panel_vertical_offset=10,
+            input_bar_offset=20,
+        ),
+        api=TauriApiResult(
+            settings=api_settings,
+            profiles=[api_profile],
+            model_selection=model_selection,
+        ),
+        tts=TauriTtsResult(enabled=False, provider="none"),
+        system_extra=TauriSystemExtraResult(
+            startup=startup,
+            launch_at_login_supported=True,
+            backchannel=backchannel,
+        ),
+        memory_curation=memory,
+    )
+    instances[0].completed.emit(result)
+
+    assert instances[0].kwargs["mcp_settings"] == MCPRuntimeSettings(windows_enabled=False)
+    assert instances[0].kwargs["runtime_loop_settings"] == RuntimeLoopSettings()
+    assert instances[0].kwargs["debug_log_settings"] == DebugLogSettings()
+    assert instances[0].kwargs["subtitle_typing_interval_ms"] == 35
+    assert instances[0].kwargs["reply_segment_pause_ms"] == 100
+    assert instances[0].kwargs["bubble_settings"] == BubbleSettings()
+    assert instances[0].kwargs["current_character"].id == "sakura"
+    assert instances[0].kwargs["tts_settings"].enabled is False
+    assert saved == [screen_awareness]
+    assert saved_mcp == [mcp]
+    assert saved_runtime_loop == [runtime_loop]
+    assert saved_api == [api_settings]
+    assert saved_api_profiles == [[api_profile]]
+    assert saved_model_selection == [model_selection]
+    assert saved_tts and saved_tts[0].enabled is False
+    assert saved_character == ["sakura"]
+    assert saved_debug == [debug_log]
+    assert saved_ui == [
+        {
+            "portrait_scale_percent": 120,
+            "subtitle_typing_interval_ms": 80,
+            "reply_segment_pause_ms": 900,
+        }
+    ]
+    assert saved_bubble == [bubble]
+    assert saved_theme == [theme]
+    assert applied_startup == [startup]
+    assert saved_startup == [startup]
+    assert saved_backchannel == [backchannel]
+    assert saved_memory == [memory]
+    assert window.api_client.settings == api_settings
+    assert window.screen_awareness_settings == screen_awareness
+    assert window.mcp_settings == mcp
+    assert window.agent_runtime.runtime_loop_settings == runtime_loop
+    assert window.portrait_scale_percent == 120
+    assert window.control_panel_width == 700
+    assert window.bubble_height == 140
+    assert window.control_panel_vertical_offset == 10
+    assert window.input_bar_offset == 20
+    assert window.layout_persisted is True
+    assert window.debug_log_settings == debug_log
+    assert window.stage_debug_overlay_applied == (True, True)
+    assert window.stage_collision_mask_applied == (False, True)
+    assert window.subtitle_typing_interval_ms == 80
+    assert window.reply_segment_pause_ms == 900
+    assert window.subtitle_controller.display_speeds == [(80, 900)]
+    assert window.bubble_settings == bubble
+    assert window.theme_settings == theme
+    assert window.applied_theme_settings == theme
+    assert window.startup_settings == startup
+    assert window.backchannel_settings == backchannel
+    assert window.memory_curation_settings == memory
+    assert synced == ["sync"]
+    assert window.tauri_settings_process is None
+    assert window._tauri_initial_tts_settings is None
+
+
+def test_show_settings_tauri_trial_cancel_does_not_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    saved: list[ScreenAwarenessSettings] = []
+    saved_mcp: list[MCPRuntimeSettings] = []
+    saved_runtime_loop: list[RuntimeLoopSettings] = []
+    saved_debug: list[DebugLogSettings] = []
+    saved_ui: list[dict[str, int]] = []
+    saved_bubble: list[BubbleSettings] = []
+    saved_theme: list[ThemeSettings] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+        def save_screen_awareness_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved.append(settings)
+
+        def save_mcp_runtime_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_mcp.append(settings)
+
+        def save_runtime_loop_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_runtime_loop.append(settings)
+
+        def save_debug_log_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_debug.append(settings)
+
+        def save_system_values(self, section, values):  # type: ignore[no-untyped-def]
+            saved_ui.append({"section": section, **values})
+
+        def save_bubble_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_bubble.append(settings)
+
+        def save_theme_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_theme.append(settings)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "SettingsDialog",
+        lambda *_args, **_kwargs: pytest.fail("取消 Tauri 设置不应回退 PySide"),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
+    instances[0].cancelled.emit()
+
+    assert saved == []
+    assert saved_mcp == []
+    assert saved_runtime_loop == []
+    assert saved_debug == []
+    assert saved_ui == []
+    assert saved_bubble == []
+    assert saved_theme == []
+    assert window.tauri_settings_process is None
+
+
+def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
+
+    # 滑块拖动：实时应用但不持久化。
+    instances[0].layout_preview.emit(
+        {
+            "portrait_scale_percent": 150,
+            "control_panel_width": 720,
+            "bubble_height": 200,
+            "control_panel_vertical_offset": 30,
+            "input_bar_offset": 12,
+        }
+    )
+    assert window.portrait_scale_percent == 150
+    assert window.control_panel_width == 720
+    assert window.bubble_height == 200
+    assert window.control_panel_vertical_offset == 30
+    assert window.input_bar_offset == 12
+    assert window.layout_persisted is False
+
+    # 取消：回滚到打开设置前的布局，且仍不持久化。
+    instances[0].cancelled.emit()
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window.tauri_settings_process is None
+
+
+def test_show_settings_tauri_trial_missing_binary_falls_back_to_pyside(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            events.append("load_tts")
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("dialog_init")
+            self.finished = _NonModalSettingsDialogStub._FinishedSignal()
+
+        def show(self) -> None:
+            events.append("show")
+
+    monkeypatch.setenv("SAKURA_TAURI_SETTINGS_TRIAL", "1")
+    monkeypatch.setenv("SAKURA_TAURI_SETTINGS_BIN", "missing-tauri-settings.exe")
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
+
+    assert events == ["load_tts", "dialog_init", "show"]
+    assert getattr(window, "settings_dialog", None) is not None
+
+
+def test_show_settings_tauri_trial_failure_warns_and_falls_back(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+    warnings: list[str] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            events.append("load_tts")
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("dialog_init")
+            self.finished = _NonModalSettingsDialogStub._FinishedSignal()
+
+        def show(self) -> None:
+            events.append("show")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
+    instances[0].failed.emit("结果无效")
+
+    assert warnings == ["结果无效\n\n已回退到原设置页。"]
+    assert events == ["load_tts", "load_tts", "dialog_init", "show"]
+    assert window.tauri_settings_process is None
+
+
+def test_show_settings_tauri_trial_invalid_result_warns_and_falls_back(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[str] = []
+    warnings: list[str] = []
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            events.append("load_tts")
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class DialogStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            events.append("dialog_init")
+            self.finished = _NonModalSettingsDialogStub._FinishedSignal()
+
+        def show(self) -> None:
+            events.append("show")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
+    instances[0].completed.emit(object())
+
+    assert warnings == ["Tauri 设置结果类型无效。\n\n已回退到原设置页。"]
+    assert events == ["load_tts", "load_tts", "dialog_init", "show"]
+    assert window.tauri_settings_process is None
+
+
+def test_show_settings_tauri_trial_save_failure_restores_preview_and_closes_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import (
+        TauriApiResult,
+        TauriCharacterResult,
+        TauriSettingsResult,
+        TauriSystemBasicResult,
+        TauriSystemExtraResult,
+        TauriTtsResult,
+    )
+
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    provider = ProviderStub()
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._create_tts_provider_from_settings = lambda _settings: provider
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window._tauri_initial_tts_settings = _minimal_tts_settings()
+    window.portrait_scale_percent = 150
+    window.control_panel_width = 700
+    window.bubble_height = 180
+    window.control_panel_vertical_offset = 25
+    window.input_bar_offset = 10
+
+    api_profile = ApiConfigProfile(
+        id="default",
+        alias="默认",
+        base_url="https://api.changed.example.com/v1",
+        api_key="changed-key",
+        models=("changed-model",),
+    )
+    api_settings = ApiSettings(
+        "https://api.changed.example.com/v1",
+        "changed-key",
+        "changed-model",
+    )
+    result = TauriSettingsResult(
+        screen_awareness=ScreenAwarenessSettings(),
+        mcp=MCPRuntimeSettings(),
+        runtime_loop=RuntimeLoopSettings(),
+        system_basic=TauriSystemBasicResult(),
+        theme=DEFAULT_THEME_SETTINGS,
+        character=TauriCharacterResult(
+            character_id="sakura",
+            portrait_scale_percent=150,
+            control_panel_width=700,
+            bubble_height=180,
+            control_panel_vertical_offset=25,
+            input_bar_offset=10,
+        ),
+        api=TauriApiResult(
+            settings=api_settings,
+            profiles=[api_profile],
+            model_selection=ModelSelectionSettings(
+                chat=ModelSlotSelection(profile_id="default", model="changed-model")
+            ),
+        ),
+        tts=TauriTtsResult(enabled=False, provider="none"),
+        system_extra=TauriSystemExtraResult(),
+    )
+
+    window._on_tauri_settings_completed(result)
+
+    assert critical_messages
+    assert provider.closed is True
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window._tauri_initial_tts_settings is None
+    assert window._tauri_original_layout is None
+
+
+def test_show_settings_tauri_trial_layout_persist_failure_rolls_back_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, _character_id):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_screen_awareness_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, _section, _values):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    provider = ProviderStub()
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._create_tts_provider_from_settings = lambda _settings: provider
+    window.raise_layout_persist_error = True
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window._tauri_initial_tts_settings = _minimal_tts_settings()
+    window.portrait_scale_percent = 150
+    window.control_panel_width = 700
+    window.bubble_height = 180
+    window.control_panel_vertical_offset = 25
+    window.input_bar_offset = 10
+
+    window._on_tauri_settings_completed(_build_tauri_settings_result())
+
+    assert critical_messages
+    assert provider.closed is True
+    assert window.api_client.settings == ApiClientStub.settings
+    assert window.agent_runtime.runtime_loop_settings == RuntimeLoopSettings()
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window._tauri_initial_tts_settings is None
+    assert window._tauri_original_layout is None
+
+
+def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
+    return {
+                "version": 2,
+                "nonce": "nonce",
+                "screen_awareness": {
+                    "enabled": True,
+                    "screen_context_enabled": True,
+                    "check_interval_minutes": 5,
+                    "cooldown_minutes": 8,
+                    "screen_context_batch_limit": 4,
+                },
+                "mcp": {
+                    "windows_enabled": True,
+                },
+                "runtime_loop": {
+                    "max_agent_steps_per_turn": 99,
+                    "max_tool_calls_per_step": 8,
+                    "max_tool_calls_per_turn": 2,
+                },
+                "system_basic": {
+                    "debug_log": {
+                        "enabled": False,
+                        "body_enabled": True,
+                        "file_enabled": True,
+                        "stage_debug_overlay": True,
+                        "stage_collision_mask": False,
+                    },
+                    "ui": {
+                        "subtitle_typing_interval_ms": 0,
+                        "reply_segment_pause_ms": 9999,
+                    },
+                    "bubble": {
+                        "auto_hide_enabled": True,
+                        "auto_hide_delay_seconds": 0,
+                    },
+                },
+        "theme": theme_payload,
+        "character": {
+            "current_character_id": "sakura",
+            "layout": {
+                "portrait_scale_percent": 100,
+                "control_panel_width": 640,
+                "bubble_height": 128,
+                "control_panel_vertical_offset": 0,
+                "input_bar_offset": 0,
+            },
+        },
+        "api": {
+            "settings": {
+                "timeout_seconds": 60,
+                "temperature": None,
+                "top_p": None,
+                "max_tokens": None,
+            },
+            "profiles": [
+                {
+                    "id": "default",
+                    "alias": "默认",
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "models": ["test-model"],
+                }
+            ],
+            "model_selection": {
+                "slots": {
+                    "chat": {"profile_id": "default", "model": "test-model"},
+                    "vision_chat": {"profile_id": "", "model": ""},
+                    "visual_context": {"profile_id": "", "model": ""},
+                    "memory_curation": {"profile_id": "", "model": ""},
+                    "theme_ai": {"profile_id": "", "model": ""},
+                }
+            },
+        },
+        "tts": {
+            "enabled": False,
+            "provider": "none",
+            "api_url": "http://127.0.0.1:9880/tts",
+            "work_dir": "",
+            "python_path": "",
+            "tts_config_path": "",
+            "timeout_seconds": 60,
+        },
+        "system_extra": {
+            "startup": {
+                "launch_at_login": False,
+                "launch_at_login_supported": True,
+            },
+            "backchannel": {
+                "enabled": False,
+                "mode": "rules",
+                "delay_ms": 600,
+                "probability": 1.0,
+                "tts_enabled": False,
+                "timeout_ms": 400,
+            },
+        },
+        "memory": {
+            "curation": {
+                "enabled": True,
+                "trigger_turns": 8,
+                "backfill_limit": 200,
+            }
+        },
+    }
+
+
+def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    theme_payload = theme_to_mapping(ThemeSettings(primary_color="#123456", ai_enabled=True))
+    theme_payload["primary_color"] = "invalid"
+    theme_payload["visual_effect_mode"] = "invalid"
+    payload = _tauri_settings_result_payload(theme_payload)
+    payload["character"]["layout"]["portrait_scale_percent"] = 999  # type: ignore[index]
+    payload["api"]["settings"]["timeout_seconds"] = 999  # type: ignore[index]
+    payload["system_extra"]["backchannel"]["delay_ms"] = 99999  # type: ignore[index]
+    payload["memory"]["curation"]["trigger_turns"] = 999  # type: ignore[index]
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.mcp == MCPRuntimeSettings(windows_enabled=True)
+    assert result.runtime_loop == RuntimeLoopSettings(
+        max_agent_steps_per_turn=12,
+        max_tool_calls_per_step=8,
+        max_tool_calls_per_turn=8,
+    )
+    assert result.system_basic.debug_log == DebugLogSettings(
+        enabled=False,
+        body_enabled=False,
+        file_enabled=True,
+        stage_debug_overlay=True,
+        stage_collision_mask=False,
+    )
+    assert result.system_basic.subtitle_typing_interval_ms == 5
+    assert result.system_basic.reply_segment_pause_ms == 3000
+    assert result.system_basic.bubble == BubbleSettings(
+        auto_hide_enabled=True,
+        auto_hide_delay_seconds=1,
+    )
+    assert result.theme.primary_color == DEFAULT_THEME_SETTINGS.primary_color
+    assert result.theme.ai_enabled is True
+    assert result.theme.visual_effect_mode == "gaussian_blur"
+    assert result.character.portrait_scale_percent == 150
+    assert result.api.settings.timeout_seconds == 600
+    assert result.system_extra.backchannel.delay_ms == 5000
+    assert result.memory_curation.trigger_turns == 50
+
+
+def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+
+    payload = {
+        "version": 2,
+        "nonce": "nonce",
+        "screen_awareness": {
+            "enabled": True,
+            "screen_context_enabled": True,
+            "check_interval_minutes": 5,
+            "cooldown_minutes": 8,
+            "screen_context_batch_limit": 4,
+        },
+        "mcp": {"windows_enabled": True},
+        "runtime_loop": {
+            "max_agent_steps_per_turn": 2,
+            "max_tool_calls_per_step": 2,
+            "max_tool_calls_per_turn": 2,
+        },
+    }
+
+    with pytest.raises(ValueError, match="系统基础配置"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_result_parser_rejects_stale_protocol() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["version"] = 1
+
+    with pytest.raises(ValueError, match="协议不匹配"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_request_includes_theme_colors() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        runtime_loop_settings=RuntimeLoopSettings(),
+        theme_settings=ThemeSettings(
+            primary_color="#123456",
+            panel_background_color="#abcdef",
+            border_color="#654321",
+        ),
+        nonce="nonce",
+    )
+
+    assert request["theme"]["primary_color"] == "#123456"
+    assert request["theme"]["panel_background_color"] == "#abcdef"
+    assert request["theme"]["border_color"] == "#654321"
+    assert request["theme"]["visual_effect_mode"] == "gaussian_blur"
+    assert request["theme_defaults"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
+    assert {"id": "primary_color", "label": "主题色"} in request["theme_fields"]
+    assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
+
+
+def test_tauri_settings_request_includes_per_character_theme() -> None:
+    from types import SimpleNamespace
+
+    from app.ui.tauri_settings import build_tauri_settings_request
+    from app.ui.theme import ThemeSettings
+
+    profile = SimpleNamespace(
+        id="sakura",
+        display_name="Sakura",
+        voice=None,
+        theme_settings=ThemeSettings(primary_color="#abcdef"),
+    )
+    registry = SimpleNamespace(profiles={"sakura": profile})
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        character_registry=registry,
+        current_character=profile,
+        nonce="nonce",
+    )
+    characters = request["character"]["characters"]
+    assert len(characters) == 1
+    assert characters[0]["theme"]["primary_color"] == "#abcdef"
+    # 每个角色都带齐全部配色字段，供切换时跟随换色。
+    assert len(characters[0]["theme"]) == len(request["theme_fields"])
+
+
+def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import (
+        TAURI_LAYOUT_PREVIEW_MARKER,
+        TAURI_SETTINGS_RESULT_MARKER,
+        TauriSettingsProcess,
+    )
+    from app.ui.theme import theme_to_mapping
+
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+    received: list[object] = []
+    completed: list[object] = []
+    process.layout_preview.connect(received.append)
+    process.completed.connect(completed.append)
+
+    marker = TAURI_LAYOUT_PREVIEW_MARKER.encode()
+    result_marker = TAURI_SETTINGS_RESULT_MARKER.encode()
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload_line = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    # 噪声行被忽略；预览行可以跨两次读取拼接。
+    process._process = FakeQProcess(b"webview noise\n" + marker + b'{"portrait_scale_percent": 150,')
+    process._handle_stdout()
+    assert received == []
+
+    process._process = FakeQProcess(
+        b' "control_panel_width": 720}\n' + result_marker + payload_line[:80]
+    )
+    process._handle_stdout()
+    assert received == [{"portrait_scale_percent": 150, "control_panel_width": 720}]
+    assert completed == []
+
+    process._process = FakeQProcess(payload_line[80:])
+    process._handle_stdout(flush=True)
+    assert len(completed) == 1
+    assert completed[0].screen_awareness.enabled is True
 
 
 def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -10615,6 +11761,18 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
 
     class MinimalSettingsWindow:
         show_settings = pet_window_cls.show_settings
+        _try_show_tauri_settings = pet_window_cls._try_show_tauri_settings
+        _show_pyside_settings_dialog = pet_window_cls._show_pyside_settings_dialog
+        _on_tauri_settings_completed = pet_window_cls._on_tauri_settings_completed
+        _on_tauri_settings_cancelled = pet_window_cls._on_tauri_settings_cancelled
+        _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
+        _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview
+        _restore_tauri_layout_preview = pet_window_cls._restore_tauri_layout_preview
+        _abort_tauri_settings_apply = pet_window_cls._abort_tauri_settings_apply
+        _close_unused_tauri_tts_provider = pet_window_cls._close_unused_tauri_tts_provider
+        _close_tauri_settings_process_for_shutdown = (
+            pet_window_cls._close_tauri_settings_process_for_shutdown
+        )
         _on_settings_dialog_finished = pet_window_cls._on_settings_dialog_finished
         _activate_settings_dialog = pet_window_cls._activate_settings_dialog
         _preview_layout = pet_window_cls._preview_layout
@@ -10636,6 +11794,11 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _apply_subtitle_display_speed = pet_window_cls._apply_subtitle_display_speed
         _apply_launch_at_login_settings = pet_window_cls._apply_launch_at_login_settings
         _apply_bubble_settings = pet_window_cls._apply_bubble_settings
+        _tts_settings_from_tauri_result = pet_window_cls._tts_settings_from_tauri_result
+
+        def _apply_theme_settings(self, theme_settings):  # type: ignore[no-untyped-def]
+            self.theme_settings = theme_settings.normalized()
+            self.applied_theme_settings = self.theme_settings
 
         def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
             self.stage_debug_overlay_applied = (enabled, refresh)
@@ -10655,6 +11818,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
             vertical_offset,
             input_bar_offset,
             persist: bool,
+            raise_on_persist_error: bool = False,
         ) -> None:
             self.portrait_scale_percent = portrait_scale_percent
             self.control_panel_width = control_panel_width
@@ -10662,6 +11826,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
             self.control_panel_vertical_offset = vertical_offset
             self.input_bar_offset = input_bar_offset
             self.layout_persisted = persist
+            if getattr(self, "raise_layout_persist_error", False) and raise_on_persist_error:
+                raise OSError("layout.yaml locked")
 
         def _sync_proactive_care_timer(self) -> None:
             pass
@@ -10690,6 +11856,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
     window.debug_log_settings = DebugLogSettings()
     window.startup_settings = StartupSettings()
+    window.theme_settings = DEFAULT_THEME_SETTINGS
     window.memory_store = memory_store
     window.agent_runtime = AgentRuntimeStub()
     window.plugin_manager = PluginManagerStub()
