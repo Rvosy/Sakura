@@ -286,3 +286,25 @@ class TestToolPermissionPolicy:
         )
         assert policy.requires_confirmation(tool, {"source": "speech", "metadata": {"image_url": "x"}})
         assert not policy.requires_confirmation(tool, {"source": "vision"})
+
+        environment_tool = _dummy_tool(
+            "observe_environment_sound",
+            requires_confirmation=True,
+            confirmation_risk="sensory_audio_capture",
+            risk="medium",
+            capability="sensory_sound_observation",
+        )
+        system_tool = _dummy_tool(
+            "observe_system_speech",
+            requires_confirmation=True,
+            confirmation_risk="sensory_audio_capture",
+            risk="medium",
+            capability="sensory_speech_observation",
+        )
+
+        assert policy.requires_confirmation(environment_tool, {})
+        assert policy.requires_confirmation(system_tool, {"duration_seconds": 1.0})
+        assert not policy.requires_confirmation(
+            environment_tool,
+            {"media_ref": "data:audio/wav;base64,abc"},
+        )

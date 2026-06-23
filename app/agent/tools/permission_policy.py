@@ -58,8 +58,8 @@ class ToolPermissionPolicy:
         if not tool.requires_confirmation:
             return False
 
-        # 系统音频采集会录制电脑输出声音；即使 free_access 开启，也必须先确认。
-        if tool.confirmation_risk == "sensory_audio_capture" and _is_sensory_audio_capture_request(arguments):
+        # 音频采集会录制电脑输出或麦克风环境音；即使 free_access 开启，也必须先确认。
+        if tool.confirmation_risk == "sensory_audio_capture" and _is_sensory_audio_capture_request(tool, arguments):
             return True
 
         # free_access 模式下的豁免
@@ -94,16 +94,26 @@ class ToolPermissionPolicy:
         return name in self.BROWSER_FREE_ACCESS_TOOLS
 
 
-def _is_sensory_audio_capture_request(arguments: dict[str, Any] | None) -> bool:
+_SENSORY_AUDIO_CAPTURE_TOOL_NAMES = {
+    "observe_system_speech",
+    "observe_system_sound",
+    "observe_environment_speech",
+    "observe_environment_sound",
+}
+
+
+def _is_sensory_audio_capture_request(tool: Tool, arguments: dict[str, Any] | None) -> bool:
     if not isinstance(arguments, dict):
-        return False
-    source = str(arguments.get("source") or "").strip().lower()
-    if source not in {"speech", "sound"}:
-        return False
+        arguments = {}
     if _has_media_ref(arguments):
         return False
     metadata = arguments.get("metadata")
-    return not _has_media_ref(metadata if isinstance(metadata, dict) else {})
+    if _has_media_ref(metadata if isinstance(metadata, dict) else {}):
+        return False
+    if tool.name in _SENSORY_AUDIO_CAPTURE_TOOL_NAMES:
+        return True
+    source = str(arguments.get("source") or "").strip().lower()
+    return source in {"speech", "sound"}
 
 
 def _has_media_ref(data: dict[str, Any]) -> bool:

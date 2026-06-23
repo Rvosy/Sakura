@@ -707,12 +707,12 @@ class ApiSettingsPage:
         owner.sensory_source_combo = _NoWheelComboBox(group)
         owner.sensory_source_combo.addItem("视觉", SensorySource.VISION.value)
         owner.sensory_source_combo.addItem("语音", SensorySource.SPEECH.value)
-        owner.sensory_source_combo.addItem("环境声音", SensorySource.SOUND.value)
+        owner.sensory_source_combo.addItem("声音事件", SensorySource.SOUND.value)
         owner.sensory_source_combo.setVisible(False)
 
         owner.sensory_source_table = QTableWidget(3, 3, group)
         owner.sensory_source_table.setObjectName("sensorySourceTable")
-        owner.sensory_source_table.setHorizontalHeaderLabels(["视觉", "语音", "环境声音"])
+        owner.sensory_source_table.setHorizontalHeaderLabels(["视觉", "语音", "声音事件"])
         owner.sensory_source_table.setVerticalHeaderLabels(["模式", "后端", "模型"])
         owner.sensory_source_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         owner.sensory_source_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
@@ -766,7 +766,7 @@ class ApiSettingsPage:
         owner.sensory_status_label.setObjectName("secondaryText")
         owner.sensory_status_label.setWordWrap(True)
         owner.sensory_privacy_label = QLabel(
-            "语音/环境声音可在确认后采集电脑系统声音；本机模式不出网，局域网/远端 API 会发送到配置的 Endpoint。",
+            "语音/声音事件可在确认后采集电脑系统声音或麦克风环境音；本机模式不出网，局域网/远端 API 会发送到配置的 Endpoint。",
             group,
         )
         owner.sensory_privacy_label.setObjectName("secondaryText")

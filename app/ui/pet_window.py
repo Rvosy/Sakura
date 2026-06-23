@@ -210,7 +210,7 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
-from app.sensory.audio_capture import create_system_audio_capture
+from app.sensory.audio_capture import create_microphone_audio_capture, create_system_audio_capture
 from app.sensory.audio_inference import create_default_audio_inference_engine
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
@@ -5644,7 +5644,11 @@ class PetWindow(QWidget):
             settings=normalized,
             store=store,
             providers=build_provider_registry(normalized.providers),
-            audio_capture=create_system_audio_capture(
+            system_audio_capture=create_system_audio_capture(
+                self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
+            microphone_audio_capture=create_microphone_audio_capture(
                 self.base_dir,
                 resource_registry=self.resource_manager.registry,
             ),

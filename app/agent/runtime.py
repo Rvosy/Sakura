@@ -65,8 +65,8 @@ from app.llm.prompt_templates import (
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
 from app.sensory.tools import (
-    SENSORY_OBSERVATION_CAPABILITY,
     build_sensory_tool_prompt,
+    configured_sensory_capabilities,
     configured_sensory_sources,
 )
 from app.storage.visual_observation import extract_visual_observation_summary
@@ -562,7 +562,9 @@ class AgentRuntime:
             if allow_screen_observation:
                 allowed_capabilities.add(SCREEN_OBSERVATION_CAPABILITY)
             if enabled_sensory_sources:
-                allowed_capabilities.add(SENSORY_OBSERVATION_CAPABILITY)
+                allowed_capabilities.update(
+                    configured_sensory_capabilities(getattr(self, "sensory_pipeline", None))
+                )
             tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
@@ -2069,26 +2071,61 @@ def _describe_pending_action(action: PendingToolAction) -> str:
         return f"执行浏览器操作 {action.tool_name.removeprefix('playwright_')}"
     if action.tool_name.startswith("windows__"):
         return f"执行 Windows 桌面 MCP 操作 {action.tool_name.removeprefix('windows__')}"
-    if action.tool_name == "observe_sensory" and _is_pending_sensory_audio_capture(action):
+    if _is_pending_sensory_audio_capture(action):
         source = str(action.arguments.get("source") or "sound")
+        if action.tool_name == "observe_system_speech":
+            source = "speech"
+        elif action.tool_name == "observe_system_sound":
+            source = "sound"
+        elif action.tool_name == "observe_environment_speech":
+            source = "speech"
+        elif action.tool_name == "observe_environment_sound":
+            source = "sound"
         duration = action.arguments.get("duration_seconds") or 3
-        return f"录制约 {duration} 秒电脑系统声音并交给已配置的 {source} 感知模型分析"
+        audio_input_source = _pending_audio_input_source(action)
+        source_label = "麦克风环境音" if audio_input_source == "microphone" else "电脑系统声音"
+        return f"录制约 {duration} 秒{source_label}并交给已配置的 {source} 感知模型分析"
     return f"执行 {action.tool_name}"
 
 
 def _is_pending_sensory_audio_capture(action: PendingToolAction) -> bool:
+    if action.tool_name in {
+        "observe_system_speech",
+        "observe_system_sound",
+        "observe_environment_speech",
+        "observe_environment_sound",
+    }:
+        return not _pending_action_has_audio_media(action)
     source = str(action.arguments.get("source") or "").strip().lower()
     if source not in {"speech", "sound"}:
         return False
+    return not _pending_action_has_audio_media(action)
+
+
+def _pending_action_has_audio_media(action: PendingToolAction) -> bool:
     if action.arguments.get("media_ref"):
-        return False
+        return True
     metadata = action.arguments.get("metadata")
     if isinstance(metadata, dict):
         for key in ("media_ref", "path", "data_url", "audio_url", "media_refs", "audios", "audio_urls"):
             value = metadata.get(key)
             if value:
-                return False
-    return True
+                return True
+    return False
+
+
+def _pending_audio_input_source(action: PendingToolAction) -> str:
+    if action.tool_name in {"observe_environment_speech", "observe_environment_sound"}:
+        return "microphone"
+    if action.tool_name in {"observe_system_speech", "observe_system_sound"}:
+        return "system_audio"
+    value = str(action.arguments.get("audio_input_source") or "").strip().lower().replace("-", "_")
+    metadata = action.arguments.get("metadata")
+    if not value and isinstance(metadata, dict):
+        value = str(metadata.get("audio_input_source") or metadata.get("capture_source") or "").strip().lower()
+    if value in {"microphone", "mic", "environment", "environment_audio", "ambient", "ambient_audio"}:
+        return "microphone"
+    return "system_audio"
 
 
 def _build_screen_observation_request_reply() -> ChatReply:

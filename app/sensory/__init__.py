@@ -1,9 +1,12 @@
 """Sensory middleware framework for multimodal observations."""
 
 from app.sensory.audio_capture import (
+    AudioInputSource,
     CapturedAudio,
+    MicrophoneAudioCapture,
     SystemAudioCapture,
     SystemAudioCaptureError,
+    create_microphone_audio_capture,
     create_system_audio_capture,
 )
 from app.sensory.audio_inference import (
@@ -46,13 +49,22 @@ from app.sensory.settings import (
 )
 from app.sensory.store import SensoryObservationStore
 from app.sensory.tools import (
+    OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME,
+    OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME,
+    OBSERVE_SYSTEM_SOUND_TOOL_NAME,
+    OBSERVE_SYSTEM_SPEECH_TOOL_NAME,
+    SENSORY_SOUND_OBSERVATION_CAPABILITY,
     SENSORY_OBSERVATION_CAPABILITY,
     SENSORY_OBSERVATION_TOOL_NAME,
+    SENSORY_SPEECH_OBSERVATION_CAPABILITY,
+    configured_sensory_capabilities,
+    create_sensory_audio_observation_tools,
     create_sensory_observation_tool,
 )
 
 __all__ = [
     "ApiSensoryProvider",
+    "AudioInputSource",
     "AudioInferenceEngine",
     "AudioInferenceFrameworkSpec",
     "AudioInferenceRequest",
@@ -65,7 +77,12 @@ __all__ = [
     "LlamaCppSensoryProvider",
     "LmStudioSensoryProvider",
     "LocalSensoryProvider",
+    "MicrophoneAudioCapture",
     "OllamaSensoryProvider",
+    "OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME",
+    "OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME",
+    "OBSERVE_SYSTEM_SOUND_TOOL_NAME",
+    "OBSERVE_SYSTEM_SPEECH_TOOL_NAME",
     "OFFICIAL_AUDIO_FRAMEWORK_ID",
     "OFFICIAL_AUDIO_FRAMEWORK_LABEL",
     "SensoryContextProvider",
@@ -84,9 +101,14 @@ __all__ = [
     "SIDECAR_AUDIO_RUNTIME",
     "SystemAudioCapture",
     "SystemAudioCaptureError",
+    "SENSORY_SOUND_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_TOOL_NAME",
+    "SENSORY_SPEECH_OBSERVATION_CAPABILITY",
     "create_default_audio_inference_engine",
+    "configured_sensory_capabilities",
+    "create_microphone_audio_capture",
+    "create_sensory_audio_observation_tools",
     "create_sensory_observation_tool",
     "create_system_audio_capture",
     "official_audio_inference_framework",

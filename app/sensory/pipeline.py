@@ -5,13 +5,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.debug_log import debug_log
-from app.sensory.audio_capture import SystemAudioCapture, SystemAudioCaptureError
+from app.sensory.audio_capture import (
+    AudioInputSource,
+    MicrophoneAudioCapture,
+    SystemAudioCapture,
+    SystemAudioCaptureError,
+)
 from app.sensory.audio_inference import (
     AudioInferenceEngine,
     AudioInferenceRequest,
+    AudioInferenceTask,
     BUILTIN_AUDIO_RUNTIME,
     OFFICIAL_AUDIO_FRAMEWORK_ID,
     create_default_audio_inference_engine,
+    coerce_audio_inference_task,
 )
 from app.sensory.models import (
     SensoryObservation,
@@ -33,6 +40,8 @@ class SensoryPipeline:
     store: SensoryObservationStore
     providers: dict[str, SensoryProvider]
     audio_capture: SystemAudioCapture | None = None
+    system_audio_capture: SystemAudioCapture | None = None
+    microphone_audio_capture: MicrophoneAudioCapture | None = None
     audio_inference_engine: AudioInferenceEngine | None = None
 
     def observe(self, request: SensoryRequest) -> SensoryObservation | None:
@@ -122,39 +131,112 @@ class SensoryPipeline:
         event_type: str = "",
         text: str = "",
         duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        exclude_current_process: bool = True,
+        task: AudioInferenceTask | str = AudioInferenceTask.AUTO,
+    ) -> SensoryObservation | None:
+        return self.observe_audio(
+            source=source,
+            input_source=AudioInputSource.SYSTEM_AUDIO,
+            user_text=user_text,
+            event_type=event_type,
+            text=text,
+            duration_seconds=duration_seconds,
+            sample_rate=sample_rate,
+            channel_count=channel_count,
+            exclude_current_process=exclude_current_process,
+            task=task,
+        )
+
+    def observe_environment_audio(
+        self,
+        *,
+        source: SensorySource = SensorySource.SOUND,
+        user_text: str = "",
+        event_type: str = "",
+        text: str = "",
+        duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        task: AudioInferenceTask | str = AudioInferenceTask.AUTO,
+    ) -> SensoryObservation | None:
+        return self.observe_audio(
+            source=source,
+            input_source=AudioInputSource.MICROPHONE,
+            user_text=user_text,
+            event_type=event_type,
+            text=text,
+            duration_seconds=duration_seconds,
+            sample_rate=sample_rate,
+            channel_count=channel_count,
+            exclude_current_process=False,
+            task=task,
+        )
+
+    def observe_audio(
+        self,
+        *,
+        source: SensorySource = SensorySource.SPEECH,
+        input_source: AudioInputSource | str = AudioInputSource.SYSTEM_AUDIO,
+        user_text: str = "",
+        event_type: str = "",
+        text: str = "",
+        duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        exclude_current_process: bool = True,
+        task: AudioInferenceTask | str = AudioInferenceTask.AUTO,
     ) -> SensoryObservation | None:
         normalized_source = coerce_sensory_source(source)
         if normalized_source not in {SensorySource.SPEECH, SensorySource.SOUND}:
-            raise SystemAudioCaptureError("系统音频采集只支持 speech 或 sound 感官源。")
+            raise SystemAudioCaptureError("短音频采集只支持 speech 或 sound 感官源。")
+        normalized_input_source = _coerce_audio_input_source(input_source)
         settings = self.settings.normalized()
         source_settings = settings.sources[normalized_source]
         if not settings.enabled or source_settings.mode == SensoryProviderMode.OFF:
             debug_log(
                 "Sensory",
-                "系统音频采集源已关闭，跳过",
-                {"source": normalized_source.value},
+                "短音频采集源已关闭，跳过",
+                {"source": normalized_source.value, "audio_input_source": normalized_input_source.value},
             )
             return None
         provider_config = settings.provider_for_source(normalized_source)
         if provider_config is None:
             debug_log(
                 "Sensory",
-                "系统音频采集 provider 未配置，跳过",
-                {"source": normalized_source.value, "provider_id": source_settings.provider_id},
+                "短音频采集 provider 未配置，跳过",
+                {
+                    "source": normalized_source.value,
+                    "audio_input_source": normalized_input_source.value,
+                    "provider_id": source_settings.provider_id,
+                },
             )
             return None
         provider = self.providers.get(source_settings.provider_id)
         if provider is None:
             debug_log(
                 "Sensory",
-                "系统音频推理 provider 未注册，跳过",
-                {"source": normalized_source.value, "provider_id": source_settings.provider_id},
+                "短音频推理 provider 未注册，跳过",
+                {
+                    "source": normalized_source.value,
+                    "audio_input_source": normalized_input_source.value,
+                    "provider_id": source_settings.provider_id,
+                },
             )
             return None
-        if self.audio_capture is None:
+        capture = self._audio_capture_for(normalized_input_source)
+        if capture is None:
+            if normalized_input_source == AudioInputSource.MICROPHONE:
+                raise SystemAudioCaptureError("麦克风环境音采集接口不可用。")
             raise SystemAudioCaptureError("系统音频采集接口不可用。")
 
-        captured = self.audio_capture.capture(duration_seconds=duration_seconds)
+        captured = capture.capture(
+            duration_seconds=duration_seconds,
+            sample_rate=sample_rate,
+            channel_count=channel_count,
+            exclude_current_process=exclude_current_process,
+        )
         try:
             engine = self.audio_inference_engine or create_default_audio_inference_engine()
             framework_id = str(
@@ -165,11 +247,12 @@ class SensoryPipeline:
             ).strip() or BUILTIN_AUDIO_RUNTIME
             inference_result = engine.infer(
                 AudioInferenceRequest(
-                    id=generate_sensory_id("system_audio"),
+                    id=generate_sensory_id(normalized_input_source.value),
                     source=normalized_source,
+                    task=coerce_audio_inference_task(task, normalized_source),
                     audio_ref=str(captured.path),
                     user_text=user_text,
-                    event_type=event_type or "system_audio_capture",
+                    event_type=event_type or f"{normalized_input_source.value}_capture",
                     text=text,
                     duration_seconds=captured.duration_seconds,
                     sample_rate=captured.sample_rate,
@@ -180,6 +263,7 @@ class SensoryPipeline:
                     runtime_kind=runtime_kind,
                     metadata={
                         "capture_source": captured.source,
+                        "audio_input_source": normalized_input_source.value,
                     },
                 ),
                 provider,
@@ -191,6 +275,7 @@ class SensoryPipeline:
                 {
                     "sensory_id": recorded.id,
                     "source": recorded.source.value,
+                    "audio_input_source": normalized_input_source.value,
                     "provider_id": recorded.provider_id,
                     "framework_id": framework_id,
                     "runtime_kind": runtime_kind,
@@ -210,6 +295,14 @@ class SensoryPipeline:
             return None
         finally:
             captured.cleanup()
+
+    def _audio_capture_for(
+        self,
+        input_source: AudioInputSource,
+    ) -> SystemAudioCapture | MicrophoneAudioCapture | None:
+        if input_source == AudioInputSource.MICROPHONE:
+            return self.microphone_audio_capture
+        return self.system_audio_capture or self.audio_capture
 
 
 def sensory_observation_from_visual_record(record: Any) -> SensoryObservation:
@@ -235,3 +328,12 @@ def sensory_observation_from_visual_record(record: Any) -> SensoryObservation:
         sensitive_redacted=bool(getattr(record, "sensitive_redacted", False)),
         metadata={"mirrored_from": "visual_observation"},
     ).normalized()
+
+
+def _coerce_audio_input_source(value: AudioInputSource | str) -> AudioInputSource:
+    if isinstance(value, AudioInputSource):
+        return value
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"microphone", "mic", "environment", "environment_audio", "ambient", "ambient_audio"}:
+        return AudioInputSource.MICROPHONE
+    return AudioInputSource.SYSTEM_AUDIO

@@ -4771,7 +4771,7 @@ def test_settings_dialog_sensory_source_table_preserves_parallel_source_configs(
     assert [table.horizontalHeaderItem(index).text() for index in range(3)] == [
         "视觉",
         "语音",
-        "环境声音",
+        "声音事件",
     ]
 
     dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))

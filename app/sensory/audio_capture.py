@@ -10,6 +10,7 @@ import tempfile
 import time
 import wave
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -19,6 +20,11 @@ from app.storage.paths import StoragePaths
 
 class SystemAudioCaptureError(RuntimeError):
     """Raised when system audio cannot be captured safely."""
+
+
+class AudioInputSource(str, Enum):
+    SYSTEM_AUDIO = "system_audio"
+    MICROPHONE = "microphone"
 
 
 @dataclass(frozen=True)
@@ -33,7 +39,7 @@ class CapturedAudio:
         try:
             self.path.unlink(missing_ok=True)
         except OSError as exc:
-            debug_log("Sensory", "系统音频临时文件清理失败", {"path": str(self.path), "error": str(exc)})
+            debug_log("Sensory", "短音频临时文件清理失败", {"path": str(self.path), "error": str(exc)})
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,18 @@ class SystemAudioCapture(Protocol):
         exclude_current_process: bool = True,
     ) -> CapturedAudio:
         """Capture a short system-output audio sample and return a temporary WAV path."""
+
+
+class MicrophoneAudioCapture(Protocol):
+    def capture(
+        self,
+        *,
+        duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        exclude_current_process: bool = True,
+    ) -> CapturedAudio:
+        """Capture a short microphone/environment sample and return a temporary WAV path."""
 
 
 class ManagedProcessResource(Protocol):
@@ -106,6 +124,18 @@ def create_system_audio_capture(
     return None
 
 
+def create_microphone_audio_capture(
+    base_dir: Path,
+    *,
+    resource_registry: ProcessRegistry | None = None,
+) -> MicrophoneAudioCapture | None:
+    paths = StoragePaths(base_dir)
+    return CommandMicrophoneAudioCapture(
+        cache_dir=paths.microphone_audio_cache_dir,
+        resource_registry=resource_registry,
+    )
+
+
 class MacOSSystemAudioCapture:
     """ScreenCaptureKit-backed system audio capture."""
 
@@ -134,7 +164,7 @@ class MacOSSystemAudioCapture:
         channel_count = _clamp_int(channel_count, 1, 2)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         helper = self._ensure_helper()
-        output_path = _new_temp_wav_path(self.cache_dir)
+        output_path = _new_temp_wav_path(self.cache_dir, prefix="system_audio_")
         command = [
             str(helper),
             "--output",
@@ -258,7 +288,7 @@ class WindowsSystemAudioCapture:
         sample_rate = _clamp_int(sample_rate, 8000, 48000)
         channel_count = _clamp_int(channel_count, 1, 2)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        output_path = _new_temp_wav_path(self.cache_dir)
+        output_path = _new_temp_wav_path(self.cache_dir, prefix="system_audio_")
         command = [
             sys.executable,
             str(self.helper_path),
@@ -333,7 +363,7 @@ class LinuxSystemAudioCapture:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
         for label, command in self._candidate_commands(sample_rate=sample_rate, channel_count=channel_count):
-            output_path = _new_temp_wav_path(self.cache_dir)
+            output_path = _new_temp_wav_path(self.cache_dir, prefix="system_audio_")
             prepared = [part.format(output=str(output_path)) for part in command]
             debug_log(
                 "Sensory",
@@ -424,6 +454,234 @@ class LinuxSystemAudioCapture:
         return commands
 
 
+class CommandMicrophoneAudioCapture:
+    """Best-effort microphone capture using recorder binaries already on the host."""
+
+    def __init__(
+        self,
+        *,
+        cache_dir: Path,
+        resource_registry: ProcessRegistry | None = None,
+    ) -> None:
+        self.cache_dir = Path(cache_dir)
+        self.resource_registry = resource_registry
+
+    def capture(
+        self,
+        *,
+        duration_seconds: float = 3.0,
+        sample_rate: int = 16000,
+        channel_count: int = 1,
+        exclude_current_process: bool = True,
+    ) -> CapturedAudio:
+        del exclude_current_process
+        duration = _clamp_float(duration_seconds, 0.5, 10.0)
+        sample_rate = _clamp_int(sample_rate, 8000, 48000)
+        channel_count = _clamp_int(channel_count, 1, 2)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        errors: list[str] = []
+        for label, command in self._candidate_commands(
+            duration_seconds=duration,
+            sample_rate=sample_rate,
+            channel_count=channel_count,
+        ):
+            output_path = _new_temp_wav_path(self.cache_dir, prefix="microphone_audio_")
+            prepared = [part.format(output=str(output_path)) for part in command]
+            debug_log(
+                "Sensory",
+                "开始采集麦克风环境音",
+                {
+                    "platform": sys.platform,
+                    "backend": label,
+                    "duration_seconds": duration,
+                    "sample_rate": sample_rate,
+                    "channel_count": channel_count,
+                },
+            )
+            try:
+                result = _run_managed_command(
+                    prepared,
+                    timeout_seconds=max(15.0, duration + 20.0),
+                    label=f"sensory_microphone_audio_{label}",
+                    resource_registry=self.resource_registry,
+                    **_subprocess_platform_options(),
+                )
+                if result.returncode != 0:
+                    message = (result.stderr or result.stdout or f"{label} microphone capture failed").strip()
+                    raise SystemAudioCaptureError(message)
+                wav_info = _validated_wav_info(output_path)
+                debug_log(
+                    "Sensory",
+                    "麦克风环境音采集完成",
+                    {
+                        "platform": sys.platform,
+                        "backend": label,
+                        "audio_path": str(output_path),
+                        "bytes": output_path.stat().st_size,
+                    },
+                )
+                return CapturedAudio(
+                    path=output_path,
+                    duration_seconds=duration,
+                    sample_rate=wav_info.sample_rate,
+                    channel_count=wav_info.channel_count,
+                    source=AudioInputSource.MICROPHONE.value,
+                )
+            except SystemAudioCaptureError as exc:
+                output_path.unlink(missing_ok=True)
+                errors.append(f"{label}: {exc}")
+        detail = "; ".join(errors) if errors else "未找到可用的麦克风录音工具。"
+        raise SystemAudioCaptureError(f"麦克风环境音采集不可用：{detail}")
+
+    def _candidate_commands(
+        self,
+        *,
+        duration_seconds: float,
+        sample_rate: int,
+        channel_count: int,
+    ) -> list[tuple[str, list[str]]]:
+        commands: list[tuple[str, list[str]]] = []
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            if sys.platform == "darwin":
+                commands.append(
+                    (
+                        "ffmpeg_avfoundation",
+                        [
+                            ffmpeg,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-y",
+                            "-f",
+                            "avfoundation",
+                            "-i",
+                            ":0",
+                            "-t",
+                            f"{duration_seconds:.3f}",
+                            "-ar",
+                            str(sample_rate),
+                            "-ac",
+                            str(channel_count),
+                            "{output}",
+                        ],
+                    )
+                )
+            elif sys.platform == "win32":
+                commands.append(
+                    (
+                        "ffmpeg_dshow",
+                        [
+                            ffmpeg,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-y",
+                            "-f",
+                            "dshow",
+                            "-i",
+                            "audio=default",
+                            "-t",
+                            f"{duration_seconds:.3f}",
+                            "-ar",
+                            str(sample_rate),
+                            "-ac",
+                            str(channel_count),
+                            "{output}",
+                        ],
+                    )
+                )
+            elif sys.platform.startswith("linux"):
+                commands.extend(
+                    [
+                        (
+                            "ffmpeg_pulse",
+                            [
+                                ffmpeg,
+                                "-hide_banner",
+                                "-loglevel",
+                                "error",
+                                "-y",
+                                "-f",
+                                "pulse",
+                                "-i",
+                                "default",
+                                "-t",
+                                f"{duration_seconds:.3f}",
+                                "-ar",
+                                str(sample_rate),
+                                "-ac",
+                                str(channel_count),
+                                "{output}",
+                            ],
+                        ),
+                        (
+                            "ffmpeg_alsa",
+                            [
+                                ffmpeg,
+                                "-hide_banner",
+                                "-loglevel",
+                                "error",
+                                "-y",
+                                "-f",
+                                "alsa",
+                                "-i",
+                                "default",
+                                "-t",
+                                f"{duration_seconds:.3f}",
+                                "-ar",
+                                str(sample_rate),
+                                "-ac",
+                                str(channel_count),
+                                "{output}",
+                            ],
+                        ),
+                    ]
+                )
+        rec = shutil.which("rec")
+        if rec:
+            commands.append(
+                (
+                    "sox_rec",
+                    [
+                        rec,
+                        "-q",
+                        "-r",
+                        str(sample_rate),
+                        "-c",
+                        str(channel_count),
+                        "{output}",
+                        "trim",
+                        "0",
+                        f"{duration_seconds:.3f}",
+                    ],
+                )
+            )
+        arecord = shutil.which("arecord")
+        if arecord:
+            commands.append(
+                (
+                    "alsa_arecord",
+                    [
+                        arecord,
+                        "-q",
+                        "-t",
+                        "wav",
+                        "-f",
+                        "S16_LE",
+                        "-r",
+                        str(sample_rate),
+                        "-c",
+                        str(channel_count),
+                        "-d",
+                        str(max(1, int(duration_seconds + 0.999))),
+                        "{output}",
+                    ],
+                )
+            )
+        return commands
+
+
 def _default_pulse_monitor_source(pactl: str) -> str:
     try:
         result = subprocess.run(
@@ -441,9 +699,9 @@ def _default_pulse_monitor_source(pactl: str) -> str:
     return f"{sink}.monitor"
 
 
-def _new_temp_wav_path(cache_dir: Path) -> Path:
+def _new_temp_wav_path(cache_dir: Path, *, prefix: str) -> Path:
     fd, raw_path = tempfile.mkstemp(
-        prefix="system_audio_",
+        prefix=prefix,
         suffix=".wav",
         dir=str(cache_dir),
     )

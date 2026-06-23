@@ -16,7 +16,7 @@ from app.llm.api_client import ChatMessage
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.sensory import audio_capture as audio_capture_module
-from app.sensory.audio_capture import CapturedAudio
+from app.sensory.audio_capture import AudioInputSource, CapturedAudio
 from app.sensory.audio_inference import (
     BUILTIN_AUDIO_RUNTIME,
     OFFICIAL_AUDIO_FRAMEWORK_ID,
@@ -48,9 +48,17 @@ from app.sensory.settings import (
 )
 from app.sensory.store import SensoryObservationStore
 from app.sensory.tools import (
+    OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME,
+    OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME,
+    OBSERVE_SYSTEM_SOUND_TOOL_NAME,
+    OBSERVE_SYSTEM_SPEECH_TOOL_NAME,
     SENSORY_OBSERVATION_CAPABILITY,
+    SENSORY_SOUND_OBSERVATION_CAPABILITY,
+    SENSORY_SPEECH_OBSERVATION_CAPABILITY,
     SENSORY_OBSERVATION_TOOL_NAME,
+    configured_sensory_capabilities,
     configured_sensory_sources,
+    create_sensory_audio_observation_tools,
     create_sensory_observation_tool,
 )
 
@@ -245,6 +253,51 @@ def test_system_audio_capture_factory_selects_platform_backend(monkeypatch, tmp_
     assert audio_capture_module.create_system_audio_capture(tmp_path) is None
 
 
+def test_microphone_audio_capture_factory_is_optional_command_backend(tmp_path: Path) -> None:
+    registry = _FakeProcessRegistry()
+
+    capture = audio_capture_module.create_microphone_audio_capture(
+        tmp_path,
+        resource_registry=registry,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(capture, audio_capture_module.CommandMicrophoneAudioCapture)
+    assert capture.resource_registry is registry
+    assert capture.cache_dir == tmp_path / "data" / "cache" / "microphone_audio"
+
+
+def test_microphone_audio_capture_builds_platform_candidates(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    binaries = {
+        "ffmpeg": "/usr/bin/ffmpeg",
+        "rec": "/usr/bin/rec",
+        "arecord": "/usr/bin/arecord",
+    }
+    monkeypatch.setattr(audio_capture_module.shutil, "which", lambda name: binaries.get(name))
+    capture = audio_capture_module.CommandMicrophoneAudioCapture(cache_dir=tmp_path)
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "darwin")
+    macos_labels = [
+        label
+        for label, _command in capture._candidate_commands(
+            duration_seconds=1.5,
+            sample_rate=16000,
+            channel_count=1,
+        )
+    ]
+    assert macos_labels[:2] == ["ffmpeg_avfoundation", "sox_rec"]
+
+    monkeypatch.setattr(audio_capture_module.sys, "platform", "linux")
+    linux_labels = [
+        label
+        for label, _command in capture._candidate_commands(
+            duration_seconds=1.5,
+            sample_rate=16000,
+            channel_count=1,
+        )
+    ]
+    assert linux_labels == ["ffmpeg_pulse", "ffmpeg_alsa", "sox_rec", "alsa_arecord"]
+
+
 def test_managed_command_registers_and_detaches_process() -> None:
     registry = _FakeProcessRegistry()
 
@@ -344,6 +397,49 @@ def test_configured_sensory_sources_require_enabled_provider_and_model(tmp_path:
     )
 
     assert configured_sensory_sources(pipeline) == (SensorySource.VISION,)
+
+
+def test_configured_sensory_capabilities_include_audio_task_tools(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_local",
+            ),
+            SensorySource.SOUND: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="sound_local",
+            ),
+        },
+        providers={
+            "speech_local": SensoryProviderConfig(
+                provider_id="speech_local",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                model="asr",
+                extra={"backend": "lmstudio"},
+            ),
+            "sound_local": SensoryProviderConfig(
+                provider_id="sound_local",
+                source=SensorySource.SOUND,
+                mode=SensoryProviderMode.LOCAL,
+                model="audio-events",
+                extra={"backend": "lmstudio"},
+            ),
+        },
+    ).normalized()
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={},
+    )
+
+    assert configured_sensory_capabilities(pipeline) == {
+        SENSORY_OBSERVATION_CAPABILITY,
+        SENSORY_SPEECH_OBSERVATION_CAPABILITY,
+        SENSORY_SOUND_OBSERVATION_CAPABILITY,
+    }
 
 
 def test_observe_sensory_tool_fails_closed_when_source_disabled(tmp_path: Path) -> None:
@@ -584,6 +680,166 @@ def test_observe_sensory_tool_captures_system_audio_when_audio_media_missing(tmp
     assert pipeline.store.recent(limit=1)[0].summary == "系统音频中有人说 hello。"
 
 
+def test_observe_sensory_tool_captures_microphone_audio_when_requested(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SOUND: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="sound_fake",
+            )
+        },
+        providers={
+            "sound_fake": SensoryProviderConfig(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-audio",
+            )
+        },
+    ).normalized()
+    system_capture = _FakeSystemAudioCapture(tmp_path)
+    microphone_capture = _FakeSystemAudioCapture(tmp_path, source=AudioInputSource.MICROPHONE.value)
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        assert request.metadata["capture_source"] == "microphone"
+        assert request.metadata["audio_input_source"] == "microphone"
+        assert request.metadata["duration_seconds"] == 2.25
+        assert request.metadata["sample_rate"] == 22050
+        assert request.metadata["channel_count"] == 2
+        assert request.metadata["audio_inference"]["task"] == "sound"
+        return SensoryObservation(
+            id="obs_microphone_sound",
+            source=request.source,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="麦克风里检测到敲击声。",
+            details={"sound_events": ["knock"]},
+            confidence=0.82,
+            provider_id="sound_fake",
+            mode=SensoryProviderMode.LOCAL,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "sound_fake": FakeSensoryProvider(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                factory=factory,
+            )
+        },
+        system_audio_capture=system_capture,
+        microphone_audio_capture=microphone_capture,
+    )
+    tool = create_sensory_observation_tool(lambda: pipeline)
+
+    result = tool.handler(
+        {
+            "source": "sound",
+            "audio_input_source": "microphone",
+            "duration_seconds": 2.25,
+            "sample_rate": 22050,
+            "channel_count": 2,
+        }
+    ) if tool.handler is not None else {}
+
+    assert result["status"] == "ok"
+    assert result["observation"]["summary"] == "麦克风里检测到敲击声。"
+    assert system_capture.count == 0
+    assert microphone_capture.count == 1
+    assert microphone_capture.last_sample_rate == 22050
+    assert microphone_capture.last_channel_count == 2
+    assert microphone_capture.last_exclude_current_process is True
+
+
+def test_sensory_audio_tools_route_all_input_and_task_combinations(tmp_path: Path) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            ),
+            SensorySource.SOUND: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="sound_fake",
+            ),
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9001/v1",
+                model="tiny-asr",
+            ),
+            "sound_fake": SensoryProviderConfig(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9002/v1",
+                model="tiny-audio",
+            ),
+        },
+    ).normalized()
+    system_capture = _FakeSystemAudioCapture(tmp_path)
+    microphone_capture = _FakeSystemAudioCapture(tmp_path, source=AudioInputSource.MICROPHONE.value)
+    observed: list[tuple[str, str, str]] = []
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        input_source = str(request.metadata["audio_input_source"])
+        task = str(request.metadata["audio_inference"]["task"])
+        observed.append((request.source.value, input_source, task))
+        return SensoryObservation(
+            id=f"obs_{request.source.value}_{input_source}_{len(observed)}",
+            source=request.source,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary=f"{request.source.value}:{input_source}",
+            confidence=0.8,
+            provider_id=f"{request.source.value}_fake",
+            mode=SensoryProviderMode.LOCAL,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                factory=factory,
+            ),
+            "sound_fake": FakeSensoryProvider(
+                provider_id="sound_fake",
+                source=SensorySource.SOUND,
+                factory=factory,
+            ),
+        },
+        system_audio_capture=system_capture,
+        microphone_audio_capture=microphone_capture,
+    )
+    tools = {tool.name: tool for tool in create_sensory_audio_observation_tools(lambda: pipeline)}
+
+    results = [
+        tools[OBSERVE_SYSTEM_SPEECH_TOOL_NAME].handler({"duration_seconds": 1.0}),
+        tools[OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME].handler({"duration_seconds": 1.0}),
+        tools[OBSERVE_SYSTEM_SOUND_TOOL_NAME].handler({"duration_seconds": 1.0}),
+        tools[OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME].handler({"duration_seconds": 1.0}),
+    ]
+
+    assert all(result["status"] == "ok" for result in results if isinstance(result, dict))
+    assert observed == [
+        ("speech", "system_audio", "speech"),
+        ("speech", "microphone", "speech"),
+        ("sound", "system_audio", "sound"),
+        ("sound", "microphone", "sound"),
+    ]
+    assert system_capture.count == 2
+    assert microphone_capture.count == 2
+
+
 def test_observe_sensory_system_audio_uses_provider_audio_framework_overrides(tmp_path: Path) -> None:
     settings = SensorySettings(
         enabled=True,
@@ -802,7 +1058,12 @@ def test_runtime_exposes_sensory_tool_only_when_provider_is_configured(tmp_path:
     runtime = AgentRuntime(
         client,  # type: ignore[arg-type]
         "基础提示",
-        tools=ToolRegistry([create_sensory_observation_tool(lambda: pipeline)]),
+        tools=ToolRegistry(
+            [
+                create_sensory_observation_tool(lambda: pipeline),
+                *create_sensory_audio_observation_tools(lambda: pipeline),
+            ]
+        ),
         memory=object(),
     )
     runtime.set_sensory_pipeline(pipeline)
@@ -811,7 +1072,12 @@ def test_runtime_exposes_sensory_tool_only_when_provider_is_configured(tmp_path:
 
     tool_names = {tool["function"]["name"] for tool in client.last_tools}
     assert SENSORY_OBSERVATION_TOOL_NAME in tool_names
+    assert OBSERVE_SYSTEM_SPEECH_TOOL_NAME in tool_names
+    assert OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME in tool_names
+    assert OBSERVE_SYSTEM_SOUND_TOOL_NAME not in tool_names
+    assert OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME not in tool_names
     assert runtime.tools.get(SENSORY_OBSERVATION_TOOL_NAME).capability == SENSORY_OBSERVATION_CAPABILITY
+    assert runtime.tools.get(OBSERVE_SYSTEM_SPEECH_TOOL_NAME).capability == SENSORY_SPEECH_OBSERVATION_CAPABILITY
     assert "增强感知" in client.last_system_prompt
 
     disabled_client = _CaptureToolClient()
@@ -823,7 +1089,12 @@ def test_runtime_exposes_sensory_tool_only_when_provider_is_configured(tmp_path:
     disabled_runtime = AgentRuntime(
         disabled_client,  # type: ignore[arg-type]
         "基础提示",
-        tools=ToolRegistry([create_sensory_observation_tool(lambda: disabled_pipeline)]),
+        tools=ToolRegistry(
+            [
+                create_sensory_observation_tool(lambda: disabled_pipeline),
+                *create_sensory_audio_observation_tools(lambda: disabled_pipeline),
+            ]
+        ),
         memory=object(),
     )
     disabled_runtime.set_sensory_pipeline(disabled_pipeline)
@@ -832,6 +1103,10 @@ def test_runtime_exposes_sensory_tool_only_when_provider_is_configured(tmp_path:
 
     disabled_tool_names = {tool["function"]["name"] for tool in disabled_client.last_tools}
     assert SENSORY_OBSERVATION_TOOL_NAME not in disabled_tool_names
+    assert OBSERVE_SYSTEM_SPEECH_TOOL_NAME not in disabled_tool_names
+    assert OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME not in disabled_tool_names
+    assert OBSERVE_SYSTEM_SOUND_TOOL_NAME not in disabled_tool_names
+    assert OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME not in disabled_tool_names
 
 
 def test_lmstudio_provider_posts_openai_compatible_vision_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1298,9 +1573,14 @@ class _FakeHTTPResponse:
 
 
 class _FakeSystemAudioCapture:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, source: str = AudioInputSource.SYSTEM_AUDIO.value) -> None:
         self.tmp_path = tmp_path
+        self.source = source
         self.count = 0
+        self.last_duration_seconds = 0.0
+        self.last_sample_rate = 0
+        self.last_channel_count = 0
+        self.last_exclude_current_process = False
 
     def capture(
         self,
@@ -1310,9 +1590,12 @@ class _FakeSystemAudioCapture:
         channel_count: int = 1,
         exclude_current_process: bool = True,
     ) -> CapturedAudio:
-        del exclude_current_process
         self.count += 1
-        path = self.tmp_path / f"captured_system_audio_{self.count}.wav"
+        self.last_duration_seconds = duration_seconds
+        self.last_sample_rate = sample_rate
+        self.last_channel_count = channel_count
+        self.last_exclude_current_process = exclude_current_process
+        path = self.tmp_path / f"captured_{self.source}_{self.count}.wav"
         with wave.open(str(path), "wb") as wav_file:
             wav_file.setnchannels(channel_count)
             wav_file.setsampwidth(2)
@@ -1323,6 +1606,7 @@ class _FakeSystemAudioCapture:
             duration_seconds=duration_seconds,
             sample_rate=sample_rate,
             channel_count=channel_count,
+            source=self.source,
         )
 
 

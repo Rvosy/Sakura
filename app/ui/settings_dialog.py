@@ -4872,7 +4872,7 @@ def _sensory_source_label(source: SensorySource) -> str:
     return {
         SensorySource.VISION: "视觉",
         SensorySource.SPEECH: "语音",
-        SensorySource.SOUND: "环境声音",
+        SensorySource.SOUND: "声音事件",
     }.get(source, source.value)
 
 

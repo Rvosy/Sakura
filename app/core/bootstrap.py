@@ -38,14 +38,14 @@ from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
-from app.sensory.audio_capture import create_system_audio_capture
+from app.sensory.audio_capture import create_microphone_audio_capture, create_system_audio_capture
 from app.sensory.audio_inference import create_default_audio_inference_engine
 from app.sensory.context import SensoryContextProvider
 from app.sensory.pipeline import SensoryPipeline
 from app.sensory.providers import build_provider_registry
 from app.sensory.settings import SensorySettings
 from app.sensory.store import SensoryObservationStore
-from app.sensory.tools import create_sensory_observation_tool
+from app.sensory.tools import create_sensory_audio_observation_tools, create_sensory_observation_tool
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -207,11 +207,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         character_name=character_profile.display_name,
     )
     agent_runtime.set_sensory_pipeline(sensory_pipeline)
-    tool_registry.register(
-        create_sensory_observation_tool(
-            lambda: getattr(agent_runtime, "sensory_pipeline", None)
-        )
-    )
+    _register_sensory_tools(tool_registry, lambda: getattr(agent_runtime, "sensory_pipeline", None))
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
@@ -337,10 +333,9 @@ def build_deferred_services(
             context.memory_store,
             context.reminder_store,
         )
-        tool_registry.register(
-            create_sensory_observation_tool(
-                lambda: getattr(context.agent_runtime, "sensory_pipeline", None)
-            )
+        _register_sensory_tools(
+            tool_registry,
+            lambda: getattr(context.agent_runtime, "sensory_pipeline", None),
         )
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()
@@ -482,10 +477,24 @@ def create_sensory_pipeline(
         settings=normalized,
         store=store,
         providers=build_provider_registry(normalized.providers),
-        audio_capture=(
+        system_audio_capture=(
             create_system_audio_capture(base_dir, resource_registry=resource_registry)
+            if base_dir is not None
+            else None
+        ),
+        microphone_audio_capture=(
+            create_microphone_audio_capture(base_dir, resource_registry=resource_registry)
             if base_dir is not None
             else None
         ),
         audio_inference_engine=create_default_audio_inference_engine(base_dir),
     )
+
+
+def _register_sensory_tools(
+    tool_registry: ToolRegistry,
+    pipeline_getter,
+) -> None:
+    tool_registry.register(create_sensory_observation_tool(pipeline_getter))
+    for tool in create_sensory_audio_observation_tools(pipeline_getter):
+        tool_registry.register(tool)

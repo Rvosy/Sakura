@@ -115,6 +115,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
         assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
         assert (
             self.paths.system_audio_capture_helper()
             == self.data / "cache" / "system_audio" / "macos_system_audio_capture"
@@ -154,6 +155,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
         assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
         assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
@@ -206,6 +208,7 @@ class TestEnsureDirs:
             paths.notes_dir,
             paths.tts_cache_dir,
             paths.system_audio_cache_dir,
+            paths.microphone_audio_cache_dir,
             paths.sensory_models_cache_dir,
             paths.audio_inference_frameworks_dir,
             paths.logs_dir,
