@@ -474,6 +474,103 @@ def test_audio_runtime_cli_audio_model_manifest_check_reports_missing_recommende
     assert "缺少 sound 推荐模型：ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF" in payload["issues"]
 
 
+def test_audio_runtime_cli_deployment_check_validates_runtime_and_audio_manifests(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    platform_key = audio_runtime_cli.llama_cpp_platform_key()
+    archive = tmp_path / "archives" / f"llama-b1-bin-{platform_key}.tar.gz"
+    archive.parent.mkdir(parents=True)
+    content = b"runtime archive"
+    archive.write_bytes(content)
+    runtime_manifest = _write_runtime_manifest(
+        tmp_path,
+        [
+            {
+                "package_id": f"b1-{platform_key}",
+                "label": platform_key,
+                "platform_key": platform_key,
+                "url": f"archives/{archive.name}",
+                "archive_format": "tar.gz",
+                "binary_relpath": "llama-server",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        ],
+    )
+    audio_model_manifest = _write_audio_model_manifest_for_sources(
+        tmp_path / "audio_models",
+        sources=["speech", "sound"],
+    )
+
+    code = audio_runtime_cli.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "deployment-check",
+            "--runtime-manifest",
+            str(runtime_manifest),
+            "--audio-model-manifest",
+            str(audio_model_manifest),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["issues"] == []
+    assert payload["runtime_manifest"]["required_platforms"] == [platform_key]
+    assert payload["runtime_manifest"]["packages"][0]["archive_exists"] is True
+    assert payload["audio_model_manifest"]["required_sources"] == ["speech", "sound"]
+
+
+def test_audio_runtime_cli_deployment_check_reports_combined_manifest_issues(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    platform_key = audio_runtime_cli.llama_cpp_platform_key()
+    other_platform = next(
+        platform for platform in audio_runtime_cli._KNOWN_LLAMA_CPP_PLATFORM_KEYS if platform != platform_key
+    )
+    runtime_manifest = _write_runtime_manifest(
+        tmp_path,
+        [
+            {
+                "package_id": f"b1-{other_platform}",
+                "label": other_platform,
+                "platform_key": other_platform,
+                "url": f"https://mirror.example/llama-b1-bin-{other_platform}.tar.gz",
+                "archive_format": "tar.gz",
+                "binary_relpath": "llama-server",
+            }
+        ],
+    )
+    audio_model_manifest = _write_audio_model_manifest(tmp_path / "audio_models", source="speech")
+
+    code = audio_runtime_cli.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "deployment-check",
+            "--runtime-manifest",
+            str(runtime_manifest),
+            "--audio-model-manifest",
+            str(audio_model_manifest),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert f"runtime_manifest: 缺少平台包：{platform_key}" in payload["issues"]
+    assert (
+        "audio_model_manifest: 缺少 sound 推荐模型：ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF"
+        in payload["issues"]
+    )
+    assert payload["runtime_manifest"]["missing_platforms"] == [platform_key]
+    assert payload["audio_model_manifest"]["required_sources"] == ["speech", "sound"]
+
+
 def test_audio_runtime_cli_doctor_reports_ready_plans_with_existing_runtime(
     tmp_path: Path,
     capsys,
@@ -741,39 +838,42 @@ def _write_runtime_manifest(tmp_path: Path, packages: list[dict[str, object]]) -
 
 
 def _write_audio_model_manifest(tmp_path: Path, *, source: str) -> Path:
+    return _write_audio_model_manifest_for_sources(tmp_path, sources=[source])
+
+
+def _write_audio_model_manifest_for_sources(tmp_path: Path, *, sources: list[str]) -> Path:
     archive_dir = tmp_path / "archives"
     archive_dir.mkdir(parents=True)
-    if source == "speech":
-        repo_id = "ggml-org/Qwen3-ASR-0.6B-GGUF"
-        filenames = ["Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"]
-    else:
-        repo_id = "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF"
-        filenames = ["Llama-3.2-1B-Instruct-Q4_K_M.gguf", "mmproj-ultravox.gguf"]
-    files = []
-    for filename in filenames:
-        path = archive_dir / filename
-        path.write_bytes(filename.encode("utf-8"))
-        files.append(
+    models = []
+    for source in sources:
+        if source == "speech":
+            repo_id = "ggml-org/Qwen3-ASR-0.6B-GGUF"
+            filenames = ["Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"]
+        else:
+            repo_id = "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF"
+            filenames = ["Llama-3.2-1B-Instruct-Q4_K_M.gguf", "mmproj-ultravox.gguf"]
+        files = []
+        for filename in filenames:
+            path = archive_dir / filename
+            path.write_bytes(filename.encode("utf-8"))
+            files.append(
+                {
+                    "filename": filename,
+                    "url": f"archives/{filename}",
+                    "size_bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        models.append(
             {
-                "filename": filename,
-                "url": f"archives/{filename}",
-                "size_bytes": path.stat().st_size,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "source": source,
+                "repo_id": repo_id,
+                "files": files,
             }
         )
     manifest = tmp_path / "audio_model_manifest.json"
     manifest.write_text(
-        json.dumps(
-            {
-                "models": [
-                    {
-                        "source": source,
-                        "repo_id": repo_id,
-                        "files": files,
-                    }
-                ]
-            }
-        ),
+        json.dumps({"models": models}),
         encoding="utf-8",
     )
     return manifest

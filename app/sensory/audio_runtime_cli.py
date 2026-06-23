@@ -66,6 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_runtime_manifest_check(args)
         if args.command == "audio-model-manifest-check":
             return _run_audio_model_manifest_check(args)
+        if args.command == "deployment-check":
+            return _run_deployment_check(args)
         if args.command == "doctor":
             return _run_doctor(args)
         if args.command == "prepare-backend":
@@ -204,6 +206,53 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
         default=[],
         help="Recommended source that must be present. Defaults to speech and sound.",
+    )
+
+    deployment_check = subparsers.add_parser(
+        "deployment-check",
+        help="Validate offline llama.cpp runtime and audio model deployment assets.",
+    )
+    _add_pretty_arg(deployment_check)
+    deployment_check.add_argument(
+        "--runtime-manifest",
+        type=Path,
+        default=None,
+        help="Runtime manifest path. Defaults to data/local_runtimes/llama_cpp/runtime_manifest.json.",
+    )
+    deployment_check.add_argument(
+        "--runtime-archive-root",
+        type=Path,
+        default=None,
+        help="Optional local archive directory for validating runtime package files by filename.",
+    )
+    deployment_check.add_argument(
+        "--audio-model-manifest",
+        type=Path,
+        default=None,
+        help="Audio model manifest path. Defaults to data/cache/sensory_models/audio_model_manifest.json.",
+    )
+    deployment_check.add_argument(
+        "--require-platform",
+        action="append",
+        default=[],
+        help="Runtime platform key that must be present. Can be repeated.",
+    )
+    deployment_check.add_argument(
+        "--require-known-platforms",
+        action="store_true",
+        help="Require all built-in runtime platform keys to be present.",
+    )
+    deployment_check.add_argument(
+        "--skip-current-platform",
+        action="store_true",
+        help="Do not require the current runtime platform package by default.",
+    )
+    deployment_check.add_argument(
+        "--require-source",
+        action="append",
+        choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
+        default=[],
+        help="Recommended audio source that must be present. Defaults to speech and sound.",
     )
 
     doctor = subparsers.add_parser(
@@ -354,7 +403,21 @@ def _run_runtime_manifest(args: argparse.Namespace) -> int:
 
 
 def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
-    manifest_path = _runtime_manifest_check_path(args)
+    result = _build_runtime_manifest_check_result(
+        manifest_path=_runtime_manifest_check_path(args),
+        archive_root=Path(args.archive_root).expanduser() if args.archive_root is not None else None,
+        required_platforms=_required_manifest_platforms(args),
+    )
+    _print_payload(result, pretty=bool(args.pretty))
+    return 0 if bool(result.get("ok")) else 1
+
+
+def _build_runtime_manifest_check_result(
+    *,
+    manifest_path: Path,
+    archive_root: Path | None,
+    required_platforms: list[str],
+) -> dict[str, Any]:
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -365,12 +428,10 @@ def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
     issues: list[str] = []
     if not packages:
         issues.append("manifest 未包含可用 packages")
-    required_platforms = _required_manifest_platforms(args)
     package_platforms = {package.platform_key for package in packages}
     missing_platforms = [platform for platform in required_platforms if platform not in package_platforms]
     for platform in missing_platforms:
         issues.append(f"缺少平台包：{platform}")
-    archive_root = Path(args.archive_root).expanduser() if args.archive_root is not None else None
     checked_packages = [
         _check_manifest_package_archive(package, manifest_path.parent, archive_root, issues)
         for package in packages
@@ -385,22 +446,80 @@ def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
         "issues": issues,
         "packages": checked_packages,
     }
-    _print_payload(result, pretty=bool(args.pretty))
-    return 0 if not issues else 1
+    return result
 
 
 def _run_audio_model_manifest_check(args: argparse.Namespace) -> int:
-    required_sources = _required_audio_model_sources(args)
+    result = _build_audio_model_manifest_check_result(
+        base_dir=Path(args.base_dir),
+        manifest_path=Path(args.manifest).expanduser() if args.manifest is not None else None,
+        required_sources=_required_audio_model_sources(args),
+    )
+    _print_payload(result, pretty=bool(args.pretty))
+    return 0 if bool(result.get("ok")) else 1
+
+
+def _build_audio_model_manifest_check_result(
+    *,
+    base_dir: Path,
+    manifest_path: Path | None,
+    required_sources: tuple[SensorySource, ...],
+) -> dict[str, Any]:
     try:
-        result = validate_llama_cpp_audio_model_manifest(
-            Path(args.base_dir),
-            manifest_path=Path(args.manifest).expanduser() if args.manifest is not None else None,
+        return validate_llama_cpp_audio_model_manifest(
+            base_dir,
+            manifest_path=manifest_path,
             required_sources=required_sources,
         )
     except RuntimeError as exc:
         raise SensoryAudioRuntimeCliError(str(exc)) from exc
+
+
+def _run_deployment_check(args: argparse.Namespace) -> int:
+    base_dir = Path(args.base_dir)
+    runtime_result = _deployment_subcheck(
+        "runtime_manifest",
+        lambda: _build_runtime_manifest_check_result(
+            manifest_path=_deployment_runtime_manifest_path(args),
+            archive_root=Path(args.runtime_archive_root).expanduser()
+            if args.runtime_archive_root is not None
+            else None,
+            required_platforms=_required_deployment_platforms(args),
+        ),
+    )
+    audio_model_result = _deployment_subcheck(
+        "audio_model_manifest",
+        lambda: _build_audio_model_manifest_check_result(
+            base_dir=base_dir,
+            manifest_path=Path(args.audio_model_manifest).expanduser()
+            if args.audio_model_manifest is not None
+            else None,
+            required_sources=_required_audio_model_sources(args),
+        ),
+    )
+    issues = [
+        f"runtime_manifest: {issue}" for issue in runtime_result.get("issues", []) if str(issue).strip()
+    ]
+    issues.extend(
+        f"audio_model_manifest: {issue}"
+        for issue in audio_model_result.get("issues", [])
+        if str(issue).strip()
+    )
+    result = {
+        "ok": bool(runtime_result.get("ok")) and bool(audio_model_result.get("ok")),
+        "issues": issues,
+        "runtime_manifest": runtime_result,
+        "audio_model_manifest": audio_model_result,
+    }
     _print_payload(result, pretty=bool(args.pretty))
     return 0 if bool(result.get("ok")) else 1
+
+
+def _deployment_subcheck(name: str, build: Any) -> dict[str, Any]:
+    try:
+        return build()
+    except SensoryAudioRuntimeCliError as exc:
+        return {"ok": False, "check": name, "issues": [str(exc)]}
 
 
 def _run_doctor(args: argparse.Namespace) -> int:
@@ -550,6 +669,20 @@ def _required_manifest_platforms(args: argparse.Namespace) -> list[str]:
     platforms = [str(platform).strip().lower() for platform in args.require_platform if str(platform).strip()]
     if args.require_known_platforms:
         platforms.extend(_KNOWN_LLAMA_CPP_PLATFORM_KEYS)
+    return _dedupe_platforms(platforms)
+
+
+def _required_deployment_platforms(args: argparse.Namespace) -> list[str]:
+    platforms: list[str] = []
+    if not bool(args.skip_current_platform):
+        platforms.append(llama_cpp_platform_key())
+    platforms.extend(str(platform).strip().lower() for platform in args.require_platform if str(platform).strip())
+    if args.require_known_platforms:
+        platforms.extend(_KNOWN_LLAMA_CPP_PLATFORM_KEYS)
+    return _dedupe_platforms(platforms)
+
+
+def _dedupe_platforms(platforms: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for platform in platforms:
@@ -558,6 +691,13 @@ def _required_manifest_platforms(args: argparse.Namespace) -> list[str]:
         seen.add(platform)
         result.append(platform)
     return result
+
+
+def _deployment_runtime_manifest_path(args: argparse.Namespace) -> Path:
+    manifest = args.runtime_manifest
+    if manifest is not None:
+        return Path(manifest).expanduser()
+    return Path(args.base_dir) / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
 
 
 def _required_audio_model_sources(args: argparse.Namespace) -> tuple[SensorySource, ...]:

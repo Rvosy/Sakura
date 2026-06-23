@@ -145,6 +145,33 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 默认要求 `speech` 和 `sound` 两个推荐模型都存在；只校验单个源时可传入 `--require-source speech` 或 `--require-source sound`。
 
+## 发布/离线部署校验
+
+发布包、内网镜像或离线安装包可以用一个只读命令同时校验 llama.cpp runtime manifest 和音频模型 manifest。该命令不会安装运行时、不会复制模型、不会下载文件、不会访问公网；它只验证 JSON、必需平台/感官源、相对路径或 `file://` 本地文件、`size_bytes` 和 `sha256`。
+
+校验当前平台运行时包，以及默认 `speech` / `sound` 两个推荐音频模型：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli deployment-check \
+  --runtime-manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --runtime-archive-root data/local_runtimes/llama_cpp/archives \
+  --audio-model-manifest data/cache/sensory_models/audio_model_manifest.json \
+  --pretty
+```
+
+校验跨平台发布包时，增加 `--require-known-platforms`：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli deployment-check \
+  --runtime-manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --runtime-archive-root data/local_runtimes/llama_cpp/archives \
+  --audio-model-manifest data/cache/sensory_models/audio_model_manifest.json \
+  --require-known-platforms \
+  --pretty
+```
+
+默认会要求当前平台的 runtime package 存在；只想校验模型素材时可加 `--skip-current-platform`。只发布单个音频源时可重复使用 `--require-source speech` 或 `--require-source sound` 限定必需模型。
+
 ## 一键准备与模型默认值
 
 设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后按当前音频源执行：
