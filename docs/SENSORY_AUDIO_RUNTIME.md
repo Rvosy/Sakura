@@ -73,51 +73,20 @@ data/logs/sensory-llama-server.log
 .venv/bin/python -m pytest tests/unit/test_sensory.py tests/unit/test_sensory_llama_cpp_runtime.py tests/ui/test_pet_window.py -q
 ```
 
-本机运行时验证：
+命令行 dry-run，不下载模型、不启动 sidecar：
 
 ```bash
-.venv/bin/python - <<'PY'
-from pathlib import Path
-from app.sensory.llama_cpp_runtime import (
-    fetch_latest_llama_cpp_runtime_packages,
-    select_llama_cpp_runtime_package,
-    install_llama_cpp_runtime_package,
-    llama_cpp_platform_key,
-    discover_llama_server_binary,
-)
-
-base_dir = Path(".")
-packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=20)
-package = select_llama_cpp_runtime_package(packages, platform_key=llama_cpp_platform_key())
-result = install_llama_cpp_runtime_package(base_dir, package, timeout_seconds=300)
-print(result.to_mapping())
-print(discover_llama_server_binary(base_dir))
-PY
+.venv/bin/python -m app.sensory.audio_runtime_cli plan --source speech --managed-llama-defaults --pretty
 ```
 
-不下载模型的配置 dry-run：
+本机运行时安装验证。没有可用 `llama-server` 时，必须显式传入 `--yes` 才会下载官方 llama.cpp 运行时：
 
 ```bash
-.venv/bin/python - <<'PY'
-from pathlib import Path
-from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
-from app.sensory.models import SensoryProviderMode, SensorySource
-from app.sensory.settings import SensoryProviderConfig
-
-plan = build_sensory_audio_smoke_plan(
-    SensoryProviderConfig(
-        provider_id="speech_local",
-        source=SensorySource.SPEECH,
-        mode=SensoryProviderMode.LOCAL,
-        endpoint="http://127.0.0.1:18080/v1",
-        model="ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0",
-        extra={"backend": "llama", "managed_runtime": "llama.cpp"},
-    ),
-    base_dir=Path("."),
-    source=SensorySource.SPEECH,
-)
-print(plan.to_mapping())
-PY
+.venv/bin/python -m app.sensory.audio_runtime_cli install-runtime --yes --pretty
 ```
 
-真实音频模型 smoke 会下载 GGUF 模型，可能占用数百 MB 到数 GB。需要用户确认后再运行。
+真实音频模型 smoke 会下载 GGUF 模型，可能占用数百 MB 到数 GB。命令行同样默认拒绝这一步；确认后需要显式传入：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli smoke --source speech --managed-llama-defaults --allow-model-download --pretty
+```
