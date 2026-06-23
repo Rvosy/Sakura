@@ -243,10 +243,12 @@ body {
 .settings-page {
   display: none;
   gap: 14px;
-  max-width: 720px;
+  width: min(100%, 980px);
+  max-width: 980px;
 }
 
 .settings-page.admin-page {
+  width: 100%;
   max-width: none;
 }
 
@@ -1442,6 +1444,18 @@ button:focus-visible,
 .setting-row > select,
 .setting-row > .custom-select {
   justify-self: end;
+}
+
+.setting-row > input[type="text"],
+.setting-row > input[type="password"],
+.setting-row > textarea {
+  width: clamp(320px, 42vw, 560px);
+  max-width: none;
+}
+
+.setting-row > .custom-select {
+  width: clamp(240px, 30vw, 380px);
+  max-width: none;
 }
 
 /* 数字输入 + 单位后缀。 */

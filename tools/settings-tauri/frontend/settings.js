@@ -366,8 +366,12 @@ function enhanceSelect(select) {
   // 弹层挂在 <body> 上，按视口坐标定位；下方空间不足且上方更宽裕时向上弹出。
   function positionMenu() {
     const rect = trigger.getBoundingClientRect();
-    menu.style.width = `${rect.width}px`;
-    menu.style.left = `${rect.left}px`;
+    const maxWidth = Math.max(120, window.innerWidth - 16);
+    menu.style.minWidth = `${rect.width}px`;
+    menu.style.width = "max-content";
+    menu.style.maxWidth = `${maxWidth}px`;
+    const menuWidth = Math.min(menu.offsetWidth, maxWidth);
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))}px`;
     const menuHeight = menu.offsetHeight;
     const spaceBelow = window.innerHeight - rect.bottom;
     if (spaceBelow < menuHeight + 12 && rect.top > spaceBelow) {
@@ -2556,10 +2560,12 @@ fields.navItems.forEach((item) => {
   item.addEventListener("click", () => showPage(item.dataset.page));
 });
 layoutSliders.forEach((fieldKey) => {
-  fields[fieldKey].addEventListener("input", () => {
+  const preview = () => {
     updateSliderOutput(fieldKey);
     requestLayoutPreview();
-  });
+  };
+  fields[fieldKey].addEventListener("input", preview);
+  fields[fieldKey].addEventListener("change", preview);
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
@@ -2603,14 +2609,35 @@ fields.saveButton.addEventListener("click", async () => {
     return;
   }
   setError("");
+  const original = fields.saveButton.textContent;
+  let settings;
+  try {
+    settings = collectSettings();
+  } catch (error) {
+    setError(String(error));
+    return;
+  }
   // 保存成功后 Rust 会关窗（save_settings → window.close），提前放行关窗拦截。
   bypassCloseGuard = true;
+  fields.saveButton.disabled = true;
+  fields.saveButton.textContent = "保存中…";
   try {
-    await invoke("save_settings", { settings: collectSettings() });
+    await invoke("save_settings", { settings });
+    settingsBaseline = settingsSnapshot();
+    refreshDirty();
+    notify("已保存。", "success");
   } catch (error) {
     bypassCloseGuard = false;
+    fields.saveButton.disabled = false;
+    fields.saveButton.textContent = original;
     setError(String(error));
+    return;
   }
+  window.setTimeout(() => {
+    bypassCloseGuard = false;
+    fields.saveButton.disabled = false;
+    fields.saveButton.textContent = original;
+  }, 800);
 });
 
 fields.applyButton.addEventListener("click", async () => {
