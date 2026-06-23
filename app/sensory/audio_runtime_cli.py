@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from app.config.settings_service import AppSettingsService
 from app.sensory.audio_models import recommended_llama_cpp_audio_model
@@ -25,6 +26,7 @@ from app.sensory.llama_cpp_runtime import (
     fetch_latest_llama_cpp_runtime_packages,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
+    llama_cpp_runtime_packages_from_manifest,
     select_llama_cpp_runtime_package,
 )
 from app.sensory.models import SensoryProviderMode, SensorySource, coerce_sensory_source
@@ -35,6 +37,16 @@ class SensoryAudioRuntimeCliError(RuntimeError):
     """Raised for expected CLI validation failures."""
 
 
+_KNOWN_LLAMA_CPP_PLATFORM_KEYS = (
+    "linux-arm64",
+    "linux-x64",
+    "macos-arm64",
+    "macos-x64",
+    "windows-arm64",
+    "windows-x64",
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -43,6 +55,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_install_runtime(args)
         if args.command == "runtime-manifest":
             return _run_runtime_manifest(args)
+        if args.command == "runtime-manifest-check":
+            return _run_runtime_manifest_check(args)
         if args.command == "smoke":
             return _run_smoke(args)
         return _run_plan(args)
@@ -112,6 +126,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional local archive directory. Adds sha256 and size_bytes for matching archive filenames.",
+    )
+
+    manifest_check = subparsers.add_parser(
+        "runtime-manifest-check",
+        help="Validate a llama.cpp runtime manifest without installing or downloading.",
+    )
+    _add_pretty_arg(manifest_check)
+    manifest_check.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Manifest path. Defaults to data/local_runtimes/llama_cpp/runtime_manifest.json.",
+    )
+    manifest_check.add_argument(
+        "--archive-root",
+        type=Path,
+        default=None,
+        help="Optional local archive directory for validating package files by filename.",
+    )
+    manifest_check.add_argument(
+        "--require-platform",
+        action="append",
+        default=[],
+        help="Platform key that must be present. Can be repeated.",
+    )
+    manifest_check.add_argument(
+        "--require-known-platforms",
+        action="store_true",
+        help="Require all built-in platform keys to be present.",
     )
 
     parser.set_defaults(
@@ -255,6 +298,42 @@ def _run_runtime_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
+    manifest_path = _runtime_manifest_check_path(args)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SensoryAudioRuntimeCliError(f"无法读取 runtime manifest：{manifest_path}：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise SensoryAudioRuntimeCliError(f"runtime manifest 必须是 JSON 对象：{manifest_path}")
+    packages = [package.normalized() for package in llama_cpp_runtime_packages_from_manifest(payload)]
+    issues: list[str] = []
+    if not packages:
+        issues.append("manifest 未包含可用 packages")
+    required_platforms = _required_manifest_platforms(args)
+    package_platforms = {package.platform_key for package in packages}
+    missing_platforms = [platform for platform in required_platforms if platform not in package_platforms]
+    for platform in missing_platforms:
+        issues.append(f"缺少平台包：{platform}")
+    archive_root = Path(args.archive_root).expanduser() if args.archive_root is not None else None
+    checked_packages = [
+        _check_manifest_package_archive(package, manifest_path.parent, archive_root, issues)
+        for package in packages
+    ]
+    result = {
+        "ok": not issues,
+        "manifest_path": str(manifest_path),
+        "package_count": len(packages),
+        "platforms": sorted(package_platforms),
+        "required_platforms": required_platforms,
+        "missing_platforms": missing_platforms,
+        "issues": issues,
+        "packages": checked_packages,
+    }
+    _print_payload(result, pretty=bool(args.pretty))
+    return 0 if not issues else 1
+
+
 def _provider_config_from_args(
     args: argparse.Namespace,
     source: SensorySource,
@@ -345,6 +424,83 @@ def _add_local_archive_metadata(data: dict[str, Any], archive_path: Path) -> Non
         raise SensoryAudioRuntimeCliError(f"本地 archive 不存在：{archive_path}")
     data["sha256"] = _sha256_file(archive_path)
     data["size_bytes"] = archive_path.stat().st_size
+
+
+def _runtime_manifest_check_path(args: argparse.Namespace) -> Path:
+    manifest = args.manifest
+    if manifest is not None:
+        return Path(manifest).expanduser()
+    return Path(args.base_dir) / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+
+
+def _required_manifest_platforms(args: argparse.Namespace) -> list[str]:
+    platforms = [str(platform).strip().lower() for platform in args.require_platform if str(platform).strip()]
+    if args.require_known_platforms:
+        platforms.extend(_KNOWN_LLAMA_CPP_PLATFORM_KEYS)
+    seen: set[str] = set()
+    result: list[str] = []
+    for platform in platforms:
+        if platform in seen:
+            continue
+        seen.add(platform)
+        result.append(platform)
+    return result
+
+
+def _check_manifest_package_archive(
+    package: Any,
+    manifest_dir: Path,
+    archive_root: Path | None,
+    issues: list[str],
+) -> dict[str, Any]:
+    archive_path = _manifest_archive_path(package.url, manifest_dir, archive_root)
+    result: dict[str, Any] = {
+        "package_id": package.package_id,
+        "platform_key": package.platform_key,
+        "url": package.url,
+        "archive_path": str(archive_path) if archive_path is not None else "",
+        "archive_exists": False,
+        "size_ok": None,
+        "sha256_ok": None,
+    }
+    if archive_path is None:
+        return result
+    if not archive_path.is_file():
+        issues.append(f"{package.package_id} 缺少 archive：{archive_path}")
+        return result
+    result["archive_exists"] = True
+    if package.size_bytes > 0:
+        actual_size = archive_path.stat().st_size
+        result["actual_size_bytes"] = actual_size
+        result["size_ok"] = actual_size == package.size_bytes
+        if not result["size_ok"]:
+            issues.append(f"{package.package_id} archive 大小不匹配：{actual_size} != {package.size_bytes}")
+    if package.sha256:
+        actual_sha256 = _sha256_file(archive_path)
+        result["actual_sha256"] = actual_sha256
+        result["sha256_ok"] = actual_sha256 == package.sha256
+        if not result["sha256_ok"]:
+            issues.append(f"{package.package_id} archive sha256 不匹配")
+    return result
+
+
+def _manifest_archive_path(
+    url: str,
+    manifest_dir: Path,
+    archive_root: Path | None,
+) -> Path | None:
+    filename = _url_filename(url)
+    if archive_root is not None:
+        return archive_root / filename
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme == "file":
+        return Path(url2pathname(parsed.path)).expanduser()
+    if parsed.scheme:
+        return None
+    path = Path(str(url)).expanduser()
+    if not path.is_absolute():
+        path = manifest_dir / path
+    return path
 
 
 def _sha256_file(path: Path) -> str:

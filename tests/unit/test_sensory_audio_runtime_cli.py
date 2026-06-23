@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,6 +309,126 @@ def test_audio_runtime_cli_runtime_manifest_errors_when_archive_root_is_incomple
     assert "本地 archive 不存在" in payload["message"]
 
 
+def test_audio_runtime_cli_runtime_manifest_check_validates_relative_archives(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive = tmp_path / "archives" / "llama-b1-bin-macos-arm64.tar.gz"
+    archive.parent.mkdir(parents=True)
+    content = b"runtime archive"
+    archive.write_bytes(content)
+    manifest = _write_runtime_manifest(
+        tmp_path,
+        [
+            {
+                "package_id": "b1-macos",
+                "label": "macOS",
+                "platform_key": "macos-arm64",
+                "url": "archives/llama-b1-bin-macos-arm64.tar.gz",
+                "archive_format": "tar.gz",
+                "binary_relpath": "llama-server",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        ],
+    )
+
+    code = audio_runtime_cli.main(
+        [
+            "runtime-manifest-check",
+            "--manifest",
+            str(manifest),
+            "--require-platform",
+            "macos-arm64",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["issues"] == []
+    assert payload["packages"][0]["archive_exists"] is True
+    assert payload["packages"][0]["size_ok"] is True
+    assert payload["packages"][0]["sha256_ok"] is True
+
+
+def test_audio_runtime_cli_runtime_manifest_check_reports_missing_platform(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    manifest = _write_runtime_manifest(
+        tmp_path,
+        [
+            {
+                "package_id": "b1-macos",
+                "label": "macOS",
+                "platform_key": "macos-arm64",
+                "url": "https://mirror.example/llama-b1-bin-macos-arm64.tar.gz",
+                "archive_format": "tar.gz",
+                "binary_relpath": "llama-server",
+            }
+        ],
+    )
+
+    code = audio_runtime_cli.main(
+        [
+            "runtime-manifest-check",
+            "--manifest",
+            str(manifest),
+            "--require-platform",
+            "windows-x64",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["missing_platforms"] == ["windows-x64"]
+    assert "缺少平台包：windows-x64" in payload["issues"]
+
+
+def test_audio_runtime_cli_runtime_manifest_check_reports_checksum_mismatch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_root = tmp_path / "archives"
+    archive_root.mkdir()
+    archive = archive_root / "llama-b1-bin-win-cpu-x64.zip"
+    archive.write_bytes(b"actual")
+    manifest = _write_runtime_manifest(
+        tmp_path,
+        [
+            {
+                "package_id": "b1-win",
+                "label": "Windows",
+                "platform_key": "windows-x64",
+                "url": "https://mirror.example/llama-b1-bin-win-cpu-x64.zip",
+                "archive_format": "zip",
+                "binary_relpath": "llama-server.exe",
+                "sha256": hashlib.sha256(b"expected").hexdigest(),
+                "size_bytes": len(b"actual"),
+            }
+        ],
+    )
+
+    code = audio_runtime_cli.main(
+        [
+            "runtime-manifest-check",
+            "--manifest",
+            str(manifest),
+            "--archive-root",
+            str(archive_root),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["packages"][0]["archive_exists"] is True
+    assert payload["packages"][0]["sha256_ok"] is False
+    assert "b1-win archive sha256 不匹配" in payload["issues"]
+
+
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
     code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "plan", "--source", "speech"])
 
@@ -316,6 +436,15 @@ def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, c
     assert code == 1
     assert payload["ok"] is False
     assert "未配置 speech 感官 provider" in payload["message"]
+
+
+def _write_runtime_manifest(tmp_path: Path, packages: list[dict[str, object]]) -> Path:
+    manifest = tmp_path / "runtime_manifest.json"
+    manifest.write_text(
+        json.dumps({"manifest_version": 1, "packages": packages}),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def _executable(path: Path) -> Path:

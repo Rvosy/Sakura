@@ -88,6 +88,18 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 `--archive-root` 不会下载文件；它要求目录中存在与官方 release asset 同名的 archive，缺失时会报错。
 
+发布前校验 manifest，不安装、不下载：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest-check \
+  --manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --archive-root data/local_runtimes/llama_cpp/archives \
+  --require-known-platforms \
+  --pretty
+```
+
+校验会检查 package 结构、必需平台、相对路径或 `file://` archive 是否存在、`size_bytes` 和 `sha256` 是否匹配。HTTPS URL 不会联网；如需校验镜像文件，配合 `--archive-root` 指向本地 archive 目录。
+
 ## 模型默认值
 
 配置 llama.cpp 运行时成功后，如果当前音频源没有模型，设置页会填入带量化后缀的 llama.cpp `-hf` 推荐值：
