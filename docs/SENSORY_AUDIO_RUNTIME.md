@@ -61,6 +61,21 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 `url` 可以是 HTTPS 镜像、`file://` URI，或相对 manifest 文件所在目录的本地 archive 路径。相对路径适合发布包把 archive 放在 `data/local_runtimes/llama_cpp/archives/` 下，安装时不会访问公网。
 
+生成当前官方 release 的 manifest 模板，不下载 archive：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest --relative-archive-dir archives --pretty
+```
+
+生成镜像 URL 版本并写入默认位置：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest \
+  --mirror-base-url https://mirror.example/llama.cpp/b9763 \
+  --output data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --pretty
+```
+
 ## 模型默认值
 
 配置 llama.cpp 运行时成功后，如果当前音频源没有模型，设置页会填入带量化后缀的 llama.cpp `-hf` 推荐值：

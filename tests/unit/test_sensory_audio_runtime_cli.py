@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.sensory import audio_runtime_cli
+from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec
 
 
 def test_audio_runtime_cli_plan_uses_managed_llama_defaults(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -151,6 +152,86 @@ def test_audio_runtime_cli_install_runtime_reuses_existing_binary(
     assert payload["ok"] is True
     assert payload["already_installed"] is True
     assert payload["binary_path"] == binary
+
+
+def test_audio_runtime_cli_runtime_manifest_generates_relative_archive_urls(
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "fetch_latest_llama_cpp_runtime_packages",
+        lambda timeout_seconds: [
+            LlamaCppRuntimePackageSpec(
+                package_id="b1-linux",
+                label="Linux",
+                platform_key="linux-x64",
+                url="https://github.com/ggml-org/llama.cpp/releases/download/b1/llama-b1-bin-ubuntu-x64.tar.gz",
+                archive_format="tar.gz",
+                binary_relpath="llama-server",
+                version="b1",
+                variant="cpu",
+            ),
+            LlamaCppRuntimePackageSpec(
+                package_id="b1-macos",
+                label="macOS",
+                platform_key="macos-arm64",
+                url="https://github.com/ggml-org/llama.cpp/releases/download/b1/llama-b1-bin-macos-arm64.tar.gz",
+                archive_format="tar.gz",
+                binary_relpath="llama-server",
+                version="b1",
+                variant="metal",
+            ),
+        ],
+    )
+
+    code = audio_runtime_cli.main(["runtime-manifest", "--relative-archive-dir", "archives"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["manifest_version"] == 1
+    assert [package["platform_key"] for package in payload["packages"]] == ["linux-x64", "macos-arm64"]
+    assert payload["packages"][0]["url"] == "archives/llama-b1-bin-ubuntu-x64.tar.gz"
+    assert payload["packages"][1]["url"] == "archives/llama-b1-bin-macos-arm64.tar.gz"
+
+
+def test_audio_runtime_cli_runtime_manifest_can_write_mirror_manifest(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "fetch_latest_llama_cpp_runtime_packages",
+        lambda timeout_seconds: [
+            LlamaCppRuntimePackageSpec(
+                package_id="b1-win",
+                label="Windows",
+                platform_key="windows-x64",
+                url="https://github.com/ggml-org/llama.cpp/releases/download/b1/llama-b1-bin-win-cpu-x64.zip",
+                archive_format="zip",
+                binary_relpath="llama-server.exe",
+                version="b1",
+                variant="cpu",
+            )
+        ],
+    )
+    output = tmp_path / "runtime_manifest.json"
+
+    code = audio_runtime_cli.main(
+        [
+            "runtime-manifest",
+            "--mirror-base-url",
+            "https://mirror.example/llama.cpp/b1",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    assert capsys.readouterr().out == ""
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["packages"][0]["url"] == "https://mirror.example/llama.cpp/b1/llama-b1-bin-win-cpu-x64.zip"
 
 
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

@@ -6,6 +6,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 from app.config.settings_service import AppSettingsService
 from app.sensory.audio_models import recommended_llama_cpp_audio_model
@@ -17,8 +18,10 @@ from app.sensory.audio_smoke import (
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
     LLAMA_CPP_MANAGED_RUNTIME_MARKER,
+    LLAMA_CPP_GITHUB_LATEST_RELEASE_API,
     discover_llama_server_binary,
     fetch_llama_cpp_runtime_package_catalog,
+    fetch_latest_llama_cpp_runtime_packages,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
     select_llama_cpp_runtime_package,
@@ -37,6 +40,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "install-runtime":
             return _run_install_runtime(args)
+        if args.command == "runtime-manifest":
+            return _run_runtime_manifest(args)
         if args.command == "smoke":
             return _run_smoke(args)
         return _run_plan(args)
@@ -78,6 +83,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--preferred-variant",
         default="auto",
         help="Runtime variant preference, usually auto/cpu/metal.",
+    )
+
+    manifest = subparsers.add_parser(
+        "runtime-manifest",
+        help="Generate a llama.cpp runtime manifest template without downloading archives.",
+    )
+    _add_pretty_arg(manifest)
+    manifest.add_argument(
+        "--mirror-base-url",
+        default="",
+        help="Rewrite package URLs to this mirror base URL using the original archive filenames.",
+    )
+    manifest.add_argument(
+        "--relative-archive-dir",
+        default="",
+        help="Rewrite package URLs to a relative archive directory, for example archives.",
+    )
+    manifest.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional output JSON path. Omit to print to stdout only.",
     )
 
     parser.set_defaults(
@@ -186,6 +213,37 @@ def _run_install_runtime(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_runtime_manifest(args: argparse.Namespace) -> int:
+    if args.mirror_base_url and args.relative_archive_dir:
+        raise SensoryAudioRuntimeCliError("不能同时指定 --mirror-base-url 和 --relative-archive-dir。")
+    packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=30)
+    entries = []
+    for package in sorted(
+        (package.normalized() for package in packages),
+        key=lambda item: (item.platform_key, item.variant, item.package_id),
+    ):
+        data = package.to_mapping()
+        data["url"] = _runtime_manifest_url(
+            package.url,
+            mirror_base_url=str(args.mirror_base_url or ""),
+            relative_archive_dir=str(args.relative_archive_dir or ""),
+        )
+        entries.append(data)
+    payload = {
+        "manifest_version": 1,
+        "source": LLAMA_CPP_GITHUB_LATEST_RELEASE_API,
+        "packages": entries,
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2 if args.pretty else None)
+    output = args.output
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(f"{text}\n", encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def _provider_config_from_args(
     args: argparse.Namespace,
     source: SensorySource,
@@ -247,6 +305,28 @@ def _managed_llama_default_config(
 
 def _remote_managed_llama_model(plan: SensoryAudioSmokePlan) -> bool:
     return bool(plan.managed_runtime and plan.requires_model_download)
+
+
+def _runtime_manifest_url(
+    original_url: str,
+    *,
+    mirror_base_url: str,
+    relative_archive_dir: str,
+) -> str:
+    filename = _url_filename(original_url)
+    if relative_archive_dir:
+        return f"{relative_archive_dir.strip().strip('/')}/{filename}"
+    if mirror_base_url:
+        return f"{mirror_base_url.strip().rstrip('/')}/{filename}"
+    return original_url
+
+
+def _url_filename(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    name = Path(parsed.path).name
+    if not name:
+        raise SensoryAudioRuntimeCliError(f"无法从 URL 提取 archive 文件名：{url}")
+    return name
 
 
 def _print_payload(payload: MappingPayload, *, pretty: bool) -> None:
