@@ -1455,6 +1455,9 @@ def apply_tauri_plugin_settings(
             if contribution is None:
                 raise ValueError(f"未知插件设置区块：{plugin_id}.{section_id}")
             normalized = _normalize_plugin_setting_values(contribution, values)
+            current = _plugin_current_settings(contribution)
+            if normalized == current:
+                continue
             if callable(contribution.save):
                 contribution.save(normalized)
                 changed = True
@@ -1499,6 +1502,18 @@ def _plugin_settings_by_key(
             continue
         by_key[(plugin_id, section_id)] = contribution
     return by_key
+
+
+def _plugin_current_settings(contribution: PluginSettingsContribution) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    if callable(contribution.load):
+        try:
+            loaded = contribution.load()
+        except Exception:  # noqa: BLE001 - 读取失败时仍允许用户保存新值
+            loaded = None
+        if isinstance(loaded, dict):
+            values = loaded
+    return _normalize_plugin_setting_values(contribution, values)
 
 
 def _normalize_plugin_setting_values(
@@ -1806,9 +1821,7 @@ def _normalized_request_model_selection(
     return ModelSelectionSettings(
         chat=ModelSlotSelection(profile_id=profile.id, model=model),
         vision_chat=selection.vision_chat,
-        visual_context=selection.visual_context,
         memory_curation=selection.memory_curation,
-        theme_ai=selection.theme_ai,
     )
 
 
@@ -1870,9 +1883,7 @@ def _model_selection_from_mapping_required(mapping: dict[str, Any]) -> ModelSele
     return ModelSelectionSettings(
         chat=chat,
         vision_chat=_slot_selection_from_mapping(slots, "vision_chat", required=False),
-        visual_context=_slot_selection_from_mapping(slots, "visual_context", required=False),
         memory_curation=_slot_selection_from_mapping(slots, "memory_curation", required=False),
-        theme_ai=_slot_selection_from_mapping(slots, "theme_ai", required=False),
     )
 
 

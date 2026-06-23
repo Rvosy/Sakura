@@ -19,9 +19,7 @@ from app.config.model_slots import normalize_provider_models
 from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
-    MODEL_SLOT_THEME_AI,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
@@ -293,9 +291,7 @@ class AppSettingsService:
             return ModelSelectionSettings(
                 chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
                 vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-                visual_context=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISUAL_CONTEXT)),
                 memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
-                theme_ai=_optional_slot_selection(raw_slots.get(MODEL_SLOT_THEME_AI)),
             )
 
         # #110 旧格式迁移：视觉/文本模型两槽位。
@@ -346,9 +342,7 @@ class AppSettingsService:
         for slot in (
             MODEL_SLOT_CHAT,
             MODEL_SLOT_VISION_CHAT,
-            MODEL_SLOT_VISUAL_CONTEXT,
             MODEL_SLOT_MEMORY_CURATION,
-            MODEL_SLOT_THEME_AI,
         ):
             selection = settings.get(slot)
             if selection is None:

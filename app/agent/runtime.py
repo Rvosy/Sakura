@@ -42,7 +42,6 @@ from app.llm.api_client import (
     is_vision_unsupported_error,
     messages_contain_image,
 )
-from app.config.models import MODEL_SLOT_VISUAL_CONTEXT
 from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.debug_log import debug_body_enabled, debug_log, summarize_messages
@@ -112,13 +111,11 @@ class AgentRuntime:
         context_providers: list[ContextProviderContribution] | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
         vision_api_client: OpenAICompatibleClient | None = None,
-        visual_context_api_client: OpenAICompatibleClient | None = None,
         character_id: str = "",
         character_name: str = "",
     ) -> None:
         self.api_client = api_client
         self._vision_api_client = vision_api_client
-        self._visual_context_api_client = visual_context_api_client
         self.system_prompt = system_prompt
         self.character_id = character_id.strip()
         self.character_name = character_name.strip()
@@ -147,19 +144,6 @@ class AgentRuntime:
     @vision_api_client.setter
     def vision_api_client(self, client: OpenAICompatibleClient | None) -> None:
         self._vision_api_client = client
-
-    @property
-    def visual_context_api_client(self) -> OpenAICompatibleClient | None:
-        return self._visual_context_api_client
-
-    @visual_context_api_client.setter
-    def visual_context_api_client(self, client: OpenAICompatibleClient | None) -> None:
-        self._visual_context_api_client = client
-
-    def api_client_for_slot(self, slot: str) -> OpenAICompatibleClient:
-        if slot == MODEL_SLOT_VISUAL_CONTEXT:
-            return self._visual_context_api_client or self._vision_api_client or self.api_client
-        return self.api_client
 
     def _client_for_messages(self, messages: list[ChatMessage]) -> OpenAICompatibleClient:
         """根据消息是否含图片，返回 vision 或 text API client。

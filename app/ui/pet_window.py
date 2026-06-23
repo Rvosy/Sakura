@@ -96,7 +96,6 @@ from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
 )
@@ -7730,17 +7729,6 @@ def _update_runtime_api_clients(
         MODEL_SLOT_VISION_CHAT,
     )
 
-    visual_context_slot = resolve_model_slot(
-        api_profiles,
-        model_selection,
-        MODEL_SLOT_VISUAL_CONTEXT,
-        base_settings,
-    )
-    window.agent_runtime.visual_context_api_client = _client_for_explicit_slot(
-        visual_context_slot,
-        MODEL_SLOT_VISUAL_CONTEXT,
-    )
-
     memory_slot = resolve_model_slot(
         api_profiles,
         model_selection,
@@ -7776,7 +7764,6 @@ def _wire_runtime_llm_event_emitters(
         for client in (
             getattr(runtime, "api_client", None),
             getattr(runtime, "vision_api_client", None),
-            getattr(runtime, "visual_context_api_client", None),
         ):
             _set_llm_event_emitter(client, emitter)
     memory_curator = getattr(window, "memory_curator", None)

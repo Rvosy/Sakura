@@ -18,7 +18,6 @@ from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ModelSelectionSettings,
     ModelSlotSelection,
 )
@@ -152,6 +151,12 @@ model_slots:
   vision_chat:
     profile_id: p1
     model: vision-model
+  visual_context:
+    profile_id: p1
+    model: visual-model
+  theme_ai:
+    profile_id: p1
+    model: visual-model
 """.lstrip(),
         encoding="utf-8",
     )
@@ -160,8 +165,13 @@ model_slots:
     base = service.load_api_settings()
 
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, base).settings.model == "chat-model"  # type: ignore[union-attr]
-    assert resolve_model_slot(profiles, selection, MODEL_SLOT_VISUAL_CONTEXT, base).settings.model == "vision-model"  # type: ignore[union-attr]
+    assert resolve_model_slot(profiles, selection, MODEL_SLOT_VISION_CHAT, base).settings.model == "vision-model"  # type: ignore[union-attr]
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_MEMORY_CURATION, base).settings.model == "chat-model"  # type: ignore[union-attr]
+    service.save_model_selection(selection)
+    assert set(load_yaml_mapping(service.api_config_path)["model_slots"]) == {
+        MODEL_SLOT_CHAT,
+        MODEL_SLOT_VISION_CHAT,
+    }
     bad_selection = ModelSelectionSettings(
         chat=ModelSlotSelection(profile_id="p1", model="missing-model"),
     )

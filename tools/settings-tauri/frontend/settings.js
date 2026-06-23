@@ -104,6 +104,10 @@ const fields = {
 let request = null;
 let lastTtsProvider = "";
 let themeChanged = false;
+// 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
+let settingsBaseline = null;
+// 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
+let bypassCloseGuard = false;
 let memoryRetryTimer = null;
 const memoryState = {
   entries: [],
@@ -139,6 +143,82 @@ const themeVars = {
 
 function setError(message) {
   fields.errorText.textContent = message || "";
+}
+
+// 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右下角 toast，自动消失。
+const toastStack = document.getElementById("toastStack");
+
+function notify(message, type = "info") {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return;
+  }
+  if (type === "error") {
+    setError(text);
+    return;
+  }
+  setError("");
+  if (!toastStack) {
+    return;
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast is-${type}`;
+  toast.setAttribute("role", "status");
+  toast.textContent = text;
+  toastStack.append(toast);
+  const remove = () => {
+    toast.classList.add("is-leaving");
+    window.setTimeout(() => toast.remove(), 220);
+  };
+  window.setTimeout(remove, 2600);
+  toast.addEventListener("click", remove);
+}
+
+// ---------- 未保存改动追踪 ----------
+function settingsSnapshot() {
+  try {
+    return JSON.stringify(collectSettings());
+  } catch {
+    return settingsBaseline;
+  }
+}
+
+function computeDirty() {
+  return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
+}
+
+function refreshDirty() {
+  const dirty = computeDirty();
+  document.body.classList.toggle("is-dirty", dirty);
+  fields.saveButton.classList.toggle("has-changes", dirty);
+}
+
+let dirtyTimer = null;
+function scheduleDirty() {
+  if (settingsBaseline === null) {
+    return;
+  }
+  window.clearTimeout(dirtyTimer);
+  dirtyTimer = window.setTimeout(refreshDirty, 150);
+}
+
+// 关窗/取消前若有未保存改动则二次确认，返回是否放行。
+async function confirmDiscard() {
+  if (!computeDirty()) {
+    return true;
+  }
+  return confirmAction("有未保存的改动，确定放弃并关闭吗？", {
+    title: "放弃改动",
+    confirmText: "放弃",
+    cancelText: "返回",
+    danger: true,
+  });
+}
+
+function markInvalid(input, invalid) {
+  if (input) {
+    input.classList.toggle("is-invalid", Boolean(invalid));
+  }
 }
 
 function clearMemoryRetry() {
@@ -391,7 +471,13 @@ function showPage(page) {
     element.classList.toggle("is-active", key === page);
   });
   fields.navItems.forEach((item) => {
-    item.classList.toggle("is-active", item.dataset.page === page);
+    const active = item.dataset.page === page;
+    item.classList.toggle("is-active", active);
+    if (active) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
   });
   document.querySelector(".page-scroll")?.classList.toggle(
     "is-admin-active",
@@ -749,11 +835,21 @@ function renderProviderList() {
   fields.providerList.textContent = "";
   const profiles = filteredProviders();
   if (!profiles.length) {
-    const empty = document.createElement("p");
+    const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = providerState.profiles.length
-      ? "没有匹配的供应商。"
-      : "还没有供应商，点「添加供应商」开始。";
+    if (providerState.profiles.length) {
+      empty.textContent = "没有匹配的供应商。";
+    } else {
+      const text = document.createElement("p");
+      text.className = "empty-state-text";
+      text.textContent = "还没有供应商，先添加一个开始配置 API。";
+      const cta = document.createElement("button");
+      cta.type = "button";
+      cta.className = "primary-button";
+      cta.textContent = "添加供应商";
+      cta.addEventListener("click", openAddProviderChooser);
+      empty.append(text, cta);
+    }
     fields.providerList.append(empty);
     return;
   }
@@ -825,9 +921,13 @@ function providerField(profile, key, label, type) {
   const input = document.createElement("input");
   input.type = type === "password" ? "password" : "text";
   input.className = "wide-input";
+  input.dataset.providerField = key;
   input.value = profile[key] || "";
   input.addEventListener("input", () => {
     profile[key] = input.value;
+    if (input.value.trim()) {
+      markInvalid(input, false);
+    }
     if (key === "alias" || key === "base_url") {
       // 仅刷新左侧卡片与标题，避免重渲详情导致输入框失焦。
       renderProviderStatus();
@@ -942,14 +1042,20 @@ function addModelsToProfile(profile, models) {
   return added;
 }
 
+function providerDetailInput(key) {
+  return fields.providerDetail.querySelector(`[data-provider-field="${key}"]`);
+}
+
 async function autoDetectModels(profile, button) {
   const baseUrl = (profile.base_url || "").trim();
   const apiKey = (profile.api_key || "").trim();
   if (!baseUrl) {
+    markInvalid(providerDetailInput("base_url"), true);
     setError("请先填写 Base URL。");
     return;
   }
   if (!apiKey) {
+    markInvalid(providerDetailInput("api_key"), true);
     setError("请先填写 API Key。");
     return;
   }
@@ -965,7 +1071,7 @@ async function autoDetectModels(profile, button) {
     });
     const models = Array.isArray(result?.models) ? result.models : [];
     if (!models.length) {
-      setError("未检测到任何模型。");
+      notify("未检测到任何模型。", "info");
       return;
     }
     openModelPicker(profile, models);
@@ -982,6 +1088,8 @@ async function testProvider(profile, button) {
   const apiKey = (profile.api_key || "").trim();
   const model = (profile.models || [])[0];
   if (!baseUrl || !apiKey) {
+    markInvalid(providerDetailInput("base_url"), !baseUrl);
+    markInvalid(providerDetailInput("api_key"), !apiKey);
     setError("请先填写 Base URL 与 API Key。");
     return;
   }
@@ -1000,7 +1108,7 @@ async function testProvider(profile, button) {
       model,
       timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
     });
-    setError(`连接成功：${result?.message || "OK"}`);
+    notify(`连接成功：${result?.message || "OK"}`, "success");
   } catch (error) {
     setError(`连接失败：${error}`);
   } finally {
@@ -1136,7 +1244,7 @@ function openModelPicker(profile, models) {
       const chosen = checks.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
       const added = addModelsToProfile(profile, chosen);
       close();
-      setError(added ? `已添加 ${added} 个模型。` : "没有新增模型。");
+      notify(added ? `已添加 ${added} 个模型。` : "没有新增模型。", added ? "success" : "info");
     }),
   );
   overlay.addEventListener("click", (event) => {
@@ -1163,55 +1271,62 @@ function renderModelSlots(selection) {
     profileSelect.dataset.slotProfile = slot.id;
     const modelSelect = document.createElement("select");
     modelSelect.dataset.slotModel = slot.id;
+    if (!slot.required) {
+      const inheritLabel = document.createElement("label");
+      inheritLabel.className = "check-control slot-inherit";
+      const inheritInput = document.createElement("input");
+      inheritInput.type = "checkbox";
+      inheritInput.dataset.slotInherit = slot.id;
+      const inheritText = document.createElement("span");
+      inheritText.textContent = "继承";
+      inheritLabel.append(inheritInput, inheritText);
+      controls.append(inheritLabel);
+      inheritInput.addEventListener("change", () => syncSlotInheritState(slot.id));
+    }
     controls.append(profileSelect, modelSelect);
     row.append(label, controls);
     fields.modelSlots.append(row);
     enhanceSelect(profileSelect);
     enhanceSelect(modelSelect);
-    profileSelect.addEventListener("change", () => syncModelOptions(slot.id));
+    profileSelect.addEventListener("change", () => syncModelOptions(slot.id, "", { preserveMissing: false }));
     const selected = selection?.slots?.[slot.id] || { profile_id: "", model: "" };
+    const inheritInput = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`);
+    if (inheritInput) {
+      inheritInput.checked = !selected.profile_id || !selected.model;
+    }
     fillProfileOptions(profileSelect, selected.profile_id, slot.required);
-    syncModelOptions(slot.id, selected.model);
+    syncModelOptions(slot.id, selected.model, { preserveMissing: true });
+    syncSlotInheritState(slot.id);
   });
 }
 
 function fillProfileOptions(select, selectedId, required) {
   const profiles = providerState.profiles;
   select.textContent = "";
-  if (!required) {
-    const inherit = document.createElement("option");
-    inherit.value = "";
-    inherit.textContent = "继承";
-    select.append(inherit);
-  }
   profiles.forEach((profile) => {
     const option = document.createElement("option");
     option.value = profile.id;
     option.textContent = profile.alias || profile.id;
     select.append(option);
   });
-  // 选中的供应商可能已被删除：回退到首个（必填槽）或「继承」（可选槽）。
+  // 选中的供应商可能已被删除：回退到首个供应商。
   const ids = profiles.map((profile) => profile.id);
   let value = ids.includes(selectedId) ? selectedId : "";
-  if (!value && required && profiles[0]) {
+  if (!value && profiles[0]) {
     value = profiles[0].id;
   }
   select.value = value;
   refreshSelect(select);
 }
 
-function syncModelOptions(slot, selectedModel) {
+function syncModelOptions(slot, selectedModel, { preserveMissing = selectedModel !== undefined } = {}) {
   const profileSelect = fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`);
   const modelSelect = fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`);
   const profile = providerState.profiles.find((item) => item.id === profileSelect.value);
   const models = profile?.models || [];
-  const current = selectedModel ?? modelSelect.value;
+  const current = selectedModel ?? "";
   modelSelect.textContent = "";
   if (!profileSelect.value) {
-    const inherit = document.createElement("option");
-    inherit.value = "";
-    inherit.textContent = "继承";
-    modelSelect.append(inherit);
     refreshSelect(modelSelect);
     return;
   }
@@ -1221,7 +1336,7 @@ function syncModelOptions(slot, selectedModel) {
     option.textContent = model;
     modelSelect.append(option);
   });
-  if (current && !models.includes(current)) {
+  if (preserveMissing && current && !models.includes(current)) {
     const option = document.createElement("option");
     option.value = current;
     option.textContent = current;
@@ -1231,6 +1346,21 @@ function syncModelOptions(slot, selectedModel) {
   refreshSelect(modelSelect);
 }
 
+function syncSlotInheritState(slot) {
+  const inheritInput = fields.modelSlots.querySelector(`[data-slot-inherit="${slot}"]`);
+  const inherited = Boolean(inheritInput?.checked);
+  const profileSelect = fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`);
+  const modelSelect = fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`);
+  if (profileSelect) {
+    profileSelect.disabled = inherited;
+    refreshSelect(profileSelect);
+  }
+  if (modelSelect) {
+    modelSelect.disabled = inherited;
+    refreshSelect(modelSelect);
+  }
+}
+
 function refreshModelSlots() {
   renderModelSlots(collectModelSelection());
 }
@@ -1238,9 +1368,10 @@ function refreshModelSlots() {
 function collectModelSelection() {
   const slots = {};
   request.api.slot_fields.forEach((slot) => {
+    const inherited = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`)?.checked;
     slots[slot.id] = {
-      profile_id: fields.modelSlots.querySelector(`[data-slot-profile="${slot.id}"]`)?.value || "",
-      model: fields.modelSlots.querySelector(`[data-slot-model="${slot.id}"]`)?.value || "",
+      profile_id: inherited ? "" : fields.modelSlots.querySelector(`[data-slot-profile="${slot.id}"]`)?.value || "",
+      model: inherited ? "" : fields.modelSlots.querySelector(`[data-slot-model="${slot.id}"]`)?.value || "",
     };
   });
   return { slots };
@@ -1600,6 +1731,7 @@ async function saveMemoryEditor() {
     memoryState.selectedId = saved.id || payload.id || "";
     memoryState.draft = null;
     await loadMemories();
+    notify("已保存记忆。", "success");
   } catch (error) {
     setError(String(error));
   }
@@ -1627,6 +1759,7 @@ async function deleteSelectedMemory() {
     }
     memoryState.selectedId = "";
     await loadMemories();
+    notify("已删除记忆。", "success");
   } catch (error) {
     setError(String(error));
   }
@@ -1641,6 +1774,10 @@ function permissionInfo(permission) {
 
 function clonePlain(value) {
   return JSON.parse(JSON.stringify(value || {}));
+}
+
+function plainEqual(left, right) {
+  return JSON.stringify(left || {}) === JSON.stringify(right || {});
 }
 
 function pluginSettingsSections(plugin) {
@@ -1976,7 +2113,7 @@ async function runPluginSettingsAction(plugin, section, action) {
       };
     }
     if (result && result.message) {
-      setError(String(result.message));
+      notify(String(result.message), "success");
     }
   } catch (error) {
     setError(String(error));
@@ -2074,14 +2211,19 @@ function collectPluginSettings() {
   const enabledById = {};
   const settingsById = {};
   (request.plugins?.items || []).forEach((plugin) => {
-    enabledById[plugin.id] = plugin.required ? true : Boolean(pluginState.enabledById[plugin.id]);
+    const enabled = plugin.required ? true : Boolean(pluginState.enabledById[plugin.id]);
+    if (enabled !== pluginState.initialEnabledById[plugin.id]) {
+      enabledById[plugin.id] = enabled;
+    }
     const sections = pluginSettingsSections(plugin);
     if (sections.length) {
-      settingsById[plugin.id] = {};
       sections.forEach((section) => {
-        settingsById[plugin.id][section.section_id] = clonePlain(
-          pluginSectionValues(plugin.id, section.section_id),
-        );
+        const values = clonePlain(pluginSectionValues(plugin.id, section.section_id));
+        const initial = pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {};
+        if (!plainEqual(values, initial)) {
+          settingsById[plugin.id] = settingsById[plugin.id] || {};
+          settingsById[plugin.id][section.section_id] = values;
+        }
       });
     }
   });
@@ -2404,6 +2546,10 @@ async function load() {
   refreshSelect(fields.backchannelMode);
   renderMemoryPage();
   renderPluginPage();
+
+  // 配置全部填充完毕后拍基线，作为「未保存改动」的比对基准。
+  settingsBaseline = settingsSnapshot();
+  refreshDirty();
 }
 
 fields.navItems.forEach((item) => {
@@ -2457,9 +2603,12 @@ fields.saveButton.addEventListener("click", async () => {
     return;
   }
   setError("");
+  // 保存成功后 Rust 会关窗（save_settings → window.close），提前放行关窗拦截。
+  bypassCloseGuard = true;
   try {
     await invoke("save_settings", { settings: collectSettings() });
   } catch (error) {
+    bypassCloseGuard = false;
     setError(String(error));
   }
 });
@@ -2472,7 +2621,10 @@ fields.applyButton.addEventListener("click", async () => {
   fields.applyButton.disabled = true;
   try {
     await invoke("apply_settings", { settings: collectSettings() });
-    setError("已应用。");
+    // 应用同样会持久化（仅不关窗），故重置基线，清掉「未保存」状态。
+    settingsBaseline = settingsSnapshot();
+    refreshDirty();
+    notify("已应用。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
@@ -2481,7 +2633,62 @@ fields.applyButton.addEventListener("click", async () => {
 });
 
 fields.cancelButton.addEventListener("click", async () => {
+  if (!(await confirmDiscard())) {
+    return;
+  }
+  bypassCloseGuard = true;
   await invoke("cancel_settings");
 });
+
+// 任意输入/勾选/点击后重算「未保存」状态（动态重建 DOM 的供应商/插件/模型区也能覆盖）。
+["input", "change", "click"].forEach((evt) => {
+  document.addEventListener(evt, scheduleDirty, true);
+});
+
+// 数字输入失焦时越界标红，改回合法即清除。
+const detailCard = document.querySelector(".detail-card");
+function numberOutOfBounds(el) {
+  if (el.value === "") {
+    return false;
+  }
+  const value = Number.parseFloat(el.value);
+  const min = el.min !== "" ? Number.parseFloat(el.min) : -Infinity;
+  const max = el.max !== "" ? Number.parseFloat(el.max) : Infinity;
+  return Number.isNaN(value) || value < min || value > max;
+}
+detailCard?.addEventListener("focusout", (event) => {
+  const el = event.target;
+  if (el instanceof HTMLInputElement && el.type === "number") {
+    markInvalid(el, numberOutOfBounds(el));
+  }
+});
+detailCard?.addEventListener("input", (event) => {
+  const el = event.target;
+  if (el instanceof HTMLInputElement && el.type === "number" && el.classList.contains("is-invalid")) {
+    markInvalid(el, numberOutOfBounds(el));
+  }
+});
+
+// 关窗（X / OS）拦截：有未保存改动时二次确认；权限或环境不支持时静默退化为直接关闭。
+(function guardWindowClose() {
+  try {
+    const current = window.__TAURI__?.window?.getCurrentWindow?.();
+    if (!current?.onCloseRequested) {
+      return;
+    }
+    current.onCloseRequested(async (event) => {
+      if (bypassCloseGuard || !computeDirty()) {
+        return;
+      }
+      event.preventDefault();
+      if (await confirmDiscard()) {
+        bypassCloseGuard = true;
+        await invoke("cancel_settings");
+      }
+    });
+  } catch {
+    // 监听不可用时不阻断窗口正常关闭。
+  }
+})();
 
 load().catch((error) => setError(String(error)));

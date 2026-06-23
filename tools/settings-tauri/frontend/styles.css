@@ -759,6 +759,11 @@ input[type="checkbox"]:disabled + span {
   padding: 7px 8px;
 }
 
+.compact-number .unit {
+  color: var(--sakura-muted-text);
+  font-weight: 600;
+}
+
 .admin-toolbar {
   display: flex;
   align-items: center;
@@ -1259,8 +1264,26 @@ footer {
   background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
 }
 
-footer .error {
+.footer-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
   margin-right: auto;
+}
+
+.dirty-flag {
+  display: none;
+  flex: none;
+  color: var(--sakura-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body.is-dirty .dirty-flag {
+  display: inline-flex;
+  align-items: center;
 }
 
 button {
@@ -1364,6 +1387,180 @@ button:focus-visible,
   box-shadow: 0 0 0 3px var(--ring);
 }
 
+/* 保存键在有未保存改动时点亮一个小圆点。 */
+#saveButton.has-changes {
+  position: relative;
+}
+
+#saveButton.has-changes::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sakura-input-bg);
+  box-shadow: 0 0 0 2px var(--sakura-primary);
+}
+
+/* ---------- 设置行：标题 + 说明 + 控件（Cluster B） ---------- */
+/* 取代刚性的 .form-row（120px 标签 + 控件）：左侧标题与一句说明，控件靠右。 */
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px 18px;
+  padding: 2px 0;
+}
+
+.setting-row-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.setting-title {
+  color: var(--sakura-text);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.setting-desc {
+  margin: 0;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* 控件在右列：覆盖全局 justify-self:start，统一靠右对齐。 */
+.setting-row > .field-unit,
+.setting-row > .slider-control,
+.setting-row > .inline-input,
+.setting-row > .setting-toggle,
+.setting-row > input,
+.setting-row > select,
+.setting-row > .custom-select {
+  justify-self: end;
+}
+
+/* 数字输入 + 单位后缀。 */
+.field-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-unit input[type="number"] {
+  max-width: 132px;
+}
+
+/* 滑块在右列需要确定宽度，否则被 auto 栅格列压窄。 */
+.setting-row > .slider-control {
+  width: clamp(220px, 38vw, 360px);
+  max-width: none;
+}
+
+.field-unit .unit {
+  flex: none;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* 开关行右侧的裸复选框（标题与说明在左列）。 */
+.setting-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.setting-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--sakura-primary);
+  cursor: pointer;
+}
+
+/* ---------- 字段级校验（Cluster C） ---------- */
+input.is-invalid,
+input.is-invalid:hover,
+.wide-input.is-invalid {
+  border-color: var(--sakura-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sakura-accent) 26%, transparent);
+}
+
+/* ---------- 空状态 CTA（Cluster C） ---------- */
+.empty-state-text {
+  margin: 0 0 10px;
+}
+
+/* ---------- Toast 轻提示（Cluster A） ---------- */
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 3000;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  pointer-events: none;
+}
+
+.toast {
+  max-width: 360px;
+  border: 1px solid var(--sakura-border);
+  border-left: 4px solid var(--sakura-primary);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 11px 14px;
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: toast-in 0.2s var(--ease) both;
+}
+
+.toast.is-success {
+  border-left-color: var(--sakura-primary);
+}
+
+.toast.is-info {
+  border-left-color: var(--sakura-muted-text);
+}
+
+.toast.is-error {
+  border-left-color: var(--sakura-accent);
+}
+
+.toast.is-leaving {
+  animation: toast-out 0.2s var(--ease) both;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
 /* ---------- 动效关键帧 ---------- */
 
 @keyframes shell-in {
@@ -1399,26 +1596,25 @@ button:focus-visible,
 }
 
 /* ---------- 窄窗口自适应 ---------- */
+/* 窗口 minWidth=900，留出侧栏后内容区在接近最小尺寸时会偏挤，这里在可达的
+   940px 断点下把表单行与管理台双栏收成单列。 */
 
-@media (max-width: 620px) {
-  .settings-shell {
+@media (max-width: 940px) {
+  .form-row,
+  .setting-row {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .nav-list {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .nav-item {
-    width: auto;
-  }
-
-  .form-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
     align-items: start;
+    gap: 8px;
+  }
+
+  .setting-row > .field-unit,
+  .setting-row > .slider-control,
+  .setting-row > .inline-input,
+  .setting-row > .setting-toggle,
+  .setting-row > input,
+  .setting-row > select,
+  .setting-row > .custom-select {
+    justify-self: start;
   }
 
   .admin-topline,

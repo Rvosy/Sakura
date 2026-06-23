@@ -14,7 +14,7 @@
           <span class="nav-brand-text">Sakura</span>
         </div>
         <nav class="nav-list">
-          <button class="nav-item is-active" type="button" data-page="character">角色</button>
+          <button class="nav-item is-active" type="button" data-page="character" aria-current="page">角色</button>
           <button class="nav-item" type="button" data-page="appearance">外观</button>
           <button class="nav-item" type="button" data-page="providers">供应商</button>
           <button class="nav-item" type="button" data-page="model">模型</button>
@@ -36,96 +36,144 @@
         <div class="page-scroll">
         <section id="page-character" class="settings-page is-active">
           <p class="page-note">拖动滑块时桌宠会实时变化，点「保存」才写入配置。</p>
-          <div class="form-row">
-            <label for="characterSelect">当前角色</label>
-            <select id="characterSelect"></select>
-          </div>
-          <div class="form-row">
-            <label for="portraitScale">立绘大小</label>
-            <div class="slider-control">
-              <input id="portraitScale" class="layout-slider" type="range" step="1" />
-              <output class="slider-value" for="portraitScale"></output>
+          <fieldset class="settings-group">
+            <legend>角色与立绘</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="characterSelect">
+                <span class="setting-title">当前角色</span>
+                <span class="setting-desc">切换桌宠使用的角色立绘与人设。</span>
+              </label>
+              <select id="characterSelect"></select>
             </div>
-          </div>
-          <div class="form-row">
-            <label for="controlPanelWidth">对话框宽度</label>
-            <div class="slider-control">
-              <input id="controlPanelWidth" class="layout-slider" type="range" step="1" />
-              <output class="slider-value" for="controlPanelWidth"></output>
+            <div class="setting-row">
+              <label class="setting-row-text" for="portraitScale">
+                <span class="setting-title">立绘大小</span>
+                <span class="setting-desc">桌面上立绘的整体缩放比例。</span>
+              </label>
+              <div class="slider-control">
+                <input id="portraitScale" class="layout-slider" type="range" step="1" />
+                <output class="slider-value" for="portraitScale"></output>
+              </div>
             </div>
-          </div>
-          <div class="form-row">
-            <label for="bubbleHeight">气泡高度</label>
-            <div class="slider-control">
-              <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
-              <output class="slider-value" for="bubbleHeight"></output>
+            <div class="setting-row">
+              <label class="setting-row-text" for="controlPanelWidth">
+                <span class="setting-title">对话框宽度</span>
+                <span class="setting-desc">对话气泡与输入栏的整体宽度。</span>
+              </label>
+              <div class="slider-control">
+                <input id="controlPanelWidth" class="layout-slider" type="range" step="1" />
+                <output class="slider-value" for="controlPanelWidth"></output>
+              </div>
             </div>
-          </div>
-          <div class="form-row">
-            <label for="controlPanelOffset">气泡上下位置</label>
-            <div class="slider-control">
-              <input id="controlPanelOffset" class="layout-slider" type="range" step="1" />
-              <output class="slider-value" for="controlPanelOffset"></output>
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleHeight">
+                <span class="setting-title">气泡高度</span>
+                <span class="setting-desc">对话气泡可显示的最大高度。</span>
+              </label>
+              <div class="slider-control">
+                <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
+                <output class="slider-value" for="bubbleHeight"></output>
+              </div>
             </div>
-          </div>
-          <div class="form-row">
-            <label for="inputBarOffset">输入框下移</label>
-            <div class="slider-control">
-              <input id="inputBarOffset" class="layout-slider" type="range" step="1" />
-              <output class="slider-value" for="inputBarOffset"></output>
+            <div class="setting-row">
+              <label class="setting-row-text" for="controlPanelOffset">
+                <span class="setting-title">气泡上下位置</span>
+                <span class="setting-desc">气泡相对立绘的纵向位置。</span>
+              </label>
+              <div class="slider-control">
+                <input id="controlPanelOffset" class="layout-slider" type="range" step="1" />
+                <output class="slider-value" for="controlPanelOffset"></output>
+              </div>
             </div>
-          </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="inputBarOffset">
+                <span class="setting-title">输入框下移</span>
+                <span class="setting-desc">输入栏相对气泡向下偏移的距离。</span>
+              </label>
+              <div class="slider-control">
+                <input id="inputBarOffset" class="layout-slider" type="range" step="1" />
+                <output class="slider-value" for="inputBarOffset"></output>
+              </div>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-privacy" class="settings-page">
-          <div class="form-row">
-            <label>状态</label>
-            <label class="check-control">
-              <input id="enabled" type="checkbox" />
-              <span>启用主动屏幕感知</span>
-            </label>
-          </div>
-
-          <div class="form-row">
-            <label for="checkInterval">主动检查间隔</label>
-            <input id="checkInterval" type="number" step="1" />
-          </div>
-          <div class="form-row">
-            <label for="cooldown">主动发言冷却</label>
-            <input id="cooldown" type="number" step="1" />
-          </div>
-          <div class="form-row">
-            <label for="batchLimit">单次最多发送截图</label>
-            <input id="batchLimit" type="number" step="1" />
-          </div>
-
-          <div class="form-row">
-            <label>预计图像 token</label>
-            <p id="tokenEstimate" class="hint"></p>
-          </div>
+          <fieldset class="settings-group">
+            <legend>主动屏幕感知</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="enabled">
+                <span class="setting-title">启用主动屏幕感知</span>
+                <span class="setting-desc">桌宠定时截屏判断是否主动找你搭话。</span>
+              </label>
+              <span class="setting-toggle"><input id="enabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="checkInterval">
+                <span class="setting-title">主动检查间隔</span>
+                <span class="setting-desc">每隔多久截屏检查一次屏幕内容。</span>
+              </label>
+              <span class="field-unit"><input id="checkInterval" type="number" step="1" /><span class="unit">分钟</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="cooldown">
+                <span class="setting-title">主动发言冷却</span>
+                <span class="setting-desc">两次主动搭话之间的最短间隔。</span>
+              </label>
+              <span class="field-unit"><input id="cooldown" type="number" step="1" /><span class="unit">分钟</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="batchLimit">
+                <span class="setting-title">单次最多发送截图</span>
+                <span class="setting-desc">一次主动感知最多附带的截图张数。</span>
+              </label>
+              <span class="field-unit"><input id="batchLimit" type="number" step="1" /><span class="unit">张</span></span>
+            </div>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">预计图像 token</span>
+                <span class="setting-desc">按当前屏幕估算每张截图消耗的 token。</span>
+              </div>
+              <p id="tokenEstimate" class="hint"></p>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-tools" class="settings-page">
-          <div class="form-row">
-            <label>Windows MCP</label>
-            <label class="check-control">
-              <input id="windowsMcp" type="checkbox" />
-              <span>启用桌面控制</span>
-            </label>
-          </div>
-
-          <div class="form-row">
-            <label for="agentSteps">循环步数</label>
-            <input id="agentSteps" type="number" step="1" />
-          </div>
-          <div class="form-row">
-            <label for="toolCallsPerStep">每步工具数</label>
-            <input id="toolCallsPerStep" type="number" step="1" />
-          </div>
-          <div class="form-row">
-            <label for="toolCallsPerTurn">整轮工具数</label>
-            <input id="toolCallsPerTurn" type="number" step="1" />
-          </div>
+          <fieldset class="settings-group">
+            <legend>桌面控制</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="windowsMcp">
+                <span class="setting-title">Windows MCP 桌面控制</span>
+                <span class="setting-desc">允许桌宠通过 MCP 操作桌面与应用。</span>
+              </label>
+              <span class="setting-toggle"><input id="windowsMcp" type="checkbox" /></span>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>工具循环上限</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="agentSteps">
+                <span class="setting-title">循环步数</span>
+                <span class="setting-desc">单轮对话最多执行的智能体步数。</span>
+              </label>
+              <span class="field-unit"><input id="agentSteps" type="number" step="1" /><span class="unit">步</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="toolCallsPerStep">
+                <span class="setting-title">每步工具数</span>
+                <span class="setting-desc">每个步骤内最多调用的工具次数。</span>
+              </label>
+              <span class="field-unit"><input id="toolCallsPerStep" type="number" step="1" /><span class="unit">次</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="toolCallsPerTurn">
+                <span class="setting-title">整轮工具数</span>
+                <span class="setting-desc">整轮对话累计的工具调用上限。</span>
+              </label>
+              <span class="field-unit"><input id="toolCallsPerTurn" type="number" step="1" /><span class="unit">次</span></span>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
@@ -170,23 +218,35 @@
 
           <fieldset class="settings-group">
             <legend>高级参数</legend>
-            <div class="form-row">
-              <label for="apiTimeout">超时</label>
-              <input id="apiTimeout" type="number" step="1" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="apiTimeout">
+                <span class="setting-title">超时</span>
+                <span class="setting-desc">单次请求等待响应的最长时间。</span>
+              </label>
+              <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
             </div>
-            <div class="form-row">
-              <label for="apiTemperature">温度</label>
+            <div class="setting-row">
+              <label class="setting-row-text" for="apiTemperature">
+                <span class="setting-title">温度</span>
+                <span class="setting-desc">越高回复越发散，越低越稳定（0–2）。</span>
+              </label>
               <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
             </div>
-            <div class="form-row">
-              <label>top_p</label>
+            <div class="setting-row">
+              <label class="setting-row-text" for="apiTopP">
+                <span class="setting-title">top_p</span>
+                <span class="setting-desc">核采样阈值；勾选后启用并覆盖默认。</span>
+              </label>
               <label class="inline-input">
                 <input id="apiTopPEnabled" type="checkbox" />
                 <input id="apiTopP" type="number" min="0" max="1" step="0.01" />
               </label>
             </div>
-            <div class="form-row">
-              <label>最大输出</label>
+            <div class="setting-row">
+              <label class="setting-row-text" for="apiMaxTokens">
+                <span class="setting-title">最大输出</span>
+                <span class="setting-desc">单次回复生成的最大 token 数；勾选后启用。</span>
+              </label>
               <label class="inline-input">
                 <input id="apiMaxTokensEnabled" type="checkbox" />
                 <input id="apiMaxTokens" type="number" step="1" />
@@ -196,161 +256,208 @@
         </section>
 
         <section id="page-voice" class="settings-page">
-          <div class="form-row">
-            <label>状态</label>
-            <label class="check-control">
-              <input id="ttsEnabled" type="checkbox" />
-              <span>启用 TTS 语音</span>
-            </label>
-          </div>
-          <div class="form-row">
-            <label for="ttsProvider">TTS 提供器</label>
-            <select id="ttsProvider"></select>
-          </div>
-          <div class="form-row">
-            <label for="ttsWorkDir">工作目录</label>
-            <input id="ttsWorkDir" class="wide-input" type="text" />
-          </div>
-          <div class="form-row">
-            <label for="ttsPythonPath">TTS Python</label>
-            <input id="ttsPythonPath" class="wide-input" type="text" />
-          </div>
-          <div class="form-row">
-            <label for="ttsApiUrl">API URL</label>
-            <input id="ttsApiUrl" class="wide-input" type="text" />
-          </div>
-          <div id="ttsBundleNoticeRow" class="form-row" hidden>
-            <label>整合包提示</label>
-            <p id="ttsBundleNotice" class="page-note"></p>
-          </div>
-          <input id="ttsConfigPath" type="hidden" />
-          <div class="form-row">
-            <label for="ttsTimeout">超时</label>
-            <input id="ttsTimeout" type="number" step="1" />
-          </div>
+          <fieldset class="settings-group">
+            <legend>TTS 语音</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsEnabled">
+                <span class="setting-title">启用 TTS 语音</span>
+                <span class="setting-desc">让桌宠用合成语音朗读回复。</span>
+              </label>
+              <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsProvider">
+                <span class="setting-title">TTS 提供器</span>
+                <span class="setting-desc">选择语音合成的后端引擎。</span>
+              </label>
+              <select id="ttsProvider"></select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsWorkDir">
+                <span class="setting-title">工作目录</span>
+                <span class="setting-desc">TTS 引擎运行所在的工作目录路径。</span>
+              </label>
+              <input id="ttsWorkDir" class="wide-input" type="text" />
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsPythonPath">
+                <span class="setting-title">TTS Python</span>
+                <span class="setting-desc">运行 TTS 引擎使用的 Python 解释器路径。</span>
+              </label>
+              <input id="ttsPythonPath" class="wide-input" type="text" />
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsApiUrl">
+                <span class="setting-title">API URL</span>
+                <span class="setting-desc">TTS 服务的接口地址。</span>
+              </label>
+              <input id="ttsApiUrl" class="wide-input" type="text" />
+            </div>
+            <div id="ttsBundleNoticeRow" hidden>
+              <p id="ttsBundleNotice" class="page-note"></p>
+            </div>
+            <input id="ttsConfigPath" type="hidden" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="ttsTimeout">
+                <span class="setting-title">超时</span>
+                <span class="setting-desc">等待语音合成完成的最长时间。</span>
+              </label>
+              <span class="field-unit"><input id="ttsTimeout" type="number" step="1" /><span class="unit">秒</span></span>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-appearance" class="settings-page">
-          <div id="themeColors" class="theme-colors"></div>
-          <div class="form-row">
-            <label for="visualEffectMode">输入栏外观效果</label>
-            <select id="visualEffectMode"></select>
-          </div>
-          <div class="form-row">
-            <label>主题操作</label>
-            <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
-          </div>
+          <fieldset class="settings-group">
+            <legend>配色</legend>
+            <div id="themeColors" class="theme-colors"></div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>输入栏</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="visualEffectMode">
+                <span class="setting-title">外观效果</span>
+                <span class="setting-desc">输入栏的毛玻璃 / 透明等视觉风格。</span>
+              </label>
+              <select id="visualEffectMode"></select>
+            </div>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">主题操作</span>
+                <span class="setting-desc">把所有配色恢复为默认樱花粉。</span>
+              </div>
+              <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-system" class="settings-page">
           <fieldset class="settings-group">
             <legend>启动</legend>
-            <div class="form-row">
-              <label>登录启动</label>
-              <label class="check-control">
-                <input id="launchAtLogin" type="checkbox" />
-                <span>开机后自动启动 Sakura</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="launchAtLogin">
+                <span class="setting-title">开机自启动</span>
+                <span class="setting-desc">登录系统后自动启动 Sakura。</span>
               </label>
+              <span class="setting-toggle"><input id="launchAtLogin" type="checkbox" /></span>
             </div>
           </fieldset>
 
           <fieldset class="settings-group">
             <legend>调试日志</legend>
-            <div class="form-row">
-              <label>终端日志</label>
-              <label class="check-control">
-                <input id="debugLogEnabled" type="checkbox" />
-                <span>输出终端调试日志</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="debugLogEnabled">
+                <span class="setting-title">终端调试日志</span>
+                <span class="setting-desc">在终端输出运行调试日志。</span>
               </label>
+              <span class="setting-toggle"><input id="debugLogEnabled" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label>正文日志</label>
-              <label class="check-control">
-                <input id="debugBodyEnabled" type="checkbox" />
-                <span>输出完整请求/回复正文</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="debugBodyEnabled">
+                <span class="setting-title">完整请求 / 回复正文</span>
+                <span class="setting-desc">日志中包含完整的请求与回复正文。</span>
               </label>
+              <span class="setting-toggle"><input id="debugBodyEnabled" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label>文件日志</label>
-              <label class="check-control">
-                <input id="debugFileEnabled" type="checkbox" />
-                <span>输出文件运行日志</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="debugFileEnabled">
+                <span class="setting-title">文件运行日志</span>
+                <span class="setting-desc">把运行日志额外写入文件。</span>
               </label>
+              <span class="setting-toggle"><input id="debugFileEnabled" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label>舞台调试</label>
-              <label class="check-control">
-                <input id="stageDebugOverlay" type="checkbox" />
-                <span>显示舞台调试框</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="stageDebugOverlay">
+                <span class="setting-title">显示舞台调试框</span>
+                <span class="setting-desc">在桌面叠加舞台调试边框。</span>
               </label>
+              <span class="setting-toggle"><input id="stageDebugOverlay" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label>碰撞区域</label>
-              <label class="check-control">
-                <input id="stageCollisionMask" type="checkbox" />
-                <span>舞台碰撞贴合</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="stageCollisionMask">
+                <span class="setting-title">舞台碰撞贴合</span>
+                <span class="setting-desc">按碰撞区域贴合舞台边界。</span>
               </label>
+              <span class="setting-toggle"><input id="stageCollisionMask" type="checkbox" /></span>
             </div>
           </fieldset>
 
           <fieldset class="settings-group">
             <legend>字幕与回复</legend>
-            <div class="form-row">
-              <label for="subtitleTypingInterval">字幕逐字间隔</label>
-              <input id="subtitleTypingInterval" type="number" step="1" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="subtitleTypingInterval">
+                <span class="setting-title">字幕逐字间隔</span>
+                <span class="setting-desc">字幕逐字显示的间隔时间。</span>
+              </label>
+              <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" /><span class="unit">ms</span></span>
             </div>
-            <div class="form-row">
-              <label for="replySegmentPause">回复分段停顿</label>
-              <input id="replySegmentPause" type="number" step="1" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="replySegmentPause">
+                <span class="setting-title">回复分段停顿</span>
+                <span class="setting-desc">多段回复之间的停顿时间。</span>
+              </label>
+              <span class="field-unit"><input id="replySegmentPause" type="number" step="1" /><span class="unit">ms</span></span>
             </div>
           </fieldset>
 
           <fieldset class="settings-group">
             <legend>气泡</legend>
-            <div class="form-row">
-              <label>自动隐藏</label>
-              <label class="check-control">
-                <input id="bubbleAutoHide" type="checkbox" />
-                <span>气泡无操作后自动隐藏</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleAutoHide">
+                <span class="setting-title">气泡自动隐藏</span>
+                <span class="setting-desc">无操作一段时间后自动隐藏气泡。</span>
               </label>
+              <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label for="bubbleAutoHideDelay">无操作时长</label>
-              <input id="bubbleAutoHideDelay" type="number" step="1" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleAutoHideDelay">
+                <span class="setting-title">无操作时长</span>
+                <span class="setting-desc">触发自动隐藏前的无操作时长。</span>
+              </label>
+              <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" /><span class="unit">秒</span></span>
             </div>
           </fieldset>
 
           <fieldset class="settings-group">
             <legend>接话</legend>
-            <div class="form-row">
-              <label>状态</label>
-              <label class="check-control">
-                <input id="backchannelEnabled" type="checkbox" />
-                <span>启用快速接话</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelEnabled">
+                <span class="setting-title">启用快速接话</span>
+                <span class="setting-desc">在你说话间隙快速给出简短回应。</span>
               </label>
+              <span class="setting-toggle"><input id="backchannelEnabled" type="checkbox" /></span>
             </div>
-            <div class="form-row">
-              <label for="backchannelMode">模式</label>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelMode">
+                <span class="setting-title">模式</span>
+                <span class="setting-desc">接话触发策略：规则 / 混合 / 关闭。</span>
+              </label>
               <select id="backchannelMode">
                 <option value="rules">规则</option>
                 <option value="hybrid">混合</option>
                 <option value="off">关闭</option>
               </select>
             </div>
-            <div class="form-row">
-              <label for="backchannelDelay">延迟</label>
-              <input id="backchannelDelay" type="number" step="1" />
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelDelay">
+                <span class="setting-title">延迟</span>
+                <span class="setting-desc">接话前的等待延迟。</span>
+              </label>
+              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">ms</span></span>
             </div>
-            <div class="form-row">
-              <label for="backchannelProbability">概率</label>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelProbability">
+                <span class="setting-title">概率</span>
+                <span class="setting-desc">命中接话的概率（0–1）。</span>
+              </label>
               <input id="backchannelProbability" type="number" min="0" max="1" step="0.01" />
             </div>
-            <div class="form-row">
-              <label>接话语音</label>
-              <label class="check-control">
-                <input id="backchannelTtsEnabled" type="checkbox" />
-                <span>接话时播放 TTS</span>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelTtsEnabled">
+                <span class="setting-title">接话语音</span>
+                <span class="setting-desc">接话时同时播放 TTS。</span>
               </label>
+              <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" /></span>
             </div>
           </fieldset>
         </section>
@@ -366,6 +473,7 @@
               <label class="compact-number" for="memoryTriggerTurns">
                 <span>频率</span>
                 <input id="memoryTriggerTurns" type="number" step="1" />
+                <span class="unit">轮</span>
               </label>
             </div>
           </div>
@@ -418,13 +526,18 @@
         </div>
 
         <footer>
-          <p id="errorText" class="error" role="alert"></p>
+          <div class="footer-status">
+            <span class="dirty-flag">● 有未保存的改动</span>
+            <p id="errorText" class="error" role="alert"></p>
+          </div>
           <button id="cancelButton" class="secondary-button" type="button">取消</button>
           <button id="applyButton" class="secondary-button" type="button">应用</button>
           <button id="saveButton" type="button">保存</button>
         </footer>
       </section>
     </main>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite"></div>
 
     <script src="./settings.js"></script>
   </body>

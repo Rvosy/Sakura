@@ -4987,9 +4987,7 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                 "slots": {
                     "chat": {"profile_id": "default", "model": "test-model"},
                     "vision_chat": {"profile_id": "", "model": ""},
-                    "visual_context": {"profile_id": "", "model": ""},
                     "memory_curation": {"profile_id": "", "model": ""},
-                    "theme_ai": {"profile_id": "", "model": ""},
                 }
             },
         },
@@ -5263,6 +5261,33 @@ def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> 
     assert {"id": "core_profile", "label": "常驻档案"} in request["memory"]["layers"]
     assert request["memory"]["defaults"]["layer"] == "semantic"
     assert request["memory"]["defaults"]["source"] == "manual"
+
+
+def test_apply_tauri_plugin_settings_skips_unchanged_values() -> None:
+    from app.plugins.models import PluginSettingsContribution, PluginSettingsField
+    from app.ui.tauri_settings import apply_tauri_plugin_settings
+
+    saved: list[dict[str, object]] = []
+    contribution = PluginSettingsContribution(
+        plugin_id="demo",
+        section_id="demo_settings",
+        title="Demo 设置",
+        fields=(PluginSettingsField("enabled", "启用", "boolean", default=True),),
+        load=lambda: {"enabled": True},
+        save=lambda values: saved.append(dict(values)),
+    )
+
+    assert apply_tauri_plugin_settings(
+        [contribution],
+        {"demo": {"demo_settings": {"enabled": True}}},
+    ) is False
+    assert saved == []
+
+    assert apply_tauri_plugin_settings(
+        [contribution],
+        {"demo": {"demo_settings": {"enabled": False}}},
+    ) is True
+    assert saved == [{"enabled": False}]
 
 
 def test_tauri_settings_request_includes_per_character_theme() -> None:
@@ -8204,7 +8229,6 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
         {
             "api_client": window.api_client,
             "vision_api_client": None,
-            "visual_context_api_client": None,
         },
     )()
     window.memory_store = MemoryStoreStub()
@@ -8217,16 +8241,12 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
             "vision", "Vision", "https://vision.example.com/v1", "vision-key", ("vision-model",)
         ),
         ApiConfigProfile(
-            "visual", "Visual", "https://visual.example.com/v1", "visual-key", ("visual-model",)
-        ),
-        ApiConfigProfile(
             "memory", "Memory", "https://memory.example.com/v1", "memory-key", ("memory-model",)
         ),
     ]
     selection = ModelSelectionSettings(
         chat=ModelSlotSelection("chat", "chat-model"),
         vision_chat=ModelSlotSelection("vision", "vision-model"),
-        visual_context=ModelSlotSelection("visual", "visual-model"),
         memory_curation=ModelSlotSelection("memory", "memory-model"),
     )
 
@@ -8239,7 +8259,6 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
 
     assert window.agent_runtime.api_client._event_emit is emit_event
     assert window.agent_runtime.vision_api_client._event_emit is emit_event
-    assert window.agent_runtime.visual_context_api_client._event_emit is emit_event
     assert window.memory_curator.api_client._event_emit is emit_event
 
 

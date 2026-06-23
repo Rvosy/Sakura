@@ -14,7 +14,6 @@ from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
 )
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
@@ -141,11 +140,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     model_selection = settings_service.load_model_selection()
     vision_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISION_CHAT, settings)
     vision_api_client = _client_for_explicit_slot(vision_slot, MODEL_SLOT_VISION_CHAT)
-    visual_context_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISUAL_CONTEXT, settings)
-    visual_context_api_client = _client_for_explicit_slot(
-        visual_context_slot,
-        MODEL_SLOT_VISUAL_CONTEXT,
-    )
 
     resource_registry = ResourceRegistry()
     memory_store = MemoryStore(
@@ -170,7 +164,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     agent_runtime = AgentRuntime(
         api_client=api_client,
         vision_api_client=vision_api_client,
-        visual_context_api_client=visual_context_api_client,
         system_prompt=system_prompt,
         reply_tones=character_profile.reply_tones,
         reply_portraits=character_profile.portrait_choices,

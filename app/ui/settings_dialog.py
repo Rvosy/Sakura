@@ -84,10 +84,8 @@ from app.config.models import (
     MODEL_SLOT_LABELS,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_ORDER,
-    MODEL_SLOT_THEME_AI,
     MODEL_SLOT_UI_ORDER,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
@@ -2177,7 +2175,7 @@ class SettingsDialog(QDialog):
     def _generate_ai_theme(self) -> None:
         if self._theme_ai_thread is not None:
             return
-        api_settings = self._validated_api_settings(MODEL_SLOT_THEME_AI)
+        api_settings = self._validated_api_settings(MODEL_SLOT_VISION_CHAT)
         if api_settings is None:
             return
         profile = self._selected_character_profile()
@@ -2338,9 +2336,7 @@ class SettingsDialog(QDialog):
         return ModelSelectionSettings(
             chat=self._collect_slot_selection(MODEL_SLOT_CHAT) or ModelSlotSelection(),
             vision_chat=self._collect_slot_selection(MODEL_SLOT_VISION_CHAT),
-            visual_context=self._collect_slot_selection(MODEL_SLOT_VISUAL_CONTEXT),
             memory_curation=self._collect_slot_selection(MODEL_SLOT_MEMORY_CURATION),
-            theme_ai=self._collect_slot_selection(MODEL_SLOT_THEME_AI),
         )
 
     def _collect_slot_selection(self, slot: str) -> ModelSlotSelection | None:
