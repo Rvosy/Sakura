@@ -29,7 +29,7 @@
 
 ## 运行时 manifest
 
-manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、或附加 `sha256` 校验。Sakura 会按顺序读取：
+manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、离线附带 archive，或附加 `sha256` 校验。Sakura 会按顺序读取：
 
 1. `SAKURA_LLAMA_CPP_RUNTIME_MANIFEST` 指向的 JSON 文件。这个路径是显式覆盖；如果文件缺失或无效，会直接报错，不会静默回退到公网。
 2. `data/local_runtimes/llama_cpp/runtime_manifest.json`
@@ -45,7 +45,7 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
       "package_id": "b9763-macos-arm64-metal",
       "label": "llama.cpp b9763 macOS arm64 Metal",
       "platform_key": "macos-arm64",
-      "url": "https://mirror.example/llama-b9763-bin-macos-arm64.tar.gz",
+      "url": "archives/llama-b9763-bin-macos-arm64.tar.gz",
       "archive_format": "tar.gz",
       "binary_relpath": "llama-server",
       "version": "b9763",
@@ -58,6 +58,8 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 ```
 
 `platform_key` 当前支持 `macos-arm64`、`macos-x64`、`windows-arm64`、`windows-x64`、`linux-arm64`、`linux-x64`。同一 manifest 可以同时放多个平台包，安装器会按当前平台选择。
+
+`url` 可以是 HTTPS 镜像、`file://` URI，或相对 manifest 文件所在目录的本地 archive 路径。相对路径适合发布包把 archive 放在 `data/local_runtimes/llama_cpp/archives/` 下，安装时不会访问公网。
 
 ## 模型默认值
 

@@ -348,6 +348,47 @@ def test_fetch_runtime_package_catalog_prefers_local_manifest_without_network(tm
     assert [package.package_id for package in catalog.packages] == ["local-macos"]
 
 
+def test_runtime_manifest_relative_archive_installs_without_network(tmp_path: Path) -> None:
+    manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+    archive = manifest.parent / "archives" / "llama.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(_zip_bytes({"llama-server": "#!/bin/sh\n"}))
+    manifest.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "package_id": "offline-macos",
+                        "label": "Offline macOS",
+                        "platform_key": "macos-arm64",
+                        "url": "archives/llama.zip",
+                        "archive_format": "zip",
+                        "binary_relpath": "llama-server",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    catalog = fetch_llama_cpp_runtime_package_catalog(
+        base_dir=tmp_path,
+        urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network not expected")),
+    )
+    package = select_llama_cpp_runtime_package(catalog.packages, platform_key="macos-arm64")
+
+    assert package.url == archive.resolve().as_uri()
+
+    result = install_llama_cpp_runtime_package(
+        tmp_path,
+        package,
+        urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network not expected")),
+    )
+
+    assert result.already_installed is False
+    assert Path(result.binary_path).is_file()
+
+
 def test_fetch_runtime_package_catalog_errors_on_missing_explicit_manifest(
     monkeypatch,
     tmp_path: Path,

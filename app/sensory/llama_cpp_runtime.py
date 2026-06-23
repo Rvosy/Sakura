@@ -9,11 +9,12 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -326,7 +327,10 @@ def _load_runtime_manifest_catalog(base_dir: Path | None) -> LlamaCppRuntimePack
             raise LlamaCppRuntimeError(f"无法读取 llama.cpp 运行时 manifest：{path}：{exc}") from exc
         if not isinstance(payload, dict):
             raise LlamaCppRuntimeError(f"llama.cpp 运行时 manifest 必须是 JSON 对象：{path}")
-        packages = llama_cpp_runtime_packages_from_manifest(payload)
+        packages = _resolve_manifest_package_urls(
+            llama_cpp_runtime_packages_from_manifest(payload),
+            path.parent,
+        )
         if not packages:
             raise LlamaCppRuntimeError(f"llama.cpp 运行时 manifest 未包含可用 packages：{path}")
         return LlamaCppRuntimePackageCatalog(
@@ -334,6 +338,31 @@ def _load_runtime_manifest_catalog(base_dir: Path | None) -> LlamaCppRuntimePack
             packages=tuple(packages),
         )
     return None
+
+
+def _resolve_manifest_package_urls(
+    packages: Sequence[LlamaCppRuntimePackageSpec],
+    manifest_dir: Path,
+) -> list[LlamaCppRuntimePackageSpec]:
+    resolved: list[LlamaCppRuntimePackageSpec] = []
+    for package in packages:
+        normalized = package.normalized()
+        url = _resolve_manifest_package_url(normalized.url, manifest_dir)
+        resolved.append(replace(normalized, url=url).normalized())
+    return resolved
+
+
+def _resolve_manifest_package_url(url: str, manifest_dir: Path) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return ""
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme:
+        return value
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = manifest_dir / path
+    return path.resolve().as_uri()
 
 
 def select_llama_cpp_runtime_package(
@@ -795,6 +824,18 @@ def _download_file(
     timeout_seconds: float,
     urlopen: Callable[..., Any],
 ) -> None:
+    local_archive = _local_archive_path_from_url(url)
+    if local_archive is not None:
+        try:
+            if not local_archive.is_file():
+                raise FileNotFoundError(local_archive)
+            temp_path = target.with_suffix(target.suffix + ".tmp")
+            shutil.copyfile(local_archive, temp_path)
+            temp_path.replace(target)
+            return
+        except Exception as exc:
+            target.with_suffix(target.suffix + ".tmp").unlink(missing_ok=True)
+            raise LlamaCppRuntimeError(f"复制 llama.cpp 本地运行时包失败：{exc}") from exc
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "Sakura sensory runtime installer"},
@@ -812,6 +853,21 @@ def _download_file(
     except Exception as exc:
         temp_path.unlink(missing_ok=True)
         raise LlamaCppRuntimeError(f"下载 llama.cpp 运行时失败：{exc}") from exc
+
+
+def _local_archive_path_from_url(url: str) -> Path | None:
+    value = str(url or "").strip()
+    if not value:
+        return None
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme == "file":
+        return Path(urllib.request.url2pathname(parsed.path)).expanduser()
+    if parsed.scheme:
+        return None
+    path = Path(value).expanduser()
+    if path.is_absolute() or path.exists() or value.startswith((".", "~")):
+        return path
+    return None
 
 
 def _sha256_file(path: Path) -> str:
