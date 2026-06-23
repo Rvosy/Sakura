@@ -61,6 +61,8 @@ body {
     radial-gradient(90% 80% at 0% 100%, var(--tint-faint), transparent 50%),
     var(--sakura-page-bg);
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 [hidden] {
@@ -333,6 +335,8 @@ textarea {
   font-family: inherit;
   font-size: 13.5px;
   padding: 9px 11px;
+  -webkit-user-select: text;
+  user-select: text;
   transition:
     border-color 0.18s var(--ease),
     box-shadow 0.18s var(--ease),
