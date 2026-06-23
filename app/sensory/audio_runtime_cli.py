@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from app.config.settings_service import AppSettingsService
+from app.sensory.audio_deployment import (
+    build_llama_cpp_audio_prepare_requirement,
+    prepare_llama_cpp_audio_backend,
+)
 from app.sensory.audio_models import recommended_llama_cpp_audio_model
 from app.sensory.audio_smoke import (
     SensoryAudioSmokePlan,
@@ -60,6 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_runtime_manifest_check(args)
         if args.command == "doctor":
             return _run_doctor(args)
+        if args.command == "prepare-backend":
+            return _run_prepare_backend(args)
         if args.command == "smoke":
             return _run_smoke(args)
         return _run_plan(args)
@@ -101,6 +107,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--preferred-variant",
         default="auto",
         help="Runtime variant preference, usually auto/cpu/metal.",
+    )
+
+    prepare_backend = subparsers.add_parser(
+        "prepare-backend",
+        help="Prepare managed llama.cpp runtime and the recommended local audio model cache.",
+    )
+    _add_pretty_arg(prepare_backend)
+    prepare_backend.add_argument(
+        "--source",
+        choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
+        default=SensorySource.SPEECH.value,
+        help="Audio sensory source to prepare.",
+    )
+    prepare_backend.add_argument(
+        "--yes",
+        action="store_true",
+        help="Allow downloading the runtime package and recommended GGUF model files.",
     )
 
     manifest = subparsers.add_parser(
@@ -348,6 +371,32 @@ def _run_doctor(args: argparse.Namespace) -> int:
         build_sensory_audio_runtime_doctor_report(Path(args.base_dir)),
         pretty=bool(args.pretty),
     )
+    return 0
+
+
+def _run_prepare_backend(args: argparse.Namespace) -> int:
+    base_dir = Path(args.base_dir)
+    source = coerce_sensory_source(args.source)
+    report = build_sensory_audio_runtime_doctor_report(base_dir)
+    requirement = build_llama_cpp_audio_prepare_requirement(report, source)
+    if not bool(args.yes) and not bool(requirement.get("ok")):
+        _print_payload(
+            {
+                "ok": False,
+                "message": "准备 llama.cpp 音频后端需要下载运行时或推荐模型；确认后重新运行并传入 --yes。",
+                "requirement": requirement,
+                "doctor": report,
+            },
+            pretty=bool(args.pretty),
+        )
+        return 2
+    payload = prepare_llama_cpp_audio_backend(
+        base_dir,
+        source,
+        download_runtime=bool(args.yes),
+        download_model=bool(args.yes),
+    )
+    _print_payload(payload, pretty=bool(args.pretty))
     return 0
 
 

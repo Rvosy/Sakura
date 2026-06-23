@@ -128,6 +128,18 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 设置页“测试模型”遇到这些推荐远端模型时，会先弹窗确认下载量；用户拒绝时不会启动 sidecar 或下载模型。若已通过“一键准备”缓存到本地目录，测试会直接使用本地路径。
 
+命令行也提供同一套一键准备入口。没有 `--yes` 时只做只读检查，发现需要下载运行时或模型会返回 `ok=false`，不会触网下载：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --pretty
+```
+
+确认下载后再执行：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --yes --pretty
+```
+
 ## 调用链
 
 1. 设置页保存 provider extra：
@@ -182,7 +194,7 @@ data/logs/sensory-llama-server.log
 - `model_location`: `local` 表示本地 GGUF，`huggingface` 表示 managed llama.cpp 首次运行可能通过 `-hf` 拉取模型，`provider` 表示模型由外部服务管理。
 - `requires_model_download`: 真实 smoke 是否可能触发模型下载。
 
-本机运行时安装验证。没有可用 `llama-server` 时，必须显式传入 `--yes` 才会下载官方 llama.cpp 运行时：
+底层本机运行时安装验证。没有可用 `llama-server` 时，必须显式传入 `--yes` 才会下载官方 llama.cpp 运行时；普通用户优先使用上面的 `prepare-backend`：
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli install-runtime --yes --pretty

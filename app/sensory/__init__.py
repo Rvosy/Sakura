@@ -27,8 +27,15 @@ from app.sensory.audio_models import (
     RECOMMENDED_LLAMA_CPP_SOUND_MODEL,
     RECOMMENDED_LLAMA_CPP_SPEECH_MODEL,
     SensoryAudioModelRecommendation,
+    llama_cpp_audio_cache_ready,
+    llama_cpp_audio_model_repo_id,
     recommended_llama_cpp_audio_model,
     sensory_audio_model_download_hint,
+)
+from app.sensory.audio_deployment import (
+    build_llama_cpp_audio_prepare_requirement,
+    ensure_llama_cpp_runtime,
+    prepare_llama_cpp_audio_backend,
 )
 from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory.audio_smoke import (
@@ -163,6 +170,7 @@ __all__ = [
     "SENSORY_OBSERVATION_TOOL_NAME",
     "SENSORY_SPEECH_OBSERVATION_CAPABILITY",
     "build_llama_server_command",
+    "build_llama_cpp_audio_prepare_requirement",
     "build_sensory_audio_runtime_doctor_report",
     "build_sensory_audio_smoke_data_url",
     "build_sensory_audio_smoke_plan",
@@ -177,14 +185,18 @@ __all__ = [
     "fetch_llama_cpp_runtime_package_catalog",
     "fetch_latest_llama_cpp_runtime_packages",
     "install_llama_cpp_runtime_package",
+    "ensure_llama_cpp_runtime",
     "LLAMA_CPP_RUNTIME_MANIFEST_ENV",
     "LlamaCppRuntimePackageCatalog",
     "llama_cpp_platform_key",
+    "llama_cpp_audio_cache_ready",
+    "llama_cpp_audio_model_repo_id",
     "llama_cpp_runtime_manifest_paths",
     "llama_cpp_runtime_packages_from_github_release",
     "llama_cpp_runtime_packages_from_manifest",
     "official_audio_inference_framework",
     "recommended_llama_cpp_audio_model",
+    "prepare_llama_cpp_audio_backend",
     "run_sensory_audio_smoke_test",
     "select_llama_cpp_runtime_package",
     "sensory_audio_model_download_hint",

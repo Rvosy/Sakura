@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from app.sensory import audio_deployment
+from app.sensory import huggingface as sensory_huggingface
 from app.sensory.audio_models import llama_cpp_audio_cache_ready, recommended_llama_cpp_audio_model
 from app.sensory.models import SensorySource
 from app.storage.paths import StoragePaths
@@ -38,7 +40,7 @@ def test_recommended_llama_cache_ready_requires_all_audio_files(tmp_path: Path) 
 def test_search_huggingface_models_uses_hf_cli_and_parses_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[tuple[list[str], int]] = []
 
-    monkeypatch.setattr(settings_workers.shutil, "which", lambda name: "/usr/local/bin/hf" if name == "hf" else None)
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda name: "/usr/local/bin/hf" if name == "hf" else None)
 
     def fake_run(command, *, check, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         calls.append((list(command), timeout))
@@ -65,7 +67,7 @@ def test_search_huggingface_models_uses_hf_cli_and_parses_json(monkeypatch) -> N
             stderr="",
         )
 
-    monkeypatch.setattr(settings_workers.subprocess, "run", fake_run)
+    monkeypatch.setattr(sensory_huggingface.subprocess, "run", fake_run)
 
     results = settings_workers.search_huggingface_models(
         SensorySource.VISION,
@@ -108,7 +110,7 @@ def test_search_huggingface_models_uses_hf_cli_and_parses_json(monkeypatch) -> N
 def test_search_huggingface_models_falls_back_and_marks_uncertain_matches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(settings_workers.shutil, "which", lambda name: "/usr/local/bin/hf" if name == "hf" else None)
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda name: "/usr/local/bin/hf" if name == "hf" else None)
 
     def fake_run(command, *, check, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         calls.append(list(command))
@@ -140,7 +142,7 @@ def test_search_huggingface_models_falls_back_and_marks_uncertain_matches(monkey
             )
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(settings_workers.subprocess, "run", fake_run)
+    monkeypatch.setattr(sensory_huggingface.subprocess, "run", fake_run)
 
     results = settings_workers.search_huggingface_models(
         SensorySource.VISION,
@@ -164,15 +166,15 @@ def test_download_huggingface_model_uses_local_dir(monkeypatch, tmp_path: Path) 
     calls: list[list[str]] = []
     target = tmp_path / "hf" / "qwen"
 
-    monkeypatch.setattr(settings_workers.shutil, "which", lambda name: "/usr/bin/hf" if name == "hf" else None)
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda name: "/usr/bin/hf" if name == "hf" else None)
 
     def fake_run(command, *, check, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         calls.append(list(command))
         return subprocess.CompletedProcess(command, 0, stdout="downloaded", stderr="")
 
-    monkeypatch.setattr(settings_workers.subprocess, "run", fake_run)
+    monkeypatch.setattr(sensory_huggingface.subprocess, "run", fake_run)
 
-    result = settings_workers.download_huggingface_model(
+    result = sensory_huggingface.download_huggingface_model(
         "Qwen/Qwen3-VL-4B-Instruct",
         target,
         timeout_seconds=33,
@@ -197,15 +199,15 @@ def test_download_huggingface_model_passes_include_patterns(monkeypatch, tmp_pat
     calls: list[list[str]] = []
     target = tmp_path / "hf" / "qwen-asr"
 
-    monkeypatch.setattr(settings_workers.shutil, "which", lambda name: "/usr/bin/hf" if name == "hf" else None)
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda name: "/usr/bin/hf" if name == "hf" else None)
 
     def fake_run(command, *, check, capture_output, text, timeout):  # type: ignore[no-untyped-def]
         calls.append(list(command))
         return subprocess.CompletedProcess(command, 0, stdout="downloaded", stderr="")
 
-    monkeypatch.setattr(settings_workers.subprocess, "run", fake_run)
+    monkeypatch.setattr(sensory_huggingface.subprocess, "run", fake_run)
 
-    result = settings_workers.download_huggingface_model(
+    result = sensory_huggingface.download_huggingface_model(
         "ggml-org/Qwen3-ASR-0.6B-GGUF",
         target,
         include_patterns=("*Q8_0.gguf", "mmproj-*.gguf"),
@@ -236,7 +238,7 @@ def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
     calls: list[tuple[str, Path, tuple[str, ...]]] = []
 
-    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: str(binary))
 
     def fake_download(repo_id, local_dir, *, include_patterns, timeout_seconds):  # type: ignore[no-untyped-def]
         calls.append((repo_id, Path(local_dir), tuple(include_patterns)))
@@ -245,9 +247,9 @@ def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
         (Path(local_dir) / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").write_text("gguf", encoding="utf-8")
         return {"repo_id": repo_id, "local_dir": str(local_dir), "message": "downloaded"}
 
-    monkeypatch.setattr(settings_workers, "download_huggingface_model", fake_download)
+    monkeypatch.setattr(audio_deployment, "download_huggingface_model", fake_download)
 
-    payload = settings_workers.prepare_llama_cpp_audio_backend(
+    payload = audio_deployment.prepare_llama_cpp_audio_backend(
         tmp_path,
         SensorySource.SPEECH,
         download_model=True,
@@ -267,6 +269,26 @@ def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
     assert model["gguf_count"] == 2
 
 
+def test_prepare_llama_cpp_audio_backend_refuses_runtime_download_without_consent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: "")
+
+    def fail_catalog(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("runtime catalog should not be fetched without consent")
+
+    monkeypatch.setattr(audio_deployment, "fetch_llama_cpp_runtime_package_catalog", fail_catalog)
+
+    with pytest.raises(RuntimeError, match="llama-server"):
+        audio_deployment.prepare_llama_cpp_audio_backend(
+            tmp_path,
+            SensorySource.SPEECH,
+            download_runtime=False,
+            download_model=False,
+        )
+
+
 def test_prepare_llama_cpp_audio_backend_reuses_cached_recommended_model(
     monkeypatch,
     tmp_path: Path,
@@ -281,14 +303,14 @@ def test_prepare_llama_cpp_audio_backend_reuses_cached_recommended_model(
     (cache_dir / "Llama-3.2-1B-Instruct-Q4_K_M.gguf").write_text("gguf", encoding="utf-8")
     (cache_dir / "mmproj-ultravox-v0_5-llama-3_2-1b-f16.gguf").write_text("gguf", encoding="utf-8")
 
-    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: str(binary))
 
     def fail_download(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("cached model should not be downloaded")
 
-    monkeypatch.setattr(settings_workers, "download_huggingface_model", fail_download)
+    monkeypatch.setattr(audio_deployment, "download_huggingface_model", fail_download)
 
-    payload = settings_workers.prepare_llama_cpp_audio_backend(
+    payload = audio_deployment.prepare_llama_cpp_audio_backend(
         tmp_path,
         SensorySource.SOUND,
         download_model=True,
@@ -308,16 +330,16 @@ def test_prepare_llama_cpp_audio_backend_rejects_empty_model_download(
     binary = tmp_path / "llama-server"
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    monkeypatch.setattr(settings_workers, "discover_llama_server_binary", lambda base_dir: str(binary))
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: str(binary))
 
     def fake_download(repo_id, local_dir, *, include_patterns, timeout_seconds):  # type: ignore[no-untyped-def]
         Path(local_dir).mkdir(parents=True, exist_ok=True)
         return {"repo_id": repo_id, "local_dir": str(local_dir), "message": "downloaded nothing"}
 
-    monkeypatch.setattr(settings_workers, "download_huggingface_model", fake_download)
+    monkeypatch.setattr(audio_deployment, "download_huggingface_model", fake_download)
 
     with pytest.raises(RuntimeError, match="未找到 GGUF"):
-        settings_workers.prepare_llama_cpp_audio_backend(
+        audio_deployment.prepare_llama_cpp_audio_backend(
             tmp_path,
             SensorySource.SPEECH,
             download_model=True,
@@ -325,7 +347,7 @@ def test_prepare_llama_cpp_audio_backend_rejects_empty_model_download(
 
 
 def test_huggingface_cli_missing_fails_with_install_hint(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(settings_workers.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda _name: None)
 
     with pytest.raises(RuntimeError, match="Hugging Face CLI"):
-        settings_workers.download_huggingface_model("Qwen/Qwen3-VL-4B-Instruct", tmp_path / "model")
+        sensory_huggingface.download_huggingface_model("Qwen/Qwen3-VL-4B-Instruct", tmp_path / "model")

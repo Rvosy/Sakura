@@ -146,7 +146,7 @@ def _next_actions(
 ) -> list[str]:
     actions: list[str] = []
     if not binary_path:
-        actions.append("运行 install-runtime --yes 配置 llama.cpp 运行时，或设置 SAKURA_LLAMA_SERVER。")
+        actions.append("运行 prepare-backend --source speech --yes 准备 llama.cpp 音频后端，或设置 SAKURA_LLAMA_SERVER。")
     if not any(bool(candidate["exists"]) for candidate in manifest_candidates):
         actions.append("发布包可生成 runtime_manifest.json 固定 llama.cpp 下载源。")
     for source, plan in plans.items():

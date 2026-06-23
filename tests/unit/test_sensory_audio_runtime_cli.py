@@ -463,7 +463,7 @@ def test_audio_runtime_cli_doctor_reports_runtime_next_action_when_missing(
     assert code == 0
     assert payload["runtime"]["binary_found"] is False
     assert payload["ready_for_smoke"] is False
-    assert any("install-runtime --yes" in action for action in payload["next_actions"])
+    assert any("prepare-backend" in action for action in payload["next_actions"])
 
 
 def test_audio_runtime_cli_doctor_lists_manifest_candidate_platforms(
@@ -524,6 +524,99 @@ def test_audio_runtime_cli_doctor_uses_cached_recommended_speech_model(
     assert payload["plans"]["speech"]["model_location"] == "local"
     assert payload["plans"]["speech"]["requires_model_download"] is False
     assert payload["plans"]["sound"]["requires_model_download"] is True
+
+
+def test_audio_runtime_cli_prepare_backend_requires_yes_before_download(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {"speech": {"ready": False}},
+        },
+    )
+
+    def fail_prepare(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("prepare should require --yes before downloads")
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fail_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "speech"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["ok"] is False
+    assert "--yes" in payload["message"]
+    assert payload["requirement"]["needs_runtime_download"] is True
+    assert payload["requirement"]["needs_model_download"] is True
+
+
+def test_audio_runtime_cli_prepare_backend_runs_with_yes(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[Path, str, bool, bool]] = []
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {"sound": {"ready": False}},
+        },
+    )
+
+    def fake_prepare(base_dir, source, *, download_runtime, download_model):  # type: ignore[no-untyped-def]
+        calls.append((Path(base_dir), source.value, download_runtime, download_model))
+        return {"ok": True, "source": source.value, "message": "prepared"}
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fake_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "sound", "--yes"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert calls == [(tmp_path, "sound", True, True)]
+
+
+def test_audio_runtime_cli_prepare_backend_can_finish_ready_cache_without_yes(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[Path, str, bool, bool]] = []
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": True},
+            "model_cache": {"speech": {"ready": True}},
+        },
+    )
+
+    def fake_prepare(base_dir, source, *, download_runtime, download_model):  # type: ignore[no-untyped-def]
+        calls.append((Path(base_dir), source.value, download_runtime, download_model))
+        return {"ok": True, "source": source.value, "message": "prepared from cache"}
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fake_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "speech"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["message"] == "prepared from cache"
+    assert calls == [(tmp_path, "speech", False, False)]
 
 
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
