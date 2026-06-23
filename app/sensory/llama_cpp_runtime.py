@@ -26,6 +26,11 @@ DEFAULT_LLAMA_CPP_HOST = "127.0.0.1"
 DEFAULT_LLAMA_CPP_MANAGED_PORT = 18080
 DEFAULT_LLAMA_CPP_ALIAS = "sakura-sensory"
 LLAMA_CPP_SERVER_ENV = "SAKURA_LLAMA_SERVER"
+LLAMA_CPP_RUNTIME_MANIFEST_ENV = "SAKURA_LLAMA_CPP_RUNTIME_MANIFEST"
+LLAMA_CPP_RUNTIME_MANIFEST_FILENAMES = (
+    "runtime_manifest.json",
+    "llama_cpp_runtime_manifest.json",
+)
 LLAMA_CPP_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 LLAMA_CPP_MANAGED_RUNTIME_MARKER = "llama.cpp"
 
@@ -165,6 +170,20 @@ class LlamaCppRuntimeInstallResult:
         }
 
 
+@dataclass(frozen=True)
+class LlamaCppRuntimePackageCatalog:
+    """Runtime package list plus provenance for installer diagnostics."""
+
+    source: str
+    packages: tuple[LlamaCppRuntimePackageSpec, ...]
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "packages": [package.to_mapping() for package in self.packages],
+        }
+
+
 def llama_cpp_platform_key(
     *,
     system: str | None = None,
@@ -205,6 +224,27 @@ def fetch_latest_llama_cpp_runtime_packages(
     if not isinstance(payload, dict):
         raise LlamaCppRuntimeError("llama.cpp release 信息格式无效。")
     return llama_cpp_runtime_packages_from_github_release(payload)
+
+
+def fetch_llama_cpp_runtime_package_catalog(
+    *,
+    base_dir: Path | None = None,
+    timeout_seconds: float = 20.0,
+    urlopen: Callable[..., Any] = urllib.request.urlopen,
+) -> LlamaCppRuntimePackageCatalog:
+    """Load a local pinned package manifest, falling back to GitHub latest."""
+
+    manifest_catalog = _load_runtime_manifest_catalog(base_dir)
+    if manifest_catalog is not None:
+        return manifest_catalog
+    packages = fetch_latest_llama_cpp_runtime_packages(
+        timeout_seconds=timeout_seconds,
+        urlopen=urlopen,
+    )
+    return LlamaCppRuntimePackageCatalog(
+        source=LLAMA_CPP_GITHUB_LATEST_RELEASE_API,
+        packages=tuple(packages),
+    )
 
 
 def llama_cpp_runtime_packages_from_github_release(
@@ -249,6 +289,51 @@ def llama_cpp_runtime_packages_from_manifest(
             ).normalized()
         )
     return packages
+
+
+def llama_cpp_runtime_manifest_paths(base_dir: Path | None = None) -> list[Path]:
+    """Return local manifest candidates without touching the network."""
+
+    candidates: list[Path] = []
+    env_path = os.environ.get(LLAMA_CPP_RUNTIME_MANIFEST_ENV, "").strip()
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    if base_dir is not None:
+        runtime_dir = StoragePaths(base_dir).llama_cpp_runtime_dir
+        candidates.extend(runtime_dir / filename for filename in LLAMA_CPP_RUNTIME_MANIFEST_FILENAMES)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _load_runtime_manifest_catalog(base_dir: Path | None) -> LlamaCppRuntimePackageCatalog | None:
+    env_path = os.environ.get(LLAMA_CPP_RUNTIME_MANIFEST_ENV, "").strip()
+    explicit_manifest = Path(env_path).expanduser() if env_path else None
+    for path in llama_cpp_runtime_manifest_paths(base_dir):
+        if not path.is_file():
+            if explicit_manifest is not None and path == explicit_manifest:
+                raise LlamaCppRuntimeError(f"llama.cpp 运行时 manifest 不存在：{path}")
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LlamaCppRuntimeError(f"无法读取 llama.cpp 运行时 manifest：{path}：{exc}") from exc
+        if not isinstance(payload, dict):
+            raise LlamaCppRuntimeError(f"llama.cpp 运行时 manifest 必须是 JSON 对象：{path}")
+        packages = llama_cpp_runtime_packages_from_manifest(payload)
+        if not packages:
+            raise LlamaCppRuntimeError(f"llama.cpp 运行时 manifest 未包含可用 packages：{path}")
+        return LlamaCppRuntimePackageCatalog(
+            source=f"manifest:{path}",
+            packages=tuple(packages),
+        )
+    return None
 
 
 def select_llama_cpp_runtime_package(

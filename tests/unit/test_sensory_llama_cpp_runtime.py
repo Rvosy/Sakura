@@ -12,6 +12,7 @@ import pytest
 
 from app.core.resource_manager import ResourceRegistry
 from app.sensory.llama_cpp_runtime import (
+    LLAMA_CPP_RUNTIME_MANIFEST_ENV,
     LLAMA_CPP_SERVER_ENV,
     LlamaCppLaunchConfig,
     LlamaCppRuntimePackageSpec,
@@ -20,9 +21,12 @@ from app.sensory.llama_cpp_runtime import (
     build_llama_server_command,
     check_llama_cpp_health,
     discover_llama_server_binary,
+    fetch_llama_cpp_runtime_package_catalog,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
+    llama_cpp_runtime_manifest_paths,
     llama_cpp_runtime_packages_from_github_release,
+    llama_cpp_runtime_packages_from_manifest,
     select_llama_cpp_runtime_package,
 )
 
@@ -278,6 +282,84 @@ def test_github_release_assets_are_filtered_to_compatible_runtime_packages() -> 
     selected = select_llama_cpp_runtime_package(packages, platform_key="macos-arm64")
     assert selected.package_id == "b9763-macos-arm64-metal"
     assert selected.binary_relpath == "llama-server"
+
+
+def test_runtime_manifest_paths_include_env_and_data_dir(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    explicit = tmp_path / "mirror.json"
+    monkeypatch.setenv(LLAMA_CPP_RUNTIME_MANIFEST_ENV, str(explicit))
+
+    paths = llama_cpp_runtime_manifest_paths(tmp_path)
+
+    assert paths[0] == explicit
+    assert tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json" in paths
+    assert tmp_path / "data" / "local_runtimes" / "llama_cpp" / "llama_cpp_runtime_manifest.json" in paths
+
+
+def test_runtime_manifest_packages_parse_flat_package_entries() -> None:
+    packages = llama_cpp_runtime_packages_from_manifest(
+        {
+            "packages": [
+                {
+                    "id": "pinned",
+                    "label": "Pinned macOS runtime",
+                    "platform": "macos-arm64",
+                    "url": "https://mirror.example/llama.tar.gz",
+                    "binary": "bin/llama-server",
+                    "sha256": "abc123",
+                    "size_bytes": 123,
+                }
+            ]
+        }
+    )
+
+    assert len(packages) == 1
+    assert packages[0].package_id == "pinned"
+    assert packages[0].binary_relpath == "bin/llama-server"
+    assert packages[0].sha256 == "abc123"
+
+
+def test_fetch_runtime_package_catalog_prefers_local_manifest_without_network(tmp_path: Path) -> None:
+    manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "package_id": "local-macos",
+                        "label": "Local mirror",
+                        "platform_key": "macos-arm64",
+                        "url": "https://mirror.example/llama.tar.gz",
+                        "archive_format": "tar.gz",
+                        "binary_relpath": "llama-server",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    catalog = fetch_llama_cpp_runtime_package_catalog(
+        base_dir=tmp_path,
+        urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network not expected")),
+    )
+
+    assert catalog.source == f"manifest:{manifest}"
+    assert [package.package_id for package in catalog.packages] == ["local-macos"]
+
+
+def test_fetch_runtime_package_catalog_errors_on_missing_explicit_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    missing = tmp_path / "missing.json"
+    monkeypatch.setenv(LLAMA_CPP_RUNTIME_MANIFEST_ENV, str(missing))
+
+    with pytest.raises(LlamaCppRuntimeError, match="manifest 不存在"):
+        fetch_llama_cpp_runtime_package_catalog(
+            base_dir=tmp_path,
+            urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network not expected")),
+        )
 
 
 def test_install_llama_cpp_runtime_package_downloads_and_extracts_zip(tmp_path: Path) -> None:

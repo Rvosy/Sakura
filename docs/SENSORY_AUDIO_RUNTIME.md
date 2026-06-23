@@ -12,6 +12,7 @@
   - `PATH`
 - 找不到时，Sakura 从 `ggml-org/llama.cpp` 最新 GitHub release 选择当前平台官方预编译包。
 - 下载与解压结果写入 `data/local_runtimes/llama_cpp/`，该目录是用户态缓存，不应提交到仓库。
+- 发布版或内网镜像可以提供本地 runtime manifest 固定下载源；Sakura 会优先读取 manifest，再回退到 GitHub latest。
 
 ## 跨平台选择
 
@@ -25,6 +26,38 @@
 - Linux arm64: `linux-arm64`
 
 安装器只选择基础 CPU/Metal 官方包；CUDA、ROCm、Vulkan、OpenVINO、SYCL 等加速包先不自动选择，避免驱动与分发复杂度进入默认路径。
+
+## 运行时 manifest
+
+manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、或附加 `sha256` 校验。Sakura 会按顺序读取：
+
+1. `SAKURA_LLAMA_CPP_RUNTIME_MANIFEST` 指向的 JSON 文件。这个路径是显式覆盖；如果文件缺失或无效，会直接报错，不会静默回退到公网。
+2. `data/local_runtimes/llama_cpp/runtime_manifest.json`
+3. `data/local_runtimes/llama_cpp/llama_cpp_runtime_manifest.json`
+4. 找不到本地 manifest 时，回退到 `ggml-org/llama.cpp` 最新 GitHub release。
+
+示例：
+
+```json
+{
+  "packages": [
+    {
+      "package_id": "b9763-macos-arm64-metal",
+      "label": "llama.cpp b9763 macOS arm64 Metal",
+      "platform_key": "macos-arm64",
+      "url": "https://mirror.example/llama-b9763-bin-macos-arm64.tar.gz",
+      "archive_format": "tar.gz",
+      "binary_relpath": "llama-server",
+      "version": "b9763",
+      "variant": "metal",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size_bytes": 10978734
+    }
+  ]
+}
+```
+
+`platform_key` 当前支持 `macos-arm64`、`macos-x64`、`windows-arm64`、`windows-x64`、`linux-arm64`、`linux-x64`。同一 manifest 可以同时放多个平台包，安装器会按当前平台选择。
 
 ## 模型默认值
 

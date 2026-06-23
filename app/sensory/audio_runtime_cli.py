@@ -18,7 +18,7 @@ from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
     LLAMA_CPP_MANAGED_RUNTIME_MARKER,
     discover_llama_server_binary,
-    fetch_latest_llama_cpp_runtime_packages,
+    fetch_llama_cpp_runtime_package_catalog,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
     select_llama_cpp_runtime_package,
@@ -172,12 +172,16 @@ def _run_install_runtime(args: argparse.Namespace) -> int:
             pretty=bool(args.pretty),
         )
         return 2
-    packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=30)
-    package = select_llama_cpp_runtime_package(packages, preferred_variant=str(args.preferred_variant or "auto"))
+    catalog = fetch_llama_cpp_runtime_package_catalog(base_dir=base_dir, timeout_seconds=30)
+    package = select_llama_cpp_runtime_package(
+        catalog.packages,
+        preferred_variant=str(args.preferred_variant or "auto"),
+    )
     result = install_llama_cpp_runtime_package(base_dir, package, timeout_seconds=600)
     payload = result.to_mapping()
     payload["ok"] = True
     payload["platform_key"] = llama_cpp_platform_key()
+    payload["package_source"] = catalog.source
     _print_payload(payload, pretty=bool(args.pretty))
     return 0
 

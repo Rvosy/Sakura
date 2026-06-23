@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.sensory import audio_runtime_cli
 
@@ -77,7 +78,7 @@ def test_audio_runtime_cli_install_runtime_requires_yes_before_download(
     def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("runtime download should require --yes")
 
-    monkeypatch.setattr(audio_runtime_cli, "fetch_latest_llama_cpp_runtime_packages", fail_if_called)
+    monkeypatch.setattr(audio_runtime_cli, "fetch_llama_cpp_runtime_package_catalog", fail_if_called)
 
     code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "install-runtime"])
 
@@ -85,6 +86,54 @@ def test_audio_runtime_cli_install_runtime_requires_yes_before_download(
     assert code == 2
     assert payload["ok"] is False
     assert "--yes" in payload["message"]
+
+
+def test_audio_runtime_cli_install_runtime_uses_local_manifest(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(audio_runtime_cli, "discover_llama_server_binary", lambda base_dir: "")
+    manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "package_id": "mirror-macos",
+                        "label": "Mirror macOS",
+                        "platform_key": "macos-arm64",
+                        "url": "https://mirror.example/llama.tar.gz",
+                        "archive_format": "tar.gz",
+                        "binary_relpath": "llama-server",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_install(base_dir, package, *, timeout_seconds):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            to_mapping=lambda: {
+                "package": package.to_mapping(),
+                "install_dir": str(tmp_path / "runtime"),
+                "binary_path": str(tmp_path / "runtime" / "llama-server"),
+                "already_installed": False,
+                "message": "installed",
+            }
+        )
+
+    monkeypatch.setattr(audio_runtime_cli, "install_llama_cpp_runtime_package", fake_install)
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "install-runtime", "--yes"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["package"]["package_id"] == "mirror-macos"
+    assert payload["package_source"] == f"manifest:{manifest}"
 
 
 def test_audio_runtime_cli_install_runtime_reuses_existing_binary(

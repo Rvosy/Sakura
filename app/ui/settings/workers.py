@@ -41,7 +41,7 @@ from app.sensory.models import SensoryRequest, SensorySource
 from app.sensory.llama_cpp_runtime import (
     LlamaCppRuntimeError,
     discover_llama_server_binary,
-    fetch_latest_llama_cpp_runtime_packages,
+    fetch_llama_cpp_runtime_package_catalog,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
     select_llama_cpp_runtime_package,
@@ -307,8 +307,11 @@ class LlamaCppRuntimeInstallWorker(QObject):
                     }
                 )
                 return
-            packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=30)
-            package = select_llama_cpp_runtime_package(packages)
+            catalog = fetch_llama_cpp_runtime_package_catalog(
+                base_dir=self.base_dir,
+                timeout_seconds=30,
+            )
+            package = select_llama_cpp_runtime_package(catalog.packages)
             result = install_llama_cpp_runtime_package(
                 self.base_dir,
                 package,
@@ -316,6 +319,7 @@ class LlamaCppRuntimeInstallWorker(QObject):
             )
             payload = result.to_mapping()
             payload["platform_key"] = llama_cpp_platform_key()
+            payload["package_source"] = catalog.source
         except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
             self.failed.emit(str(exc))
         else:
