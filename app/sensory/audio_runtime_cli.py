@@ -16,6 +16,7 @@ from app.sensory.audio_deployment import (
     build_llama_cpp_runtime_download_preflight,
     prepare_llama_cpp_audio_backend,
 )
+from app.sensory.audio_model_manifest import validate_llama_cpp_audio_model_manifest
 from app.sensory.audio_models import recommended_llama_cpp_audio_model
 from app.sensory.audio_smoke import (
     SensoryAudioSmokePlan,
@@ -63,6 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_runtime_manifest(args)
         if args.command == "runtime-manifest-check":
             return _run_runtime_manifest_check(args)
+        if args.command == "audio-model-manifest-check":
+            return _run_audio_model_manifest_check(args)
         if args.command == "doctor":
             return _run_doctor(args)
         if args.command == "prepare-backend":
@@ -182,6 +185,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-known-platforms",
         action="store_true",
         help="Require all built-in platform keys to be present.",
+    )
+
+    audio_model_manifest_check = subparsers.add_parser(
+        "audio-model-manifest-check",
+        help="Validate a local llama.cpp audio model manifest without copying files.",
+    )
+    _add_pretty_arg(audio_model_manifest_check)
+    audio_model_manifest_check.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Manifest path. Defaults to data/cache/sensory_models/audio_model_manifest.json.",
+    )
+    audio_model_manifest_check.add_argument(
+        "--require-source",
+        action="append",
+        choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
+        default=[],
+        help="Recommended source that must be present. Defaults to speech and sound.",
     )
 
     doctor = subparsers.add_parser(
@@ -367,6 +389,20 @@ def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
     return 0 if not issues else 1
 
 
+def _run_audio_model_manifest_check(args: argparse.Namespace) -> int:
+    required_sources = _required_audio_model_sources(args)
+    try:
+        result = validate_llama_cpp_audio_model_manifest(
+            Path(args.base_dir),
+            manifest_path=Path(args.manifest).expanduser() if args.manifest is not None else None,
+            required_sources=required_sources,
+        )
+    except RuntimeError as exc:
+        raise SensoryAudioRuntimeCliError(str(exc)) from exc
+    _print_payload(result, pretty=bool(args.pretty))
+    return 0 if bool(result.get("ok")) else 1
+
+
 def _run_doctor(args: argparse.Namespace) -> int:
     _print_payload(
         build_sensory_audio_runtime_doctor_report(Path(args.base_dir)),
@@ -522,6 +558,21 @@ def _required_manifest_platforms(args: argparse.Namespace) -> list[str]:
         seen.add(platform)
         result.append(platform)
     return result
+
+
+def _required_audio_model_sources(args: argparse.Namespace) -> tuple[SensorySource, ...]:
+    raw_sources = list(args.require_source or [])
+    if not raw_sources:
+        raw_sources = [SensorySource.SPEECH.value, SensorySource.SOUND.value]
+    seen: set[SensorySource] = set()
+    result: list[SensorySource] = []
+    for raw_source in raw_sources:
+        source = coerce_sensory_source(raw_source)
+        if source in seen:
+            continue
+        seen.add(source)
+        result.append(source)
+    return tuple(result)
 
 
 def _check_manifest_package_archive(

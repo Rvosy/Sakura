@@ -28,6 +28,7 @@ from app.sensory.audio_model_manifest import (
     audio_model_manifest_paths,
     copy_llama_cpp_audio_model_from_manifest,
     find_llama_cpp_audio_model_manifest_entry,
+    validate_llama_cpp_audio_model_manifest,
 )
 from app.sensory.audio_models import (
     RECOMMENDED_LLAMA_CPP_SOUND_MODEL,
@@ -219,4 +220,5 @@ __all__ = [
     "run_sensory_audio_smoke_test",
     "select_llama_cpp_runtime_package",
     "sensory_audio_model_download_hint",
+    "validate_llama_cpp_audio_model_manifest",
 ]

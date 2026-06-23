@@ -114,6 +114,57 @@ def copy_llama_cpp_audio_model_from_manifest(
     }
 
 
+def validate_llama_cpp_audio_model_manifest(
+    base_dir: Path,
+    *,
+    manifest_path: Path | None = None,
+    required_sources: tuple[SensorySource, ...] = (),
+) -> dict[str, Any]:
+    path, payload = _load_manifest_for_validation(base_dir, manifest_path)
+    issues: list[str] = []
+    entries = payload.get("models")
+    if not isinstance(entries, list):
+        issues.append("音频模型 manifest 必须包含 models 列表")
+        entries = []
+    checked_models: list[dict[str, Any]] = []
+    for index, raw_entry in enumerate(entries):
+        if not isinstance(raw_entry, dict):
+            issues.append(f"models[{index}] 不是 JSON 对象")
+            continue
+        checked_models.append(_check_manifest_entry(raw_entry, path.parent, issues, index))
+
+    required = tuple(required_sources)
+    for source in required:
+        expected = _expected_recommended_model(source)
+        if expected is None:
+            issues.append(f"{source.value} 没有内置推荐音频模型")
+            continue
+        match = next(
+            (
+                model
+                for model in checked_models
+                if model.get("source") == source.value and model.get("repo_id") == expected["repo_id"]
+            ),
+            None,
+        )
+        if match is None:
+            issues.append(f"缺少 {source.value} 推荐模型：{expected['repo_id']}")
+            continue
+        filenames = [Path(str(file_info.get("filename") or "")).name for file_info in match.get("files", [])]
+        for pattern in expected["include_patterns"]:
+            if not any(fnmatch.fnmatch(filename, pattern) for filename in filenames):
+                issues.append(f"{source.value} 推荐模型缺少文件：{pattern}")
+
+    return {
+        "ok": not issues,
+        "manifest_path": str(path),
+        "issues": issues,
+        "required_sources": [source.value for source in required],
+        "model_count": len(checked_models),
+        "models": checked_models,
+    }
+
+
 def _load_first_manifest(base_dir: Path) -> tuple[Path | None, dict[str, Any]]:
     env_path = os.environ.get(AUDIO_MODEL_MANIFEST_ENV, "").strip()
     explicit_manifest = Path(env_path).expanduser() if env_path else None
@@ -130,6 +181,32 @@ def _load_first_manifest(base_dir: Path) -> tuple[Path | None, dict[str, Any]]:
             raise RuntimeError(f"音频模型 manifest 必须是 JSON 对象：{path}")
         return path, payload
     return None, {}
+
+
+def _load_manifest_for_validation(
+    base_dir: Path,
+    manifest_path: Path | None,
+) -> tuple[Path, dict[str, Any]]:
+    if manifest_path is not None:
+        path = Path(manifest_path).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"音频模型 manifest 不存在：{path}")
+        return path, _read_manifest_payload(path)
+    path, payload = _load_first_manifest(base_dir)
+    if path is None:
+        default_path = StoragePaths(base_dir).sensory_models_cache_dir / AUDIO_MODEL_MANIFEST_FILENAMES[0]
+        raise RuntimeError(f"音频模型 manifest 不存在：{default_path}")
+    return path, payload
+
+
+def _read_manifest_payload(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"无法读取音频模型 manifest：{path}：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"音频模型 manifest 必须是 JSON 对象：{path}")
+    return payload
 
 
 def _manifest_files(
@@ -172,6 +249,73 @@ def _manifest_files(
     if not files:
         raise RuntimeError("音频模型 manifest 没有可用文件。")
     return files
+
+
+def _check_manifest_entry(
+    entry: dict[str, Any],
+    manifest_dir: Path,
+    issues: list[str],
+    index: int,
+) -> dict[str, Any]:
+    source = str(entry.get("source") or "").strip().lower()
+    repo_id = str(entry.get("repo_id") or entry.get("model") or "").strip()
+    raw_files = entry.get("files")
+    if not source:
+        issues.append(f"models[{index}] 缺少 source")
+    if not repo_id:
+        issues.append(f"models[{index}] 缺少 repo_id")
+    if not isinstance(raw_files, list) or not raw_files:
+        issues.append(f"models[{index}] 缺少 files")
+        raw_files = []
+    checked_files: list[dict[str, Any]] = []
+    for file_index, raw_file in enumerate(raw_files):
+        if not isinstance(raw_file, dict):
+            issues.append(f"models[{index}].files[{file_index}] 不是 JSON 对象")
+            continue
+        try:
+            filename = _safe_relative_filename(
+                str(raw_file.get("filename") or Path(str(raw_file.get("url") or raw_file.get("path") or "")).name)
+            )
+            path = _resolve_manifest_file_path(
+                str(raw_file.get("url") or raw_file.get("path") or ""),
+                manifest_dir,
+            )
+            file_info = {
+                "filename": filename,
+                "path": str(path),
+                "size_bytes": _positive_int(raw_file.get("size_bytes")),
+                "sha256": str(raw_file.get("sha256") or "").strip().lower(),
+            }
+            _verify_local_file(path, file_info)
+        except RuntimeError as exc:
+            issues.append(f"models[{index}].files[{file_index}] {exc}")
+            checked_files.append(
+                {
+                    "filename": str(raw_file.get("filename") or ""),
+                    "path": str(raw_file.get("url") or raw_file.get("path") or ""),
+                    "ok": False,
+                    "message": str(exc),
+                }
+            )
+            continue
+        checked_files.append({**file_info, "ok": True})
+    return {
+        "source": source,
+        "repo_id": repo_id,
+        "files": checked_files,
+    }
+
+
+def _expected_recommended_model(source: SensorySource) -> dict[str, Any] | None:
+    from app.sensory.audio_models import llama_cpp_audio_model_repo_id, recommended_llama_cpp_audio_model
+
+    recommendation = recommended_llama_cpp_audio_model(source)
+    if recommendation is None:
+        return None
+    return {
+        "repo_id": llama_cpp_audio_model_repo_id(recommendation.model),
+        "include_patterns": list(recommendation.include_patterns),
+    }
 
 
 def _resolve_manifest_file_path(value: str, manifest_dir: Path) -> Path:

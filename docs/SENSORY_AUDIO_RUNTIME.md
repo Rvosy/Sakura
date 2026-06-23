@@ -135,6 +135,16 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 `url` 只支持本地相对路径、绝对路径或 `file://` URI，不支持新的远端下载源。相对路径按 manifest 所在目录解析。文件名必须匹配推荐 include patterns；缺文件、大小不匹配或 `sha256` 不匹配时会 fail closed。命中本地音频模型 manifest 时，“准备 llama.cpp 音频后端”会复制文件到标准缓存目录，再把模型字段指向缓存目录。
 
+发布前校验音频模型 manifest，不复制、不下载：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli audio-model-manifest-check \
+  --manifest data/cache/sensory_models/audio_model_manifest.json \
+  --pretty
+```
+
+默认要求 `speech` 和 `sound` 两个推荐模型都存在；只校验单个源时可传入 `--require-source speech` 或 `--require-source sound`。
+
 ## 一键准备与模型默认值
 
 设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后按当前音频源执行：

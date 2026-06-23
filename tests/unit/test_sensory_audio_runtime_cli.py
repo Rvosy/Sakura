@@ -430,6 +430,50 @@ def test_audio_runtime_cli_runtime_manifest_check_reports_checksum_mismatch(
     assert "b1-win archive sha256 不匹配" in payload["issues"]
 
 
+def test_audio_runtime_cli_audio_model_manifest_check_validates_recommended_source(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    manifest = _write_audio_model_manifest(tmp_path, source="speech")
+
+    code = audio_runtime_cli.main(
+        [
+            "audio-model-manifest-check",
+            "--manifest",
+            str(manifest),
+            "--require-source",
+            "speech",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["required_sources"] == ["speech"]
+    assert payload["models"][0]["repo_id"] == "ggml-org/Qwen3-ASR-0.6B-GGUF"
+    assert all(file_info["ok"] for file_info in payload["models"][0]["files"])
+
+
+def test_audio_runtime_cli_audio_model_manifest_check_reports_missing_recommended_source(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    manifest = _write_audio_model_manifest(tmp_path, source="speech")
+
+    code = audio_runtime_cli.main(
+        [
+            "audio-model-manifest-check",
+            "--manifest",
+            str(manifest),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert "缺少 sound 推荐模型：ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF" in payload["issues"]
+
+
 def test_audio_runtime_cli_doctor_reports_ready_plans_with_existing_runtime(
     tmp_path: Path,
     capsys,
@@ -691,6 +735,45 @@ def _write_runtime_manifest(tmp_path: Path, packages: list[dict[str, object]]) -
     manifest = tmp_path / "runtime_manifest.json"
     manifest.write_text(
         json.dumps({"manifest_version": 1, "packages": packages}),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _write_audio_model_manifest(tmp_path: Path, *, source: str) -> Path:
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir(parents=True)
+    if source == "speech":
+        repo_id = "ggml-org/Qwen3-ASR-0.6B-GGUF"
+        filenames = ["Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"]
+    else:
+        repo_id = "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF"
+        filenames = ["Llama-3.2-1B-Instruct-Q4_K_M.gguf", "mmproj-ultravox.gguf"]
+    files = []
+    for filename in filenames:
+        path = archive_dir / filename
+        path.write_bytes(filename.encode("utf-8"))
+        files.append(
+            {
+                "filename": filename,
+                "url": f"archives/{filename}",
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = tmp_path / "audio_model_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "source": source,
+                        "repo_id": repo_id,
+                        "files": files,
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     return manifest
