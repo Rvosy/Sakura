@@ -5277,6 +5277,7 @@ class PetWindow(QWidget):
         self.tauri_settings_process = process
         self._tauri_initial_tts_settings = tts_settings
         process.completed.connect(self._on_tauri_settings_completed)
+        process.applied.connect(self._on_tauri_settings_applied)
         process.cancelled.connect(self._on_tauri_settings_cancelled)
         process.failed.connect(self._on_tauri_settings_failed)
         process.layout_preview.connect(self._on_tauri_settings_layout_preview)
@@ -5307,8 +5308,17 @@ class PetWindow(QWidget):
 
     @Slot(object)
     def _on_tauri_settings_completed(self, result: object) -> None:
+        # 「保存」：应用并关闭窗口。
         self.tauri_settings_process = None
         self._sync_secondary_window_state()
+        self._apply_tauri_settings_result(result, final=True)
+
+    @Slot(object)
+    def _on_tauri_settings_applied(self, result: object) -> None:
+        # 「应用」：持久化并即时生效，但窗口保持打开。
+        self._apply_tauri_settings_result(result, final=False)
+
+    def _apply_tauri_settings_result(self, result: object, *, final: bool) -> None:
         if not isinstance(result, TauriSettingsResult):
             self._on_tauri_settings_failed("Tauri 设置结果类型无效。")
             return
@@ -5327,13 +5337,13 @@ class PetWindow(QWidget):
                     exc,
                 ),
             )
-            self._abort_tauri_settings_apply()
+            self._abort_tauri_settings_apply(final=final)
             return
 
         tts_settings = self._tts_settings_from_tauri_result(result.tts, selected_profile)
         new_tts_provider = self._create_tts_provider_from_settings(tts_settings)
         if new_tts_provider is None:
-            self._abort_tauri_settings_apply()
+            self._abort_tauri_settings_apply(final=final)
             return
 
         current_startup_settings = getattr(self, "startup_settings", StartupSettings())
@@ -5438,7 +5448,7 @@ class PetWindow(QWidget):
                     exc,
                 ),
             )
-            self._abort_tauri_settings_apply(new_tts_provider)
+            self._abort_tauri_settings_apply(new_tts_provider, final=final)
             return
 
         _update_runtime_api_clients(
@@ -5530,9 +5540,21 @@ class PetWindow(QWidget):
             self.backchannel_settings = system_extra.backchannel
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
-        self._tauri_initial_tts_settings = None
-        # 已应用并持久化最终布局，丢弃回滚基准。
-        self._tauri_original_layout = None
+        if final:
+            self._tauri_initial_tts_settings = None
+            # 已应用并持久化最终布局，丢弃回滚基准。
+            self._tauri_original_layout = None
+        else:
+            # 「应用」后窗口仍打开：把回滚基准更新为当前已应用状态，
+            # 以便后续滑块实时预览的「取消」回滚到这里而不是最初打开时。
+            self._tauri_initial_tts_settings = tts_settings
+            self._tauri_original_layout = (
+                result.character.portrait_scale_percent,
+                result.character.control_panel_width,
+                result.character.bubble_height,
+                result.character.control_panel_vertical_offset,
+                result.character.input_bar_offset,
+            )
         if plugin_config_changed:
             show_themed_information(
                 self,
@@ -5540,12 +5562,19 @@ class PetWindow(QWidget):
                 "插件启用状态需要重启 Sakura 后才会生效。",
             )
 
-    def _abort_tauri_settings_apply(self, new_tts_provider: object | None = None) -> None:
-        self._tauri_initial_tts_settings = None
+    def _abort_tauri_settings_apply(
+        self,
+        new_tts_provider: object | None = None,
+        *,
+        final: bool = True,
+    ) -> None:
         if new_tts_provider is not None:
             self._close_unused_tauri_tts_provider(new_tts_provider)
-        self._restore_tauri_layout_preview()
-        self._sync_secondary_window_state()
+        # 「应用」失败时窗口仍开着，不要还原布局预览/恢复置顶，保留用户编辑现场。
+        if final:
+            self._tauri_initial_tts_settings = None
+            self._restore_tauri_layout_preview()
+            self._sync_secondary_window_state()
 
     def _close_unused_tauri_tts_provider(self, provider: object) -> None:
         close_unused = getattr(provider, "close", None)

@@ -4126,6 +4126,7 @@ def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, star
         def __init__(self, *_args, **_kwargs) -> None:
             self.kwargs = _kwargs
             self.completed = _SignalStub()
+            self.applied = _SignalStub()
             self.cancelled = _SignalStub()
             self.failed = _SignalStub()
             self.layout_preview = _SignalStub()
@@ -12017,6 +12018,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _try_show_tauri_settings = pet_window_cls._try_show_tauri_settings
         _show_pyside_settings_dialog = pet_window_cls._show_pyside_settings_dialog
         _on_tauri_settings_completed = pet_window_cls._on_tauri_settings_completed
+        _on_tauri_settings_applied = pet_window_cls._on_tauri_settings_applied
+        _apply_tauri_settings_result = pet_window_cls._apply_tauri_settings_result
         _on_tauri_settings_cancelled = pet_window_cls._on_tauri_settings_cancelled
         _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
         _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview

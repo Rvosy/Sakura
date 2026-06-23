@@ -56,10 +56,7 @@ body {
 body {
   margin: 0;
   color: var(--sakura-text);
-  background:
-    radial-gradient(120% 90% at 100% 0%, var(--tint-soft), transparent 55%),
-    radial-gradient(90% 80% at 0% 100%, var(--tint-faint), transparent 50%),
-    var(--sakura-page-bg);
+  background: var(--sakura-page-bg);
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
@@ -95,9 +92,7 @@ body {
   flex-direction: column;
   gap: 10px;
   padding: 14px 12px;
-  background:
-    linear-gradient(180deg, var(--tint-soft), transparent 38%),
-    color-mix(in srgb, var(--sakura-panel-bg) 62%, var(--surface-raised));
+  background: color-mix(in srgb, var(--sakura-panel-bg) 62%, var(--surface-raised));
 }
 
 .nav-brand {
@@ -199,7 +194,6 @@ body {
 .page-head {
   padding: 18px 22px 14px;
   border-bottom: 1px solid var(--hairline);
-  background: linear-gradient(180deg, var(--tint-faint), transparent);
 }
 
 .page-title {
@@ -323,6 +317,7 @@ body {
 
 input[type="number"],
 input[type="text"],
+input[type="password"],
 select,
 textarea {
   width: 100%;
@@ -343,7 +338,8 @@ textarea {
     background-color 0.18s var(--ease);
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="password"] {
   max-width: 320px;
 }
 
@@ -364,6 +360,7 @@ textarea {
 
 input[type="number"]:hover:not(:disabled),
 input[type="text"]:hover:not(:disabled),
+input[type="password"]:hover:not(:disabled),
 select:hover:not(:disabled),
 textarea:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-border));
@@ -371,6 +368,7 @@ textarea:hover:not(:disabled) {
 
 input[type="number"]:focus,
 input[type="text"]:focus,
+input[type="password"]:focus,
 select:focus,
 textarea:focus {
   outline: none;
@@ -380,6 +378,7 @@ textarea:focus {
 
 input[type="number"]:disabled,
 input[type="text"]:disabled,
+input[type="password"]:disabled,
 select:disabled,
 textarea:disabled {
   background: color-mix(in srgb, var(--sakura-panel-bg) 60%, var(--sakura-border) 18%);
@@ -568,11 +567,7 @@ input[type="range"].layout-slider {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--sakura-primary) 55%, transparent),
-    var(--tint-soft)
-  );
+  background: color-mix(in srgb, var(--sakura-primary) 28%, var(--tint-faint));
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
@@ -989,6 +984,209 @@ input[type="checkbox"]:disabled + span {
   font-size: 13px;
 }
 
+/* ---------- 供应商主从页 ---------- */
+
+.provider-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.18s var(--ease),
+    box-shadow 0.18s var(--ease),
+    transform 0.12s var(--ease);
+}
+
+.provider-card:hover {
+  border-color: var(--sakura-primary);
+  box-shadow: var(--shadow-pop);
+  transform: translateY(-1px);
+}
+
+.provider-card.is-selected {
+  border-color: var(--sakura-primary);
+  background: color-mix(in srgb, var(--sakura-primary) 8%, var(--surface-raised));
+}
+
+.provider-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  background: var(--tint-faint);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.provider-avatar.is-initial {
+  color: var(--sakura-primary);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.provider-avatar-img {
+  width: 22px;
+  height: 22px;
+  display: block;
+  object-fit: contain;
+}
+
+.provider-card-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.provider-card-body strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-card-body .card-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-count {
+  flex: 0 0 auto;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.provider-models {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--sakura-border);
+}
+
+.provider-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.provider-models-head h3 {
+  margin: 0;
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+}
+
+.model-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--tint-faint);
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 4px 6px 4px 11px;
+}
+
+.model-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sakura-muted-text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.model-chip-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sakura-accent) 16%, transparent);
+  color: var(--sakura-accent);
+  transform: none;
+  box-shadow: none;
+}
+
+.model-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-add-row .wide-input {
+  flex: 1 1 auto;
+  max-width: none;
+}
+
+.provider-preset-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-preset-option {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.model-picker-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-picker-list {
+  display: grid;
+  gap: 4px;
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.model-picker-item {
+  gap: 9px;
+  padding: 5px 4px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
 /* ---------- 内置确认弹窗 ---------- */
 
 .confirm-overlay {
@@ -1099,11 +1297,22 @@ button:active:not(:disabled) {
 
 #saveButton {
   border-color: var(--sakura-primary);
-  background: linear-gradient(180deg, var(--sakura-primary), var(--sakura-primary-hover));
+  background: var(--sakura-primary);
   color: var(--sakura-input-bg);
 }
 
 #saveButton:hover:not(:disabled) {
+  color: var(--sakura-input-bg);
+  filter: brightness(1.05);
+}
+
+.primary-button {
+  border-color: var(--sakura-primary);
+  background: var(--sakura-primary);
+  color: var(--sakura-input-bg);
+}
+
+.primary-button:hover:not(:disabled) {
   color: var(--sakura-input-bg);
   filter: brightness(1.05);
 }

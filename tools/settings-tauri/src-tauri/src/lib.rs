@@ -104,11 +104,14 @@ fn load_request(state: State<'_, AppState>) -> Result<Value, String> {
 /// We trust the frontend payload as-is and only stamp the protocol `version`
 /// and the request `nonce` so the Python side can verify the round-trip. Python
 /// (`parse_tauri_settings_result`) is the single source of truth for validation.
-#[tauri::command]
-fn save_settings(
+/// Write the collected settings to stdout for the host (Python) to parse.
+///
+/// `keep_open` distinguishes 应用 (apply: persist, window stays open) from
+/// 保存 (save: persist, window closes). Python routes on the `keep_open` flag.
+fn write_settings_result(
     settings: Value,
-    state: State<'_, AppState>,
-    window: Window,
+    state: &AppState,
+    keep_open: bool,
 ) -> Result<(), String> {
     let nonce = state
         .request
@@ -122,12 +125,28 @@ fn save_settings(
     };
     payload.insert("version".to_string(), Value::from(PROTOCOL_VERSION));
     payload.insert("nonce".to_string(), Value::from(nonce));
+    payload.insert("keep_open".to_string(), Value::from(keep_open));
 
     let line = serde_json::to_string(&Value::Object(payload)).map_err(|error| error.to_string())?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{RESULT_MARKER}{line}").map_err(|error| error.to_string())?;
-    out.flush().map_err(|error| error.to_string())?;
+    out.flush().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_settings(
+    settings: Value,
+    state: State<'_, AppState>,
+    window: Window,
+) -> Result<(), String> {
+    write_settings_result(settings, &state, false)?;
     window.close().map_err(|error| error.to_string())
+}
+
+/// Persist the settings but keep the window open (「应用」按钮)。
+#[tauri::command]
+fn apply_settings(settings: Value, state: State<'_, AppState>) -> Result<(), String> {
+    write_settings_result(settings, &state, true)
 }
 
 /// Stream a live layout preview to the host without closing the window.
@@ -171,6 +190,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_request,
             save_settings,
+            apply_settings,
             preview_layout,
             host_call,
             cancel_settings

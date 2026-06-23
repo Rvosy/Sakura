@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from app.agent.memory_curator import MemoryCurationSettings
@@ -129,6 +129,7 @@ from app.ui.theme import (
     theme_colors_to_mapping,
     theme_to_mapping,
 )
+from app.ui.settings.workers import ApiConnectionTestWorker, ApiModelListProbeWorker
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
 from app.voice.tts_settings import (
@@ -173,6 +174,34 @@ def _default_api_settings() -> ApiSettings:
         base_url=DEFAULT_BASE_URL,
         api_key="",
         model=DEFAULT_TEXT_MODEL,
+    )
+
+
+def _api_probe_settings(method: str, params: dict[str, Any]) -> ApiSettings:
+    """把前端 api.list_models / api.test_connection 的参数转成 ApiSettings 并校验。"""
+    base_url = str(params.get("base_url") or "").strip()
+    api_key = str(params.get("api_key") or "").strip()
+    model = str(params.get("model") or "").strip()
+    if not base_url:
+        raise ValueError("请先填写 Base URL。")
+    if not api_key:
+        raise ValueError("请先填写 API Key。")
+    if method == "api.test_connection" and not model:
+        raise ValueError("请先选择要测试的模型。")
+    timeout_seconds = 60
+    raw_timeout = params.get("timeout_seconds")
+    if raw_timeout is not None:
+        try:
+            timeout_seconds = int(raw_timeout)
+        except (TypeError, ValueError):
+            timeout_seconds = 60
+    # 控制单次探测时长，留在 Rust 30s RPC 超时之内。
+    timeout_seconds = max(5, min(timeout_seconds, 25))
+    return ApiSettings(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -582,6 +611,7 @@ def parse_tauri_settings_payload(
 
 class TauriSettingsProcess(QObject):
     completed = Signal(object)
+    applied = Signal(object)
     cancelled = Signal()
     failed = Signal(str)
     layout_preview = Signal(object)
@@ -654,6 +684,8 @@ class TauriSettingsProcess(QObject):
         self._cleaned = False
         self._request_payload = b""
         self._stdout_buffer = ""
+        # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
+        self._api_probes: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         if not tauri_settings_trial_enabled():
@@ -809,13 +841,18 @@ class TauriSettingsProcess(QObject):
                 continue
             payload = stripped[len(TAURI_SETTINGS_RESULT_MARKER):]
             try:
+                data = json.loads(payload)
                 result = parse_tauri_settings_payload(
-                    json.loads(payload),
+                    data,
                     expected_nonce=self._nonce,
                 )
             except (ValueError, json.JSONDecodeError) as exc:
                 self._done = True
                 self.failed.emit(str(exc))
+                continue
+            # 「应用」：持久化但保持窗口打开，进程继续监听后续保存/应用。
+            if isinstance(data, dict) and data.get("keep_open"):
+                self.applied.emit(result)
                 continue
             self._done = True
             self.completed.emit(result)
@@ -841,6 +878,10 @@ class TauriSettingsProcess(QObject):
         if not isinstance(params, dict):
             self._send_rpc_response(request_id, ok=False, error="RPC params 必须是对象。")
             return
+        # 模型检测/连通性测试是阻塞网络调用，放到后台线程，避免冻结主程序 Qt 事件循环。
+        if method in ("api.list_models", "api.test_connection"):
+            self._dispatch_api_probe(request_id, method, params)
+            return
         try:
             result = self._dispatch_rpc(method, params)
         except Exception as exc:  # noqa: BLE001
@@ -848,6 +889,41 @@ class TauriSettingsProcess(QObject):
             self._send_rpc_response(request_id, ok=False, error=str(exc))
             return
         self._send_rpc_response(request_id, ok=True, result=result)
+
+    def _dispatch_api_probe(self, request_id: str, method: str, params: dict[str, Any]) -> None:
+        """在后台线程跑 list_models / test_connection，完成后经 RPC 回传结果。"""
+        try:
+            settings = _api_probe_settings(method, params)
+        except ValueError as exc:
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+
+        thread = QThread(self)
+        if method == "api.test_connection":
+            worker: QObject = ApiConnectionTestWorker(settings)
+        else:
+            worker = ApiModelListProbeWorker(settings)
+        worker.moveToThread(thread)
+        self._api_probes[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _on_success(payload: Any) -> None:
+            if method == "api.test_connection":
+                self._send_rpc_response(request_id, ok=True, result={"message": str(payload)})
+            else:
+                models = [str(item) for item in payload if str(item).strip()]
+                self._send_rpc_response(request_id, ok=True, result={"models": models})
+
+        def _on_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(_on_success)
+        worker.failed.connect(_on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._api_probes.pop(rid, None))
+        thread.start()
 
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "plugin.settings_action":
@@ -939,6 +1015,14 @@ class TauriSettingsProcess(QObject):
             return
         self._cleaned = True
         self._request_payload = b""
+        # 收尾在途探测线程，避免线程仍在运行时随 self 被销毁。
+        for thread, _worker in list(self._api_probes.values()):
+            try:
+                thread.quit()
+                thread.wait(3000)
+            except RuntimeError:
+                pass
+        self._api_probes.clear()
         process = self._process
         if process is not None:
             process.deleteLater()

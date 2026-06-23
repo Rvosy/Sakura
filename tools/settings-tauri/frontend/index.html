@@ -16,6 +16,7 @@
         <nav class="nav-list">
           <button class="nav-item is-active" type="button" data-page="character">角色</button>
           <button class="nav-item" type="button" data-page="appearance">外观</button>
+          <button class="nav-item" type="button" data-page="providers">供应商</button>
           <button class="nav-item" type="button" data-page="model">模型</button>
           <button class="nav-item" type="button" data-page="voice">语音</button>
           <button class="nav-item" type="button" data-page="privacy">隐私</button>
@@ -148,18 +149,22 @@
           </div>
         </section>
 
+        <section id="page-providers" class="settings-page admin-page">
+          <div id="providerStatusStrip" class="admin-strip"></div>
+          <div class="admin-toolbar">
+            <input id="providerSearch" class="admin-search" type="text" placeholder="搜索供应商、Base URL" />
+            <button id="addProviderButton" class="secondary-button" type="button">添加供应商</button>
+          </div>
+          <div class="admin-workbench">
+            <div id="providerList" class="admin-list"></div>
+            <aside id="providerDetail" class="admin-detail"></aside>
+          </div>
+        </section>
+
         <section id="page-model" class="settings-page">
           <fieldset class="settings-group">
-            <legend>供应商</legend>
-            <div id="apiProfiles" class="dynamic-list"></div>
-            <div class="form-row">
-              <label>供应商操作</label>
-              <button id="addApiProfileButton" class="secondary-button" type="button">添加供应商</button>
-            </div>
-          </fieldset>
-
-          <fieldset class="settings-group">
             <legend>模型槽位</legend>
+            <p class="page-note">在「供应商」页配置 API Key 与模型后，这里为各功能分配供应商与模型。</p>
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
@@ -415,6 +420,7 @@
         <footer>
           <p id="errorText" class="error" role="alert"></p>
           <button id="cancelButton" class="secondary-button" type="button">取消</button>
+          <button id="applyButton" class="secondary-button" type="button">应用</button>
           <button id="saveButton" type="button">保存</button>
         </footer>
       </section>

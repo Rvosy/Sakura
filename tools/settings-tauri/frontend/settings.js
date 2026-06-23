@@ -15,8 +15,11 @@ const fields = {
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
   toolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
-  apiProfiles: document.getElementById("apiProfiles"),
-  addApiProfileButton: document.getElementById("addApiProfileButton"),
+  providerStatusStrip: document.getElementById("providerStatusStrip"),
+  providerSearch: document.getElementById("providerSearch"),
+  addProviderButton: document.getElementById("addProviderButton"),
+  providerList: document.getElementById("providerList"),
+  providerDetail: document.getElementById("providerDetail"),
   modelSlots: document.getElementById("modelSlots"),
   apiTimeout: document.getElementById("apiTimeout"),
   apiTemperature: document.getElementById("apiTemperature"),
@@ -79,6 +82,7 @@ const fields = {
   tokenEstimate: document.getElementById("tokenEstimate"),
   errorText: document.getElementById("errorText"),
   saveButton: document.getElementById("saveButton"),
+  applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
   pageTitle: document.getElementById("pageTitle"),
   pageSubtitle: document.getElementById("pageSubtitle"),
@@ -87,6 +91,7 @@ const fields = {
     character: document.getElementById("page-character"),
     privacy: document.getElementById("page-privacy"),
     appearance: document.getElementById("page-appearance"),
+    providers: document.getElementById("page-providers"),
     model: document.getElementById("page-model"),
     voice: document.getElementById("page-voice"),
     tools: document.getElementById("page-tools"),
@@ -371,7 +376,8 @@ function normalizeColorText(value, fallback) {
 const pageMeta = {
   character: { title: "角色", subtitle: "选择陪伴角色与立绘布局" },
   appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
-  model: { title: "模型", subtitle: "供应商、模型槽位与高级参数" },
+  providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
+  model: { title: "模型", subtitle: "功能模型分配与高级参数" },
   voice: { title: "语音", subtitle: "TTS 提供器与语音参数" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
@@ -387,7 +393,10 @@ function showPage(page) {
   fields.navItems.forEach((item) => {
     item.classList.toggle("is-active", item.dataset.page === page);
   });
-  document.querySelector(".page-scroll")?.classList.toggle("is-admin-active", page === "memory" || page === "plugins");
+  document.querySelector(".page-scroll")?.classList.toggle(
+    "is-admin-active",
+    page === "memory" || page === "plugins" || page === "providers",
+  );
   if (page !== "memory") {
     clearMemoryRetry();
   }
@@ -395,6 +404,10 @@ function showPage(page) {
   if (meta) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = meta.subtitle;
+  }
+  // 进入「模型」页时按当前供应商重建槽位选项（供应商可能在另一页被改过）。
+  if (page === "model" && request) {
+    refreshModelSlots();
   }
   if (
     page === "memory"
@@ -623,88 +636,517 @@ function makeProfileId() {
   return `profile-${Date.now()}`;
 }
 
-function textRow(labelText, field, value) {
+// 供应商页改为状态驱动的主从结构：providerState.profiles 是唯一数据源，
+// 「供应商」页与「模型」页的槽位都从它派生（参照 pluginState/memoryState）。
+const providerState = { profiles: [], selectedId: "", search: "" };
+
+// 内置预设：选中即预填 Base URL 与图标，其余走「自定义」。
+const PROVIDER_PRESETS = [
+  {
+    key: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com/v1",
+    host: "api.deepseek.com",
+    iconUrl: "./assets/providers/deepseek.svg",
+  },
+];
+
+function initializeProviderState() {
+  providerState.profiles = (request.api.profiles || []).map((profile) => ({
+    id: profile.id || makeProfileId(),
+    alias: profile.alias || profile.id || "供应商",
+    base_url: profile.base_url || "",
+    api_key: profile.api_key || "",
+    models: Array.isArray(profile.models) ? profile.models.map(String) : [],
+  }));
+  providerState.selectedId = providerState.profiles[0]?.id || "";
+}
+
+function providerHost(url) {
+  const text = String(url || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    return new URL(text).host;
+  } catch {
+    return text.replace(/^https?:\/\//, "").split("/")[0];
+  }
+}
+
+function presetForProfile(profile) {
+  const host = providerHost(profile.base_url);
+  const alias = String(profile.alias || "").toLowerCase();
+  return (
+    PROVIDER_PRESETS.find((preset) => preset.host === host || preset.label.toLowerCase() === alias)
+    || null
+  );
+}
+
+function filteredProviders() {
+  const query = providerState.search.trim().toLowerCase();
+  if (!query) {
+    return providerState.profiles;
+  }
+  return providerState.profiles.filter((profile) =>
+    [profile.alias, profile.base_url, ...(profile.models || [])]
+      .join(" ")
+      .toLowerCase()
+      .includes(query),
+  );
+}
+
+function renderProviderPage() {
+  renderProviderStatus();
+  renderProviderList();
+  renderProviderDetail();
+}
+
+function renderProviderStatus() {
+  const items = providerState.profiles;
+  const configured = items.filter(
+    (profile) => (profile.base_url || "").trim() && (profile.api_key || "").trim(),
+  ).length;
+  const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
+  renderStrip(fields.providerStatusStrip, [
+    { label: "供应商", value: items.length },
+    { label: "已配置", value: configured },
+    { label: "模型", value: totalModels },
+  ]);
+}
+
+// 填充头像：优先用图标资源（如 DeepSeek SVG），其次 emoji，最后名称首字母。
+function applyAvatar(avatar, { iconUrl, icon, initial } = {}) {
+  avatar.textContent = "";
+  avatar.classList.remove("is-initial");
+  if (iconUrl) {
+    const img = document.createElement("img");
+    img.className = "provider-avatar-img";
+    img.src = iconUrl;
+    img.alt = "";
+    avatar.append(img);
+  } else if (icon) {
+    avatar.textContent = icon;
+  } else {
+    avatar.classList.add("is-initial");
+    avatar.textContent = (initial || "?").trim().charAt(0).toUpperCase() || "?";
+  }
+}
+
+function providerAvatar(profile) {
+  const avatar = document.createElement("span");
+  avatar.className = "provider-avatar";
+  const preset = presetForProfile(profile);
+  applyAvatar(avatar, {
+    iconUrl: preset?.iconUrl,
+    icon: preset?.icon,
+    initial: profile.alias || "?",
+  });
+  return avatar;
+}
+
+function renderProviderList() {
+  fields.providerList.textContent = "";
+  const profiles = filteredProviders();
+  if (!profiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = providerState.profiles.length
+      ? "没有匹配的供应商。"
+      : "还没有供应商，点「添加供应商」开始。";
+    fields.providerList.append(empty);
+    return;
+  }
+  profiles.forEach((profile) => {
+    const card = document.createElement("div");
+    card.className = "provider-card";
+    card.classList.toggle("is-selected", profile.id === providerState.selectedId);
+    card.addEventListener("click", () => {
+      providerState.selectedId = profile.id;
+      renderProviderPage();
+    });
+    const body = document.createElement("div");
+    body.className = "provider-card-body";
+    const title = document.createElement("strong");
+    title.textContent = profile.alias || profile.id;
+    const meta = document.createElement("span");
+    meta.className = "card-meta";
+    meta.textContent = providerHost(profile.base_url) || "未设置 Base URL";
+    body.append(title, meta);
+    const count = document.createElement("span");
+    count.className = "provider-count";
+    count.textContent = `${(profile.models || []).length} 个模型`;
+    card.append(providerAvatar(profile), body, count);
+    fields.providerList.append(card);
+  });
+}
+
+function renderProviderDetail() {
+  const detail = fields.providerDetail;
+  detail.textContent = "";
+  const profile = providerState.profiles.find((item) => item.id === providerState.selectedId);
+  if (!profile) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "选择左侧供应商查看与编辑配置。";
+    detail.append(empty);
+    return;
+  }
+  const title = document.createElement("h2");
+  title.textContent = profile.alias || profile.id;
+  detail.append(
+    title,
+    providerField(profile, "alias", "名称", "text"),
+    providerField(profile, "base_url", "Base URL", "text"),
+    providerField(profile, "api_key", "API Key", "password"),
+    renderProviderModels(profile),
+  );
+  const actions = document.createElement("div");
+  actions.className = "detail-actions";
+  const testButton = document.createElement("button");
+  testButton.type = "button";
+  testButton.className = "secondary-button";
+  testButton.textContent = "测试连接";
+  testButton.addEventListener("click", () => testProvider(profile, testButton));
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "danger-button";
+  removeButton.textContent = "删除供应商";
+  removeButton.addEventListener("click", () => removeProvider(profile));
+  actions.append(testButton, removeButton);
+  detail.append(actions);
+}
+
+function providerField(profile, key, label, type) {
   const row = document.createElement("div");
   row.className = "form-row";
-  const label = document.createElement("label");
-  label.textContent = labelText;
+  const labelEl = document.createElement("label");
+  labelEl.textContent = label;
+  const input = document.createElement("input");
+  input.type = type === "password" ? "password" : "text";
+  input.className = "wide-input";
+  input.value = profile[key] || "";
+  input.addEventListener("input", () => {
+    profile[key] = input.value;
+    if (key === "alias" || key === "base_url") {
+      // 仅刷新左侧卡片与标题，避免重渲详情导致输入框失焦。
+      renderProviderStatus();
+      renderProviderList();
+      if (key === "alias") {
+        const heading = fields.providerDetail.querySelector("h2");
+        if (heading) {
+          heading.textContent = input.value.trim() || profile.id;
+        }
+      }
+    } else if (key === "api_key") {
+      renderProviderStatus();
+    }
+  });
+  row.append(labelEl, input);
+  return row;
+}
+
+function renderProviderModels(profile) {
+  const section = document.createElement("div");
+  section.className = "provider-models";
+  const head = document.createElement("div");
+  head.className = "provider-models-head";
+  const heading = document.createElement("h3");
+  heading.textContent = "模型";
+  const detectButton = document.createElement("button");
+  detectButton.type = "button";
+  detectButton.className = "secondary-button compact-button";
+  detectButton.textContent = "自动检测";
+  detectButton.addEventListener("click", () => autoDetectModels(profile, detectButton));
+  head.append(heading, detectButton);
+  section.append(head);
+
+  const list = document.createElement("div");
+  list.className = "model-chip-list";
+  if (!(profile.models || []).length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "还没有模型，点「自动检测」或在下方手动添加。";
+    list.append(empty);
+  } else {
+    profile.models.forEach((model) => {
+      const chip = document.createElement("span");
+      chip.className = "model-chip";
+      const name = document.createElement("span");
+      name.textContent = model;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "model-chip-remove";
+      remove.setAttribute("aria-label", `删除 ${model}`);
+      remove.textContent = "×";
+      remove.addEventListener("click", () => {
+        profile.models = profile.models.filter((item) => item !== model);
+        renderProviderPage();
+        refreshModelSlots();
+      });
+      chip.append(name, remove);
+      list.append(chip);
+    });
+  }
+  section.append(list);
+
+  const addRow = document.createElement("div");
+  addRow.className = "model-add-row";
   const input = document.createElement("input");
   input.type = "text";
   input.className = "wide-input";
-  input.dataset.profileField = field;
-  input.value = value;
-  row.append(label, input);
-  return row;
-}
-
-function textareaRow(labelText, field, value) {
-  const row = document.createElement("div");
-  row.className = "form-row align-start";
-  const label = document.createElement("label");
-  label.textContent = labelText;
-  const textarea = document.createElement("textarea");
-  textarea.dataset.profileField = field;
-  textarea.value = value;
-  row.append(label, textarea);
-  return row;
-}
-
-function renderApiProfiles(profiles) {
-  fields.apiProfiles.textContent = "";
-  profiles.forEach((profile) => {
-    const group = document.createElement("fieldset");
-    group.className = "nested-group";
-    group.dataset.profileId = profile.id;
-    const legend = document.createElement("legend");
-    legend.textContent = profile.alias || profile.id;
-    const alias = textRow("名称", "alias", profile.alias || profile.id);
-    const baseUrl = textRow("Base URL", "base_url", profile.base_url || "");
-    const apiKey = textRow("API Key", "api_key", profile.api_key || "");
-    const models = textareaRow("模型列表", "models", (profile.models || []).join("\n"));
-    const actions = document.createElement("div");
-    actions.className = "form-row";
-    const label = document.createElement("label");
-    label.textContent = "供应商";
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.className = "secondary-button";
-    removeButton.textContent = "删除";
-    removeButton.addEventListener("click", () => {
-      if (fields.apiProfiles.querySelectorAll(".nested-group").length <= 1) {
-        return;
-      }
-      group.remove();
-      refreshModelSlots();
-    });
-    actions.append(label, removeButton);
-    [alias, baseUrl, apiKey, models].forEach((row) => {
-      const input = row.querySelector("[data-profile-field]");
-      input.addEventListener("input", () => {
-        legend.textContent = alias.querySelector("input").value.trim() || profile.id;
-        if (input.dataset.profileField === "models") {
-          refreshModelSlots();
-        }
-      });
-    });
-    group.append(legend, alias, baseUrl, apiKey, models, actions);
-    fields.apiProfiles.append(group);
+  input.placeholder = "手动添加模型 ID";
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "secondary-button compact-button";
+  addButton.textContent = "添加";
+  const commit = () => {
+    const value = input.value.trim();
+    if (!value) {
+      return;
+    }
+    const added = addModelsToProfile(profile, [value]);
+    input.value = "";
+    setError(added ? "" : "该模型已存在。");
+  };
+  addButton.addEventListener("click", commit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    }
   });
+  addRow.append(input, addButton);
+  section.append(addRow);
+  return section;
 }
 
-function apiProfilesFromDom() {
-  return Array.from(fields.apiProfiles.querySelectorAll(".nested-group")).map((group) => {
-    const value = (field) => group.querySelector(`[data-profile-field="${field}"]`).value.trim();
-    return {
-      id: group.dataset.profileId,
-      alias: value("alias") || group.dataset.profileId,
-      base_url: value("base_url"),
-      api_key: value("api_key"),
-      models: value("models")
-        .split(/\r?\n|,/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    };
+function addModelsToProfile(profile, models) {
+  if (!Array.isArray(profile.models)) {
+    profile.models = [];
+  }
+  const existing = new Set(profile.models);
+  let added = 0;
+  models.forEach((model) => {
+    const name = String(model || "").trim();
+    if (name && !existing.has(name)) {
+      existing.add(name);
+      profile.models.push(name);
+      added += 1;
+    }
   });
+  if (added) {
+    renderProviderPage();
+    refreshModelSlots();
+  }
+  return added;
+}
+
+async function autoDetectModels(profile, button) {
+  const baseUrl = (profile.base_url || "").trim();
+  const apiKey = (profile.api_key || "").trim();
+  if (!baseUrl) {
+    setError("请先填写 Base URL。");
+    return;
+  }
+  if (!apiKey) {
+    setError("请先填写 API Key。");
+    return;
+  }
+  setError("");
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "检测中…";
+  try {
+    const result = await hostCall("api.list_models", {
+      base_url: baseUrl,
+      api_key: apiKey,
+      timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
+    });
+    const models = Array.isArray(result?.models) ? result.models : [];
+    if (!models.length) {
+      setError("未检测到任何模型。");
+      return;
+    }
+    openModelPicker(profile, models);
+  } catch (error) {
+    setError(`自动检测失败：${error}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function testProvider(profile, button) {
+  const baseUrl = (profile.base_url || "").trim();
+  const apiKey = (profile.api_key || "").trim();
+  const model = (profile.models || [])[0];
+  if (!baseUrl || !apiKey) {
+    setError("请先填写 Base URL 与 API Key。");
+    return;
+  }
+  if (!model) {
+    setError("请先添加至少一个模型再测试。");
+    return;
+  }
+  setError("");
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "测试中…";
+  try {
+    const result = await hostCall("api.test_connection", {
+      base_url: baseUrl,
+      api_key: apiKey,
+      model,
+      timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
+    });
+    setError(`连接成功：${result?.message || "OK"}`);
+  } catch (error) {
+    setError(`连接失败：${error}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function removeProvider(profile) {
+  providerState.profiles = providerState.profiles.filter((item) => item.id !== profile.id);
+  if (providerState.selectedId === profile.id) {
+    providerState.selectedId = providerState.profiles[0]?.id || "";
+  }
+  renderProviderPage();
+  refreshModelSlots();
+}
+
+function addProvider(preset) {
+  const profile = {
+    id: makeProfileId(),
+    alias: preset?.label || "新供应商",
+    base_url: preset?.base_url || "",
+    api_key: "",
+    models: [],
+  };
+  providerState.profiles.push(profile);
+  providerState.selectedId = profile.id;
+  providerState.search = "";
+  if (fields.providerSearch) {
+    fields.providerSearch.value = "";
+  }
+  renderProviderPage();
+  refreshModelSlots();
+}
+
+function makeModalButton(text, className, handler) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = text;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function openAddProviderChooser() {
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  const dialog = document.createElement("div");
+  dialog.className = "confirm-dialog provider-add-dialog";
+  const heading = document.createElement("h2");
+  heading.textContent = "添加供应商";
+  const grid = document.createElement("div");
+  grid.className = "provider-preset-grid";
+  const close = () => overlay.remove();
+  PROVIDER_PRESETS.forEach((preset) => {
+    const option = makeModalButton("", "provider-preset-option", () => {
+      addProvider(preset);
+      close();
+    });
+    const icon = document.createElement("span");
+    icon.className = "provider-avatar";
+    applyAvatar(icon, { iconUrl: preset.iconUrl, icon: preset.icon, initial: preset.label });
+    const label = document.createElement("span");
+    label.textContent = preset.label;
+    option.append(icon, label);
+    grid.append(option);
+  });
+  const custom = makeModalButton("", "provider-preset-option", () => {
+    addProvider(null);
+    close();
+  });
+  const customIcon = document.createElement("span");
+  customIcon.className = "provider-avatar is-initial";
+  customIcon.textContent = "＋";
+  const customLabel = document.createElement("span");
+  customLabel.textContent = "自定义";
+  custom.append(customIcon, customLabel);
+  grid.append(custom);
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  actions.append(makeModalButton("取消", "secondary-button", close));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
+  });
+  dialog.append(heading, grid, actions);
+  overlay.append(dialog);
+  document.body.append(overlay);
+}
+
+function openModelPicker(profile, models) {
+  const existing = new Set(profile.models || []);
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  const dialog = document.createElement("div");
+  dialog.className = "confirm-dialog model-picker-dialog";
+  const heading = document.createElement("h2");
+  heading.textContent = `检测到 ${models.length} 个模型`;
+  const toolbar = document.createElement("div");
+  toolbar.className = "model-picker-toolbar";
+  const body = document.createElement("div");
+  body.className = "model-picker-list";
+  const checks = models.map((model) => {
+    const item = document.createElement("label");
+    item.className = "check-control model-picker-item";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = model;
+    checkbox.checked = !existing.has(model);
+    const text = document.createElement("span");
+    text.textContent = existing.has(model) ? `${model}（已添加）` : model;
+    item.append(checkbox, text);
+    body.append(item);
+    return checkbox;
+  });
+  const setAll = (predicate) => checks.forEach((checkbox) => {
+    checkbox.checked = predicate(checkbox);
+  });
+  toolbar.append(
+    makeModalButton("全选", "secondary-button compact-button", () => setAll(() => true)),
+    makeModalButton("只选新增", "secondary-button compact-button", () =>
+      setAll((checkbox) => !existing.has(checkbox.value)),
+    ),
+    makeModalButton("全不选", "secondary-button compact-button", () => setAll(() => false)),
+  );
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const close = () => overlay.remove();
+  actions.append(
+    makeModalButton("取消", "secondary-button", close),
+    makeModalButton("添加", "primary-button", () => {
+      const chosen = checks.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+      const added = addModelsToProfile(profile, chosen);
+      close();
+      setError(added ? `已添加 ${added} 个模型。` : "没有新增模型。");
+    }),
+  );
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
+  });
+  dialog.append(heading, toolbar, body, actions);
+  overlay.append(dialog);
+  document.body.append(overlay);
 }
 
 function renderModelSlots(selection) {
@@ -734,7 +1176,7 @@ function renderModelSlots(selection) {
 }
 
 function fillProfileOptions(select, selectedId, required) {
-  const profiles = apiProfilesFromDom();
+  const profiles = providerState.profiles;
   select.textContent = "";
   if (!required) {
     const inherit = document.createElement("option");
@@ -748,14 +1190,20 @@ function fillProfileOptions(select, selectedId, required) {
     option.textContent = profile.alias || profile.id;
     select.append(option);
   });
-  select.value = selectedId || (required && profiles[0] ? profiles[0].id : "");
+  // 选中的供应商可能已被删除：回退到首个（必填槽）或「继承」（可选槽）。
+  const ids = profiles.map((profile) => profile.id);
+  let value = ids.includes(selectedId) ? selectedId : "";
+  if (!value && required && profiles[0]) {
+    value = profiles[0].id;
+  }
+  select.value = value;
   refreshSelect(select);
 }
 
 function syncModelOptions(slot, selectedModel) {
   const profileSelect = fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`);
   const modelSelect = fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`);
-  const profile = apiProfilesFromDom().find((item) => item.id === profileSelect.value);
+  const profile = providerState.profiles.find((item) => item.id === profileSelect.value);
   const models = profile?.models || [];
   const current = selectedModel ?? modelSelect.value;
   modelSelect.textContent = "";
@@ -1731,7 +2179,13 @@ function collectApiSettings() {
         ? clampInt(fields.apiMaxTokens.value, limits.api_max_tokens)
         : null,
     },
-    profiles: apiProfilesFromDom(),
+    profiles: providerState.profiles.map((profile) => ({
+      id: profile.id,
+      alias: (profile.alias || "").trim() || profile.id,
+      base_url: (profile.base_url || "").trim(),
+      api_key: (profile.api_key || "").trim(),
+      models: (profile.models || []).map((model) => String(model).trim()).filter(Boolean),
+    })),
     model_selection: collectModelSelection(),
   };
 }
@@ -1844,7 +2298,8 @@ async function load() {
   applyTheme(request.theme);
   renderCharacters();
   renderThemeControls();
-  renderApiProfiles(request.api.profiles);
+  initializeProviderState();
+  renderProviderPage();
   renderModelSlots(request.api.model_selection);
   renderTtsProviders();
   renderMemoryControls();
@@ -1964,16 +2419,10 @@ fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
-fields.addApiProfileButton.addEventListener("click", () => {
-  const profile = {
-    id: makeProfileId(),
-    alias: "新供应商",
-    base_url: "https://api.openai.com/v1",
-    api_key: "",
-    models: ["gpt-4.1-mini"],
-  };
-  renderApiProfiles([...apiProfilesFromDom(), profile]);
-  refreshModelSlots();
+fields.addProviderButton.addEventListener("click", openAddProviderChooser);
+fields.providerSearch.addEventListener("input", () => {
+  providerState.search = fields.providerSearch.value;
+  renderProviderList();
 });
 fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
@@ -2012,6 +2461,22 @@ fields.saveButton.addEventListener("click", async () => {
     await invoke("save_settings", { settings: collectSettings() });
   } catch (error) {
     setError(String(error));
+  }
+});
+
+fields.applyButton.addEventListener("click", async () => {
+  if (!request) {
+    return;
+  }
+  setError("");
+  fields.applyButton.disabled = true;
+  try {
+    await invoke("apply_settings", { settings: collectSettings() });
+    setError("已应用。");
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    fields.applyButton.disabled = false;
   }
 });
 
