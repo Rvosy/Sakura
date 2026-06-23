@@ -41,6 +41,7 @@ data/visual_observations/
 data/runtime_events/
 data/notes/
 data/tts_bundles/
+data/local_runtimes/
 data/logs/
 data/cache/
 data/sakura.lock

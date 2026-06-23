@@ -7,17 +7,13 @@
 
 from __future__ import annotations
 
-import base64
-import io
 import json
-import math
 import mimetypes
 import shutil
-import struct
 import subprocess
 import urllib.error
 import urllib.request
-import wave
+import base64
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -37,7 +33,19 @@ from app.config.character_loader import CharacterProfile
 from app.core.debug_log import debug_log
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
+from app.sensory.audio_smoke import (
+    build_sensory_audio_smoke_data_url,
+    run_sensory_audio_smoke_test,
+)
 from app.sensory.models import SensoryRequest, SensorySource
+from app.sensory.llama_cpp_runtime import (
+    LlamaCppRuntimeError,
+    discover_llama_server_binary,
+    fetch_latest_llama_cpp_runtime_packages,
+    install_llama_cpp_runtime_package,
+    llama_cpp_platform_key,
+    select_llama_cpp_runtime_package,
+)
 from app.sensory.providers import (
     DEFAULT_LLAMA_CPP_ENDPOINT,
     DEFAULT_LMSTUDIO_ENDPOINT,
@@ -56,7 +64,7 @@ _SENSORY_TEST_IMAGE_DATA_URL = (
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAA9hAAAPYQGoP6dp"
     "AAAAGUlEQVQokWO84+DAQApgIkn1qIZRDUNKAwBb8AF8KOWdWAAAAABJRU5ErkJggg=="
 )
-_SENSORY_TEST_AUDIO_DATA_URL = ""
+_SENSORY_TEST_AUDIO_DATA_URL = build_sensory_audio_smoke_data_url()
 HF_CLI_INSTALL_HINT = (
     "未找到 Hugging Face CLI `hf`。请先安装："
     "macOS/Linux 运行 `curl -LsSf https://hf.co/cli/install.sh | bash`；"
@@ -67,27 +75,6 @@ HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
 HF_COMPATIBILITY_CLEAR = "clear"
 HF_COMPATIBILITY_POSSIBLE = "possible"
 HF_COMPATIBILITY_UNKNOWN = "unknown"
-
-
-def _build_sensory_test_audio_data_url() -> str:
-    sample_rate = 16000
-    duration_seconds = 0.35
-    frequency = 880.0
-    amplitude = 0.28
-    frame_count = int(sample_rate * duration_seconds)
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        for index in range(frame_count):
-            value = int(32767 * amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
-            wav.writeframesraw(struct.pack("<h", value))
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:audio/wav;base64,{encoded}"
-
-
-_SENSORY_TEST_AUDIO_DATA_URL = _build_sensory_test_audio_data_url()
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -167,15 +154,35 @@ class SensoryModelTestWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, config: SensoryProviderConfig, source: SensorySource) -> None:
+    def __init__(
+        self,
+        config: SensoryProviderConfig,
+        source: SensorySource,
+        *,
+        base_dir: Path | None = None,
+    ) -> None:
         super().__init__()
         self.config = config.normalized()
         self.source = source
+        self.base_dir = base_dir
 
     @Slot()
     def run(self) -> None:
         try:
-            provider = provider_from_config(self.config)
+            if self.source in {SensorySource.SPEECH, SensorySource.SOUND}:
+                result = run_sensory_audio_smoke_test(
+                    self.config,
+                    base_dir=self.base_dir,
+                    source=self.source,
+                )
+                if not result.ok:
+                    raise RuntimeError(result.message)
+                observation = result.observation
+                if observation is None:
+                    raise RuntimeError("音频推理 smoke test 未返回观察结果。")
+                self.succeeded.emit(observation.to_dict())
+                return
+            provider = provider_from_config(self.config, base_dir=self.base_dir)
             request = SensoryRequest(
                 id="settings_test",
                 source=self.source,
@@ -266,6 +273,53 @@ class HuggingFaceModelDownloadWorker(QObject):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppRuntimeInstallWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            existing = discover_llama_server_binary(self.base_dir)
+            if existing:
+                self.succeeded.emit(
+                    {
+                        "binary_path": existing,
+                        "install_dir": str(Path(existing).parent),
+                        "already_installed": True,
+                        "platform_key": llama_cpp_platform_key(),
+                        "message": "已找到可用的 llama-server。",
+                    }
+                )
+                return
+            packages = fetch_latest_llama_cpp_runtime_packages(timeout_seconds=30)
+            package = select_llama_cpp_runtime_package(packages)
+            result = install_llama_cpp_runtime_package(
+                self.base_dir,
+                package,
+                timeout_seconds=self.timeout_seconds,
+            )
+            payload = result.to_mapping()
+            payload["platform_key"] = llama_cpp_platform_key()
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
         finally:
             self.finished.emit()
 

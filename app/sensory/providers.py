@@ -9,7 +9,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from typing import Protocol
+from urllib.parse import urlparse
 
+from app.sensory.llama_cpp_runtime import (
+    DEFAULT_LLAMA_CPP_ALIAS,
+    DEFAULT_LLAMA_CPP_HOST,
+    DEFAULT_LLAMA_CPP_MANAGED_PORT,
+    LLAMA_CPP_MANAGED_RUNTIME_MARKER,
+    LlamaCppLaunchConfig,
+    LlamaCppRuntimeError,
+    LlamaCppRuntimeManager,
+)
 from app.sensory.models import (
     SensoryObservation,
     SensoryProviderMode,
@@ -92,6 +102,45 @@ class LlamaCppSensoryProvider(LocalSensoryProvider):
 
     def __init__(self, config: SensoryProviderConfig) -> None:
         super().__init__(_with_default_endpoint(config, DEFAULT_LLAMA_CPP_ENDPOINT))
+
+
+class ManagedLlamaCppSensoryProvider:
+    """llama.cpp provider that starts a Sakura-managed ``llama-server`` on demand."""
+
+    def __init__(
+        self,
+        config: SensoryProviderConfig,
+        *,
+        base_dir: Path,
+        resource_registry: Any | None = None,
+    ) -> None:
+        self.config = _with_default_endpoint(config, _managed_llama_cpp_endpoint(config)).normalized()
+        self.provider_id = self.config.provider_id
+        self.source = self.config.source
+        self.mode = SensoryProviderMode.LOCAL
+        self._runtime_manager = LlamaCppRuntimeManager(
+            base_dir=base_dir,
+            resource_registry=resource_registry,
+        )
+        self._provider = LlamaCppSensoryProvider(
+            _with_model(self.config, _llama_cpp_model_alias(self.config.model))
+        )
+        self._runtime_ready = False
+
+    def observe(self, request: SensoryRequest) -> SensoryObservation:
+        self._ensure_runtime()
+        return self._provider.observe(request)
+
+    def _ensure_runtime(self) -> None:
+        if self._runtime_ready:
+            return
+        try:
+            status = self._runtime_manager.start(_llama_cpp_launch_config_from_provider(self.config))
+        except LlamaCppRuntimeError as exc:
+            raise SensoryProviderUnavailable(str(exc)) from exc
+        if not status.healthy:
+            raise SensoryProviderUnavailable("llama.cpp sensory runtime is not healthy")
+        self._runtime_ready = status.healthy
 
 
 class OllamaSensoryProvider:
@@ -192,7 +241,12 @@ class FakeSensoryProvider:
         ).normalized()
 
 
-def provider_from_config(config: SensoryProviderConfig) -> SensoryProvider:
+def provider_from_config(
+    config: SensoryProviderConfig,
+    *,
+    base_dir: Path | None = None,
+    resource_registry: Any | None = None,
+) -> SensoryProvider:
     normalized = config.normalized()
     if normalized.mode == SensoryProviderMode.API:
         return ApiSensoryProvider(normalized)
@@ -201,6 +255,12 @@ def provider_from_config(config: SensoryProviderConfig) -> SensoryProvider:
         if backend in {"lmstudio", "lm_studio"}:
             return LmStudioSensoryProvider(normalized)
         if backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+            if base_dir is not None and _managed_llama_cpp_enabled(normalized):
+                return ManagedLlamaCppSensoryProvider(
+                    normalized,
+                    base_dir=base_dir,
+                    resource_registry=resource_registry,
+                )
             return LlamaCppSensoryProvider(normalized)
         if backend == "ollama":
             return OllamaSensoryProvider(normalized)
@@ -208,10 +268,22 @@ def provider_from_config(config: SensoryProviderConfig) -> SensoryProvider:
     return DisabledProvider()
 
 
-def build_provider_registry(configs: dict[str, SensoryProviderConfig]) -> dict[str, SensoryProvider]:
+def build_provider_registry(
+    configs: dict[str, SensoryProviderConfig],
+    *,
+    base_dir: Path | None = None,
+    resource_registry: Any | None = None,
+) -> dict[str, SensoryProvider]:
     return {
         provider.provider_id: provider
-        for provider in (provider_from_config(config) for config in configs.values())
+        for provider in (
+            provider_from_config(
+                config,
+                base_dir=base_dir,
+                resource_registry=resource_registry,
+            )
+            for config in configs.values()
+        )
     }
 
 
@@ -573,6 +645,121 @@ def _with_default_endpoint(config: SensoryProviderConfig, endpoint: str) -> Sens
         timeout_seconds=normalized.timeout_seconds,
         extra=normalized.extra,
     )
+
+
+def _with_model(config: SensoryProviderConfig, model: str) -> SensoryProviderConfig:
+    normalized = config.normalized()
+    return SensoryProviderConfig(
+        provider_id=normalized.provider_id,
+        source=normalized.source,
+        mode=normalized.mode,
+        endpoint=normalized.endpoint,
+        model=model or normalized.model,
+        api_key=normalized.api_key,
+        timeout_seconds=normalized.timeout_seconds,
+        extra=normalized.extra,
+    ).normalized()
+
+
+def _managed_llama_cpp_enabled(config: SensoryProviderConfig) -> bool:
+    extra = config.extra
+    marker = str(extra.get("managed_runtime") or "").strip().lower()
+    return (
+        marker == LLAMA_CPP_MANAGED_RUNTIME_MARKER
+        or bool(str(extra.get("llama_binary_path") or "").strip())
+        or bool(str(extra.get("llama_runtime_package_id") or "").strip())
+    )
+
+
+def _managed_llama_cpp_endpoint(config: SensoryProviderConfig) -> str:
+    if config.endpoint:
+        return config.endpoint
+    return f"http://{DEFAULT_LLAMA_CPP_HOST}:{DEFAULT_LLAMA_CPP_MANAGED_PORT}/v1"
+
+
+def _llama_cpp_launch_config_from_provider(config: SensoryProviderConfig) -> LlamaCppLaunchConfig:
+    endpoint = _managed_llama_cpp_endpoint(config)
+    host, port = _host_port_from_endpoint(endpoint)
+    model = config.model.strip()
+    model_path, hf_repo, mmproj_path = _llama_cpp_model_paths(model, config.extra)
+    return LlamaCppLaunchConfig(
+        binary_path=str(config.extra.get("llama_binary_path") or "").strip(),
+        model_path=model_path,
+        hf_repo=hf_repo,
+        mmproj_path=mmproj_path,
+        host=host,
+        port=port,
+        alias=_llama_cpp_model_alias(model),
+        ctx_size=_int_extra(config.extra, "ctx_size", 4096),
+        n_gpu_layers=config.extra.get("n_gpu_layers", "auto"),
+        threads=_int_extra(config.extra, "threads", 0),
+        timeout_seconds=float(config.timeout_seconds),
+        extra_args=_llama_cpp_extra_args(config.extra),
+    )
+
+
+def _host_port_from_endpoint(endpoint: str) -> tuple[str, int]:
+    parsed = urlparse(endpoint.strip())
+    host = parsed.hostname or DEFAULT_LLAMA_CPP_HOST
+    port = parsed.port or DEFAULT_LLAMA_CPP_MANAGED_PORT
+    return host, port
+
+
+def _llama_cpp_model_paths(model: str, extra: dict[str, Any]) -> tuple[str, str, str]:
+    explicit_model_path = str(extra.get("model_path") or "").strip()
+    explicit_hf_repo = str(extra.get("hf_repo") or "").strip()
+    explicit_mmproj = str(extra.get("mmproj_path") or "").strip()
+    if explicit_model_path or explicit_hf_repo:
+        return explicit_model_path, explicit_hf_repo, explicit_mmproj
+    model_text = model.strip()
+    if not model_text:
+        return "", "", explicit_mmproj
+    path = Path(model_text).expanduser()
+    if path.is_file():
+        return str(path), "", explicit_mmproj
+    if path.is_dir():
+        model_path, mmproj_path = _find_llama_cpp_model_files(path)
+        return str(model_path) if model_path is not None else "", "", explicit_mmproj or (
+            str(mmproj_path) if mmproj_path is not None else ""
+        )
+    if "/" in model_text:
+        return "", model_text, explicit_mmproj
+    return model_text, "", explicit_mmproj
+
+
+def _find_llama_cpp_model_files(directory: Path) -> tuple[Path | None, Path | None]:
+    try:
+        ggufs = sorted(directory.rglob("*.gguf"))
+    except OSError:
+        return None, None
+    mmproj = next((path for path in ggufs if "mmproj" in path.name.lower()), None)
+    model = next((path for path in ggufs if path != mmproj), None)
+    return model, mmproj
+
+
+def _llama_cpp_model_alias(model: str) -> str:
+    text = model.strip()
+    if not text:
+        return DEFAULT_LLAMA_CPP_ALIAS
+    if "/" in text and not Path(text).expanduser().exists():
+        return text
+    path = Path(text).expanduser()
+    if path.is_dir():
+        return path.name or DEFAULT_LLAMA_CPP_ALIAS
+    if path.exists() and path.suffix:
+        return path.stem or DEFAULT_LLAMA_CPP_ALIAS
+    if text.lower().endswith(".gguf"):
+        return path.stem or DEFAULT_LLAMA_CPP_ALIAS
+    return text
+
+
+def _llama_cpp_extra_args(extra: dict[str, Any]) -> tuple[str, ...]:
+    raw = extra.get("llama_extra_args")
+    if isinstance(raw, list):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    if isinstance(raw, str) and raw.strip():
+        return tuple(part for part in raw.strip().split(" ") if part)
+    return ()
 
 
 def _backend_name(config: SensoryProviderConfig) -> str:

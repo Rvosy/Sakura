@@ -5643,7 +5643,11 @@ class PetWindow(QWidget):
         pipeline = SensoryPipeline(
             settings=normalized,
             store=store,
-            providers=build_provider_registry(normalized.providers),
+            providers=build_provider_registry(
+                normalized.providers,
+                base_dir=self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
             system_audio_capture=create_system_audio_capture(
                 self.base_dir,
                 resource_registry=self.resource_manager.registry,

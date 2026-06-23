@@ -7,6 +7,7 @@ import sys
 import wave
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from app.agent.actions import PendingToolAction
@@ -16,12 +17,18 @@ from app.llm.api_client import ChatMessage
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.sensory import audio_capture as audio_capture_module
+from app.sensory import providers as providers_module
 from app.sensory.audio_capture import AudioInputSource, CapturedAudio
 from app.sensory.audio_inference import (
     BUILTIN_AUDIO_RUNTIME,
     OFFICIAL_AUDIO_FRAMEWORK_ID,
     SIDECAR_AUDIO_RUNTIME,
     official_audio_inference_framework,
+)
+from app.sensory.audio_smoke import (
+    build_sensory_audio_smoke_plan,
+    build_sensory_audio_smoke_data_url,
+    run_sensory_audio_smoke_test,
 )
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
@@ -101,6 +108,109 @@ def test_settings_sensory_test_audio_is_decodable_wav() -> None:
         assert wav.getnchannels() == 1
         assert wav.getframerate() == 16000
         assert wav.getnframes() > 0
+
+
+def test_sensory_audio_smoke_data_url_is_decodable_wav() -> None:
+    prefix, payload = build_sensory_audio_smoke_data_url().split(",", 1)
+    raw = base64.b64decode(payload, validate=True)
+
+    assert prefix == "data:audio/wav;base64"
+    with wave.open(io.BytesIO(raw), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getframerate() == 16000
+        assert wav.getnframes() > 0
+
+
+def test_sensory_audio_smoke_test_returns_observation(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    def fake_post_json(
+        url: str,
+        payload: dict[str, object],
+        *,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del url, headers, timeout_seconds
+        assert payload["model"] == "audio-model"
+        return {"choices": [{"message": {"content": '{"summary":"音频正常","confidence":0.9}'}}]}
+
+    monkeypatch.setattr(providers_module, "_post_json", fake_post_json)
+
+    result = run_sensory_audio_smoke_test(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="audio-model",
+            extra={"backend": "openai_compatible"},
+        ),
+        base_dir=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.observation is not None
+    assert result.observation.summary == "音频正常"
+
+
+def test_sensory_audio_smoke_test_fails_closed_without_model(tmp_path: Path) -> None:
+    result = run_sensory_audio_smoke_test(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="",
+            extra={"backend": "openai_compatible"},
+        ),
+        base_dir=tmp_path,
+    )
+
+    assert result.ok is False
+    assert "no model" in result.message
+
+
+def test_sensory_audio_smoke_plan_reports_managed_runtime_and_download_hint(tmp_path: Path) -> None:
+    binary = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    if sys.platform != "win32":
+        binary.chmod(0o755)
+
+    plan = build_sensory_audio_smoke_plan(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0",
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+        source=SensorySource.SPEECH,
+    )
+
+    assert plan.ok is True
+    assert plan.managed_runtime is True
+    assert plan.binary_path == str(binary)
+    assert plan.model_download_hint == "约 1.0 GB"
+
+
+def test_sensory_audio_smoke_plan_reports_missing_runtime(tmp_path: Path) -> None:
+    plan = build_sensory_audio_smoke_plan(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0",
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+        source=SensorySource.SPEECH,
+    )
+
+    assert plan.ok is False
+    assert "runtime binary" in plan.message
 
 
 def test_official_audio_inference_framework_is_optional_and_packaged_under_data(tmp_path: Path) -> None:
@@ -189,6 +299,171 @@ def test_sensory_pipeline_routes_by_mode_and_provider_id(tmp_path: Path) -> None
     assert observation is not None
     assert observation.provider_id == "fake_vision"
     assert store.recent(limit=1)[0].summary == "屏幕中有一个确认按钮。"
+
+
+def test_managed_llama_provider_starts_runtime_before_audio_observation(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    starts = []
+
+    class FakeRuntimeManager:
+        def __init__(self, *, base_dir: Path, resource_registry: object | None = None) -> None:
+            assert base_dir == tmp_path
+            self.resource_registry = resource_registry
+
+        def start(self, config: object) -> object:
+            starts.append(config)
+            return SimpleNamespace(healthy=True, model_id="ggml-org/Qwen3-ASR-0.6B-GGUF")
+
+    def fake_post_json(
+        url: str,
+        payload: dict[str, object],
+        *,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del headers, timeout_seconds
+        assert url == "http://127.0.0.1:18080/v1/chat/completions"
+        assert payload["model"] == "ggml-org/Qwen3-ASR-0.6B-GGUF"
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "summary": "听到一句短语。",
+                                "details": {"transcript": "hello"},
+                                "confidence": 0.8,
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(providers_module, "LlamaCppRuntimeManager", FakeRuntimeManager)
+    monkeypatch.setattr(providers_module, "_post_json", fake_post_json)
+    provider = provider_from_config(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF",
+            extra={
+                "backend": "llama",
+                "managed_runtime": "llama.cpp",
+                "llama_binary_path": str(tmp_path / "llama-server"),
+            },
+        ),
+        base_dir=tmp_path,
+    )
+
+    observation = provider.observe(
+        SensoryRequest(
+            id="req_audio",
+            source=SensorySource.SPEECH,
+            media_ref="data:audio/wav;base64,AAAA",
+        )
+    )
+
+    assert observation.summary == "听到一句短语。"
+    assert starts
+    launch_config = starts[0]
+    assert getattr(launch_config, "hf_repo") == "ggml-org/Qwen3-ASR-0.6B-GGUF"
+    assert getattr(launch_config, "port") == 18080
+
+
+def test_managed_llama_provider_uses_local_gguf_directory_alias(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    model_dir = tmp_path / "Qwen3-ASR-local"
+    model_dir.mkdir()
+    model_file = model_dir / "qwen3-asr-q4.gguf"
+    mmproj_file = model_dir / "mmproj-qwen3-asr.gguf"
+    model_file.write_text("model", encoding="utf-8")
+    mmproj_file.write_text("mmproj", encoding="utf-8")
+    starts = []
+
+    class FakeRuntimeManager:
+        def __init__(self, *, base_dir: Path, resource_registry: object | None = None) -> None:
+            del base_dir, resource_registry
+
+        def start(self, config: object) -> object:
+            starts.append(config)
+            return SimpleNamespace(healthy=True, model_id="Qwen3-ASR-local")
+
+    def fake_post_json(
+        url: str,
+        payload: dict[str, object],
+        *,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del url, headers, timeout_seconds
+        assert payload["model"] == "Qwen3-ASR-local"
+        return {"choices": [{"message": {"content": '{"summary":"ok","confidence":0.9}'}}]}
+
+    monkeypatch.setattr(providers_module, "LlamaCppRuntimeManager", FakeRuntimeManager)
+    monkeypatch.setattr(providers_module, "_post_json", fake_post_json)
+    provider = provider_from_config(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model=str(model_dir),
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+    )
+
+    observation = provider.observe(
+        SensoryRequest(
+            id="req_audio",
+            source=SensorySource.SPEECH,
+            media_ref="data:audio/wav;base64,AAAA",
+        )
+    )
+
+    assert observation.summary == "ok"
+    launch_config = starts[0]
+    assert getattr(launch_config, "model_path") == str(model_file)
+    assert getattr(launch_config, "mmproj_path") == str(mmproj_file)
+    assert getattr(launch_config, "alias") == "Qwen3-ASR-local"
+
+
+def test_managed_llama_provider_fails_closed_when_runtime_unhealthy(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    class FakeRuntimeManager:
+        def __init__(self, *, base_dir: Path, resource_registry: object | None = None) -> None:
+            del base_dir, resource_registry
+
+        def start(self, config: object) -> object:
+            del config
+            return SimpleNamespace(healthy=False, model_id="")
+
+    monkeypatch.setattr(providers_module, "LlamaCppRuntimeManager", FakeRuntimeManager)
+    provider = provider_from_config(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF",
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+    )
+
+    try:
+        provider.observe(
+            SensoryRequest(
+                id="req_audio",
+                source=SensorySource.SPEECH,
+                media_ref="data:audio/wav;base64,AAAA",
+            )
+        )
+    except SensoryProviderUnavailable as exc:
+        assert "not healthy" in str(exc)
+    else:
+        raise AssertionError("expected provider to fail closed")
 
 
 def test_sensory_pipeline_disabled_source_fails_closed(tmp_path: Path) -> None:

@@ -476,7 +476,11 @@ def create_sensory_pipeline(
     return SensoryPipeline(
         settings=normalized,
         store=store,
-        providers=build_provider_registry(normalized.providers),
+        providers=build_provider_registry(
+            normalized.providers,
+            base_dir=base_dir,
+            resource_registry=resource_registry,
+        ),
         system_audio_capture=(
             create_system_audio_capture(base_dir, resource_registry=resource_registry)
             if base_dir is not None
