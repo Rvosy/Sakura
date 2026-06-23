@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from app.core.resource_manager import ResourceRegistry
+from app.sensory import llama_cpp_runtime
 from app.sensory.llama_cpp_runtime import (
     LLAMA_CPP_RUNTIME_MANIFEST_ENV,
     LLAMA_CPP_SERVER_ENV,
@@ -431,6 +432,46 @@ def test_install_llama_cpp_runtime_package_downloads_and_extracts_zip(tmp_path: 
     )
     assert second.already_installed is True
     assert second.binary_path == result.binary_path
+
+
+def test_install_llama_cpp_runtime_package_refuses_download_when_disk_is_low(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    package = LlamaCppRuntimePackageSpec(
+        package_id="b9763-low-disk",
+        label="test",
+        platform_key="macos-arm64",
+        url="https://example.invalid/llama.zip",
+        archive_format="zip",
+        binary_relpath="llama-server",
+        size_bytes=100,
+    )
+    checks: list[tuple[Path, int]] = []
+
+    def fake_disk_space_check(path: Path, required_bytes: int) -> dict[str, object]:
+        checks.append((path, required_bytes))
+        return {
+            "ok": False,
+            "available_bytes": 128,
+            "needed_bytes": 256,
+            "required_bytes": required_bytes,
+        }
+
+    monkeypatch.setattr(llama_cpp_runtime, "build_disk_space_check", fake_disk_space_check)
+
+    with pytest.raises(LlamaCppRuntimeError, match="磁盘空间不足"):
+        install_llama_cpp_runtime_package(
+            tmp_path,
+            package,
+            urlopen=lambda _request, timeout: (_ for _ in ()).throw(
+                AssertionError("runtime archive should not download when disk is low")
+            ),
+        )
+
+    assert checks
+    assert checks[0][0].name == "llama.zip"
+    assert checks[0][1] == 200
 
 
 def test_install_llama_cpp_runtime_package_reuses_nested_existing_binary(tmp_path: Path) -> None:

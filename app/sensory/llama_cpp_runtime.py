@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from app.core.debug_log import debug_log
 from app.core.resource_manager import ProcessResource, ResourceRegistry
+from app.sensory.disk_space import build_disk_space_check, format_bytes
 from app.storage.paths import StoragePaths
 
 
@@ -160,6 +161,7 @@ class LlamaCppRuntimeInstallResult:
     binary_path: str
     already_installed: bool = False
     message: str = ""
+    disk_space: Mapping[str, Any] = field(default_factory=dict)
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -168,6 +170,7 @@ class LlamaCppRuntimeInstallResult:
             "binary_path": self.binary_path,
             "already_installed": bool(self.already_installed),
             "message": self.message,
+            "disk_space": dict(self.disk_space),
         }
 
 
@@ -410,8 +413,16 @@ def install_llama_cpp_runtime_package(
         )
 
     archive_dir = root / "_downloads"
-    archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / _archive_filename(normalized)
+    disk_space = build_disk_space_check(
+        archive_path,
+        _runtime_install_required_bytes(normalized),
+    )
+    if not bool(disk_space.get("ok", True)):
+        available = format_bytes(int(disk_space.get("available_bytes") or 0))
+        needed = format_bytes(int(disk_space.get("needed_bytes") or 0))
+        raise LlamaCppRuntimeError(f"磁盘空间不足，无法下载 llama.cpp 运行时：需要 {needed}，可用 {available}。")
+    archive_dir.mkdir(parents=True, exist_ok=True)
     _download_file(normalized.url, archive_path, timeout_seconds=timeout_seconds, urlopen=urlopen)
     if normalized.sha256:
         actual = _sha256_file(archive_path)
@@ -451,6 +462,7 @@ def install_llama_cpp_runtime_package(
         binary_path=str(installed_binary),
         already_installed=False,
         message="llama.cpp 运行时已安装。",
+        disk_space=disk_space,
     )
 
 
@@ -815,6 +827,23 @@ def _archive_filename(package: LlamaCppRuntimePackageSpec) -> str:
     if raw_name.endswith((".zip", ".tar.gz", ".tgz")):
         return raw_name
     return f"{package.package_id}{suffix}"
+
+
+def _runtime_install_required_bytes(package: LlamaCppRuntimePackageSpec) -> int:
+    archive_size = package.normalized().size_bytes
+    if archive_size <= 0:
+        local_archive = _local_archive_path_from_url(package.url)
+        if local_archive is not None:
+            try:
+                archive_size = local_archive.stat().st_size
+            except OSError:
+                archive_size = 0
+    if archive_size <= 0:
+        return 0
+    # Keep room for both the archive and its extracted contents. The exact
+    # expansion ratio varies by platform package, so this remains a preflight
+    # estimate rather than a hard post-install accounting invariant.
+    return archive_size * 2
 
 
 def _download_file(

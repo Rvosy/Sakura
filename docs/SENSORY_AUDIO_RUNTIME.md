@@ -11,7 +11,7 @@
   - `data/local_runtimes/llama_cpp/`
   - `PATH`
 - 找不到时，Sakura 从 `ggml-org/llama.cpp` 最新 GitHub release 选择当前平台官方预编译包。
-- 下载与解压结果写入 `data/local_runtimes/llama_cpp/`，该目录是用户态缓存，不应提交到仓库。
+- 下载前会按 archive 大小估算“archive + 解压内容”所需空间并保留安全余量；空间不足时不会开始下载。下载与解压结果写入 `data/local_runtimes/llama_cpp/`，该目录是用户态缓存，不应提交到仓库。
 - 发布版或内网镜像可以提供本地 runtime manifest 固定下载源；Sakura 会优先读取 manifest，再回退到 GitHub latest。
 
 ## 跨平台选择
@@ -105,8 +105,8 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 设置页“准备 llama.cpp 音频后端”会按当前音频源执行：
 
 1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
-2. 检查推荐 GGUF 模型是否已在 `data/sensory_models/<source>/...` 缓存。
-3. 检查本地磁盘空间是否足够容纳推荐模型下载，并保留安全余量。
+2. 检查推荐 GGUF 模型是否已在 `data/cache/sensory_models/<source>/...` 缓存。
+3. 检查本地磁盘空间是否足够容纳运行时 archive、解压内容和推荐模型下载，并保留安全余量。
 4. 未缓存时，在用户确认后下载推荐文件；有 Hugging Face CLI 时优先使用 `hf`，没有 `hf` 时使用内置 HTTP 直连下载匹配文件。
 5. 成功后把模型字段指向本地缓存目录，避免后续 smoke 或真实调用再让 `llama-server -hf` 拉模型。
 
