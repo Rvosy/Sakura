@@ -4774,11 +4774,70 @@ def test_settings_dialog_llama_prepare_confirmation_mentions_disk_preflight(monk
 
     monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
 
-    dialog._install_sensory_llama_runtime()
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "speech",
+            "requirement": {
+                "runtime_preflight": {
+                    "required": True,
+                    "message": "将下载 llama.cpp b1 macOS（10.0 MB）。",
+                    "disk_space": {
+                        "ok": True,
+                        "needed_bytes": 2048,
+                        "available_bytes": 4096,
+                    },
+                },
+                "disk_space": {
+                    "ok": True,
+                    "needed_bytes": 1024,
+                    "available_bytes": 4096,
+                },
+            },
+        }
+    )
 
     assert questions
-    assert "运行时包、解压内容和推荐模型所需的磁盘空间" in questions[0]
+    assert "将下载 llama.cpp b1 macOS" in questions[0]
+    assert "运行时空间" in questions[0]
+    assert "模型空间" in questions[0]
     assert dialog._sensory_llama_runtime_thread is None
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_prepare_blocks_low_disk_preflight(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_low_disk")
+    warnings: list[str] = []
+    questions: list[str] = []
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "warning", lambda _parent, _title, text: warnings.append(text))
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", lambda _parent, _title, text: questions.append(text))
+
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "speech",
+            "requirement": {
+                "runtime_preflight": {
+                    "required": True,
+                    "disk_space": {
+                        "ok": False,
+                        "needed_bytes": 2048,
+                        "available_bytes": 1024,
+                    },
+                },
+                "disk_space": {"ok": True},
+            },
+        }
+    )
+
+    assert warnings and "运行时磁盘空间不足" in warnings[0]
+    assert questions == []
+    assert dialog._pending_sensory_llama_prepare_source is None
 
     dialog.deleteLater()
     app.processEvents()

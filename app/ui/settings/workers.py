@@ -37,6 +37,8 @@ from app.sensory.audio_smoke import (
 )
 from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory.audio_deployment import (
+    build_llama_cpp_audio_prepare_requirement,
+    build_llama_cpp_runtime_download_preflight,
     ensure_llama_cpp_runtime,
     prepare_llama_cpp_audio_backend,
 )
@@ -334,6 +336,45 @@ class LlamaCppAudioBackendPrepareWorker(QObject):
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPreflightWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path, source: SensorySource) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.source = source
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+            runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+            runtime_preflight = (
+                build_llama_cpp_runtime_download_preflight(self.base_dir)
+                if not bool(runtime.get("binary_found"))
+                else {}
+            )
+            requirement = build_llama_cpp_audio_prepare_requirement(
+                report,
+                self.source,
+                runtime_preflight=runtime_preflight,
+            )
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(
+                {
+                    "source": self.source.value,
+                    "doctor": report,
+                    "requirement": requirement,
+                }
+            )
         finally:
             self.finished.emit()
 

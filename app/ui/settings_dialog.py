@@ -77,6 +77,7 @@ from app.sensory.audio_models import (
     sensory_audio_model_download_hint,
 )
 from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
+from app.sensory.disk_space import format_bytes
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
     LLAMA_CPP_MANAGED_RUNTIME_MARKER,
@@ -586,6 +587,9 @@ class SettingsDialog(QDialog):
         self._sensory_model_probe_worker: settings_workers.SensoryModelListProbeWorker | None = None
         self._sensory_model_test_thread: QThread | None = None
         self._sensory_model_test_worker: settings_workers.SensoryModelTestWorker | None = None
+        self._sensory_llama_preflight_thread: QThread | None = None
+        self._sensory_llama_preflight_worker: settings_workers.LlamaCppAudioBackendPreflightWorker | None = None
+        self._pending_sensory_llama_prepare_source: SensorySource | None = None
         self._sensory_llama_runtime_thread: QThread | None = None
         self._sensory_llama_runtime_worker: (
             settings_workers.LlamaCppRuntimeInstallWorker
@@ -1319,6 +1323,13 @@ class SettingsDialog(QDialog):
         finally:
             self._syncing_sensory_controls = previous_syncing
 
+    def _sensory_llama_operation_running(self) -> bool:
+        return (
+            self._sensory_llama_preflight_thread is not None
+            or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
+        )
+
     @Slot(bool)
     def _sync_sensory_controls(self, *_args: object) -> None:
         if not hasattr(self, "sensory_mode_combo"):
@@ -1350,22 +1361,19 @@ class SettingsDialog(QDialog):
             configured
             and self._sensory_model_probe_thread is None
             and self._sensory_model_test_thread is None
-            and self._sensory_llama_runtime_thread is None
-            and self._sensory_llama_doctor_thread is None
+            and not self._sensory_llama_operation_running()
         )
         self.sensory_test_button.setEnabled(
             configured
             and self._sensory_model_probe_thread is None
             and self._sensory_model_test_thread is None
-            and self._sensory_llama_runtime_thread is None
-            and self._sensory_llama_doctor_thread is None
+            and not self._sensory_llama_operation_running()
         )
         if hasattr(self, "sensory_hf_download_button"):
             self.sensory_hf_download_button.setEnabled(
                 self._sensory_model_probe_thread is None
                 and self._sensory_model_test_thread is None
-                and self._sensory_llama_runtime_thread is None
-                and self._sensory_llama_doctor_thread is None
+                and not self._sensory_llama_operation_running()
             )
         if hasattr(self, "sensory_llama_runtime_button"):
             self.sensory_llama_runtime_button.setEnabled(
@@ -1375,8 +1383,7 @@ class SettingsDialog(QDialog):
                 and active_source in {SensorySource.SPEECH, SensorySource.SOUND}
                 and self._sensory_model_probe_thread is None
                 and self._sensory_model_test_thread is None
-                and self._sensory_llama_runtime_thread is None
-                and self._sensory_llama_doctor_thread is None
+                and not self._sensory_llama_operation_running()
             )
         if hasattr(self, "sensory_llama_doctor_button"):
             self.sensory_llama_doctor_button.setEnabled(
@@ -1385,8 +1392,7 @@ class SettingsDialog(QDialog):
                 and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
                 and self._sensory_model_probe_thread is None
                 and self._sensory_model_test_thread is None
-                and self._sensory_llama_runtime_thread is None
-                and self._sensory_llama_doctor_thread is None
+                and not self._sensory_llama_operation_running()
             )
         if not configured and hasattr(self, "sensory_status_label"):
             self.sensory_status_label.setText("该感官源已关闭。")
@@ -1477,8 +1483,7 @@ class SettingsDialog(QDialog):
             selected is None
             or self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
-            or self._sensory_llama_runtime_thread is not None
-            or self._sensory_llama_doctor_thread is not None
+            or self._sensory_llama_operation_running()
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1547,8 +1552,7 @@ class SettingsDialog(QDialog):
             selected is None
             or self._sensory_model_test_thread is not None
             or self._sensory_model_probe_thread is not None
-            or self._sensory_llama_runtime_thread is not None
-            or self._sensory_llama_doctor_thread is not None
+            or self._sensory_llama_operation_running()
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1652,8 +1656,7 @@ class SettingsDialog(QDialog):
         if (
             self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
-            or self._sensory_llama_runtime_thread is not None
-            or self._sensory_llama_doctor_thread is not None
+            or self._sensory_llama_operation_running()
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1702,8 +1705,7 @@ class SettingsDialog(QDialog):
         if (
             self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
-            or self._sensory_llama_runtime_thread is not None
-            or self._sensory_llama_doctor_thread is not None
+            or self._sensory_llama_operation_running()
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1755,8 +1757,7 @@ class SettingsDialog(QDialog):
         if (
             self._sensory_model_probe_thread is not None
             or self._sensory_model_test_thread is not None
-            or self._sensory_llama_runtime_thread is not None
-            or self._sensory_llama_doctor_thread is not None
+            or self._sensory_llama_operation_running()
             or self._api_model_probe_thread is not None
             or self._api_test_thread is not None
             or self._tts_test_thread is not None
@@ -1778,30 +1779,63 @@ class SettingsDialog(QDialog):
         if recommendation is None:
             QMessageBox.warning(self, "缺少推荐模型", f"{active_source.value} 没有内置推荐 llama.cpp 音频模型。")
             return
-        repo_id = _llama_cpp_audio_repo_id(recommendation.model)
-        cache_dir = StoragePaths(self.base_dir).sensory_model_cache_for(active_source.value, repo_id)
-        cached = llama_cpp_audio_cache_ready(cache_dir, recommendation.include_patterns)
-        model_line = (
-            f"推荐模型 {recommendation.model} 已在本地缓存。"
-            if cached
-            else (
-                f"将下载推荐模型 {recommendation.model}（{recommendation.download_hint}）到 Sakura 本地缓存，"
-                f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
-            )
+        self._set_sensory_llama_preflight_busy(True)
+        self.sensory_status_label.setText("正在检查 llama.cpp 音频后端...")
+        thread = QThread()
+        worker = settings_workers.LlamaCppAudioBackendPreflightWorker(self.base_dir, active_source)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_llama_preflight_success)
+        worker.failed.connect(self._handle_sensory_llama_preflight_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_llama_preflight_state)
+
+        self._sensory_llama_preflight_thread = thread
+        self._sensory_llama_preflight_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_llama_preflight_success(self, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        active_source = coerce_sensory_source(
+            str(payload.get("source") or getattr(self, "_active_sensory_source", SensorySource.VISION.value))
         )
+        blocking_message = _sensory_llama_prepare_blocking_message(payload)
+        if blocking_message:
+            self.sensory_status_label.setText(f"准备不可用：{blocking_message}")
+            QMessageBox.warning(self, "准备不可用", blocking_message)
+            return
+        message = _format_sensory_llama_prepare_confirmation(active_source, payload, self.base_dir)
         if (
             QMessageBox.question(
                 self,
                 "准备 llama.cpp 音频后端",
-                (
-                    "将优先使用本机已有的 llama-server；若未找到，会从 llama.cpp 官方 GitHub release "
-                    "下载当前平台的运行时包。下载前会检查运行时包、解压内容和推荐模型所需的磁盘空间。\n\n"
-                    f"{model_line}\n\n是否继续？"
-                ),
+                message,
             )
-            != QMessageBox.StandardButton.Yes
+            == QMessageBox.StandardButton.Yes
         ):
+            self._pending_sensory_llama_prepare_source = active_source
+
+    @Slot(str)
+    def _handle_sensory_llama_preflight_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"检查失败：{message}")
+        QMessageBox.warning(self, "检查失败", message)
+
+    @Slot()
+    def _reset_sensory_llama_preflight_state(self) -> None:
+        self._sensory_llama_preflight_thread = None
+        self._sensory_llama_preflight_worker = None
+        pending_source = self._pending_sensory_llama_prepare_source
+        self._pending_sensory_llama_prepare_source = None
+        if pending_source is not None:
+            self._start_sensory_llama_runtime_prepare(pending_source)
             return
+        self._set_sensory_llama_preflight_busy(False)
+        self._sync_sensory_controls()
+
+    def _start_sensory_llama_runtime_prepare(self, active_source: SensorySource) -> None:
         self._set_sensory_llama_runtime_busy(True)
         self.sensory_status_label.setText("正在准备 llama.cpp 音频后端...")
         thread = QThread()
@@ -1897,6 +1931,22 @@ class SettingsDialog(QDialog):
         if hasattr(self, "sensory_llama_doctor_button"):
             self.sensory_llama_doctor_button.setEnabled(not busy)
         self._set_save_buttons_busy(busy, "准备 llama.cpp...")
+
+    def _set_sensory_llama_preflight_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+            self.sensory_llama_runtime_button.setText(
+                "检查中..." if busy else "准备 llama.cpp 音频后端"
+            )
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "检查 llama.cpp...")
 
     def _set_sensory_llama_doctor_busy(self, busy: bool) -> None:
         if hasattr(self, "sensory_llama_doctor_button"):
@@ -3186,8 +3236,8 @@ class SettingsDialog(QDialog):
         if self._sensory_model_test_thread is not None:
             QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再保存设置。")
             return
-        if self._sensory_llama_runtime_thread is not None:
-            QMessageBox.information(self, "准备中", "llama.cpp 音频后端仍在准备，请等待完成后再保存设置。")
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再保存设置。")
             return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再保存设置。")
@@ -3651,11 +3701,8 @@ class SettingsDialog(QDialog):
         if self._sensory_model_test_thread is not None:
             QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
             return
-        if self._sensory_llama_runtime_thread is not None:
-            QMessageBox.information(self, "准备中", "llama.cpp 音频后端仍在准备，请等待完成后再关闭设置。")
-            return
-        if self._sensory_llama_doctor_thread is not None:
-            QMessageBox.information(self, "诊断中", "llama.cpp 运行时诊断仍在进行，请等待完成后再关闭设置。")
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再关闭设置。")
             return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
@@ -3698,12 +3745,8 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
             event.ignore()
             return
-        if self._sensory_llama_runtime_thread is not None:
-            QMessageBox.information(self, "准备中", "llama.cpp 音频后端仍在准备，请等待完成后再关闭设置。")
-            event.ignore()
-            return
-        if self._sensory_llama_doctor_thread is not None:
-            QMessageBox.information(self, "诊断中", "llama.cpp 运行时诊断仍在进行，请等待完成后再关闭设置。")
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再关闭设置。")
             event.ignore()
             return
         if self._character_export_thread is not None:
@@ -5296,6 +5339,87 @@ def _sensory_backend_label(backend: str) -> str:
         "llamacpp": "llama.cpp",
         "openai_compatible": "OpenAI 兼容 API",
     }.get(backend.strip().lower(), backend)
+
+
+def _format_sensory_llama_prepare_confirmation(
+    source: SensorySource,
+    payload: dict[str, Any],
+    base_dir: Path,
+) -> str:
+    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
+    runtime_preflight = (
+        requirement.get("runtime_preflight")
+        if isinstance(requirement.get("runtime_preflight"), dict)
+        else {}
+    )
+    lines = [
+        "将准备本机 llama.cpp 音频后端。",
+        "",
+    ]
+    if isinstance(runtime_preflight, dict) and runtime_preflight:
+        if bool(runtime_preflight.get("required")):
+            lines.append(str(runtime_preflight.get("message") or "将下载当前平台的 llama.cpp 运行时包。"))
+            disk_space = runtime_preflight.get("disk_space")
+            if isinstance(disk_space, dict):
+                lines.append(
+                    "运行时空间："
+                    f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+                    f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+                )
+        else:
+            binary_path = str(runtime_preflight.get("binary_path") or "").strip()
+            lines.append(f"运行时：已找到本机 llama-server{f'：{binary_path}' if binary_path else '。'}")
+    else:
+        lines.append("运行时：将优先使用本机已有的 llama-server；缺失时下载当前平台官方包。")
+
+    recommendation = recommended_llama_cpp_audio_model(source)
+    if recommendation is not None:
+        repo_id = _llama_cpp_audio_repo_id(recommendation.model)
+        cache_dir = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id)
+        cached = llama_cpp_audio_cache_ready(cache_dir, recommendation.include_patterns)
+        if cached:
+            lines.append(f"推荐模型：已在本地缓存 {cache_dir}。")
+        else:
+            lines.append(
+                f"推荐模型：将下载 {recommendation.model}（{recommendation.download_hint}），"
+                f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
+            )
+            disk_space = requirement.get("disk_space") if isinstance(requirement, dict) else {}
+            if isinstance(disk_space, dict):
+                lines.append(
+                    "模型空间："
+                    f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+                    f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+                )
+    lines.extend(["", "是否继续？"])
+    return "\n".join(lines)
+
+
+def _sensory_llama_prepare_blocking_message(payload: dict[str, Any]) -> str:
+    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
+    runtime_preflight = (
+        requirement.get("runtime_preflight")
+        if isinstance(requirement.get("runtime_preflight"), dict)
+        else {}
+    )
+    if isinstance(runtime_preflight, dict) and runtime_preflight:
+        if runtime_preflight.get("error"):
+            return str(runtime_preflight.get("message") or runtime_preflight.get("error") or "无法确认 llama.cpp 运行时包。")
+        runtime_disk = runtime_preflight.get("disk_space")
+        if isinstance(runtime_disk, dict) and not bool(runtime_disk.get("ok", True)):
+            return (
+                "运行时磁盘空间不足："
+                f"需要 {format_bytes(int(runtime_disk.get('needed_bytes') or 0))}，"
+                f"可用 {format_bytes(int(runtime_disk.get('available_bytes') or 0))}。"
+            )
+    model_disk = requirement.get("disk_space") if isinstance(requirement, dict) else {}
+    if isinstance(model_disk, dict) and not bool(model_disk.get("ok", True)):
+        return (
+            "模型下载磁盘空间不足："
+            f"需要 {format_bytes(int(model_disk.get('needed_bytes') or 0))}，"
+            f"可用 {format_bytes(int(model_disk.get('available_bytes') or 0))}。"
+        )
+    return ""
 
 
 def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
