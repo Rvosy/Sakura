@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import io
 import math
+import os
 import struct
+import sys
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,8 +98,10 @@ def build_sensory_audio_smoke_plan(
         == LLAMA_CPP_MANAGED_RUNTIME_MARKER
     )
     binary_path = ""
-    if managed_runtime and base_dir is not None:
-        binary_path = discover_llama_server_binary(base_dir)
+    if managed_runtime:
+        binary_path = _configured_llama_binary(normalized) or (
+            discover_llama_server_binary(base_dir) if base_dir is not None else ""
+        )
     runtime_requirement = _runtime_requirement(managed_runtime, binary_path)
     model_location = _model_location(normalized.model, managed_runtime)
     model_hint = sensory_audio_model_download_hint(normalized.model)
@@ -129,7 +133,7 @@ def build_sensory_audio_smoke_plan(
         binary_path=binary_path,
         platform_key=llama_cpp_platform_key(),
         runtime_requirement=runtime_requirement,
-        runtime_install_dir=_runtime_install_dir(base_dir) if managed_runtime else "",
+        runtime_install_dir=_runtime_install_dir(normalized, base_dir) if managed_runtime else "",
         model_location=model_location,
         requires_runtime_download=runtime_requirement == "download_required",
         requires_model_download=model_location == "huggingface",
@@ -208,10 +212,30 @@ def _runtime_requirement(managed_runtime: bool, binary_path: str) -> str:
     return "download_required"
 
 
-def _runtime_install_dir(base_dir: Path | None) -> str:
+def _configured_llama_binary(config: SensoryProviderConfig) -> str:
+    raw = str(config.extra.get("llama_binary_path") or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw).expanduser()
+    if _is_executable_file(path):
+        return str(path)
+    return ""
+
+
+def _runtime_install_dir(config: SensoryProviderConfig, base_dir: Path | None) -> str:
+    configured = str(config.extra.get("llama_runtime_install_dir") or "").strip()
+    if configured:
+        return configured
     if base_dir is None:
         return ""
     return str(StoragePaths(base_dir).llama_cpp_runtime_dir)
+
+
+def _is_executable_file(path: Path) -> bool:
+    try:
+        return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
+    except OSError:
+        return False
 
 
 def _model_location(model: str, managed_runtime: bool) -> str:

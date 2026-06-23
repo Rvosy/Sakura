@@ -74,6 +74,7 @@ from app.sensory.audio_models import (
     recommended_llama_cpp_audio_model,
     sensory_audio_model_download_hint,
 )
+from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
     LLAMA_CPP_MANAGED_RUNTIME_MARKER,
@@ -1588,16 +1589,28 @@ class SettingsDialog(QDialog):
             return True
         if not _sensory_provider_is_managed_llama(config):
             return True
-        hint = _sensory_llama_model_download_hint(config.model)
-        if not hint:
+        plan = build_sensory_audio_smoke_plan(
+            config,
+            base_dir=self.base_dir,
+            source=source,
+        )
+        if plan.requires_runtime_download:
+            QMessageBox.warning(
+                self,
+                "需要先配置运行时",
+                "未找到可用的 llama-server。请先点击“配置 llama.cpp 运行时”，再测试音频模型。",
+            )
+            return False
+        if not plan.requires_model_download:
             return True
+        download_hint = f"预计下载量 {plan.model_download_hint}" if plan.model_download_hint else "下载量取决于模型仓库，可能较大"
         return (
             QMessageBox.question(
                 self,
                 "确认下载音频模型",
                 (
-                    f"首次测试 {config.model} 时，llama.cpp 可能会下载模型与 mmproj，"
-                    f"预计下载量 {hint}。日志会写入 data/logs/sensory-llama-server.log。是否继续？"
+                    f"首次测试 {config.model} 时，llama.cpp 可能会从 Hugging Face 下载模型与 mmproj，"
+                    f"{download_hint}。日志会写入 data/logs/sensory-llama-server.log。是否继续？"
                 ),
             )
             == QMessageBox.StandardButton.Yes

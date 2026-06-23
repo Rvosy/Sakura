@@ -257,6 +257,38 @@ def test_sensory_audio_smoke_plan_treats_local_managed_llama_model_as_no_downloa
     assert plan.model_download_hint == ""
 
 
+def test_sensory_audio_smoke_plan_uses_configured_llama_binary(tmp_path: Path) -> None:
+    binary = tmp_path / "custom" / "llama-server"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    if sys.platform != "win32":
+        binary.chmod(0o755)
+    install_dir = tmp_path / "custom"
+
+    plan = build_sensory_audio_smoke_plan(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0",
+            extra={
+                "backend": "llama",
+                "managed_runtime": "llama.cpp",
+                "llama_binary_path": str(binary),
+                "llama_runtime_install_dir": str(install_dir),
+            },
+        ),
+        base_dir=tmp_path,
+        source=SensorySource.SPEECH,
+    )
+
+    assert plan.ok is True
+    assert plan.binary_path == str(binary)
+    assert plan.runtime_install_dir == str(install_dir)
+    assert plan.runtime_requirement == "cached"
+
+
 def test_official_audio_inference_framework_is_optional_and_packaged_under_data(tmp_path: Path) -> None:
     framework = official_audio_inference_framework(tmp_path)
 
