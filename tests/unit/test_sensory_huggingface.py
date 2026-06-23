@@ -12,7 +12,7 @@ from app.sensory import audio_deployment
 from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory import huggingface as sensory_huggingface
 from app.sensory.audio_models import llama_cpp_audio_cache_ready, recommended_llama_cpp_audio_model
-from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec
+from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec, llama_cpp_platform_key
 from app.sensory.models import SensorySource
 from app.storage.paths import StoragePaths
 from app.ui.settings import workers as settings_workers
@@ -417,11 +417,13 @@ def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
     monkeypatch,
     tmp_path: Path,
 ) -> None:  # type: ignore[no-untyped-def]
+    platform_key = llama_cpp_platform_key()
+    archive_name = f"llama-b1-bin-{platform_key}.tar.gz"
     package = LlamaCppRuntimePackageSpec(
-        package_id="b1-macos",
-        label="llama.cpp b1 macOS",
-        platform_key="macos-arm64",
-        url="https://example.invalid/llama-b1-bin-macos-arm64.tar.gz",
+        package_id=f"b1-{platform_key}",
+        label=f"llama.cpp b1 {platform_key}",
+        platform_key=platform_key,
+        url=f"https://example.invalid/{archive_name}",
         archive_format="tar.gz",
         binary_relpath="llama-server",
         size_bytes=1024,
@@ -449,7 +451,7 @@ def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
     assert preflight["required"] is True
     assert preflight["ok"] is True
     assert preflight["package_source"] == "manifest:test"
-    assert preflight["package"]["package_id"] == "b1-macos"
+    assert preflight["package"]["package_id"] == f"b1-{platform_key}"
     assert preflight["estimated_download_bytes"] == 1024
     assert preflight["estimated_required_bytes"] == 2048
     assert preflight["download_hint"] == "1.0 KB"
@@ -457,7 +459,7 @@ def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
         (
             StoragePaths(tmp_path).llama_cpp_runtime_dir
             / "_downloads"
-            / "llama-b1-bin-macos-arm64.tar.gz",
+            / archive_name,
             2048,
         )
     ]

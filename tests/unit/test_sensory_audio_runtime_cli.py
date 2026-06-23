@@ -97,6 +97,7 @@ def test_audio_runtime_cli_install_runtime_uses_local_manifest(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(audio_runtime_cli, "discover_llama_server_binary", lambda base_dir: "")
+    platform_key = audio_runtime_cli.llama_cpp_platform_key()
     manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
@@ -104,10 +105,10 @@ def test_audio_runtime_cli_install_runtime_uses_local_manifest(
             {
                 "packages": [
                     {
-                        "package_id": "mirror-macos",
-                        "label": "Mirror macOS",
-                        "platform_key": "macos-arm64",
-                        "url": "https://mirror.example/llama.tar.gz",
+                        "package_id": f"mirror-{platform_key}",
+                        "label": f"Mirror {platform_key}",
+                        "platform_key": platform_key,
+                        "url": f"https://mirror.example/llama-{platform_key}.tar.gz",
                         "archive_format": "tar.gz",
                         "binary_relpath": "llama-server",
                     }
@@ -135,7 +136,7 @@ def test_audio_runtime_cli_install_runtime_uses_local_manifest(
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["ok"] is True
-    assert payload["package"]["package_id"] == "mirror-macos"
+    assert payload["package"]["package_id"] == f"mirror-{platform_key}"
     assert payload["package_source"] == f"manifest:{manifest}"
 
 
