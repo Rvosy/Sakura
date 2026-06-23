@@ -55,6 +55,8 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
         "huggingface": {
             "hf_cli_found": bool(hf_path),
             "hf_cli_path": hf_path,
+            "builtin_file_download_supported": True,
+            "manual_repository_download_requires_hf_cli": not bool(hf_path),
         },
         "model_cache": model_cache,
         "plans": plans,
@@ -165,5 +167,5 @@ def _next_actions(
             hint = str(plan.get("model_download_hint") or "模型大小取决于仓库")
             actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
     if not hf_cli_found and any(not bool(state.get("ready")) for state in model_cache.values()):
-        actions.append("安装 Hugging Face CLI `hf` 后才能自动下载推荐 GGUF 模型。")
+        actions.append("未安装 Hugging Face CLI `hf`；推荐 GGUF 文件会使用内置直连下载，手动下载任意仓库仍需 `hf`。")
     return actions

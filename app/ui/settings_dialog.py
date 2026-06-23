@@ -5310,7 +5310,12 @@ def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
     huggingface = report.get("huggingface") if isinstance(report.get("huggingface"), dict) else {}
     if isinstance(huggingface, dict):
         hf_path = str(huggingface.get("hf_cli_path") or "").strip()
-        lines.append(f"Hugging Face CLI：{hf_path or '未找到'}")
+        if hf_path:
+            lines.append(f"Hugging Face CLI：{hf_path}")
+        elif bool(huggingface.get("builtin_file_download_supported")):
+            lines.append("Hugging Face CLI：未找到；推荐模型可使用内置直连下载")
+        else:
+            lines.append("Hugging Face CLI：未找到")
     manifest_candidates = runtime.get("manifest_candidates") if isinstance(runtime, dict) else []
     if isinstance(manifest_candidates, list):
         existing = [

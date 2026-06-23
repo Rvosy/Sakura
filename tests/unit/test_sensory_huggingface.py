@@ -230,6 +230,64 @@ def test_download_huggingface_model_passes_include_patterns(monkeypatch, tmp_pat
     assert result["include_patterns"] == ["*Q8_0.gguf", "mmproj-*.gguf"]
 
 
+def test_download_huggingface_model_falls_back_to_builtin_http_for_included_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    target = tmp_path / "hf" / "qwen-asr"
+    urls: list[str] = []
+
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda _name: None)
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        urls.append(str(getattr(request, "full_url", "")))
+        if "/api/models/" in urls[-1]:
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "siblings": [
+                            {"rfilename": "README.md"},
+                            {"rfilename": "Qwen3-ASR-0.6B-Q8_0.gguf"},
+                            {"rfilename": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"},
+                            {"rfilename": "Qwen3-ASR-0.6B-bf16.gguf"},
+                        ]
+                    }
+                ).encode("utf-8")
+            )
+        return _FakeResponse(b"gguf")
+
+    monkeypatch.setattr(sensory_huggingface, "urlopen", fake_urlopen)
+
+    result = sensory_huggingface.download_huggingface_model(
+        "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        target,
+        include_patterns=("Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
+        timeout_seconds=33,
+    )
+
+    assert result["download_method"] == "builtin_http"
+    assert result["downloaded_files"] == [
+        "Qwen3-ASR-0.6B-Q8_0.gguf",
+        "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+    ]
+    assert (target / "Qwen3-ASR-0.6B-Q8_0.gguf").read_bytes() == b"gguf"
+    assert (target / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf").read_bytes() == b"gguf"
+    assert len(urls) == 3
+
+
+def test_download_huggingface_model_without_hf_refuses_unbounded_builtin_download(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(sensory_huggingface.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="整个仓库"):
+        sensory_huggingface.download_huggingface_model(
+            "Qwen/Qwen3-VL-4B-Instruct",
+            tmp_path / "model",
+        )
+
+
 def test_prepare_llama_cpp_audio_backend_downloads_recommended_model(
     monkeypatch,
     tmp_path: Path,
@@ -351,3 +409,22 @@ def test_huggingface_cli_missing_fails_with_install_hint(monkeypatch, tmp_path: 
 
     with pytest.raises(RuntimeError, match="Hugging Face CLI"):
         sensory_huggingface.download_huggingface_model("Qwen/Qwen3-VL-4B-Instruct", tmp_path / "model")
+
+
+class _FakeResponse:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.offset = 0
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self.data) - self.offset
+        chunk = self.data[self.offset : self.offset + size]
+        self.offset += len(chunk)
+        return chunk
