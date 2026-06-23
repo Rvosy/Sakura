@@ -28,6 +28,7 @@ from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
     LLAMA_CPP_MANAGED_RUNTIME_MARKER,
     LLAMA_CPP_GITHUB_LATEST_RELEASE_API,
+    LlamaCppRuntimeError,
     discover_llama_server_binary,
     fetch_llama_cpp_runtime_package_catalog,
     fetch_latest_llama_cpp_runtime_packages,
@@ -75,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "smoke":
             return _run_smoke(args)
         return _run_plan(args)
-    except SensoryAudioRuntimeCliError as exc:
+    except (SensoryAudioRuntimeCliError, LlamaCppRuntimeError, RuntimeError, OSError) as exc:
         _print_payload({"ok": False, "message": str(exc)}, pretty=bool(args.pretty))
         return 1
 

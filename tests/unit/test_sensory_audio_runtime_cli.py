@@ -140,6 +140,44 @@ def test_audio_runtime_cli_install_runtime_uses_local_manifest(
     assert payload["package_source"] == f"manifest:{manifest}"
 
 
+def test_audio_runtime_cli_install_runtime_reports_missing_platform_as_json(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(audio_runtime_cli, "discover_llama_server_binary", lambda base_dir: "")
+    platform_key = audio_runtime_cli.llama_cpp_platform_key()
+    other_platform = next(
+        platform for platform in audio_runtime_cli._KNOWN_LLAMA_CPP_PLATFORM_KEYS if platform != platform_key
+    )
+    manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "package_id": f"mirror-{other_platform}",
+                        "label": f"Mirror {other_platform}",
+                        "platform_key": other_platform,
+                        "url": f"https://mirror.example/llama-{other_platform}.tar.gz",
+                        "archive_format": "tar.gz",
+                        "binary_relpath": "llama-server",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "install-runtime", "--yes"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert f"没有找到适用于 {platform_key}" in payload["message"]
+
+
 def test_audio_runtime_cli_install_runtime_reuses_existing_binary(
     tmp_path: Path,
     capsys,
@@ -787,6 +825,35 @@ def test_audio_runtime_cli_prepare_backend_runs_with_yes(
     assert code == 0
     assert payload["ok"] is True
     assert calls == [(tmp_path, "sound", True, True)]
+
+
+def test_audio_runtime_cli_prepare_backend_reports_expected_failure_as_json(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {"sound": {"ready": False}},
+        },
+    )
+
+    def fake_prepare(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("download failed")
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fake_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "sound", "--yes"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["message"] == "download failed"
 
 
 def test_audio_runtime_cli_prepare_backend_can_finish_ready_cache_without_yes(
