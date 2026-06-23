@@ -5307,6 +5307,10 @@ def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
         f"llama-server：{binary_path or '未找到'}",
         f"音频测试准备：{'已准备' if ready else '未准备'}",
     ]
+    huggingface = report.get("huggingface") if isinstance(report.get("huggingface"), dict) else {}
+    if isinstance(huggingface, dict):
+        hf_path = str(huggingface.get("hf_cli_path") or "").strip()
+        lines.append(f"Hugging Face CLI：{hf_path or '未找到'}")
     manifest_candidates = runtime.get("manifest_candidates") if isinstance(runtime, dict) else []
     if isinstance(manifest_candidates, list):
         existing = [

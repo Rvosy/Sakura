@@ -13,6 +13,10 @@ HF_CLI_INSTALL_HINT = (
 HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
 
 
+def hf_cli_path() -> str:
+    return shutil.which("hf") or ""
+
+
 def download_huggingface_model(
     repo_id: str,
     local_dir: Path,
@@ -49,7 +53,7 @@ def run_hf_command(
     *,
     timeout_seconds: int,
 ) -> subprocess.CompletedProcess[str]:
-    executable = shutil.which("hf")
+    executable = hf_cli_path()
     if not executable:
         raise RuntimeError(HF_CLI_INSTALL_HINT)
     command = [executable, *args]

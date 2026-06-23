@@ -5009,6 +5009,10 @@ def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch
                 "binary_path": "/tmp/llama-server",
                 "manifest_candidates": [{"exists": False}],
             },
+            "huggingface": {
+                "hf_cli_found": True,
+                "hf_cli_path": "/usr/local/bin/hf",
+            },
             "ready_for_smoke": True,
             "next_actions": ["speech 首次真实 smoke 需要确认 GGUF 模型下载：约 1.0 GB。"],
         }
@@ -5016,6 +5020,7 @@ def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch
 
     assert "平台：macos-arm64" in messages[0]
     assert "llama-server：/tmp/llama-server" in messages[0]
+    assert "Hugging Face CLI：/usr/local/bin/hf" in messages[0]
     assert dialog.sensory_status_label.text() == "平台：macos-arm64"
 
     dialog.deleteLater()

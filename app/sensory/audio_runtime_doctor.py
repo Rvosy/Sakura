@@ -18,6 +18,7 @@ from app.sensory.llama_cpp_runtime import (
     llama_cpp_runtime_manifest_paths,
     llama_cpp_runtime_packages_from_manifest,
 )
+from app.sensory.huggingface import hf_cli_path
 from app.sensory.models import SensoryProviderMode, SensorySource
 from app.sensory.settings import SensoryProviderConfig
 from app.storage.paths import StoragePaths
@@ -33,6 +34,7 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
         source.value: _model_cache_state(root, source)
         for source in (SensorySource.SPEECH, SensorySource.SOUND)
     }
+    hf_path = hf_cli_path()
     plans = {
         source.value: build_sensory_audio_smoke_plan(
             _managed_llama_default_config(source, model_cache[source.value]),
@@ -50,13 +52,19 @@ def build_sensory_audio_runtime_doctor_report(base_dir: Path) -> dict[str, Any]:
             "binary_path": binary_path,
             "manifest_candidates": manifest_candidates,
         },
+        "huggingface": {
+            "hf_cli_found": bool(hf_path),
+            "hf_cli_path": hf_path,
+        },
         "model_cache": model_cache,
         "plans": plans,
         "ready_for_smoke": ready_for_smoke,
         "next_actions": _next_actions(
             binary_path=binary_path,
+            hf_cli_found=bool(hf_path),
             manifest_candidates=manifest_candidates,
             plans=plans,
+            model_cache=model_cache,
         ),
     }
 
@@ -141,8 +149,10 @@ def _manifest_candidates(base_dir: Path) -> list[dict[str, Any]]:
 def _next_actions(
     *,
     binary_path: str,
+    hf_cli_found: bool,
     manifest_candidates: list[dict[str, Any]],
     plans: dict[str, dict[str, object]],
+    model_cache: dict[str, dict[str, Any]],
 ) -> list[str]:
     actions: list[str] = []
     if not binary_path:
@@ -150,7 +160,10 @@ def _next_actions(
     if not any(bool(candidate["exists"]) for candidate in manifest_candidates):
         actions.append("发布包可生成 runtime_manifest.json 固定 llama.cpp 下载源。")
     for source, plan in plans.items():
-        if bool(plan.get("requires_model_download")):
+        cache_state = model_cache.get(source, {})
+        if bool(plan.get("requires_model_download")) and not bool(cache_state.get("ready")):
             hint = str(plan.get("model_download_hint") or "模型大小取决于仓库")
             actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
+    if not hf_cli_found and any(not bool(state.get("ready")) for state in model_cache.values()):
+        actions.append("安装 Hugging Face CLI `hf` 后才能自动下载推荐 GGUF 模型。")
     return actions
