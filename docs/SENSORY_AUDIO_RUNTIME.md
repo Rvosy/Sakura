@@ -252,6 +252,7 @@ data/logs/sensory-llama-server.log
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli plan --source speech --managed-llama-defaults --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli plan --source all --managed-llama-defaults --pretty
 ```
 
 整体诊断，不下载、不安装、不启动 sidecar：
@@ -281,4 +282,7 @@ data/logs/sensory-llama-server.log
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli smoke --source speech --managed-llama-defaults --allow-model-download --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli smoke --source all --managed-llama-defaults --allow-model-download --pretty
 ```
+
+不带 `--allow-model-download` 时，`smoke --source all --managed-llama-defaults` 会一次构建 `speech` 与 `sound` 的计划并返回 `blocked_sources`，但不会启动 sidecar，也不会拉取 GGUF 模型。

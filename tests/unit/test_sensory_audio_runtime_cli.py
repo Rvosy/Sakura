@@ -40,6 +40,32 @@ def test_audio_runtime_cli_plan_uses_managed_llama_defaults(tmp_path: Path, caps
     assert payload["platform_key"]
 
 
+def test_audio_runtime_cli_plan_all_uses_managed_llama_defaults(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    _executable(tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server")
+
+    code = audio_runtime_cli.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "plan",
+            "--source",
+            "all",
+            "--managed-llama-defaults",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["source"] == "all"
+    assert set(payload["plans"]) == {"speech", "sound"}
+    assert payload["plans"]["speech"]["model"] == "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
+    assert payload["plans"]["sound"]["model"] == "ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF:Q4_K_M"
+    assert payload["plans"]["speech"]["requires_model_download"] is True
+    assert payload["plans"]["sound"]["requires_model_download"] is True
+    assert payload["issues"] == []
+
+
 def test_audio_runtime_cli_smoke_refuses_remote_llama_model_without_explicit_allow(
     tmp_path: Path,
     capsys,
@@ -69,6 +95,74 @@ def test_audio_runtime_cli_smoke_refuses_remote_llama_model_without_explicit_all
     assert "--allow-model-download" in payload["message"]
     assert payload["plan"]["model_download_hint"] == "约 1.0 GB"
     assert payload["plan"]["requires_model_download"] is True
+
+
+def test_audio_runtime_cli_smoke_all_refuses_remote_llama_models_without_explicit_allow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    _executable(tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server")
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("smoke test should not start without download consent")
+
+    monkeypatch.setattr(audio_runtime_cli, "run_sensory_audio_smoke_test", fail_if_called)
+
+    code = audio_runtime_cli.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "smoke",
+            "--source",
+            "all",
+            "--managed-llama-defaults",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["source"] == "all"
+    assert "--allow-model-download" in payload["message"]
+    assert set(payload["blocked_sources"]) == {"speech", "sound"}
+    assert set(payload["plans"]) == {"speech", "sound"}
+
+
+def test_audio_runtime_cli_smoke_all_runs_sources_with_explicit_allow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    _executable(tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server")
+    calls: list[str] = []
+
+    def fake_smoke(config, *, base_dir, source):  # type: ignore[no-untyped-def]
+        calls.append(source.value)
+        message = f"ok {source.value}"
+        return SimpleNamespace(ok=True, message=message, to_mapping=lambda: {"ok": True, "message": message})
+
+    monkeypatch.setattr(audio_runtime_cli, "run_sensory_audio_smoke_test", fake_smoke)
+
+    code = audio_runtime_cli.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "smoke",
+            "--source",
+            "all",
+            "--managed-llama-defaults",
+            "--allow-model-download",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["source"] == "all"
+    assert calls == ["speech", "sound"]
+    assert payload["results"]["speech"]["message"] == "ok speech"
+    assert payload["results"]["sound"]["message"] == "ok sound"
 
 
 def test_audio_runtime_cli_install_runtime_requires_yes_before_download(

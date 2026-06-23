@@ -284,9 +284,9 @@ def _add_pretty_arg(parser: argparse.ArgumentParser) -> None:
 def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source",
-        choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
+        choices=[source.value for source in _AUDIO_PREPARE_SOURCES] + [_AUDIO_PREPARE_SOURCE_ALL],
         default=SensorySource.SPEECH.value,
-        help="Audio sensory source to inspect.",
+        help="Audio sensory source to inspect, or all for speech and sound.",
     )
     parser.add_argument("--provider-id", default="", help="Provider id from sensory.providers.")
     parser.add_argument("--endpoint", default="", help="Override provider endpoint.")
@@ -301,7 +301,19 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_plan(args: argparse.Namespace) -> int:
-    source = coerce_sensory_source(args.source)
+    sources = _audio_sources_from_arg(args.source)
+    if len(sources) > 1:
+        plans = _build_audio_smoke_plans(args, sources)
+        issues = _audio_smoke_plan_issues(plans)
+        payload = {
+            "ok": not issues,
+            "source": _prepare_backend_source_label(sources),
+            "plans": {source: plan.to_mapping() for source, plan in plans.items()},
+            "issues": issues,
+        }
+        _print_payload(payload, pretty=bool(args.pretty))
+        return 0 if bool(payload["ok"]) else 1
+    source = sources[0]
     config = _provider_config_from_args(args, source)
     plan = build_sensory_audio_smoke_plan(config, base_dir=Path(args.base_dir), source=source)
     _print_payload(plan.to_mapping(), pretty=bool(args.pretty))
@@ -309,7 +321,10 @@ def _run_plan(args: argparse.Namespace) -> int:
 
 
 def _run_smoke(args: argparse.Namespace) -> int:
-    source = coerce_sensory_source(args.source)
+    sources = _audio_sources_from_arg(args.source)
+    if len(sources) > 1:
+        return _run_multi_source_smoke(args, sources)
+    source = sources[0]
     config = _provider_config_from_args(args, source)
     plan = build_sensory_audio_smoke_plan(config, base_dir=Path(args.base_dir), source=source)
     if not plan.ok:
@@ -329,6 +344,75 @@ def _run_smoke(args: argparse.Namespace) -> int:
     result = run_sensory_audio_smoke_test(config, base_dir=Path(args.base_dir), source=source)
     _print_payload(result.to_mapping(), pretty=bool(args.pretty))
     return 0 if result.ok else 1
+
+
+def _run_multi_source_smoke(args: argparse.Namespace, sources: tuple[SensorySource, ...]) -> int:
+    plans = _build_audio_smoke_plans(args, sources)
+    issues = _audio_smoke_plan_issues(plans)
+    if issues:
+        _print_payload(
+            {
+                "ok": False,
+                "source": _prepare_backend_source_label(sources),
+                "plans": {source: plan.to_mapping() for source, plan in plans.items()},
+                "issues": issues,
+            },
+            pretty=bool(args.pretty),
+        )
+        return 1
+    blocked_sources = [
+        source
+        for source, plan in plans.items()
+        if _remote_managed_llama_model(plan) and not bool(args.allow_model_download)
+    ]
+    if blocked_sources:
+        _print_payload(
+            {
+                "ok": False,
+                "source": _prepare_backend_source_label(sources),
+                "message": "真实 smoke 会让 llama.cpp 拉取远端模型；确认后重新运行并传入 --allow-model-download。",
+                "blocked_sources": blocked_sources,
+                "plans": {source: plan.to_mapping() for source, plan in plans.items()},
+            },
+            pretty=bool(args.pretty),
+        )
+        return 2
+    results: dict[str, Any] = {}
+    run_issues: list[str] = []
+    for source in sources:
+        config = _provider_config_from_args(args, source)
+        result = run_sensory_audio_smoke_test(config, base_dir=Path(args.base_dir), source=source)
+        results[source.value] = result.to_mapping()
+        if not result.ok:
+            run_issues.append(f"{source.value}: {result.message}")
+    payload = {
+        "ok": not run_issues,
+        "source": _prepare_backend_source_label(sources),
+        "results": results,
+        "issues": run_issues,
+        "message": "音频推理 smoke test 全部通过。" if not run_issues else "部分音频推理 smoke test 失败。",
+    }
+    _print_payload(payload, pretty=bool(args.pretty))
+    return 0 if bool(payload["ok"]) else 1
+
+
+def _build_audio_smoke_plans(
+    args: argparse.Namespace,
+    sources: tuple[SensorySource, ...],
+) -> dict[str, SensoryAudioSmokePlan]:
+    plans: dict[str, SensoryAudioSmokePlan] = {}
+    for source in sources:
+        config = _provider_config_from_args(args, source)
+        plans[source.value] = build_sensory_audio_smoke_plan(
+            config,
+            base_dir=Path(args.base_dir),
+            source=source,
+        )
+    return plans
+
+
+def _audio_smoke_plan_issues(plans: dict[str, SensoryAudioSmokePlan]) -> list[str]:
+    return [f"{source}: {plan.message}" for source, plan in plans.items() if not plan.ok]
 
 
 def _run_install_runtime(args: argparse.Namespace) -> int:
@@ -580,6 +664,10 @@ def _run_prepare_backend(args: argparse.Namespace) -> int:
     )
     _print_payload(payload, pretty=bool(args.pretty))
     return 0
+
+
+def _audio_sources_from_arg(raw_source: object) -> tuple[SensorySource, ...]:
+    return _prepare_backend_sources(raw_source)
 
 
 def _prepare_backend_sources(raw_source: object) -> tuple[SensorySource, ...]:
