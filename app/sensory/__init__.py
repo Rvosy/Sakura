@@ -23,6 +23,12 @@ from app.sensory.audio_inference import (
     create_default_audio_inference_engine,
     official_audio_inference_framework,
 )
+from app.sensory.audio_model_manifest import (
+    AUDIO_MODEL_MANIFEST_ENV,
+    audio_model_manifest_paths,
+    copy_llama_cpp_audio_model_from_manifest,
+    find_llama_cpp_audio_model_manifest_entry,
+)
 from app.sensory.audio_models import (
     RECOMMENDED_LLAMA_CPP_SOUND_MODEL,
     RECOMMENDED_LLAMA_CPP_SPEECH_MODEL,
@@ -116,6 +122,7 @@ from app.sensory.tools import (
 
 __all__ = [
     "ApiSensoryProvider",
+    "AUDIO_MODEL_MANIFEST_ENV",
     "AudioInputSource",
     "AudioInferenceEngine",
     "AudioInferenceFrameworkSpec",
@@ -181,6 +188,8 @@ __all__ = [
     "build_sensory_audio_smoke_plan",
     "build_disk_space_check",
     "check_llama_cpp_health",
+    "audio_model_manifest_paths",
+    "copy_llama_cpp_audio_model_from_manifest",
     "create_default_audio_inference_engine",
     "configured_sensory_capabilities",
     "create_microphone_audio_capture",
@@ -190,6 +199,7 @@ __all__ = [
     "discover_llama_server_binary",
     "fetch_llama_cpp_runtime_package_catalog",
     "fetch_latest_llama_cpp_runtime_packages",
+    "find_llama_cpp_audio_model_manifest_entry",
     "format_bytes",
     "install_llama_cpp_runtime_package",
     "ensure_llama_cpp_runtime",

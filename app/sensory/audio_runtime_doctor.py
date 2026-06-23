@@ -9,6 +9,7 @@ from app.sensory.audio_models import (
     llama_cpp_audio_model_repo_id,
     recommended_llama_cpp_audio_model,
 )
+from app.sensory.audio_model_manifest import find_llama_cpp_audio_model_manifest_entry
 from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
 from app.sensory.llama_cpp_runtime import (
     DEFAULT_LLAMA_CPP_MANAGED_PORT,
@@ -115,6 +116,18 @@ def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
         path,
         0 if ready or recommendation is None else recommendation.estimated_download_bytes,
     )
+    model_manifest: dict[str, Any] = {}
+    model_manifest_error = ""
+    if not ready and repo_id and recommendation is not None:
+        try:
+            model_manifest = find_llama_cpp_audio_model_manifest_entry(
+                base_dir,
+                source=source,
+                repo_id=repo_id,
+                include_patterns=recommendation.include_patterns,
+            )
+        except RuntimeError as exc:
+            model_manifest_error = str(exc)
     return {
         "repo_id": repo_id,
         "path": str(path) if ready else "",
@@ -124,6 +137,8 @@ def _model_cache_state(base_dir: Path, source: SensorySource) -> dict[str, Any]:
         "include_patterns": list(recommendation.include_patterns) if recommendation else [],
         "ready": ready,
         "used_for_plan": ready,
+        "model_manifest": model_manifest,
+        "model_manifest_error": model_manifest_error,
         "disk_space": disk_space,
     }
 
@@ -170,9 +185,18 @@ def _next_actions(
     for source, plan in plans.items():
         cache_state = model_cache.get(source, {})
         if bool(plan.get("requires_model_download")) and not bool(cache_state.get("ready")):
-            hint = str(plan.get("model_download_hint") or "模型大小取决于仓库")
-            actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
-    if not hf_cli_found and any(not bool(state.get("ready")) for state in model_cache.values()):
+            if isinstance(cache_state.get("model_manifest"), dict) and cache_state.get("model_manifest"):
+                actions.append(f"{source} 推荐 GGUF 模型可从本地音频模型 manifest 安装。")
+            else:
+                hint = str(plan.get("model_download_hint") or "模型大小取决于仓库")
+                actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
+        manifest_error = str(cache_state.get("model_manifest_error") or "").strip()
+        if manifest_error:
+            actions.append(f"{source} 音频模型 manifest 无效：{manifest_error}。")
+    if not hf_cli_found and any(
+        not bool(state.get("ready")) and not bool(state.get("model_manifest"))
+        for state in model_cache.values()
+    ):
         actions.append("未安装 Hugging Face CLI `hf`；推荐 GGUF 文件会使用内置直连下载，手动下载任意仓库仍需 `hf`。")
     for source, state in model_cache.items():
         disk_space = state.get("disk_space") if isinstance(state, dict) else {}

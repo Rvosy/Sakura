@@ -8,6 +8,7 @@ from app.sensory.audio_models import (
     llama_cpp_audio_model_repo_id,
     recommended_llama_cpp_audio_model,
 )
+from app.sensory.audio_model_manifest import copy_llama_cpp_audio_model_from_manifest
 from app.sensory.huggingface import (
     HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
     download_huggingface_model,
@@ -95,12 +96,20 @@ def prepare_llama_cpp_audio_backend(
             available = format_bytes(int(disk_space.get("available_bytes") or 0))
             needed = format_bytes(int(disk_space.get("needed_bytes") or 0))
             raise RuntimeError(f"磁盘空间不足，无法下载推荐模型：需要 {needed}，可用 {available}。")
-        download_result = download_huggingface_model(
-            repo_id,
-            local_dir,
+        download_result = copy_llama_cpp_audio_model_from_manifest(
+            Path(base_dir),
+            source=source,
+            repo_id=repo_id,
             include_patterns=recommendation.include_patterns,
-            timeout_seconds=timeout_seconds,
+            local_dir=local_dir,
         )
+        if not download_result:
+            download_result = download_huggingface_model(
+                repo_id,
+                local_dir,
+                include_patterns=recommendation.include_patterns,
+                timeout_seconds=timeout_seconds,
+            )
     gguf_count = _gguf_count(local_dir)
     model_payload: dict[str, object] = {
         "repo_id": repo_id,
@@ -195,6 +204,7 @@ def build_llama_cpp_audio_prepare_requirement(
     needs_runtime_download = not bool(runtime.get("binary_found")) if isinstance(runtime, dict) else True
     needs_model_download = not bool(cache_state.get("ready")) if isinstance(cache_state, dict) else True
     disk_space = cache_state.get("disk_space") if isinstance(cache_state, dict) else {}
+    model_manifest = cache_state.get("model_manifest") if isinstance(cache_state, dict) else {}
     actions: list[str] = []
     if needs_runtime_download:
         if isinstance(runtime_preflight, dict) and runtime_preflight:
@@ -212,7 +222,10 @@ def build_llama_cpp_audio_prepare_requirement(
         else:
             actions.append("需要下载或配置 llama.cpp 运行时。")
     if needs_model_download:
-        actions.append(f"需要下载 {source.value} 推荐 GGUF 模型。")
+        if isinstance(model_manifest, dict) and model_manifest:
+            actions.append(f"可从本地音频模型 manifest 安装 {source.value} 推荐 GGUF 模型。")
+        else:
+            actions.append(f"需要下载 {source.value} 推荐 GGUF 模型。")
     if isinstance(disk_space, dict) and not bool(disk_space.get("ok", True)):
         actions.append(
             "磁盘空间不足："
@@ -227,6 +240,7 @@ def build_llama_cpp_audio_prepare_requirement(
         "needs_runtime_download": needs_runtime_download,
         "needs_model_download": needs_model_download,
         "runtime_preflight": runtime_preflight if isinstance(runtime_preflight, dict) else {},
+        "model_manifest": model_manifest if isinstance(model_manifest, dict) else {},
         "disk_space": disk_space if isinstance(disk_space, dict) else {},
         "actions": actions,
     }

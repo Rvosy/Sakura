@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.sensory import audio_deployment
+from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
 from app.sensory import huggingface as sensory_huggingface
 from app.sensory.audio_models import llama_cpp_audio_cache_ready, recommended_llama_cpp_audio_model
 from app.sensory.llama_cpp_runtime import LlamaCppRuntimePackageSpec
@@ -350,6 +352,67 @@ def test_prepare_llama_cpp_audio_backend_refuses_runtime_download_without_consen
         )
 
 
+def test_prepare_llama_cpp_audio_backend_uses_local_audio_model_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    manifest_dir = StoragePaths(tmp_path).sensory_models_cache_dir
+    archive_dir = manifest_dir / "archives"
+    archive_dir.mkdir(parents=True)
+    model_file = archive_dir / "Qwen3-ASR-0.6B-Q8_0.gguf"
+    mmproj_file = archive_dir / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+    model_file.write_bytes(b"model")
+    mmproj_file.write_bytes(b"mmproj")
+    (manifest_dir / "audio_model_manifest.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "source": "speech",
+                        "repo_id": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+                        "files": [
+                            {
+                                "filename": model_file.name,
+                                "url": f"archives/{model_file.name}",
+                                "size_bytes": model_file.stat().st_size,
+                                "sha256": hashlib.sha256(model_file.read_bytes()).hexdigest(),
+                            },
+                            {
+                                "filename": mmproj_file.name,
+                                "url": f"archives/{mmproj_file.name}",
+                                "size_bytes": mmproj_file.stat().st_size,
+                                "sha256": hashlib.sha256(mmproj_file.read_bytes()).hexdigest(),
+                            },
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audio_deployment, "discover_llama_server_binary", lambda base_dir: str(binary))
+
+    def fail_hf_download(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("local audio model manifest should avoid Hugging Face download")
+
+    monkeypatch.setattr(audio_deployment, "download_huggingface_model", fail_hf_download)
+
+    payload = audio_deployment.prepare_llama_cpp_audio_backend(
+        tmp_path,
+        SensorySource.SPEECH,
+        download_model=True,
+    )
+
+    model = payload["model"]
+    local_dir = Path(model["local_dir"])
+    assert model["gguf_count"] == 2
+    assert model["download_message"] == "copied 2 file(s) from local audio model manifest"
+    assert (local_dir / model_file.name).read_bytes() == b"model"
+    assert (local_dir / mmproj_file.name).read_bytes() == b"mmproj"
+
+
 def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
     monkeypatch,
     tmp_path: Path,
@@ -398,6 +461,40 @@ def test_llama_cpp_runtime_download_preflight_selects_package_and_checks_space(
             2048,
         )
     ]
+
+
+def test_audio_runtime_doctor_reports_local_audio_model_manifest(tmp_path: Path) -> None:
+    manifest_dir = StoragePaths(tmp_path).sensory_models_cache_dir
+    archive_dir = manifest_dir / "archives"
+    archive_dir.mkdir(parents=True)
+    model_file = archive_dir / "Qwen3-ASR-0.6B-Q8_0.gguf"
+    mmproj_file = archive_dir / "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+    model_file.write_bytes(b"model")
+    mmproj_file.write_bytes(b"mmproj")
+    (manifest_dir / "audio_model_manifest.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "source": "speech",
+                        "repo_id": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+                        "files": [
+                            {"filename": model_file.name, "url": f"archives/{model_file.name}"},
+                            {"filename": mmproj_file.name, "url": f"archives/{mmproj_file.name}"},
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_sensory_audio_runtime_doctor_report(tmp_path)
+
+    speech_cache = report["model_cache"]["speech"]
+    assert speech_cache["model_manifest"]["manifest_path"] == str(manifest_dir / "audio_model_manifest.json")
+    assert speech_cache["model_manifest_error"] == ""
+    assert any("本地音频模型 manifest" in action for action in report["next_actions"])
 
 
 def test_prepare_llama_cpp_audio_backend_refuses_model_download_when_disk_is_low(

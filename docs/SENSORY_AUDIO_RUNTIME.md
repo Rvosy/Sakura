@@ -100,6 +100,41 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 校验会检查 package 结构、必需平台、相对路径或 `file://` archive 是否存在、`size_bytes` 和 `sha256` 是否匹配。HTTPS URL 不会联网；如需校验镜像文件，配合 `--archive-root` 指向本地 archive 目录。
 
+## 音频模型 manifest
+
+发布包或内网环境也可以预置推荐 GGUF 文件，避免用户首次准备时访问 Hugging Face。Sakura 会按顺序读取：
+
+1. `SAKURA_AUDIO_MODEL_MANIFEST` 指向的 JSON 文件。这个路径是显式覆盖；如果文件缺失或无效，准备流程会报错。
+2. `data/cache/sensory_models/audio_model_manifest.json`
+3. `data/cache/sensory_models/llama_cpp_audio_model_manifest.json`
+
+示例：
+
+```json
+{
+  "models": [
+    {
+      "source": "speech",
+      "repo_id": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+      "files": [
+        {
+          "filename": "Qwen3-ASR-0.6B-Q8_0.gguf",
+          "url": "archives/Qwen3-ASR-0.6B-Q8_0.gguf",
+          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "size_bytes": 1000000000
+        },
+        {
+          "filename": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+          "url": "archives/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`url` 只支持本地相对路径、绝对路径或 `file://` URI，不支持新的远端下载源。相对路径按 manifest 所在目录解析。文件名必须匹配推荐 include patterns；缺文件、大小不匹配或 `sha256` 不匹配时会 fail closed。命中本地音频模型 manifest 时，“准备 llama.cpp 音频后端”会复制文件到标准缓存目录，再把模型字段指向缓存目录。
+
 ## 一键准备与模型默认值
 
 设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后按当前音频源执行：

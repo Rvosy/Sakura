@@ -5380,10 +5380,18 @@ def _format_sensory_llama_prepare_confirmation(
         if cached:
             lines.append(f"推荐模型：已在本地缓存 {cache_dir}。")
         else:
-            lines.append(
-                f"推荐模型：将下载 {recommendation.model}（{recommendation.download_hint}），"
-                f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
-            )
+            model_manifest = requirement.get("model_manifest") if isinstance(requirement, dict) else {}
+            if isinstance(model_manifest, dict) and model_manifest:
+                manifest_path = str(model_manifest.get("manifest_path") or "").strip()
+                lines.append(
+                    f"推荐模型：将从本地音频模型 manifest 复制 {recommendation.model}"
+                    f"{f'（{manifest_path}）' if manifest_path else ''}。"
+                )
+            else:
+                lines.append(
+                    f"推荐模型：将下载 {recommendation.model}（{recommendation.download_hint}），"
+                    f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
+                )
             disk_space = requirement.get("disk_space") if isinstance(requirement, dict) else {}
             if isinstance(disk_space, dict):
                 lines.append(
@@ -5461,6 +5469,15 @@ def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
         ]
         if cached_sources:
             lines.append(f"本地模型缓存：{', '.join(sorted(cached_sources))}。")
+        manifest_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict)
+            and isinstance(state.get("model_manifest"), dict)
+            and bool(state.get("model_manifest"))
+        ]
+        if manifest_sources:
+            lines.append(f"本地模型 manifest：{', '.join(sorted(manifest_sources))}。")
         low_space_sources = [
             source
             for source, state in model_cache.items()

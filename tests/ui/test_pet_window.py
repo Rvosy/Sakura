@@ -4792,12 +4792,16 @@ def test_settings_dialog_llama_prepare_confirmation_mentions_disk_preflight(monk
                     "needed_bytes": 1024,
                     "available_bytes": 4096,
                 },
+                "model_manifest": {
+                    "manifest_path": "/tmp/audio_model_manifest.json",
+                },
             },
         }
     )
 
     assert questions
     assert "将下载 llama.cpp b1 macOS" in questions[0]
+    assert "本地音频模型 manifest" in questions[0]
     assert "运行时空间" in questions[0]
     assert "模型空间" in questions[0]
     assert dialog._sensory_llama_runtime_thread is None
@@ -5107,6 +5111,7 @@ def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch
             "model_cache": {
                 "speech": {
                     "used_for_plan": False,
+                    "model_manifest": {"manifest_path": "/tmp/audio_model_manifest.json"},
                     "disk_space": {"ok": False},
                 }
             },
@@ -5117,6 +5122,7 @@ def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch
     assert "平台：macos-arm64" in messages[0]
     assert "llama-server：/tmp/llama-server" in messages[0]
     assert "Hugging Face CLI：/usr/local/bin/hf" in messages[0]
+    assert "本地模型 manifest：speech" in messages[0]
     assert "模型下载空间不足：speech" in messages[0]
     assert dialog.sensory_status_label.text() == "平台：macos-arm64"
 
