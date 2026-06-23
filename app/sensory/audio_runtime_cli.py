@@ -53,6 +53,8 @@ _KNOWN_LLAMA_CPP_PLATFORM_KEYS = (
     "windows-arm64",
     "windows-x64",
 )
+_AUDIO_PREPARE_SOURCE_ALL = "all"
+_AUDIO_PREPARE_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -123,9 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_pretty_arg(prepare_backend)
     prepare_backend.add_argument(
         "--source",
-        choices=[SensorySource.SPEECH.value, SensorySource.SOUND.value],
+        choices=[source.value for source in _AUDIO_PREPARE_SOURCES] + [_AUDIO_PREPARE_SOURCE_ALL],
         default=SensorySource.SPEECH.value,
-        help="Audio sensory source to prepare.",
+        help="Audio sensory source to prepare, or all for speech and sound.",
     )
     prepare_backend.add_argument(
         "--yes",
@@ -533,7 +535,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
 def _run_prepare_backend(args: argparse.Namespace) -> int:
     base_dir = Path(args.base_dir)
-    source = coerce_sensory_source(args.source)
+    sources = _prepare_backend_sources(args.source)
     report = build_sensory_audio_runtime_doctor_report(base_dir)
     runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     runtime_preflight = (
@@ -541,22 +543,35 @@ def _run_prepare_backend(args: argparse.Namespace) -> int:
         if not bool(args.yes) and not bool(runtime.get("binary_found"))
         else {}
     )
-    requirement = build_llama_cpp_audio_prepare_requirement(
-        report,
-        source,
-        runtime_preflight=runtime_preflight,
-    )
-    if not bool(args.yes) and not bool(requirement.get("ok")):
+    requirements = {
+        source.value: build_llama_cpp_audio_prepare_requirement(
+            report,
+            source,
+            runtime_preflight=runtime_preflight,
+        )
+        for source in sources
+    }
+    needs_confirmation = any(not bool(requirement.get("ok")) for requirement in requirements.values())
+    if not bool(args.yes) and needs_confirmation:
+        source_label = _prepare_backend_source_label(sources)
+        source_text = "准备全部音频源的" if source_label == _AUDIO_PREPARE_SOURCE_ALL else f"准备 {source_label} "
         _print_payload(
             {
                 "ok": False,
-                "message": "准备 llama.cpp 音频后端需要下载运行时或推荐模型；确认后重新运行并传入 --yes。",
-                "requirement": requirement,
+                "source": source_label,
+                "message": f"{source_text}llama.cpp 音频后端需要下载运行时或推荐模型；确认后重新运行并传入 --yes。",
+                "requirement": requirements[sources[0].value] if len(sources) == 1 else {},
+                "requirements": requirements,
                 "doctor": report,
             },
             pretty=bool(args.pretty),
         )
         return 2
+    if len(sources) > 1:
+        payload = _prepare_multiple_audio_backends(base_dir, sources, download=bool(args.yes))
+        _print_payload(payload, pretty=bool(args.pretty))
+        return 0 if bool(payload.get("ok")) else 1
+    source = sources[0]
     payload = prepare_llama_cpp_audio_backend(
         base_dir,
         source,
@@ -565,6 +580,53 @@ def _run_prepare_backend(args: argparse.Namespace) -> int:
     )
     _print_payload(payload, pretty=bool(args.pretty))
     return 0
+
+
+def _prepare_backend_sources(raw_source: object) -> tuple[SensorySource, ...]:
+    value = str(raw_source or "").strip().lower()
+    if value == _AUDIO_PREPARE_SOURCE_ALL:
+        return _AUDIO_PREPARE_SOURCES
+    return (coerce_sensory_source(value),)
+
+
+def _prepare_backend_source_label(sources: tuple[SensorySource, ...]) -> str:
+    if len(sources) == len(_AUDIO_PREPARE_SOURCES) and set(sources) == set(_AUDIO_PREPARE_SOURCES):
+        return _AUDIO_PREPARE_SOURCE_ALL
+    return sources[0].value if sources else ""
+
+
+def _prepare_multiple_audio_backends(
+    base_dir: Path,
+    sources: tuple[SensorySource, ...],
+    *,
+    download: bool,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    issues: list[str] = []
+    for source in sources:
+        try:
+            results[source.value] = prepare_llama_cpp_audio_backend(
+                base_dir,
+                source,
+                download_runtime=download,
+                download_model=download,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            message = str(exc)
+            issues.append(f"{source.value}: {message}")
+            results[source.value] = {
+                "ok": False,
+                "source": source.value,
+                "message": message,
+            }
+    return {
+        "ok": not issues,
+        "source": _prepare_backend_source_label(sources),
+        "sources": [source.value for source in sources],
+        "results": results,
+        "issues": issues,
+        "message": "llama.cpp 音频后端已准备好。" if not issues else "部分 llama.cpp 音频后端准备失败。",
+    }
 
 
 def _provider_config_from_args(

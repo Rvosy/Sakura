@@ -201,17 +201,21 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 设置页“测试模型”遇到这些推荐远端模型时，会先弹窗确认下载量；用户拒绝时不会启动 sidecar 或下载模型。若已通过“一键准备”缓存到本地目录，测试会直接使用本地路径。
 
-命令行也提供同一套一键准备入口。没有 `--yes` 时只做只读检查，发现需要下载运行时或模型会返回 `ok=false`；如果缺少本地 `llama-server`，会读取 runtime manifest 或 GitHub release 元数据来确认当前平台包、下载量和磁盘空间，但不会下载 archive：
+命令行也提供同一套一键准备入口。没有 `--yes` 时只做只读检查，发现需要下载运行时或模型会返回 `ok=false`；如果缺少本地 `llama-server`，会读取 runtime manifest 或 GitHub release 元数据来确认当前平台包、下载量和磁盘空间，但不会下载 archive。`--source all` 会一次检查 `speech` 与 `sound` 两个推荐模型，并复用同一个 runtime：
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source all --pretty
 ```
 
 确认下载后再执行：
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --yes --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source all --yes --pretty
 ```
+
+如果 `--source all --yes` 中某个模型准备失败，命令会返回非零，并在 `results.speech` / `results.sound` 中保留已完成和失败的分项结果，方便发布脚本或设置页报告部分成功状态。
 
 ## 调用链
 

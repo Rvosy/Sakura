@@ -796,6 +796,52 @@ def test_audio_runtime_cli_prepare_backend_requires_yes_before_download(
     assert any("10.0 MB" in action for action in payload["requirement"]["actions"])
 
 
+def test_audio_runtime_cli_prepare_backend_all_requires_yes_before_download(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {
+                "speech": {"ready": False},
+                "sound": {"ready": False},
+            },
+        },
+    )
+
+    def fail_prepare(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("prepare should require --yes before downloads")
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fail_prepare)
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_llama_cpp_runtime_download_preflight",
+        lambda base_dir: {
+            "required": True,
+            "ok": True,
+            "download_hint": "10.0 MB",
+            "message": "将下载 llama.cpp 当前平台包（10.0 MB）。",
+            "disk_space": {"ok": True},
+        },
+    )
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "prepare-backend", "--source", "all"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["source"] == "all"
+    assert "--yes" in payload["message"]
+    assert payload["requirement"] == {}
+    assert set(payload["requirements"]) == {"speech", "sound"}
+    assert payload["requirements"]["speech"]["needs_runtime_download"] is True
+    assert payload["requirements"]["sound"]["needs_model_download"] is True
+
+
 def test_audio_runtime_cli_prepare_backend_runs_with_yes(
     tmp_path: Path,
     capsys,
@@ -825,6 +871,83 @@ def test_audio_runtime_cli_prepare_backend_runs_with_yes(
     assert code == 0
     assert payload["ok"] is True
     assert calls == [(tmp_path, "sound", True, True)]
+
+
+def test_audio_runtime_cli_prepare_backend_all_runs_sources_with_yes(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[Path, str, bool, bool]] = []
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {
+                "speech": {"ready": False},
+                "sound": {"ready": False},
+            },
+        },
+    )
+
+    def fake_prepare(base_dir, source, *, download_runtime, download_model):  # type: ignore[no-untyped-def]
+        calls.append((Path(base_dir), source.value, download_runtime, download_model))
+        return {"ok": True, "source": source.value, "message": f"prepared {source.value}"}
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fake_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "all", "--yes"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["source"] == "all"
+    assert payload["sources"] == ["speech", "sound"]
+    assert payload["issues"] == []
+    assert payload["results"]["speech"]["message"] == "prepared speech"
+    assert calls == [
+        (tmp_path, "speech", True, True),
+        (tmp_path, "sound", True, True),
+    ]
+
+
+def test_audio_runtime_cli_prepare_backend_all_reports_partial_failure(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        audio_runtime_cli,
+        "build_sensory_audio_runtime_doctor_report",
+        lambda base_dir: {
+            "runtime": {"binary_found": False},
+            "model_cache": {
+                "speech": {"ready": False},
+                "sound": {"ready": False},
+            },
+        },
+    )
+
+    def fake_prepare(base_dir, source, *, download_runtime, download_model):  # type: ignore[no-untyped-def]
+        if source == audio_runtime_cli.SensorySource.SOUND:
+            raise RuntimeError("sound download failed")
+        return {"ok": True, "source": source.value, "message": f"prepared {source.value}"}
+
+    monkeypatch.setattr(audio_runtime_cli, "prepare_llama_cpp_audio_backend", fake_prepare)
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "prepare-backend", "--source", "all", "--yes"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["results"]["speech"]["ok"] is True
+    assert payload["results"]["sound"]["ok"] is False
+    assert payload["issues"] == ["sound: sound download failed"]
 
 
 def test_audio_runtime_cli_prepare_backend_reports_expected_failure_as_json(
