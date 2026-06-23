@@ -429,6 +429,77 @@ def test_audio_runtime_cli_runtime_manifest_check_reports_checksum_mismatch(
     assert "b1-win archive sha256 不匹配" in payload["issues"]
 
 
+def test_audio_runtime_cli_doctor_reports_ready_plans_with_existing_runtime(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    binary = _executable(
+        tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server"
+    )
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["runtime"]["binary_found"] is True
+    assert payload["runtime"]["binary_path"] == str(binary)
+    assert payload["ready_for_smoke"] is True
+    assert payload["plans"]["speech"]["requires_model_download"] is True
+    assert payload["plans"]["sound"]["model_download_hint"] == "约 2.1 GB"
+
+
+def test_audio_runtime_cli_doctor_reports_runtime_next_action_when_missing(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(audio_runtime_cli, "discover_llama_server_binary", lambda base_dir: "")
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["runtime"]["binary_found"] is False
+    assert payload["ready_for_smoke"] is False
+    assert any("install-runtime --yes" in action for action in payload["next_actions"])
+
+
+def test_audio_runtime_cli_doctor_lists_manifest_candidate_platforms(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _executable(tmp_path / "data" / "local_runtimes" / "llama_cpp" / "b1" / "bin" / "llama-server")
+    manifest = tmp_path / "data" / "local_runtimes" / "llama_cpp" / "runtime_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "package_id": "b1-macos",
+                        "label": "macOS",
+                        "platform_key": "macos-arm64",
+                        "url": "archives/llama.tar.gz",
+                        "archive_format": "tar.gz",
+                        "binary_relpath": "llama-server",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    candidates = payload["runtime"]["manifest_candidates"]
+    assert candidates[0]["path"] == str(manifest)
+    assert candidates[0]["exists"] is True
+    assert candidates[0]["package_count"] == 1
+    assert candidates[0]["platforms"] == ["macos-arm64"]
+
+
 def test_audio_runtime_cli_plan_reports_missing_saved_provider(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
     code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "plan", "--source", "speech"])
 

@@ -26,6 +26,7 @@ from app.sensory.llama_cpp_runtime import (
     fetch_latest_llama_cpp_runtime_packages,
     install_llama_cpp_runtime_package,
     llama_cpp_platform_key,
+    llama_cpp_runtime_manifest_paths,
     llama_cpp_runtime_packages_from_manifest,
     select_llama_cpp_runtime_package,
 )
@@ -57,6 +58,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_runtime_manifest(args)
         if args.command == "runtime-manifest-check":
             return _run_runtime_manifest_check(args)
+        if args.command == "doctor":
+            return _run_doctor(args)
         if args.command == "smoke":
             return _run_smoke(args)
         return _run_plan(args)
@@ -156,6 +159,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Require all built-in platform keys to be present.",
     )
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Summarize audio runtime readiness without installing or downloading.",
+    )
+    _add_pretty_arg(doctor)
 
     parser.set_defaults(
         command="plan",
@@ -334,6 +343,42 @@ def _run_runtime_manifest_check(args: argparse.Namespace) -> int:
     return 0 if not issues else 1
 
 
+def _run_doctor(args: argparse.Namespace) -> int:
+    base_dir = Path(args.base_dir)
+    binary_path = discover_llama_server_binary(base_dir)
+    manifest_candidates = _doctor_manifest_candidates(base_dir)
+    plans = {
+        source.value: build_sensory_audio_smoke_plan(
+            _managed_llama_default_config(args, source),
+            base_dir=base_dir,
+            source=source,
+        ).to_mapping()
+        for source in (SensorySource.SPEECH, SensorySource.SOUND)
+    }
+    ready_for_smoke = all(bool(plan["ok"]) for plan in plans.values())
+    next_actions = _doctor_next_actions(
+        binary_path=binary_path,
+        manifest_candidates=manifest_candidates,
+        plans=plans,
+    )
+    _print_payload(
+        {
+            "ok": True,
+            "platform_key": llama_cpp_platform_key(),
+            "runtime": {
+                "binary_found": bool(binary_path),
+                "binary_path": binary_path,
+                "manifest_candidates": manifest_candidates,
+            },
+            "plans": plans,
+            "ready_for_smoke": ready_for_smoke,
+            "next_actions": next_actions,
+        },
+        pretty=bool(args.pretty),
+    )
+    return 0
+
+
 def _provider_config_from_args(
     args: argparse.Namespace,
     source: SensorySource,
@@ -482,6 +527,46 @@ def _check_manifest_package_archive(
         if not result["sha256_ok"]:
             issues.append(f"{package.package_id} archive sha256 不匹配")
     return result
+
+
+def _doctor_manifest_candidates(base_dir: Path) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for path in llama_cpp_runtime_manifest_paths(base_dir):
+        exists = path.is_file()
+        entry: dict[str, Any] = {
+            "path": str(path),
+            "exists": exists,
+            "package_count": 0,
+            "platforms": [],
+        }
+        if exists:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                packages = llama_cpp_runtime_packages_from_manifest(payload if isinstance(payload, dict) else {})
+            except (OSError, json.JSONDecodeError):
+                packages = []
+            entry["package_count"] = len(packages)
+            entry["platforms"] = sorted({package.normalized().platform_key for package in packages})
+        candidates.append(entry)
+    return candidates
+
+
+def _doctor_next_actions(
+    *,
+    binary_path: str,
+    manifest_candidates: list[dict[str, Any]],
+    plans: dict[str, dict[str, object]],
+) -> list[str]:
+    actions: list[str] = []
+    if not binary_path:
+        actions.append("运行 install-runtime --yes 配置 llama.cpp 运行时，或设置 SAKURA_LLAMA_SERVER。")
+    if not any(bool(candidate["exists"]) for candidate in manifest_candidates):
+        actions.append("发布包可生成 runtime_manifest.json 固定 llama.cpp 下载源。")
+    for source, plan in plans.items():
+        if bool(plan.get("requires_model_download")):
+            hint = str(plan.get("model_download_hint") or "模型大小取决于仓库")
+            actions.append(f"{source} 首次真实 smoke 需要确认 GGUF 模型下载：{hint}。")
+    return actions
 
 
 def _manifest_archive_path(
