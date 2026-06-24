@@ -689,9 +689,34 @@ def test_list_nvidia_gpus_swallows_which_errors(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(tts_bundle.shutil, "which", _boom)
 
-    assert tts_bundle.list_nvidia_gpus() == []
+    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == []
     # 上层推荐逻辑不应被探测异常打断
     assert tts_bundle.recommend_gpt_sovits_bundle() is not None
+
+
+def test_list_nvidia_gpus_uses_ttl_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_bundle, "_NVIDIA_GPU_CACHE", None)
+    monkeypatch.setattr(tts_bundle.shutil, "which", lambda _name: "nvidia-smi")
+    now = [100.0]
+    calls = {"run": 0}
+
+    class Result:
+        returncode = 0
+        stdout = "NVIDIA GeForce RTX 4070, 12288\n"
+
+    def fake_run(**_kwargs):  # type: ignore[no-untyped-def]
+        calls["run"] += 1
+        return Result()
+
+    monkeypatch.setattr(tts_bundle.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(tts_bundle.subprocess, "run", fake_run)
+
+    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    now[0] += 1
+    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    now[0] += 31
+    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    assert calls["run"] == 2
 
 
 def test_tts_bundle_label_includes_approx_size() -> None:

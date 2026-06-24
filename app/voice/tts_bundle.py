@@ -172,6 +172,8 @@ _MIGRATING_DIR_NAME = ".migrating"
 _MIGRATION_STATE_FILE = ".sakura_migration.json"
 _MIGRATION_TEMP_SUFFIX = ".__sakura_tmp__"
 _MIGRATION_COPY_CHUNK_SIZE = 16 * 1024 * 1024
+_NVIDIA_GPU_CACHE_TTL_SECONDS = 30.0
+_NVIDIA_GPU_CACHE: tuple[float, list[GPUInfo]] | None = None
 
 
 def format_platform_summary() -> str:
@@ -181,7 +183,19 @@ def format_platform_summary() -> str:
         return f"{platform.system()} {platform.release()}"
 
 
-def list_nvidia_gpus() -> list[GPUInfo]:
+def list_nvidia_gpus(*, force_refresh: bool = False) -> list[GPUInfo]:
+    global _NVIDIA_GPU_CACHE
+    now = time.monotonic()
+    if not force_refresh and _NVIDIA_GPU_CACHE is not None:
+        cached_at, cached = _NVIDIA_GPU_CACHE
+        if now - cached_at < _NVIDIA_GPU_CACHE_TTL_SECONDS:
+            return list(cached)
+    gpus = _probe_nvidia_gpus()
+    _NVIDIA_GPU_CACHE = (now, list(gpus))
+    return gpus
+
+
+def _probe_nvidia_gpus() -> list[GPUInfo]:
     # GPU 探测属于尽力而为：任何异常都按“未检测到 GPU”处理，避免拖垮设置页等调用方的构造。
     # 注意 shutil.which 也需保护——当 sys.platform 被伪造为 win32（如测试）但宿主非 Windows 时，
     # 其内部会访问 _winapi.NeedCurrentDirectoryForExePath，而非 Windows 上 _winapi 为 None 会抛 AttributeError。
