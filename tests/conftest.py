@@ -51,6 +51,34 @@ _THREAD_ATTR_NAMES = (
 )
 
 
+class _LocalQtBot:
+    def __init__(self) -> None:
+        self._widgets: list[Any] = []
+
+    def addWidget(self, widget: Any) -> None:  # noqa: N802 - pytest-qt compatibility
+        self._widgets.append(widget)
+
+    def close_widgets(self) -> None:
+        for widget in reversed(self._widgets):
+            try:
+                widget.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                widget.deleteLater()
+            except RuntimeError:
+                pass
+        self._widgets.clear()
+
+
+@pytest.fixture
+def qtbot() -> Iterable[_LocalQtBot]:
+    """Minimal qtbot subset used by local UI tests when pytest-qt is absent."""
+    bot = _LocalQtBot()
+    yield bot
+    bot.close_widgets()
+
+
 @pytest.fixture(autouse=True)
 def cleanup_qt_objects_after_test() -> Iterable[None]:
     yield
