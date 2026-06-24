@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
@@ -64,10 +65,35 @@ from app.config.settings_service import (
     BackchannelSettings,
     BubbleSettings,
     DebugLogSettings,
+    ScreenObservationSettings,
     StartupSettings,
 )
 from app.platforms.launch_at_login import is_launch_at_login_supported
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+from app.sensory.audio_models import (
+    llama_cpp_audio_cache_ready,
+    llama_cpp_audio_model_repo_id,
+    recommended_llama_cpp_audio_model,
+    sensory_audio_model_download_hint,
+)
+from app.sensory.audio_smoke import build_sensory_audio_smoke_plan
+from app.sensory.disk_space import format_bytes
+from app.sensory.llama_cpp_runtime import (
+    DEFAULT_LLAMA_CPP_MANAGED_PORT,
+    LLAMA_CPP_MANAGED_RUNTIME_MARKER,
+)
+from app.sensory.models import SensoryProviderMode, SensorySource, coerce_sensory_source
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+)
+from app.sensory.settings import (
+    SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    SensoryProviderConfig,
+    SensorySettings,
+    SensorySourceSettings,
+)
 from app.plugins.discovery import PluginDiscovery, save_plugin_enabled_overrides
 from app.plugins.models import PluginSpec
 from app.config.character_loader import (
@@ -143,6 +169,13 @@ from app.plugins.models import SettingsPanelContribution, ToolsTabContribution
 
 MEMORY_READING_TEXT = "正在读取长期记忆..."
 MEMORY_DEPENDENCY_LOADING_TEXT = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
+_SENSORY_LLAMA_RUNTIME_STATE_KEYS = (
+    "managed_runtime",
+    "llama_binary_path",
+    "llama_runtime_package_id",
+    "llama_runtime_install_dir",
+)
+_SENSORY_LLAMA_AUDIO_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
 
 
 from app.ui.settings import workers as settings_workers
@@ -158,6 +191,241 @@ from app.ui.settings.pages import (
     ToolsSettingsPage,
     TtsSettingsPage,
 )
+
+
+class HuggingFaceSensoryModelDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        base_dir: Path,
+        source: SensorySource,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.base_dir = base_dir
+        self.source = source
+        self.selected_repo_id = ""
+        self.selected_local_dir = ""
+        self._search_thread: QThread | None = None
+        self._search_worker: settings_workers.HuggingFaceModelSearchWorker | None = None
+        self._download_thread: QThread | None = None
+        self._download_worker: settings_workers.HuggingFaceModelDownloadWorker | None = None
+        self._accept_after_download = False
+
+        self.setWindowTitle("从 Hugging Face 下载")
+        self.setMinimumSize(560, 420)
+
+        self.query_edit = QLineEdit(self)
+        self.query_edit.setText(settings_workers.default_huggingface_query_for_source(source))
+        self.search_button = QPushButton("搜索", self)
+        self.search_button.clicked.connect(self._start_search)
+
+        search_row = QWidget(self)
+        search_layout = QHBoxLayout(search_row)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(8)
+        search_layout.addWidget(self.query_edit, 1)
+        search_layout.addWidget(self.search_button)
+
+        self.results_list = QListWidget(self)
+        self.results_list.itemSelectionChanged.connect(self._sync_download_button)
+        self.status_label = QLabel("输入关键词后搜索模型。", self)
+        self.status_label.setObjectName("secondaryText")
+        self.status_label.setWordWrap(True)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        self.download_button = self.button_box.addButton(
+            "下载选中模型",
+            QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        self.download_button.clicked.connect(self._start_download)
+        self.button_box.rejected.connect(self.reject)
+        self.download_button.setEnabled(False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("Hugging Face 模型搜索", self))
+        layout.addWidget(search_row)
+        layout.addWidget(self.results_list, 1)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.button_box)
+
+    def _operation_running(self) -> bool:
+        return self._search_thread is not None or self._download_thread is not None
+
+    def _set_busy(self, busy: bool, text: str) -> None:
+        self.query_edit.setEnabled(not busy)
+        self.search_button.setEnabled(not busy)
+        self.results_list.setEnabled(not busy)
+        self.download_button.setEnabled(not busy and self._selected_repo_id() != "")
+        close_button = self.button_box.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setEnabled(not busy)
+        if busy:
+            self.status_label.setText(text)
+
+    def _sync_download_button(self) -> None:
+        self.download_button.setEnabled(not self._operation_running() and self._selected_repo_id() != "")
+
+    def _selected_repo_id(self) -> str:
+        item = self.results_list.currentItem()
+        if item is None:
+            return ""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(data, dict):
+            repo_id = data.get("repo_id")
+            if isinstance(repo_id, str):
+                return repo_id.strip()
+        return item.text().split()[0].strip()
+
+    def _start_search(self) -> None:
+        if self._operation_running():
+            return
+        self._set_busy(True, "正在搜索 Hugging Face 模型...")
+        thread = QThread()
+        worker = settings_workers.HuggingFaceModelSearchWorker(
+            self.source,
+            self.query_edit.text().strip(),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_search_success)
+        worker.failed.connect(self._handle_search_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_search_worker)
+
+        self._search_thread = thread
+        self._search_worker = worker
+        thread.start()
+
+    @Slot(list)
+    def _handle_search_success(self, models: list[dict[str, object]]) -> None:
+        self.results_list.clear()
+        if not models:
+            self.status_label.setText("没有找到匹配的 Hugging Face 模型。")
+            return
+        clear_count = 0
+        possible_count = 0
+        for model in models:
+            repo_id = str(model.get("repo_id") or "").strip()
+            if not repo_id:
+                continue
+            details: list[str] = [repo_id]
+            compatibility_label = str(model.get("compatibility_label") or "").strip()
+            if compatibility_label:
+                details.append(compatibility_label)
+            compatibility = str(model.get("compatibility") or "").strip()
+            if compatibility == "clear":
+                clear_count += 1
+            elif compatibility == "possible":
+                possible_count += 1
+            pipeline_tag = str(model.get("pipeline_tag") or "").strip()
+            if pipeline_tag:
+                details.append(pipeline_tag)
+            downloads = model.get("downloads")
+            if isinstance(downloads, int):
+                details.append(f"{downloads} downloads")
+            likes = model.get("likes")
+            if isinstance(likes, int):
+                details.append(f"{likes} likes")
+            item = QListWidgetItem("  ·  ".join(details))
+            item.setData(Qt.ItemDataRole.UserRole, model)
+            reason = str(model.get("compatibility_reason") or "").strip()
+            if reason:
+                item.setToolTip(reason)
+            self.results_list.addItem(item)
+        if self.results_list.count() > 0:
+            self.results_list.setCurrentRow(0)
+        self.status_label.setText(
+            f"已找到 {self.results_list.count()} 个模型；"
+            f"明显兼容 {clear_count} 个，可能兼容 {possible_count} 个。"
+        )
+
+    @Slot(str)
+    def _handle_search_failed(self, message: str) -> None:
+        self.status_label.setText(f"搜索失败：{message}")
+        QMessageBox.warning(self, "搜索失败", message)
+
+    @Slot()
+    def _reset_search_worker(self) -> None:
+        self._search_thread = None
+        self._search_worker = None
+        self._set_busy(False, "")
+        self._sync_download_button()
+
+    def _start_download(self) -> None:
+        if self._operation_running():
+            return
+        repo_id = self._selected_repo_id()
+        if not repo_id:
+            QMessageBox.information(self, "未选择模型", "请先选择一个 Hugging Face 模型。")
+            return
+        self._set_busy(True, f"正在下载 {repo_id} ...")
+        thread = QThread()
+        worker = settings_workers.HuggingFaceModelDownloadWorker(
+            self.base_dir,
+            self.source,
+            repo_id,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_download_success)
+        worker.failed.connect(self._handle_download_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_download_worker)
+
+        self._download_thread = thread
+        self._download_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_download_success(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self.status_label.setText("下载完成。")
+            self._accept_after_download = True
+            return
+        self.selected_repo_id = str(result.get("repo_id") or "").strip()
+        self.selected_local_dir = str(result.get("local_dir") or "").strip()
+        self.status_label.setText(f"下载完成：{self.selected_local_dir}")
+        self._accept_after_download = bool(self.selected_repo_id)
+        QMessageBox.information(
+            self,
+            "下载完成",
+            f"模型已下载到：{self.selected_local_dir}",
+        )
+
+    @Slot(str)
+    def _handle_download_failed(self, message: str) -> None:
+        self.status_label.setText(f"下载失败：{message}")
+        QMessageBox.warning(self, "下载失败", message)
+
+    @Slot()
+    def _reset_download_worker(self) -> None:
+        self._download_thread = None
+        self._download_worker = None
+        self._set_busy(False, "")
+        self._sync_download_button()
+        if self._accept_after_download:
+            self._accept_after_download = False
+            super().accept()
+
+    def reject(self) -> None:
+        if self._operation_running():
+            QMessageBox.information(self, "处理中", "Hugging Face 操作仍在进行，请等待完成后再关闭。")
+            return
+        super().reject()
+
+    def closeEvent(self, event):  # type: ignore[no-untyped-def]
+        if self._operation_running():
+            QMessageBox.information(self, "处理中", "Hugging Face 操作仍在进行，请等待完成后再关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class SettingsDialog(QDialog):
@@ -187,6 +455,8 @@ class SettingsDialog(QDialog):
         bubble_settings: BubbleSettings | None = None,
         backchannel_settings: BackchannelSettings | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
+        sensory_settings: SensorySettings | None = None,
+        screen_observation_settings: ScreenObservationSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
         memory_curation_settings=None,
@@ -204,6 +474,9 @@ class SettingsDialog(QDialog):
         self.tts_settings = tts_settings
         self.startup_settings = startup_settings or StartupSettings()
         self.bubble_settings = bubble_settings or BubbleSettings()
+        self.screen_observation_settings = (
+            screen_observation_settings or ScreenObservationSettings()
+        ).normalized()
         self.backchannel_settings = (backchannel_settings or BackchannelSettings()).normalized()
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self._initial_mcp_settings = mcp_settings or MCPRuntimeSettings()
@@ -211,6 +484,7 @@ class SettingsDialog(QDialog):
         from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
 
         self.memory_curation_settings = memory_curation_settings or _MemoryCurationSettings()
+        self.sensory_settings = (sensory_settings or SensorySettings()).normalized()
         self._initial_api_settings = api_settings
         self._initial_tts_settings = tts_settings
         self._api_profiles = _ensure_api_profiles(api_settings, api_profiles, global_model_names)
@@ -271,6 +545,7 @@ class SettingsDialog(QDialog):
         self.result_subtitle_typing_interval_ms: int | None = None
         self.result_reply_segment_pause_ms: int | None = None
         self.result_screen_awareness_settings: ScreenAwarenessSettings | None = None
+        self.result_screen_observation_settings: ScreenObservationSettings | None = None
         self.result_proactive_care_settings: ScreenAwarenessSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
         self.result_runtime_loop_settings: RuntimeLoopSettings | None = None
@@ -279,6 +554,7 @@ class SettingsDialog(QDialog):
         self.result_bubble_settings: BubbleSettings | None = None
         self.result_backchannel_settings: BackchannelSettings | None = None
         self.result_memory_curation_settings = None
+        self.result_sensory_settings: SensorySettings | None = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
@@ -309,6 +585,21 @@ class SettingsDialog(QDialog):
         self._backchannel_model_download_worker: settings_workers.BackchannelModelDownloadWorker | None = None
         self._theme_ai_thread: QThread | None = None
         self._theme_ai_worker: settings_workers.ThemeAiWorker | None = None
+        self._sensory_model_probe_thread: QThread | None = None
+        self._sensory_model_probe_worker: settings_workers.SensoryModelListProbeWorker | None = None
+        self._sensory_model_test_thread: QThread | None = None
+        self._sensory_model_test_worker: settings_workers.SensoryModelTestWorker | None = None
+        self._sensory_llama_preflight_thread: QThread | None = None
+        self._sensory_llama_preflight_worker: settings_workers.LlamaCppAudioBackendPreflightWorker | None = None
+        self._pending_sensory_llama_prepare_sources: tuple[SensorySource, ...] | None = None
+        self._sensory_llama_runtime_thread: QThread | None = None
+        self._sensory_llama_runtime_worker: (
+            settings_workers.LlamaCppRuntimeInstallWorker
+            | settings_workers.LlamaCppAudioBackendPrepareWorker
+            | None
+        ) = None
+        self._sensory_llama_doctor_thread: QThread | None = None
+        self._sensory_llama_doctor_worker: settings_workers.LlamaCppRuntimeDoctorWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
@@ -338,12 +629,26 @@ class SettingsDialog(QDialog):
                 ),
             ),
             ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
-            ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings, self._api_profiles, self._global_model_names, self._initial_model_selection))),
+            (
+                "模型",
+                self._build_scrollable_tab(
+                    ApiSettingsPage(self).build(
+                        api_settings,
+                        self._api_profiles,
+                        self._global_model_names,
+                        self._initial_model_selection,
+                        self.sensory_settings,
+                    )
+                ),
+            ),
             ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
             (
                 "隐私",
                 self._build_scrollable_tab(
-                    PrivacySettingsPage(self).build(screen_awareness_settings or ScreenAwarenessSettings())
+                    PrivacySettingsPage(self).build(
+                        screen_awareness_settings or ScreenAwarenessSettings(),
+                        self.screen_observation_settings,
+                    )
                 ),
             ),
             (
@@ -810,6 +1115,962 @@ class SettingsDialog(QDialog):
             label = form_layout.labelForField(widget)
             if label is not None:
                 label.setEnabled(enabled if labels_enabled is None else labels_enabled)
+
+    def _initialize_sensory_ui_state(self, settings: SensorySettings) -> None:
+        normalized = settings.normalized()
+        self._syncing_sensory_controls = False
+        self._active_sensory_source = SensorySource.VISION.value
+        self._sensory_source_state: dict[str, dict[str, Any]] = {}
+        for source in SensorySource:
+            source_settings = normalized.sources[source]
+            provider = normalized.provider_for_source(source)
+            self._sensory_source_state[source.value] = _sensory_state_from_settings(
+                source,
+                source_settings,
+                provider,
+            )
+
+    def _handle_sensory_source_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        previous_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        self._capture_sensory_current_source(previous_source)
+        next_source = str(
+            self.sensory_source_combo.currentData() or SensorySource.VISION.value
+        )
+        self._load_sensory_source_controls(next_source, mark_dirty=False)
+        self._sync_sensory_controls()
+
+    def _handle_sensory_source_table_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        table = getattr(self, "sensory_source_table", None)
+        if table is None:
+            return
+        source = _sensory_source_for_column(int(table.currentColumn()))
+        if source is None:
+            return
+        previous_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        if source.value == previous_source:
+            self._refresh_sensory_source_table()
+            return
+        self._capture_sensory_current_source(previous_source)
+        self._load_sensory_source_controls(source.value, mark_dirty=False)
+        self._sync_sensory_controls()
+
+    def _handle_sensory_control_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        self._capture_sensory_current_source()
+        self._refresh_sensory_source_table()
+        if hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText(self._sensory_status_hint())
+        self._sync_sensory_controls()
+
+    def _handle_sensory_backend_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        active_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        previous_state = dict(
+            getattr(self, "_sensory_source_state", {}).get(
+                active_source,
+                _default_sensory_state(coerce_sensory_source(active_source)),
+            )
+        )
+        previous_default = _default_sensory_endpoint(
+            str(previous_state.get("backend") or ""),
+            str(previous_state.get("mode_ui") or "local"),
+        )
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        mode_ui = str(self.sensory_mode_combo.currentData() or "local")
+        next_default = _default_sensory_endpoint(backend, mode_ui)
+        current_endpoint = self.sensory_endpoint_edit.text().strip()
+        self._syncing_sensory_controls = True
+        try:
+            self.sensory_endpoint_edit.setPlaceholderText(next_default)
+            if not current_endpoint or current_endpoint == previous_default:
+                self.sensory_endpoint_edit.setText(next_default)
+        finally:
+            self._syncing_sensory_controls = False
+        self._handle_sensory_control_changed()
+
+    def _capture_sensory_current_source(self, source_value: str | None = None) -> None:
+        if not hasattr(self, "_sensory_source_state"):
+            return
+        source = coerce_sensory_source(
+            source_value
+            or getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        self._sensory_source_state[source.value] = self._sensory_current_state()
+
+    def _sensory_current_state(self) -> dict[str, Any]:
+        if not hasattr(self, "sensory_mode_combo"):
+            return _default_sensory_state(SensorySource.VISION)
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        previous_state = dict(
+            getattr(self, "_sensory_source_state", {}).get(
+                source.value,
+                _default_sensory_state(source),
+            )
+        )
+        state = {
+            "mode_ui": mode_ui,
+            "backend": backend,
+            "endpoint": self.sensory_endpoint_edit.text().strip(),
+            "model": self.sensory_model_edit.text().strip(),
+            "api_key": self.sensory_api_key_edit.text().strip(),
+            "timeout_seconds": int(self.sensory_timeout_spin.value()),
+            "confidence_threshold": float(self.sensory_confidence_spin.value()),
+            "context_enabled": self.sensory_settings.sources[source].context_enabled,
+            "context_limit": self.sensory_settings.sources[source].context_limit,
+        }
+        for key in _SENSORY_LLAMA_RUNTIME_STATE_KEYS:
+            if previous_state.get(key):
+                state[key] = previous_state[key]
+        return state
+
+    def _load_sensory_source_controls(
+        self,
+        source_value: str,
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        if not hasattr(self, "_sensory_source_state"):
+            return
+        source = coerce_sensory_source(source_value)
+        state = self._sensory_source_state.setdefault(
+            source.value,
+            _default_sensory_state(source),
+        )
+        self._active_sensory_source = source.value
+        self._syncing_sensory_controls = True
+        try:
+            _set_combo_data(self.sensory_source_combo, source.value)
+            _set_combo_data(self.sensory_mode_combo, str(state.get("mode_ui") or "off"))
+            _set_combo_data(self.sensory_backend_combo, str(state.get("backend") or "lmstudio"))
+            mode_ui = str(state.get("mode_ui") or "off")
+            backend = str(state.get("backend") or "lmstudio")
+            endpoint = str(state.get("endpoint") or "")
+            self.sensory_endpoint_edit.setPlaceholderText(
+                _default_sensory_endpoint(backend, mode_ui)
+            )
+            self.sensory_endpoint_edit.setText(endpoint)
+            self.sensory_model_edit.setText(str(state.get("model") or ""))
+            self.sensory_api_key_edit.setText(str(state.get("api_key") or ""))
+            self.sensory_timeout_spin.setValue(int(state.get("timeout_seconds") or SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS))
+            self.sensory_confidence_spin.setValue(float(state.get("confidence_threshold") or 0.5))
+            if hasattr(self, "sensory_status_label"):
+                self.sensory_status_label.setText(self._sensory_status_hint())
+        finally:
+            self._syncing_sensory_controls = False
+        self._refresh_sensory_source_table()
+        if mark_dirty:
+            self._handle_sensory_control_changed()
+
+    def _refresh_sensory_source_table(self) -> None:
+        table = getattr(self, "sensory_source_table", None)
+        if table is None or not hasattr(self, "_sensory_source_state"):
+            return
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        previous_syncing = bool(getattr(self, "_syncing_sensory_controls", False))
+        self._syncing_sensory_controls = True
+        try:
+            for column, source in enumerate(_sensory_source_order()):
+                state = dict(
+                    self._sensory_source_state.get(
+                        source.value,
+                        _default_sensory_state(source),
+                    )
+                )
+                mode_ui = str(state.get("mode_ui") or "off")
+                backend = str(state.get("backend") or "lmstudio")
+                model = str(state.get("model") or "").strip()
+                values = (
+                    _sensory_mode_label(mode_ui),
+                    _sensory_backend_label(backend) if mode_ui != "off" else "-",
+                    model or "-",
+                )
+                for row, value in enumerate(values):
+                    item = table.item(row, column)
+                    if item is None:
+                        item = QTableWidgetItem("")
+                        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                        item.setTextAlignment(
+                            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+                        )
+                        table.setItem(row, column, item)
+                    item.setText(value)
+                    item.setToolTip(value)
+                    item.setData(Qt.ItemDataRole.UserRole, source.value)
+            active_column = _sensory_source_column(active_source)
+            if active_column >= 0:
+                table.setCurrentCell(0, active_column)
+                table.selectColumn(active_column)
+            table.resizeRowsToContents()
+        finally:
+            self._syncing_sensory_controls = previous_syncing
+
+    def _sensory_llama_operation_running(self) -> bool:
+        return (
+            self._sensory_llama_preflight_thread is not None
+            or self._sensory_llama_runtime_thread is not None
+            or self._sensory_llama_doctor_thread is not None
+        )
+
+    @Slot(bool)
+    def _sync_sensory_controls(self, *_args: object) -> None:
+        if not hasattr(self, "sensory_mode_combo"):
+            return
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        configured = mode_ui != "off"
+        self.sensory_context_enabled_check.setEnabled(self.sensory_enabled_check.isChecked())
+        self.sensory_context_budget_spin.setEnabled(
+            self.sensory_enabled_check.isChecked()
+            and self.sensory_context_enabled_check.isChecked()
+        )
+        for widget in (
+            self.sensory_backend_combo,
+            self.sensory_endpoint_edit,
+            self.sensory_model_edit,
+            self.sensory_api_key_edit,
+            self.sensory_timeout_spin,
+            self.sensory_confidence_spin,
+        ):
+            widget.setEnabled(configured)
+        local_default = _default_sensory_endpoint(backend, mode_ui)
+        self.sensory_endpoint_edit.setPlaceholderText(local_default)
+        self.sensory_api_key_edit.setEnabled(configured)
+        self.sensory_probe_button.setEnabled(
+            configured
+            and self._sensory_model_probe_thread is None
+            and self._sensory_model_test_thread is None
+            and not self._sensory_llama_operation_running()
+        )
+        self.sensory_test_button.setEnabled(
+            configured
+            and self._sensory_model_probe_thread is None
+            and self._sensory_model_test_thread is None
+            and not self._sensory_llama_operation_running()
+        )
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(
+                self._sensory_model_probe_thread is None
+                and self._sensory_model_test_thread is None
+                and not self._sensory_llama_operation_running()
+            )
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(
+                configured
+                and mode_ui == "local"
+                and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+                and active_source in {SensorySource.SPEECH, SensorySource.SOUND}
+                and self._sensory_model_probe_thread is None
+                and self._sensory_model_test_thread is None
+                and not self._sensory_llama_operation_running()
+            )
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(
+                configured
+                and mode_ui == "local"
+                and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+                and self._sensory_model_probe_thread is None
+                and self._sensory_model_test_thread is None
+                and not self._sensory_llama_operation_running()
+            )
+        if not configured and hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText("该感官源已关闭。")
+
+    def _selected_sensory_settings(self) -> SensorySettings | None:
+        if not hasattr(self, "sensory_enabled_check"):
+            return self.sensory_settings.normalized()
+        self._capture_sensory_current_source()
+        normalized = self.sensory_settings.normalized()
+        sources: dict[SensorySource, SensorySourceSettings] = {}
+        providers: dict[str, SensoryProviderConfig] = {}
+        for source in SensorySource:
+            state = dict(
+                getattr(self, "_sensory_source_state", {}).get(
+                    source.value,
+                    _default_sensory_state(source),
+                )
+            )
+            mode_ui = str(state.get("mode_ui") or "off")
+            mode = _sensory_provider_mode_from_ui(mode_ui)
+            provider_id = ""
+            if mode != SensoryProviderMode.OFF:
+                validation_error = _validate_sensory_state(source, state)
+                if validation_error:
+                    QMessageBox.warning(self, "增强感知配置无效", validation_error)
+                    self._load_sensory_source_controls(source.value, mark_dirty=False)
+                    return None
+                backend = str(state.get("backend") or "lmstudio")
+                provider_id = _sensory_provider_id(source, backend, mode_ui)
+                providers[provider_id] = _sensory_provider_config_from_state(
+                    source,
+                    provider_id,
+                    state,
+                )
+            previous_source_settings = normalized.sources[source]
+            sources[source] = SensorySourceSettings(
+                mode=mode,
+                provider_id=provider_id,
+                confidence_threshold=float(state.get("confidence_threshold") or 0.5),
+                context_enabled=bool(
+                    state.get("context_enabled", previous_source_settings.context_enabled)
+                ),
+                context_limit=int(
+                    state.get("context_limit", previous_source_settings.context_limit)
+                ),
+            ).normalized(source)
+        return SensorySettings(
+            enabled=self.sensory_enabled_check.isChecked(),
+            context_enabled=self.sensory_context_enabled_check.isChecked(),
+            context_budget_chars=int(self.sensory_context_budget_spin.value()),
+            retention_days=normalized.retention_days,
+            retention_limit=normalized.retention_limit,
+            sources=sources,
+            providers=providers,
+        ).normalized()
+
+    def _selected_sensory_provider_config(
+        self,
+        *,
+        require_model: bool,
+    ) -> tuple[SensorySource, SensoryProviderConfig] | None:
+        if not hasattr(self, "sensory_mode_combo"):
+            return None
+        self._capture_sensory_current_source()
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        state = self._sensory_current_state()
+        mode_ui = str(state.get("mode_ui") or "off")
+        if mode_ui == "off":
+            QMessageBox.information(self, "增强感知已关闭", "请先为当前感官源选择本机、局域网或远端 API 模式。")
+            return None
+        validation_error = _validate_sensory_state(
+            source,
+            state,
+            require_model=require_model,
+        )
+        if validation_error:
+            QMessageBox.warning(self, "增强感知配置无效", validation_error)
+            return None
+        backend = str(state.get("backend") or "lmstudio")
+        provider_id = _sensory_provider_id(source, backend, mode_ui)
+        return source, _sensory_provider_config_from_state(source, provider_id, state)
+
+    def _probe_sensory_models(self) -> None:
+        selected = self._selected_sensory_provider_config(require_model=False)
+        if (
+            selected is None
+            or self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_llama_operation_running()
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            return
+        _source, config = selected
+        self._set_sensory_model_probe_busy(True)
+        if hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText("正在检测增强感知模型列表...")
+        thread = QThread()
+        worker = settings_workers.SensoryModelListProbeWorker(config)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_model_probe_success)
+        worker.failed.connect(self._handle_sensory_model_probe_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_model_probe_state)
+
+        self._sensory_model_probe_thread = thread
+        self._sensory_model_probe_worker = worker
+        thread.start()
+
+    @Slot(list)
+    def _handle_sensory_model_probe_success(self, model_names: list[str]) -> None:
+        if not model_names:
+            message = "模型列表为空，请检查服务是否暴露模型列表接口。"
+            self.sensory_status_label.setText(message)
+            QMessageBox.warning(self, "探测失败", message)
+            return
+        self.sensory_model_edit.set_model_names(model_names)
+        self._capture_sensory_current_source()
+        self.sensory_status_label.setText(f"已发现 {len(model_names)} 个模型。")
+        QMessageBox.information(self, "探测成功", f"已发现 {len(model_names)} 个模型。")
+
+    @Slot(str)
+    def _handle_sensory_model_probe_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"检测失败：{message}")
+        QMessageBox.warning(self, "探测失败", message)
+
+    @Slot()
+    def _reset_sensory_model_probe_state(self) -> None:
+        self._sensory_model_probe_thread = None
+        self._sensory_model_probe_worker = None
+        self._set_sensory_model_probe_busy(False)
+        self._sync_sensory_controls()
+
+    def _set_sensory_model_probe_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+            self.sensory_probe_button.setText("检测中..." if busy else "检测模型")
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "检测感知模型...")
+
+    def _test_sensory_model(self) -> None:
+        selected = self._selected_sensory_provider_config(require_model=True)
+        if (
+            selected is None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_model_probe_thread is not None
+            or self._sensory_llama_operation_running()
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            return
+        source, config = selected
+        if not self._confirm_sensory_llama_model_download(source, config):
+            return
+        self._set_sensory_model_test_busy(True)
+        self.sensory_status_label.setText("正在测试增强感知模型...")
+        thread = QThread()
+        worker = settings_workers.SensoryModelTestWorker(config, source, base_dir=self.base_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_model_test_success)
+        worker.failed.connect(self._handle_sensory_model_test_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_model_test_state)
+
+        self._sensory_model_test_thread = thread
+        self._sensory_model_test_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_model_test_success(self, observation: object) -> None:
+        if isinstance(observation, dict):
+            summary = str(observation.get("summary") or "").strip()
+            confidence = observation.get("confidence")
+            self.sensory_status_label.setText(
+                f"测试成功，置信度 {confidence}。{summary[:120]}"
+            )
+        else:
+            self.sensory_status_label.setText("测试成功。")
+        QMessageBox.information(self, "测试成功", self.sensory_status_label.text())
+
+    @Slot(str)
+    def _handle_sensory_model_test_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"测试失败：{message}")
+        QMessageBox.warning(self, "测试失败", message)
+
+    @Slot()
+    def _reset_sensory_model_test_state(self) -> None:
+        self._sensory_model_test_thread = None
+        self._sensory_model_test_worker = None
+        self._set_sensory_model_test_busy(False)
+        self._sync_sensory_controls()
+
+    def _set_sensory_model_test_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+            self.sensory_test_button.setText("测试中..." if busy else "测试模型")
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "测试感知模型...")
+
+    def _confirm_sensory_llama_model_download(
+        self,
+        source: SensorySource,
+        config: SensoryProviderConfig,
+    ) -> bool:
+        if source not in {SensorySource.SPEECH, SensorySource.SOUND}:
+            return True
+        if not _sensory_provider_is_managed_llama(config):
+            return True
+        plan = build_sensory_audio_smoke_plan(
+            config,
+            base_dir=self.base_dir,
+            source=source,
+        )
+        if plan.requires_runtime_download:
+            QMessageBox.warning(
+                self,
+                "需要先配置运行时",
+                "未找到可用的 llama-server。请先点击“准备 llama.cpp 音频后端”，再测试音频模型。",
+            )
+            return False
+        if not plan.requires_model_download:
+            return True
+        download_hint = f"预计下载量 {plan.model_download_hint}" if plan.model_download_hint else "下载量取决于模型仓库，可能较大"
+        return (
+            QMessageBox.question(
+                self,
+                "确认下载音频模型",
+                (
+                    f"首次测试 {config.model} 时，llama.cpp 可能会从 Hugging Face 下载模型与 mmproj，"
+                    f"{download_hint}。日志会写入 data/logs/sensory-llama-server.log。是否继续？"
+                ),
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _download_sensory_model_from_huggingface(self) -> None:
+        if (
+            self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_llama_operation_running()
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            QMessageBox.information(self, "处理中", "请等待当前检测或测试完成后再下载模型。")
+            return
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        dialog = HuggingFaceSensoryModelDialog(
+            base_dir=self.base_dir,
+            source=source,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        repo_id = dialog.selected_repo_id.strip()
+        if not repo_id:
+            return
+        local_dir = dialog.selected_local_dir.strip()
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        use_local_llama_model = (
+            mode_ui == "local"
+            and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+            and bool(local_dir)
+        )
+        selected_model = local_dir if use_local_llama_model else repo_id
+        existing_models = [
+            self.sensory_model_edit.itemText(index)
+            for index in range(self.sensory_model_edit.count())
+            if self.sensory_model_edit.itemText(index).strip()
+        ]
+        next_models = [selected_model, *[name for name in existing_models if name != selected_model]]
+        self.sensory_model_edit.set_model_names(next_models)
+        self.sensory_model_edit.setText(selected_model)
+        self._capture_sensory_current_source()
+        self._sync_sensory_controls()
+        if hasattr(self, "sensory_status_label"):
+            if local_dir:
+                self.sensory_status_label.setText(f"已从 Hugging Face 下载到：{local_dir}")
+            else:
+                self.sensory_status_label.setText("已从 Hugging Face 下载模型。")
+
+    def _diagnose_sensory_llama_runtime(self) -> None:
+        if (
+            self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_llama_operation_running()
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            QMessageBox.information(self, "处理中", "请等待当前检测、测试或配置完成后再诊断 llama.cpp。")
+            return
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        if mode_ui != "local" or backend not in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+            QMessageBox.information(self, "不可用", "请先选择“本机运行框架”和 llama.cpp 后端。")
+            return
+        self._set_sensory_llama_doctor_busy(True)
+        self.sensory_status_label.setText("正在诊断 llama.cpp 运行时...")
+        thread = QThread()
+        worker = settings_workers.LlamaCppRuntimeDoctorWorker(self.base_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_llama_doctor_success)
+        worker.failed.connect(self._handle_sensory_llama_doctor_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_llama_doctor_state)
+
+        self._sensory_llama_doctor_thread = thread
+        self._sensory_llama_doctor_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_llama_doctor_success(self, result: object) -> None:
+        report = result if isinstance(result, dict) else {}
+        message = _format_sensory_llama_doctor_message(report)
+        self.sensory_status_label.setText(message.splitlines()[0] if message else "诊断完成。")
+        QMessageBox.information(self, "诊断完成", message or "诊断完成。")
+
+    @Slot(str)
+    def _handle_sensory_llama_doctor_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"诊断失败：{message}")
+        QMessageBox.warning(self, "诊断失败", message)
+
+    @Slot()
+    def _reset_sensory_llama_doctor_state(self) -> None:
+        self._sensory_llama_doctor_thread = None
+        self._sensory_llama_doctor_worker = None
+        self._set_sensory_llama_doctor_busy(False)
+        self._sync_sensory_controls()
+
+    def _install_sensory_llama_runtime(self) -> None:
+        if (
+            self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_llama_operation_running()
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            QMessageBox.information(self, "处理中", "请等待当前检测、测试或下载完成后再配置 llama.cpp。")
+            return
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        if mode_ui != "local" or backend not in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+            QMessageBox.information(self, "不可用", "请先选择“本机运行框架”和 llama.cpp 后端。")
+            return
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        if active_source not in {SensorySource.SPEECH, SensorySource.SOUND}:
+            QMessageBox.information(self, "不可用", "llama.cpp 一键准备仅适用于语音和声音事件。")
+            return
+        self._capture_sensory_current_source()
+        prepare_sources = _sensory_llama_prepare_sources()
+        missing_recommendations = [
+            _sensory_source_label(source)
+            for source in prepare_sources
+            if recommended_llama_cpp_audio_model(source) is None
+        ]
+        if missing_recommendations:
+            QMessageBox.warning(
+                self,
+                "缺少推荐模型",
+                f"{', '.join(missing_recommendations)} 没有内置推荐 llama.cpp 音频模型。",
+            )
+            return
+        self._set_sensory_llama_preflight_busy(True)
+        self.sensory_status_label.setText("正在检查 llama.cpp 音频后端...")
+        thread = QThread()
+        worker = settings_workers.LlamaCppAudioBackendPreflightWorker(self.base_dir, prepare_sources)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_llama_preflight_success)
+        worker.failed.connect(self._handle_sensory_llama_preflight_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_llama_preflight_state)
+
+        self._sensory_llama_preflight_thread = thread
+        self._sensory_llama_preflight_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_llama_preflight_success(self, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        prepare_sources = _sensory_llama_sources_from_payload(
+            payload,
+            fallback=(
+                coerce_sensory_source(
+                    getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+                ),
+            ),
+        )
+        blocking_message = _sensory_llama_prepare_blocking_message(payload)
+        if blocking_message:
+            self.sensory_status_label.setText(f"准备不可用：{blocking_message}")
+            QMessageBox.warning(self, "准备不可用", blocking_message)
+            return
+        message = _format_sensory_llama_prepare_confirmation(prepare_sources, payload, self.base_dir)
+        if (
+            QMessageBox.question(
+                self,
+                "准备 llama.cpp 音频后端",
+                message,
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self._pending_sensory_llama_prepare_sources = prepare_sources
+
+    @Slot(str)
+    def _handle_sensory_llama_preflight_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"检查失败：{message}")
+        QMessageBox.warning(self, "检查失败", message)
+
+    @Slot()
+    def _reset_sensory_llama_preflight_state(self) -> None:
+        self._sensory_llama_preflight_thread = None
+        self._sensory_llama_preflight_worker = None
+        pending_sources = self._pending_sensory_llama_prepare_sources
+        self._pending_sensory_llama_prepare_sources = None
+        if pending_sources is not None:
+            self._start_sensory_llama_runtime_prepare(pending_sources)
+            return
+        self._set_sensory_llama_preflight_busy(False)
+        self._sync_sensory_controls()
+
+    def _start_sensory_llama_runtime_prepare(self, prepare_sources: SensorySource | tuple[SensorySource, ...]) -> None:
+        self._set_sensory_llama_runtime_busy(True)
+        self.sensory_status_label.setText("正在准备 llama.cpp 音频后端...")
+        thread = QThread()
+        worker = settings_workers.LlamaCppAudioBackendPrepareWorker(self.base_dir, prepare_sources)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_llama_runtime_success)
+        worker.failed.connect(self._handle_sensory_llama_runtime_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_llama_runtime_state)
+
+        self._sensory_llama_runtime_thread = thread
+        self._sensory_llama_runtime_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_llama_runtime_success(self, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        successful_sources: list[SensorySource] = []
+        result_messages: list[str] = []
+        issues: list[str] = []
+        results = payload.get("results") if isinstance(payload.get("results"), dict) else {}
+        if isinstance(results, dict) and results:
+            for raw_source, raw_result in results.items():
+                source = coerce_sensory_source(raw_source)
+                source_payload = raw_result if isinstance(raw_result, dict) else {}
+                if bool(source_payload.get("ok")):
+                    successful_sources.append(source)
+                    result_messages.append(
+                        self._apply_sensory_llama_prepare_result(source, source_payload)
+                    )
+            issues = [str(issue) for issue in payload.get("issues", []) if str(issue).strip()]
+        else:
+            source = coerce_sensory_source(
+                str(payload.get("source") or getattr(self, "_active_sensory_source", SensorySource.VISION.value))
+            )
+            successful_sources.append(source)
+            result_messages.append(self._apply_sensory_llama_prepare_result(source, payload))
+
+        active_source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        self._load_sensory_source_controls(active_source.value, mark_dirty=False)
+        self._sync_sensory_controls()
+        message = str(payload.get("message") or "llama.cpp 音频后端已准备。").strip()
+        if successful_sources:
+            labels = "、".join(_sensory_source_label(source) for source in successful_sources)
+            message = f"{message} 已配置：{labels}。"
+        if result_messages:
+            message = f"{message}\n" + "\n".join(result_messages)
+        if issues:
+            message = f"{message}\n失败项：\n" + "\n".join(f"- {issue}" for issue in issues)
+        self.sensory_status_label.setText(message)
+        if issues:
+            QMessageBox.warning(self, "部分配置失败", message)
+        else:
+            QMessageBox.information(self, "配置成功", message)
+
+    def _apply_sensory_llama_prepare_result(
+        self,
+        source: SensorySource,
+        payload: dict[str, Any],
+    ) -> str:
+        runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else payload
+        model_payload = payload.get("model") if isinstance(payload.get("model"), dict) else {}
+        binary_path = str(runtime_payload.get("binary_path") or "").strip()
+        install_dir = str(runtime_payload.get("install_dir") or "").strip()
+        package = runtime_payload.get("package") if isinstance(runtime_payload.get("package"), dict) else {}
+        package_id = str(package.get("package_id") or "").strip() if isinstance(package, dict) else ""
+        state = dict(
+            getattr(self, "_sensory_source_state", {}).get(
+                source.value,
+                _default_sensory_state(source),
+            )
+        )
+        state["mode_ui"] = "local"
+        state["backend"] = "llama"
+        state["managed_runtime"] = LLAMA_CPP_MANAGED_RUNTIME_MARKER
+        if binary_path:
+            state["llama_binary_path"] = binary_path
+        if install_dir:
+            state["llama_runtime_install_dir"] = install_dir
+        if package_id:
+            state["llama_runtime_package_id"] = package_id
+        state["endpoint"] = f"http://127.0.0.1:{DEFAULT_LLAMA_CPP_MANAGED_PORT}/v1"
+        local_model_dir = str(model_payload.get("local_dir") or "").strip() if isinstance(model_payload, dict) else ""
+        if local_model_dir:
+            state["model"] = local_model_dir
+        elif not str(state.get("model") or "").strip():
+            recommended_model = _recommended_llama_cpp_model_for_source(source)
+            if recommended_model:
+                state["model"] = recommended_model
+        self._sensory_source_state[source.value] = state
+        details = [_sensory_source_label(source)]
+        if local_model_dir:
+            downloaded = bool(model_payload.get("downloaded")) if isinstance(model_payload, dict) else False
+            verb = "已下载并填入本地模型缓存" if downloaded else "已填入本地模型缓存"
+            details.append(f"{verb}：{local_model_dir}")
+        elif state.get("model"):
+            details.append(f"已填入推荐模型：{state['model']}")
+        if binary_path:
+            details.append(f"llama-server：{binary_path}")
+        return "；".join(str(part) for part in details if str(part).strip()) + "。"
+
+    @Slot(str)
+    def _handle_sensory_llama_runtime_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"配置失败：{message}")
+        QMessageBox.warning(self, "配置失败", message)
+
+    @Slot()
+    def _reset_sensory_llama_runtime_state(self) -> None:
+        self._sensory_llama_runtime_thread = None
+        self._sensory_llama_runtime_worker = None
+        self._set_sensory_llama_runtime_busy(False)
+        self._sync_sensory_controls()
+
+    def _set_sensory_llama_runtime_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+            self.sensory_llama_runtime_button.setText(
+                "准备中..." if busy else "准备 llama.cpp 音频后端"
+            )
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "准备 llama.cpp...")
+
+    def _set_sensory_llama_preflight_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+            self.sensory_llama_runtime_button.setText(
+                "检查中..." if busy else "准备 llama.cpp 音频后端"
+            )
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "检查 llama.cpp...")
+
+    def _set_sensory_llama_doctor_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_llama_doctor_button"):
+            self.sensory_llama_doctor_button.setEnabled(not busy)
+            self.sensory_llama_doctor_button.setText(
+                "诊断中..." if busy else "诊断 llama.cpp"
+            )
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        if hasattr(self, "sensory_hf_download_button"):
+            self.sensory_hf_download_button.setEnabled(not busy)
+        if hasattr(self, "sensory_llama_runtime_button"):
+            self.sensory_llama_runtime_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "诊断 llama.cpp...")
+
+    def _set_save_buttons_busy(self, busy: bool, text: str) -> None:
+        if not hasattr(self, "button_box"):
+            return
+        save_button = self.button_box.button(QDialogButtonBox.StandardButton.Save)
+        cancel_button = self.button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if save_button is not None:
+            if busy:
+                if self._save_button_text is None:
+                    self._save_button_text = save_button.text()
+                save_button.setText(text)
+            elif self._save_button_text is not None:
+                save_button.setText(self._save_button_text)
+                self._save_button_text = None
+            save_button.setEnabled(not busy)
+        if cancel_button is not None:
+            cancel_button.setEnabled(not busy)
+
+    def _sensory_status_hint(self) -> str:
+        if not hasattr(self, "sensory_mode_combo"):
+            return "未测试"
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        if mode_ui == "off":
+            return "该感官源已关闭。"
+        if not self.sensory_model_edit.text().strip():
+            return "请填写模型，或先检测模型列表。"
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio").strip().lower()
+        if (
+            source in {SensorySource.SPEECH, SensorySource.SOUND}
+            and mode_ui == "local"
+            and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+        ):
+            state = self._sensory_current_state()
+            provider_id = _sensory_provider_id(source, backend, mode_ui)
+            config = _sensory_provider_config_from_state(source, provider_id, state)
+            if not _sensory_provider_is_managed_llama(config):
+                return "可点击“准备 llama.cpp 音频后端”，或填写已运行的本机 llama-server Endpoint。"
+            plan = build_sensory_audio_smoke_plan(
+                config,
+                base_dir=self.base_dir,
+                source=source,
+            )
+            if plan.requires_runtime_download:
+                return "未找到可用的 llama-server，请先准备 llama.cpp 音频后端。"
+            if plan.requires_model_download:
+                hint = f"预计下载 {plan.model_download_hint}" if plan.model_download_hint else "可能下载远端 GGUF 模型"
+                return f"运行时已准备好；首次测试会确认{hint}。"
+            if plan.model_location == "local":
+                return "本机 llama.cpp 运行时和本地模型路径已准备好，尚未测试。"
+        return "配置已修改，尚未测试。"
 
     def _load_memory_entries(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
@@ -2024,6 +3285,15 @@ class SettingsDialog(QDialog):
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再保存设置。")
             return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再保存设置。")
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再保存设置。")
+            return
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再保存设置。")
+            return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再保存设置。")
             return
@@ -2264,6 +3534,9 @@ class SettingsDialog(QDialog):
         theme_settings = self._selected_theme_settings()
         if theme_settings is None:
             return None
+        sensory_settings = self._selected_sensory_settings()
+        if sensory_settings is None:
+            return None
         character_id = self._selected_character_id()
         if character_id is None:
             QMessageBox.warning(self, "配置无效", "请先导入并选择一个角色包。")
@@ -2293,6 +3566,12 @@ class SettingsDialog(QDialog):
                 cooldown_minutes=self.proactive_cooldown_spin.value(),
                 screen_context_batch_limit=self.proactive_batch_limit_spin.value(),
             ),
+            "screen_observation_settings": ScreenObservationSettings(
+                delivery_mode=str(
+                    self.screen_observation_delivery_combo.currentData()
+                    or self.screen_observation_settings.delivery_mode
+                )
+            ).normalized(),
             "mcp_settings": MCPRuntimeSettings(
                 windows_enabled=(
                     self.windows_mcp_enabled_check.isChecked()
@@ -2326,6 +3605,7 @@ class SettingsDialog(QDialog):
                 auto_hide_enabled=self.bubble_auto_hide_check.isChecked(),
                 auto_hide_delay_seconds=self.bubble_auto_hide_delay_spin.value(),
             ),
+            "sensory_settings": sensory_settings,
             "backchannel_settings": BackchannelSettings(
                 enabled=self.backchannel_enabled_check.isChecked(),
                 mode=str(self.backchannel_mode_combo.currentData() or self.backchannel_settings.mode),
@@ -2354,11 +3634,13 @@ class SettingsDialog(QDialog):
         reply_segment_pause_ms = values["reply_segment_pause_ms"]
         theme_settings = values["theme_settings"]
         screen_awareness_settings = values["screen_awareness_settings"]
+        screen_observation_settings = values["screen_observation_settings"]
         mcp_settings = values["mcp_settings"]
         runtime_loop_settings = values["runtime_loop_settings"]
         debug_log_settings = values["debug_log_settings"]
         startup_settings = values["startup_settings"]
         bubble_settings = values["bubble_settings"]
+        sensory_settings = values["sensory_settings"]
         backchannel_settings = values["backchannel_settings"]
         memory_curation_settings = values["memory_curation_settings"]
         api_profiles = values.get("api_profiles", [])
@@ -2381,6 +3663,8 @@ class SettingsDialog(QDialog):
             return
         if not isinstance(screen_awareness_settings, ScreenAwarenessSettings):
             return
+        if not isinstance(screen_observation_settings, ScreenObservationSettings):
+            return
         if not isinstance(mcp_settings, MCPRuntimeSettings):
             return
         if not isinstance(runtime_loop_settings, RuntimeLoopSettings):
@@ -2390,6 +3674,8 @@ class SettingsDialog(QDialog):
         if not isinstance(startup_settings, StartupSettings):
             return
         if not isinstance(bubble_settings, BubbleSettings):
+            return
+        if not isinstance(sensory_settings, SensorySettings):
             return
         if not isinstance(backchannel_settings, BackchannelSettings):
             return
@@ -2436,12 +3722,14 @@ class SettingsDialog(QDialog):
         self.result_theme_settings = theme_settings
         self.result_theme_write_mode = self._theme_write_mode
         self.result_screen_awareness_settings = screen_awareness_settings
+        self.result_screen_observation_settings = screen_observation_settings.normalized()
         self.result_proactive_care_settings = screen_awareness_settings
         self.result_mcp_settings = mcp_settings
         self.result_runtime_loop_settings = runtime_loop_settings
         self.result_debug_log_settings = debug_log_settings
         self.result_startup_settings = startup_settings
         self.result_bubble_settings = bubble_settings
+        self.result_sensory_settings = sensory_settings.normalized()
         self.result_backchannel_settings = backchannel_settings.normalized()
         self.result_memory_curation_settings = memory_curation_settings
         self.result_api_profiles = list(api_profiles) if isinstance(api_profiles, list) else []
@@ -2465,6 +3753,15 @@ class SettingsDialog(QDialog):
             return
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再关闭设置。")
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再关闭设置。")
             return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
@@ -2497,6 +3794,18 @@ class SettingsDialog(QDialog):
             return
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_llama_operation_running():
+            QMessageBox.information(self, "处理中", "llama.cpp 音频后端仍在检查、准备或诊断，请等待完成后再关闭设置。")
             event.ignore()
             return
         if self._character_export_thread is not None:
@@ -3820,17 +5129,516 @@ class SettingsDialog(QDialog):
         self._sync_voice_import_controls()
 
 
-def _is_http_url(url: str) -> bool:
-    parsed_url = urlparse(url)
-    return parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
-
-
 def _combo_int_data(combo: object, *, default: int) -> int:
     current_data = getattr(combo, "currentData", lambda: None)()
     try:
         return int(current_data)
     except (TypeError, ValueError):
         return default
+
+
+def _default_sensory_state(source: SensorySource) -> dict[str, Any]:
+    return {
+        "mode_ui": "off",
+        "backend": "lmstudio",
+        "endpoint": DEFAULT_LMSTUDIO_ENDPOINT,
+        "model": "",
+        "api_key": "",
+        "timeout_seconds": SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+        "confidence_threshold": 0.5,
+        "context_enabled": True,
+        "context_limit": 4,
+        "source": source.value,
+    }
+
+
+def _sensory_state_from_settings(
+    source: SensorySource,
+    source_settings: SensorySourceSettings,
+    provider: SensoryProviderConfig | None,
+) -> dict[str, Any]:
+    mode_ui = _sensory_mode_ui(source_settings, provider)
+    backend = _sensory_backend(provider)
+    extra = provider.extra if provider is not None else {}
+    state = {
+        "mode_ui": mode_ui,
+        "backend": backend,
+        "endpoint": (
+            str(provider.endpoint).strip()
+            if provider is not None and str(provider.endpoint).strip()
+            else _default_sensory_endpoint(backend, mode_ui)
+        ),
+        "model": str(provider.model).strip() if provider is not None else "",
+        "api_key": str(provider.api_key).strip() if provider is not None else "",
+        "timeout_seconds": (
+            int(provider.timeout_seconds)
+            if provider is not None
+            else SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS
+        ),
+        "confidence_threshold": float(source_settings.confidence_threshold),
+        "context_enabled": bool(source_settings.context_enabled),
+        "context_limit": int(source_settings.context_limit),
+        "source": source.value,
+    }
+    for key in _SENSORY_LLAMA_RUNTIME_STATE_KEYS:
+        value = extra.get(key)
+        if value:
+            state[key] = str(value)
+    return state
+
+
+def _sensory_mode_ui(
+    source_settings: SensorySourceSettings,
+    provider: SensoryProviderConfig | None,
+) -> str:
+    if source_settings.mode == SensoryProviderMode.OFF:
+        return "off"
+    if source_settings.mode == SensoryProviderMode.API:
+        return "api"
+    if provider is not None:
+        network_scope = str(provider.extra.get("network_scope") or "").strip().lower()
+        if network_scope == "lan":
+            return "lan"
+        if provider.endpoint and not _is_localhost_endpoint(provider.endpoint):
+            return "lan"
+    return "local"
+
+
+def _sensory_backend(provider: SensoryProviderConfig | None) -> str:
+    if provider is None:
+        return "lmstudio"
+    explicit = provider.extra.get("backend") or provider.extra.get("provider")
+    if explicit:
+        backend = str(explicit).strip().lower()
+        if backend in {"lm_studio", "lm-studio"}:
+            return "lmstudio"
+        if backend in {"llama.cpp", "llama_cpp", "llamacpp"}:
+            return "llama"
+        if backend in {"ollama", "lmstudio", "llama", "openai_compatible"}:
+            return backend
+    text = " ".join([provider.provider_id, provider.endpoint]).lower()
+    if "ollama" in text or "127.0.0.1:11434" in text:
+        return "ollama"
+    if "llama" in text or "127.0.0.1:8080" in text:
+        return "llama"
+    if "lmstudio" in text or "lm-studio" in text or "127.0.0.1:1234" in text:
+        return "lmstudio"
+    return "openai_compatible"
+
+
+def _sensory_provider_mode_from_ui(mode_ui: str) -> SensoryProviderMode:
+    normalized = mode_ui.strip().lower()
+    if normalized == "api":
+        return SensoryProviderMode.API
+    if normalized in {"local", "lan"}:
+        return SensoryProviderMode.LOCAL
+    return SensoryProviderMode.OFF
+
+
+def _sensory_provider_id(
+    source: SensorySource,
+    backend: str,
+    mode_ui: str,
+) -> str:
+    if mode_ui == "lan":
+        return f"{source.value}_lan"
+    mode = _sensory_provider_mode_from_ui(mode_ui)
+    if mode == SensoryProviderMode.OFF:
+        return ""
+    if backend == "openai_compatible" and mode == SensoryProviderMode.LOCAL:
+        return f"{source.value}_local_openai"
+    return f"{source.value}_{mode.value}"
+
+
+def _sensory_provider_config_from_state(
+    source: SensorySource,
+    provider_id: str,
+    state: dict[str, Any],
+) -> SensoryProviderConfig:
+    mode_ui = str(state.get("mode_ui") or "off")
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    endpoint = str(state.get("endpoint") or "").strip()
+    if not endpoint and mode_ui != "lan":
+        endpoint = _default_sensory_endpoint(backend, mode_ui)
+    extra: dict[str, Any] = {"backend": backend}
+    if mode_ui == "lan":
+        extra["network_scope"] = "lan"
+    elif mode_ui == "local":
+        extra["network_scope"] = "local"
+    if backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"} and mode_ui == "local":
+        for key in _SENSORY_LLAMA_RUNTIME_STATE_KEYS:
+            value = str(state.get(key) or "").strip()
+            if value:
+                extra[key] = value
+    return SensoryProviderConfig(
+        provider_id=provider_id,
+        source=source,
+        mode=_sensory_provider_mode_from_ui(mode_ui),
+        endpoint=endpoint,
+        model=str(state.get("model") or "").strip(),
+        api_key=str(state.get("api_key") or "").strip(),
+        timeout_seconds=int(state.get("timeout_seconds") or SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS),
+        extra=extra,
+    ).normalized()
+
+
+def _validate_sensory_state(
+    source: SensorySource,
+    state: dict[str, Any],
+    *,
+    require_model: bool = True,
+) -> str:
+    mode_ui = str(state.get("mode_ui") or "off").strip().lower()
+    if mode_ui == "off":
+        return ""
+    label = _sensory_source_label(source)
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    endpoint = str(state.get("endpoint") or "").strip()
+    if require_model and not str(state.get("model") or "").strip():
+        return f"{label}的增强感知模型不能为空。"
+    if mode_ui in {"api", "lan"} and not _is_http_url(endpoint):
+        return f"{label}选择{_sensory_mode_label(mode_ui)}时必须填写有效的 http 或 https Endpoint。"
+    if mode_ui == "lan":
+        if _is_placeholder_endpoint(endpoint):
+            return f"{label}选择局域网连接时，请把 Endpoint 中的占位 IP 替换为实际局域网地址。"
+        if _is_localhost_endpoint(endpoint):
+            return f"{label}选择局域网连接时，Endpoint 不能是 localhost 或 127.0.0.1。"
+    if mode_ui == "local":
+        if endpoint and not _is_http_url(endpoint):
+            return f"{label}的本机 Endpoint 必须是有效的 http 或 https 地址。"
+        if backend == "openai_compatible" and not _is_http_url(endpoint):
+            return f"{label}使用 OpenAI 兼容本机服务时必须填写有效 Endpoint。"
+    return ""
+
+
+def _default_sensory_endpoint(backend: str, mode_ui: str = "local") -> str:
+    normalized_backend = backend.strip().lower()
+    normalized_mode = mode_ui.strip().lower()
+    if normalized_backend in {"lmstudio", "lm_studio", "lm-studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if normalized_backend == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    if normalized_backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    if normalized_mode == "lan":
+        return "http://<LAN-IP>:8000/v1"
+    if normalized_mode == "api":
+        return "https://api.openai.com/v1"
+    return "http://127.0.0.1:8000/v1"
+
+
+def _is_localhost_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").strip().lower()
+    return hostname in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _is_placeholder_endpoint(endpoint: str) -> bool:
+    return "<" in endpoint or ">" in endpoint
+
+
+def _is_http_url(url: str) -> bool:
+    parsed_url = urlparse(url)
+    return parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
+
+
+def _set_combo_data(combo: object, value: object) -> None:
+    find_data = getattr(combo, "findData", None)
+    set_current_index = getattr(combo, "setCurrentIndex", None)
+    if not callable(find_data) or not callable(set_current_index):
+        return
+    index = find_data(value)
+    if index >= 0:
+        set_current_index(index)
+
+
+def _sensory_source_order() -> tuple[SensorySource, ...]:
+    return (SensorySource.VISION, SensorySource.SPEECH, SensorySource.SOUND)
+
+
+def _sensory_source_for_column(column: int) -> SensorySource | None:
+    sources = _sensory_source_order()
+    if column < 0 or column >= len(sources):
+        return None
+    return sources[column]
+
+
+def _sensory_source_column(source: SensorySource) -> int:
+    try:
+        return _sensory_source_order().index(source)
+    except ValueError:
+        return -1
+
+
+def _sensory_source_label(source: SensorySource) -> str:
+    return {
+        SensorySource.VISION: "视觉",
+        SensorySource.SPEECH: "语音",
+        SensorySource.SOUND: "声音事件",
+    }.get(source, source.value)
+
+
+def _sensory_llama_prepare_sources() -> tuple[SensorySource, ...]:
+    return _SENSORY_LLAMA_AUDIO_SOURCES
+
+
+def _sensory_llama_sources_from_payload(
+    payload: dict[str, Any],
+    *,
+    fallback: tuple[SensorySource, ...],
+) -> tuple[SensorySource, ...]:
+    raw_sources = payload.get("sources")
+    if isinstance(raw_sources, list):
+        sources = tuple(
+            source
+            for source in (coerce_sensory_source(raw_source) for raw_source in raw_sources)
+            if source in _SENSORY_LLAMA_AUDIO_SOURCES
+        )
+        if sources:
+            return sources
+    raw_source = str(payload.get("source") or "").strip().lower()
+    if raw_source == "all":
+        return _SENSORY_LLAMA_AUDIO_SOURCES
+    if raw_source:
+        source = coerce_sensory_source(raw_source)
+        if source in _SENSORY_LLAMA_AUDIO_SOURCES:
+            return (source,)
+    return fallback
+
+
+def _sensory_llama_requirements(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements = payload.get("requirements")
+    if isinstance(requirements, dict) and requirements:
+        return [requirement for requirement in requirements.values() if isinstance(requirement, dict)]
+    requirement = payload.get("requirement")
+    if isinstance(requirement, dict) and requirement:
+        return [requirement]
+    return []
+
+
+def _sensory_mode_label(mode_ui: str) -> str:
+    return {
+        "off": "关闭",
+        "local": "本机运行框架",
+        "lan": "局域网连接分布式计算",
+        "api": "远端 API",
+    }.get(mode_ui, mode_ui)
+
+
+def _sensory_backend_label(backend: str) -> str:
+    return {
+        "lmstudio": "LM Studio",
+        "lm_studio": "LM Studio",
+        "ollama": "Ollama",
+        "llama": "llama.cpp",
+        "llama.cpp": "llama.cpp",
+        "llama_cpp": "llama.cpp",
+        "llamacpp": "llama.cpp",
+        "openai_compatible": "OpenAI 兼容 API",
+    }.get(backend.strip().lower(), backend)
+
+
+def _format_sensory_llama_prepare_confirmation(
+    source_or_sources: SensorySource | tuple[SensorySource, ...],
+    payload: dict[str, Any],
+    base_dir: Path,
+) -> str:
+    sources = (
+        source_or_sources
+        if isinstance(source_or_sources, tuple)
+        else (source_or_sources,)
+    )
+    requirements_by_source = payload.get("requirements") if isinstance(payload.get("requirements"), dict) else {}
+    requirement = payload.get("requirement") if isinstance(payload.get("requirement"), dict) else {}
+    if not requirement and isinstance(requirements_by_source, dict) and sources:
+        first_requirement = requirements_by_source.get(sources[0].value)
+        requirement = first_requirement if isinstance(first_requirement, dict) else {}
+    runtime_preflight = _runtime_preflight_from_requirements(_sensory_llama_requirements(payload))
+    lines = [
+        "将准备本机 llama.cpp 音频后端。",
+        "",
+    ]
+    if len(sources) > 1:
+        lines.append(f"范围：{'、'.join(_sensory_source_label(source) for source in sources)}。")
+    if isinstance(runtime_preflight, dict) and runtime_preflight:
+        if bool(runtime_preflight.get("required")):
+            lines.append(str(runtime_preflight.get("message") or "将下载当前平台的 llama.cpp 运行时包。"))
+            disk_space = runtime_preflight.get("disk_space")
+            if isinstance(disk_space, dict):
+                lines.append(
+                    "运行时空间："
+                    f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+                    f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+                )
+        else:
+            binary_path = str(runtime_preflight.get("binary_path") or "").strip()
+            lines.append(f"运行时：已找到本机 llama-server{f'：{binary_path}' if binary_path else '。'}")
+    else:
+        lines.append("运行时：将优先使用本机已有的 llama-server；缺失时下载当前平台官方包。")
+
+    for source in sources:
+        source_requirement = requirement
+        if isinstance(requirements_by_source, dict):
+            raw_requirement = requirements_by_source.get(source.value)
+            if isinstance(raw_requirement, dict):
+                source_requirement = raw_requirement
+        recommendation = recommended_llama_cpp_audio_model(source)
+        if recommendation is None:
+            continue
+        repo_id = _llama_cpp_audio_repo_id(recommendation.model)
+        cache_dir = StoragePaths(base_dir).sensory_model_cache_for(source.value, repo_id)
+        cached = llama_cpp_audio_cache_ready(cache_dir, recommendation.include_patterns)
+        prefix = f"{_sensory_source_label(source)}推荐模型"
+        if cached:
+            lines.append(f"{prefix}：已在本地缓存 {cache_dir}。")
+        else:
+            model_manifest = source_requirement.get("model_manifest") if isinstance(source_requirement, dict) else {}
+            if isinstance(model_manifest, dict) and model_manifest:
+                manifest_path = str(model_manifest.get("manifest_path") or "").strip()
+                lines.append(
+                    f"{prefix}：将从本地音频模型 manifest 复制 {recommendation.model}"
+                    f"{f'（{manifest_path}）' if manifest_path else ''}。"
+                )
+            else:
+                lines.append(
+                    f"{prefix}：将下载 {recommendation.model}（{recommendation.download_hint}），"
+                    f"只包含 {', '.join(recommendation.include_patterns) or '推荐文件'}。"
+                )
+            disk_space = source_requirement.get("disk_space") if isinstance(source_requirement, dict) else {}
+            if isinstance(disk_space, dict):
+                lines.append(
+                    f"{_sensory_source_label(source)}模型空间："
+                    f"需要 {format_bytes(int(disk_space.get('needed_bytes') or 0))}，"
+                    f"可用 {format_bytes(int(disk_space.get('available_bytes') or 0))}。"
+                )
+    lines.extend(["", "是否继续？"])
+    return "\n".join(lines)
+
+
+def _sensory_llama_prepare_blocking_message(payload: dict[str, Any]) -> str:
+    requirements = _sensory_llama_requirements(payload)
+    runtime_preflight = _runtime_preflight_from_requirements(requirements)
+    if isinstance(runtime_preflight, dict) and runtime_preflight:
+        if runtime_preflight.get("error"):
+            return str(runtime_preflight.get("message") or runtime_preflight.get("error") or "无法确认 llama.cpp 运行时包。")
+        runtime_disk = runtime_preflight.get("disk_space")
+        if isinstance(runtime_disk, dict) and not bool(runtime_disk.get("ok", True)):
+            return (
+                "运行时磁盘空间不足："
+                f"需要 {format_bytes(int(runtime_disk.get('needed_bytes') or 0))}，"
+                f"可用 {format_bytes(int(runtime_disk.get('available_bytes') or 0))}。"
+            )
+    for requirement in requirements:
+        model_disk = requirement.get("disk_space") if isinstance(requirement, dict) else {}
+        if isinstance(model_disk, dict) and not bool(model_disk.get("ok", True)):
+            source = coerce_sensory_source(str(requirement.get("source") or SensorySource.SPEECH.value))
+            prefix = "" if len(requirements) == 1 else f"{_sensory_source_label(source)}"
+            return (
+                f"{prefix}模型下载磁盘空间不足："
+                f"需要 {format_bytes(int(model_disk.get('needed_bytes') or 0))}，"
+                f"可用 {format_bytes(int(model_disk.get('available_bytes') or 0))}。"
+            )
+    return ""
+
+
+def _runtime_preflight_from_requirements(requirements: list[dict[str, Any]]) -> dict[str, Any]:
+    for requirement in requirements:
+        runtime_preflight = (
+            requirement.get("runtime_preflight")
+            if isinstance(requirement.get("runtime_preflight"), dict)
+            else {}
+        )
+        if runtime_preflight:
+            return runtime_preflight
+    return {}
+
+
+def _format_sensory_llama_doctor_message(report: dict[str, Any]) -> str:
+    platform_key = str(report.get("platform_key") or "unknown")
+    runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    binary_path = str(runtime.get("binary_path") or "").strip() if isinstance(runtime, dict) else ""
+    ready = bool(report.get("ready_for_smoke"))
+    lines = [
+        f"平台：{platform_key}",
+        f"llama-server：{binary_path or '未找到'}",
+        f"音频测试准备：{'已准备' if ready else '未准备'}",
+    ]
+    huggingface = report.get("huggingface") if isinstance(report.get("huggingface"), dict) else {}
+    if isinstance(huggingface, dict):
+        hf_path = str(huggingface.get("hf_cli_path") or "").strip()
+        if hf_path:
+            lines.append(f"Hugging Face CLI：{hf_path}")
+        elif bool(huggingface.get("builtin_file_download_supported")):
+            lines.append("Hugging Face CLI：未找到；推荐模型可使用内置直连下载")
+        else:
+            lines.append("Hugging Face CLI：未找到")
+    manifest_candidates = runtime.get("manifest_candidates") if isinstance(runtime, dict) else []
+    if isinstance(manifest_candidates, list):
+        existing = [
+            candidate
+            for candidate in manifest_candidates
+            if isinstance(candidate, dict) and bool(candidate.get("exists"))
+        ]
+        if existing:
+            lines.append(f"runtime manifest：已找到 {len(existing)} 个。")
+        else:
+            lines.append("runtime manifest：未找到。")
+    model_cache = report.get("model_cache")
+    if isinstance(model_cache, dict):
+        cached_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict) and bool(state.get("used_for_plan"))
+        ]
+        if cached_sources:
+            lines.append(f"本地模型缓存：{', '.join(sorted(cached_sources))}。")
+        manifest_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict)
+            and isinstance(state.get("model_manifest"), dict)
+            and bool(state.get("model_manifest"))
+        ]
+        if manifest_sources:
+            lines.append(f"本地模型 manifest：{', '.join(sorted(manifest_sources))}。")
+        low_space_sources = [
+            source
+            for source, state in model_cache.items()
+            if isinstance(state, dict)
+            and isinstance(state.get("disk_space"), dict)
+            and not bool(state["disk_space"].get("ok", True))
+        ]
+        if low_space_sources:
+            lines.append(f"模型下载空间不足：{', '.join(sorted(low_space_sources))}。")
+    actions = report.get("next_actions")
+    if isinstance(actions, list) and actions:
+        lines.append("")
+        lines.append("下一步：")
+        lines.extend(f"- {str(action)}" for action in actions[:4])
+    return "\n".join(lines)
+
+
+def _recommended_llama_cpp_model_for_source(source: SensorySource) -> str:
+    recommendation = recommended_llama_cpp_audio_model(source)
+    return recommendation.model if recommendation is not None else ""
+
+
+def _llama_cpp_audio_repo_id(model: str) -> str:
+    return llama_cpp_audio_model_repo_id(model)
+
+
+def _sensory_llama_model_download_hint(model: str) -> str:
+    return sensory_audio_model_download_hint(model)
+
+
+def _sensory_provider_is_managed_llama(config: SensoryProviderConfig) -> bool:
+    backend = str(config.extra.get("backend") or config.extra.get("provider") or "").strip().lower()
+    marker = str(config.extra.get("managed_runtime") or "").strip().lower()
+    return (
+        config.mode == SensoryProviderMode.LOCAL
+        and backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}
+        and marker == LLAMA_CPP_MANAGED_RUNTIME_MARKER
+    )
 
 
 def _default_tts_api_url(provider: str) -> str:

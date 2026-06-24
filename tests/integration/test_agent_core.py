@@ -3055,6 +3055,33 @@ def test_model_vision_disabled_hides_screen_observation_tool() -> None:
     assert OBSERVE_SCREEN_TOOL_NAME not in client.tool_names
 
 
+def test_screen_observation_text_bridge_exposes_tool_without_model_vision() -> None:
+    class PromptCaptureClient:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self.tool_names: list[str] = []
+
+        def complete_raw(self, system_prompt, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
+            self.prompts.append(system_prompt)
+            return '{"reply":{"segments":[{"ja":"見るね。","zh":"我看看。","tone":"中性"}]}}'
+
+        complete_with_tools = _legacy_complete_with_tools
+
+    client = PromptCaptureClient()
+    runtime = AgentRuntime(
+        api_client=client,  # type: ignore[arg-type]
+        system_prompt="你是 Sakura。",
+        tools=ToolRegistry([create_screen_observation_tool()]),
+    )
+    runtime.set_autonomous_screen_observation_enabled(True)
+    runtime.set_model_vision_enabled(False)
+    runtime.set_screen_observation_text_bridge_enabled(True)
+
+    runtime.handle_user_message([{"role": "user", "content": "帮我看看当前屏幕"}])
+
+    assert OBSERVE_SCREEN_TOOL_NAME in client.tool_names
+
+
 def test_screen_observation_tool_hidden_after_image_is_attached() -> None:
     class PromptCaptureClient:
         def __init__(self) -> None:

@@ -35,6 +35,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ScreenAwarenessSettings,
 )
+from app.sensory.settings import SensorySettings, sensory_settings_from_config
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
@@ -69,6 +70,31 @@ class StartupSettings:
     """启动行为配置。"""
 
     launch_at_login: bool = False
+
+
+SCREEN_OBSERVATION_DELIVERY_IMAGE = "image"
+SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY = "sensory_summary"
+SCREEN_OBSERVATION_DELIVERY_MODES = (
+    SCREEN_OBSERVATION_DELIVERY_IMAGE,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+)
+
+
+@dataclass(frozen=True)
+class ScreenObservationSettings:
+    """截图交付给主模型的方式。"""
+
+    delivery_mode: str = SCREEN_OBSERVATION_DELIVERY_IMAGE
+
+    @property
+    def uses_sensory_summary(self) -> bool:
+        return self.normalized().delivery_mode == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+
+    def normalized(self) -> "ScreenObservationSettings":
+        delivery_mode = str(self.delivery_mode or "").strip().lower()
+        if delivery_mode not in SCREEN_OBSERVATION_DELIVERY_MODES:
+            delivery_mode = SCREEN_OBSERVATION_DELIVERY_IMAGE
+        return ScreenObservationSettings(delivery_mode=delivery_mode)
 
 
 BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS = 1
@@ -573,6 +599,21 @@ class AppSettingsService:
             {"launch_at_login": bool(settings.launch_at_login)},
         )
 
+    def load_screen_observation_settings(self) -> ScreenObservationSettings:
+        section = self._system_section("screen_observation")
+        return ScreenObservationSettings(
+            delivery_mode=str(
+                section.get("delivery_mode", SCREEN_OBSERVATION_DELIVERY_IMAGE)
+            )
+        ).normalized()
+
+    def save_screen_observation_settings(self, settings: ScreenObservationSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "screen_observation",
+            {"delivery_mode": normalized.delivery_mode},
+        )
+
     def load_theme_settings(self) -> ThemeSettings:
         ui = self._system_section("ui")
         return theme_from_mapping(ui.get("theme"))
@@ -619,6 +660,25 @@ class AppSettingsService:
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
         }
         save_yaml_mapping(self.system_config_path, data)
+
+    def load_sensory_settings(self) -> SensorySettings:
+        return sensory_settings_from_config(
+            self._system_section("sensory"),
+            self._api_section("sensory"),
+        )
+
+    def save_sensory_settings(self, settings: SensorySettings) -> None:
+        normalized = settings.normalized()
+
+        system_data = load_yaml_mapping(self.system_config_path)
+        system_data["sensory"] = normalized.to_system_mapping()
+        save_yaml_mapping(self.system_config_path, system_data)
+
+        api_data = load_yaml_mapping(self.api_config_path)
+        sensory_api = _mapping(api_data.get("sensory"))
+        sensory_api.update(normalized.to_api_mapping())
+        api_data["sensory"] = sensory_api
+        save_yaml_mapping(self.api_config_path, api_data)
 
     def load_proactive_care_settings(self) -> ScreenAwarenessSettings:
         """兼容旧调用点；新代码请使用 load_screen_awareness_settings。"""

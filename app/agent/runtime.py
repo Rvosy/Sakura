@@ -64,6 +64,11 @@ from app.llm.prompt_templates import (
     build_segmented_reply_instruction,
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+from app.sensory.tools import (
+    build_sensory_tool_prompt,
+    configured_sensory_capabilities,
+    configured_sensory_sources,
+)
 from app.storage.visual_observation import extract_visual_observation_summary
 
 from app.llm.prompts.runtime import PromptRuntime
@@ -128,9 +133,11 @@ class AgentRuntime:
         self.memory = memory or MemoryStore()
         self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
-        self.context_providers = (
+        self._builtin_context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+        self._plugin_context_providers: list[ContextProviderContribution] = []
+        self.context_providers = [*self._builtin_context_providers]
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self.prompt_runtime = PromptRuntime()
         self.context_orchestrator = ContextOrchestrator()
@@ -138,7 +145,9 @@ class AgentRuntime:
         self._last_prompt_inspection: PromptInspection | None = None
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
+        self.screen_observation_text_bridge_enabled = False
         self.autonomous_screen_observation_enabled = True
+        self.sensory_pipeline: Any | None = None
 
     @property
     def vision_api_client(self) -> OpenAICompatibleClient | None:
@@ -197,9 +206,30 @@ class AgentRuntime:
         context_providers: list[ContextProviderContribution] | None,
     ) -> None:
         """同步插件动态上下文提供者。"""
-        self.context_providers = (
+        self._plugin_context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+        self.context_providers = [
+            *self._builtin_context_providers,
+            *self._plugin_context_providers,
+        ]
+
+    def set_builtin_context_providers(
+        self,
+        context_providers: list[ContextProviderContribution] | None,
+    ) -> None:
+        """同步内建动态上下文提供者，保留插件上下文。"""
+        self._builtin_context_providers = (
+            [*context_providers] if context_providers is not None else []
+        )
+        self.context_providers = [
+            *self._builtin_context_providers,
+            *self._plugin_context_providers,
+        ]
+
+    def set_sensory_pipeline(self, sensory_pipeline: Any | None) -> None:
+        """同步增强感知管线，供内建工具按最新配置路由。"""
+        self.sensory_pipeline = sensory_pipeline
 
     def set_history_store(
         self,
@@ -299,9 +329,18 @@ class AgentRuntime:
         """允许模型在需要时请求一次当前屏幕截图。"""
         self.model_vision_enabled = enabled
 
+    def set_screen_observation_text_bridge_enabled(self, enabled: bool) -> None:
+        """允许 observe_screen 通过增强视觉模型转成文字摘要后再交给主模型。"""
+        self.screen_observation_text_bridge_enabled = bool(enabled)
+
     def set_autonomous_screen_observation_enabled(self, enabled: bool) -> None:
         """允许模型在对话或主动事件中自主决定是否观察屏幕。"""
         self.autonomous_screen_observation_enabled = enabled
+
+    def _screen_observation_input_available(self) -> bool:
+        return bool(getattr(self, "model_vision_enabled", True)) or bool(
+            getattr(self, "screen_observation_text_bridge_enabled", False)
+        )
 
     def set_runtime_loop_settings(self, settings: RuntimeLoopSettings | None) -> None:
         """同步工具循环限制，后续对话从新设置开始生效。"""
@@ -446,7 +485,7 @@ class AgentRuntime:
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
         allow_screen_observation = (
-            self.model_vision_enabled
+            self._screen_observation_input_available()
             and self.autonomous_screen_observation_enabled
             and not messages_contain_image(messages)
             and tool_routing._should_offer_screen_observation(messages)
@@ -458,6 +497,7 @@ class AgentRuntime:
                 "message_count": len(messages),
                 "allow_screen_observation": allow_screen_observation,
                 "model_vision_enabled": self.model_vision_enabled,
+                "screen_observation_text_bridge_enabled": self.screen_observation_text_bridge_enabled,
                 "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 "messages": summarize_messages(messages),
             },
@@ -513,7 +553,18 @@ class AgentRuntime:
             )
             if browser_page_mode or visible_browser_guard_active:
                 active_groups.add("browser")
-            allowed_capabilities = {SCREEN_OBSERVATION_CAPABILITY} if allow_screen_observation else set()
+            enabled_sensory_sources = configured_sensory_sources(
+                getattr(self, "sensory_pipeline", None)
+            )
+            if enabled_sensory_sources:
+                active_groups.add("sensory")
+            allowed_capabilities: set[str] = set()
+            if allow_screen_observation:
+                allowed_capabilities.add(SCREEN_OBSERVATION_CAPABILITY)
+            if enabled_sensory_sources:
+                allowed_capabilities.update(
+                    configured_sensory_capabilities(getattr(self, "sensory_pipeline", None))
+                )
             tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
@@ -995,7 +1046,7 @@ class AgentRuntime:
                 *confirmed_messages,
             ]
             allow_screen_observation = (
-                self.model_vision_enabled
+                self._screen_observation_input_available()
                 and self.autonomous_screen_observation_enabled
                 and not messages_contain_image(working_messages)
                 and tool_routing._should_offer_screen_observation(working_messages)
@@ -1097,15 +1148,32 @@ class AgentRuntime:
             },
         )
         if event.type in {"screen_awareness_check", "proactive_check"}:
+            proactive_started_at = time.perf_counter()
             screen_context_allowed = bool(event.payload.get("screen_context_allowed"))
             allow_screen_observation = (
                 screen_context_allowed
+                and self._screen_observation_input_available()
+                and not bool(event.payload.get("screen_observation_requested_by_model"))
+                and not isinstance(event.payload.get("visual_contexts"), list)
                 and not messages_contain_image(event_messages)
             )
-            return self._run_tool_loop(
+            debug_log(
+                "ProactiveModel",
+                "主动模型开始工作",
+                {
+                    "event_type": event.type,
+                    "allow_screen_observation": allow_screen_observation,
+                    "model_vision_enabled": bool(getattr(self, "model_vision_enabled", True)),
+                    "screen_observation_text_bridge_enabled": bool(
+                        getattr(self, "screen_observation_text_bridge_enabled", False)
+                    ),
+                    "has_screen_image": messages_contain_image(event_messages),
+                },
+            )
+            result = self._run_tool_loop(
                 event_messages,
                 allow_screen_observation=allow_screen_observation,
-                turn_started_at=time.perf_counter(),
+                turn_started_at=proactive_started_at,
                 proactive_mode=True,
                 context_source="event",
                 event_type=event.type,
@@ -1115,6 +1183,17 @@ class AgentRuntime:
                 progress_callback=progress_callback,
                 cancel_checker=cancel_checker,
             )
+            debug_log(
+                "ProactiveModel",
+                "主动模型调用完成",
+                {
+                    "event_type": event.type,
+                    "segments": len(result.reply.segments),
+                    "actions": [action.type for action in result.actions],
+                    "elapsed_ms": int((time.perf_counter() - proactive_started_at) * 1000),
+                },
+            )
+            return result
 
         snapshot = self._build_single_context_snapshot(
             event_messages,
@@ -1125,6 +1204,15 @@ class AgentRuntime:
         )
         prompt_build = self._build_event_reply_result(event.type, snapshot)
         self._record_prompt_inspection(prompt_build.inspection)
+        event_started_at = time.perf_counter()
+        debug_log(
+            "ProactiveModel",
+            "主动模型开始工作",
+            {
+                "event_type": event.type,
+                "has_screen_image": messages_contain_image(event_messages),
+            },
+        )
         try:
             check_cancelled(cancel_checker)
             reply = self._client_for_messages(event_messages).chat(
@@ -1142,6 +1230,15 @@ class AgentRuntime:
                 debug_log("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
                 return AgentResult(reply=_build_proactive_vision_unsupported_reply())
             raise
+        debug_log(
+            "ProactiveModel",
+            "主动模型调用完成",
+            {
+                "event_type": event.type,
+                "segments": len(reply.segments),
+                "elapsed_ms": int((time.perf_counter() - event_started_at) * 1000),
+            },
+        )
         return AgentResult(
             reply=reply,
             actions=[event_action],
@@ -1218,11 +1315,15 @@ class AgentRuntime:
         browser_page_rule = tool_routing._build_browser_page_mode_rule(browser_page_mode)
         visible_browser_rule = tool_routing._build_visible_browser_mode_rule(visible_browser_mode)
         web_tool_capability_rule = tool_routing._build_web_tool_capability_rule(visible_browser_mode)
+        sensory_tool_rule = build_sensory_tool_prompt(
+            configured_sensory_sources(getattr(self, "sensory_pipeline", None))
+        )
         capability_rules = "\n".join(
             [
                 "可用工具能力领域：",
                 web_tool_capability_rule,
                 "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
+                sensory_tool_rule,
                 "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
                 "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
             ]
@@ -1293,13 +1394,19 @@ class AgentRuntime:
         extra_instructions: str = "",
         include_visual_observation: bool = False,
     ):
+        sensory_tool_rule = build_sensory_tool_prompt(
+            configured_sensory_sources(getattr(self, "sensory_pipeline", None))
+        )
+        combined_extra_instructions = "\n".join(
+            part for part in (extra_instructions.strip(), sensory_tool_rule) if part
+        )
         proactive_rules = build_proactive_check_tool_system_prefix(
             "",
             self.reply_tones,
             self.reply_portraits,
             max_tool_calls_per_step=self.runtime_loop_settings.max_tool_calls_per_step,
             max_tool_calls_per_turn=self.runtime_loop_settings.max_tool_calls_per_turn,
-            extra_instructions=self._combine_extra_instructions(extra_instructions),
+            extra_instructions=self._combine_extra_instructions(combined_extra_instructions),
         )
         sections = [
             *self._persona_sections(),
@@ -1964,7 +2071,61 @@ def _describe_pending_action(action: PendingToolAction) -> str:
         return f"执行浏览器操作 {action.tool_name.removeprefix('playwright_')}"
     if action.tool_name.startswith("windows__"):
         return f"执行 Windows 桌面 MCP 操作 {action.tool_name.removeprefix('windows__')}"
+    if _is_pending_sensory_audio_capture(action):
+        source = str(action.arguments.get("source") or "sound")
+        if action.tool_name == "observe_system_speech":
+            source = "speech"
+        elif action.tool_name == "observe_system_sound":
+            source = "sound"
+        elif action.tool_name == "observe_environment_speech":
+            source = "speech"
+        elif action.tool_name == "observe_environment_sound":
+            source = "sound"
+        duration = action.arguments.get("duration_seconds") or 3
+        audio_input_source = _pending_audio_input_source(action)
+        source_label = "麦克风环境音" if audio_input_source == "microphone" else "电脑系统声音"
+        return f"录制约 {duration} 秒{source_label}并交给已配置的 {source} 感知模型分析"
     return f"执行 {action.tool_name}"
+
+
+def _is_pending_sensory_audio_capture(action: PendingToolAction) -> bool:
+    if action.tool_name in {
+        "observe_system_speech",
+        "observe_system_sound",
+        "observe_environment_speech",
+        "observe_environment_sound",
+    }:
+        return not _pending_action_has_audio_media(action)
+    source = str(action.arguments.get("source") or "").strip().lower()
+    if source not in {"speech", "sound"}:
+        return False
+    return not _pending_action_has_audio_media(action)
+
+
+def _pending_action_has_audio_media(action: PendingToolAction) -> bool:
+    if action.arguments.get("media_ref"):
+        return True
+    metadata = action.arguments.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("media_ref", "path", "data_url", "audio_url", "media_refs", "audios", "audio_urls"):
+            value = metadata.get(key)
+            if value:
+                return True
+    return False
+
+
+def _pending_audio_input_source(action: PendingToolAction) -> str:
+    if action.tool_name in {"observe_environment_speech", "observe_environment_sound"}:
+        return "microphone"
+    if action.tool_name in {"observe_system_speech", "observe_system_sound"}:
+        return "system_audio"
+    value = str(action.arguments.get("audio_input_source") or "").strip().lower().replace("-", "_")
+    metadata = action.arguments.get("metadata")
+    if not value and isinstance(metadata, dict):
+        value = str(metadata.get("audio_input_source") or metadata.get("capture_source") or "").strip().lower()
+    if value in {"microphone", "mic", "environment", "environment_audio", "ambient", "ambient_audio"}:
+        return "microphone"
+    return "system_audio"
 
 
 def _build_screen_observation_request_reply() -> ChatReply:

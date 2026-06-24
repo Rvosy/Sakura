@@ -107,12 +107,36 @@ class TestStoragePathsSnapshot:
         assert self.paths.plugins_config() == self.data / "config" / "plugins.yaml"
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
         assert self.paths.legacy_chat_history() == self.data / "chat_history.jsonl"
+        assert self.paths.sensory_observations_for("sakura") == self.data / "sensory_observations" / "sakura.jsonl"
         assert self.paths.memory_store() == self.data / "memory.json"
         assert self.paths.memory_core_profiles() == self.data / "memory" / "core_profiles.json"
         assert self.paths.memory_curation_state() == self.data / "memory_curation_state.json"
         assert self.paths.reminders_store() == self.data / "reminders.json"
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
+        assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
+        assert (
+            self.paths.system_audio_capture_helper()
+            == self.data / "cache" / "system_audio" / "macos_system_audio_capture"
+        )
+        assert self.paths.sensory_models_cache_dir == self.data / "cache" / "sensory_models"
+        assert (
+            self.paths.sensory_model_cache_for("vision", "Qwen/Qwen3-VL-4B-Instruct")
+            == self.data / "cache" / "sensory_models" / "vision" / "Qwen_Qwen3-VL-4B-Instruct"
+        )
+        assert self.paths.audio_inference_dir == self.data / "audio_inference"
+        assert self.paths.audio_inference_frameworks_dir == self.data / "audio_inference" / "frameworks"
+        assert (
+            self.paths.audio_inference_framework_for("sakura_official_short")
+            == self.data / "audio_inference" / "frameworks" / "sakura_official_short"
+        )
+        assert self.paths.local_runtimes_dir == self.data / "local_runtimes"
+        assert self.paths.llama_cpp_runtime_dir == self.data / "local_runtimes" / "llama_cpp"
+        assert (
+            self.paths.llama_cpp_runtime_for("b9763-arm64")
+            == self.data / "local_runtimes" / "llama_cpp" / "b9763-arm64"
+        )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
         # 现网存在 "N.A.V.I." 形态角色，历史文件为 N.A.V.I..jsonl，映射不得改变
@@ -125,6 +149,10 @@ class TestStoragePathsSnapshot:
             == self.data / "visual_observations" / "N.A.V.I..jsonl"
         )
         assert (
+            self.paths.sensory_observations_for("N.A.V.I.")
+            == self.data / "sensory_observations" / "N.A.V.I..jsonl"
+        )
+        assert (
             self.paths.runtime_events_for("N.A.V.I.")
             == self.data / "runtime_events" / "N.A.V.I..jsonl"
         )
@@ -132,6 +160,8 @@ class TestStoragePathsSnapshot:
     def test_new_directories(self) -> None:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
+        assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
         assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
@@ -179,9 +209,16 @@ class TestEnsureDirs:
             paths.chat_history_dir,
             paths.runtime_events_dir,
             paths.visual_observations_dir,
+            paths.sensory_observations_dir,
             paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
+            paths.system_audio_cache_dir,
+            paths.microphone_audio_cache_dir,
+            paths.sensory_models_cache_dir,
+            paths.audio_inference_frameworks_dir,
+            paths.local_runtimes_dir,
+            paths.llama_cpp_runtime_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()

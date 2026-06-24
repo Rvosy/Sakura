@@ -100,6 +100,14 @@ class StoragePaths:
     def visual_observations_for(self, character_id: str) -> Path:
         return self.visual_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
 
+    # ---- 感官观察 ----
+    @property
+    def sensory_observations_dir(self) -> Path:
+        return self._data / "sensory_observations"
+
+    def sensory_observations_for(self, character_id: str) -> Path:
+        return self.sensory_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
+
     # ---- 记忆 ----
     @property
     def memory_dir(self) -> Path:
@@ -138,6 +146,51 @@ class StoragePaths:
     @property
     def tts_cache_dir(self) -> Path:
         return self.cache_dir / "tts"
+
+    @property
+    def system_audio_cache_dir(self) -> Path:
+        return self.cache_dir / "system_audio"
+
+    @property
+    def microphone_audio_cache_dir(self) -> Path:
+        return self.cache_dir / "microphone_audio"
+
+    def system_audio_capture_helper(self) -> Path:
+        return self.system_audio_cache_dir / "macos_system_audio_capture"
+
+    @property
+    def sensory_models_cache_dir(self) -> Path:
+        return self.cache_dir / "sensory_models"
+
+    def sensory_model_cache_for(self, source: object, repo_id: str) -> Path:
+        source_value = str(getattr(source, "value", source)).strip() or "unknown"
+        return (
+            self.sensory_models_cache_dir
+            / sanitize_file_stem(source_value)
+            / sanitize_file_stem(repo_id)
+        )
+
+    @property
+    def audio_inference_dir(self) -> Path:
+        return self._data / "audio_inference"
+
+    @property
+    def audio_inference_frameworks_dir(self) -> Path:
+        return self.audio_inference_dir / "frameworks"
+
+    def audio_inference_framework_for(self, framework_id: str) -> Path:
+        return self.audio_inference_frameworks_dir / sanitize_file_stem(framework_id)
+
+    @property
+    def local_runtimes_dir(self) -> Path:
+        return self._data / "local_runtimes"
+
+    @property
+    def llama_cpp_runtime_dir(self) -> Path:
+        return self.local_runtimes_dir / "llama_cpp"
+
+    def llama_cpp_runtime_for(self, runtime_id: str) -> Path:
+        return self.llama_cpp_runtime_dir / sanitize_file_stem(runtime_id)
 
     # ---- 日志 ----
     @property
@@ -203,9 +256,16 @@ class StoragePaths:
             self.chat_history_dir,
             self.runtime_events_dir,
             self.visual_observations_dir,
+            self.sensory_observations_dir,
             self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,
+            self.system_audio_cache_dir,
+            self.microphone_audio_cache_dir,
+            self.sensory_models_cache_dir,
+            self.audio_inference_frameworks_dir,
+            self.local_runtimes_dir,
+            self.llama_cpp_runtime_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

@@ -98,7 +98,12 @@ from app.config.models import (
     ApiConfigProfile,
     ModelSelectionSettings,
 )
-from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.config.settings_service import (
+    BackchannelSettings,
+    BubbleSettings,
+    ScreenObservationSettings,
+    StartupSettings,
+)
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
@@ -205,6 +210,15 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
+from app.sensory.audio_capture import create_microphone_audio_capture, create_system_audio_capture
+from app.sensory.audio_inference import create_default_audio_inference_engine
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
+from app.sensory.tools import configured_sensory_sources
+from app.sensory.models import SensorySource
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.card_container import CardContainer
@@ -537,6 +551,10 @@ class PetWindow(QWidget):
         self._active_mobile_chat_request: dict[str, Any] | None = None
         self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
+        self.sensory_observation_store = context.sensory_observation_store
+        self.sensory_settings = context.sensory_settings
+        self.sensory_pipeline = context.sensory_pipeline
+        self.agent_runtime.set_sensory_pipeline(self.sensory_pipeline)
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
@@ -549,6 +567,7 @@ class PetWindow(QWidget):
         self.memory_curator = context.memory_curator
         self.subtitle_language = self._load_subtitle_language()
         self.screen_observation_enabled = self._load_screen_observation_enabled()
+        self.screen_observation_settings = self._load_screen_observation_settings()
         self.autonomous_screen_observation_enabled = self._load_autonomous_screen_observation_enabled()
         self.screen_awareness_settings = getattr(context, "screen_awareness_settings", None)
         if self.screen_awareness_settings is None:
@@ -558,6 +577,7 @@ class PetWindow(QWidget):
         self.agent_runtime.set_autonomous_screen_observation_enabled(
             self.autonomous_screen_observation_enabled
         )
+        self._sync_screen_observation_runtime_capabilities()
         self.free_access_enabled = self._load_free_access_enabled()
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self.always_on_top_enabled = self._load_always_on_top_enabled()
@@ -2939,7 +2959,12 @@ class PetWindow(QWidget):
         visual_observation_jobs: list[VisualObservationJob] = []
         if manual_observation is not None:
             visual_id = generate_visual_observation_id()
-            request_user_message = build_screen_observation_user_message(text, manual_observation)
+            use_sensory_summary = _screen_observation_uses_sensory_summary_for_window(self)
+            request_user_message = (
+                {"role": "user", "content": text}
+                if use_sensory_summary
+                else build_screen_observation_user_message(text, manual_observation)
+            )
             recorded_user_text = append_manual_observation_marker(text, manual_observation, visual_id)
             visual_observation_jobs.append(
                 VisualObservationJob(
@@ -2947,6 +2972,8 @@ class PetWindow(QWidget):
                     source="manual_screenshot",
                     user_text=text,
                     observation=manual_observation,
+                    use_sensory_provider=use_sensory_summary,
+                    inject_as_context=use_sensory_summary,
                 )
             )
         else:
@@ -2957,7 +2984,8 @@ class PetWindow(QWidget):
             [*self.messages, request_user_message],
             user_text=text,
             store=getattr(self, "visual_observation_store", None),
-            has_current_image=manual_observation is not None,
+            has_current_image=manual_observation is not None
+            and not _screen_observation_uses_sensory_summary_for_window(self),
         )
         # 注入运行时事件上下文：与视觉上下文同样只进 request_messages，不写入 self.messages、不持久化。
         runtime_event_queue = getattr(self, "runtime_event_queue", None)
@@ -3039,6 +3067,7 @@ class PetWindow(QWidget):
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
+            sensory_pipeline=getattr(self, "sensory_pipeline", None),
             interaction_id=self.active_interaction_id,
         )
         self.resource_manager.spawn_qt_worker(
@@ -3146,9 +3175,10 @@ class PetWindow(QWidget):
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
         if not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions):
             return False
+        text_bridge_available = _screen_observation_text_bridge_available_for_window(self)
         if (
             not self.screen_observation_enabled
-            or not self.model_vision_enabled
+            or not (self.model_vision_enabled or text_bridge_available)
             or not self.autonomous_screen_observation_enabled
         ):
             self._log_interaction_stage(
@@ -3156,6 +3186,7 @@ class PetWindow(QWidget):
                 {
                     "screen_observation_enabled": self.screen_observation_enabled,
                     "model_vision_enabled": self.model_vision_enabled,
+                    "screen_observation_text_bridge_available": text_bridge_available,
                     "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 },
             )
@@ -3165,6 +3196,7 @@ class PetWindow(QWidget):
                 {
                     "screen_observation_enabled": self.screen_observation_enabled,
                     "model_vision_enabled": self.model_vision_enabled,
+                    "screen_observation_text_bridge_available": text_bridge_available,
                     "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 },
             )
@@ -3214,7 +3246,12 @@ class PetWindow(QWidget):
             return
 
         visual_id = generate_visual_observation_id()
-        observed_message = build_screen_observation_user_message(text, observation)
+        use_sensory_summary = _screen_observation_uses_sensory_summary_for_window(self)
+        observed_message = (
+            {"role": "user", "content": text}
+            if use_sensory_summary
+            else build_screen_observation_user_message(text, observation)
+        )
         self.messages[user_message_index] = {
             "role": "user",
             "content": append_observation_marker(text, observation, visual_id),
@@ -3227,9 +3264,12 @@ class PetWindow(QWidget):
                 source="autonomous_screen",
                 user_text=text,
                 observation=observation,
+                use_sensory_provider=use_sensory_summary,
+                inject_as_context=use_sensory_summary,
             ),
         ]
-        # 截图消息包含 base64，必须作为本次 follow-up 的最后一条消息保留。
+        # 直接发图时，截图消息包含 base64，必须作为本次 follow-up 的最后一条消息保留。
+        # 摘要桥模式下，这里只保留纯文本消息；截图由 ChatWorker 交给增强视觉模型转摘要。
         # 中间进度回复已经展示给用户，不再放入这次入模上下文，避免字符裁剪丢掉截图。
         self.pending_screen_observation_messages = trim_messages_for_model(
             [*self.messages[:user_message_index], observed_message]
@@ -3244,7 +3284,8 @@ class PetWindow(QWidget):
                 "height": observation.height,
                 "captured_at": observation.captured_at,
                 "screen_name": observation.screen_name,
-                "image": observation.data_url,
+                "delivery_mode": _screen_observation_delivery_mode_for_window(self),
+                "image_attached": not use_sensory_summary,
                 "message_count": len(self.pending_screen_observation_messages),
             },
         )
@@ -3328,13 +3369,18 @@ class PetWindow(QWidget):
         reminder_id = reminder_id if isinstance(reminder_id, str) else None
         reason = str(context.get("reason", "")).strip()
         payload = dict(event.payload)
-        payload["screen_context"] = {
-            "data_url": observation.data_url,
+        use_sensory_summary = _screen_observation_uses_sensory_summary_for_window(self)
+        screen_context = {
             "width": observation.width,
             "height": observation.height,
             "captured_at": observation.captured_at,
             "screen_name": observation.screen_name,
         }
+        if use_sensory_summary:
+            screen_context["delivery_mode"] = "sensory_summary"
+        else:
+            screen_context["data_url"] = observation.data_url
+        payload["screen_context"] = screen_context
         payload["screen_observation_requested_by_model"] = True
         payload["screen_observation_reason"] = reason
         self.pending_screen_observation_event = AgentEvent(type=event.type, payload=payload)
@@ -3348,6 +3394,8 @@ class PetWindow(QWidget):
                 source="autonomous_screen",
                 user_text=reason,
                 observation=observation,
+                use_sensory_provider=use_sensory_summary,
+                inject_as_context=use_sensory_summary,
             ),
         ]
         self._record_history("system", append_observation_marker("", observation, visual_id).strip())
@@ -3361,7 +3409,8 @@ class PetWindow(QWidget):
                 "height": observation.height,
                 "captured_at": observation.captured_at,
                 "screen_name": observation.screen_name,
-                "image": observation.data_url,
+                "delivery_mode": _screen_observation_delivery_mode_for_window(self),
+                "image_attached": not use_sensory_summary,
             },
         )
         self._log_interaction_stage(
@@ -3624,10 +3673,17 @@ class PetWindow(QWidget):
             return
 
         event = self._build_screen_awareness_event(now)
+        use_sensory_summary = _screen_observation_uses_sensory_summary_for_window(self)
         self.pending_event_visual_observation_jobs = [
             *getattr(self, "pending_event_visual_observation_jobs", []),
-            *_build_screen_awareness_visual_observation_jobs(event),
+            *_build_screen_awareness_visual_observation_jobs(
+                event,
+                use_sensory_provider=use_sensory_summary,
+                inject_as_context=use_sensory_summary,
+            ),
         ]
+        if use_sensory_summary:
+            event = _strip_screen_context_images_for_summary_delivery(event)
         self.last_screen_awareness_at = now
         self._record_history("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER)
         self._clear_screen_awareness_context_batch("sent")
@@ -3820,10 +3876,17 @@ class PetWindow(QWidget):
             return
 
         event = self._build_proactive_care_event(now)
+        use_sensory_summary = _screen_observation_uses_sensory_summary_for_window(self)
         self.pending_event_visual_observation_jobs = [
             *getattr(self, "pending_event_visual_observation_jobs", []),
-            *_build_screen_awareness_visual_observation_jobs(event),
+            *_build_screen_awareness_visual_observation_jobs(
+                event,
+                use_sensory_provider=use_sensory_summary,
+                inject_as_context=use_sensory_summary,
+            ),
         ]
+        if use_sensory_summary:
+            event = _strip_screen_context_images_for_summary_delivery(event)
         self.last_proactive_care_at = now
         self._record_history("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER)
         self._clear_proactive_screen_context_batch("sent")
@@ -4020,6 +4083,7 @@ class PetWindow(QWidget):
         )
         worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
+        worker.sensory_pipeline = getattr(self, "sensory_pipeline", None)
         self.pending_event_visual_observation_jobs = []
         self.resource_manager.spawn_qt_worker(
             worker,
@@ -4785,7 +4849,6 @@ class PetWindow(QWidget):
         for provider, keep_local_service in pending:
             self._close_retired_tts_provider(provider, keep_local_service=keep_local_service)
 
-
     def _apply_startup_initializing_state(self) -> None:
         self.input_edit.setPlaceholderText(STARTUP_INITIALIZING_TEXT)
         self._set_busy(True)
@@ -5079,6 +5142,23 @@ class PetWindow(QWidget):
                 "proactive_care_settings",
                 ScreenAwarenessSettings(),
             )
+        sensory_settings = getattr(self, "sensory_settings", None)
+        if sensory_settings is None:
+            load_sensory_settings = getattr(
+                self.settings_service,
+                "load_sensory_settings",
+                None,
+            )
+            sensory_settings = (
+                load_sensory_settings()
+                if callable(load_sensory_settings)
+                else SensorySettings()
+            )
+        screen_observation_settings = getattr(
+            self,
+            "screen_observation_settings",
+            ScreenObservationSettings(),
+        )
 
         dialog = SettingsDialog(
             self.api_client.settings,
@@ -5109,6 +5189,8 @@ class PetWindow(QWidget):
                 "runtime_loop_settings",
                 RuntimeLoopSettings(),
             ),
+            sensory_settings=sensory_settings,
+            screen_observation_settings=screen_observation_settings,
             on_layout_preview=self._preview_layout,
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
             on_prepare_secondary_window=self._prepare_secondary_window,
@@ -5202,6 +5284,16 @@ class PetWindow(QWidget):
             getattr(dialog, "result_memory_curation_settings", None)
             or getattr(self, "memory_curation_settings", None)
         )
+        result_sensory_settings = getattr(
+            dialog,
+            "result_sensory_settings",
+            getattr(self, "sensory_settings", SensorySettings()),
+        )
+        result_screen_observation_settings = getattr(
+            dialog,
+            "result_screen_observation_settings",
+            getattr(self, "screen_observation_settings", ScreenObservationSettings()),
+        )
         result_screen_awareness_settings = getattr(
             dialog,
             "result_screen_awareness_settings",
@@ -5251,6 +5343,24 @@ class PetWindow(QWidget):
                 self,
                 "backchannel_settings",
                 BackchannelSettings(),
+            )
+        if result_sensory_settings is None or not isinstance(
+            result_sensory_settings,
+            SensorySettings,
+        ):
+            result_sensory_settings = getattr(
+                self,
+                "sensory_settings",
+                SensorySettings(),
+            )
+        if result_screen_observation_settings is None or not isinstance(
+            result_screen_observation_settings,
+            ScreenObservationSettings,
+        ):
+            result_screen_observation_settings = getattr(
+                self,
+                "screen_observation_settings",
+                ScreenObservationSettings(),
             )
         (
             result_subtitle_typing_interval_ms,
@@ -5318,6 +5428,13 @@ class PetWindow(QWidget):
                 self.settings_service.save_proactive_care_settings(
                     result_screen_awareness_settings
                 )
+            save_screen_observation_settings = getattr(
+                self.settings_service,
+                "save_screen_observation_settings",
+                None,
+            )
+            if callable(save_screen_observation_settings):
+                save_screen_observation_settings(result_screen_observation_settings)
             self.settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings)
             self.settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
             if startup_settings_changed:
@@ -5352,6 +5469,13 @@ class PetWindow(QWidget):
                 self.settings_service.save_memory_curation_settings(
                     result_memory_curation_settings
                 )
+            save_sensory_settings = getattr(
+                self.settings_service,
+                "save_sensory_settings",
+                None,
+            )
+            if callable(save_sensory_settings):
+                save_sensory_settings(result_sensory_settings)
         except (CharacterConfigError, OSError) as exc:
             show_themed_critical(
                 self,
@@ -5398,6 +5522,14 @@ class PetWindow(QWidget):
         else:
             self.theme_settings = result_theme_settings
         self.screen_awareness_settings = result_screen_awareness_settings
+        self.screen_observation_settings = result_screen_observation_settings.normalized()
+        sync_screen_observation_capabilities = getattr(
+            self,
+            "_sync_screen_observation_runtime_capabilities",
+            None,
+        )
+        if callable(sync_screen_observation_capabilities):
+            sync_screen_observation_capabilities()
         mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
         self.mcp_settings = dialog.result_mcp_settings
         self.debug_log_settings = dialog.result_debug_log_settings
@@ -5465,6 +5597,11 @@ class PetWindow(QWidget):
                     debug_log("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
             debug_log("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
         self._apply_character(selected_profile)
+        apply_sensory_settings = getattr(self, "_apply_sensory_settings", None)
+        if callable(apply_sensory_settings):
+            apply_sensory_settings(result_sensory_settings, profile=selected_profile)
+        else:
+            self.sensory_settings = result_sensory_settings.normalized()
         apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
         if callable(apply_backchannel_settings):
             apply_backchannel_settings(result_backchannel_settings)
@@ -5486,6 +5623,49 @@ class PetWindow(QWidget):
     def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
         """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
         self._present_registered_secondary_window(dialog)
+
+    def _apply_sensory_settings(
+        self,
+        settings: SensorySettings,
+        *,
+        profile: CharacterProfile | None = None,
+    ) -> None:
+        normalized = settings.normalized()
+        active_profile = profile or getattr(self, "character_profile", None)
+        if active_profile is None:
+            return
+        sensory_path = StoragePaths(self.base_dir).sensory_observations_for(active_profile.id)
+        store = SensoryObservationStore(
+            sensory_path,
+            retention_days=normalized.retention_days,
+            retention_limit=normalized.retention_limit,
+        )
+        pipeline = SensoryPipeline(
+            settings=normalized,
+            store=store,
+            providers=build_provider_registry(
+                normalized.providers,
+                base_dir=self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
+            system_audio_capture=create_system_audio_capture(
+                self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
+            microphone_audio_capture=create_microphone_audio_capture(
+                self.base_dir,
+                resource_registry=self.resource_manager.registry,
+            ),
+            audio_inference_engine=create_default_audio_inference_engine(self.base_dir),
+        )
+        self.sensory_settings = normalized
+        self.sensory_observation_store = store
+        self.sensory_pipeline = pipeline
+        self.agent_runtime.set_sensory_pipeline(pipeline)
+        self.agent_runtime.set_builtin_context_providers(
+            [SensoryContextProvider(normalized, store).contribution()]
+        )
+        self._sync_screen_observation_runtime_capabilities()
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:
@@ -5529,6 +5709,7 @@ class PetWindow(QWidget):
         enabled = enabled and self.screen_observation_enabled
         self.model_vision_enabled = enabled
         self.agent_runtime.set_model_vision_enabled(enabled)
+        self._sync_screen_observation_runtime_capabilities()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
 
@@ -5557,6 +5738,35 @@ class PetWindow(QWidget):
             )
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
+
+    def _screen_observation_uses_sensory_summary(self) -> bool:
+        return _screen_observation_uses_sensory_summary_for_window(self)
+
+    def _screen_observation_text_bridge_available(self) -> bool:
+        return _screen_observation_text_bridge_available_for_window(self)
+
+    def _sync_screen_observation_runtime_capabilities(self) -> None:
+        setter = getattr(
+            self.agent_runtime,
+            "set_screen_observation_text_bridge_enabled",
+            None,
+        )
+        bridge_available = self._screen_observation_text_bridge_available()
+        if callable(setter):
+            setter(bridge_available)
+        debug_log(
+            "PetWindow",
+            "屏幕观察能力已同步",
+            {
+                "model_vision_enabled": self.model_vision_enabled,
+                "screen_observation_text_bridge_enabled": bridge_available,
+                "delivery_mode": getattr(
+                    self,
+                    "screen_observation_settings",
+                    ScreenObservationSettings(),
+                ).normalized().delivery_mode,
+            },
+        )
 
     @Slot(bool)
     def _toggle_free_access(self, checked: bool) -> None:
@@ -5878,6 +6088,12 @@ class PetWindow(QWidget):
             debug_log("PetWindow", "屏幕观察 YAML 配置已加载", {"enabled": enabled})
             return enabled
         return True
+
+    def _load_screen_observation_settings(self) -> ScreenObservationSettings:
+        loader = getattr(self.settings_service, "load_screen_observation_settings", None)
+        if callable(loader):
+            return loader()
+        return ScreenObservationSettings()
 
     def _load_autonomous_screen_observation_enabled(self) -> bool:
         system_values = self._load_system_config_values("screen_observation")
@@ -6651,7 +6867,12 @@ def _screen_awareness_night_key(now: datetime | None = None) -> str:
     return ""
 
 
-def _build_screen_awareness_visual_observation_jobs(event: AgentEvent) -> list[VisualObservationJob]:
+def _build_screen_awareness_visual_observation_jobs(
+    event: AgentEvent,
+    *,
+    use_sensory_provider: bool = False,
+    inject_as_context: bool = False,
+) -> list[VisualObservationJob]:
     screen_contexts = event.payload.get("screen_contexts")
     if not isinstance(screen_contexts, list) or not screen_contexts:
         return []
@@ -6665,6 +6886,8 @@ def _build_screen_awareness_visual_observation_jobs(event: AgentEvent) -> list[V
                 for context in screen_contexts
                 if isinstance(context, dict)
             ],
+            use_sensory_provider=use_sensory_provider,
+            inject_as_context=inject_as_context,
         )
     ]
 
@@ -6686,6 +6909,57 @@ def _screen_awareness_visual_user_text(event: AgentEvent) -> str:
             continue
         lines.append(f"- {role}: {_truncate_screen_awareness_recent_conversation_content(content, 160)}")
     return "\n".join(lines) if len(lines) > 1 else "主动屏幕感知上下文批次"
+
+
+def _strip_screen_context_images_for_summary_delivery(event: AgentEvent) -> AgentEvent:
+    payload = dict(event.payload)
+    screen_contexts = payload.get("screen_contexts")
+    if isinstance(screen_contexts, list):
+        payload["screen_contexts"] = [
+            _strip_screen_context_image(context)
+            if isinstance(context, dict)
+            else context
+            for context in screen_contexts
+        ]
+    screen_context = payload.get("screen_context")
+    if isinstance(screen_context, dict):
+        payload["screen_context"] = _strip_screen_context_image(screen_context)
+    payload["screen_observation_delivery_mode"] = "sensory_summary"
+    return AgentEvent(type=event.type, payload=payload)
+
+
+def _strip_screen_context_image(context: dict[str, Any]) -> dict[str, Any]:
+    stripped = dict(context)
+    if stripped.pop("data_url", None):
+        stripped["image_attached"] = False
+        stripped["delivery_mode"] = "sensory_summary"
+    return stripped
+
+
+def _screen_observation_uses_sensory_summary_for_window(window: Any) -> bool:
+    return _screen_observation_delivery_mode_for_window(window) == "sensory_summary"
+
+
+def _screen_observation_delivery_mode_for_window(window: Any) -> str:
+    settings = getattr(
+        window,
+        "screen_observation_settings",
+        ScreenObservationSettings(),
+    )
+    normalize = getattr(settings, "normalized", None)
+    if callable(normalize):
+        settings = normalize()
+    return str(getattr(settings, "delivery_mode", "image") or "image")
+
+
+def _screen_observation_text_bridge_available_for_window(window: Any) -> bool:
+    if not getattr(window, "screen_observation_enabled", True):
+        return False
+    if not _screen_observation_uses_sensory_summary_for_window(window):
+        return False
+    return SensorySource.VISION in configured_sensory_sources(
+        getattr(window, "sensory_pipeline", None)
+    )
 
 
 def _build_screen_awareness_recent_conversation(

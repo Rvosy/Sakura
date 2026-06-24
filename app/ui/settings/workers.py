@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
-import base64
+import json
 import mimetypes
+import urllib.error
+import urllib.request
+import base64
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -28,9 +31,50 @@ from app.config.character_loader import CharacterProfile
 from app.core.debug_log import debug_log
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
+from app.sensory.audio_smoke import (
+    build_sensory_audio_smoke_data_url,
+    run_sensory_audio_smoke_test,
+)
+from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
+from app.sensory.audio_deployment import (
+    build_llama_cpp_audio_prepare_requirement,
+    build_llama_cpp_runtime_download_preflight,
+    ensure_llama_cpp_runtime,
+    prepare_llama_cpp_audio_backend,
+)
+from app.sensory.huggingface import (
+    HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    download_huggingface_model,
+    run_hf_command,
+)
+from app.sensory.models import SensoryRequest, SensorySource
+from app.sensory.llama_cpp_runtime import (
+    LlamaCppRuntimeError,
+)
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+    provider_from_config,
+)
+from app.sensory.settings import SensoryProviderConfig
+from app.storage.paths import StoragePaths
 from app.ui.theme import parse_ai_theme_response
 from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import GPTSoVITSTTSSettings
+
+
+_LLAMA_AUDIO_PREPARE_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
+_SENSORY_TEST_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAA9hAAAPYQGoP6dp"
+    "AAAAGUlEQVQokWO84+DAQApgIkn1qIZRDUNKAwBb8AF8KOWdWAAAAABJRU5ErkJggg=="
+)
+_SENSORY_TEST_AUDIO_DATA_URL = build_sensory_audio_smoke_data_url()
+HF_MODEL_SEARCH_LIMIT = 20
+HF_COMPATIBILITY_CLEAR = "clear"
+HF_COMPATIBILITY_POSSIBLE = "possible"
+HF_COMPATIBILITY_UNKNOWN = "unknown"
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -84,6 +128,339 @@ class ApiModelListProbeWorker(QObject):
             self.finished.emit()
 
 
+class SensoryModelListProbeWorker(QObject):
+    succeeded = Signal(list)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, config: SensoryProviderConfig) -> None:
+        super().__init__()
+        self.config = config.normalized()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            models = _probe_sensory_models(self.config)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(models)
+        finally:
+            self.finished.emit()
+
+
+class SensoryModelTestWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        config: SensoryProviderConfig,
+        source: SensorySource,
+        *,
+        base_dir: Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.config = config.normalized()
+        self.source = source
+        self.base_dir = base_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self.source in {SensorySource.SPEECH, SensorySource.SOUND}:
+                result = run_sensory_audio_smoke_test(
+                    self.config,
+                    base_dir=self.base_dir,
+                    source=self.source,
+                )
+                if not result.ok:
+                    raise RuntimeError(result.message)
+                observation = result.observation
+                if observation is None:
+                    raise RuntimeError("音频推理 smoke test 未返回观察结果。")
+                self.succeeded.emit(observation.to_dict())
+                return
+            provider = provider_from_config(self.config, base_dir=self.base_dir)
+            request = SensoryRequest(
+                id="settings_test",
+                source=self.source,
+                user_text="设置页测试增强感知模型",
+                event_type="settings_test",
+                text=_sensory_test_text(self.source),
+                media_ref=_sensory_test_media_ref(self.source),
+                metadata={"test": True},
+            )
+            observation = provider.observe(request)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(observation.to_dict())
+        finally:
+            self.finished.emit()
+
+
+class HuggingFaceModelSearchWorker(QObject):
+    succeeded = Signal(list)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        source: SensorySource,
+        query: str,
+        *,
+        limit: int = HF_MODEL_SEARCH_LIMIT,
+        timeout_seconds: int = 60,
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.query = query
+        self.limit = limit
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            models = search_huggingface_models(
+                self.source,
+                self.query,
+                limit=self.limit,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(models)
+        finally:
+            self.finished.emit()
+
+
+class HuggingFaceModelDownloadWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        source: SensorySource,
+        repo_id: str,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.source = source
+        self.repo_id = repo_id
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            local_dir = StoragePaths(self.base_dir).sensory_model_cache_for(
+                self.source.value,
+                self.repo_id,
+            )
+            result = download_huggingface_model(
+                self.repo_id,
+                local_dir,
+                timeout_seconds=self.timeout_seconds,
+            )
+            result["source"] = self.source.value
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppRuntimeInstallWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            payload = ensure_llama_cpp_runtime(
+                self.base_dir,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPrepareWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        source: SensorySource | Sequence[SensorySource],
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if len(self.sources) == 1:
+                payload = prepare_llama_cpp_audio_backend(
+                    self.base_dir,
+                    self.source,
+                    download_model=True,
+                    timeout_seconds=self.timeout_seconds,
+                )
+            else:
+                payload = _prepare_multiple_llama_audio_backends(
+                    self.base_dir,
+                    self.sources,
+                    timeout_seconds=self.timeout_seconds,
+                )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPreflightWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path, source: SensorySource | Sequence[SensorySource]) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+            runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+            runtime_preflight = (
+                build_llama_cpp_runtime_download_preflight(self.base_dir)
+                if not bool(runtime.get("binary_found"))
+                else {}
+            )
+            requirements = {
+                source.value: build_llama_cpp_audio_prepare_requirement(
+                    report,
+                    source,
+                    runtime_preflight=runtime_preflight,
+                )
+                for source in self.sources
+            }
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(
+                {
+                    "source": "all" if len(self.sources) > 1 else self.source.value,
+                    "doctor": report,
+                    "requirement": requirements[self.source.value] if len(self.sources) == 1 else {},
+                    "requirements": requirements,
+                }
+            )
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppRuntimeDoctorWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(report)
+        finally:
+            self.finished.emit()
+
+
+def _llama_audio_prepare_sources(source: SensorySource | Sequence[SensorySource]) -> tuple[SensorySource, ...]:
+    if isinstance(source, SensorySource):
+        return (source,)
+    sources: list[SensorySource] = []
+    seen: set[SensorySource] = set()
+    for item in source:
+        if item not in _LLAMA_AUDIO_PREPARE_SOURCES or item in seen:
+            continue
+        seen.add(item)
+        sources.append(item)
+    return tuple(sources) or _LLAMA_AUDIO_PREPARE_SOURCES
+
+
+def _prepare_multiple_llama_audio_backends(
+    base_dir: Path,
+    sources: tuple[SensorySource, ...],
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    issues: list[str] = []
+    for source in sources:
+        try:
+            results[source.value] = prepare_llama_cpp_audio_backend(
+                base_dir,
+                source,
+                download_model=True,
+                timeout_seconds=timeout_seconds,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            message = str(exc)
+            issues.append(f"{source.value}: {message}")
+            results[source.value] = {
+                "ok": False,
+                "source": source.value,
+                "message": message,
+            }
+    return {
+        "ok": not issues,
+        "source": "all",
+        "sources": [source.value for source in sources],
+        "results": results,
+        "issues": issues,
+        "message": "llama.cpp 音频后端已准备好。" if not issues else "部分 llama.cpp 音频后端准备失败。",
+    }
+
+
 class TTSTestWorker(QObject):
     succeeded = Signal(object, str)
     failed = Signal(str)
@@ -121,6 +498,328 @@ class TTSTestWorker(QObject):
                     except Exception as exc:  # noqa: BLE001
                         debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
             self.finished.emit()
+
+
+def _probe_sensory_models(config: SensoryProviderConfig) -> list[str]:
+    backend = str(config.extra.get("backend") or config.extra.get("provider") or "").strip().lower()
+    if backend == "ollama":
+        data = _get_json(
+            _ollama_tags_url(config.endpoint),
+            config.timeout_seconds,
+            api_key=config.api_key,
+        )
+        models = data.get("models")
+        if not isinstance(models, list):
+            return []
+        names: list[str] = []
+        for item in models:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+        return names
+    data = _get_json(
+        _openai_models_url(_default_sensory_endpoint(config)),
+        config.timeout_seconds,
+        api_key=config.api_key,
+    )
+    raw_models = data.get("data")
+    if not isinstance(raw_models, list):
+        return []
+    names = []
+    for item in raw_models:
+        if isinstance(item, dict):
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id.strip():
+                names.append(model_id.strip())
+    return names
+
+
+def default_huggingface_query_for_source(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "automatic-speech-recognition whisper qwen audio"
+    if source == SensorySource.SOUND:
+        return "audio-classification sound event"
+    return "vision-language qwen vl instruct"
+
+
+def primary_huggingface_task_filter_for_source(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "automatic-speech-recognition"
+    if source == SensorySource.SOUND:
+        return "audio-classification"
+    return "image-text-to-text"
+
+
+def search_huggingface_models(
+    source: SensorySource,
+    query: str,
+    *,
+    limit: int = HF_MODEL_SEARCH_LIMIT,
+    timeout_seconds: int = 60,
+) -> list[dict[str, object]]:
+    text = query.strip() or default_huggingface_query_for_source(source)
+    count = max(1, min(int(limit), 50))
+    strict_models = _run_huggingface_model_search(
+        text,
+        count,
+        timeout_seconds=timeout_seconds,
+        task_filter=primary_huggingface_task_filter_for_source(source),
+    )
+    strict_marked = _mark_huggingface_model_compatibility(source, strict_models)
+    clear_models = [
+        model
+        for model in strict_marked
+        if model.get("compatibility") == HF_COMPATIBILITY_CLEAR
+    ]
+    if clear_models:
+        return clear_models
+    broad_models = _run_huggingface_model_search(
+        text,
+        count,
+        timeout_seconds=timeout_seconds,
+        task_filter="",
+    )
+    return _sort_huggingface_model_results(
+        _mark_huggingface_model_compatibility(source, broad_models)
+    )
+
+
+def _run_huggingface_model_search(
+    text: str,
+    limit: int,
+    *,
+    timeout_seconds: int,
+    task_filter: str = "",
+) -> list[dict[str, object]]:
+    args = [
+        "models",
+        "list",
+        "--search",
+        text,
+        "--limit",
+        str(limit),
+        "--format",
+        "json",
+    ]
+    if task_filter:
+        args.extend(["--filter", task_filter])
+    completed = run_hf_command(args, timeout_seconds=timeout_seconds)
+    return _parse_huggingface_model_results(completed.stdout)
+
+
+def _parse_huggingface_model_results(raw_text: str) -> list[dict[str, object]]:
+    text = raw_text.strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Hugging Face CLI 返回的模型列表不是 JSON。") from exc
+    if isinstance(payload, dict):
+        raw_items = payload.get("models") or payload.get("data") or payload.get("items") or []
+    elif isinstance(payload, list):
+        raw_items = payload
+    else:
+        raw_items = []
+    results: list[dict[str, object]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        repo_id = item.get("id") or item.get("modelId") or item.get("name")
+        if not isinstance(repo_id, str) or "/" not in repo_id:
+            continue
+        result: dict[str, object] = {"repo_id": repo_id.strip()}
+        for key in ("pipeline_tag", "downloads", "likes", "lastModified", "tags", "library_name"):
+            if key in item:
+                result[key] = item[key]
+        results.append(result)
+    return results
+
+
+def _mark_huggingface_model_compatibility(
+    source: SensorySource,
+    models: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            **model,
+            **_huggingface_model_compatibility(source, model),
+        }
+        for model in models
+    ]
+
+
+def _huggingface_model_compatibility(
+    source: SensorySource,
+    model: dict[str, object],
+) -> dict[str, str]:
+    pipeline_tag = str(model.get("pipeline_tag") or "").strip().lower()
+    tags = _normalized_huggingface_tags(model)
+    haystack = " ".join(
+        [
+            str(model.get("repo_id") or ""),
+            pipeline_tag,
+            " ".join(tags),
+            str(model.get("library_name") or ""),
+        ]
+    ).lower()
+    clear_tasks = _clear_huggingface_tasks(source)
+    possible_markers = _possible_huggingface_markers(source)
+    if pipeline_tag in clear_tasks:
+        return {
+            "compatibility": HF_COMPATIBILITY_CLEAR,
+            "compatibility_label": "明显兼容",
+            "compatibility_reason": f"主任务 {pipeline_tag}",
+        }
+    if not pipeline_tag and tags.intersection(clear_tasks):
+        task = sorted(tags.intersection(clear_tasks))[0]
+        return {
+            "compatibility": HF_COMPATIBILITY_CLEAR,
+            "compatibility_label": "明显兼容",
+            "compatibility_reason": f"任务标签 {task}",
+        }
+    if any(marker in haystack for marker in possible_markers):
+        if pipeline_tag:
+            reason = f"命名/标签匹配，主任务 {pipeline_tag}"
+        else:
+            reason = "命名/标签匹配，未声明主任务"
+        return {
+            "compatibility": HF_COMPATIBILITY_POSSIBLE,
+            "compatibility_label": "可能兼容",
+            "compatibility_reason": reason,
+        }
+    return {
+        "compatibility": HF_COMPATIBILITY_UNKNOWN,
+        "compatibility_label": "类型未验证",
+        "compatibility_reason": "未发现明确任务标签",
+    }
+
+
+def _normalized_huggingface_tags(model: dict[str, object]) -> set[str]:
+    raw_tags = model.get("tags")
+    if not isinstance(raw_tags, list):
+        return set()
+    return {
+        str(tag).strip().lower()
+        for tag in raw_tags
+        if str(tag).strip()
+    }
+
+
+def _clear_huggingface_tasks(source: SensorySource) -> set[str]:
+    if source == SensorySource.SPEECH:
+        return {"automatic-speech-recognition", "audio-text-to-text"}
+    if source == SensorySource.SOUND:
+        return {"audio-classification"}
+    return {
+        "image-text-to-text",
+        "visual-question-answering",
+        "image-to-text",
+        "document-question-answering",
+    }
+
+
+def _possible_huggingface_markers(source: SensorySource) -> tuple[str, ...]:
+    if source == SensorySource.SPEECH:
+        return ("whisper", "faster-whisper", "asr", "speech", "sensevoice", "wav2vec")
+    if source == SensorySource.SOUND:
+        return ("audio-classification", "sound-event", "yamnet", "audio-spectrogram", "panns")
+    return (
+        "vision-language",
+        "vlm",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "qwen2_5_vl",
+        "qwen3-vl",
+        "qwen3_vl",
+        "llava",
+        "internvl",
+        "minicpm-v",
+        "molmo",
+        "image-text-to-text",
+    )
+
+
+def _sort_huggingface_model_results(models: list[dict[str, object]]) -> list[dict[str, object]]:
+    order = {
+        HF_COMPATIBILITY_CLEAR: 0,
+        HF_COMPATIBILITY_POSSIBLE: 1,
+        HF_COMPATIBILITY_UNKNOWN: 2,
+    }
+    return sorted(
+        models,
+        key=lambda model: (
+            order.get(str(model.get("compatibility") or ""), 3),
+            -int(model.get("downloads") or 0)
+            if isinstance(model.get("downloads"), int)
+            else 0,
+            str(model.get("repo_id") or "").lower(),
+        ),
+    )
+
+
+def _get_json(url: str, timeout_seconds: int, *, api_key: str = "") -> dict[str, object]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+    except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("模型列表接口返回的不是 JSON object。")
+    return data
+
+
+def _default_sensory_endpoint(config: SensoryProviderConfig) -> str:
+    endpoint = config.endpoint.strip()
+    if endpoint:
+        return endpoint
+    backend = str(config.extra.get("backend") or config.extra.get("provider") or "").strip().lower()
+    if backend in {"lmstudio", "lm_studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    if backend == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    return endpoint
+
+
+def _openai_models_url(endpoint: str) -> str:
+    base = endpoint.strip().rstrip("/")
+    if not base:
+        raise RuntimeError("请先填写增强感知服务 Endpoint。")
+    if base.endswith("/models"):
+        return base
+    return f"{base}/models"
+
+
+def _ollama_tags_url(endpoint: str) -> str:
+    base = (endpoint.strip() or DEFAULT_OLLAMA_ENDPOINT).rstrip("/")
+    if base.endswith("/api/tags"):
+        return base
+    return f"{base}/api/tags"
+
+
+def _sensory_test_text(source: SensorySource) -> str:
+    if source == SensorySource.SPEECH:
+        return "请判断这段短测试音频中是否有人声，并返回结构化 JSON。"
+    if source == SensorySource.SOUND:
+        return "请识别这段短测试音频中的声音类型，并返回结构化 JSON。"
+    return "请识别这张测试图片并返回结构化 JSON。"
+
+
+def _sensory_test_media_ref(source: SensorySource) -> str:
+    if source == SensorySource.VISION:
+        return _SENSORY_TEST_IMAGE_DATA_URL
+    if source in {SensorySource.SPEECH, SensorySource.SOUND}:
+        return _SENSORY_TEST_AUDIO_DATA_URL
+    return ""
 
 
 class MemoryListWorker(QObject):

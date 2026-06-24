@@ -11,6 +11,8 @@ from app.config.settings_service import (
     AppSettingsService,
     BubbleSettings,
     DebugLogSettings,
+    SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY,
+    ScreenObservationSettings,
     StartupSettings,
 )
 from app.config.model_slots import resolve_model_slot
@@ -25,6 +27,8 @@ from app.config.models import (
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
+from app.sensory.models import SensoryProviderMode, SensorySource
+from app.sensory.settings import SensoryProviderConfig, SensorySettings, SensorySourceSettings
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
     DEFAULT_PET_WINDOW_STYLESHEET,
@@ -258,6 +262,113 @@ def test_settings_service_loads_and_saves_bubble_settings() -> None:
     system = load_yaml_mapping(service.system_config_path)
     assert system["ui"]["bubble_auto_hide_enabled"] is False
     assert system["ui"]["bubble_auto_hide_delay_seconds"] == 120
+
+
+def test_settings_service_loads_and_saves_sensory_settings() -> None:
+    root = _runtime_root("yaml_sensory")
+    service = AppSettingsService(root)
+    service.system_config_path.parent.mkdir(parents=True)
+    service.system_config_path.write_text(
+        """
+sensory:
+  enabled: true
+  context_budget_chars: 1600
+  retention_days: 3
+  sources:
+    vision:
+      mode: api
+      confidence_threshold: 0.7
+    speech:
+      mode: local
+      provider_id: speech_local_custom
+""".lstrip(),
+        encoding="utf-8",
+    )
+    service.api_config_path.write_text(
+        """
+sensory:
+  providers:
+    vision_api:
+      source: vision
+      mode: api
+      endpoint: https://vision.example/v1
+      model: vlm-mini
+      timeout_seconds: 12
+    speech:
+      local:
+        id: speech_local_custom
+        endpoint: http://127.0.0.1:9010
+        model: asr-small
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    loaded = service.load_sensory_settings()
+
+    assert loaded.enabled is True
+    assert loaded.context_budget_chars == 1600
+    assert loaded.sources[SensorySource.VISION].mode == SensoryProviderMode.API
+    assert loaded.sources[SensorySource.VISION].provider_id == "vision_api"
+    assert loaded.sources[SensorySource.VISION].confidence_threshold == 0.7
+    assert loaded.sources[SensorySource.SPEECH].provider_id == "speech_local_custom"
+    assert loaded.providers["vision_api"].endpoint == "https://vision.example/v1"
+
+    service.save_sensory_settings(
+        SensorySettings(
+            enabled=False,
+            context_budget_chars=900,
+            sources={
+                SensorySource.SOUND: SensorySourceSettings(
+                    mode=SensoryProviderMode.LOCAL,
+                    provider_id="sound_local",
+                    confidence_threshold=0.6,
+                )
+            },
+            providers={
+                "sound_local": SensoryProviderConfig(
+                    provider_id="sound_local",
+                    source=SensorySource.SOUND,
+                    mode=SensoryProviderMode.LOCAL,
+                    endpoint="http://127.0.0.1:9020",
+                    model="sound-events",
+                )
+            },
+        )
+    )
+
+    saved_system = load_yaml_mapping(service.system_config_path)
+    saved_api = load_yaml_mapping(service.api_config_path)
+    assert saved_system["sensory"]["enabled"] is False
+    assert saved_system["sensory"]["context_budget_chars"] == 900
+    assert saved_system["sensory"]["sources"]["sound"]["mode"] == "local"
+    assert saved_api["sensory"]["providers"]["sound_local"]["endpoint"] == "http://127.0.0.1:9020"
+    assert "vision_api" not in saved_api["sensory"]["providers"]
+
+
+def test_settings_service_defaults_sensory_to_disabled() -> None:
+    service = AppSettingsService(_runtime_root("yaml_sensory_default_off"))
+
+    loaded = service.load_sensory_settings()
+
+    assert loaded.enabled is False
+    assert loaded.sources[SensorySource.VISION].mode == SensoryProviderMode.OFF
+    assert loaded.providers == {}
+
+
+def test_screen_observation_delivery_mode_round_trips() -> None:
+    service = AppSettingsService(_runtime_root("yaml_screen_observation_delivery"))
+
+    assert service.load_screen_observation_settings() == ScreenObservationSettings()
+
+    service.save_screen_observation_settings(
+        ScreenObservationSettings(delivery_mode=SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY)
+    )
+
+    loaded = service.load_screen_observation_settings()
+    system = load_yaml_mapping(service.system_config_path)
+    assert loaded.delivery_mode == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
+    assert loaded.uses_sensory_summary is True
+    assert system["screen_observation"]["delivery_mode"] == SCREEN_OBSERVATION_DELIVERY_SENSORY_SUMMARY
 
 
 def test_save_bubble_settings_preserves_other_ui_keys() -> None:

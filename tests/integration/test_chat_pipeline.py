@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from app.agent import AgentEvent, AgentResult, PendingToolAction
+from app.agent.runtime import AgentRuntime
 from app.core.chat_pipeline import ChatPipeline
 from app.llm.chat_reply import parse_chat_reply
+from app.sensory.context import SensoryContextProvider
+from app.sensory.models import SensoryObservation, SensoryProviderMode, SensorySource
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import FakeSensoryProvider
+from app.sensory.settings import SensorySettings, SensorySourceSettings
+from app.sensory.store import SensoryObservationStore
 from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
 
@@ -16,11 +24,13 @@ class RuntimeStub:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.events: list[AgentEvent] = []
+        self.user_messages: list[list[dict[str, object]]] = []
 
     def handle_user_message(self, messages, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
         if cancel_checker is not None:
             cancel_checker()
         self.calls.append(f"user:{len(messages)}")
+        self.user_messages.append(messages)
         if progress_callback is not None:
             progress_callback
         return AgentResult(parse_chat_reply("はい"), [])
@@ -184,5 +194,255 @@ def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply()
         raw = path.read_text(encoding="utf-8")
         assert "vis_chat" in raw
         assert "截图里有一张设置页" in raw
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_mirrors_visual_contexts_to_sensory_store() -> None:
+    class Client:
+        def complete_raw(self, _system_prompt, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return json.dumps(
+                {
+                    "summary": "屏幕展示了设置弹窗。",
+                    "visible_texts": ["设置", "保存"],
+                    "uncertain_texts": [],
+                    "notable_elements": ["设置窗口"],
+                    "confidence": 0.88,
+                    "sensitive_redacted": False,
+                },
+                ensure_ascii=False,
+            )
+
+    runtime = RuntimeStub()
+    runtime.api_client = Client()
+    visual_path = Path("__pycache__") / "test_runtime" / f"visual_pipeline_{uuid.uuid4().hex}.jsonl"
+    sensory_path = Path("__pycache__") / "test_runtime" / f"sensory_pipeline_{uuid.uuid4().hex}.jsonl"
+    try:
+        sensory_store = SensoryObservationStore(sensory_path)
+        pipeline = ChatPipeline(
+            runtime,  # type: ignore[arg-type]
+            visual_observation_store=VisualObservationStore(visual_path),
+            sensory_pipeline=SensoryPipeline(
+                settings=SensorySettings(enabled=True).normalized(),
+                store=sensory_store,
+                providers={},
+            ),
+        )
+
+        pipeline.run_event(
+            AgentEvent(type="screen_awareness_check", payload={"screen_context_count": 1}),
+            visual_observation_jobs=[
+                VisualObservationJob(
+                    id="vis_mirror",
+                    source="screen_awareness_context",
+                    user_text="主动屏幕感知上下文批次",
+                    screen_contexts=[
+                        {
+                            "data_url": "data:image/jpeg;base64,event",
+                            "width": 1280,
+                            "height": 720,
+                            "captured_at": "2026-06-01T08:20:19+08:00",
+                            "screen_name": "Mi monitor",
+                        }
+                    ],
+                )
+            ],
+        )
+
+        mirrored = sensory_store.recent(limit=1)[0]
+        assert mirrored.source == SensorySource.VISION
+        assert mirrored.details["visual_id"] == "vis_mirror"
+        assert "data:image" not in json.dumps(mirrored.to_dict(), ensure_ascii=False)
+    finally:
+        visual_path.unlink(missing_ok=True)
+        sensory_path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_does_not_mirror_visual_contexts_when_sensory_default_off() -> None:
+    class Client:
+        def complete_raw(self, _system_prompt, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return json.dumps(
+                {
+                    "summary": "屏幕展示了设置弹窗。",
+                    "visible_texts": ["设置", "保存"],
+                    "confidence": 0.88,
+                },
+                ensure_ascii=False,
+            )
+
+    runtime = RuntimeStub()
+    runtime.api_client = Client()
+    visual_path = Path("__pycache__") / "test_runtime" / f"visual_default_off_{uuid.uuid4().hex}.jsonl"
+    sensory_path = Path("__pycache__") / "test_runtime" / f"sensory_default_off_{uuid.uuid4().hex}.jsonl"
+    try:
+        sensory_store = SensoryObservationStore(sensory_path)
+        pipeline = ChatPipeline(
+            runtime,  # type: ignore[arg-type]
+            visual_observation_store=VisualObservationStore(visual_path),
+            sensory_pipeline=SensoryPipeline(
+                settings=SensorySettings().normalized(),
+                store=sensory_store,
+                providers={},
+            ),
+        )
+
+        pipeline.run_event(
+            AgentEvent(type="screen_awareness_check", payload={"screen_context_count": 1}),
+            visual_observation_jobs=[
+                VisualObservationJob(
+                    id="vis_default_off",
+                    source="screen_awareness_context",
+                    user_text="主动屏幕感知上下文批次",
+                    screen_contexts=[
+                        {
+                            "data_url": "data:image/jpeg;base64,event",
+                            "width": 1280,
+                            "height": 720,
+                            "captured_at": "2026-06-01T08:20:19+08:00",
+                            "screen_name": "Mi monitor",
+                        }
+                    ],
+                )
+            ],
+        )
+
+        assert sensory_store.recent(limit=1) == []
+        assert not sensory_path.exists()
+    finally:
+        visual_path.unlink(missing_ok=True)
+        sensory_path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_uses_sensory_provider_for_visual_summary_bridge() -> None:
+    class MainClient:
+        def complete_raw(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("summary bridge must not send images to the main model")
+
+    runtime = RuntimeStub()
+    runtime.api_client = MainClient()
+    visual_path = Path("__pycache__") / "test_runtime" / f"visual_bridge_{uuid.uuid4().hex}.jsonl"
+    sensory_path = Path("__pycache__") / "test_runtime" / f"sensory_bridge_{uuid.uuid4().hex}.jsonl"
+    try:
+        settings = SensorySettings(
+            enabled=True,
+            sources={
+                SensorySource.VISION: SensorySourceSettings(
+                    mode=SensoryProviderMode.LOCAL,
+                    provider_id="fake_vision",
+                )
+            },
+        ).normalized()
+        pipeline = ChatPipeline(
+            runtime,  # type: ignore[arg-type]
+            visual_observation_store=VisualObservationStore(visual_path),
+            sensory_pipeline=SensoryPipeline(
+                settings=settings,
+                store=SensoryObservationStore(sensory_path),
+                providers={
+                    "fake_vision": FakeSensoryProvider(
+                        provider_id="fake_vision",
+                        source=SensorySource.VISION,
+                        summary="截图中显示 LM Studio 正在运行 qwen3-vl。",
+                        confidence=0.91,
+                    )
+                },
+            ),
+        )
+
+        pipeline.run_user_message(
+            [{"role": "user", "content": "帮我看看当前屏幕"}],
+            visual_observation_jobs=[
+                VisualObservationJob(
+                    id="vis_bridge",
+                    source="autonomous_screen",
+                    user_text="帮我看看当前屏幕",
+                    screen_contexts=[
+                        {
+                            "data_url": "data:image/jpeg;base64,bridge",
+                            "width": 1440,
+                            "height": 900,
+                            "captured_at": "2026-06-20T18:00:00+08:00",
+                            "screen_name": "Built-in Display",
+                        }
+                    ],
+                    use_sensory_provider=True,
+                    inject_as_context=True,
+                )
+            ],
+        )
+
+        assert runtime.calls == ["user:2"]
+        injected_message = runtime.user_messages[-1][-1]
+        injected_json = json.dumps(injected_message, ensure_ascii=False)
+        assert injected_message["role"] == "system"
+        assert "截图中显示 LM Studio 正在运行 qwen3-vl。" in injected_json
+        assert "data:image" not in injected_json
+    finally:
+        visual_path.unlink(missing_ok=True)
+        sensory_path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_injects_sensory_context_into_agent_runtime() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.system_prompts: list[str] = []
+            self.runtime_contexts: list[str] = []
+
+        def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
+            return 0.8, {}
+
+        def complete_with_tools(self, system_prompt, _messages, **kwargs):  # type: ignore[no-untyped-def]
+            self.system_prompts.append(system_prompt)
+            self.runtime_contexts.append(str(kwargs.get("runtime_context") or ""))
+
+            class Turn:
+                content = '{"segments":[{"ja":"確認したよ。","zh":"我确认了。","tone":"中性"}]}'
+                tool_calls: list[object] = []
+                message = {"role": "assistant", "content": content}
+                runtime_context_role = "system"
+
+            return Turn()
+
+    path = Path("__pycache__") / "test_runtime" / f"sensory_context_{uuid.uuid4().hex}.jsonl"
+    try:
+        store = SensoryObservationStore(path)
+        store.append(
+            SensoryObservation(
+                id="obs_screen_error",
+                source=SensorySource.VISION,
+                created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                summary="屏幕上显示 E42 保存失败。",
+                details={"visible_texts": ["E42", "保存失败"]},
+                confidence=0.95,
+                provider_id="fake_vlm",
+                mode=SensoryProviderMode.API,
+            )
+        )
+        settings = SensorySettings(
+            enabled=True,
+            sources={
+                SensorySource.VISION: SensorySourceSettings(
+                    confidence_threshold=0.5,
+                    context_limit=3,
+                )
+            }
+        ).normalized()
+        provider = SensoryContextProvider(settings=settings, store=store).contribution()
+        client = Client()
+        runtime = AgentRuntime(
+            client,  # type: ignore[arg-type]
+            "基础提示",
+            memory=object(),
+            context_providers=[provider],
+        )
+        pipeline = ChatPipeline(runtime)
+
+        pipeline.run_user_message([{"role": "user", "content": "刚才屏幕有什么报错？"}])
+
+        assert client.system_prompts
+        assert client.runtime_contexts
+        assert 'source="plugin:sensory"' in client.runtime_contexts[0]
+        assert "obs_screen_error" in client.runtime_contexts[0]
+        assert "E42 保存失败" in client.runtime_contexts[0]
     finally:
         path.unlink(missing_ok=True)

@@ -38,6 +38,14 @@ from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
+from app.sensory.audio_capture import create_microphone_audio_capture, create_system_audio_capture
+from app.sensory.audio_inference import create_default_audio_inference_engine
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
+from app.sensory.tools import create_sensory_audio_observation_tools, create_sensory_observation_tool
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -167,6 +175,22 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     mcp_settings = settings_service.load_mcp_runtime_settings()
     runtime_loop_settings = settings_service.load_runtime_loop_settings()
     history_store = create_history_store(base_dir, character_profile)
+    sensory_settings = settings_service.load_sensory_settings()
+    sensory_observation_store = create_sensory_observation_store(
+        base_dir,
+        character_profile,
+        sensory_settings,
+    )
+    sensory_pipeline = create_sensory_pipeline(
+        sensory_settings,
+        sensory_observation_store,
+        base_dir=base_dir,
+        resource_registry=resource_registry,
+    )
+    sensory_context_provider = SensoryContextProvider(
+        sensory_settings,
+        sensory_observation_store,
+    ).contribution()
     agent_runtime = AgentRuntime(
         api_client=api_client,
         vision_api_client=vision_api_client,
@@ -178,9 +202,12 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         memory=memory_store,
         history_store=history_store,
         runtime_loop_settings=runtime_loop_settings,
+        context_providers=[sensory_context_provider],
         character_id=character_profile.id,
         character_name=character_profile.display_name,
     )
+    agent_runtime.set_sensory_pipeline(sensory_pipeline)
+    _register_sensory_tools(tool_registry, lambda: getattr(agent_runtime, "sensory_pipeline", None))
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = create_visual_observation_store(base_dir, character_profile)
     debug_log_settings = settings_service.load_debug_log_settings()
@@ -238,6 +265,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             reminder_store=reminder_store,
             history_store=history_store,
             visual_observation_store=visual_observation_store,
+            sensory_observation_store=sensory_observation_store,
             runtime_event_log=runtime_event_log,
         ),
         resource_registry=resource_registry,
@@ -253,6 +281,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
             screen_awareness_settings=screen_awareness_settings,
+            sensory_settings=sensory_settings,
+            sensory_pipeline=sensory_pipeline,
         ),
         startup_initializing=True,
     )
@@ -302,6 +332,10 @@ def build_deferred_services(
             base_dir,
             context.memory_store,
             context.reminder_store,
+        )
+        _register_sensory_tools(
+            tool_registry,
+            lambda: getattr(context.agent_runtime, "sensory_pipeline", None),
         )
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()
@@ -414,3 +448,57 @@ def _client_for_explicit_slot(
     if resolved is None or resolved.source_slot != slot:
         return None
     return OpenAICompatibleClient(resolved.settings)
+
+
+def create_sensory_observation_store(
+    base_dir: Path,
+    profile: CharacterProfile,
+    settings: SensorySettings | None = None,
+) -> SensoryObservationStore:
+    sensory_settings = settings or AppSettingsService(base_dir=base_dir).load_sensory_settings()
+    sensory_path = StoragePaths(base_dir).sensory_observations_for(profile.id)
+    normalized = sensory_settings.normalized()
+    return SensoryObservationStore(
+        sensory_path,
+        retention_days=normalized.retention_days,
+        retention_limit=normalized.retention_limit,
+    )
+
+
+def create_sensory_pipeline(
+    settings: SensorySettings,
+    store: SensoryObservationStore,
+    *,
+    base_dir: Path | None = None,
+    resource_registry: ResourceRegistry | None = None,
+) -> SensoryPipeline:
+    normalized = settings.normalized()
+    return SensoryPipeline(
+        settings=normalized,
+        store=store,
+        providers=build_provider_registry(
+            normalized.providers,
+            base_dir=base_dir,
+            resource_registry=resource_registry,
+        ),
+        system_audio_capture=(
+            create_system_audio_capture(base_dir, resource_registry=resource_registry)
+            if base_dir is not None
+            else None
+        ),
+        microphone_audio_capture=(
+            create_microphone_audio_capture(base_dir, resource_registry=resource_registry)
+            if base_dir is not None
+            else None
+        ),
+        audio_inference_engine=create_default_audio_inference_engine(base_dir),
+    )
+
+
+def _register_sensory_tools(
+    tool_registry: ToolRegistry,
+    pipeline_getter,
+) -> None:
+    tool_registry.register(create_sensory_observation_tool(pipeline_getter))
+    for tool in create_sensory_audio_observation_tools(pipeline_getter):
+        tool_registry.register(tool)

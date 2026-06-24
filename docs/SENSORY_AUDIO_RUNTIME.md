@@ -1,0 +1,288 @@
+# 增强感知音频推理运行时
+
+本模块提供可选的本机音频推理后端部署路径，用于语音与声音事件增强感知。目标是让普通用户不需要手动编译推理框架，同时保持默认关闭、跨平台、可回退。
+
+## 运行时边界
+
+- 默认不启动、不下载、不采集音频。
+- 只有用户在设置页选择“本机运行框架”与 `llama.cpp` 后端，并点击“准备 llama.cpp 音频后端”且确认下载提示时，才会准备本机运行时与推荐模型缓存。
+- Sakura 优先复用已存在的 `llama-server`：
+  - `SAKURA_LLAMA_SERVER`
+  - `data/local_runtimes/llama_cpp/`
+  - `PATH`
+- 找不到时，Sakura 从 `ggml-org/llama.cpp` 最新 GitHub release 选择当前平台官方预编译包。
+- 下载前会按 archive 大小估算“archive + 解压内容”所需空间并保留安全余量；空间不足时不会开始下载。下载与解压结果写入 `data/local_runtimes/llama_cpp/`，该目录是用户态缓存，不应提交到仓库。
+- 发布版或内网镜像可以提供本地 runtime manifest 固定下载源；Sakura 会优先读取 manifest，再回退到 GitHub latest。
+
+## 跨平台选择
+
+当前平台 key：
+
+- macOS arm64: `macos-arm64`，优先选择 Metal 包
+- macOS x64: `macos-x64`
+- Windows x64: `windows-x64`
+- Windows arm64: `windows-arm64`
+- Linux x64: `linux-x64`
+- Linux arm64: `linux-arm64`
+
+安装器只选择基础 CPU/Metal 官方包；CUDA、ROCm、Vulkan、OpenVINO、SYCL 等加速包先不自动选择，避免驱动与分发复杂度进入默认路径。
+
+## 运行时 manifest
+
+manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、离线附带 archive，或附加 `sha256` 校验。Sakura 会按顺序读取：
+
+1. `SAKURA_LLAMA_CPP_RUNTIME_MANIFEST` 指向的 JSON 文件。这个路径是显式覆盖；如果文件缺失或无效，会直接报错，不会静默回退到公网。
+2. `data/local_runtimes/llama_cpp/runtime_manifest.json`
+3. `data/local_runtimes/llama_cpp/llama_cpp_runtime_manifest.json`
+4. 找不到本地 manifest 时，回退到 `ggml-org/llama.cpp` 最新 GitHub release。
+
+示例：
+
+```json
+{
+  "packages": [
+    {
+      "package_id": "b9763-macos-arm64-metal",
+      "label": "llama.cpp b9763 macOS arm64 Metal",
+      "platform_key": "macos-arm64",
+      "url": "archives/llama-b9763-bin-macos-arm64.tar.gz",
+      "archive_format": "tar.gz",
+      "binary_relpath": "llama-server",
+      "version": "b9763",
+      "variant": "metal",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size_bytes": 10978734
+    }
+  ]
+}
+```
+
+`platform_key` 当前支持 `macos-arm64`、`macos-x64`、`windows-arm64`、`windows-x64`、`linux-arm64`、`linux-x64`。同一 manifest 可以同时放多个平台包，安装器会按当前平台选择。
+
+`url` 可以是 HTTPS 镜像、`file://` URI，或相对 manifest 文件所在目录的本地 archive 路径。相对路径适合发布包把 archive 放在 `data/local_runtimes/llama_cpp/archives/` 下，安装时不会访问公网。
+
+生成当前官方 release 的 manifest 模板，不下载 archive：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest --relative-archive-dir archives --pretty
+```
+
+生成镜像 URL 版本并写入默认位置：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest \
+  --mirror-base-url https://mirror.example/llama.cpp/b9763 \
+  --output data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --pretty
+```
+
+如果 archive 已经下载到本地目录，可以同时写入真实 `sha256` 与 `size_bytes`：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest \
+  --relative-archive-dir archives \
+  --archive-root data/local_runtimes/llama_cpp/archives \
+  --output data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --pretty
+```
+
+`--archive-root` 不会下载文件；它要求目录中存在与官方 release asset 同名的 archive，缺失时会报错。
+
+发布前校验 manifest，不安装、不下载：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli runtime-manifest-check \
+  --manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --archive-root data/local_runtimes/llama_cpp/archives \
+  --require-known-platforms \
+  --pretty
+```
+
+校验会检查 package 结构、必需平台、相对路径或 `file://` archive 是否存在、`size_bytes` 和 `sha256` 是否匹配。HTTPS URL 不会联网；如需校验镜像文件，配合 `--archive-root` 指向本地 archive 目录。
+
+## 音频模型 manifest
+
+发布包或内网环境也可以预置推荐 GGUF 文件，避免用户首次准备时访问 Hugging Face。Sakura 会按顺序读取：
+
+1. `SAKURA_AUDIO_MODEL_MANIFEST` 指向的 JSON 文件。这个路径是显式覆盖；如果文件缺失或无效，准备流程会报错。
+2. `data/cache/sensory_models/audio_model_manifest.json`
+3. `data/cache/sensory_models/llama_cpp_audio_model_manifest.json`
+
+示例：
+
+```json
+{
+  "models": [
+    {
+      "source": "speech",
+      "repo_id": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+      "files": [
+        {
+          "filename": "Qwen3-ASR-0.6B-Q8_0.gguf",
+          "url": "archives/Qwen3-ASR-0.6B-Q8_0.gguf",
+          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "size_bytes": 1000000000
+        },
+        {
+          "filename": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+          "url": "archives/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`url` 只支持本地相对路径、绝对路径或 `file://` URI，不支持新的远端下载源。相对路径按 manifest 所在目录解析。文件名必须匹配推荐 include patterns；缺文件、大小不匹配或 `sha256` 不匹配时会 fail closed。命中本地音频模型 manifest 时，“准备 llama.cpp 音频后端”会复制文件到标准缓存目录，再把模型字段指向缓存目录。
+
+发布前校验音频模型 manifest，不复制、不下载：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli audio-model-manifest-check \
+  --manifest data/cache/sensory_models/audio_model_manifest.json \
+  --pretty
+```
+
+默认要求 `speech` 和 `sound` 两个推荐模型都存在；只校验单个源时可传入 `--require-source speech` 或 `--require-source sound`。
+
+## 发布/离线部署校验
+
+发布包、内网镜像或离线安装包可以用一个只读命令同时校验 llama.cpp runtime manifest 和音频模型 manifest。该命令不会安装运行时、不会复制模型、不会下载文件、不会访问公网；它只验证 JSON、必需平台/感官源、相对路径或 `file://` 本地文件、`size_bytes` 和 `sha256`。
+
+校验当前平台运行时包，以及默认 `speech` / `sound` 两个推荐音频模型：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli deployment-check \
+  --runtime-manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --runtime-archive-root data/local_runtimes/llama_cpp/archives \
+  --audio-model-manifest data/cache/sensory_models/audio_model_manifest.json \
+  --pretty
+```
+
+校验跨平台发布包时，增加 `--require-known-platforms`：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli deployment-check \
+  --runtime-manifest data/local_runtimes/llama_cpp/runtime_manifest.json \
+  --runtime-archive-root data/local_runtimes/llama_cpp/archives \
+  --audio-model-manifest data/cache/sensory_models/audio_model_manifest.json \
+  --require-known-platforms \
+  --pretty
+```
+
+默认会要求当前平台的 runtime package 存在；只想校验模型素材时可加 `--skip-current-platform`。只发布单个音频源时可重复使用 `--require-source speech` 或 `--require-source sound` 限定必需模型。
+
+## 一键准备与模型默认值
+
+设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后会一次准备 `speech` 与 `sound` 两个音频源，并复用同一个本机 llama.cpp runtime：
+
+1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
+2. 检查推荐 GGUF 模型是否已在 `data/cache/sensory_models/<source>/...` 缓存。
+3. 检查本地磁盘空间是否足够容纳运行时 archive、解压内容和推荐模型下载，并保留安全余量。
+4. 未缓存时，在用户确认后下载推荐文件；有 Hugging Face CLI 时优先使用 `hf`，没有 `hf` 时使用内置 HTTP 直连下载匹配文件。
+5. 成功后把模型字段指向本地缓存目录，避免后续 smoke 或真实调用再让 `llama-server -hf` 拉模型。
+
+如果只安装运行时或命令行使用远端 `-hf`，推荐值为：
+
+- 语音：`ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0`
+- 声音事件：`ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF:Q4_K_M`
+
+推荐模型下载会限制文件范围，避免拉取完整仓库：
+
+- 语音：`--include Qwen3-ASR-0.6B-Q8_0.gguf --include mmproj-Qwen3-ASR-0.6B-Q8_0.gguf`
+- 声音事件：`--include Llama-3.2-1B-Instruct-Q4_K_M.gguf --include mmproj-*.gguf`
+
+这些是推荐值，不覆盖用户已填写的非一键模型。用户也可以手动从 Hugging Face 下载模型到本地；手动下载任意仓库仍需要 Hugging Face CLI。在本机 llama.cpp 模式下，模型字段会优先使用下载后的本地目录。
+
+截至 2026-06-23，推荐 smoke 下载量约为：
+
+- Qwen3-ASR Q8_0 + mmproj：约 1.0 GB
+- Ultravox Q4_K_M + mmproj：约 2.1 GB
+
+设置页“测试模型”遇到这些推荐远端模型时，会先弹窗确认下载量；用户拒绝时不会启动 sidecar 或下载模型。若已通过“一键准备”缓存到本地目录，测试会直接使用本地路径。
+
+命令行也提供同一套一键准备入口。没有 `--yes` 时只做只读检查，发现需要下载运行时或模型会返回 `ok=false`；如果缺少本地 `llama-server`，会读取 runtime manifest 或 GitHub release 元数据来确认当前平台包、下载量和磁盘空间，但不会下载 archive。`--source all` 会一次检查 `speech` 与 `sound` 两个推荐模型，并复用同一个 runtime：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source all --pretty
+```
+
+确认下载后再执行：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source speech --yes --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli prepare-backend --source all --yes --pretty
+```
+
+如果 `--source all --yes` 中某个模型准备失败，命令会返回非零，并在 `results.speech` / `results.sound` 中保留已完成和失败的分项结果，方便发布脚本或设置页报告部分成功状态。
+
+## 调用链
+
+1. 设置页保存 provider extra：
+   - `backend=llama`
+   - `managed_runtime=llama.cpp`
+   - `llama_binary_path`
+   - `llama_runtime_install_dir`
+   - `llama_runtime_package_id`
+2. `build_provider_registry(..., base_dir, resource_registry)` 创建 `ManagedLlamaCppSensoryProvider`。
+3. 第一次音频感知调用前，provider 启动 `llama-server` sidecar。
+4. sidecar 通过 OpenAI-compatible `/v1/chat/completions` 接收 `input_audio`。
+5. 进程通过 `ResourceRegistry` 接管，随 Sakura 生命周期清理。
+
+## 日志
+
+Sakura 管理的 `llama-server` stdout/stderr 写入：
+
+```text
+data/logs/sensory-llama-server.log
+```
+
+模型下载、GGUF 加载、端口占用、Metal/CUDA/CPU 初始化等问题优先看这个文件。启动超时或进程立即退出时，错误消息会带上该日志路径。
+
+## 验证
+
+轻量验证：
+
+```bash
+.venv/bin/python -m pytest tests/unit/test_sensory.py tests/unit/test_sensory_llama_cpp_runtime.py tests/unit/test_sensory_huggingface.py tests/ui/test_pet_window.py -q
+```
+
+命令行 dry-run，不下载模型、不启动 sidecar：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli plan --source speech --managed-llama-defaults --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli plan --source all --managed-llama-defaults --pretty
+```
+
+整体诊断，不下载、不安装、不启动 sidecar：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli doctor --pretty
+```
+
+`doctor` 会汇总当前平台、`llama-server` 是否可用、Hugging Face CLI 是否可用、内置推荐文件下载是否可用、本地 runtime manifest 候选、本地推荐模型缓存、推荐模型磁盘空间预检、语音/声音默认模型 smoke plan、以及下一步动作建议。
+
+设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断 llama.cpp”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
+
+`plan` 输出中几个字段用于发布预检：
+
+- `runtime_requirement`: `cached` 表示已找到本机 `llama-server`，`download_required` 表示需要安装官方运行时，`external_service` 表示该 provider 依赖外部 LM Studio/Ollama/API 服务。
+- `requires_runtime_download`: 是否需要 Sakura 下载官方 llama.cpp 运行时。
+- `model_location`: `local` 表示本地 GGUF，`huggingface` 表示 managed llama.cpp 首次运行可能通过 `-hf` 拉取模型，`provider` 表示模型由外部服务管理。
+- `requires_model_download`: 真实 smoke 是否可能触发模型下载。
+
+底层本机运行时安装验证。没有可用 `llama-server` 时，必须显式传入 `--yes` 才会下载官方 llama.cpp 运行时；普通用户优先使用上面的 `prepare-backend`：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli install-runtime --yes --pretty
+```
+
+真实音频模型 smoke 会下载 GGUF 模型，可能占用数百 MB 到数 GB。命令行同样默认拒绝这一步；确认后需要显式传入：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli smoke --source speech --managed-llama-defaults --allow-model-download --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli smoke --source all --managed-llama-defaults --allow-model-download --pretty
+```
+
+不带 `--allow-model-download` 时，`smoke --source all --managed-llama-defaults` 会一次构建 `speech` 与 `sound` 的计划并返回 `blocked_sources`，但不会启动 sidecar，也不会拉取 GGUF 模型。

@@ -70,6 +70,8 @@ class VisualObservationJob:
     user_text: str
     observation: Any | None = None
     screen_contexts: list[dict[str, Any]] | None = None
+    use_sensory_provider: bool = False
+    inject_as_context: bool = False
 
 
 class VisualObservationStore:
@@ -236,6 +238,69 @@ def visual_observation_record_from_summary(
             }
         )
     return record
+
+
+def visual_observation_media_refs(job: VisualObservationJob) -> list[str]:
+    refs: list[str] = []
+    if job.observation is not None:
+        data_url = getattr(job.observation, "data_url", "")
+        if isinstance(data_url, str) and data_url.startswith("data:image/"):
+            refs.append(data_url)
+    for context in job.screen_contexts or []:
+        data_url = context.get("data_url")
+        if isinstance(data_url, str) and data_url.startswith("data:image/"):
+            refs.append(data_url)
+    return refs[:4]
+
+
+def visual_record_from_sensory_observation(
+    job: VisualObservationJob,
+    observation: Any,
+) -> VisualObservationRecord:
+    metadata = _job_metadata(job)
+    details = getattr(observation, "details", None)
+    details = details if isinstance(details, dict) else {}
+    summary, summary_redacted = _redact_text(
+        str(getattr(observation, "summary", "") or "增强视觉模型未返回摘要。")
+    )
+    visible_texts, visible_redacted = _redact_text_list(details.get("visible_texts"))
+    uncertain_texts, uncertain_redacted = _redact_text_list(details.get("uncertain_texts"))
+    notable_elements, notable_redacted = _redact_text_list(details.get("notable_elements"))
+    if not notable_elements:
+        notable_elements, labels_redacted = _redact_text_list(details.get("labels"))
+        notable_redacted = notable_redacted or labels_redacted
+    user_text, user_text_redacted = _redact_text(job.user_text)
+    sensitive_redacted = bool(getattr(observation, "sensitive_redacted", False)) or any(
+        [
+            summary_redacted,
+            visible_redacted,
+            uncertain_redacted,
+            notable_redacted,
+            user_text_redacted,
+        ]
+    )
+    return VisualObservationRecord(
+        id=job.id,
+        created_at=str(getattr(observation, "created_at", "") or _now_iso()),
+        source=job.source,
+        user_text=user_text,
+        screen_name=metadata["screen_name"],
+        width=metadata["width"],
+        height=metadata["height"],
+        summary=summary,
+        visible_texts=visible_texts,
+        uncertain_texts=uncertain_texts,
+        notable_elements=notable_elements,
+        confidence=_confidence_value(getattr(observation, "confidence", 0.0)),
+        sensitive_redacted=sensitive_redacted,
+    )
+
+
+def fallback_visual_observation_record(
+    job: VisualObservationJob,
+    summary: str,
+) -> VisualObservationRecord:
+    return _fallback_record(job, _job_metadata(job), summary)
 
 
 def build_visual_context_message(
