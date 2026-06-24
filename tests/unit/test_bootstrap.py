@@ -39,6 +39,9 @@ def test_build_initial_app_context_skips_deferred_runtime_services(
     assert context.character_profile.id == "demo"
     assert isinstance(context.tts_provider, NullTTSProvider)
     assert context.mcp_tool_provider is None
+    assert context.pet_state_store.snapshot()["state"]["mood"] == "neutral"
+    assert context.tool_registry.get("pet_state_get") is not None
+    assert context.tool_registry.get("pet_state_update") is not None
     assert calls == []
 
 
@@ -92,6 +95,8 @@ def test_build_deferred_services_loads_injectable_runtime_services(
     assert services.mcp_tool_provider is mcp_provider
     assert services.tool_registry.get("plugin_demo") is not None
     assert services.tool_registry.get("mcp_demo") is not None
+    assert services.tool_registry.get("pet_state_get") is not None
+    assert services.tool_registry.get("pet_state_update") is not None
     assert services.errors == ()
     assert provider_base_dirs == [root]
 

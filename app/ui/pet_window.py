@@ -98,7 +98,12 @@ from app.config.models import (
     ApiConfigProfile,
     ModelSelectionSettings,
 )
-from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.config.settings_service import (
+    BackchannelSettings,
+    BubbleSettings,
+    CharacterBehaviorSettings,
+    StartupSettings,
+)
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
@@ -205,6 +210,9 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
+from app.pet_state.prompting import build_pet_state_context_message
+from app.pet_state.store import PetStateStore
+from app.pet_state.tools import create_pet_state_tools
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.card_container import CardContainer
@@ -243,6 +251,8 @@ MEMORY_STATUS_STARTUP_DELAY_MS = 1_000
 SPEAKING_STATE_TIMEOUT_MS = 45_000
 THREAD_SHUTDOWN_WAIT_MS = 1_000
 TRANSIENT_PROGRESS_MESSAGE_KEY = "_sakura_transient_progress"
+PET_STATE_POPUP_WIDTH = 360
+PET_STATE_POPUP_SCREEN_MARGIN = 12
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
 MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。"
@@ -487,6 +497,66 @@ def _screen_observation_max_edge_from_context(context: dict[str, Any]) -> int:
     return max(1, max_edge)
 
 
+class DraggablePetStatePopup(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
+        self._drag_anchor: QPoint | None = None
+        self._drag_handles: set[QWidget] = set()
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def add_drag_handle(self, widget: QWidget) -> None:
+        self._drag_handles.add(widget)
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if isinstance(watched, QWidget) and watched in self._drag_handles and isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                return self._start_drag(event)
+            if event.type() == QEvent.Type.MouseMove:
+                return self._continue_drag(event)
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                return self._end_drag(event)
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self._start_drag(event):
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if not self._continue_drag(event):
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if not self._end_drag(event):
+            super().mouseReleaseEvent(event)
+
+    def _start_drag(self, event: QMouseEvent) -> bool:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return False
+        self._drag_anchor = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        event.accept()
+        return True
+
+    def _continue_drag(self, event: QMouseEvent) -> bool:
+        if self._drag_anchor is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+            return False
+        self.move(event.globalPosition().toPoint() - self._drag_anchor)
+        event.accept()
+        return True
+
+    def _end_drag(self, event: QMouseEvent) -> bool:
+        if event.button() != Qt.MouseButton.LeftButton or self._drag_anchor is None:
+            return False
+        self._drag_anchor = None
+        event.accept()
+        return True
+
+
 class PetWindow(QWidget):
     memory_status_changed = Signal(str, str)
     # 插件请求把文本填入输入框；用信号 marshal 回 UI 线程（ASR 等可能在后台线程触发）。
@@ -537,6 +607,10 @@ class PetWindow(QWidget):
         self._active_mobile_chat_request: dict[str, Any] | None = None
         self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
+        self.pet_state_store = context.pet_state_store
+        self._pet_state_store_connected = False
+        self.pet_state_popup: QFrame | None = None
+        self.pet_state_popup_body_label: QLabel | None = None
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
@@ -553,14 +627,19 @@ class PetWindow(QWidget):
         self.screen_awareness_settings = getattr(context, "screen_awareness_settings", None)
         if self.screen_awareness_settings is None:
             self.screen_awareness_settings = context.proactive_care_settings
+        self.character_behavior_settings = self.settings_service.load_character_behavior_settings()
         self.model_vision_enabled = self.screen_observation_enabled
         self.agent_runtime.set_model_vision_enabled(self.model_vision_enabled)
         self.agent_runtime.set_autonomous_screen_observation_enabled(
             self.autonomous_screen_observation_enabled
         )
+        self.agent_runtime.set_pet_state_enabled(
+            self.character_behavior_settings.mood_enabled
+        )
         self.free_access_enabled = self._load_free_access_enabled()
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self.always_on_top_enabled = self._load_always_on_top_enabled()
+        self.pet_state_popup_pinned = self._load_pet_state_popup_pinned()
         # 普通副窗口打开期间临时压低桌宠的实际置顶层级，避免副窗口被桌宠盖住；不改变用户配置。
         self._secondary_windows_suppress_topmost = False
         # 副窗口可见期间暂停桌宠气泡后台 hover 轮询，减少与副窗口下拉弹层抢占合成器。
@@ -677,6 +756,7 @@ class PetWindow(QWidget):
                 "screen_awareness": self.screen_awareness_settings,
                 "auto_memory": self.memory_curation_settings,
                 "always_on_top_enabled": self.always_on_top_enabled,
+                "pet_state_popup_pinned": self.pet_state_popup_pinned,
             },
         )
 
@@ -929,6 +1009,7 @@ class PetWindow(QWidget):
         )
         self._load_backchannel_manifest_for(self.character_profile)
         self._sync_plugin_chat_ui_widgets()
+        self._connect_pet_state_store(self.pet_state_store)
 
         self._apply_theme_settings(self.theme_settings)
         self._apply_fonts()
@@ -1021,6 +1102,191 @@ class PetWindow(QWidget):
     def proactive_screen_context_dropped_count(self, value: int) -> None:
         self.screen_awareness_context_dropped_count = value
 
+    def _connect_pet_state_store(self, store: PetStateStore | None) -> None:
+        old_store = getattr(self, "pet_state_store", None)
+        if getattr(self, "_pet_state_store_connected", False) and old_store is not None:
+            try:
+                old_store.state_changed.disconnect(self._handle_pet_state_changed)
+            except (RuntimeError, TypeError):
+                pass
+        self.pet_state_store = store
+        self._pet_state_store_connected = False
+        if store is None:
+            self._apply_pet_state_snapshot(None)
+            return
+        store.state_changed.connect(self._handle_pet_state_changed)
+        self._pet_state_store_connected = True
+        self._apply_pet_state_snapshot(store.snapshot())
+
+    def _register_pet_state_tools_for_current_store(self) -> None:
+        store = getattr(self, "pet_state_store", None)
+        if store is None:
+            return
+        for tool in create_pet_state_tools(store):
+            self.tool_registry.register(tool)
+
+    def _pet_state_behavior_enabled(self) -> bool:
+        settings = getattr(self, "character_behavior_settings", None)
+        return bool(getattr(settings, "mood_enabled", False))
+
+    def _apply_character_behavior_settings(
+        self,
+        settings: CharacterBehaviorSettings,
+        *,
+        pet_state_popup_pinned: bool | None = None,
+    ) -> None:
+        if not isinstance(settings, CharacterBehaviorSettings):
+            settings = CharacterBehaviorSettings()
+        normalized = settings.normalized()
+        self.character_behavior_settings = normalized
+        agent_runtime = getattr(self, "agent_runtime", None)
+        set_pet_state_enabled = getattr(agent_runtime, "set_pet_state_enabled", None)
+        if callable(set_pet_state_enabled):
+            set_pet_state_enabled(normalized.mood_enabled)
+        if pet_state_popup_pinned is not None:
+            self.pet_state_popup_pinned = bool(pet_state_popup_pinned)
+
+        if not normalized.mood_enabled or not bool(
+            getattr(self, "pet_state_popup_pinned", False)
+        ):
+            self.hide_pet_state_popup()
+        else:
+            self.show_pet_state_popup()
+
+    @Slot(object)
+    def _handle_pet_state_changed(self, snapshot: object) -> None:
+        self._apply_pet_state_snapshot(snapshot if isinstance(snapshot, dict) else None)
+
+    def _apply_pet_state_snapshot(self, snapshot: dict[str, Any] | None) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is None or not popup.isVisible():
+            return
+        self._update_pet_state_popup(snapshot)
+
+    @Slot()
+    def show_pet_state_popup(self) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
+        popup = self._ensure_pet_state_popup()
+        self._update_pet_state_popup()
+        popup.adjustSize()
+        popup.resize(PET_STATE_POPUP_WIDTH, popup.sizeHint().height())
+        popup.move(self._pet_state_popup_position(popup.size()))
+        popup.show()
+        popup.raise_()
+
+    @Slot()
+    def hide_pet_state_popup(self) -> None:
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is not None:
+            popup.hide()
+
+    def _maybe_show_pinned_pet_state_popup(self) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            return
+        if not bool(getattr(self, "pet_state_popup_pinned", False)):
+            return
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is not None and popup.isVisible():
+            return
+        QTimer.singleShot(0, self.show_pet_state_popup)
+
+    def _ensure_pet_state_popup(self) -> QFrame:
+        if self.pet_state_popup is not None:
+            return self.pet_state_popup
+
+        popup = DraggablePetStatePopup(self)
+        popup.setWindowFlags(self._pet_state_popup_window_flags())
+        popup.setObjectName("petStatePopup")
+        popup.setFixedWidth(PET_STATE_POPUP_WIDTH)
+        popup.setStyleSheet(pet_window_stylesheet(self.theme_settings))
+
+        bubble = QFrame(popup)
+        bubble.setObjectName("petStatePopupBubble")
+        bubble.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        bubble.setFixedWidth(PET_STATE_POPUP_WIDTH)
+
+        title_label = QLabel("桌宠状态", bubble)
+        title_label.setObjectName("petStatePopupTitle")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        body_label = QLabel("", bubble)
+        body_label.setObjectName("petStatePopupBody")
+        body_label.setTextFormat(Qt.TextFormat.PlainText)
+        body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body_label.setWordWrap(True)
+        body_label.setFixedWidth(PET_STATE_POPUP_WIDTH - 36)
+        body_label.setFont(_rounded_chinese_font(11, QFont.Weight.Medium))
+
+        bubble_layout = QVBoxLayout()
+        bubble_layout.setContentsMargins(18, 12, 18, 14)
+        bubble_layout.setSpacing(8)
+        bubble_layout.addWidget(title_label)
+        bubble_layout.addWidget(body_label)
+        bubble.setLayout(bubble_layout)
+
+        popup_layout = QVBoxLayout()
+        popup_layout.setContentsMargins(0, 0, 0, 0)
+        popup_layout.setSpacing(0)
+        popup_layout.addWidget(bubble)
+        popup.setLayout(popup_layout)
+        popup.add_drag_handle(title_label)
+        popup.add_drag_handle(bubble)
+
+        self.pet_state_popup = popup
+        self.pet_state_popup_body_label = body_label
+        return popup
+
+    def _update_pet_state_popup(self, snapshot: dict[str, Any] | None = None) -> None:
+        body_label = getattr(self, "pet_state_popup_body_label", None)
+        if body_label is None:
+            return
+        if snapshot is None:
+            snapshot = self._pet_state_snapshot_for_display()
+        body_label.setText(_format_pet_state_snapshot_for_ui(snapshot))
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is not None:
+            popup.adjustSize()
+
+    def _pet_state_snapshot_for_display(self) -> dict[str, Any]:
+        store = getattr(self, "pet_state_store", None)
+        if store is None:
+            return {"state": None, "error": "pet_state_store unavailable"}
+        try:
+            return store.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("PetState", "读取桌宠状态快照失败", {"error": str(exc)})
+            return {"state": None, "error": str(exc)}
+
+    def _pet_state_popup_position(self, popup_size: QSize) -> QPoint:
+        cursor = QCursor.pos()
+        screen = QApplication.screenAt(cursor) or QApplication.primaryScreen()
+        if screen is None:
+            return cursor + QPoint(12, 12)
+        geometry = screen.availableGeometry()
+        margin = PET_STATE_POPUP_SCREEN_MARGIN
+        min_x = geometry.left() + margin
+        min_y = geometry.top() + margin
+        max_x = max(min_x, geometry.right() - popup_size.width() - margin)
+        max_y = max(min_y, geometry.bottom() - popup_size.height() - margin)
+        pet_rect = self.frameGeometry()
+        target_y = min(max(cursor.y(), min_y), max_y)
+        right_x = pet_rect.right() + margin
+        left_x = pet_rect.left() - popup_size.width() - margin
+        if right_x <= max_x:
+            return QPoint(right_x, target_y)
+        if left_x >= min_x:
+            return QPoint(left_x, target_y)
+        desired = cursor + QPoint(12, 12)
+        x = min(max(desired.x(), min_x), max_x)
+        y = min(max(desired.y(), min_y), max_y)
+        return QPoint(x, y)
+
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self._layout_stage()
@@ -1048,6 +1314,7 @@ class PetWindow(QWidget):
             QTimer.singleShot(100, self._raise_foreground_controls)
         self._refresh_tray_menu()
         self._schedule_native_topmost_sync()
+        self._maybe_show_pinned_pet_state_popup()
         if getattr(self, "memory_failure_dialog_pending_message", ""):
             QTimer.singleShot(0, self._show_pending_memory_failure_dialog)
 
@@ -2627,11 +2894,15 @@ class PetWindow(QWidget):
         self.tray_icon.show()
 
     def _build_menu(self) -> QMenu:
+        pet_state_enabled = self._pet_state_behavior_enabled()
         return build_pet_tray_menu(
             self,
             chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
             free_access_checked=self.free_access_enabled,
             always_on_top_checked=self.always_on_top_enabled,
+            pet_state_popup_checked=pet_state_enabled
+            and bool(getattr(self, "pet_state_popup_pinned", False)),
+            pet_state_popup_enabled=pet_state_enabled,
             interactions_enabled=not getattr(self, "startup_initializing", False),
             window_visible=self.isVisible(),
             on_hide=self._hide_to_tray,
@@ -2639,6 +2910,11 @@ class PetWindow(QWidget):
             on_toggle_chinese_subtitles=self._toggle_chinese_subtitles,
             on_toggle_free_access=self._toggle_free_access,
             on_toggle_always_on_top=self._toggle_always_on_top,
+            on_toggle_pet_state_popup=getattr(
+                self,
+                "_toggle_pet_state_popup_pinned",
+                lambda _checked: None,
+            ),
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
             on_show_settings=self.show_settings,
@@ -2959,6 +3235,12 @@ class PetWindow(QWidget):
             store=getattr(self, "visual_observation_store", None),
             has_current_image=manual_observation is not None,
         )
+        pet_state_behavior_enabled = getattr(self, "_pet_state_behavior_enabled", None)
+        if callable(pet_state_behavior_enabled) and pet_state_behavior_enabled():
+            request_messages = _add_pet_state_context_to_messages(
+                request_messages,
+                getattr(self, "pet_state_store", None),
+            )
         # 注入运行时事件上下文：与视觉上下文同样只进 request_messages，不写入 self.messages、不持久化。
         runtime_event_queue = getattr(self, "runtime_event_queue", None)
         if runtime_event_queue is not None:
@@ -3119,6 +3401,9 @@ class PetWindow(QWidget):
             self._log_interaction_stage("screen_observation_followup_queued")
             return
         reply = result.reply
+        apply_pet_state_delta = getattr(self, "_apply_reply_pet_state_delta", None)
+        if callable(apply_pet_state_delta):
+            apply_pet_state_delta(reply)
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
@@ -3574,10 +3859,23 @@ class PetWindow(QWidget):
             },
         )
         if record_history:
+            apply_pet_state_delta = getattr(self, "_apply_reply_pet_state_delta", None)
+            if callable(apply_pet_state_delta):
+                apply_pet_state_delta(reply)
             self.messages.append({"role": "assistant", "content": reply.text})
             self._record_assistant_reply_history(reply, _debug=result._debug)
         self._show_reply_segments(reply.segments)
         self._apply_pending_action_from_result(result)
+
+    def _apply_reply_pet_state_delta(self, reply: ChatReply) -> None:
+        delta = getattr(reply, "pet_state_delta", None)
+        if not isinstance(delta, dict) or not delta:
+            return
+        debug_log(
+            "PetState",
+            "最终回复携带 pet_state_delta，仅记录为可选审计信息；未作为正式写路径落盘",
+            {"delta": _normalize_reply_pet_state_delta(delta)},
+        )
 
     def _apply_pending_action_from_result(self, result: AgentResult) -> None:
         for action in result.actions:
@@ -4000,6 +4298,7 @@ class PetWindow(QWidget):
         if self.worker_thread is not None or self.active_reminder_id is not None or self.active_event_type:
             return
 
+        event = self._event_with_pet_state_context(event)
         self._begin_interaction(event.type)
         self._log_interaction_stage(
             "event_worker_start",
@@ -4036,6 +4335,28 @@ class PetWindow(QWidget):
             on_finished=self._cleanup_worker,
         )
         self._log_interaction_stage("event_worker_started")
+
+    def _event_with_pet_state_context(self, event: AgentEvent) -> AgentEvent:
+        if not self._pet_state_behavior_enabled():
+            return event
+        store = getattr(self, "pet_state_store", None)
+        if store is None:
+            return event
+        try:
+            snapshot = store.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("PetState", "注入主动事件桌宠状态失败，已跳过", {"error": str(exc)})
+            return event
+        payload = dict(event.payload)
+        payload["pet_state_context"] = {
+            "snapshot": snapshot,
+            "reply_contract": (
+                "情绪模块已启用；长期状态正式写路径是 pet_state_update 或宿主内部 PetStateStore.update。"
+                "最终回复可以省略 pet_state_delta；如果携带，它只作为可选建议/debug/审计信息，不能替代正式写路径。"
+                "状态 delta 只能写 mood、affect、evidence，不要写 display。"
+            ),
+        }
+        return AgentEvent(type=event.type, payload=payload)
 
     @Slot(object)
     def _handle_event_reply(self, result: AgentResult) -> None:
@@ -4441,6 +4762,7 @@ class PetWindow(QWidget):
         self._prepare_backchannel_audio_cache()
         self.tool_registry = services.tool_registry
         self.free_access_enabled = self.tool_registry.free_access_enabled
+        self._register_pet_state_tools_for_current_store()
         self.agent_runtime.tools = services.tool_registry
         self.agent_runtime.set_prompt_patches(services.plugin_manager.prompt_patches)
         self.agent_runtime.set_context_providers(services.plugin_manager.context_providers)
@@ -4961,6 +5283,9 @@ class PetWindow(QWidget):
         self.hidden_to_tray = True
         self.pet_hidden_at = time.perf_counter()
         self.emit_runtime_event(PET_HIDDEN, source="tray")
+        hide_pet_state_popup = getattr(self, "hide_pet_state_popup", None)
+        if callable(hide_pet_state_popup):
+            hide_pet_state_popup()
         self.hide()
         self._refresh_tray_menu()
 
@@ -5104,6 +5429,12 @@ class PetWindow(QWidget):
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
+            character_behavior_settings=getattr(
+                self,
+                "character_behavior_settings",
+                CharacterBehaviorSettings(),
+            ),
+            pet_state_popup_pinned=bool(getattr(self, "pet_state_popup_pinned", False)),
             runtime_loop_settings=getattr(
                 self.agent_runtime,
                 "runtime_loop_settings",
@@ -5213,6 +5544,25 @@ class PetWindow(QWidget):
                 "result_proactive_care_settings",
                 None,
             )
+        result_character_behavior_settings = getattr(
+            dialog,
+            "result_character_behavior_settings",
+            getattr(self, "character_behavior_settings", CharacterBehaviorSettings()),
+        )
+        if not isinstance(result_character_behavior_settings, CharacterBehaviorSettings):
+            result_character_behavior_settings = getattr(
+                self,
+                "character_behavior_settings",
+                CharacterBehaviorSettings(),
+            )
+        result_character_behavior_settings = result_character_behavior_settings.normalized()
+        result_pet_state_popup_pinned = bool(
+            getattr(
+                dialog,
+                "result_pet_state_popup_pinned",
+                getattr(self, "pet_state_popup_pinned", False),
+            )
+        )
         result_control_panel_width = getattr(
             dialog, "result_control_panel_width", self.control_panel_width
         )
@@ -5331,9 +5681,17 @@ class PetWindow(QWidget):
                     "portrait_scale_percent": dialog.result_portrait_scale_percent,
                     "subtitle_typing_interval_ms": result_subtitle_typing_interval_ms,
                     "reply_segment_pause_ms": result_reply_segment_pause_ms,
+                    "pet_state_popup_pinned": result_pet_state_popup_pinned,
                 },
             )
             self.settings_service.save_bubble_settings(result_bubble_settings)
+            save_character_behavior_settings = getattr(
+                self.settings_service,
+                "save_character_behavior_settings",
+                None,
+            )
+            if callable(save_character_behavior_settings):
+                save_character_behavior_settings(result_character_behavior_settings)
             save_backchannel_settings = getattr(
                 self.settings_service,
                 "save_backchannel_settings",
@@ -5470,6 +5828,19 @@ class PetWindow(QWidget):
             apply_backchannel_settings(result_backchannel_settings)
         else:
             self.backchannel_settings = result_backchannel_settings
+        apply_character_behavior_settings = getattr(
+            self,
+            "_apply_character_behavior_settings",
+            None,
+        )
+        if callable(apply_character_behavior_settings):
+            apply_character_behavior_settings(
+                result_character_behavior_settings,
+                pet_state_popup_pinned=result_pet_state_popup_pinned,
+            )
+        else:
+            self.character_behavior_settings = result_character_behavior_settings
+            self.pet_state_popup_pinned = result_pet_state_popup_pinned
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
@@ -5603,6 +5974,31 @@ class PetWindow(QWidget):
                 continue
             _configure_secondary_window(window, keep_on_top=keep_on_top)
             _present_secondary_window(window)
+
+    @Slot(bool)
+    def _toggle_pet_state_popup_pinned(self, checked: bool) -> None:
+        if not self._pet_state_behavior_enabled():
+            self.hide_pet_state_popup()
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.setContextMenu(self._build_menu())
+            return
+        if checked == self.pet_state_popup_pinned:
+            return
+        previous_enabled = self.pet_state_popup_pinned
+        self.pet_state_popup_pinned = checked
+        try:
+            self._save_system_config_values("ui", {"pet_state_popup_pinned": checked})
+        except OSError as exc:
+            self.pet_state_popup_pinned = previous_enabled
+            show_themed_warning(self, "保存失败", f"无法保存桌宠状态显示设置：{exc}")
+            return
+
+        if checked:
+            self.show_pet_state_popup()
+        else:
+            self.hide_pet_state_popup()
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setContextMenu(self._build_menu())
 
     def _create_tts_provider_from_settings(
         self,
@@ -5902,6 +6298,13 @@ class PetWindow(QWidget):
             return _parse_bool(system_values.get("always_on_top_enabled"), default=False)
         return False
 
+    def _load_pet_state_popup_pinned(self) -> bool:
+        """从 system_config.yaml 加载桌宠状态气泡常显设置，默认关闭。"""
+        system_values = self._load_system_config_values("ui")
+        if "pet_state_popup_pinned" in system_values:
+            return _parse_bool(system_values.get("pet_state_popup_pinned"), default=False)
+        return False
+
     def _load_system_config_values(self, section: str) -> dict[str, Any]:
         return self.settings_service.load_system_values(section)
 
@@ -6031,14 +6434,36 @@ class PetWindow(QWidget):
         """兼容旧调用：设置窗口也走统一副窗口置顶压低逻辑。"""
         self._set_secondary_windows_topmost_suppressed(suppressed)
 
+    def _pet_state_popup_window_flags(self) -> Qt.WindowType:
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        if self.always_on_top_enabled:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        return flags
+
     def _apply_window_flags(self) -> None:
         was_visible = self.isVisible()
         self.setWindowFlags(self._window_flags())
-        # 单窗口重构后气泡/输入栏为子控件，无独立置顶标志需同步。
+        apply_pet_state_flags = getattr(self, "_apply_pet_state_popup_window_flags", None)
+        if callable(apply_pet_state_flags):
+            apply_pet_state_flags()
         if was_visible:
             self.show()
             self._schedule_native_topmost_sync()
             QTimer.singleShot(0, self._raise_foreground_controls)
+
+    def _apply_pet_state_popup_window_flags(self) -> None:
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is None:
+            return
+        was_visible = popup.isVisible()
+        popup.setWindowFlags(self._pet_state_popup_window_flags())
+        if was_visible:
+            popup.show()
+            popup.raise_()
 
     def _schedule_native_topmost_sync(self) -> None:
         if sys.platform not in {"win32", "darwin"}:
@@ -6085,8 +6510,11 @@ class PetWindow(QWidget):
                 debug_log("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
 
     def _topmost_sync_windows(self):
-        # 单窗口重构后只有主窗口一个顶层窗口，置顶仅作用于它。
-        return [self]
+        windows = [self]
+        popup = getattr(self, "pet_state_popup", None)
+        if popup is not None and popup.isVisible():
+            windows.append(popup)
+        return windows
 
     def _stack_renderer_overlay_below(self) -> None:
         manager = getattr(self, "renderer_manager", None)
@@ -6210,6 +6638,8 @@ class PetWindow(QWidget):
             self.history_window.set_theme_settings(self.theme_settings)
         if self.runtime_log_window is not None:
             self.runtime_log_window.set_theme_settings(self.theme_settings)
+        if self.pet_state_popup is not None:
+            self.pet_state_popup.setStyleSheet(pet_window_stylesheet(self.theme_settings))
         if hasattr(self, "tray_icon"):
             self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
@@ -6400,6 +6830,8 @@ class PetWindow(QWidget):
         self.runtime_event_log = self._create_runtime_event_log(profile)
         self.pet_hidden_at = None
         self.visual_observation_store = self._create_visual_observation_store(profile)
+        self._connect_pet_state_store(self._create_pet_state_store(profile))
+        self._register_pet_state_tools_for_current_store()
         if self.history_window is not None:
             self.history_window.set_history_store(self.history_store, profile.display_name)
 
@@ -6433,6 +6865,176 @@ class PetWindow(QWidget):
         from app.core.bootstrap import create_visual_observation_store
 
         return create_visual_observation_store(self.base_dir, profile)
+
+    def _create_pet_state_store(self, profile: CharacterProfile) -> PetStateStore:
+        from app.core.bootstrap import create_pet_state_store
+
+        return create_pet_state_store(self.base_dir, profile)
+
+
+_PET_STATE_MOOD_LABELS = {
+    "neutral": "平静",
+    "happy": "开心",
+    "sad": "低落",
+    "angry": "不满",
+    "shy": "害羞",
+    "anxious": "不安",
+    "curious": "好奇",
+    "tired": "疲惫",
+}
+
+_PET_STATE_TRIGGER_LABELS = {
+    "startup": "启动",
+    "user_message": "用户消息",
+    "assistant_reply": "模型回复",
+    "runtime_event": "运行事件",
+    "tool_result": "工具结果",
+    "harness": "本地裁决",
+}
+
+_PET_STATE_DECISION_LABELS = {
+    "applied": "已应用",
+    "revised": "已修正",
+    "rejected": "已拒绝",
+    "model_forced": "模型强制",
+    "noop": "无变化",
+}
+
+_PET_STATE_FIELD_LABELS = {
+    "mood": "心情",
+    "affect.valence": "愉悦度",
+    "affect.arousal": "活跃度",
+    "affect.confidence": "置信度",
+    "evidence.last_user_signal": "判断信号",
+    "evidence.last_trigger": "触发来源",
+    "evidence.reason": "判断依据",
+}
+
+
+def _format_pet_state_snapshot_for_ui(snapshot: dict[str, Any] | None) -> str:
+    if not isinstance(snapshot, dict):
+        return "状态：不可用"
+    state = snapshot.get("state")
+    if not isinstance(state, dict):
+        error = _display_value(snapshot.get("error"))
+        return f"状态：不可用\n错误：{error}"
+
+    affect = state.get("affect") if isinstance(state.get("affect"), dict) else {}
+    evidence = state.get("evidence") if isinstance(state.get("evidence"), dict) else {}
+    display = state.get("display") if isinstance(state.get("display"), dict) else {}
+    mood = str(state.get("mood") or "").strip()
+    mood_label = _display_value(display.get("label") or _PET_STATE_MOOD_LABELS.get(mood) or mood)
+    mood_value = f"{mood_label}（{mood}）" if mood else mood_label
+    lines = [
+        f"心情：{mood_value}",
+        f"愉悦度：{_format_pet_state_number(affect.get('valence'))}",
+        f"活跃度：{_format_pet_state_number(affect.get('arousal'))}",
+        f"置信度：{_format_pet_state_number(affect.get('confidence'))}",
+        f"判断信号：{_display_value(evidence.get('last_user_signal'))}",
+        f"触发来源：{_friendly_pet_state_trigger(evidence.get('last_trigger'))}",
+        f"判断依据：{_display_value(evidence.get('reason'))}",
+        f"待机表情：{_display_value(display.get('idle_expression_hint'))}",
+        f"更新时间：{_format_pet_state_time(state.get('updated_at'))}",
+    ]
+
+    decision = snapshot.get("last_harness_decision")
+    model_delta = snapshot.get("last_model_delta")
+    lines.append("")
+    if isinstance(decision, dict):
+        lines.extend(
+            [
+                f"本地裁决：{_friendly_pet_state_decision(decision.get('status'))}",
+                f"裁决说明：{_display_value(decision.get('reason'))}",
+                f"修正字段：{_friendly_pet_state_fields(decision.get('revised_fields'))}",
+                f"拒绝字段：{_friendly_pet_state_fields(decision.get('rejected_fields'))}",
+            ]
+        )
+    else:
+        lines.append("本地裁决：暂无")
+    if isinstance(model_delta, dict):
+        forced = "是" if bool(model_delta.get("forced")) else "否"
+        lines.extend(
+            [
+                f"最近提交：{_format_pet_state_time(model_delta.get('submitted_at'))}",
+                f"强制请求：{forced}",
+                f"强制字段：{_friendly_pet_state_fields(model_delta.get('force_fields'))}",
+            ]
+        )
+    else:
+        lines.append("最近提交：暂无")
+    return "\n".join(lines)
+
+
+def _normalize_reply_pet_state_delta(delta: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    if "mood" in delta:
+        normalized["mood"] = delta.get("mood")
+    affect = delta.get("affect")
+    if isinstance(affect, dict):
+        normalized["affect"] = {
+            key: affect.get(key)
+            for key in ("valence", "arousal", "confidence")
+            if key in affect
+        }
+    evidence = delta.get("evidence")
+    if isinstance(evidence, dict):
+        normalized["evidence"] = {
+            key: evidence.get(key)
+            for key in ("last_user_signal", "last_trigger", "reason")
+            if key in evidence
+        }
+    else:
+        normalized["evidence"] = {}
+    normalized["evidence"].setdefault("last_trigger", "assistant_reply")
+    return normalized
+
+
+def _display_value(value: object, fallback: str = "暂无") -> str:
+    text = str(value or "").strip()
+    return text if text else fallback
+
+
+def _format_pet_state_number(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "暂无"
+    return f"{number:.2f}"
+
+
+def _format_pet_state_time(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "暂无"
+    return text.replace("T", " ")
+
+
+def _friendly_pet_state_trigger(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "暂无"
+    label = _PET_STATE_TRIGGER_LABELS.get(text)
+    return f"{label}（{text}）" if label else text
+
+
+def _friendly_pet_state_decision(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "暂无"
+    label = _PET_STATE_DECISION_LABELS.get(text)
+    return f"{label}（{text}）" if label else text
+
+
+def _friendly_pet_state_fields(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "无"
+    labels: list[str] = []
+    for item in value:
+        field_name = str(item or "").strip()
+        if not field_name:
+            continue
+        labels.append(_PET_STATE_FIELD_LABELS.get(field_name, field_name))
+    return "、".join(labels) if labels else "无"
 
 
 def _build_screen_observation_disabled_result() -> AgentResult:
@@ -6499,6 +7101,22 @@ def _add_visual_context_to_messages(
     if context_message is None:
         return messages
 
+    return [*messages[:-1], context_message, messages[-1]]
+
+
+def _add_pet_state_context_to_messages(
+    messages: list[dict[str, Any]],
+    store: PetStateStore | None,
+) -> list[dict[str, Any]]:
+    if store is None or not messages:
+        return messages
+    try:
+        context_message = build_pet_state_context_message(store.snapshot())
+    except Exception as exc:  # noqa: BLE001
+        debug_log("PetState", "注入桌宠状态上下文失败，已跳过", {"error": str(exc)})
+        return messages
+    if context_message is None:
+        return messages
     return [*messages[:-1], context_message, messages[-1]]
 
 

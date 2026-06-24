@@ -2,6 +2,7 @@
 
 from app.ui.settings.pages.sections import (
     ApiSettingsPage,
+    CharacterBehaviorSettingsPage,
     CharacterSettingsPage,
     MemorySettingsPage,
     PluginSettingsPage,
@@ -14,6 +15,7 @@ from app.ui.settings.pages.sections import (
 
 __all__ = [
     "ApiSettingsPage",
+    "CharacterBehaviorSettingsPage",
     "CharacterSettingsPage",
     "MemorySettingsPage",
     "PluginSettingsPage",

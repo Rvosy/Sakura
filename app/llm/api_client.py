@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
-from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
+from app.llm.chat_reply import ChatReply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.core.debug_log import debug_log, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
@@ -195,13 +195,16 @@ class OpenAICompatibleClient:
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
         *,
+        require_pet_state_delta: bool = False,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
     ) -> ChatReply:
+        _ = require_pet_state_delta
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
         temperature, extra_params = self.resolve_dialogue_params()
+        full_system_prompt = f"{system_prompt.strip()}\n\n{segmented_reply_instruction}"
         content = self.complete_raw(
-            f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
+            full_system_prompt,
             messages,
             temperature=temperature,
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
@@ -211,7 +214,8 @@ class OpenAICompatibleClient:
         )
         check_cancelled(cancel_checker)
 
-        reply = sanitize_reply_tones(parse_chat_reply(content), reply_tones)
+        parsed = parse_chat_reply_result(content)
+        reply = sanitize_reply_tones(parsed.reply, reply_tones)
         debug_log(
             "API",
             "聊天回复解析完成",

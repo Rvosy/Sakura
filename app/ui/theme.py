@@ -214,6 +214,21 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid {rgba(theme.border_color, 170)};
     border-radius: 20px;
 }}
+#petStatePopupBubble {{
+    background: {rgba(theme.bubble_background_color, 238)};
+    border: 1px solid {rgba(theme.border_color, 170)};
+    border-radius: 20px;
+}}
+#petStatePopupTitle {{
+    color: {theme.primary_color};
+    font-size: 13px;
+    font-weight: 700;
+}}
+#petStatePopupBody {{
+    color: {theme.text_color};
+    font-size: 13px;
+    line-height: 1.35;
+}}
 #speakerName {{
     color: {theme.primary_color};
     font-size: 13px;

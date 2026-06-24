@@ -13,16 +13,19 @@ def build_pet_tray_menu(
     chinese_subtitles_checked: bool,
     free_access_checked: bool,
     always_on_top_checked: bool,
+    pet_state_popup_checked: bool,
     on_hide: Callable[[], None],
     on_show: Callable[[], None],
     on_toggle_chinese_subtitles: Callable[[bool], None],
     on_toggle_free_access: Callable[[bool], None],
     on_toggle_always_on_top: Callable[[bool], None],
+    on_toggle_pet_state_popup: Callable[[bool], None],
     on_show_history: Callable[[], None],
     on_show_runtime_log: Callable[[], None],
     on_show_settings: Callable[[], None],
     window_visible: bool = True,
     interactions_enabled: bool = True,
+    pet_state_popup_enabled: bool = True,
 ) -> QMenu:
     """构建桌宠托盘和右键菜单。"""
 
@@ -64,6 +67,13 @@ def build_pet_tray_menu(
     menu.addAction(always_on_top_action)
 
     menu.addSeparator()
+
+    pet_state_action = QAction("桌宠状态", parent)
+    pet_state_action.setCheckable(True)
+    pet_state_action.setChecked(pet_state_popup_checked)
+    pet_state_action.setEnabled(interactions_enabled and pet_state_popup_enabled)
+    pet_state_action.triggered.connect(on_toggle_pet_state_popup)
+    menu.addAction(pet_state_action)
 
     history_action = QAction("历史记录", parent)
     history_action.setEnabled(interactions_enabled)

@@ -304,3 +304,55 @@ def test_search_tools_activates_browser_tool_group() -> None:
     }
     assert "browser_tool" not in first_tool_names
     assert "browser_tool" in second_tool_names
+
+
+def test_search_tools_does_not_activate_pet_state_when_disabled() -> None:
+    registry = ToolRegistry(
+        [
+            Tool(
+                name="pet_state_get",
+                description="读取 Sakura 当前心情",
+                parameters={"type": "object", "properties": {}, "required": []},
+                handler=lambda _arguments: {"ok": True},
+                group="pet_state",
+            ),
+            Tool(
+                name="pet_state_update",
+                description="更新 Sakura 当前心情",
+                parameters={"type": "object", "properties": {}, "required": []},
+                handler=lambda _arguments: {"ok": True},
+                group="pet_state",
+            ),
+        ]
+    )
+    registry.register(
+        Tool(
+            name="search_tools",
+            description="Search tools",
+            parameters={
+                "type": "object",
+                "properties": {"keyword": {"type": "string"}},
+                "required": ["keyword"],
+            },
+            handler=registry.search_tools,
+        )
+    )
+    client = NativeFakeClient(
+        [
+            _tool_turn("call_search", "search_tools", {"keyword": "心情"}),
+            _final_turn("没有启用心情机制。"),
+        ]
+    )
+    runtime = AgentRuntime(client, "system", tools=registry)  # type: ignore[arg-type]
+
+    runtime.handle_user_message([{"role": "user", "content": "心情如何？"}])
+
+    first_tool_result = client.calls[1]["messages"][-1]["content"]
+    assert "pet_state_get" not in first_tool_result
+    assert "pet_state_update" not in first_tool_result
+    second_tool_names = {
+        tool["function"]["name"]
+        for tool in client.calls[1]["kwargs"]["tools"]
+    }
+    assert "pet_state_get" not in second_tool_names
+    assert "pet_state_update" not in second_tool_names

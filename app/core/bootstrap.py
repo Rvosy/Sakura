@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry, create_builtin_tool_registry
+from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry
+from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
 from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.memory_curator import MemoryCurator, MemoryCurationState
@@ -38,6 +39,7 @@ from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
+from app.pet_state.store import PetStateStore
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -156,10 +158,12 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     )
     memory_store.preload(wait=False)
     reminder_store = ReminderStore(StoragePaths(base_dir).reminders_store())
+    pet_state_store = create_pet_state_store(base_dir, character_profile)
     tool_registry = create_builtin_tool_registry(
         base_dir,
         memory_store,
         reminder_store,
+        pet_state_store,
     )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
@@ -238,6 +242,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             reminder_store=reminder_store,
             history_store=history_store,
             visual_observation_store=visual_observation_store,
+            pet_state_store=pet_state_store,
             runtime_event_log=runtime_event_log,
         ),
         resource_registry=resource_registry,
@@ -302,6 +307,7 @@ def build_deferred_services(
             base_dir,
             context.memory_store,
             context.reminder_store,
+            context.pet_state_store,
         )
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()
@@ -405,6 +411,11 @@ def create_visual_observation_store(
 ) -> VisualObservationStore:
     visual_path = StoragePaths(base_dir).visual_observations_for(profile.id)
     return VisualObservationStore(visual_path)
+
+
+def create_pet_state_store(base_dir: Path, profile: CharacterProfile) -> PetStateStore:
+    state_path = StoragePaths(base_dir).pet_state_for(profile.id)
+    return PetStateStore(state_path)
 
 
 def _client_for_explicit_slot(

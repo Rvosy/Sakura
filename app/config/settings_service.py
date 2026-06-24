@@ -71,6 +71,16 @@ class StartupSettings:
     launch_at_login: bool = False
 
 
+@dataclass(frozen=True)
+class CharacterBehaviorSettings:
+    """角色行为配置。"""
+
+    mood_enabled: bool = False
+
+    def normalized(self) -> "CharacterBehaviorSettings":
+        return CharacterBehaviorSettings(mood_enabled=bool(self.mood_enabled))
+
+
 BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS = 1
 BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS = 120
 BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS = 5
@@ -627,6 +637,19 @@ class AppSettingsService:
     def save_proactive_care_settings(self, settings: ScreenAwarenessSettings) -> None:
         """兼容旧调用点；新代码请使用 save_screen_awareness_settings。"""
         self.save_screen_awareness_settings(settings)
+
+    def load_character_behavior_settings(self) -> CharacterBehaviorSettings:
+        behavior = self._system_section("character_behavior")
+        return CharacterBehaviorSettings(
+            mood_enabled=_bool_value(behavior.get("mood_enabled"), False),
+        ).normalized()
+
+    def save_character_behavior_settings(self, settings: CharacterBehaviorSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "character_behavior",
+            {"mood_enabled": bool(normalized.mood_enabled)},
+        )
 
     def load_bubble_settings(self) -> BubbleSettings:
         ui = self._system_section("ui")

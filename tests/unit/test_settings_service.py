@@ -10,6 +10,7 @@ from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import (
     AppSettingsService,
     BubbleSettings,
+    CharacterBehaviorSettings,
     DebugLogSettings,
     StartupSettings,
 )
@@ -235,6 +236,33 @@ def test_settings_service_loads_and_saves_startup_settings() -> None:
     assert service.load_startup_settings() == StartupSettings(launch_at_login=True)
     system = load_yaml_mapping(service.system_config_path)
     assert system["startup"]["launch_at_login"] is True
+
+
+def test_settings_service_loads_and_saves_character_behavior_settings() -> None:
+    root = _runtime_root("yaml_character_behavior")
+    service = AppSettingsService(root)
+
+    assert service.load_character_behavior_settings() == CharacterBehaviorSettings(
+        mood_enabled=False
+    )
+
+    service.save_character_behavior_settings(CharacterBehaviorSettings(mood_enabled=True))
+
+    assert service.load_character_behavior_settings() == CharacterBehaviorSettings(
+        mood_enabled=True
+    )
+    system = load_yaml_mapping(service.system_config_path)
+    assert system["character_behavior"]["mood_enabled"] is True
+
+
+def test_settings_service_character_behavior_invalid_values_fall_back() -> None:
+    root = _runtime_root("yaml_character_behavior_invalid")
+    service = AppSettingsService(root)
+    service.save_system_values("character_behavior", {"mood_enabled": "sometimes"})
+
+    assert service.load_character_behavior_settings() == CharacterBehaviorSettings(
+        mood_enabled=False
+    )
 
 
 def test_settings_service_loads_and_saves_bubble_settings() -> None:
