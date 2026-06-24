@@ -720,12 +720,21 @@ class AgentRuntime:
                         )
                     )
                     continue
-                prepared = self.tools.prepare_or_execute(
-                    call.name,
-                    execution_arguments,
-                    _tool_call_reason(call),
-                    tool_call_id=call.id,
-                )
+                tool = self.tools.get(call.name)
+                if tool is not None and tool.group == "pet_state" and not self.pet_state_enabled:
+                    prepared = ToolExecutionResult(
+                        tool_name=call.name,
+                        success=False,
+                        content="",
+                        error="心情机制未启用，pet_state 工具不可用。",
+                    )
+                else:
+                    prepared = self.tools.prepare_or_execute(
+                        call.name,
+                        execution_arguments,
+                        _tool_call_reason(call),
+                        tool_call_id=call.id,
+                    )
                 check_cancelled(cancel_checker)
                 if isinstance(prepared, PendingToolAction):
                     prepared = prepared.with_continuation_messages(

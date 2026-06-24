@@ -243,6 +243,71 @@ class TestToolSystemPrompt:
         assert "pet_state_get" in tool_names
         assert "pet_state_update" in tool_names
 
+    def test_pet_state_tool_call_is_rejected_when_disabled(self) -> None:
+        executed: list[dict[str, object]] = []
+        client = _dummy_api_client()
+        arguments = {"delta": {"mood": "happy"}}
+        arguments_json = json.dumps(arguments, ensure_ascii=False)
+        client.complete_with_tools.side_effect = [
+            MagicMock(
+                content="",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_pet_state",
+                        name="pet_state_update",
+                        arguments=arguments,
+                        arguments_json=arguments_json,
+                    )
+                ],
+                message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_pet_state",
+                            "type": "function",
+                            "function": {
+                                "name": "pet_state_update",
+                                "arguments": arguments_json,
+                            },
+                        }
+                    ],
+                },
+                runtime_context_role="system",
+            ),
+            MagicMock(
+                content=json.dumps(
+                    {"segments": [{"ja": "いいよ。", "zh": "好。", "tone": "中性"}]},
+                    ensure_ascii=False,
+                ),
+                tool_calls=[],
+                message={
+                    "role": "assistant",
+                    "content": json.dumps(
+                        {"segments": [{"ja": "いいよ。", "zh": "好。", "tone": "中性"}]},
+                        ensure_ascii=False,
+                    ),
+                },
+                runtime_context_role="system",
+            ),
+        ]
+        registry = ToolRegistry(
+            [
+                _dummy_tool(
+                    "pet_state_update",
+                    group="pet_state",
+                    handler=lambda args: executed.append(args) or {"ok": True},
+                )
+            ]
+        )
+        runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry)
+
+        result = runtime.handle_user_message([ChatMessage(role="user", content="心情如何？")])
+
+        assert executed == []
+        assert result.actions[0].payload["success"] is False
+        assert result.actions[0].payload["error"] == "心情机制未启用，pet_state 工具不可用。"
+
 
 class TestToolCallCountLimits:
     """验证 allowed_calls 计算逻辑"""
