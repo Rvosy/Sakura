@@ -4127,10 +4127,12 @@ def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, star
             self.kwargs = _kwargs
             self.completed = _SignalStub()
             self.applied = _SignalStub()
+            self.apply_requested = _SignalStub()
             self.cancelled = _SignalStub()
             self.failed = _SignalStub()
             self.layout_preview = _SignalStub()
             self.shutdown_called = False
+            self.apply_responses: list[tuple[str, bool, str]] = []
             instances.append(self)
 
         def start(self) -> bool:
@@ -4138,6 +4140,9 @@ def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, star
 
         def shutdown(self) -> None:
             self.shutdown_called = True
+
+        def resolve_apply_request(self, request_id: str, *, ok: bool, error: str = "") -> None:
+            self.apply_responses.append((request_id, ok, error))
 
     monkeypatch.setattr(pet_window_module, "TauriSettingsProcess", TauriSettingsProcessStub)
     return instances
@@ -5700,6 +5705,92 @@ def test_tauri_settings_process_routes_keep_open_result_to_applied() -> None:
     assert len(applied) == 1
     assert applied[0].screen_awareness.enabled is True
     assert completed == []
+
+
+def test_tauri_settings_process_apply_rpc_waits_for_host_ack() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+    from app.ui.theme import theme_to_mapping
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def write(self, data: bytes) -> int:
+            text = data.decode("utf-8")
+            self.writes.append(text)
+            return len(data)
+
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+    process._process = FakeQProcess()
+    applied: list[str] = []
+
+    def _ack(request_id: str, result: object) -> None:
+        applied.append(request_id)
+        process.resolve_apply_request(request_id, ok=True)
+
+    process.apply_requested.connect(_ack)
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+
+    process._handle_rpc_request(
+        json.dumps(
+            {
+                "id": "apply-1",
+                "method": "settings.apply",
+                "params": {"settings": payload},
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert applied == ["apply-1"]
+    assert '"ok": true' in process._process.writes[-1]
+
+
+def test_tauri_settings_apply_request_reports_save_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProcessStub:
+        def __init__(self) -> None:
+            self.responses: list[tuple[str, bool, str]] = []
+
+        def resolve_apply_request(self, request_id: str, *, ok: bool, error: str = "") -> None:
+            self.responses.append((request_id, ok, error))
+
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+    process = ProcessStub()
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.tauri_settings_process = process
+
+    window._on_tauri_settings_apply_requested("apply-1", _build_tauri_settings_result())
+
+    assert critical_messages
+    assert process.responses == [("apply-1", False, "Tauri 设置没有保存成功。")]
+    assert window.tauri_settings_process is process
 
 
 def test_tauri_settings_capability_allows_window_close() -> None:
@@ -12555,6 +12646,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _show_pyside_settings_dialog = pet_window_cls._show_pyside_settings_dialog
         _on_tauri_settings_completed = pet_window_cls._on_tauri_settings_completed
         _on_tauri_settings_applied = pet_window_cls._on_tauri_settings_applied
+        _on_tauri_settings_apply_requested = pet_window_cls._on_tauri_settings_apply_requested
         _apply_tauri_settings_result = pet_window_cls._apply_tauri_settings_result
         _on_tauri_settings_cancelled = pet_window_cls._on_tauri_settings_cancelled
         _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed

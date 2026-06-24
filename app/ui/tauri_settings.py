@@ -814,6 +814,7 @@ def _required_rpc_str(mapping: dict[str, Any], key: str) -> str:
 class TauriSettingsProcess(QObject):
     completed = Signal(object)
     applied = Signal(object)
+    apply_requested = Signal(str, object)
     cancelled = Signal()
     failed = Signal(str)
     layout_preview = Signal(object)
@@ -1088,6 +1089,9 @@ class TauriSettingsProcess(QObject):
         if not isinstance(params, dict):
             self._send_rpc_response(request_id, ok=False, error="RPC params 必须是对象。")
             return
+        if method == "settings.apply":
+            self._handle_apply_rpc(request_id, params)
+            return
         # 模型检测/连通性测试是阻塞网络调用，放到后台线程，避免冻结主程序 Qt 事件循环。
         if method in ("api.list_models", "api.test_connection"):
             self._dispatch_api_probe(request_id, method, params)
@@ -1205,6 +1209,26 @@ class TauriSettingsProcess(QObject):
         if method.startswith("character."):
             return dispatch_tauri_character_rpc(self.base_dir, method, params)
         raise ValueError(f"未知 Tauri RPC 方法：{method}")
+
+    def _handle_apply_rpc(self, request_id: str, params: dict[str, Any]) -> None:
+        raw_settings = params.get("settings")
+        if not isinstance(raw_settings, dict):
+            self._send_rpc_response(request_id, ok=False, error="RPC settings 必须是对象。")
+            return
+        try:
+            result = parse_tauri_settings_payload(raw_settings, expected_nonce=self._nonce)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+        self.apply_requested.emit(request_id, result)
+
+    def resolve_apply_request(self, request_id: str, *, ok: bool, error: str = "") -> None:
+        self._send_rpc_response(
+            request_id,
+            ok=ok,
+            result={"applied": True} if ok else None,
+            error=error,
+        )
 
     def _send_rpc_response(
         self,

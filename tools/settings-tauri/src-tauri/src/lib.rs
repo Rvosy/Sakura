@@ -109,7 +109,11 @@ fn load_request(state: State<'_, AppState>) -> Result<Value, String> {
 ///
 /// `keep_open` distinguishes 应用 (apply: persist, window stays open) from
 /// 保存 (save: persist, window closes). Python routes on the `keep_open` flag.
-fn write_settings_result(settings: Value, state: &AppState, keep_open: bool) -> Result<(), String> {
+fn settings_result_payload(
+    settings: Value,
+    state: &AppState,
+    keep_open: bool,
+) -> Result<Value, String> {
     let nonce = state
         .request
         .get("nonce")
@@ -123,8 +127,12 @@ fn write_settings_result(settings: Value, state: &AppState, keep_open: bool) -> 
     payload.insert("version".to_string(), Value::from(PROTOCOL_VERSION));
     payload.insert("nonce".to_string(), Value::from(nonce));
     payload.insert("keep_open".to_string(), Value::from(keep_open));
+    Ok(Value::Object(payload))
+}
 
-    let line = serde_json::to_string(&Value::Object(payload)).map_err(|error| error.to_string())?;
+fn write_settings_result(settings: Value, state: &AppState, keep_open: bool) -> Result<(), String> {
+    let payload = settings_result_payload(settings, state, keep_open)?;
+    let line = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{RESULT_MARKER}{line}").map_err(|error| error.to_string())?;
     out.flush().map_err(|error| error.to_string())
@@ -142,8 +150,9 @@ fn save_settings(
 
 /// Persist the settings but keep the window open (「应用」按钮)。
 #[tauri::command]
-fn apply_settings(settings: Value, state: State<'_, AppState>) -> Result<(), String> {
-    write_settings_result(settings, &state, true)
+fn apply_settings(settings: Value, state: State<'_, AppState>) -> Result<Value, String> {
+    let payload = settings_result_payload(settings, &state, true)?;
+    state.rpc.call("settings.apply", json!({ "settings": payload }))
 }
 
 /// Stream a live layout preview to the host without closing the window.

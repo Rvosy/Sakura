@@ -5304,6 +5304,7 @@ class PetWindow(QWidget):
         self._tauri_initial_tts_settings = tts_settings
         process.completed.connect(self._on_tauri_settings_completed)
         process.applied.connect(self._on_tauri_settings_applied)
+        process.apply_requested.connect(self._on_tauri_settings_apply_requested)
         process.cancelled.connect(self._on_tauri_settings_cancelled)
         process.failed.connect(self._on_tauri_settings_failed)
         process.layout_preview.connect(self._on_tauri_settings_layout_preview)
@@ -5348,10 +5349,24 @@ class PetWindow(QWidget):
         # 「应用」：持久化并即时生效，但窗口保持打开。
         self._apply_tauri_settings_result(result, final=False)
 
-    def _apply_tauri_settings_result(self, result: object, *, final: bool) -> None:
+    @Slot(str, object)
+    def _on_tauri_settings_apply_requested(self, request_id: str, result: object) -> None:
+        process = self.tauri_settings_process
+        ok = self._apply_tauri_settings_result(result, final=False)
+        if process is None:
+            return
+        resolve = getattr(process, "resolve_apply_request", None)
+        if callable(resolve):
+            resolve(
+                request_id,
+                ok=ok,
+                error="" if ok else "Tauri 设置没有保存成功。",
+            )
+
+    def _apply_tauri_settings_result(self, result: object, *, final: bool) -> bool:
         if not isinstance(result, TauriSettingsResult):
             self._on_tauri_settings_failed("Tauri 设置结果类型无效。")
-            return
+            return False
         settings = result.screen_awareness
         system_basic = result.system_basic
         system_extra = result.system_extra
@@ -5372,13 +5387,13 @@ class PetWindow(QWidget):
                     ),
                 )
                 self._abort_tauri_settings_apply(final=final)
-                return
+                return False
 
         tts_settings = self._tts_settings_from_tauri_result(result.tts, selected_profile)
         new_tts_provider = self._create_tts_provider_from_settings(tts_settings)
         if new_tts_provider is None:
             self._abort_tauri_settings_apply(final=final)
-            return
+            return False
 
         current_startup_settings = getattr(self, "startup_settings", StartupSettings())
         result_startup_settings = (
@@ -5495,7 +5510,7 @@ class PetWindow(QWidget):
                 ),
             )
             self._abort_tauri_settings_apply(new_tts_provider, final=final)
-            return
+            return False
 
         _update_runtime_api_clients(
             self,
@@ -5607,6 +5622,7 @@ class PetWindow(QWidget):
                 "设置已保存",
                 "插件启用状态需要重启 Sakura 后才会生效。",
             )
+        return True
 
     def _abort_tauri_settings_apply(
         self,
