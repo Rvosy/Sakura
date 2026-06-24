@@ -4458,6 +4458,7 @@ def test_show_settings_tauri_trial_saves_screen_awareness(monkeypatch) -> None: 
     assert window.backchannel_settings == backchannel
     assert window.memory_curation_settings == memory
     assert synced == ["sync"]
+    assert instances[0].shutdown_called is True
     assert window.tauri_settings_process is None
     assert window._tauri_initial_tts_settings is None
 
@@ -5365,6 +5366,49 @@ def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
     process._handle_stdout(flush=True)
     assert len(completed) == 1
     assert completed[0].screen_awareness.enabled is True
+
+
+def test_tauri_settings_process_routes_keep_open_result_to_applied() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TAURI_SETTINGS_RESULT_MARKER, TauriSettingsProcess
+    from app.ui.theme import theme_to_mapping
+
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+    applied: list[object] = []
+    completed: list[object] = []
+    process.applied.connect(applied.append)
+    process.completed.connect(completed.append)
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["keep_open"] = True
+    line = TAURI_SETTINGS_RESULT_MARKER + json.dumps(payload, ensure_ascii=False) + "\n"
+    process._process = FakeQProcess(line.encode("utf-8"))
+
+    process._handle_stdout()
+
+    assert len(applied) == 1
+    assert applied[0].screen_awareness.enabled is True
+    assert completed == []
+
+
+def test_tauri_settings_capability_allows_window_close() -> None:
+    capability_path = Path("tools/settings-tauri/src-tauri/capabilities/default.json")
+    capability = json.loads(capability_path.read_text(encoding="utf-8"))
+
+    assert "core:window:allow-close" in capability["permissions"]
 
 
 def test_tauri_settings_process_dispatches_memory_rpc_methods() -> None:

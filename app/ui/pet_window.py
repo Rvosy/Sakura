@@ -5308,7 +5308,11 @@ class PetWindow(QWidget):
     @Slot(object)
     def _on_tauri_settings_completed(self, result: object) -> None:
         # 「保存」：应用并关闭窗口。
+        process = self.tauri_settings_process
         self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
         self._sync_secondary_window_state()
         self._apply_tauri_settings_result(result, final=True)
 

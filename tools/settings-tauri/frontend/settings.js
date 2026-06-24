@@ -215,6 +215,21 @@ async function confirmDiscard() {
   });
 }
 
+async function closeSettingsWindow() {
+  bypassCloseGuard = true;
+  try {
+    await invoke("cancel_settings");
+    return;
+  } catch (error) {
+    const current = window.__TAURI__?.window?.getCurrentWindow?.();
+    if (current?.close) {
+      await current.close();
+      return;
+    }
+    throw error;
+  }
+}
+
 function markInvalid(input, invalid) {
   if (input) {
     input.classList.toggle("is-invalid", Boolean(invalid));
@@ -2617,7 +2632,7 @@ fields.saveButton.addEventListener("click", async () => {
     setError(String(error));
     return;
   }
-  // 保存成功后 Rust 会关窗（save_settings → window.close），提前放行关窗拦截。
+  // 保存成功后 Rust/Python 会关窗，提前放行关窗拦截。
   bypassCloseGuard = true;
   fields.saveButton.disabled = true;
   fields.saveButton.textContent = "保存中…";
@@ -2663,8 +2678,12 @@ fields.cancelButton.addEventListener("click", async () => {
   if (!(await confirmDiscard())) {
     return;
   }
-  bypassCloseGuard = true;
-  await invoke("cancel_settings");
+  try {
+    await closeSettingsWindow();
+  } catch (error) {
+    bypassCloseGuard = false;
+    setError(String(error));
+  }
 });
 
 // 任意输入/勾选/点击后重算「未保存」状态（动态重建 DOM 的供应商/插件/模型区也能覆盖）。
@@ -2709,8 +2728,12 @@ detailCard?.addEventListener("input", (event) => {
       }
       event.preventDefault();
       if (await confirmDiscard()) {
-        bypassCloseGuard = true;
-        await invoke("cancel_settings");
+        try {
+          await closeSettingsWindow();
+        } catch (error) {
+          bypassCloseGuard = false;
+          setError(String(error));
+        }
       }
     });
   } catch {

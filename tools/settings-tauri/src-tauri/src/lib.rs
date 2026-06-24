@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::{State, Window};
+use tauri::{Manager, State, Window, WindowEvent};
 
 /// Lines on stdout that start with this marker carry a live layout preview for
 /// the host (Python) to apply immediately. Anything else on stdout is ignored.
@@ -108,11 +108,7 @@ fn load_request(state: State<'_, AppState>) -> Result<Value, String> {
 ///
 /// `keep_open` distinguishes 应用 (apply: persist, window stays open) from
 /// 保存 (save: persist, window closes). Python routes on the `keep_open` flag.
-fn write_settings_result(
-    settings: Value,
-    state: &AppState,
-    keep_open: bool,
-) -> Result<(), String> {
+fn write_settings_result(settings: Value, state: &AppState, keep_open: bool) -> Result<(), String> {
     let nonce = state
         .request
         .get("nonce")
@@ -140,7 +136,7 @@ fn save_settings(
     window: Window,
 ) -> Result<(), String> {
     write_settings_result(settings, &state, false)?;
-    window.close().map_err(|error| error.to_string())
+    close_settings_window(window)
 }
 
 /// Persist the settings but keep the window open (「应用」按钮)。
@@ -163,17 +159,20 @@ fn preview_layout(layout: Value) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn host_call(
-    method: String,
-    params: Value,
-    state: State<'_, AppState>,
-) -> Result<Value, String> {
+fn host_call(method: String, params: Value, state: State<'_, AppState>) -> Result<Value, String> {
     state.rpc.call(&method, params)
 }
 
 #[tauri::command]
 fn cancel_settings(window: Window) -> Result<(), String> {
-    window.close().map_err(|error| error.to_string())
+    close_settings_window(window)
+}
+
+fn close_settings_window(window: Window) -> Result<(), String> {
+    let app = window.app_handle().clone();
+    window.close().map_err(|error| error.to_string())?;
+    app.exit(0);
+    Ok(())
 }
 
 pub fn run() {
@@ -195,6 +194,11 @@ pub fn run() {
             host_call,
             cancel_settings
         ])
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                window.app_handle().exit(0);
+            }
+        })
         .run(tauri::generate_context!())
         .expect("failed to run Sakura settings window");
 }
@@ -282,7 +286,9 @@ mod tests {
     fn ignores_invalid_rpc_response_lines() {
         assert!(parse_rpc_response_line("plain log").is_none());
         assert!(parse_rpc_response_line("@@SAKURA_SETTINGS_RPC_RESULT@@not-json").is_none());
-        assert!(parse_rpc_response_line(r#"@@SAKURA_SETTINGS_RPC_RESULT@@{"id":"rpc-1"}"#).is_none());
+        assert!(
+            parse_rpc_response_line(r#"@@SAKURA_SETTINGS_RPC_RESULT@@{"id":"rpc-1"}"#).is_none()
+        );
     }
 
     #[test]
