@@ -5403,7 +5403,8 @@ class PetWindow(QWidget):
         )
         startup_settings_changed = result_startup_settings != current_startup_settings
         api_changed = result.api.settings != self.api_client.settings
-        plugin_config_changed = False
+        plugin_enabled_changed = False
+        plugin_settings_changed = False
         config_snapshot = _snapshot_config_files(self.base_dir)
         try:
             if api_changed:
@@ -5465,12 +5466,11 @@ class PetWindow(QWidget):
             if callable(save_memory_curation_settings):
                 save_memory_curation_settings(result.memory_curation)
             if result.plugins.enabled_by_id:
-                plugin_config_changed = (
+                plugin_enabled_changed = (
                     save_plugin_enabled_overrides(
                         self.base_dir,
                         result.plugins.enabled_by_id,
                     )
-                    or plugin_config_changed
                 )
             self._apply_layout_settings(
                 portrait_scale_percent=result.character.portrait_scale_percent,
@@ -5484,12 +5484,9 @@ class PetWindow(QWidget):
             if startup_settings_changed:
                 self.settings_service.save_startup_settings(result_startup_settings)
                 self._apply_launch_at_login_settings(result_startup_settings)
-            plugin_config_changed = (
-                apply_tauri_plugin_settings(
-                    getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
-                    result.plugins.settings_by_id,
-                )
-                or plugin_config_changed
+            plugin_settings_changed = apply_tauri_plugin_settings(
+                getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
+                result.plugins.settings_by_id,
             )
         except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
             try:
@@ -5616,11 +5613,17 @@ class PetWindow(QWidget):
                 result.character.control_panel_vertical_offset,
                 result.character.input_bar_offset,
             )
-        if plugin_config_changed:
+        if plugin_enabled_changed:
             show_themed_information(
                 self,
                 "设置已保存",
                 "插件启用状态需要重启 Sakura 后才会生效。",
+            )
+        elif plugin_settings_changed:
+            show_themed_information(
+                self,
+                "设置已保存",
+                "插件设置已保存并即时生效。",
             )
         return True
 

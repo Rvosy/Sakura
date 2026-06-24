@@ -5456,6 +5456,43 @@ def test_apply_tauri_plugin_settings_skips_unchanged_values() -> None:
     assert saved == [{"enabled": False}]
 
 
+def test_tauri_plugin_settings_message_does_not_claim_restart(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+    from app.ui.tauri_settings import TauriPluginResult
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    messages: list[str] = []
+    monkeypatch.setattr(pet_window_module, "apply_tauri_plugin_settings", lambda *_args: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_information",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        plugins=TauriPluginResult(settings_by_id={"demo": {"main": {"enabled": False}}}),
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert messages == ["插件设置已保存并即时生效。"]
+
+
 def test_tauri_settings_request_includes_per_character_theme() -> None:
     from types import SimpleNamespace
 
@@ -5694,6 +5731,33 @@ def test_tauri_character_rpc_rejects_voice_export_without_models() -> None:
             root,
             "character.export_archive",
             {"path": str(root / "sakura.voice"), "character_id": "sakura", "kind": "voice"},
+        )
+
+
+def test_tauri_character_rpc_validates_paths() -> None:
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    root = _ui_runtime_root("tauri_char_path_validation")
+    bad_suffix = root / "bad.txt"
+    bad_suffix.write_text("not an archive", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="扩展名"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.import_archive",
+            {"path": str(bad_suffix)},
+        )
+    with pytest.raises(ValueError, match="文件不存在"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.import_voice_archive",
+            {"path": str(root / "missing.voice"), "character_id": "sakura"},
+        )
+    with pytest.raises(ValueError, match="导出目录不存在"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.export_archive",
+            {"path": str(root / "missing" / "sakura.char"), "character_id": "sakura", "kind": "card"},
         )
 
 

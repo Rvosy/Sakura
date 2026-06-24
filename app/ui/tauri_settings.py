@@ -730,7 +730,7 @@ def dispatch_tauri_character_rpc(base_dir: Path, method: str, params: dict[str, 
         raise ValueError(f"未知 Tauri RPC 方法：{method}")
     root = Path(base_dir)
     if method == "character.import_archive":
-        path = _required_rpc_path(params, "path")
+        path = _required_existing_rpc_path(params, "path", suffixes=(".char",))
         result = import_character_archive(path, root)
         registry = CharacterRegistry(root)
         profile = registry.get(result.character_id)
@@ -744,7 +744,7 @@ def dispatch_tauri_character_rpc(base_dir: Path, method: str, params: dict[str, 
             disable_tts=profile.voice is None,
         )
     if method == "character.import_voice_archive":
-        path = _required_rpc_path(params, "path")
+        path = _required_existing_rpc_path(params, "path", suffixes=(".voice",))
         character_id = _required_rpc_str(params, "character_id")
         result = import_character_voice_archive(path, root, character_id)
         registry = CharacterRegistry(root)
@@ -762,6 +762,7 @@ def dispatch_tauri_character_rpc(base_dir: Path, method: str, params: dict[str, 
             _required_rpc_path(params, "path"),
             export_kind,
         )
+        _validate_export_parent(output_path)
         registry = CharacterRegistry(root)
         profile = registry.get(character_id)
         if export_kind in {"full", "voice"} and not _has_exportable_voice_model(profile):
@@ -812,6 +813,28 @@ def _normalized_character_export_path(path: Path, export_kind: str) -> Path:
 
 def _required_rpc_path(mapping: dict[str, Any], key: str) -> Path:
     return Path(_required_rpc_str(mapping, key))
+
+
+def _required_existing_rpc_path(
+    mapping: dict[str, Any],
+    key: str,
+    *,
+    suffixes: tuple[str, ...],
+) -> Path:
+    path = _required_rpc_path(mapping, key)
+    if path.suffix.lower() not in suffixes:
+        raise ValueError(f"文件扩展名必须是：{' / '.join(suffixes)}")
+    if not path.is_file():
+        raise ValueError(f"文件不存在：{path}")
+    return path
+
+
+def _validate_export_parent(path: Path) -> None:
+    parent = path.parent
+    if parent and not parent.exists():
+        raise ValueError(f"导出目录不存在：{parent}")
+    if parent and not parent.is_dir():
+        raise ValueError(f"导出目录不是文件夹：{parent}")
 
 
 def _required_rpc_str(mapping: dict[str, Any], key: str) -> str:
