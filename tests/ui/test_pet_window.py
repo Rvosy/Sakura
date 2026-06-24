@@ -5107,6 +5107,19 @@ def test_tauri_settings_result_parser_reads_plugin_enabled_overrides() -> None:
     assert result.plugins.settings_by_id == {"demo": {"main": {"enabled": True}}}
 
 
+def test_tauri_settings_result_parser_recovers_empty_profile_models_from_slots() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["api"]["profiles"][0]["models"] = []  # type: ignore[index]
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.api.profiles[0].models == ("test-model",)
+    assert result.api.settings.model == "test-model"
+
+
 def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
 
@@ -6116,6 +6129,100 @@ def test_settings_dialog_model_combo_saves_manual_input(monkeypatch) -> None:  #
 
     assert dialog.result_api_settings is not None
     assert dialog.result_api_settings.model == "manual-model"
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_inherited_model_slots_follow_chat_selection() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.config.models import (
+        MODEL_SLOT_CHAT,
+        MODEL_SLOT_MEMORY_CURATION,
+        MODEL_SLOT_VISION_CHAT,
+        ApiConfigProfile,
+        ModelSelectionSettings,
+        ModelSlotSelection,
+    )
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("api_inherited_slots")
+    profiles = [
+        ApiConfigProfile(
+            "default",
+            "默认",
+            "https://api.example.com/v1",
+            "test-key",
+            ("old-chat", "new-chat", "vision-custom"),
+        ),
+        ApiConfigProfile(
+            "backup",
+            "备用",
+            "https://backup.example.com/v1",
+            "backup-key",
+            ("backup-chat", "backup-alt"),
+        ),
+    ]
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="old-chat",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+        api_profiles=profiles,
+        model_selection=ModelSelectionSettings(
+            chat=ModelSlotSelection(profile_id="default", model="old-chat")
+        ),
+    )
+
+    assert dialog._slot_inherit_checks[MODEL_SLOT_VISION_CHAT].isChecked()
+    assert dialog._slot_inherit_checks[MODEL_SLOT_MEMORY_CURATION].isChecked()
+    assert dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].text() == "old-chat"
+    assert dialog._slot_model_combos[MODEL_SLOT_MEMORY_CURATION].text() == "old-chat"
+
+    dialog._slot_model_combos[MODEL_SLOT_CHAT].setText("new-chat")
+    app.processEvents()
+
+    assert dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].text() == "new-chat"
+    assert dialog._slot_model_combos[MODEL_SLOT_MEMORY_CURATION].text() == "new-chat"
+
+    backup_index = dialog._slot_profile_combos[MODEL_SLOT_CHAT].findData("backup")
+    assert backup_index >= 0
+    dialog._slot_profile_combos[MODEL_SLOT_CHAT].setCurrentIndex(backup_index)
+    app.processEvents()
+
+    assert dialog._slot_profile_combos[MODEL_SLOT_VISION_CHAT].currentData() == "backup"
+    assert dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].text() == "backup-chat"
+    assert dialog._slot_profile_combos[MODEL_SLOT_MEMORY_CURATION].currentData() == "backup"
+    assert dialog._slot_model_combos[MODEL_SLOT_MEMORY_CURATION].text() == "backup-chat"
+
+    inherited_selection = dialog._collect_model_selection()
+    assert inherited_selection.vision_chat is None
+    assert inherited_selection.memory_curation is None
+
+    dialog._slot_inherit_checks[MODEL_SLOT_VISION_CHAT].setChecked(False)
+    default_index = dialog._slot_profile_combos[MODEL_SLOT_VISION_CHAT].findData("default")
+    assert default_index >= 0
+    dialog._slot_profile_combos[MODEL_SLOT_VISION_CHAT].setCurrentIndex(default_index)
+    dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].setText("vision-custom")
+    dialog._slot_inherit_checks[MODEL_SLOT_VISION_CHAT].setChecked(True)
+    assert dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].text() == "backup-chat"
+    dialog._slot_inherit_checks[MODEL_SLOT_VISION_CHAT].setChecked(False)
+    assert dialog._slot_model_combos[MODEL_SLOT_VISION_CHAT].text() == "vision-custom"
+
+    selection = dialog._collect_model_selection()
+    assert selection.vision_chat == ModelSlotSelection(profile_id="default", model="vision-custom")
+    assert selection.memory_curation is None
+
     dialog.deleteLater()
     app.processEvents()
 

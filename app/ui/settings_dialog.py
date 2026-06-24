@@ -81,6 +81,7 @@ from app.config.model_slots import find_profile, resolve_model_slot
 from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_DESCRIPTIONS,
+    MODEL_SLOT_FALLBACKS,
     MODEL_SLOT_LABELS,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_ORDER,
@@ -2340,9 +2341,11 @@ class SettingsDialog(QDialog):
         )
 
     def _collect_slot_selection(self, slot: str) -> ModelSlotSelection | None:
-        inherit_check = getattr(self, "_slot_inherit_checks", {}).get(slot)
-        if slot != MODEL_SLOT_CHAT and inherit_check is not None and inherit_check.isChecked():
+        if self._slot_inherited(slot):
             return None
+        return self._raw_slot_selection(slot)
+
+    def _raw_slot_selection(self, slot: str) -> ModelSlotSelection | None:
         profile_id = self._slot_profile_id(slot)
         model_combo = getattr(self, "_slot_model_combos", {}).get(slot)
         model = model_combo.text().strip() if model_combo is not None else ""
@@ -2353,6 +2356,57 @@ class SettingsDialog(QDialog):
     def _slot_profile_id(self, slot: str) -> str:
         profile_combo = getattr(self, "_slot_profile_combos", {}).get(slot)
         return str(profile_combo.currentData() or "") if profile_combo is not None else ""
+
+    def _slot_inherited(self, slot: str) -> bool:
+        inherit_check = getattr(self, "_slot_inherit_checks", {}).get(slot)
+        return bool(slot != MODEL_SLOT_CHAT and inherit_check is not None and inherit_check.isChecked())
+
+    def _handle_slot_inherit_toggled(self, slot: str, checked: bool) -> None:
+        saved_selections = getattr(self, "_slot_inherit_manual_selections", {})
+        if slot != MODEL_SLOT_CHAT and checked:
+            selection = self._raw_slot_selection(slot)
+            if selection is not None and selection.configured:
+                saved_selections[slot] = selection
+        elif slot != MODEL_SLOT_CHAT:
+            selection = saved_selections.pop(slot, None)
+            if selection is not None:
+                self._set_slot_controls_from_selection(slot, selection)
+        self._slot_inherit_manual_selections = saved_selections
+        self._sync_slot_inherit_state(slot)
+
+    def _inherited_slot_source_selection(self, slot: str) -> ModelSlotSelection | None:
+        for source_slot in MODEL_SLOT_FALLBACKS.get(slot, ()):
+            selection = self._raw_slot_selection(source_slot)
+            if selection is not None and selection.configured:
+                return selection
+        return None
+
+    def _set_slot_controls_from_selection(self, slot: str, selection: ModelSlotSelection) -> None:
+        profile_combo = getattr(self, "_slot_profile_combos", {}).get(slot)
+        if profile_combo is not None and selection.profile_id:
+            index = profile_combo.findData(selection.profile_id)
+            if index >= 0:
+                profile_combo.blockSignals(True)
+                profile_combo.setCurrentIndex(index)
+                profile_combo.blockSignals(False)
+        model_combo = getattr(self, "_slot_model_combos", {}).get(slot)
+        if model_combo is None:
+            return
+        profile = find_profile(self._api_profiles, self._slot_profile_id(slot))
+        model_combo.set_model_names(list(profile.models) if profile is not None else [])
+        model_combo.blockSignals(True)
+        model_combo.setText(selection.model)
+        model_combo.blockSignals(False)
+
+    def _apply_inherited_slot_display(self, slot: str) -> None:
+        selection = self._inherited_slot_source_selection(slot)
+        if selection is not None:
+            self._set_slot_controls_from_selection(slot, selection)
+
+    def _sync_inherited_slot_displays(self) -> None:
+        for slot in MODEL_SLOT_ORDER:
+            if self._slot_inherited(slot):
+                self._apply_inherited_slot_display(slot)
 
     def _api_settings_for_slot(
         self,
@@ -2379,6 +2433,9 @@ class SettingsDialog(QDialog):
         combo = getattr(self, "_slot_model_combos", {}).get(slot)
         if combo is None:
             return
+        if self._slot_inherited(slot):
+            self._apply_inherited_slot_display(slot)
+            return
         current = combo.text().strip()
         profile = find_profile(self._api_profiles, profile_id)
         models = list(profile.models) if profile is not None else []
@@ -2391,12 +2448,13 @@ class SettingsDialog(QDialog):
         else:
             combo.setText("")
         combo.blockSignals(False)
+        if slot == MODEL_SLOT_CHAT:
+            self._sync_inherited_slot_displays()
 
     def _sync_slot_inherit_state(self, slot: str) -> None:
-        inherited = False
-        inherit_check = getattr(self, "_slot_inherit_checks", {}).get(slot)
-        if slot != MODEL_SLOT_CHAT and inherit_check is not None:
-            inherited = inherit_check.isChecked()
+        inherited = self._slot_inherited(slot)
+        if inherited:
+            self._apply_inherited_slot_display(slot)
         for mapping_name in (
             "_slot_profile_combos",
             "_slot_model_combos",
@@ -2412,6 +2470,7 @@ class SettingsDialog(QDialog):
             self.provider_summary_label.setText(self._provider_summary(self._api_profiles))
         for slot in MODEL_SLOT_ORDER:
             self._sync_slot_model_combo(slot)
+        self._sync_inherited_slot_displays()
 
     def _replace_profile(self, profile: ApiConfigProfile) -> None:
         for index, item in enumerate(self._api_profiles):
@@ -2433,6 +2492,7 @@ class SettingsDialog(QDialog):
             combo.setCurrentIndex(idx if idx >= 0 else 0)
             combo.blockSignals(False)
             self._sync_slot_model_combo(slot)
+        self._sync_inherited_slot_displays()
 
     def _used_slots_for_profile(self, profile_id: str) -> list[str]:
         used: list[str] = []

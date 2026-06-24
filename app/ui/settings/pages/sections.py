@@ -463,6 +463,7 @@ class ApiSettingsPage:
         owner._slot_profile_combos = {}
         owner._slot_model_combos = {}
         owner._slot_inherit_checks = {}
+        owner._slot_inherit_manual_selections = {}
         owner._slot_test_buttons = {}
         owner._slot_probe_buttons = {}
         for slot in MODEL_SLOT_UI_ORDER:
@@ -550,7 +551,12 @@ class ApiSettingsPage:
             lambda _index, slot_name=slot: owner._sync_slot_model_combo(slot_name, keep_current=False)
         )
         inherit_check.toggled.connect(
-            lambda _checked, slot_name=slot: owner._sync_slot_inherit_state(slot_name)
+            lambda checked, slot_name=slot: owner._handle_slot_inherit_toggled(slot_name, checked)
+        )
+        model_combo.currentTextChanged.connect(
+            lambda _text, slot_name=slot: owner._sync_inherited_slot_displays()
+            if slot_name == MODEL_SLOT_CHAT
+            else None
         )
         probe_btn.clicked.connect(lambda _checked=False, slot_name=slot: owner._probe_api_models(slot_name))
         test_btn.clicked.connect(lambda _checked=False, slot_name=slot: owner._test_api_settings(slot_name))

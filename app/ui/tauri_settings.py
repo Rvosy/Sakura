@@ -1707,10 +1707,13 @@ def _api_from_mapping_required(mapping: dict[str, Any]) -> TauriApiResult:
     raw_profiles = mapping.get("profiles")
     if not isinstance(raw_profiles, list):
         raise ValueError("Tauri 设置结果缺少 API 供应商配置。")
-    profiles = _api_profiles_from_raw(raw_profiles)
     raw_selection = mapping.get("model_selection")
     if not isinstance(raw_selection, dict):
         raise ValueError("Tauri 设置结果缺少模型槽位配置。")
+    profiles = _api_profiles_from_raw(
+        raw_profiles,
+        selected_models_by_profile_id=_selected_models_by_profile_id(raw_selection),
+    )
     model_selection = _model_selection_from_mapping_required(raw_selection)
     raw_settings = mapping.get("settings")
     if not isinstance(raw_settings, dict):
@@ -1903,9 +1906,33 @@ def _model_selection_to_mapping(selection: ModelSelectionSettings) -> dict[str, 
     return {"slots": slots}
 
 
-def _api_profiles_from_raw(raw_profiles: list[Any]) -> list[ApiConfigProfile]:
+def _selected_models_by_profile_id(mapping: dict[str, Any]) -> dict[str, list[str]]:
+    """从模型槽位里提取可用模型，修复旧/异常 Tauri payload 的空 models 列表。"""
+    slots = mapping.get("slots")
+    if not isinstance(slots, dict):
+        return {}
+    selected: dict[str, list[str]] = {}
+    for raw in slots.values():
+        if not isinstance(raw, dict):
+            continue
+        profile_id = str(raw.get("profile_id", "")).strip()
+        model = str(raw.get("model", "")).strip()
+        if not profile_id or not model:
+            continue
+        models = selected.setdefault(profile_id, [])
+        if model not in models:
+            models.append(model)
+    return selected
+
+
+def _api_profiles_from_raw(
+    raw_profiles: list[Any],
+    *,
+    selected_models_by_profile_id: dict[str, list[str]] | None = None,
+) -> list[ApiConfigProfile]:
     profiles: list[ApiConfigProfile] = []
     seen: set[str] = set()
+    selected_models_by_profile_id = selected_models_by_profile_id or {}
     for raw in raw_profiles:
         if not isinstance(raw, dict):
             raise ValueError("Tauri 设置结果字段无效：api.profiles")
@@ -1918,6 +1945,8 @@ def _api_profiles_from_raw(raw_profiles: list[Any]) -> list[ApiConfigProfile]:
         if not base_url:
             raise ValueError("Tauri 设置结果字段无效：api.profiles.base_url")
         models = normalize_provider_models(raw.get("models"))
+        if not models:
+            models = normalize_provider_models(selected_models_by_profile_id.get(profile_id, []))
         if not models:
             raise ValueError("Tauri 设置结果字段无效：api.profiles.models")
         profiles.append(

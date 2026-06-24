@@ -744,6 +744,7 @@ function makeProfileId() {
 // 供应商页改为状态驱动的主从结构：providerState.profiles 是唯一数据源，
 // 「供应商」页与「模型」页的槽位都从它派生（参照 pluginState/memoryState）。
 const providerState = { profiles: [], selectedId: "", search: "" };
+const inheritedSlotManualSelections = {};
 
 // 内置预设：选中即预填 Base URL 与图标，其余走「自定义」。
 const PROVIDER_PRESETS = [
@@ -1276,6 +1277,66 @@ function openModelPicker(profile, models) {
   document.body.append(overlay);
 }
 
+function modelSlotElements(slot) {
+  return {
+    inheritInput: fields.modelSlots.querySelector(`[data-slot-inherit="${slot}"]`),
+    profileSelect: fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`),
+    modelSelect: fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`),
+  };
+}
+
+function readSlotSelection(slot) {
+  const { profileSelect, modelSelect } = modelSlotElements(slot);
+  return {
+    profile_id: profileSelect?.value || "",
+    model: modelSelect?.value || "",
+  };
+}
+
+function setSlotSelection(slot, selection, { preserveMissing = true } = {}) {
+  const { profileSelect, modelSelect } = modelSlotElements(slot);
+  if (!profileSelect || !modelSelect) {
+    return;
+  }
+  const profileId = selection?.profile_id || "";
+  if (profileId && Array.from(profileSelect.options).some((option) => option.value === profileId)) {
+    profileSelect.value = profileId;
+    refreshSelect(profileSelect);
+  }
+  syncModelOptions(slot, selection?.model || "", { preserveMissing });
+}
+
+function inheritedSlotSourceSelection(slot) {
+  if (slot === "chat") {
+    return null;
+  }
+  const chat = readSlotSelection("chat");
+  return chat.profile_id && chat.model ? chat : null;
+}
+
+function syncInheritedSlotDisplays() {
+  request.api.slot_fields.forEach((slot) => {
+    const inheritInput = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`);
+    if (inheritInput?.checked) {
+      syncSlotInheritState(slot.id);
+    }
+  });
+}
+
+function handleSlotInheritChange(slot) {
+  const { inheritInput } = modelSlotElements(slot);
+  if (inheritInput?.checked) {
+    const current = readSlotSelection(slot);
+    if (current.profile_id && current.model) {
+      inheritedSlotManualSelections[slot] = current;
+    }
+  } else if (inheritedSlotManualSelections[slot]) {
+    setSlotSelection(slot, inheritedSlotManualSelections[slot], { preserveMissing: true });
+    delete inheritedSlotManualSelections[slot];
+  }
+  syncSlotInheritState(slot);
+}
+
 function renderModelSlots(selection) {
   fields.modelSlots.textContent = "";
   request.api.slot_fields.forEach((slot) => {
@@ -1300,14 +1361,24 @@ function renderModelSlots(selection) {
       inheritText.textContent = "继承";
       inheritLabel.append(inheritInput, inheritText);
       controls.append(inheritLabel);
-      inheritInput.addEventListener("change", () => syncSlotInheritState(slot.id));
+      inheritInput.addEventListener("change", () => handleSlotInheritChange(slot.id));
     }
     controls.append(profileSelect, modelSelect);
     row.append(label, controls);
     fields.modelSlots.append(row);
     enhanceSelect(profileSelect);
     enhanceSelect(modelSelect);
-    profileSelect.addEventListener("change", () => syncModelOptions(slot.id, "", { preserveMissing: false }));
+    profileSelect.addEventListener("change", () => {
+      syncModelOptions(slot.id, "", { preserveMissing: false });
+      if (slot.id === "chat") {
+        syncInheritedSlotDisplays();
+      }
+    });
+    modelSelect.addEventListener("change", () => {
+      if (slot.id === "chat") {
+        syncInheritedSlotDisplays();
+      }
+    });
     const selected = selection?.slots?.[slot.id] || { profile_id: "", model: "" };
     const inheritInput = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`);
     if (inheritInput) {
@@ -1370,6 +1441,12 @@ function syncSlotInheritState(slot) {
   const inherited = Boolean(inheritInput?.checked);
   const profileSelect = fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`);
   const modelSelect = fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`);
+  if (inherited) {
+    const inheritedSelection = inheritedSlotSourceSelection(slot);
+    if (inheritedSelection) {
+      setSlotSelection(slot, inheritedSelection, { preserveMissing: true });
+    }
+  }
   if (profileSelect) {
     profileSelect.disabled = inherited;
     refreshSelect(profileSelect);
@@ -2322,6 +2399,62 @@ function collectRuntimeLoopSettings() {
   };
 }
 
+function normalizedProviderProfiles() {
+  return providerState.profiles.map((profile) => ({
+    id: profile.id,
+    alias: (profile.alias || "").trim() || profile.id,
+    base_url: (profile.base_url || "").trim(),
+    api_key: (profile.api_key || "").trim(),
+    models: (profile.models || []).map((model) => String(model).trim()).filter(Boolean),
+  }));
+}
+
+function providerDisplayName(profile) {
+  return profile.alias || profile.id || "未命名供应商";
+}
+
+function focusProviderValidation(profile, field) {
+  providerState.selectedId = profile.id;
+  providerState.search = "";
+  if (fields.providerSearch) {
+    fields.providerSearch.value = "";
+  }
+  showPage("providers");
+  renderProviderPage();
+  markInvalid(providerDetailInput(field), true);
+}
+
+function validateApiSettingsBeforeSubmit() {
+  const profiles = normalizedProviderProfiles();
+  if (!profiles.length) {
+    showPage("providers");
+    setError("请至少添加一个 API 供应商。");
+    return false;
+  }
+  const missingBaseUrl = profiles.find((profile) => !profile.base_url);
+  if (missingBaseUrl) {
+    focusProviderValidation(missingBaseUrl, "base_url");
+    setError(`供应商「${providerDisplayName(missingBaseUrl)}」缺少 Base URL。`);
+    return false;
+  }
+  const missingModels = profiles.find((profile) => !profile.models.length);
+  if (missingModels) {
+    focusProviderValidation(missingModels, "");
+    setError(`供应商「${providerDisplayName(missingModels)}」至少需要一个模型。`);
+    return false;
+  }
+  const selection = collectModelSelection();
+  const chat = selection.slots.chat || {};
+  const chatProfile = profiles.find((profile) => profile.id === chat.profile_id);
+  if (!chatProfile || !chat.model || !chatProfile.models.includes(chat.model)) {
+    showPage("model");
+    refreshModelSlots();
+    setError("请选择可用的聊天模型。");
+    return false;
+  }
+  return true;
+}
+
 function collectApiSettings() {
   const limits = request.limits;
   const temperature = clampFloat(fields.apiTemperature.value, limits.api_temperature);
@@ -2340,13 +2473,7 @@ function collectApiSettings() {
         ? clampInt(fields.apiMaxTokens.value, limits.api_max_tokens)
         : null,
     },
-    profiles: providerState.profiles.map((profile) => ({
-      id: profile.id,
-      alias: (profile.alias || "").trim() || profile.id,
-      base_url: (profile.base_url || "").trim(),
-      api_key: (profile.api_key || "").trim(),
-      models: (profile.models || []).map((model) => String(model).trim()).filter(Boolean),
-    })),
+    profiles: normalizedProviderProfiles(),
     model_selection: collectModelSelection(),
   };
 }
@@ -2624,6 +2751,9 @@ fields.saveButton.addEventListener("click", async () => {
     return;
   }
   setError("");
+  if (!validateApiSettingsBeforeSubmit()) {
+    return;
+  }
   const original = fields.saveButton.textContent;
   let settings;
   try {
@@ -2660,6 +2790,9 @@ fields.applyButton.addEventListener("click", async () => {
     return;
   }
   setError("");
+  if (!validateApiSettingsBeforeSubmit()) {
+    return;
+  }
   fields.applyButton.disabled = true;
   try {
     await invoke("apply_settings", { settings: collectSettings() });
