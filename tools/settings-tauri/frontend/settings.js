@@ -230,6 +230,25 @@ async function closeSettingsWindow() {
   }
 }
 
+let closeRequestInFlight = false;
+async function requestCancelClose() {
+  if (closeRequestInFlight) {
+    return;
+  }
+  closeRequestInFlight = true;
+  try {
+    if (!(await confirmDiscard())) {
+      return;
+    }
+    await closeSettingsWindow();
+  } catch (error) {
+    bypassCloseGuard = false;
+    setError(String(error));
+  } finally {
+    closeRequestInFlight = false;
+  }
+}
+
 function markInvalid(input, invalid) {
   if (input) {
     input.classList.toggle("is-invalid", Boolean(invalid));
@@ -2808,15 +2827,7 @@ fields.applyButton.addEventListener("click", async () => {
 });
 
 fields.cancelButton.addEventListener("click", async () => {
-  if (!(await confirmDiscard())) {
-    return;
-  }
-  try {
-    await closeSettingsWindow();
-  } catch (error) {
-    bypassCloseGuard = false;
-    setError(String(error));
-  }
+  await requestCancelClose();
 });
 
 // 任意输入/勾选/点击后重算「未保存」状态（动态重建 DOM 的供应商/插件/模型区也能覆盖）。
@@ -2848,26 +2859,20 @@ detailCard?.addEventListener("input", (event) => {
   }
 });
 
-// 关窗（X / OS）拦截：有未保存改动时二次确认；权限或环境不支持时静默退化为直接关闭。
+// 关窗（X / OS）拦截：统一走「取消」路径；有未保存改动时二次确认。
 (function guardWindowClose() {
   try {
+    window.__TAURI__?.event?.listen?.("sakura://settings-close-requested", requestCancelClose);
     const current = window.__TAURI__?.window?.getCurrentWindow?.();
     if (!current?.onCloseRequested) {
       return;
     }
     current.onCloseRequested(async (event) => {
-      if (bypassCloseGuard || !computeDirty()) {
+      if (bypassCloseGuard) {
         return;
       }
       event.preventDefault();
-      if (await confirmDiscard()) {
-        try {
-          await closeSettingsWindow();
-        } catch (error) {
-          bypassCloseGuard = false;
-          setError(String(error));
-        }
-      }
+      await requestCancelClose();
     });
   } catch {
     // 监听不可用时不阻断窗口正常关闭。

@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::{Manager, State, Window, WindowEvent};
+use tauri::{Emitter, Manager, State, Window, WindowEvent};
 
 /// Lines on stdout that start with this marker carry a live layout preview for
 /// the host (Python) to apply immediately. Anything else on stdout is ignored.
@@ -13,6 +13,7 @@ const PREVIEW_MARKER: &str = "@@SAKURA_LAYOUT_PREVIEW@@";
 const RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RESULT@@";
 const RPC_MARKER: &str = "@@SAKURA_SETTINGS_RPC@@";
 const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
+const CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
 const PROTOCOL_VERSION: u8 = 2;
 static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -170,7 +171,7 @@ fn cancel_settings(window: Window) -> Result<(), String> {
 
 fn close_settings_window(window: Window) -> Result<(), String> {
     let app = window.app_handle().clone();
-    window.close().map_err(|error| error.to_string())?;
+    window.destroy().map_err(|error| error.to_string())?;
     app.exit(0);
     Ok(())
 }
@@ -194,10 +195,15 @@ pub fn run() {
             host_call,
             cancel_settings
         ])
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::Destroyed) {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = window.emit(CLOSE_REQUESTED_EVENT, json!({}));
+            }
+            WindowEvent::Destroyed => {
                 window.app_handle().exit(0);
             }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("failed to run Sakura settings window");
