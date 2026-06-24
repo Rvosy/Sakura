@@ -63,6 +63,7 @@ from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_LABELS,
     MODEL_SLOT_ORDER,
+    MODEL_SLOT_VISION_CHAT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
@@ -136,7 +137,12 @@ from app.ui.theme import (
     theme_colors_to_mapping,
     theme_to_mapping,
 )
-from app.ui.settings.workers import ApiConnectionTestWorker, ApiModelListProbeWorker, _has_exportable_voice_model
+from app.ui.settings.workers import (
+    ApiConnectionTestWorker,
+    ApiModelListProbeWorker,
+    ThemeAiWorker,
+    _has_exportable_voice_model,
+)
 from app.ui.settings.resource_tasks import settings_resource_task_manager
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
@@ -897,6 +903,7 @@ class TauriSettingsProcess(QObject):
         self._api_probes: dict[str, tuple[QThread, QObject]] = {}
         self._memory_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._character_rpcs: dict[str, tuple[QThread, QObject]] = {}
+        self._theme_ai_rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         if not tauri_settings_trial_enabled():
@@ -1098,6 +1105,9 @@ class TauriSettingsProcess(QObject):
         if method in ("api.list_models", "api.test_connection"):
             self._dispatch_api_probe(request_id, method, params)
             return
+        if method == "theme.generate_ai":
+            self._dispatch_theme_ai_rpc(request_id, params)
+            return
         if method.startswith("memory."):
             self._dispatch_memory_rpc(request_id, method, params)
             return
@@ -1198,6 +1208,43 @@ class TauriSettingsProcess(QObject):
         thread.finished.connect(lambda rid=request_id: self._character_rpcs.pop(rid, None))
         thread.start()
 
+    def _dispatch_theme_ai_rpc(self, request_id: str, params: dict[str, Any]) -> None:
+        try:
+            character_id = _required_rpc_str(params, "character_id")
+            registry = CharacterRegistry(self.base_dir)
+            profile = registry.get(character_id)
+            settings = _theme_ai_api_settings(
+                self.api_settings,
+                self.api_profiles,
+                self.model_selection,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+
+        thread = QThread(self)
+        worker: QObject = ThemeAiWorker(settings, profile, ai_enabled=True)
+        worker.moveToThread(thread)
+        self._theme_ai_rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _on_success(payload: object) -> None:
+            if not isinstance(payload, ThemeSettings):
+                self._send_rpc_response(request_id, ok=False, error="AI 返回的主题格式无效。")
+                return
+            self._send_rpc_response(request_id, ok=True, result={"theme": theme_to_mapping(payload)})
+
+        def _on_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(_on_success)
+        worker.failed.connect(_on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._theme_ai_rpcs.pop(rid, None))
+        thread.start()
+
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
@@ -1271,7 +1318,7 @@ class TauriSettingsProcess(QObject):
         self._cleaned = True
         self._request_payload = b""
         # 收尾在途 RPC 线程，避免线程仍在运行时随 self 被销毁。
-        for pending in (self._api_probes, self._memory_rpcs, self._character_rpcs):
+        for pending in (self._api_probes, self._memory_rpcs, self._character_rpcs, self._theme_ai_rpcs):
             for thread, _worker in list(pending.values()):
                 try:
                     thread.quit()
@@ -1479,6 +1526,28 @@ def _api_to_mapping(
             for slot in MODEL_SLOT_ORDER
         ],
     }
+
+
+def _theme_ai_api_settings(
+    settings: ApiSettings,
+    profiles: list[ApiConfigProfile] | None,
+    model_selection: ModelSelectionSettings | None,
+) -> ApiSettings:
+    normalized_profiles = _normalized_request_api_profiles(settings, profiles)
+    normalized_selection = _normalized_request_model_selection(
+        settings,
+        normalized_profiles,
+        model_selection,
+    )
+    resolved = resolve_model_slot(
+        normalized_profiles,
+        normalized_selection,
+        MODEL_SLOT_VISION_CHAT,
+        settings,
+    )
+    if resolved is None:
+        raise ValueError("AI 配色需要可用的视觉模型。")
+    return resolved.settings
 
 
 def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None, base_dir: Path | None) -> dict[str, object]:

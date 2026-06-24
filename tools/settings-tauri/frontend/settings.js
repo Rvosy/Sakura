@@ -43,6 +43,7 @@ const fields = {
   ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
+  themeAiButton: document.getElementById("themeAiButton"),
   resetThemeButton: document.getElementById("resetThemeButton"),
   launchAtLogin: document.getElementById("launchAtLogin"),
   debugLogEnabled: document.getElementById("debugLogEnabled"),
@@ -821,6 +822,32 @@ function setThemeValues(theme, options = {}) {
     ...theme,
     visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
   });
+}
+
+async function generateAiTheme() {
+  const character = selectedCharacter();
+  if (!character) {
+    setError("请先选择一个角色。");
+    return;
+  }
+  const original = fields.themeAiButton.textContent;
+  fields.themeAiButton.disabled = true;
+  fields.themeAiButton.textContent = "生成中…";
+  setError("");
+  try {
+    const result = await hostCall("theme.generate_ai", { character_id: character.id });
+    if (!result?.theme) {
+      throw new Error("AI 返回的主题格式无效。");
+    }
+    setThemeValues(result.theme);
+    themeChanged = true;
+    notify("AI 配色已生成。", "success");
+  } catch (error) {
+    setError(`AI 配色失败，已保留当前配色：${error}`);
+  } finally {
+    fields.themeAiButton.disabled = false;
+    fields.themeAiButton.textContent = original;
+  }
 }
 
 function makeProfileId() {
@@ -3664,6 +3691,7 @@ fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
 fields.backchannelEnabled.addEventListener("change", renderBackchannelResourceCard);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
+fields.themeAiButton.addEventListener("click", generateAiTheme);
 fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });
   themeChanged = true;

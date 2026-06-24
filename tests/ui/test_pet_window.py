@@ -5486,6 +5486,8 @@ def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
     source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
 
     assert "function selectedCharacterThemeDefaults()" in source
+    assert "themeAiButton: document.getElementById(\"themeAiButton\")" in source
+    assert "hostCall(\"theme.generate_ai\"" in source
     assert "theme_changed: themeChanged" in source
     assert "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });" in source
 
@@ -5838,6 +5840,59 @@ def test_tauri_settings_process_apply_rpc_waits_for_host_ack() -> None:
 
     assert applied == ["apply-1"]
     assert '"ok": true' in process._process.writes[-1]
+
+
+def test_tauri_settings_theme_ai_rpc_returns_theme(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    qtcore = pytest.importorskip("PySide6.QtCore")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def write(self, data: bytes) -> int:
+            text = data.decode("utf-8")
+            self.writes.append(text)
+            return len(data)
+
+    class SuccessWorker(qtcore.QObject):
+        succeeded = qtcore.Signal(object)
+        failed = qtcore.Signal(str)
+        finished = qtcore.Signal()
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__()
+
+        @qtcore.Slot()
+        def run(self) -> None:
+            self.succeeded.emit(ThemeSettings(primary_color="#123456"))
+            self.finished.emit()
+
+    root = _ui_runtime_root("tauri_theme_ai_rpc")
+    _build_settings_dialog_character(root, "sakura", "Sakura")
+    process = TauriSettingsProcess(
+        base_dir=root,
+        settings=ScreenAwarenessSettings(),
+        api_settings=ApiSettings("https://api.example.com/v1", "test-key", "test-model"),
+    )
+    process._process = FakeQProcess()
+    monkeypatch.setattr(tauri_settings, "ThemeAiWorker", SuccessWorker)
+
+    process._dispatch_theme_ai_rpc("theme-1", {"character_id": "sakura"})
+    deadline = time.time() + 2
+    while not process._process.writes and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert process._process.writes
+    assert '"ok": true' in process._process.writes[-1]
+    assert "#123456" in process._process.writes[-1]
 
 
 def test_tauri_settings_apply_request_reports_save_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -1610,6 +1610,13 @@ button:active:not(:disabled) {
   min-width: 116px;
 }
 
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .compact-button {
   min-width: 72px;
   padding-inline: 12px;
