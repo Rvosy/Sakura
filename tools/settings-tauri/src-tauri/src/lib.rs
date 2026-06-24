@@ -15,6 +15,8 @@ const RPC_MARKER: &str = "@@SAKURA_SETTINGS_RPC@@";
 const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
 const CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
 const PROTOCOL_VERSION: u8 = 2;
+const DEFAULT_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const CHARACTER_ARCHIVE_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -67,7 +69,7 @@ impl HostRpc {
             return Err(error);
         }
 
-        match rx.recv_timeout(Duration::from_secs(30)) {
+        match rx.recv_timeout(host_rpc_timeout(method)) {
             Ok(response) if response.ok => Ok(response.result.unwrap_or(Value::Null)),
             Ok(response) => Err(response
                 .error
@@ -130,6 +132,15 @@ fn settings_result_payload(
     Ok(Value::Object(payload))
 }
 
+fn host_rpc_timeout(method: &str) -> Duration {
+    match method {
+        "character.import_archive"
+        | "character.import_voice_archive"
+        | "character.export_archive" => CHARACTER_ARCHIVE_RPC_TIMEOUT,
+        _ => DEFAULT_HOST_RPC_TIMEOUT,
+    }
+}
+
 fn write_settings_result(settings: Value, state: &AppState, keep_open: bool) -> Result<(), String> {
     let payload = settings_result_payload(settings, state, keep_open)?;
     let line = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
@@ -152,7 +163,9 @@ fn save_settings(
 #[tauri::command]
 fn apply_settings(settings: Value, state: State<'_, AppState>) -> Result<Value, String> {
     let payload = settings_result_payload(settings, &state, true)?;
-    state.rpc.call("settings.apply", json!({ "settings": payload }))
+    state
+        .rpc
+        .call("settings.apply", json!({ "settings": payload }))
 }
 
 /// Stream a live layout preview to the host without closing the window.
@@ -316,5 +329,25 @@ mod tests {
         assert_eq!(response.id, "rpc-2");
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn uses_long_timeout_for_character_archive_rpc() {
+        assert_eq!(
+            host_rpc_timeout("character.import_archive"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("character.import_voice_archive"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("character.export_archive"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("api.test_connection"),
+            Duration::from_secs(30)
+        );
     }
 }
