@@ -594,6 +594,7 @@ def download_and_extract_bundle(
     error = extract(archive, tmp_dir)
     if error is not None:
         raise RuntimeError(f"解压 TTS 整合包失败：{error}")
+    _emit_status(on_status, "install")
     work_dir = _replace_installed_bundle_from_extract(tmp_dir, installed_dir)
     _emit_status(on_status, "cleanup")
     _cleanup_archive(archive)

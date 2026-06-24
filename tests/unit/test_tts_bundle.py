@@ -77,7 +77,7 @@ def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
     assert not archive.with_name(f"{archive.name}.part").exists()
     assert work_dir == (root / "tts" / entry.key).resolve()
     assert (work_dir / "api_v2.py").exists()
-    assert statuses == ["verify", "download", "extract", "cleanup"]
+    assert statuses == ["verify", "download", "extract", "install", "cleanup"]
     assert progress[-1] == 100
 
 
@@ -109,7 +109,7 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
 
     assert work_dir == (root / "tts" / entry.key).resolve()
     assert not archive.exists()
-    assert statuses == ["verify", "extract", "cleanup"]
+    assert statuses == ["verify", "extract", "install", "cleanup"]
     assert 10 in progress
     assert progress[-1] == 100
 
