@@ -49,7 +49,7 @@ permissions:
 | `tool` | 注册 Agent 工具 |
 | `tools_tab` | 注册“工具”页扩展 |
 | `plugin_settings` | 注册 Tauri/宿主统一渲染的插件详细设置 |
-| `settings_panel` | 注册旧版 Qt 设置面板（兼容保留，内置插件不再使用） |
+| `settings_panel` | 注册旧版 Qt 设置面板（仅旧版 PySide 设置窗兼容保留，Tauri 设置页不渲染） |
 | `chat_ui` | 注册聊天输入区控件 |
 | `prompt_patch` | 注册提示词补丁 |
 | `context_provider` | 注册动态上下文提供者 |
@@ -182,6 +182,8 @@ class MyPlugin(PluginBase):
 | `register_renderer()` | `RendererContribution` | 角色渲染后端（接管角色显示） |
 
 `PluginSettingsContribution` 使用声明式字段，由 Tauri 设置页和宿主回退 UI 统一渲染。插件通过 `load()` 返回当前值，通过 `save(values)` 保存用户修改；需要刷新状态或测试连接时，可提供 `PluginSettingsAction`。
+
+旧版 `SettingsPanelContribution` 只能在 PySide 设置窗中显示。Tauri 设置迁移后，插件要在新设置页暴露配置，必须改用 `PluginSettingsContribution`；Sakura 内置插件已按这个路径迁移。
 
 旧版 `SettingsPanelContribution` 和聊天 UI 的 `build(parent)` 应返回 PySide6 `QWidget`。构建失败时宿主会显示降级文本，不会阻止 Sakura 启动。
 
