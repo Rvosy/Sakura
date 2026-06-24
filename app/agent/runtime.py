@@ -788,6 +788,9 @@ class AgentRuntime:
                         error=SCREEN_OBSERVATION_DISABLED_ERROR,
                     )
 
+                if call.name == "search_tools" and not self.pet_state_enabled:
+                    prepared = _without_disabled_pet_state_search_results(prepared)
+
                 debug_log("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
                 step_results.append(prepared)
                 execution_results.append(prepared)
@@ -1508,6 +1511,17 @@ def _groups_from_search_tools_result(result: ToolExecutionResult) -> set[str]:
         if isinstance(group, str) and group.strip():
             groups.add(group.strip())
     return groups
+
+
+def _without_disabled_pet_state_search_results(result: ToolExecutionResult) -> ToolExecutionResult:
+    if not result.success or not isinstance(result.content, list):
+        return result
+    filtered = [
+        item
+        for item in result.content
+        if not (isinstance(item, dict) and item.get("group") == "pet_state")
+    ]
+    return ToolExecutionResult(result.tool_name, True, filtered, result.error)
 
 
 def _latest_user_text(messages: list[ChatMessage]) -> str:

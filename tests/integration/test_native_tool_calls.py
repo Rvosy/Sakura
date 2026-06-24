@@ -347,6 +347,9 @@ def test_search_tools_does_not_activate_pet_state_when_disabled() -> None:
 
     runtime.handle_user_message([{"role": "user", "content": "心情如何？"}])
 
+    first_tool_result = client.calls[1]["messages"][-1]["content"]
+    assert "pet_state_get" not in first_tool_result
+    assert "pet_state_update" not in first_tool_result
     second_tool_names = {
         tool["function"]["name"]
         for tool in client.calls[1]["kwargs"]["tools"]
