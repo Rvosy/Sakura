@@ -4921,6 +4921,56 @@ def test_show_settings_tauri_trial_layout_persist_failure_rolls_back_runtime(mon
     assert window._tauri_original_layout is None
 
 
+def test_tauri_settings_save_failure_rolls_back_config_files(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    root = _ui_runtime_root("tauri_save_config_rollback")
+    config_dir = root / "data" / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    api_path = config_dir / "api.yaml"
+    mcp_path = config_dir / "mcp.yaml"
+    old_api = "llm:\n  model: old-model\n"
+    api_path.write_text(old_api, encoding="utf-8")
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            api_path.write_text("llm:\n  model: changed-model\n", encoding="utf-8")
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            mcp_path.write_text("created: true\n", encoding="utf-8")
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "old-model")
+
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.base_dir = root
+
+    window._apply_tauri_settings_result(_build_tauri_settings_result(), final=True)
+
+    assert critical_messages
+    assert api_path.read_text(encoding="utf-8") == old_api
+    assert not mcp_path.exists()
+    assert window.api_client.settings == ApiClientStub.settings
+
+
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
                 "version": 2,

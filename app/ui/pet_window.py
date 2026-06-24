@@ -257,6 +257,13 @@ MEMORY_STATUS_DISPLAY_MS = 7_000
 MEMORY_STATUS_STARTUP_DELAY_MS = 1_000
 SPEAKING_STATE_TIMEOUT_MS = 45_000
 THREAD_SHUTDOWN_WAIT_MS = 1_000
+_TAURI_SETTINGS_CONFIG_NAMES = (
+    "api.yaml",
+    "characters.yaml",
+    "system_config.yaml",
+    "mcp.yaml",
+    "plugins.yaml",
+)
 TRANSIENT_PROGRESS_MESSAGE_KEY = "_sakura_transient_progress"
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
@@ -298,6 +305,26 @@ PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT = SCREEN_AWARENESS_RECENT_CONVERSATIO
 PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER = SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 REPLY_HISTORY_PANEL_WIDTH = 34
 REPLY_HISTORY_PANEL_HEIGHT = 70
+
+
+def _snapshot_config_files(base_dir: Path) -> dict[Path, bytes | None]:
+    config_dir = StoragePaths(base_dir).config_dir
+    paths = {config_dir / name for name in _TAURI_SETTINGS_CONFIG_NAMES}
+    if config_dir.is_dir():
+        paths.update(path for path in config_dir.iterdir() if path.is_file() and path.suffix == ".yaml")
+    return {path: path.read_bytes() if path.is_file() else None for path in paths}
+
+
+def _restore_config_files(snapshot: dict[Path, bytes | None]) -> None:
+    for path, data in snapshot.items():
+        if data is None:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 REPLY_HISTORY_BUTTON_SIZE = 30
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
@@ -5362,6 +5389,7 @@ class PetWindow(QWidget):
         startup_settings_changed = result_startup_settings != current_startup_settings
         api_changed = result.api.settings != self.api_client.settings
         plugin_config_changed = False
+        config_snapshot = _snapshot_config_files(self.base_dir)
         try:
             if api_changed:
                 self.settings_service.save_api_settings(result.api.settings)
@@ -5398,9 +5426,6 @@ class PetWindow(QWidget):
             if result.theme != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
                 self.settings_service.save_theme_settings(result.theme)
             self.settings_service.save_debug_log_settings(system_basic.debug_log)
-            if startup_settings_changed:
-                self._apply_launch_at_login_settings(result_startup_settings)
-                self.settings_service.save_startup_settings(result_startup_settings)
             self._save_system_config_values(
                 "ui",
                 {
@@ -5424,10 +5449,6 @@ class PetWindow(QWidget):
             )
             if callable(save_memory_curation_settings):
                 save_memory_curation_settings(result.memory_curation)
-            plugin_config_changed = apply_tauri_plugin_settings(
-                getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
-                result.plugins.settings_by_id,
-            )
             if result.plugins.enabled_by_id:
                 plugin_config_changed = (
                     save_plugin_enabled_overrides(
@@ -5445,7 +5466,25 @@ class PetWindow(QWidget):
                 persist=True,
                 raise_on_persist_error=True,
             )
+            if startup_settings_changed:
+                self.settings_service.save_startup_settings(result_startup_settings)
+                self._apply_launch_at_login_settings(result_startup_settings)
+            plugin_config_changed = (
+                apply_tauri_plugin_settings(
+                    getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
+                    result.plugins.settings_by_id,
+                )
+                or plugin_config_changed
+            )
         except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
+            try:
+                _restore_config_files(config_snapshot)
+            except OSError as rollback_exc:
+                debug_log(
+                    "Settings",
+                    "Tauri 设置保存失败后回滚配置失败",
+                    {"error": str(rollback_exc)},
+                )
             show_themed_critical(
                 self,
                 "保存失败",
