@@ -5431,6 +5431,8 @@ def test_tauri_settings_process_writes_memory_rpc_response_line() -> None:
         TAURI_SETTINGS_RPC_RESULT_MARKER,
         TauriSettingsProcess,
     )
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
 
     class FakeMemoryStore:
         def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
@@ -5466,6 +5468,83 @@ def test_tauri_settings_process_writes_memory_rpc_response_line() -> None:
 
     process._handle_stdout()
 
+    assert _process_events_until(app, lambda: bool(fake.writes))
+    line = b"".join(fake.writes).decode("utf-8").strip()
+    assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
+    payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])
+    assert payload["id"] == "rpc-1"
+    assert payload["ok"] is True
+    assert payload["result"]["memories"][0]["content"] == "主人"
+
+
+def test_tauri_settings_memory_rpc_runs_off_main_thread() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import (
+        TAURI_SETTINGS_RPC_MARKER,
+        TAURI_SETTINGS_RPC_RESULT_MARKER,
+        TauriSettingsProcess,
+    )
+
+    class BlockingMemoryStore:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.started.set()
+            assert self.release.wait(2)
+            return {
+                "status": "ready",
+                "count": 1,
+                "memories": [{"id": "m1", "content": arguments["query"], "layer": "semantic"}],
+            }
+
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+            self.writes: list[bytes] = []
+
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    store = BlockingMemoryStore()
+    request = {"id": "rpc-1", "method": "memory.search", "params": {"query": "主人"}}
+    fake = FakeQProcess(
+        (TAURI_SETTINGS_RPC_MARKER + json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=store,
+    )
+    process._process = fake
+
+    started_at = time.monotonic()
+    process._handle_stdout()
+    elapsed = time.monotonic() - started_at
+
+    started = _process_events_until(app, lambda: store.started.is_set(), timeout_ms=3000)
+    store.release.set()
+    if not started:
+        _process_events_until(app, lambda: not process._memory_rpcs, timeout_ms=3000)
+
+    assert elapsed < 0.2
+    assert not fake.writes
+    assert started
+    assert not fake.writes
+
+    assert _process_events_until(app, lambda: bool(fake.writes), timeout_ms=3000)
     line = b"".join(fake.writes).decode("utf-8").strip()
     assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
     payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])

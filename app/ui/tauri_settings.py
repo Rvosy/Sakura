@@ -269,6 +269,29 @@ class TauriSettingsResult:
     plugins: TauriPluginResult = field(default_factory=TauriPluginResult)
 
 
+class TauriMemoryRpcWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, memory_store: Any | None, method: str, params: dict[str, Any]) -> None:
+        super().__init__()
+        self.memory_store = memory_store
+        self.method = method
+        self.params = dict(params)
+
+    def run(self) -> None:
+        try:
+            result = dispatch_tauri_memory_rpc(self.memory_store, self.method, self.params)
+        except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
+            traceback.print_exc()
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
 def tauri_settings_trial_enabled(environ: Mapping[str, str] | None = None) -> bool:
     value = (environ or os.environ).get(TAURI_SETTINGS_TRIAL_ENV, "")
     return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -609,6 +632,57 @@ def parse_tauri_settings_payload(
     )
 
 
+def dispatch_tauri_memory_rpc(
+    memory_store: Any | None,
+    method: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    if not method.startswith("memory."):
+        raise ValueError(f"未知 Tauri RPC 方法：{method}")
+    if memory_store is None:
+        return {
+            "status": "failed",
+            "message": "长期记忆系统不可用。",
+            "error": "memory store is not available",
+            "memories": [],
+        }
+    if method == "memory.search":
+        arguments = dict(params)
+        arguments.setdefault("limit", 120)
+        return memory_store.search_memory(arguments, wait=False)
+    if method == "memory.upsert":
+        arguments = dict(params)
+        memory_id = str(arguments.get("id") or "").strip()
+        if memory_id:
+            arguments["id"] = memory_id
+            return memory_store.update_memory(arguments, allow_sensitive=True, wait=False)
+        return memory_store.create_memory(arguments, allow_sensitive=True, wait=False)
+    if method == "memory.delete":
+        ids = params.get("ids")
+        if ids is None and params.get("id") is not None:
+            ids = [params.get("id")]
+        if not isinstance(ids, list):
+            raise ValueError("memory.delete 需要 id 或 ids。")
+        deleted: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        for raw_id in ids:
+            memory_id = str(raw_id or "").strip()
+            if not memory_id:
+                continue
+            result = memory_store.forget_memory({"id": memory_id}, wait=False)
+            if result.get("status") in {"loading", "failed"}:
+                failed.append(
+                    {
+                        "id": memory_id,
+                        "error": str(result.get("error") or result.get("message") or "删除失败"),
+                    }
+                )
+                continue
+            deleted.append(result.get("memory") or result.get("forgotten") or {"id": memory_id})
+        return {"deleted": deleted, "failed": failed, "ok": not failed}
+    raise ValueError(f"未知 Tauri RPC 方法：{method}")
+
+
 class TauriSettingsProcess(QObject):
     completed = Signal(object)
     applied = Signal(object)
@@ -686,6 +760,7 @@ class TauriSettingsProcess(QObject):
         self._stdout_buffer = ""
         # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
         self._api_probes: dict[str, tuple[QThread, QObject]] = {}
+        self._memory_rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         if not tauri_settings_trial_enabled():
@@ -882,6 +957,9 @@ class TauriSettingsProcess(QObject):
         if method in ("api.list_models", "api.test_connection"):
             self._dispatch_api_probe(request_id, method, params)
             return
+        if method.startswith("memory."):
+            self._dispatch_memory_rpc(request_id, method, params)
+            return
         try:
             result = self._dispatch_rpc(method, params)
         except Exception as exc:  # noqa: BLE001
@@ -925,56 +1003,37 @@ class TauriSettingsProcess(QObject):
         thread.finished.connect(lambda rid=request_id: self._api_probes.pop(rid, None))
         thread.start()
 
+    def _dispatch_memory_rpc(self, request_id: str, method: str, params: dict[str, Any]) -> None:
+        """在后台线程访问 mem0/Qdrant，避免记忆页加载阻塞 Qt 主事件循环。"""
+        thread = QThread()
+        worker: QObject = TauriMemoryRpcWorker(self.memory_store, method, params)
+        worker.moveToThread(thread)
+        self._memory_rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _on_success(payload: object) -> None:
+            result = payload if isinstance(payload, dict) else {"result": payload}
+            self._send_rpc_response(request_id, ok=True, result=result)
+
+        def _on_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(_on_success)
+        worker.failed.connect(_on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._memory_rpcs.pop(rid, None))
+        thread.start()
+
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
                 self.plugin_settings_contributions,
                 params,
             )
-        if not method.startswith("memory."):
-            raise ValueError(f"未知 Tauri RPC 方法：{method}")
-        memory_store = self.memory_store
-        if memory_store is None:
-            return {
-                "status": "failed",
-                "message": "长期记忆系统不可用。",
-                "error": "memory store is not available",
-                "memories": [],
-            }
-        if method == "memory.search":
-            arguments = dict(params)
-            arguments.setdefault("limit", 120)
-            return memory_store.search_memory(arguments, wait=False)
-        if method == "memory.upsert":
-            arguments = dict(params)
-            memory_id = str(arguments.get("id") or "").strip()
-            if memory_id:
-                arguments["id"] = memory_id
-                return memory_store.update_memory(arguments, allow_sensitive=True, wait=False)
-            return memory_store.create_memory(arguments, allow_sensitive=True, wait=False)
-        if method == "memory.delete":
-            ids = params.get("ids")
-            if ids is None and params.get("id") is not None:
-                ids = [params.get("id")]
-            if not isinstance(ids, list):
-                raise ValueError("memory.delete 需要 id 或 ids。")
-            deleted: list[dict[str, Any]] = []
-            failed: list[dict[str, str]] = []
-            for raw_id in ids:
-                memory_id = str(raw_id or "").strip()
-                if not memory_id:
-                    continue
-                result = memory_store.forget_memory({"id": memory_id}, wait=False)
-                if result.get("status") in {"loading", "failed"}:
-                    failed.append(
-                        {
-                            "id": memory_id,
-                            "error": str(result.get("error") or result.get("message") or "删除失败"),
-                        }
-                    )
-                    continue
-                deleted.append(result.get("memory") or result.get("forgotten") or {"id": memory_id})
-            return {"deleted": deleted, "failed": failed, "ok": not failed}
+        if method.startswith("memory."):
+            return dispatch_tauri_memory_rpc(self.memory_store, method, params)
         raise ValueError(f"未知 Tauri RPC 方法：{method}")
 
     def _send_rpc_response(
@@ -1015,14 +1074,15 @@ class TauriSettingsProcess(QObject):
             return
         self._cleaned = True
         self._request_payload = b""
-        # 收尾在途探测线程，避免线程仍在运行时随 self 被销毁。
-        for thread, _worker in list(self._api_probes.values()):
-            try:
-                thread.quit()
-                thread.wait(3000)
-            except RuntimeError:
-                pass
-        self._api_probes.clear()
+        # 收尾在途 RPC 线程，避免线程仍在运行时随 self 被销毁。
+        for pending in (self._api_probes, self._memory_rpcs):
+            for thread, _worker in list(pending.values()):
+                try:
+                    thread.quit()
+                    thread.wait(3000)
+                except RuntimeError:
+                    pass
+            pending.clear()
         process = self._process
         if process is not None:
             process.deleteLater()
