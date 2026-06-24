@@ -35,6 +35,7 @@ const fields = {
   ttsConfigPath: document.getElementById("ttsConfigPath"),
   ttsBundleNoticeRow: document.getElementById("ttsBundleNoticeRow"),
   ttsBundleNotice: document.getElementById("ttsBundleNotice"),
+  ttsResourceCard: document.getElementById("ttsResourceCard"),
   ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
@@ -54,8 +55,10 @@ const fields = {
   backchannelDelay: document.getElementById("backchannelDelay"),
   backchannelProbability: document.getElementById("backchannelProbability"),
   backchannelTtsEnabled: document.getElementById("backchannelTtsEnabled"),
+  backchannelResourceCard: document.getElementById("backchannelResourceCard"),
   memoryCurationEnabled: document.getElementById("memoryCurationEnabled"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
+  memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
   memoryStatusStrip: document.getElementById("memoryStatusStrip"),
   memorySearch: document.getElementById("memorySearch"),
   memoryLayerFilter: document.getElementById("memoryLayerFilter"),
@@ -125,6 +128,12 @@ const pluginState = {
   settingsValues: {},
   initialSettingsValues: {},
   actionBusyKey: "",
+};
+const resourceState = {
+  snapshot: null,
+  pollTimer: null,
+  ttsBundleKey: "",
+  seenTaskFinishes: {},
 };
 
 const themeVars = {
@@ -668,9 +677,13 @@ function syncTtsState() {
   fields.ttsPythonPath.readOnly = false;
   fields.ttsConfigPath.disabled = true;
   syncTtsBundleNotice();
+  if (request) {
+    renderTtsResourceCard();
+  }
 }
 
 function handleTtsProviderChange() {
+  resourceState.ttsBundleKey = "";
   applyTtsProviderDefaults(lastTtsProvider);
   syncTtsState();
 }
@@ -1506,6 +1519,626 @@ async function hostCall(method, params = {}) {
   return invoke("host_call", { method, params });
 }
 
+function resourcesSnapshot() {
+  return resourceState.snapshot || request?.resources || {};
+}
+
+function taskFor(kind) {
+  const snapshot = resourcesSnapshot();
+  if (kind === "tts") {
+    return snapshot.tts?.task || snapshot.tasks?.tts || null;
+  }
+  if (kind === "backchannel") {
+    return snapshot.backchannel?.task || snapshot.tasks?.backchannel || null;
+  }
+  if (kind === "memory_model") {
+    return snapshot.memory_model?.task || snapshot.tasks?.memory_model || null;
+  }
+  return null;
+}
+
+function taskRunning(task) {
+  return task?.status === "running" || task?.status === "queued";
+}
+
+function hasRunningResourceTask(snapshot = resourcesSnapshot()) {
+  return ["tts", "backchannel", "memory_model"].some((kind) => {
+    const task =
+      kind === "tts"
+        ? snapshot.tts?.task || snapshot.tasks?.tts
+        : kind === "backchannel"
+          ? snapshot.backchannel?.task || snapshot.tasks?.backchannel
+          : snapshot.memory_model?.task || snapshot.tasks?.memory_model;
+    return taskRunning(task);
+  });
+}
+
+function resourceStatusLabel(status, ready = false) {
+  if (status === "not_required") {
+    return "无需";
+  }
+  if (status === "running" || status === "queued") {
+    return "处理中";
+  }
+  if (status === "succeeded") {
+    return "已完成";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  if (status === "cancelled") {
+    return "可继续";
+  }
+  return ready ? "已就绪" : "缺失";
+}
+
+function resourceStatusClass(status, ready = false) {
+  if (status === "not_required") {
+    return "is-ready";
+  }
+  if (status === "running" || status === "queued") {
+    return "is-running";
+  }
+  if (status === "succeeded" || ready) {
+    return "is-ready";
+  }
+  if (status === "failed") {
+    return "is-failed";
+  }
+  if (status === "cancelled") {
+    return "is-paused";
+  }
+  return "is-missing";
+}
+
+function renderResourceCards() {
+  renderTtsResourceCard();
+  renderBackchannelResourceCard();
+  renderMemoryModelResourceCard();
+}
+
+function renderResourceCard(container, model) {
+  if (!container) {
+    return;
+  }
+  container.textContent = "";
+  container.classList.toggle("is-muted", Boolean(model.muted));
+  const head = document.createElement("div");
+  head.className = "resource-card__head";
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "resource-card__title-wrap";
+  const title = document.createElement("strong");
+  title.textContent = model.title;
+  const subtitle = document.createElement("span");
+  subtitle.textContent = model.subtitle || "";
+  titleWrap.append(title, subtitle);
+  const badge = document.createElement("span");
+  badge.className = `resource-badge ${resourceStatusClass(model.status, model.ready)}`;
+  badge.textContent = resourceStatusLabel(model.status, model.ready);
+  head.append(titleWrap, badge);
+
+  const body = document.createElement("div");
+  body.className = "resource-card__body";
+  if (model.message) {
+    const message = document.createElement("p");
+    message.className = "resource-message";
+    message.textContent = model.message;
+    body.append(message);
+  }
+  if (model.detail) {
+    const detail = document.createElement("p");
+    detail.className = "resource-detail";
+    detail.textContent = model.detail;
+    body.append(detail);
+  }
+  if (model.progressVisible) {
+    const progress = document.createElement("div");
+    progress.className = "resource-progress";
+    const bar = document.createElement("span");
+    bar.style.width = `${Math.max(0, Math.min(100, Number(model.progress || 0)))}%`;
+    progress.append(bar);
+    body.append(progress);
+  }
+  if (Array.isArray(model.meta) && model.meta.length) {
+    const meta = document.createElement("dl");
+    meta.className = "resource-meta";
+    model.meta.forEach(([label, value]) => {
+      if (!value) {
+        return;
+      }
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      meta.append(dt, dd);
+    });
+    body.append(meta);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "resource-actions";
+  (model.actions || []).forEach((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = action.primary ? "" : action.danger ? "danger-button" : "secondary-button";
+    button.textContent = action.label;
+    button.disabled = Boolean(action.disabled);
+    button.addEventListener("click", action.onClick);
+    actions.append(button);
+  });
+  if (actions.childNodes.length) {
+    body.append(actions);
+  }
+  container.append(head, body);
+}
+
+function selectedTtsBundle() {
+  const resources = resourcesSnapshot().tts || {};
+  const bundles = Array.isArray(resources.bundles) ? resources.bundles : [];
+  const provider = fields.ttsProvider.value;
+  const providerBundles = ttsBundlesForProvider(provider, bundles);
+  if (!providerBundles.length) {
+    return null;
+  }
+
+  const providerRecommendedKey = ttsProviderRecommendedKey(provider, resources);
+  let selected = providerBundles.find((bundle) => bundle.key === resourceState.ttsBundleKey);
+  if (!selected) {
+    selected = providerBundles.find((bundle) => bundle.key === providerRecommendedKey) || providerBundles[0];
+  }
+  if (selected) {
+    resourceState.ttsBundleKey = selected.key;
+  }
+  return selected || null;
+}
+
+function ttsBundlesForProvider(provider, bundles) {
+  if (provider === "genie-tts") {
+    return bundles.filter((bundle) => bundle.provider === "genie-tts");
+  }
+  if (provider === "gpt-sovits") {
+    return bundles.filter((bundle) => bundle.provider === "gpt-sovits");
+  }
+  return bundles.filter((bundle) => bundle.provider === provider);
+}
+
+function ttsProviderRecommendedKey(provider, resources) {
+  if (provider === "genie-tts") {
+    return resources.genie_key || "";
+  }
+  if (provider === "gpt-sovits") {
+    return resources.gpt_sovits_recommended_key || "";
+  }
+  return resources.recommended_key || "";
+}
+
+function ttsProviderLabel(provider) {
+  if (provider === "genie-tts") {
+    return "Genie TTS";
+  }
+  if (provider === "gpt-sovits") {
+    return "GPT-SoVITS";
+  }
+  if (provider === "custom-gpt-sovits") {
+    return "外部 GPT-SoVITS";
+  }
+  return "TTS";
+}
+
+function ttsInstallActionLabel(provider, selected, ready, running, task) {
+  if (running) {
+    return "处理中";
+  }
+  if (ready) {
+    return "重新安装";
+  }
+  if (task?.status === "cancelled") {
+    return "继续安装";
+  }
+  if (provider === "genie-tts") {
+    return "安装 Genie CPU 包";
+  }
+  if (selected?.variant === "gpt-sovits-50") {
+    return "安装 SoVITS 50 系包";
+  }
+  if (provider === "gpt-sovits") {
+    return "安装 SoVITS 通用包";
+  }
+  return "安装推荐包";
+}
+
+function renderTtsBundleSelector(container, bundles, selectedKey, disabled) {
+  const row = document.createElement("label");
+  row.className = "resource-select-row";
+  const label = document.createElement("span");
+  label.textContent = "整合包";
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  bundles.forEach((bundle) => {
+    const option = document.createElement("option");
+    option.value = bundle.key;
+    option.textContent = bundle.display_label || bundle.label || bundle.key;
+    select.append(option);
+  });
+  select.value = selectedKey;
+  select.addEventListener("change", () => {
+    resourceState.ttsBundleKey = select.value;
+    renderResourceCards();
+  });
+  row.append(label, select);
+  container.append(row);
+}
+
+async function copyResourceDiagnostic(kind, task, context = {}) {
+  const diagnostic = JSON.stringify(
+    {
+      kind,
+      status: task?.status || "",
+      stage: task?.stage || "",
+      message: task?.message || "",
+      detail: task?.detail || "",
+      error: task?.error || "",
+      result: task?.result || {},
+      context,
+    },
+    null,
+    2,
+  );
+  try {
+    await navigator.clipboard.writeText(diagnostic);
+    notify("诊断信息已复制。", "success");
+  } catch (_error) {
+    window.prompt("复制以下诊断信息：", diagnostic);
+  }
+}
+
+function renderTtsResourceCard() {
+  const resources = resourcesSnapshot().tts || {};
+  const bundles = Array.isArray(resources.bundles) ? resources.bundles : [];
+  const provider = fields.ttsProvider.value;
+  const providerBundles = ttsBundlesForProvider(provider, bundles);
+  const task = taskFor("tts");
+  const running = taskRunning(task);
+  const selected = selectedTtsBundle();
+  const taskBundleKey = task?.context?.bundle_key || "";
+  const taskMatchesSelected = !taskBundleKey || taskBundleKey === selected?.key;
+  const muted = !fields.ttsEnabled.checked || provider === "none" || provider === "custom-gpt-sovits";
+  const ready = Boolean(selected?.installed) || (taskMatchesSelected && task?.status === "succeeded");
+  const providerLabel = ttsProviderLabel(provider);
+  const providerHint = ttsProviderResourceHint(provider, resources, selected);
+  const message = muted
+    ? !fields.ttsEnabled.checked || provider === "none"
+      ? "TTS 已关闭。"
+      : provider === "custom-gpt-sovits"
+      ? "外部 GPT-SoVITS 使用你填写的本机路径。"
+      : "无需内置资源。"
+    : running
+      ? taskMatchesSelected
+        ? task.message || `正在处理 ${providerLabel} 整合包。`
+        : `后台正在处理 ${task.title || "其他 TTS 整合包"}，当前展示 ${providerLabel} 的安装信息。`
+      : ready
+        ? `${providerLabel} 本地运行环境已就绪。`
+        : `${providerLabel} 需要安装对应的本地整合包。`;
+  const detail = running && taskMatchesSelected
+    ? task.detail || ""
+    : providerHint
+      ? providerHint
+      : selected
+      ? `${selected.variant_label || selected.display_label || selected.label} · ${selected.work_dir || "待安装"}`
+      : resources.gpu_summary || "";
+  const actions = [];
+  if (!muted && selected) {
+    actions.push({
+      label: ttsInstallActionLabel(provider, selected, ready, running, task),
+      primary: !ready,
+      disabled: running,
+      onClick: () => startResourceAction("resources.tts.install", { bundle_key: selected.key }),
+    });
+    if (running && task?.cancellable) {
+      actions.push({
+        label: "暂停",
+        danger: true,
+        onClick: () => startResourceAction("resources.tts.cancel"),
+      });
+    }
+  }
+  if (task?.status === "failed") {
+    actions.push({
+      label: "复制诊断",
+      onClick: () => copyResourceDiagnostic("tts", task, { provider, bundle_key: selected?.key || "" }),
+    });
+  }
+  actions.push({ label: "刷新", onClick: refreshResources });
+
+  renderResourceCard(fields.ttsResourceCard, {
+    title: `${providerLabel} 整合包`,
+    subtitle: muted
+      ? "无需内置资源"
+      : selected?.variant_label || resources.gpu_status?.gpt_sovits?.message || resources.platform || "",
+    status: muted ? "not_required" : task?.status || "",
+    ready,
+    muted,
+    message,
+    detail,
+    progressVisible: running && taskMatchesSelected,
+    progress: task?.progress || 0,
+    meta: [
+      ["平台", resources.platform],
+      ["显卡", provider === "gpt-sovits" ? resources.gpu_summary : ""],
+      ["下载源", selected?.download_url],
+      ["安装目录", selected?.work_dir],
+    ],
+    actions,
+  });
+  if (!muted && providerBundles.length > 1 && fields.ttsResourceCard) {
+    const body = fields.ttsResourceCard.querySelector(".resource-card__body");
+    if (body) {
+      renderTtsBundleSelector(body, providerBundles, selected?.key || "", running);
+    }
+  }
+}
+
+function ttsProviderResourceHint(provider, resources, selected) {
+  if (provider === "genie-tts") {
+    return selected
+      ? `${selected.display_label || selected.label} · 使用 CPU 整合包，不依赖 NVIDIA 显卡。`
+      : "Genie TTS 使用 CPU 整合包，不依赖 NVIDIA 显卡。";
+  }
+  if (provider !== "gpt-sovits") {
+    return "";
+  }
+  const status = resources.gpu_status?.gpt_sovits;
+  if (!status) {
+    return resources.gpu_summary || "";
+  }
+  const selectedText = selected?.variant_label ? `当前选择：${selected.variant_label}。` : "";
+  if (status.severity === "warning") {
+    return `${status.message} ${status.vram_note || ""} ${selectedText}`.trim();
+  }
+  return `${status.message} ${status.vram_note || ""} ${selectedText}`.trim();
+}
+
+function renderBackchannelResourceCard() {
+  const resources = resourcesSnapshot().backchannel || {};
+  const task = taskFor("backchannel");
+  const running = taskRunning(task);
+  const mode = fields.backchannelMode.value;
+  const enabled = fields.backchannelEnabled.checked;
+  const ready = Boolean(resources.ready) || task?.status === "succeeded";
+  const wantsModel = enabled && mode === "hybrid";
+  const message = running
+    ? task.message || "正在处理接话模型。"
+    : ready
+      ? mode === "hybrid"
+        ? "模型增强已就绪。"
+        : "模型已就绪，切换到模型增强后启用。"
+      : wantsModel
+        ? "模型增强缺少句向量模型，会暂时降级到规则模式。"
+        : "规则模式不依赖模型，可先安装备用。";
+  const actions = [
+    {
+      label: running ? "安装中" : ready ? "重新安装" : "在线安装",
+      primary: !ready,
+      disabled: running,
+      onClick: () => startResourceAction("resources.backchannel.download"),
+    },
+    {
+      label: "导入 ZIP",
+      disabled: running,
+      onClick: () => importResourceZip("backchannel"),
+    },
+  ];
+  if (task?.status === "failed") {
+    actions.push({
+      label: "复制诊断",
+      onClick: () => copyResourceDiagnostic("backchannel", task, { mode, enabled, model_name: resources.model_name || "" }),
+    });
+  }
+  actions.push({ label: "刷新", onClick: refreshResources });
+
+  renderResourceCard(fields.backchannelResourceCard, {
+    title: "接话模型",
+    subtitle: resources.model_name || "",
+    status: task?.status || "",
+    ready,
+    message,
+    detail: running ? task.detail || "" : resources.cache_folder || resources.endpoint || "",
+    progressVisible: running,
+    progress: task?.progress || (running ? 35 : 0),
+    meta: [
+      ["端点", resources.endpoint],
+      ["缓存", resources.cache_folder],
+      ["错误", task?.error],
+    ],
+    actions,
+  });
+}
+
+function renderMemoryModelResourceCard() {
+  const resources = resourcesSnapshot().memory_model || {};
+  const task = taskFor("memory_model");
+  const running = taskRunning(task);
+  const ready = Boolean(resources.ready) || task?.status === "succeeded";
+  const available = resources.available !== false;
+  const message = !available
+    ? "长期记忆系统暂不可用。"
+    : running
+      ? task.message || "正在处理记忆模型。"
+      : ready
+        ? "记忆模型已就绪。"
+        : "记忆检索需要本地嵌入模型。";
+  const actions = [
+    {
+      label: running ? "安装中" : ready ? "重新安装" : "在线安装",
+      primary: !ready,
+      disabled: running || !available,
+      onClick: () => startResourceAction("resources.memory.download"),
+    },
+    {
+      label: "导入 ZIP",
+      disabled: running || !available,
+      onClick: () => importResourceZip("memory"),
+    },
+  ];
+  if (task?.status === "failed") {
+    actions.push({
+      label: "复制诊断",
+      onClick: () => copyResourceDiagnostic("memory_model", task, { model_name: resources.model_name || "" }),
+    });
+  }
+  actions.push({ label: "刷新", disabled: !available, onClick: refreshResources });
+
+  renderResourceCard(fields.memoryModelResourceCard, {
+    title: "记忆模型",
+    subtitle: resources.model_name || "",
+    status: task?.status || "",
+    ready,
+    muted: !available,
+    message,
+    detail: running ? task.detail || "" : resources.error || "",
+    progressVisible: running,
+    progress: task?.progress || (running ? 35 : 0),
+    meta: [
+      ["缓存", task?.result?.cache_folder],
+      ["错误", task?.error || resources.error],
+    ],
+    actions,
+  });
+}
+
+async function refreshResources() {
+  if (!request) {
+    return;
+  }
+  const previous = resourcesSnapshot();
+  try {
+    const snapshot = await hostCall("resources.status");
+    resourceState.snapshot = snapshot;
+    handleResourceTaskTransitions(previous, snapshot);
+    renderResourceCards();
+    if (hasRunningResourceTask(snapshot)) {
+      startResourcePolling();
+    } else {
+      stopResourcePolling();
+    }
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+async function startResourceAction(method, params = {}) {
+  setError("");
+  const previous = resourcesSnapshot();
+  try {
+    const snapshot = await hostCall(method, params);
+    resourceState.snapshot = snapshot;
+    handleResourceTaskTransitions(previous, snapshot);
+    renderResourceCards();
+    if (hasRunningResourceTask(snapshot)) {
+      startResourcePolling();
+    }
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+function startResourcePolling() {
+  if (resourceState.pollTimer) {
+    return;
+  }
+  resourceState.pollTimer = window.setInterval(refreshResources, 1200);
+}
+
+function stopResourcePolling() {
+  window.clearInterval(resourceState.pollTimer);
+  resourceState.pollTimer = null;
+}
+
+function handleResourceTaskTransitions(previous, next) {
+  const pairs = [
+    ["tts", previous?.tts?.task || previous?.tasks?.tts, next?.tts?.task || next?.tasks?.tts],
+    [
+      "backchannel",
+      previous?.backchannel?.task || previous?.tasks?.backchannel,
+      next?.backchannel?.task || next?.tasks?.backchannel,
+    ],
+    [
+      "memory_model",
+      previous?.memory_model?.task || previous?.tasks?.memory_model,
+      next?.memory_model?.task || next?.tasks?.memory_model,
+    ],
+  ];
+  pairs.forEach(([kind, before, after]) => {
+    if (!after || after.status !== "succeeded") {
+      return;
+    }
+    const finishKey = `${kind}:${after.finished_at || ""}`;
+    if (!after.finished_at || resourceState.seenTaskFinishes[finishKey]) {
+      return;
+    }
+    if (before?.status === "succeeded") {
+      resourceState.seenTaskFinishes[finishKey] = true;
+      return;
+    }
+    resourceState.seenTaskFinishes[finishKey] = true;
+    if (kind === "tts") {
+      applyTtsInstallResult(after.result || {});
+    } else if (kind === "backchannel") {
+      notify("接话模型已就绪。", "success");
+    } else if (kind === "memory_model") {
+      notify("记忆模型已就绪。", "success");
+      if (fields.pages.memory.classList.contains("is-active")) {
+        loadMemories();
+      }
+    }
+  });
+}
+
+function applyTtsInstallResult(result) {
+  if (!result || !result.work_dir) {
+    return;
+  }
+  fields.ttsEnabled.checked = true;
+  fields.ttsProvider.value = result.provider || fields.ttsProvider.value;
+  fields.ttsWorkDir.value = result.work_dir || "";
+  fields.ttsPythonPath.value = result.python_path || "";
+  fields.ttsConfigPath.value = result.tts_config_path || "";
+  fields.ttsApiUrl.value = result.api_url || fields.ttsApiUrl.value;
+  refreshSelect(fields.ttsProvider);
+  syncTtsState();
+  scheduleDirty();
+  notify("TTS 整合包已安装，配置已回填。", "success");
+}
+
+async function chooseZipPath(title) {
+  const dialogApi = window.__TAURI__?.dialog;
+  if (dialogApi?.open) {
+    const selected = await dialogApi.open({
+      title,
+      multiple: false,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
+    return Array.isArray(selected) ? selected[0] : selected;
+  }
+  return window.prompt(`${title}\n请输入 ZIP 文件完整路径：`, "") || "";
+}
+
+async function importResourceZip(kind) {
+  const title = kind === "backchannel" ? "导入接话模型 ZIP" : "导入记忆模型 ZIP";
+  let path = "";
+  try {
+    path = String(await chooseZipPath(title) || "").trim();
+  } catch (error) {
+    setError(String(error));
+    return;
+  }
+  if (!path) {
+    return;
+  }
+  const method = kind === "backchannel" ? "resources.backchannel.import" : "resources.memory.import";
+  await startResourceAction(method, { path });
+}
+
 function memoryLayers() {
   return request?.memory?.layers || [];
 }
@@ -1754,6 +2387,7 @@ function renderMemoryPage() {
   fillMemoryEditor(selectedMemory());
   fields.memoryAddButton.disabled = memoryState.status === "loading" || memoryState.status === "failed";
   fields.memoryRefreshButton.disabled = memoryState.loading;
+  renderMemoryModelResourceCard();
 }
 
 async function loadMemories() {
@@ -2602,6 +3236,7 @@ function collectSettings() {
 
 async function load() {
   request = await invoke("load_request");
+  resourceState.snapshot = request.resources || {};
   applyTheme(request.theme);
   renderCharacters();
   renderThemeControls();
@@ -2711,6 +3346,10 @@ async function load() {
   refreshSelect(fields.backchannelMode);
   renderMemoryPage();
   renderPluginPage();
+  renderResourceCards();
+  if (hasRunningResourceTask()) {
+    startResourcePolling();
+  }
 
   // 配置全部填充完毕后拍基线，作为「未保存改动」的比对基准。
   settingsBaseline = settingsSnapshot();
@@ -2741,6 +3380,8 @@ fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
 fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
+fields.backchannelEnabled.addEventListener("change", renderBackchannelResourceCard);
+fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(request.theme_defaults);

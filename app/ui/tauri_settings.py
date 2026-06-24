@@ -130,6 +130,7 @@ from app.ui.theme import (
     theme_to_mapping,
 )
 from app.ui.settings.workers import ApiConnectionTestWorker, ApiModelListProbeWorker
+from app.ui.settings.resource_tasks import settings_resource_task_manager
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
 from app.voice.tts_settings import (
@@ -422,6 +423,7 @@ def build_tauri_settings_request(
         ),
         "memory": _memory_to_mapping(memory_curation_settings or MemoryCurationSettings()),
         "plugins": _plugins_to_mapping(base_dir, plugin_settings_contributions),
+        "resources": {},
         "theme_defaults": _theme_to_mapping(DEFAULT_THEME_SETTINGS),
         "theme_fields": [
             {"id": field, "label": label}
@@ -750,6 +752,10 @@ class TauriSettingsProcess(QObject):
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
         self.memory_store = memory_store
         self.plugin_settings_contributions = list(plugin_settings_contributions or [])
+        self.resource_tasks = settings_resource_task_manager(
+            self.base_dir,
+            memory_store=self.memory_store,
+        )
         self.model = model
         self.parent_widget = parent_widget
         self._process: QProcess | None = None
@@ -820,7 +826,7 @@ class TauriSettingsProcess(QObject):
         self._cleanup()
 
     def _build_request(self) -> dict[str, Any]:
-        return build_tauri_settings_request(
+        request = build_tauri_settings_request(
             self.settings,
             base_dir=self.base_dir,
             mcp_settings=self.mcp_settings,
@@ -849,6 +855,8 @@ class TauriSettingsProcess(QObject):
             model=self.model,
             parent_widget=self.parent_widget,
         )
+        request["resources"] = self.resource_tasks.snapshot()
+        return request
 
     def _send_request(self) -> None:
         process = self._process
@@ -1034,6 +1042,8 @@ class TauriSettingsProcess(QObject):
             )
         if method.startswith("memory."):
             return dispatch_tauri_memory_rpc(self.memory_store, method, params)
+        if method.startswith("resources."):
+            return self.resource_tasks.dispatch(method, params)
         raise ValueError(f"未知 Tauri RPC 方法：{method}")
 
     def _send_rpc_response(

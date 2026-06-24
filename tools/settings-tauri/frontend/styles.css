@@ -287,6 +287,171 @@ body {
   border-radius: 999px;
 }
 
+/* ---------- 资源状态卡 ---------- */
+
+.resource-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 74%, transparent);
+  border-radius: 8px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--sakura-input-bg) 92%, var(--sakura-primary)),
+      color-mix(in srgb, var(--sakura-panel-bg) 80%, var(--sakura-input-bg))
+    );
+  box-shadow: 0 12px 28px -24px color-mix(in srgb, var(--sakura-accent) 50%, transparent);
+}
+
+.resource-card:empty {
+  display: none;
+}
+
+.resource-card.is-muted {
+  background: color-mix(in srgb, var(--surface-soft) 84%, var(--sakura-input-bg));
+}
+
+.resource-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.resource-card__title-wrap {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resource-card__title-wrap strong {
+  color: var(--sakura-text);
+  font-size: 14px;
+}
+
+.resource-card__title-wrap span {
+  overflow-wrap: anywhere;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+}
+
+.resource-badge {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.resource-badge.is-ready {
+  border-color: color-mix(in srgb, #2f9e67 42%, var(--sakura-border));
+  color: #24764f;
+}
+
+.resource-badge.is-running {
+  border-color: color-mix(in srgb, var(--sakura-primary) 62%, var(--sakura-border));
+  color: var(--sakura-primary);
+}
+
+.resource-badge.is-failed {
+  border-color: color-mix(in srgb, #b92b42 52%, var(--sakura-border));
+  color: #a5273a;
+}
+
+.resource-badge.is-paused {
+  color: var(--sakura-accent);
+}
+
+.resource-card__body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.resource-message,
+.resource-detail {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-message {
+  color: var(--sakura-text);
+  font-size: 13.5px;
+}
+
+.resource-detail {
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+}
+
+.resource-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sakura-border) 28%, transparent);
+}
+
+.resource-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    var(--sakura-primary),
+    color-mix(in srgb, var(--sakura-accent) 72%, var(--sakura-input-bg))
+  );
+  transition: width 0.24s var(--ease);
+}
+
+.resource-meta {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 0;
+  padding-top: 2px;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+}
+
+.resource-meta dt {
+  color: var(--sakura-secondary-text);
+  font-weight: 700;
+}
+
+.resource-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.resource-select-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.resource-select-row select {
+  max-width: none;
+}
+
 /* ---------- 表单行与控件 ---------- */
 
 .form-row {
