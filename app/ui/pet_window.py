@@ -5330,18 +5330,22 @@ class PetWindow(QWidget):
         system_extra = result.system_extra
         try:
             selected_profile = self.character_registry.get(result.character.character_id)
-        except CharacterConfigError as exc:
-            show_themed_critical(
-                self,
-                "角色配置无效",
-                format_failure_message(
-                    "无法读取当前选择的角色配置。",
-                    "请重新导入或选择一个完整的角色包。",
-                    exc,
-                ),
-            )
-            self._abort_tauri_settings_apply(final=final)
-            return
+        except CharacterConfigError:
+            self.character_registry = CharacterRegistry(self.base_dir)
+            try:
+                selected_profile = self.character_registry.get(result.character.character_id)
+            except CharacterConfigError as exc:
+                show_themed_critical(
+                    self,
+                    "角色配置无效",
+                    format_failure_message(
+                        "无法读取当前选择的角色配置。",
+                        "请重新导入或选择一个完整的角色包。",
+                        exc,
+                    ),
+                )
+                self._abort_tauri_settings_apply(final=final)
+                return
 
         tts_settings = self._tts_settings_from_tauri_result(result.tts, selected_profile)
         new_tts_provider = self._create_tts_provider_from_settings(tts_settings)

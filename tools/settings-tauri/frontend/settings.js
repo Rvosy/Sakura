@@ -2,6 +2,10 @@ const invoke = window.__TAURI__.core.invoke;
 
 const fields = {
   characterSelect: document.getElementById("characterSelect"),
+  characterImportButton: document.getElementById("characterImportButton"),
+  ttsVoiceImportButton: document.getElementById("ttsVoiceImportButton"),
+  characterExportButton: document.getElementById("characterExportButton"),
+  characterArchiveHint: document.getElementById("characterArchiveHint"),
   portraitScale: document.getElementById("portraitScale"),
   controlPanelWidth: document.getElementById("controlPanelWidth"),
   bubbleHeight: document.getElementById("bubbleHeight"),
@@ -112,6 +116,27 @@ let settingsBaseline = null;
 // 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
 let bypassCloseGuard = false;
 let memoryRetryTimer = null;
+let characterArchiveBusy = false;
+const characterExportOptions = [
+  {
+    kind: "full",
+    label: "完整包 (.char)",
+    description: "导出角色配置和可携带语音模型，适合完整迁移。",
+    requiresVoice: true,
+  },
+  {
+    kind: "card",
+    label: "单角色包 (.char)",
+    description: "只导出角色配置，不包含语音模型。",
+    requiresVoice: false,
+  },
+  {
+    kind: "voice",
+    label: "语音包 (.voice)",
+    description: "只导出当前角色的可携带 TTS 模型。",
+    requiresVoice: true,
+  },
+];
 const memoryState = {
   entries: [],
   selectedId: "",
@@ -394,7 +419,14 @@ function enhanceSelect(select) {
         item.classList.add("is-selected");
         item.setAttribute("aria-selected", "true");
       }
+      if (option.disabled) {
+        item.classList.add("is-disabled");
+        item.setAttribute("aria-disabled", "true");
+      }
       item.addEventListener("click", () => {
+        if (option.disabled) {
+          return;
+        }
         if (select.value !== option.value) {
           select.value = option.value;
           select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -579,6 +611,10 @@ function selectedCharacter() {
   return request.character.characters.find((item) => item.id === id) || null;
 }
 
+function selectedCharacterHasExportableVoice() {
+  return Boolean(selectedCharacter()?.has_exportable_voice);
+}
+
 // 切换角色时跟随载入该角色自带的配色（仅配色，输入栏视觉效果等用户级偏好保留）。
 function applySelectedCharacterTheme() {
   const character = selectedCharacter();
@@ -702,6 +738,31 @@ function renderCharacters() {
     fields.characterSelect.append(option);
   });
   fields.characterSelect.value = request.character.current_character_id;
+  syncCharacterArchiveState();
+}
+
+function syncCharacterArchiveState() {
+  if (!request) {
+    return;
+  }
+  const character = selectedCharacter();
+  const hasCharacter = Boolean(character);
+  fields.characterSelect.disabled = characterArchiveBusy || !request.character.characters.length;
+  fields.characterImportButton.disabled = characterArchiveBusy;
+  fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
+  fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
+  fields.saveButton.disabled = characterArchiveBusy;
+  fields.applyButton.disabled = characterArchiveBusy;
+  fields.cancelButton.disabled = characterArchiveBusy;
+  fields.characterArchiveHint.textContent = characterArchiveBusy
+    ? "角色包处理中..."
+    : (hasCharacter ? "管理 Sakura .char 与 .voice 文件。" : "先导入一个 Sakura .char 角色包。");
+  refreshSelect(fields.characterSelect);
+}
+
+function setCharacterArchiveBusy(busy) {
+  characterArchiveBusy = Boolean(busy);
+  syncCharacterArchiveState();
 }
 
 function renderThemeControls() {
@@ -1524,6 +1585,217 @@ function setTtsProviderValue(provider) {
 
 async function hostCall(method, params = {}) {
   return invoke("host_call", { method, params });
+}
+
+function characterExportDefaultName(kind) {
+  const id = selectedCharacter()?.id || "character";
+  if (kind === "voice") {
+    return `${id}.voice`;
+  }
+  if (kind === "card") {
+    return `${id}.card.char`;
+  }
+  return `${id}.char`;
+}
+
+function archiveDialogFilter(kind) {
+  if (kind === "voice") {
+    return [{ name: "Sakura TTS 模型包", extensions: ["voice"] }];
+  }
+  return [{ name: "Sakura 角色包", extensions: ["char"] }];
+}
+
+async function chooseArchivePath(kind) {
+  const title = kind === "voice" ? "导入 Sakura TTS 模型包" : "导入 Sakura 角色包";
+  const dialogApi = window.__TAURI__?.dialog;
+  if (dialogApi?.open) {
+    const selected = await dialogApi.open({
+      title,
+      multiple: false,
+      filters: archiveDialogFilter(kind),
+    });
+    return Array.isArray(selected) ? selected[0] : selected;
+  }
+  return window.prompt(`${title}\n请输入文件完整路径：`, "") || "";
+}
+
+async function chooseExportPath(kind) {
+  const title = kind === "voice"
+    ? "导出 Sakura TTS 模型包"
+    : (kind === "card" ? "导出 Sakura 单角色包" : "导出 Sakura 完整角色包");
+  const dialogApi = window.__TAURI__?.dialog;
+  const defaultPath = characterExportDefaultName(kind);
+  if (dialogApi?.save) {
+    return dialogApi.save({
+      title,
+      defaultPath,
+      filters: archiveDialogFilter(kind),
+    });
+  }
+  return window.prompt(`${title}\n请输入保存路径：`, defaultPath) || "";
+}
+
+function chooseExportKind() {
+  return new Promise((resolve) => {
+    const hasVoice = selectedCharacterHasExportableVoice();
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    const dialog = document.createElement("section");
+    dialog.className = "confirm-dialog export-kind-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const heading = document.createElement("h2");
+    heading.textContent = "选择导出内容";
+    const body = document.createElement("div");
+    body.className = "export-kind-list";
+
+    characterExportOptions.forEach((option) => {
+      const disabled = option.requiresVoice && !hasVoice;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "export-kind-option";
+      button.disabled = disabled;
+      const title = document.createElement("span");
+      title.className = "export-kind-title";
+      title.textContent = option.label;
+      const desc = document.createElement("span");
+      desc.className = "export-kind-desc";
+      desc.textContent = disabled
+        ? `${option.description} 当前角色没有可导出的语音模型。`
+        : option.description;
+      button.append(title, desc);
+      button.addEventListener("click", () => close(option.kind));
+      body.append(button);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary-button";
+    cancel.textContent = "取消";
+    actions.append(cancel);
+    dialog.append(heading, body, actions);
+    overlay.append(dialog);
+
+    function close(kind) {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      resolve(kind || "");
+    }
+    function onKey(event) {
+      if (event.key === "Escape") {
+        close("");
+      }
+    }
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close("");
+      }
+    });
+    cancel.addEventListener("click", () => close(""));
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    dialog.querySelector("button:not(:disabled)")?.focus();
+  });
+}
+
+function applyCharacterRpcResult(result, { dirty = true, applyTheme = false } = {}) {
+  if (Array.isArray(result?.characters)) {
+    request.character.characters = result.characters;
+  }
+  if (result?.current_character_id) {
+    request.character.current_character_id = result.current_character_id;
+  }
+  renderCharacters();
+  refreshSelect(fields.characterSelect);
+  if (result?.current_character_id) {
+    fields.characterSelect.value = result.current_character_id;
+    refreshSelect(fields.characterSelect);
+  }
+  if (result?.disable_tts) {
+    fields.ttsEnabled.checked = false;
+  }
+  if (applyTheme) {
+    applySelectedCharacterTheme();
+  }
+  syncTtsState();
+  syncCharacterArchiveState();
+  if (dirty) {
+    scheduleDirty();
+  }
+  if (result?.message) {
+    notify(result.message, "success");
+  }
+}
+
+async function runCharacterArchiveAction(action) {
+  if (!request || characterArchiveBusy) {
+    return;
+  }
+  setError("");
+  setCharacterArchiveBusy(true);
+  try {
+    await action();
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    setCharacterArchiveBusy(false);
+  }
+}
+
+async function importCharacterArchive() {
+  await runCharacterArchiveAction(async () => {
+    const path = String(await chooseArchivePath("character") || "").trim();
+    if (!path) {
+      return;
+    }
+    const result = await hostCall("character.import_archive", { path });
+    applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
+  });
+}
+
+async function importCharacterVoiceArchive() {
+  await runCharacterArchiveAction(async () => {
+    const character = selectedCharacter();
+    if (!character) {
+      setError("请先选择一个角色。");
+      return;
+    }
+    const path = String(await chooseArchivePath("voice") || "").trim();
+    if (!path) {
+      return;
+    }
+    const result = await hostCall("character.import_voice_archive", {
+      path,
+      character_id: character.id,
+    });
+    applyCharacterRpcResult(result, { dirty: false });
+  });
+}
+
+async function exportCharacterArchive() {
+  await runCharacterArchiveAction(async () => {
+    const character = selectedCharacter();
+    if (!character) {
+      setError("当前没有可导出的角色。");
+      return;
+    }
+    const kind = await chooseExportKind();
+    if (!kind) {
+      return;
+    }
+    const path = String(await chooseExportPath(kind) || "").trim();
+    if (!path) {
+      return;
+    }
+    const result = await hostCall("character.export_archive", {
+      path,
+      character_id: character.id,
+      kind,
+    });
+    applyCharacterRpcResult(result, { dirty: false });
+  });
 }
 
 function resourcesSnapshot() {
@@ -3348,6 +3620,7 @@ async function load() {
   syncBubbleState();
   syncApiAdvancedState();
   syncTtsState();
+  syncCharacterArchiveState();
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.ttsProvider);
   refreshSelect(fields.backchannelMode);
@@ -3376,6 +3649,10 @@ layoutSliders.forEach((fieldKey) => {
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
+fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
+fields.characterImportButton.addEventListener("click", importCharacterArchive);
+fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
+fields.characterExportButton.addEventListener("click", exportCharacterArchive);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);

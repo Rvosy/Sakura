@@ -5347,6 +5347,224 @@ def test_tauri_settings_request_includes_per_character_theme() -> None:
     assert len(characters[0]["theme"]) == len(request["theme_fields"])
 
 
+def test_tauri_settings_request_marks_exportable_voice() -> None:
+    from app.config.character_loader import CharacterRegistry
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    root = _ui_runtime_root("tauri_request_voice_exportable")
+    with_voice = _build_settings_dialog_character(root, "sakura", "Sakura")
+    _build_settings_dialog_character(root, "nanami", "Nanami", with_voice=False)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        character_registry=CharacterRegistry(root),
+        current_character=with_voice,
+        nonce="nonce",
+    )
+
+    by_id = {item["id"]: item for item in request["character"]["characters"]}
+    assert by_id["sakura"]["has_voice"] is True
+    assert by_id["sakura"]["has_exportable_voice"] is True
+    assert by_id["nanami"]["has_voice"] is False
+    assert by_id["nanami"]["has_exportable_voice"] is False
+
+
+def test_tauri_character_rpc_import_archive_refreshes_characters() -> None:
+    from app.config.character_archive import export_character_archive
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    case_root = _ui_runtime_root("tauri_char_import")
+    root = case_root / "runtime"
+    source_root = case_root / "source"
+    _build_settings_dialog_character(root, "sakura", "Sakura")
+    imported = _build_settings_dialog_character(source_root, "nanami", "Nanami")
+    archive_path = case_root / "nanami.char"
+    export_character_archive(imported, archive_path)
+
+    result = dispatch_tauri_character_rpc(
+        root,
+        "character.import_archive",
+        {"path": str(archive_path)},
+    )
+
+    assert result["current_character_id"] == "nanami"
+    assert result.get("disable_tts") is not True
+    assert {item["id"] for item in result["characters"]} == {"sakura", "nanami"}
+    assert any(item["id"] == "nanami" and item["has_exportable_voice"] for item in result["characters"])
+
+
+def test_tauri_character_rpc_import_voice_less_archive_disables_tts() -> None:
+    from app.config.character_archive import export_character_archive
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    case_root = _ui_runtime_root("tauri_char_import_no_voice")
+    root = case_root / "runtime"
+    source_root = case_root / "source"
+    _build_settings_dialog_character(root, "sakura", "Sakura")
+    imported = _build_settings_dialog_character(source_root, "nanami", "Nanami", with_voice=False)
+    archive_path = case_root / "nanami.char"
+    export_character_archive(imported, archive_path)
+
+    result = dispatch_tauri_character_rpc(
+        root,
+        "character.import_archive",
+        {"path": str(archive_path)},
+    )
+
+    assert result["current_character_id"] == "nanami"
+    assert result["disable_tts"] is True
+    assert "TTS 已自动关闭" in result["message"]
+    assert any(item["id"] == "nanami" and not item["has_voice"] for item in result["characters"])
+
+
+def test_tauri_character_rpc_import_voice_archive_updates_selected_character() -> None:
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    root = _ui_runtime_root("tauri_voice_import")
+    _build_settings_dialog_character(root, "sakura", "Sakura", with_voice=False)
+    archive_path = _build_settings_dialog_voice_archive(root)
+
+    result = dispatch_tauri_character_rpc(
+        root,
+        "character.import_voice_archive",
+        {"path": str(archive_path), "character_id": "sakura"},
+    )
+
+    assert result["current_character_id"] == "sakura"
+    sakura = next(item for item in result["characters"] if item["id"] == "sakura")
+    assert sakura["has_voice"] is True
+    assert sakura["has_exportable_voice"] is True
+
+
+def test_tauri_character_rpc_exports_archive_kinds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings
+
+    root = _ui_runtime_root("tauri_char_export")
+    _build_settings_dialog_character(root, "sakura", "Sakura")
+    calls: list[tuple[str, str, bool | None]] = []
+
+    def fake_export_character_archive(profile, output_path, *, include_voice=True):  # type: ignore[no-untyped-def]
+        calls.append(("char", Path(output_path).name, include_voice))
+
+    def fake_export_character_voice_archive(profile, output_path):  # type: ignore[no-untyped-def]
+        calls.append(("voice", Path(output_path).name, None))
+
+    monkeypatch.setattr(tauri_settings, "export_character_archive", fake_export_character_archive)
+    monkeypatch.setattr(tauri_settings, "export_character_voice_archive", fake_export_character_voice_archive)
+
+    tauri_settings.dispatch_tauri_character_rpc(
+        root,
+        "character.export_archive",
+        {"path": str(root / "full"), "character_id": "sakura", "kind": "full"},
+    )
+    tauri_settings.dispatch_tauri_character_rpc(
+        root,
+        "character.export_archive",
+        {"path": str(root / "card.char"), "character_id": "sakura", "kind": "card"},
+    )
+    tauri_settings.dispatch_tauri_character_rpc(
+        root,
+        "character.export_archive",
+        {"path": str(root / "voice"), "character_id": "sakura", "kind": "voice"},
+    )
+
+    assert calls == [
+        ("char", "full.char", True),
+        ("char", "card.char", False),
+        ("voice", "voice.voice", None),
+    ]
+
+
+def test_tauri_character_rpc_rejects_voice_export_without_models() -> None:
+    from app.config.character_archive import CharacterArchiveError
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    root = _ui_runtime_root("tauri_char_export_no_voice")
+    _build_settings_dialog_character(root, "sakura", "Sakura", with_voice=False)
+
+    with pytest.raises(CharacterArchiveError, match="没有完整语音模型"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.export_archive",
+            {"path": str(root / "sakura.char"), "character_id": "sakura", "kind": "full"},
+        )
+    with pytest.raises(CharacterArchiveError, match="没有可导出的语音模型"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.export_archive",
+            {"path": str(root / "sakura.voice"), "character_id": "sakura", "kind": "voice"},
+        )
+
+
+def test_tauri_settings_apply_reloads_registry_for_imported_character() -> None:
+    from app.agent.memory_curator import MemoryCurationSettings
+    from app.config.character_loader import CharacterRegistry
+    from app.ui.pet_window import PetWindow
+
+    saved_character: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, character_id):  # type: ignore[no-untyped-def]
+            saved_character.append(character_id)
+
+        def save_screen_awareness_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, _section, _values):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_backchannel_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_memory_curation_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        MemoryCurationSettings(),
+    )
+    root = _ui_runtime_root("tauri_reload_imported_character")
+    sakura = _build_settings_dialog_character(root, "sakura", "Sakura")
+    window.base_dir = root
+    window.character_registry = CharacterRegistry(root)
+    window.character_profile = sakura
+    _build_settings_dialog_character(root, "nanami", "Nanami", with_voice=False)
+
+    window._apply_tauri_settings_result(_build_tauri_settings_result(character_id="nanami"), final=True)
+
+    assert saved_character == ["nanami"]
+    assert window.character_profile.id == "nanami"
+
+
 def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -5439,6 +5657,8 @@ def test_tauri_settings_capability_allows_window_close() -> None:
     capability = json.loads(capability_path.read_text(encoding="utf-8"))
 
     assert "core:window:allow-close" in capability["permissions"]
+    assert "dialog:allow-open" in capability["permissions"]
+    assert "dialog:allow-save" in capability["permissions"]
 
 
 def test_tauri_settings_process_dispatches_memory_rpc_methods() -> None:
@@ -12374,6 +12594,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.base_dir = Path(".")
     window.character_registry = CharacterRegistryStub()
     window.character_profile = CharacterProfileStub()
+    window.tauri_settings_process = None
     window.proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
     window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
     window.debug_log_settings = DebugLogSettings()

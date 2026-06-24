@@ -694,6 +694,17 @@ input[type="color"]:hover {
   color: var(--sakura-primary);
 }
 
+.custom-select__option.is-disabled {
+  color: var(--sakura-muted-text);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.custom-select__option.is-disabled:hover {
+  background: transparent;
+  color: var(--sakura-muted-text);
+}
+
 .custom-select__option.is-selected {
   background: var(--tint-soft);
   color: var(--sakura-primary);
@@ -730,6 +741,20 @@ input[type="color"]:hover {
   width: 100%;
   max-width: 340px;
   justify-self: start;
+}
+
+.archive-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.archive-controls button {
+  white-space: nowrap;
 }
 
 input[type="range"].layout-slider {
@@ -1420,6 +1445,53 @@ input[type="checkbox"]:disabled + span {
   font-size: 13.5px;
 }
 
+.export-kind-dialog {
+  width: min(430px, 100%);
+}
+
+.export-kind-list {
+  display: grid;
+  gap: 8px;
+}
+
+.export-kind-option {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font-family: inherit;
+  text-align: left;
+  padding: 11px 12px;
+  cursor: pointer;
+}
+
+.export-kind-option:hover:not(:disabled),
+.export-kind-option:focus-visible {
+  outline: none;
+  border-color: var(--sakura-primary);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.export-kind-option:disabled {
+  color: var(--sakura-muted-text);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.export-kind-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.export-kind-desc {
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
 .confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -1638,6 +1710,7 @@ button:focus-visible,
 /* 控件在右列：覆盖全局 justify-self:start，统一靠右对齐。 */
 .setting-row > .field-unit,
 .setting-row > .slider-control,
+.setting-row > .archive-controls,
 .setting-row > .inline-input,
 .setting-row > .setting-toggle,
 .setting-row > input,

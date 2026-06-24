@@ -44,6 +44,13 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
     estimate_screen_context_image_tokens_for_size,
 )
+from app.config.character_archive import (
+    CharacterArchiveError,
+    export_character_archive,
+    export_character_voice_archive,
+    import_character_archive,
+    import_character_voice_archive,
+)
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.defaults import (
     DEFAULT_BASE_URL,
@@ -129,7 +136,7 @@ from app.ui.theme import (
     theme_colors_to_mapping,
     theme_to_mapping,
 )
-from app.ui.settings.workers import ApiConnectionTestWorker, ApiModelListProbeWorker
+from app.ui.settings.workers import ApiConnectionTestWorker, ApiModelListProbeWorker, _has_exportable_voice_model
 from app.ui.settings.resource_tasks import settings_resource_task_manager
 from app.ui.window_backdrop import VisualEffectMode
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
@@ -284,6 +291,29 @@ class TauriMemoryRpcWorker(QObject):
     def run(self) -> None:
         try:
             result = dispatch_tauri_memory_rpc(self.memory_store, self.method, self.params)
+        except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
+            traceback.print_exc()
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
+        finally:
+            self.finished.emit()
+
+
+class TauriCharacterRpcWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path, method: str, params: dict[str, Any]) -> None:
+        super().__init__()
+        self.base_dir = Path(base_dir)
+        self.method = method
+        self.params = dict(params)
+
+    def run(self) -> None:
+        try:
+            result = dispatch_tauri_character_rpc(self.base_dir, self.method, self.params)
         except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
             traceback.print_exc()
             self.failed.emit(str(exc))
@@ -685,6 +715,102 @@ def dispatch_tauri_memory_rpc(
     raise ValueError(f"未知 Tauri RPC 方法：{method}")
 
 
+def dispatch_tauri_character_rpc(base_dir: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if not method.startswith("character."):
+        raise ValueError(f"未知 Tauri RPC 方法：{method}")
+    root = Path(base_dir)
+    if method == "character.import_archive":
+        path = _required_rpc_path(params, "path")
+        result = import_character_archive(path, root)
+        registry = CharacterRegistry(root)
+        profile = registry.get(result.character_id)
+        return _character_rpc_result(
+            registry,
+            result.character_id,
+            message=(
+                f"已导入角色「{result.display_name}」。"
+                + ("该角色没有语音包，TTS 已自动关闭。" if profile.voice is None else "")
+            ),
+            disable_tts=profile.voice is None,
+        )
+    if method == "character.import_voice_archive":
+        path = _required_rpc_path(params, "path")
+        character_id = _required_rpc_str(params, "character_id")
+        result = import_character_voice_archive(path, root, character_id)
+        registry = CharacterRegistry(root)
+        return _character_rpc_result(
+            registry,
+            result.character_id,
+            message=f"已为角色「{result.display_name}」导入 TTS 模型包。",
+        )
+    if method == "character.export_archive":
+        character_id = _required_rpc_str(params, "character_id")
+        export_kind = _required_rpc_str(params, "kind")
+        if export_kind not in {"full", "card", "voice"}:
+            raise ValueError("未知角色包导出类型。")
+        output_path = _normalized_character_export_path(
+            _required_rpc_path(params, "path"),
+            export_kind,
+        )
+        registry = CharacterRegistry(root)
+        profile = registry.get(character_id)
+        if export_kind in {"full", "voice"} and not _has_exportable_voice_model(profile):
+            if export_kind == "full":
+                raise CharacterArchiveError("当前角色没有完整语音模型，请导出单角色包。")
+            raise CharacterArchiveError("当前角色没有可导出的语音模型。")
+        if export_kind == "voice":
+            export_character_voice_archive(profile, output_path)
+        else:
+            export_character_archive(profile, output_path, include_voice=export_kind == "full")
+        return _character_rpc_result(
+            registry,
+            character_id,
+            message=f"角色包已导出到：{output_path}",
+            output_path=str(output_path),
+        )
+    raise ValueError(f"未知 Tauri RPC 方法：{method}")
+
+
+def _character_rpc_result(
+    registry: CharacterRegistry,
+    current_character_id: str,
+    *,
+    message: str,
+    disable_tts: bool = False,
+    output_path: str = "",
+) -> dict[str, Any]:
+    try:
+        current = registry.get(current_character_id)
+    except Exception:  # noqa: BLE001
+        current = None
+    result: dict[str, Any] = {
+        "current_character_id": current_character_id,
+        "characters": _character_items(registry, current),
+        "message": message,
+    }
+    if disable_tts:
+        result["disable_tts"] = True
+    if output_path:
+        result["output_path"] = output_path
+    return result
+
+
+def _normalized_character_export_path(path: Path, export_kind: str) -> Path:
+    suffix = ".voice" if export_kind == "voice" else ".char"
+    return path if path.suffix.lower() == suffix else path.with_suffix(suffix)
+
+
+def _required_rpc_path(mapping: dict[str, Any], key: str) -> Path:
+    return Path(_required_rpc_str(mapping, key))
+
+
+def _required_rpc_str(mapping: dict[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"RPC 缺少字段：{key}")
+    return value.strip()
+
+
 class TauriSettingsProcess(QObject):
     completed = Signal(object)
     applied = Signal(object)
@@ -767,6 +893,7 @@ class TauriSettingsProcess(QObject):
         # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
         self._api_probes: dict[str, tuple[QThread, QObject]] = {}
         self._memory_rpcs: dict[str, tuple[QThread, QObject]] = {}
+        self._character_rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         if not tauri_settings_trial_enabled():
@@ -968,6 +1095,9 @@ class TauriSettingsProcess(QObject):
         if method.startswith("memory."):
             self._dispatch_memory_rpc(request_id, method, params)
             return
+        if method.startswith("character."):
+            self._dispatch_character_rpc(request_id, method, params)
+            return
         try:
             result = self._dispatch_rpc(method, params)
         except Exception as exc:  # noqa: BLE001
@@ -1034,6 +1164,34 @@ class TauriSettingsProcess(QObject):
         thread.finished.connect(lambda rid=request_id: self._memory_rpcs.pop(rid, None))
         thread.start()
 
+    def _dispatch_character_rpc(self, request_id: str, method: str, params: dict[str, Any]) -> None:
+        thread = QThread()
+        worker: QObject = TauriCharacterRpcWorker(self.base_dir, method, params)
+        worker.moveToThread(thread)
+        self._character_rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _on_success(payload: object) -> None:
+            result = payload if isinstance(payload, dict) else {"result": payload}
+            selected_id = str(result.get("current_character_id") or "")
+            try:
+                self.character_registry = CharacterRegistry(self.base_dir)
+                self.current_character = self.character_registry.get(selected_id) if selected_id else None
+            except Exception:  # noqa: BLE001 - RPC result is already computed; keep response intact.
+                pass
+            self._send_rpc_response(request_id, ok=True, result=result)
+
+        def _on_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(_on_success)
+        worker.failed.connect(_on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._character_rpcs.pop(rid, None))
+        thread.start()
+
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
@@ -1044,6 +1202,8 @@ class TauriSettingsProcess(QObject):
             return dispatch_tauri_memory_rpc(self.memory_store, method, params)
         if method.startswith("resources."):
             return self.resource_tasks.dispatch(method, params)
+        if method.startswith("character."):
+            return dispatch_tauri_character_rpc(self.base_dir, method, params)
         raise ValueError(f"未知 Tauri RPC 方法：{method}")
 
     def _send_rpc_response(
@@ -1085,7 +1245,7 @@ class TauriSettingsProcess(QObject):
         self._cleaned = True
         self._request_payload = b""
         # 收尾在途 RPC 线程，避免线程仍在运行时随 self 被销毁。
-        for pending in (self._api_probes, self._memory_rpcs):
+        for pending in (self._api_probes, self._memory_rpcs, self._character_rpcs):
             for thread, _worker in list(pending.values()):
                 try:
                     thread.quit()
@@ -1197,6 +1357,37 @@ def _character_theme_colors(profile: CharacterProfile | None) -> dict[str, objec
     return theme_colors_to_mapping(theme or DEFAULT_THEME_SETTINGS)
 
 
+def _character_to_item(profile: CharacterProfile) -> dict[str, object]:
+    profile_id = str(getattr(profile, "id", "")).strip()
+    return {
+        "id": profile_id,
+        "display_name": str(getattr(profile, "display_name", "") or profile_id),
+        "has_voice": getattr(profile, "voice", None) is not None,
+        "has_exportable_voice": _has_exportable_voice_model(profile),
+        "theme": _character_theme_colors(profile),
+    }
+
+
+def _character_items(
+    character_registry: CharacterRegistry | None,
+    current_character: CharacterProfile | None = None,
+) -> list[dict[str, object]]:
+    profiles = getattr(character_registry, "profiles", {}) if character_registry is not None else {}
+    characters: list[dict[str, object]] = []
+    if isinstance(profiles, Mapping):
+        iterable = profiles.values()
+    else:
+        iterable = ()
+    for profile in iterable:
+        profile_id = str(getattr(profile, "id", "")).strip()
+        if profile_id:
+            characters.append(_character_to_item(profile))
+    current_id = str(getattr(current_character, "id", "") or "").strip()
+    if current_id and not any(item["id"] == current_id for item in characters):
+        characters.append(_character_to_item(current_character))
+    return characters
+
+
 def _character_to_mapping(
     character_registry: CharacterRegistry | None,
     current_character: CharacterProfile | None,
@@ -1207,36 +1398,8 @@ def _character_to_mapping(
     control_panel_vertical_offset: int,
     input_bar_offset: int,
 ) -> dict[str, object]:
-    profiles = getattr(character_registry, "profiles", {}) if character_registry is not None else {}
-    characters: list[dict[str, object]] = []
-    if isinstance(profiles, Mapping):
-        iterable = profiles.values()
-    else:
-        iterable = ()
-    for profile in iterable:
-        profile_id = str(getattr(profile, "id", "")).strip()
-        if not profile_id:
-            continue
-        characters.append(
-            {
-                "id": profile_id,
-                "display_name": str(getattr(profile, "display_name", "") or profile_id),
-                "has_voice": getattr(profile, "voice", None) is not None,
-                "theme": _character_theme_colors(profile),
-            }
-        )
+    characters = _character_items(character_registry, current_character)
     current_id = str(getattr(current_character, "id", "") or "").strip()
-    if current_id and not any(item["id"] == current_id for item in characters):
-        characters.append(
-            {
-                "id": current_id,
-                "display_name": str(
-                    getattr(current_character, "display_name", "") or current_id
-                ),
-                "has_voice": getattr(current_character, "voice", None) is not None,
-                "theme": _character_theme_colors(current_character),
-            }
-        )
     return {
         "current_character_id": current_id,
         "characters": characters,
