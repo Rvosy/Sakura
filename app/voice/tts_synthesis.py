@@ -33,6 +33,7 @@ from app.voice.tts_service import (
     _encode_genie_character_name,
     _format_gpt_sovits_http_error,
     _is_soft_synth_failure,
+    _urlopen_tts_direct,
 )
 from app.voice.tts_types import TTSCallback, TTSPreparedAudio, _TTSRequest
 
@@ -197,7 +198,7 @@ class GPTSoVITSSynthesisEngine:
             )
 
             try:
-                with urllib.request.urlopen(
+                with _urlopen_tts_direct(
                     http_request,
                     timeout=settings.timeout_seconds,
                 ) as response:
