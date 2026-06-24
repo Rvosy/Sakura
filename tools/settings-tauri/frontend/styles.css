@@ -244,6 +244,7 @@ body {
   display: none;
   gap: 14px;
   width: min(100%, 980px);
+  min-width: 0;
   max-width: 980px;
 }
 
@@ -268,6 +269,7 @@ body {
   gap: 12px;
   margin: 0;
   padding: 16px 16px 14px;
+  min-width: 0;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   background: var(--surface-soft);
@@ -293,12 +295,17 @@ body {
   align-items: center;
   gap: 16px;
   min-height: 36px;
+  min-width: 0;
 }
 
 .form-row > label:first-child {
+  min-width: 0;
+  overflow: hidden;
   color: var(--sakura-text);
   font-size: 13.5px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .check-control {
@@ -630,6 +637,12 @@ input[type="range"].layout-slider::-moz-range-thumb {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+.theme-color-control input[type="text"] {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* ---------- 模型页动态列表 ---------- */
@@ -663,6 +676,8 @@ input[type="range"].layout-slider::-moz-range-thumb {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .slot-controls .custom-select {
@@ -769,17 +784,20 @@ input[type="checkbox"]:disabled + span {
 .admin-toolbar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 10px;
+  min-width: 0;
 }
 
 .admin-search {
-  flex: 1 1 260px;
+  flex: 1 1 160px;
+  min-width: 120px;
   max-width: none !important;
 }
 
 .admin-toolbar .custom-select {
-  flex: 0 0 160px;
+  flex: 0 1 160px;
+  min-width: 120px;
 }
 
 .admin-workbench {
@@ -1413,6 +1431,7 @@ button:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px 18px;
+  min-width: 0;
   padding: 2px 0;
 }
 
@@ -1420,19 +1439,27 @@ button:focus-visible,
   display: grid;
   gap: 3px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .setting-title {
+  display: block;
+  overflow: hidden;
   color: var(--sakura-text);
   font-size: 13.5px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .setting-desc {
+  overflow: hidden;
   margin: 0;
   color: var(--sakura-muted-text);
   font-size: 12px;
   line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 控件在右列：覆盖全局 justify-self:start，统一靠右对齐。 */
@@ -1443,6 +1470,7 @@ button:focus-visible,
 .setting-row > input,
 .setting-row > select,
 .setting-row > .custom-select {
+  min-width: 0;
   justify-self: end;
 }
 
@@ -1463,6 +1491,8 @@ button:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .field-unit input[type="number"] {
@@ -1610,49 +1640,64 @@ input.is-invalid:hover,
 }
 
 /* ---------- 窄窗口自适应 ---------- */
-/* 窗口 minWidth=900，留出侧栏后内容区在接近最小尺寸时会偏挤，这里在可达的
-   940px 断点下把表单行与管理台双栏收成单列。 */
+/* 窗口 minWidth=900，接近最小尺寸时只压缩间距与控件宽度，保持表单行横向布局。 */
 
 @media (max-width: 940px) {
-  .form-row,
+  .settings-shell {
+    grid-template-columns: 168px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .page-head {
+    padding: 16px 18px 12px;
+  }
+
+  .page-scroll {
+    padding: 16px 18px;
+  }
+
+  footer {
+    padding: 12px 18px;
+  }
+
+  .settings-group {
+    padding: 14px;
+  }
+
+  .form-row {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 12px;
+  }
+
   .setting-row {
-    grid-template-columns: 1fr;
-    align-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+  }
+
+  .setting-row > input[type="text"],
+  .setting-row > input[type="password"],
+  .setting-row > textarea {
+    width: clamp(260px, 36vw, 420px);
+  }
+
+  .setting-row > .custom-select {
+    width: clamp(220px, 28vw, 320px);
+  }
+
+  .setting-row > .slider-control {
+    width: clamp(210px, 32vw, 320px);
+  }
+
+  .admin-toolbar {
     gap: 8px;
   }
 
-  .setting-row > .field-unit,
-  .setting-row > .slider-control,
-  .setting-row > .inline-input,
-  .setting-row > .setting-toggle,
-  .setting-row > input,
-  .setting-row > select,
-  .setting-row > .custom-select {
-    justify-self: start;
+  button {
+    padding-inline: 14px;
   }
 
-  .admin-topline,
-  .admin-workbench,
-  .detail-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .admin-mini-panel {
-    justify-content: space-between;
-  }
-
-  .admin-list,
-  .admin-detail {
-    max-height: min(420px, 55vh);
-  }
-
-  .page-scroll.is-admin-active {
-    overflow-y: auto;
-  }
-
-  .settings-page.admin-page.is-active,
-  .admin-workbench {
-    height: auto;
-    overflow: visible;
+  .secondary-button {
+    min-width: 104px;
   }
 }
