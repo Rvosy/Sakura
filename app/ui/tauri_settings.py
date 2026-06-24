@@ -1931,8 +1931,6 @@ def _normalize_plugin_setting_values(
         field = fields_by_key.get(str(key))
         if field is None:
             raise ValueError(f"未知插件设置字段：{contribution.plugin_id}.{contribution.section_id}.{key}")
-        if field.readonly:
-            continue
     for key, field in fields_by_key.items():
         if field.readonly:
             continue

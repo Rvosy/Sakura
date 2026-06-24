@@ -13,6 +13,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYTEST_QT_API", "pyside6")
 
 _ORIGINAL_PATH_MKDIR = Path.mkdir
+_PYTEST_BASETEMP = (Path.cwd() / ".pytest-basetemp").resolve()
+
+
+def _is_pytest_basetemp_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    return resolved == _PYTEST_BASETEMP or _PYTEST_BASETEMP in resolved.parents
 
 
 def _mkdir_without_private_windows_acl(
@@ -22,7 +31,7 @@ def _mkdir_without_private_windows_acl(
     exist_ok: bool = False,
 ) -> None:
     # pytest's 0o700 temp dirs can become unreadable in the Windows sandbox.
-    if os.name == "nt" and mode == 0o700:
+    if os.name == "nt" and mode == 0o700 and _is_pytest_basetemp_path(self):
         mode = 0o777
     return _ORIGINAL_PATH_MKDIR(self, mode=mode, parents=parents, exist_ok=exist_ok)
 
