@@ -630,7 +630,13 @@ input[type="range"].layout-slider::-moz-range-thumb {
 
 .theme-colors {
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 22px;
+}
+
+.theme-colors .form-row {
+  grid-template-columns: minmax(96px, 1fr) auto;
+  gap: 10px;
 }
 
 .theme-color-control {
@@ -641,7 +647,9 @@ input[type="range"].layout-slider::-moz-range-thumb {
 }
 
 .theme-color-control input[type="text"] {
-  flex: 1 1 0;
+  flex: 0 0 132px;
+  width: 132px;
+  max-width: 132px;
   min-width: 0;
 }
 
@@ -1668,6 +1676,18 @@ input.is-invalid:hover,
   .form-row {
     grid-template-columns: 112px minmax(0, 1fr);
     gap: 12px;
+  }
+
+  .theme-colors {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-colors .form-row {
+    grid-template-columns: 112px minmax(0, 1fr);
+  }
+
+  .theme-color-control {
+    justify-self: start;
   }
 
   .setting-row {
