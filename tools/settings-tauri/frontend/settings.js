@@ -1507,12 +1507,19 @@ function collectModelSelection() {
 
 function renderTtsProviders() {
   fields.ttsProvider.textContent = "";
-  request.tts.providers.forEach((provider) => {
+  request.tts.providers.filter((provider) => provider.id !== "none").forEach((provider) => {
     const option = document.createElement("option");
     option.value = provider.id;
     option.textContent = provider.label;
     fields.ttsProvider.append(option);
   });
+}
+
+function setTtsProviderValue(provider) {
+  fields.ttsProvider.value = provider === "none" ? "" : provider;
+  if (!fields.ttsProvider.value) {
+    fields.ttsProvider.value = request.tts.providers.find((item) => item.id !== "none")?.id || "gpt-sovits";
+  }
 }
 
 async function hostCall(method, params = {}) {
@@ -3303,7 +3310,7 @@ async function load() {
   fields.apiMaxTokens.value = request.api.settings.max_tokens ?? 2048;
 
   fields.ttsEnabled.checked = request.tts.enabled;
-  fields.ttsProvider.value = request.tts.provider;
+  setTtsProviderValue(request.tts.provider);
   fields.ttsApiUrl.value = request.tts.api_url;
   fields.ttsWorkDir.value = request.tts.work_dir;
   fields.ttsPythonPath.value = request.tts.python_path;

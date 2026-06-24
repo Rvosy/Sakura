@@ -1300,11 +1300,11 @@ def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None, base_dir: Path | None
         ref_text_path=Path(),
         ref_text="",
     )
+    provider = str(current.provider or TTS_PROVIDER_NONE)
     return {
         "enabled": bool(current.enabled),
-        "provider": str(current.provider or TTS_PROVIDER_NONE),
+        "provider": TTS_PROVIDER_GPT_SOVITS if provider == TTS_PROVIDER_NONE else provider,
         "providers": [
-            {"id": TTS_PROVIDER_NONE, "label": "关闭"},
             {"id": TTS_PROVIDER_GPT_SOVITS, "label": "内置 GPT-SoVITS"},
             {"id": TTS_PROVIDER_CUSTOM_GPT_SOVITS, "label": "外部 GPT-SoVITS"},
             {"id": TTS_PROVIDER_GENIE, "label": "Genie TTS"},

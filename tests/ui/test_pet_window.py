@@ -5230,6 +5230,9 @@ def test_tauri_settings_request_includes_tts_provider_defaults(monkeypatch) -> N
     )
 
     defaults = request["tts"]["provider_defaults"]
+    provider_options = request["tts"]["providers"]
+    assert "none" not in [option["id"] for option in provider_options]
+    assert "关闭" not in [option["label"] for option in provider_options]
     assert defaults["gpt-sovits"]["api_url"] == "http://127.0.0.1:9880/tts"
     assert defaults["gpt-sovits"]["work_dir"] == str(gpt_work_dir)
     assert defaults["gpt-sovits"]["python_path"] == str(gpt_work_dir / "runtime" / "python.exe")
@@ -5239,6 +5242,20 @@ def test_tauri_settings_request_includes_tts_provider_defaults(monkeypatch) -> N
     assert defaults["genie-tts"]["notice"] == ""
     assert defaults["custom-gpt-sovits"]["work_dir"] == ""
     assert defaults["custom-gpt-sovits"]["notice"] == ""
+
+
+def test_tauri_settings_request_uses_real_tts_provider_when_disabled() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        tts_settings=replace(_minimal_tts_settings(), enabled=False, provider="none"),
+        nonce="nonce",
+    )
+
+    assert request["tts"]["enabled"] is False
+    assert request["tts"]["provider"] == "gpt-sovits"
+    assert "none" not in [option["id"] for option in request["tts"]["providers"]]
 
 
 def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
