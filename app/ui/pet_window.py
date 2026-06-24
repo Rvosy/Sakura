@@ -5675,7 +5675,11 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _on_tauri_settings_failed(self, message: str) -> None:
+        process = self.tauri_settings_process
         self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
         self._tauri_initial_tts_settings = None
         self._restore_tauri_layout_preview()
         self._sync_secondary_window_state()

@@ -4681,6 +4681,7 @@ def test_show_settings_tauri_trial_failure_warns_and_falls_back(monkeypatch) -> 
 
     assert warnings == ["结果无效\n\n已回退到原设置页。"]
     assert events == ["load_tts", "load_tts", "dialog_init", "show"]
+    assert instances[0].shutdown_called is True
     assert window.tauri_settings_process is None
 
 
@@ -4732,6 +4733,7 @@ def test_show_settings_tauri_trial_invalid_result_warns_and_falls_back(monkeypat
 
     assert warnings == ["Tauri 设置结果类型无效。\n\n已回退到原设置页。"]
     assert events == ["load_tts", "load_tts", "dialog_init", "show"]
+    assert instances[0].shutdown_called is True
     assert window.tauri_settings_process is None
 
 
