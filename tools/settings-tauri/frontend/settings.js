@@ -40,6 +40,7 @@ const fields = {
   ttsBundleNoticeRow: document.getElementById("ttsBundleNoticeRow"),
   ttsBundleNotice: document.getElementById("ttsBundleNotice"),
   ttsResourceCard: document.getElementById("ttsResourceCard"),
+  ttsTestButton: document.getElementById("ttsTestButton"),
   ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
@@ -703,9 +704,35 @@ function syncTtsState() {
   fields.ttsWorkDir.readOnly = false;
   fields.ttsPythonPath.readOnly = false;
   fields.ttsConfigPath.disabled = true;
+  fields.ttsTestButton.disabled = !active;
   syncTtsBundleNotice();
   if (request) {
     renderTtsResourceCard();
+  }
+}
+
+async function testTtsSettings() {
+  const character = selectedCharacter();
+  if (!character) {
+    setError("请先选择一个角色。");
+    return;
+  }
+  const original = fields.ttsTestButton.textContent;
+  fields.ttsTestButton.disabled = true;
+  fields.ttsTestButton.textContent = "检测中…";
+  setError("");
+  try {
+    const result = await hostCall("tts.test", {
+      character_id: character.id,
+      tts: collectTtsSettings(),
+    });
+    notify(result?.message || "TTS 服务检测成功。", "success");
+  } catch (error) {
+    setError(`TTS 检测失败：${error}`);
+  } finally {
+    fields.ttsTestButton.disabled = false;
+    fields.ttsTestButton.textContent = original;
+    syncTtsState();
   }
 }
 
@@ -3688,6 +3715,7 @@ fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
 fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
+fields.ttsTestButton.addEventListener("click", testTtsSettings);
 fields.backchannelEnabled.addEventListener("change", renderBackchannelResourceCard);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);

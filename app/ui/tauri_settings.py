@@ -140,11 +140,13 @@ from app.ui.theme import (
 from app.ui.settings.workers import (
     ApiConnectionTestWorker,
     ApiModelListProbeWorker,
+    TTSTestWorker,
     ThemeAiWorker,
     _has_exportable_voice_model,
 )
 from app.ui.settings.resource_tasks import settings_resource_task_manager
 from app.ui.window_backdrop import VisualEffectMode
+from app.storage.paths import StoragePaths
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
@@ -904,6 +906,7 @@ class TauriSettingsProcess(QObject):
         self._memory_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._character_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._theme_ai_rpcs: dict[str, tuple[QThread, QObject]] = {}
+        self._tts_test_rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         if not tauri_settings_trial_enabled():
@@ -1108,6 +1111,9 @@ class TauriSettingsProcess(QObject):
         if method == "theme.generate_ai":
             self._dispatch_theme_ai_rpc(request_id, params)
             return
+        if method == "tts.test":
+            self._dispatch_tts_test_rpc(request_id, params)
+            return
         if method.startswith("memory."):
             self._dispatch_memory_rpc(request_id, method, params)
             return
@@ -1245,6 +1251,48 @@ class TauriSettingsProcess(QObject):
         thread.finished.connect(lambda rid=request_id: self._theme_ai_rpcs.pop(rid, None))
         thread.start()
 
+    def _dispatch_tts_test_rpc(self, request_id: str, params: dict[str, Any]) -> None:
+        try:
+            raw_tts = params.get("tts")
+            if not isinstance(raw_tts, dict):
+                raise ValueError("RPC tts 必须是对象。")
+            character_id = _required_rpc_str(params, "character_id")
+            profile = CharacterRegistry(self.base_dir).get(character_id)
+            settings = _tts_settings_for_profile(
+                _tts_from_mapping_required(raw_tts),
+                profile,
+                self.base_dir,
+            )
+            if not settings.enabled:
+                raise ValueError("请先启用 TTS，并选择带语音包的角色。")
+        except Exception as exc:  # noqa: BLE001
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+
+        thread = QThread(self)
+        worker: QObject = TTSTestWorker(settings, base_dir=self.base_dir)
+        worker.moveToThread(thread)
+        self._tts_test_rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _on_success(_settings: object, message: str) -> None:
+            self._send_rpc_response(
+                request_id,
+                ok=True,
+                result={"message": str(message) or "TTS 服务检测成功。"},
+            )
+
+        def _on_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(_on_success)
+        worker.failed.connect(_on_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._tts_test_rpcs.pop(rid, None))
+        thread.start()
+
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
@@ -1318,7 +1366,13 @@ class TauriSettingsProcess(QObject):
         self._cleaned = True
         self._request_payload = b""
         # 收尾在途 RPC 线程，避免线程仍在运行时随 self 被销毁。
-        for pending in (self._api_probes, self._memory_rpcs, self._character_rpcs, self._theme_ai_rpcs):
+        for pending in (
+            self._api_probes,
+            self._memory_rpcs,
+            self._character_rpcs,
+            self._theme_ai_rpcs,
+            self._tts_test_rpcs,
+        ):
             for thread, _worker in list(pending.values()):
                 try:
                     thread.quit()
@@ -2028,6 +2082,66 @@ def _tts_from_mapping_required(mapping: dict[str, Any]) -> TauriTtsResult:
         tts_config_path=_required_str(mapping, "tts_config_path").strip(),
         timeout_seconds=_clamp_int_value(_required_int(mapping, "timeout_seconds"), 1, 600),
     )
+
+
+def _tts_settings_for_profile(
+    result_tts: TauriTtsResult,
+    profile: CharacterProfile,
+    base_dir: Path,
+) -> GPTSoVITSTTSSettings:
+    enabled = bool(result_tts.enabled)
+    selected_voice = getattr(profile, "voice", None)
+    if enabled and selected_voice is None:
+        enabled = False
+    ref_lang = getattr(selected_voice, "ref_lang", None) or "ja"
+    text_lang = getattr(selected_voice, "text_lang", None) or "ja"
+    onnx_model_dir = (
+        StoragePaths(base_dir).tts_bundle_onnx_for(profile.id)
+        if result_tts.provider == TTS_PROVIDER_GENIE
+        else None
+    )
+    work_dir = _optional_path_for_tauri(result_tts.work_dir, base_dir)
+    python_path = _optional_path_for_tauri(result_tts.python_path, base_dir)
+    tts_config_path = _optional_path_for_tauri(result_tts.tts_config_path, base_dir)
+    if selected_voice is None or not hasattr(profile, "package_dir"):
+        return GPTSoVITSTTSSettings(
+            enabled=False,
+            api_url=result_tts.api_url,
+            ref_audio_path=base_dir / "ref" / "VO01_2210.ogg",
+            ref_text_path=base_dir / "ref" / "text.txt",
+            ref_text="",
+            provider=result_tts.provider,
+            work_dir=work_dir,
+            python_path=python_path,
+            tts_config_path=tts_config_path,
+            character_name=getattr(profile, "display_name", profile.id),
+            onnx_model_dir=onnx_model_dir,
+            ref_lang=ref_lang,
+            text_lang=text_lang,
+            timeout_seconds=result_tts.timeout_seconds,
+        )
+    return GPTSoVITSTTSSettings.from_character_profile(
+        character_profile=profile,
+        enabled=enabled,
+        api_url=result_tts.api_url,
+        ref_lang=ref_lang,
+        text_lang=text_lang,
+        timeout_seconds=result_tts.timeout_seconds,
+        provider=result_tts.provider,
+        work_dir=work_dir,
+        python_path=python_path,
+        tts_config_path=tts_config_path,
+        onnx_model_dir=onnx_model_dir,
+        validate_enabled=False,
+    )
+
+
+def _optional_path_for_tauri(value: object, base_dir: Path) -> Path | None:
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.is_absolute() else base_dir / path
 
 
 def _system_extra_from_mapping_required(mapping: dict[str, Any]) -> TauriSystemExtraResult:
