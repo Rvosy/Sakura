@@ -269,6 +269,7 @@ class TauriSettingsResult:
     runtime_loop: RuntimeLoopSettings
     system_basic: TauriSystemBasicResult = field(default_factory=TauriSystemBasicResult)
     theme: ThemeSettings = field(default_factory=lambda: DEFAULT_THEME_SETTINGS)
+    theme_changed: bool = True
     character: TauriCharacterResult = field(default_factory=TauriCharacterResult)
     api: TauriApiResult = field(default_factory=TauriApiResult)
     tts: TauriTtsResult = field(default_factory=TauriTtsResult)
@@ -655,6 +656,7 @@ def parse_tauri_settings_payload(
             ).normalized(),
         ),
         theme=_theme_from_mapping_required(theme),
+        theme_changed=_optional_bool(raw.get("theme_changed"), default=True),
         character=_character_from_mapping_required(character),
         api=api_result,
         tts=_tts_from_mapping_required(tts),
@@ -2249,6 +2251,10 @@ def _required_bool(mapping: dict[str, Any], key: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"Tauri 设置结果字段无效：{key}")
     return value
+
+
+def _optional_bool(value: object, *, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 def _required_int(mapping: dict[str, Any], key: str) -> int:

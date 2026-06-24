@@ -4978,6 +4978,72 @@ def test_tauri_settings_save_failure_rolls_back_config_files(monkeypatch) -> Non
     assert window.api_client.settings == ApiClientStub.settings
 
 
+def test_tauri_settings_apply_character_theme_without_saving_global_theme() -> None:
+    from app.ui.pet_window import PetWindow
+
+    saved_theme: list[ThemeSettings] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, _character_id):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_screen_awareness_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_theme_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_theme.append(settings)
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, _section, _values):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_backchannel_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_memory_curation_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    theme = ThemeSettings(primary_color="#123456")
+    result = replace(_build_tauri_settings_result(), theme=theme, theme_changed=False)
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert saved_theme == []
+    assert window.theme_settings == theme.normalized()
+
+
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
                 "version": 2,
@@ -5175,6 +5241,18 @@ def test_tauri_settings_result_parser_recovers_empty_profile_models_from_slots()
 
     assert result.api.profiles[0].models == ("test-model",)
     assert result.api.settings.model == "test-model"
+
+
+def test_tauri_settings_result_parser_reads_theme_changed_flag() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["theme_changed"] = False
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.theme_changed is False
 
 
 def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
@@ -5402,6 +5480,14 @@ def test_tauri_settings_request_includes_per_character_theme() -> None:
     assert characters[0]["theme"]["primary_color"] == "#abcdef"
     # 每个角色都带齐全部配色字段，供切换时跟随换色。
     assert len(characters[0]["theme"]) == len(request["theme_fields"])
+
+
+def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert "function selectedCharacterThemeDefaults()" in source
+    assert "theme_changed: themeChanged" in source
+    assert "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });" in source
 
 
 def test_tauri_settings_request_marks_exportable_voice() -> None:

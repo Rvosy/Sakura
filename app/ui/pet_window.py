@@ -5438,7 +5438,7 @@ class PetWindow(QWidget):
             )
             if callable(save_runtime_loop_settings):
                 save_runtime_loop_settings(result.runtime_loop)
-            if result.theme != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
+            if result.theme_changed and result.theme != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
                 self.settings_service.save_theme_settings(result.theme)
             self.settings_service.save_debug_log_settings(system_basic.debug_log)
             self._save_system_config_values(

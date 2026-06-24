@@ -615,23 +615,13 @@ function selectedCharacterHasExportableVoice() {
   return Boolean(selectedCharacter()?.has_exportable_voice);
 }
 
+function selectedCharacterThemeDefaults() {
+  return selectedCharacter()?.theme || request.theme_defaults;
+}
+
 // 切换角色时跟随载入该角色自带的配色（仅配色，输入栏视觉效果等用户级偏好保留）。
 function applySelectedCharacterTheme() {
-  const character = selectedCharacter();
-  if (!character || !character.theme) {
-    return;
-  }
-  request.theme_fields.forEach(({ id }) => {
-    const textInput = fields.themeColors.querySelector(`[data-theme-field="${id}"]`);
-    const colorInput = fields.themeColors.querySelector(`[data-theme-swatch="${id}"]`);
-    if (!textInput || !colorInput) {
-      return;
-    }
-    const color = normalizeColorText(character.theme[id], request.theme_defaults[id]);
-    textInput.value = color;
-    colorInput.value = color;
-  });
-  markThemeChanged();
+  setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });
 }
 
 function ttsProviderDefaults(provider) {
@@ -814,7 +804,8 @@ function renderThemeControls() {
   });
 }
 
-function setThemeValues(theme) {
+function setThemeValues(theme, options = {}) {
+  const updateVisualEffect = options.updateVisualEffect !== false;
   request.theme_fields.forEach(({ id }) => {
     const textInput = fields.themeColors.querySelector(`[data-theme-field="${id}"]`);
     const colorInput = fields.themeColors.querySelector(`[data-theme-swatch="${id}"]`);
@@ -822,9 +813,14 @@ function setThemeValues(theme) {
     textInput.value = color;
     colorInput.value = color;
   });
-  fields.visualEffectMode.value = theme.visual_effect_mode;
-  refreshSelect(fields.visualEffectMode);
-  applyTheme(theme);
+  if (updateVisualEffect && theme.visual_effect_mode) {
+    fields.visualEffectMode.value = theme.visual_effect_mode;
+    refreshSelect(fields.visualEffectMode);
+  }
+  applyTheme({
+    ...theme,
+    visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
+  });
 }
 
 function makeProfileId() {
@@ -3504,6 +3500,7 @@ function collectSettings() {
     runtime_loop: collectRuntimeLoopSettings(),
     system_basic: collectSystemBasicSettings(),
     theme: collectThemeSettings(),
+    theme_changed: themeChanged,
     character: collectCharacterSettings(),
     api: collectApiSettings(),
     tts: collectTtsSettings(),
@@ -3668,7 +3665,7 @@ fields.backchannelEnabled.addEventListener("change", renderBackchannelResourceCa
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.resetThemeButton.addEventListener("click", () => {
-  setThemeValues(request.theme_defaults);
+  setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });
   themeChanged = true;
 });
 fields.debugLogEnabled.addEventListener("change", syncDebugLogState);
