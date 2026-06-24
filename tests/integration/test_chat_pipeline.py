@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from app.agent import AgentEvent, AgentResult, PendingToolAction
+from app.agent.runtime import AgentRuntime
 from app.core.chat_pipeline import ChatPipeline
 from app.llm.chat_reply import parse_chat_reply
+from app.sensory.context import SensoryContextProvider
+from app.sensory.models import SensoryObservation, SensoryProviderMode, SensorySource
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.settings import SensorySettings, SensorySourceSettings
+from app.sensory.store import SensoryObservationStore
 from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
 
@@ -184,5 +191,71 @@ def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply()
         raw = path.read_text(encoding="utf-8")
         assert "vis_chat" in raw
         assert "截图里有一张设置页" in raw
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_injects_sensory_context_into_agent_runtime() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.system_prompts: list[str] = []
+            self.runtime_contexts: list[str] = []
+
+        def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
+            return 0.8, {}
+
+        def complete_with_tools(self, system_prompt, _messages, **kwargs):  # type: ignore[no-untyped-def]
+            self.system_prompts.append(system_prompt)
+            self.runtime_contexts.append(str(kwargs.get("runtime_context") or ""))
+
+            class Turn:
+                content = '{"segments":[{"ja":"確認したよ。","zh":"我确认了。","tone":"中性"}]}'
+                tool_calls: list[object] = []
+                message = {"role": "assistant", "content": content}
+                runtime_context_role = "system"
+
+            return Turn()
+
+    path = Path("__pycache__") / "test_runtime" / f"sensory_context_{uuid.uuid4().hex}.jsonl"
+    try:
+        store = SensoryObservationStore(path)
+        store.append(
+            SensoryObservation(
+                id="obs_screen_error",
+                source=SensorySource.VISION,
+                created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                summary="屏幕上显示 E42 保存失败。",
+                details={"visible_texts": ["E42", "保存失败"]},
+                confidence=0.95,
+                provider_id="fake_vlm",
+                mode=SensoryProviderMode.API,
+            )
+        )
+        settings = SensorySettings(
+            enabled=True,
+            sources={
+                SensorySource.VISION: SensorySourceSettings(
+                    confidence_threshold=0.5,
+                    context_limit=3,
+                )
+            }
+        ).normalized()
+        provider = SensoryContextProvider(settings=settings, store=store).contribution()
+        client = Client()
+        runtime = AgentRuntime(
+            client,  # type: ignore[arg-type]
+            "基础提示",
+            memory=object(),
+            context_providers=[provider],
+        )
+        pipeline = ChatPipeline(runtime)
+
+        pipeline.run_user_message([{"role": "user", "content": "刚才屏幕有什么报错？"}])
+
+        assert client.system_prompts
+        assert client.runtime_contexts
+        assert 'source="plugin:sensory"' in client.runtime_contexts[0]
+        assert "obs_screen_error" in client.runtime_contexts[0]
+        assert "E42 保存失败" in client.runtime_contexts[0]
     finally:
         path.unlink(missing_ok=True)

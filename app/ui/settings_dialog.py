@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
@@ -68,6 +68,18 @@ from app.config.settings_service import (
 )
 from app.platforms.launch_at_login import is_launch_at_login_supported
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+from app.sensory.models import SensoryProviderMode, SensorySource, coerce_sensory_source
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+)
+from app.sensory.settings import (
+    SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    SensoryProviderConfig,
+    SensorySettings,
+    SensorySourceSettings,
+)
 from app.plugins.discovery import PluginDiscovery, save_plugin_enabled_overrides
 from app.plugins.models import PluginSpec
 from app.config.character_loader import (
@@ -187,6 +199,7 @@ class SettingsDialog(QDialog):
         bubble_settings: BubbleSettings | None = None,
         backchannel_settings: BackchannelSettings | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
+        sensory_settings: SensorySettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
         memory_curation_settings=None,
@@ -211,6 +224,7 @@ class SettingsDialog(QDialog):
         from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
 
         self.memory_curation_settings = memory_curation_settings or _MemoryCurationSettings()
+        self.sensory_settings = (sensory_settings or SensorySettings()).normalized()
         self._initial_api_settings = api_settings
         self._initial_tts_settings = tts_settings
         self._api_profiles = _ensure_api_profiles(api_settings, api_profiles, global_model_names)
@@ -279,6 +293,7 @@ class SettingsDialog(QDialog):
         self.result_bubble_settings: BubbleSettings | None = None
         self.result_backchannel_settings: BackchannelSettings | None = None
         self.result_memory_curation_settings = None
+        self.result_sensory_settings: SensorySettings | None = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
@@ -309,6 +324,10 @@ class SettingsDialog(QDialog):
         self._backchannel_model_download_worker: settings_workers.BackchannelModelDownloadWorker | None = None
         self._theme_ai_thread: QThread | None = None
         self._theme_ai_worker: settings_workers.ThemeAiWorker | None = None
+        self._sensory_model_probe_thread: QThread | None = None
+        self._sensory_model_probe_worker: settings_workers.SensoryModelListProbeWorker | None = None
+        self._sensory_model_test_thread: QThread | None = None
+        self._sensory_model_test_worker: settings_workers.SensoryModelTestWorker | None = None
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
@@ -338,7 +357,18 @@ class SettingsDialog(QDialog):
                 ),
             ),
             ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
-            ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings, self._api_profiles, self._global_model_names, self._initial_model_selection))),
+            (
+                "模型",
+                self._build_scrollable_tab(
+                    ApiSettingsPage(self).build(
+                        api_settings,
+                        self._api_profiles,
+                        self._global_model_names,
+                        self._initial_model_selection,
+                        self.sensory_settings,
+                    )
+                ),
+            ),
             ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
             (
                 "隐私",
@@ -810,6 +840,399 @@ class SettingsDialog(QDialog):
             label = form_layout.labelForField(widget)
             if label is not None:
                 label.setEnabled(enabled if labels_enabled is None else labels_enabled)
+
+    def _initialize_sensory_ui_state(self, settings: SensorySettings) -> None:
+        normalized = settings.normalized()
+        self._syncing_sensory_controls = False
+        self._active_sensory_source = SensorySource.VISION.value
+        self._sensory_source_state: dict[str, dict[str, Any]] = {}
+        for source in SensorySource:
+            source_settings = normalized.sources[source]
+            provider = normalized.provider_for_source(source)
+            self._sensory_source_state[source.value] = _sensory_state_from_settings(
+                source,
+                source_settings,
+                provider,
+            )
+
+    def _handle_sensory_source_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        previous_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        self._capture_sensory_current_source(previous_source)
+        next_source = str(
+            self.sensory_source_combo.currentData() or SensorySource.VISION.value
+        )
+        self._load_sensory_source_controls(next_source, mark_dirty=False)
+        self._sync_sensory_controls()
+
+    def _handle_sensory_control_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        self._capture_sensory_current_source()
+        if hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText(self._sensory_status_hint())
+        self._sync_sensory_controls()
+
+    def _handle_sensory_backend_changed(self, *_args: object) -> None:
+        if getattr(self, "_syncing_sensory_controls", False):
+            return
+        active_source = str(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+            or SensorySource.VISION.value
+        )
+        previous_state = dict(
+            getattr(self, "_sensory_source_state", {}).get(
+                active_source,
+                _default_sensory_state(coerce_sensory_source(active_source)),
+            )
+        )
+        previous_default = _default_sensory_endpoint(
+            str(previous_state.get("backend") or ""),
+            str(previous_state.get("mode_ui") or "local"),
+        )
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        mode_ui = str(self.sensory_mode_combo.currentData() or "local")
+        next_default = _default_sensory_endpoint(backend, mode_ui)
+        current_endpoint = self.sensory_endpoint_edit.text().strip()
+        self._syncing_sensory_controls = True
+        try:
+            self.sensory_endpoint_edit.setPlaceholderText(next_default)
+            if not current_endpoint or current_endpoint == previous_default:
+                self.sensory_endpoint_edit.setText(next_default)
+        finally:
+            self._syncing_sensory_controls = False
+        self._handle_sensory_control_changed()
+
+    def _capture_sensory_current_source(self, source_value: str | None = None) -> None:
+        if not hasattr(self, "_sensory_source_state"):
+            return
+        source = coerce_sensory_source(
+            source_value
+            or getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        self._sensory_source_state[source.value] = self._sensory_current_state()
+
+    def _sensory_current_state(self) -> dict[str, Any]:
+        if not hasattr(self, "sensory_mode_combo"):
+            return _default_sensory_state(SensorySource.VISION)
+        source = coerce_sensory_source(
+            getattr(self, "_active_sensory_source", SensorySource.VISION.value)
+        )
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        return {
+            "mode_ui": mode_ui,
+            "backend": backend,
+            "endpoint": self.sensory_endpoint_edit.text().strip(),
+            "model": self.sensory_model_edit.text().strip(),
+            "api_key": self.sensory_api_key_edit.text().strip(),
+            "timeout_seconds": int(self.sensory_timeout_spin.value()),
+            "confidence_threshold": float(self.sensory_confidence_spin.value()),
+            "context_enabled": self.sensory_settings.sources[source].context_enabled,
+            "context_limit": self.sensory_settings.sources[source].context_limit,
+        }
+
+    def _load_sensory_source_controls(
+        self,
+        source_value: str,
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        if not hasattr(self, "_sensory_source_state"):
+            return
+        source = coerce_sensory_source(source_value)
+        state = self._sensory_source_state.setdefault(
+            source.value,
+            _default_sensory_state(source),
+        )
+        self._active_sensory_source = source.value
+        self._syncing_sensory_controls = True
+        try:
+            _set_combo_data(self.sensory_source_combo, source.value)
+            _set_combo_data(self.sensory_mode_combo, str(state.get("mode_ui") or "off"))
+            _set_combo_data(self.sensory_backend_combo, str(state.get("backend") or "lmstudio"))
+            mode_ui = str(state.get("mode_ui") or "off")
+            backend = str(state.get("backend") or "lmstudio")
+            endpoint = str(state.get("endpoint") or "")
+            self.sensory_endpoint_edit.setPlaceholderText(
+                _default_sensory_endpoint(backend, mode_ui)
+            )
+            self.sensory_endpoint_edit.setText(endpoint)
+            self.sensory_model_edit.setText(str(state.get("model") or ""))
+            self.sensory_api_key_edit.setText(str(state.get("api_key") or ""))
+            self.sensory_timeout_spin.setValue(int(state.get("timeout_seconds") or SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS))
+            self.sensory_confidence_spin.setValue(float(state.get("confidence_threshold") or 0.5))
+            if hasattr(self, "sensory_status_label"):
+                self.sensory_status_label.setText(self._sensory_status_hint())
+        finally:
+            self._syncing_sensory_controls = False
+        if mark_dirty:
+            self._handle_sensory_control_changed()
+
+    @Slot(bool)
+    def _sync_sensory_controls(self, *_args: object) -> None:
+        if not hasattr(self, "sensory_mode_combo"):
+            return
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        backend = str(self.sensory_backend_combo.currentData() or "lmstudio")
+        configured = mode_ui != "off"
+        self.sensory_context_enabled_check.setEnabled(self.sensory_enabled_check.isChecked())
+        self.sensory_context_budget_spin.setEnabled(
+            self.sensory_enabled_check.isChecked()
+            and self.sensory_context_enabled_check.isChecked()
+        )
+        for widget in (
+            self.sensory_backend_combo,
+            self.sensory_endpoint_edit,
+            self.sensory_model_edit,
+            self.sensory_api_key_edit,
+            self.sensory_timeout_spin,
+            self.sensory_confidence_spin,
+        ):
+            widget.setEnabled(configured)
+        local_default = _default_sensory_endpoint(backend, mode_ui)
+        self.sensory_endpoint_edit.setPlaceholderText(local_default)
+        self.sensory_api_key_edit.setEnabled(configured)
+        self.sensory_probe_button.setEnabled(
+            configured and self._sensory_model_probe_thread is None and self._sensory_model_test_thread is None
+        )
+        self.sensory_test_button.setEnabled(
+            configured and self._sensory_model_probe_thread is None and self._sensory_model_test_thread is None
+        )
+        if not configured and hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText("该感官源已关闭。")
+
+    def _selected_sensory_settings(self) -> SensorySettings | None:
+        if not hasattr(self, "sensory_enabled_check"):
+            return self.sensory_settings.normalized()
+        self._capture_sensory_current_source()
+        normalized = self.sensory_settings.normalized()
+        sources: dict[SensorySource, SensorySourceSettings] = {}
+        providers: dict[str, SensoryProviderConfig] = {}
+        for source in SensorySource:
+            state = dict(
+                getattr(self, "_sensory_source_state", {}).get(
+                    source.value,
+                    _default_sensory_state(source),
+                )
+            )
+            mode_ui = str(state.get("mode_ui") or "off")
+            mode = _sensory_provider_mode_from_ui(mode_ui)
+            provider_id = ""
+            if mode != SensoryProviderMode.OFF:
+                validation_error = _validate_sensory_state(source, state)
+                if validation_error:
+                    QMessageBox.warning(self, "增强感知配置无效", validation_error)
+                    self._load_sensory_source_controls(source.value, mark_dirty=False)
+                    return None
+                backend = str(state.get("backend") or "lmstudio")
+                provider_id = _sensory_provider_id(source, backend, mode_ui)
+                providers[provider_id] = _sensory_provider_config_from_state(
+                    source,
+                    provider_id,
+                    state,
+                )
+            previous_source_settings = normalized.sources[source]
+            sources[source] = SensorySourceSettings(
+                mode=mode,
+                provider_id=provider_id,
+                confidence_threshold=float(state.get("confidence_threshold") or 0.5),
+                context_enabled=bool(
+                    state.get("context_enabled", previous_source_settings.context_enabled)
+                ),
+                context_limit=int(
+                    state.get("context_limit", previous_source_settings.context_limit)
+                ),
+            ).normalized(source)
+        return SensorySettings(
+            enabled=self.sensory_enabled_check.isChecked(),
+            context_enabled=self.sensory_context_enabled_check.isChecked(),
+            context_budget_chars=int(self.sensory_context_budget_spin.value()),
+            retention_days=normalized.retention_days,
+            retention_limit=normalized.retention_limit,
+            sources=sources,
+            providers=providers,
+        ).normalized()
+
+    def _selected_sensory_provider_config(
+        self,
+        *,
+        require_model: bool,
+    ) -> tuple[SensorySource, SensoryProviderConfig] | None:
+        if not hasattr(self, "sensory_mode_combo"):
+            return None
+        self._capture_sensory_current_source()
+        source = coerce_sensory_source(self.sensory_source_combo.currentData())
+        state = self._sensory_current_state()
+        mode_ui = str(state.get("mode_ui") or "off")
+        if mode_ui == "off":
+            QMessageBox.information(self, "增强感知已关闭", "请先为当前感官源选择本机、局域网或远端 API 模式。")
+            return None
+        validation_error = _validate_sensory_state(
+            source,
+            state,
+            require_model=require_model,
+        )
+        if validation_error:
+            QMessageBox.warning(self, "增强感知配置无效", validation_error)
+            return None
+        backend = str(state.get("backend") or "lmstudio")
+        provider_id = _sensory_provider_id(source, backend, mode_ui)
+        return source, _sensory_provider_config_from_state(source, provider_id, state)
+
+    def _probe_sensory_models(self) -> None:
+        selected = self._selected_sensory_provider_config(require_model=False)
+        if (
+            selected is None
+            or self._sensory_model_probe_thread is not None
+            or self._sensory_model_test_thread is not None
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            return
+        _source, config = selected
+        self._set_sensory_model_probe_busy(True)
+        if hasattr(self, "sensory_status_label"):
+            self.sensory_status_label.setText("正在检测增强感知模型列表...")
+        thread = QThread()
+        worker = settings_workers.SensoryModelListProbeWorker(config)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_model_probe_success)
+        worker.failed.connect(self._handle_sensory_model_probe_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_model_probe_state)
+
+        self._sensory_model_probe_thread = thread
+        self._sensory_model_probe_worker = worker
+        thread.start()
+
+    @Slot(list)
+    def _handle_sensory_model_probe_success(self, model_names: list[str]) -> None:
+        if not model_names:
+            message = "模型列表为空，请检查服务是否暴露模型列表接口。"
+            self.sensory_status_label.setText(message)
+            QMessageBox.warning(self, "探测失败", message)
+            return
+        self.sensory_model_edit.set_model_names(model_names)
+        self._capture_sensory_current_source()
+        self.sensory_status_label.setText(f"已发现 {len(model_names)} 个模型。")
+        QMessageBox.information(self, "探测成功", f"已发现 {len(model_names)} 个模型。")
+
+    @Slot(str)
+    def _handle_sensory_model_probe_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"检测失败：{message}")
+        QMessageBox.warning(self, "探测失败", message)
+
+    @Slot()
+    def _reset_sensory_model_probe_state(self) -> None:
+        self._sensory_model_probe_thread = None
+        self._sensory_model_probe_worker = None
+        self._set_sensory_model_probe_busy(False)
+        self._sync_sensory_controls()
+
+    def _set_sensory_model_probe_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+            self.sensory_probe_button.setText("检测中..." if busy else "检测模型")
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "检测感知模型...")
+
+    def _test_sensory_model(self) -> None:
+        selected = self._selected_sensory_provider_config(require_model=True)
+        if (
+            selected is None
+            or self._sensory_model_test_thread is not None
+            or self._sensory_model_probe_thread is not None
+            or self._api_model_probe_thread is not None
+            or self._api_test_thread is not None
+            or self._tts_test_thread is not None
+        ):
+            return
+        source, config = selected
+        self._set_sensory_model_test_busy(True)
+        self.sensory_status_label.setText("正在测试增强感知模型...")
+        thread = QThread()
+        worker = settings_workers.SensoryModelTestWorker(config, source)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_sensory_model_test_success)
+        worker.failed.connect(self._handle_sensory_model_test_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._reset_sensory_model_test_state)
+
+        self._sensory_model_test_thread = thread
+        self._sensory_model_test_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _handle_sensory_model_test_success(self, observation: object) -> None:
+        if isinstance(observation, dict):
+            summary = str(observation.get("summary") or "").strip()
+            confidence = observation.get("confidence")
+            self.sensory_status_label.setText(
+                f"测试成功，置信度 {confidence}。{summary[:120]}"
+            )
+        else:
+            self.sensory_status_label.setText("测试成功。")
+        QMessageBox.information(self, "测试成功", self.sensory_status_label.text())
+
+    @Slot(str)
+    def _handle_sensory_model_test_failed(self, message: str) -> None:
+        self.sensory_status_label.setText(f"测试失败：{message}")
+        QMessageBox.warning(self, "测试失败", message)
+
+    @Slot()
+    def _reset_sensory_model_test_state(self) -> None:
+        self._sensory_model_test_thread = None
+        self._sensory_model_test_worker = None
+        self._set_sensory_model_test_busy(False)
+        self._sync_sensory_controls()
+
+    def _set_sensory_model_test_busy(self, busy: bool) -> None:
+        if hasattr(self, "sensory_test_button"):
+            self.sensory_test_button.setEnabled(not busy)
+            self.sensory_test_button.setText("测试中..." if busy else "测试模型")
+        if hasattr(self, "sensory_probe_button"):
+            self.sensory_probe_button.setEnabled(not busy)
+        self._set_save_buttons_busy(busy, "测试感知模型...")
+
+    def _set_save_buttons_busy(self, busy: bool, text: str) -> None:
+        if not hasattr(self, "button_box"):
+            return
+        save_button = self.button_box.button(QDialogButtonBox.StandardButton.Save)
+        cancel_button = self.button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if save_button is not None:
+            if busy:
+                if self._save_button_text is None:
+                    self._save_button_text = save_button.text()
+                save_button.setText(text)
+            elif self._save_button_text is not None:
+                save_button.setText(self._save_button_text)
+                self._save_button_text = None
+            save_button.setEnabled(not busy)
+        if cancel_button is not None:
+            cancel_button.setEnabled(not busy)
+
+    def _sensory_status_hint(self) -> str:
+        if not hasattr(self, "sensory_mode_combo"):
+            return "未测试"
+        mode_ui = str(self.sensory_mode_combo.currentData() or "off")
+        if mode_ui == "off":
+            return "该感官源已关闭。"
+        if not self.sensory_model_edit.text().strip():
+            return "请填写模型，或先检测模型列表。"
+        return "配置已修改，尚未测试。"
 
     def _load_memory_entries(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
@@ -2024,6 +2447,12 @@ class SettingsDialog(QDialog):
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再保存设置。")
             return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再保存设置。")
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再保存设置。")
+            return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再保存设置。")
             return
@@ -2264,6 +2693,9 @@ class SettingsDialog(QDialog):
         theme_settings = self._selected_theme_settings()
         if theme_settings is None:
             return None
+        sensory_settings = self._selected_sensory_settings()
+        if sensory_settings is None:
+            return None
         character_id = self._selected_character_id()
         if character_id is None:
             QMessageBox.warning(self, "配置无效", "请先导入并选择一个角色包。")
@@ -2326,6 +2758,7 @@ class SettingsDialog(QDialog):
                 auto_hide_enabled=self.bubble_auto_hide_check.isChecked(),
                 auto_hide_delay_seconds=self.bubble_auto_hide_delay_spin.value(),
             ),
+            "sensory_settings": sensory_settings,
             "backchannel_settings": BackchannelSettings(
                 enabled=self.backchannel_enabled_check.isChecked(),
                 mode=str(self.backchannel_mode_combo.currentData() or self.backchannel_settings.mode),
@@ -2359,6 +2792,7 @@ class SettingsDialog(QDialog):
         debug_log_settings = values["debug_log_settings"]
         startup_settings = values["startup_settings"]
         bubble_settings = values["bubble_settings"]
+        sensory_settings = values["sensory_settings"]
         backchannel_settings = values["backchannel_settings"]
         memory_curation_settings = values["memory_curation_settings"]
         api_profiles = values.get("api_profiles", [])
@@ -2390,6 +2824,8 @@ class SettingsDialog(QDialog):
         if not isinstance(startup_settings, StartupSettings):
             return
         if not isinstance(bubble_settings, BubbleSettings):
+            return
+        if not isinstance(sensory_settings, SensorySettings):
             return
         if not isinstance(backchannel_settings, BackchannelSettings):
             return
@@ -2442,6 +2878,7 @@ class SettingsDialog(QDialog):
         self.result_debug_log_settings = debug_log_settings
         self.result_startup_settings = startup_settings
         self.result_bubble_settings = bubble_settings
+        self.result_sensory_settings = sensory_settings.normalized()
         self.result_backchannel_settings = backchannel_settings.normalized()
         self.result_memory_curation_settings = memory_curation_settings
         self.result_api_profiles = list(api_profiles) if isinstance(api_profiles, list) else []
@@ -2465,6 +2902,12 @@ class SettingsDialog(QDialog):
             return
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再关闭设置。")
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
             return
         if self._character_export_thread is not None:
             QMessageBox.information(self, "导出中", "角色包导出仍在进行，请等待完成后再关闭设置。")
@@ -2497,6 +2940,14 @@ class SettingsDialog(QDialog):
             return
         if self._tts_test_thread is not None:
             QMessageBox.information(self, "检测中", "TTS 服务检测仍在进行，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_model_probe_thread is not None:
+            QMessageBox.information(self, "检测中", "增强感知模型列表仍在检测，请等待完成后再关闭设置。")
+            event.ignore()
+            return
+        if self._sensory_model_test_thread is not None:
+            QMessageBox.information(self, "测试中", "增强感知模型测试仍在进行，请等待完成后再关闭设置。")
             event.ignore()
             return
         if self._character_export_thread is not None:
@@ -3820,17 +4271,232 @@ class SettingsDialog(QDialog):
         self._sync_voice_import_controls()
 
 
-def _is_http_url(url: str) -> bool:
-    parsed_url = urlparse(url)
-    return parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
-
-
 def _combo_int_data(combo: object, *, default: int) -> int:
     current_data = getattr(combo, "currentData", lambda: None)()
     try:
         return int(current_data)
     except (TypeError, ValueError):
         return default
+
+
+def _default_sensory_state(source: SensorySource) -> dict[str, Any]:
+    return {
+        "mode_ui": "off",
+        "backend": "lmstudio",
+        "endpoint": DEFAULT_LMSTUDIO_ENDPOINT,
+        "model": "",
+        "api_key": "",
+        "timeout_seconds": SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+        "confidence_threshold": 0.5,
+        "context_enabled": True,
+        "context_limit": 4,
+        "source": source.value,
+    }
+
+
+def _sensory_state_from_settings(
+    source: SensorySource,
+    source_settings: SensorySourceSettings,
+    provider: SensoryProviderConfig | None,
+) -> dict[str, Any]:
+    mode_ui = _sensory_mode_ui(source_settings, provider)
+    backend = _sensory_backend(provider)
+    return {
+        "mode_ui": mode_ui,
+        "backend": backend,
+        "endpoint": (
+            str(provider.endpoint).strip()
+            if provider is not None and str(provider.endpoint).strip()
+            else _default_sensory_endpoint(backend, mode_ui)
+        ),
+        "model": str(provider.model).strip() if provider is not None else "",
+        "api_key": str(provider.api_key).strip() if provider is not None else "",
+        "timeout_seconds": (
+            int(provider.timeout_seconds)
+            if provider is not None
+            else SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS
+        ),
+        "confidence_threshold": float(source_settings.confidence_threshold),
+        "context_enabled": bool(source_settings.context_enabled),
+        "context_limit": int(source_settings.context_limit),
+        "source": source.value,
+    }
+
+
+def _sensory_mode_ui(
+    source_settings: SensorySourceSettings,
+    provider: SensoryProviderConfig | None,
+) -> str:
+    if source_settings.mode == SensoryProviderMode.OFF:
+        return "off"
+    if source_settings.mode == SensoryProviderMode.API:
+        return "api"
+    if provider is not None:
+        network_scope = str(provider.extra.get("network_scope") or "").strip().lower()
+        if network_scope == "lan":
+            return "lan"
+        if provider.endpoint and not _is_localhost_endpoint(provider.endpoint):
+            return "lan"
+    return "local"
+
+
+def _sensory_backend(provider: SensoryProviderConfig | None) -> str:
+    if provider is None:
+        return "lmstudio"
+    explicit = provider.extra.get("backend") or provider.extra.get("provider")
+    if explicit:
+        backend = str(explicit).strip().lower()
+        if backend in {"lm_studio", "lm-studio"}:
+            return "lmstudio"
+        if backend in {"llama.cpp", "llama_cpp", "llamacpp"}:
+            return "llama"
+        if backend in {"ollama", "lmstudio", "llama", "openai_compatible"}:
+            return backend
+    text = " ".join([provider.provider_id, provider.endpoint]).lower()
+    if "ollama" in text or "127.0.0.1:11434" in text:
+        return "ollama"
+    if "llama" in text or "127.0.0.1:8080" in text:
+        return "llama"
+    if "lmstudio" in text or "lm-studio" in text or "127.0.0.1:1234" in text:
+        return "lmstudio"
+    return "openai_compatible"
+
+
+def _sensory_provider_mode_from_ui(mode_ui: str) -> SensoryProviderMode:
+    normalized = mode_ui.strip().lower()
+    if normalized == "api":
+        return SensoryProviderMode.API
+    if normalized in {"local", "lan"}:
+        return SensoryProviderMode.LOCAL
+    return SensoryProviderMode.OFF
+
+
+def _sensory_provider_id(
+    source: SensorySource,
+    backend: str,
+    mode_ui: str,
+) -> str:
+    if mode_ui == "lan":
+        return f"{source.value}_lan"
+    mode = _sensory_provider_mode_from_ui(mode_ui)
+    if mode == SensoryProviderMode.OFF:
+        return ""
+    if backend == "openai_compatible" and mode == SensoryProviderMode.LOCAL:
+        return f"{source.value}_local_openai"
+    return f"{source.value}_{mode.value}"
+
+
+def _sensory_provider_config_from_state(
+    source: SensorySource,
+    provider_id: str,
+    state: dict[str, Any],
+) -> SensoryProviderConfig:
+    mode_ui = str(state.get("mode_ui") or "off")
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    endpoint = str(state.get("endpoint") or "").strip()
+    if not endpoint and mode_ui != "lan":
+        endpoint = _default_sensory_endpoint(backend, mode_ui)
+    extra: dict[str, Any] = {"backend": backend}
+    if mode_ui == "lan":
+        extra["network_scope"] = "lan"
+    elif mode_ui == "local":
+        extra["network_scope"] = "local"
+    return SensoryProviderConfig(
+        provider_id=provider_id,
+        source=source,
+        mode=_sensory_provider_mode_from_ui(mode_ui),
+        endpoint=endpoint,
+        model=str(state.get("model") or "").strip(),
+        api_key=str(state.get("api_key") or "").strip(),
+        timeout_seconds=int(state.get("timeout_seconds") or SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS),
+        extra=extra,
+    ).normalized()
+
+
+def _validate_sensory_state(
+    source: SensorySource,
+    state: dict[str, Any],
+    *,
+    require_model: bool = True,
+) -> str:
+    mode_ui = str(state.get("mode_ui") or "off").strip().lower()
+    if mode_ui == "off":
+        return ""
+    label = _sensory_source_label(source)
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    endpoint = str(state.get("endpoint") or "").strip()
+    if require_model and not str(state.get("model") or "").strip():
+        return f"{label}的增强感知模型不能为空。"
+    if mode_ui in {"api", "lan"} and not _is_http_url(endpoint):
+        return f"{label}选择{_sensory_mode_label(mode_ui)}时必须填写有效的 http 或 https Endpoint。"
+    if mode_ui == "lan":
+        if _is_placeholder_endpoint(endpoint):
+            return f"{label}选择局域网连接时，请把 Endpoint 中的占位 IP 替换为实际局域网地址。"
+        if _is_localhost_endpoint(endpoint):
+            return f"{label}选择局域网连接时，Endpoint 不能是 localhost 或 127.0.0.1。"
+    if mode_ui == "local":
+        if endpoint and not _is_http_url(endpoint):
+            return f"{label}的本机 Endpoint 必须是有效的 http 或 https 地址。"
+        if backend == "openai_compatible" and not _is_http_url(endpoint):
+            return f"{label}使用 OpenAI 兼容本机服务时必须填写有效 Endpoint。"
+    return ""
+
+
+def _default_sensory_endpoint(backend: str, mode_ui: str = "local") -> str:
+    normalized_backend = backend.strip().lower()
+    normalized_mode = mode_ui.strip().lower()
+    if normalized_backend in {"lmstudio", "lm_studio", "lm-studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if normalized_backend == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    if normalized_backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    if normalized_mode == "lan":
+        return "http://<LAN-IP>:8000/v1"
+    if normalized_mode == "api":
+        return "https://api.openai.com/v1"
+    return "http://127.0.0.1:8000/v1"
+
+
+def _is_localhost_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").strip().lower()
+    return hostname in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _is_placeholder_endpoint(endpoint: str) -> bool:
+    return "<" in endpoint or ">" in endpoint
+
+
+def _is_http_url(url: str) -> bool:
+    parsed_url = urlparse(url)
+    return parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
+
+
+def _set_combo_data(combo: object, value: object) -> None:
+    find_data = getattr(combo, "findData", None)
+    set_current_index = getattr(combo, "setCurrentIndex", None)
+    if not callable(find_data) or not callable(set_current_index):
+        return
+    index = find_data(value)
+    if index >= 0:
+        set_current_index(index)
+
+
+def _sensory_source_label(source: SensorySource) -> str:
+    return {
+        SensorySource.VISION: "视觉",
+        SensorySource.SPEECH: "语音",
+        SensorySource.SOUND: "环境声音",
+    }.get(source, source.value)
+
+
+def _sensory_mode_label(mode_ui: str) -> str:
+    return {
+        "local": "本机运行框架",
+        "lan": "局域网连接分布式计算",
+        "api": "远端 API",
+    }.get(mode_ui, mode_ui)
 
 
 def _default_tts_api_url(provider: str) -> str:

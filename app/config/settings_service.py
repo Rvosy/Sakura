@@ -35,6 +35,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ScreenAwarenessSettings,
 )
+from app.sensory.settings import SensorySettings, sensory_settings_from_config
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
@@ -619,6 +620,25 @@ class AppSettingsService:
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
         }
         save_yaml_mapping(self.system_config_path, data)
+
+    def load_sensory_settings(self) -> SensorySettings:
+        return sensory_settings_from_config(
+            self._system_section("sensory"),
+            self._api_section("sensory"),
+        )
+
+    def save_sensory_settings(self, settings: SensorySettings) -> None:
+        normalized = settings.normalized()
+
+        system_data = load_yaml_mapping(self.system_config_path)
+        system_data["sensory"] = normalized.to_system_mapping()
+        save_yaml_mapping(self.system_config_path, system_data)
+
+        api_data = load_yaml_mapping(self.api_config_path)
+        sensory_api = _mapping(api_data.get("sensory"))
+        sensory_api.update(normalized.to_api_mapping())
+        api_data["sensory"] = sensory_api
+        save_yaml_mapping(self.api_config_path, api_data)
 
     def load_proactive_care_settings(self) -> ScreenAwarenessSettings:
         """兼容旧调用点；新代码请使用 load_screen_awareness_settings。"""

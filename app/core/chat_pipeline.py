@@ -11,6 +11,7 @@ from app.storage.visual_observation import (
     VisualObservationStore,
     visual_observation_record_from_summary,
 )
+from app.sensory.pipeline import SensoryPipeline
 
 
 ProgressCallback = Callable[[AgentProgress], None]
@@ -23,9 +24,11 @@ class ChatPipeline:
         self,
         agent_runtime: AgentRuntime,
         visual_observation_store: VisualObservationStore | None = None,
+        sensory_pipeline: SensoryPipeline | None = None,
     ) -> None:
         self.agent_runtime = agent_runtime
         self.visual_observation_store = visual_observation_store
+        self.sensory_pipeline = sensory_pipeline or getattr(agent_runtime, "sensory_pipeline", None)
 
     def run_user_message(
         self,
@@ -127,6 +130,8 @@ class ChatPipeline:
             debug_log(log_scope, "视觉观察摘要为空，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
         self.visual_observation_store.append(record)
+        if self.sensory_pipeline is not None:
+            self.sensory_pipeline.record_visual_observation(record)
         debug_log(
             log_scope,
             "视觉观察记录已保存",

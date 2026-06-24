@@ -64,6 +64,11 @@ from app.llm.prompt_templates import (
     build_segmented_reply_instruction,
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+from app.sensory.tools import (
+    SENSORY_OBSERVATION_CAPABILITY,
+    build_sensory_tool_prompt,
+    configured_sensory_sources,
+)
 from app.storage.visual_observation import extract_visual_observation_summary
 
 from app.llm.prompts.runtime import PromptRuntime
@@ -128,9 +133,11 @@ class AgentRuntime:
         self.memory = memory or MemoryStore()
         self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
-        self.context_providers = (
+        self._builtin_context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+        self._plugin_context_providers: list[ContextProviderContribution] = []
+        self.context_providers = [*self._builtin_context_providers]
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self.prompt_runtime = PromptRuntime()
         self.context_orchestrator = ContextOrchestrator()
@@ -139,6 +146,7 @@ class AgentRuntime:
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+        self.sensory_pipeline: Any | None = None
 
     @property
     def vision_api_client(self) -> OpenAICompatibleClient | None:
@@ -197,9 +205,30 @@ class AgentRuntime:
         context_providers: list[ContextProviderContribution] | None,
     ) -> None:
         """同步插件动态上下文提供者。"""
-        self.context_providers = (
+        self._plugin_context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+        self.context_providers = [
+            *self._builtin_context_providers,
+            *self._plugin_context_providers,
+        ]
+
+    def set_builtin_context_providers(
+        self,
+        context_providers: list[ContextProviderContribution] | None,
+    ) -> None:
+        """同步内建动态上下文提供者，保留插件上下文。"""
+        self._builtin_context_providers = (
+            [*context_providers] if context_providers is not None else []
+        )
+        self.context_providers = [
+            *self._builtin_context_providers,
+            *self._plugin_context_providers,
+        ]
+
+    def set_sensory_pipeline(self, sensory_pipeline: Any | None) -> None:
+        """同步增强感知管线，供内建工具按最新配置路由。"""
+        self.sensory_pipeline = sensory_pipeline
 
     def set_history_store(
         self,
@@ -513,7 +542,16 @@ class AgentRuntime:
             )
             if browser_page_mode or visible_browser_guard_active:
                 active_groups.add("browser")
-            allowed_capabilities = {SCREEN_OBSERVATION_CAPABILITY} if allow_screen_observation else set()
+            enabled_sensory_sources = configured_sensory_sources(
+                getattr(self, "sensory_pipeline", None)
+            )
+            if enabled_sensory_sources:
+                active_groups.add("sensory")
+            allowed_capabilities: set[str] = set()
+            if allow_screen_observation:
+                allowed_capabilities.add(SCREEN_OBSERVATION_CAPABILITY)
+            if enabled_sensory_sources:
+                allowed_capabilities.add(SENSORY_OBSERVATION_CAPABILITY)
             tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
@@ -1218,11 +1256,15 @@ class AgentRuntime:
         browser_page_rule = tool_routing._build_browser_page_mode_rule(browser_page_mode)
         visible_browser_rule = tool_routing._build_visible_browser_mode_rule(visible_browser_mode)
         web_tool_capability_rule = tool_routing._build_web_tool_capability_rule(visible_browser_mode)
+        sensory_tool_rule = build_sensory_tool_prompt(
+            configured_sensory_sources(getattr(self, "sensory_pipeline", None))
+        )
         capability_rules = "\n".join(
             [
                 "可用工具能力领域：",
                 web_tool_capability_rule,
                 "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
+                sensory_tool_rule,
                 "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
                 "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
             ]
@@ -1293,13 +1335,19 @@ class AgentRuntime:
         extra_instructions: str = "",
         include_visual_observation: bool = False,
     ):
+        sensory_tool_rule = build_sensory_tool_prompt(
+            configured_sensory_sources(getattr(self, "sensory_pipeline", None))
+        )
+        combined_extra_instructions = "\n".join(
+            part for part in (extra_instructions.strip(), sensory_tool_rule) if part
+        )
         proactive_rules = build_proactive_check_tool_system_prefix(
             "",
             self.reply_tones,
             self.reply_portraits,
             max_tool_calls_per_step=self.runtime_loop_settings.max_tool_calls_per_step,
             max_tool_calls_per_turn=self.runtime_loop_settings.max_tool_calls_per_turn,
-            extra_instructions=self._combine_extra_instructions(extra_instructions),
+            extra_instructions=self._combine_extra_instructions(combined_extra_instructions),
         )
         sections = [
             *self._persona_sections(),

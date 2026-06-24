@@ -81,6 +81,18 @@ from app.config.settings_service import (
     StartupSettings,
 )
 from app.llm.api_client import ApiSettings
+from app.sensory.models import SensorySource
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+)
+from app.sensory.settings import (
+    SENSORY_DEFAULT_CONTEXT_BUDGET_CHARS,
+    SENSORY_MAX_CONTEXT_BUDGET_CHARS,
+    SENSORY_MIN_CONTEXT_BUDGET_CHARS,
+    SensorySettings,
+)
 from app.platforms.launch_at_login import (
     is_launch_at_login_supported,
     launch_at_login_platform_text,
@@ -431,6 +443,7 @@ class ApiSettingsPage:
         api_profiles: list | None = None,
         model_names: list[str] | None = None,
         model_selection: Any = None,
+        sensory_settings: SensorySettings | None = None,
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
@@ -491,6 +504,8 @@ class ApiSettingsPage:
         outer_layout.addWidget(slot_group)
         outer_layout.addWidget(basic_group)
         outer_layout.addWidget(self._build_advanced_llm_params_group(settings, tab))
+        if sensory_settings is not None:
+            outer_layout.addWidget(self._build_sensory_group(sensory_settings, tab))
         outer_layout.addStretch(1)
         tab.setLayout(outer_layout)
 
@@ -666,6 +681,129 @@ class ApiSettingsPage:
         body.setVisible(has_custom)
         owner.advanced_params_hint.setEnabled(True)
         return group
+
+    def _build_sensory_group(self, settings: SensorySettings, parent: QWidget) -> QGroupBox:
+        owner = self.dialog
+        normalized = settings.normalized()
+        owner._initialize_sensory_ui_state(normalized)
+
+        group = QGroupBox("增强感知", parent)
+        group.setObjectName("sensorySettingsGroup")
+
+        owner.sensory_enabled_check = QCheckBox("启用增强感知工具", group)
+        owner.sensory_enabled_check.setChecked(normalized.enabled)
+        owner.sensory_context_enabled_check = QCheckBox("将感官摘要动态注入主模型上下文", group)
+        owner.sensory_context_enabled_check.setChecked(normalized.context_enabled)
+
+        owner.sensory_context_budget_spin = _NoWheelSpinBox(group)
+        owner.sensory_context_budget_spin.setRange(
+            SENSORY_MIN_CONTEXT_BUDGET_CHARS,
+            SENSORY_MAX_CONTEXT_BUDGET_CHARS,
+        )
+        owner.sensory_context_budget_spin.setSuffix(" 字符")
+        owner.sensory_context_budget_spin.setValue(
+            normalized.context_budget_chars or SENSORY_DEFAULT_CONTEXT_BUDGET_CHARS
+        )
+
+        owner.sensory_source_combo = _NoWheelComboBox(group)
+        owner.sensory_source_combo.addItem("视觉", SensorySource.VISION.value)
+        owner.sensory_source_combo.addItem("语音", SensorySource.SPEECH.value)
+        owner.sensory_source_combo.addItem("环境声音", SensorySource.SOUND.value)
+
+        owner.sensory_mode_combo = _NoWheelComboBox(group)
+        owner.sensory_mode_combo.addItem("关闭该感官模型", "off")
+        owner.sensory_mode_combo.addItem("本机运行框架", "local")
+        owner.sensory_mode_combo.addItem("局域网连接分布式计算", "lan")
+        owner.sensory_mode_combo.addItem("远端 API", "api")
+
+        owner.sensory_backend_combo = _NoWheelComboBox(group)
+        owner.sensory_backend_combo.addItem("LM Studio", "lmstudio")
+        owner.sensory_backend_combo.addItem("Ollama", "ollama")
+        owner.sensory_backend_combo.addItem("llama.cpp", "llama")
+        owner.sensory_backend_combo.addItem("OpenAI 兼容 API", "openai_compatible")
+
+        owner.sensory_endpoint_edit = QLineEdit(group)
+        owner.sensory_model_edit = ModelComboBox(group)
+        owner.sensory_model_edit.setPlaceholderText("例如 qwen3-vl-4b-instruct-mlx")
+        owner.sensory_api_key_edit = QLineEdit(group)
+        owner.sensory_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        owner.sensory_api_key_edit.setPlaceholderText("本机服务通常可留空")
+
+        owner.sensory_timeout_spin = _NoWheelSpinBox(group)
+        owner.sensory_timeout_spin.setRange(1, 300)
+        owner.sensory_timeout_spin.setSuffix(" 秒")
+
+        owner.sensory_confidence_spin = _NoWheelDoubleSpinBox(group)
+        owner.sensory_confidence_spin.setRange(0.0, 1.0)
+        owner.sensory_confidence_spin.setSingleStep(0.05)
+        owner.sensory_confidence_spin.setDecimals(2)
+
+        owner.sensory_probe_button = QPushButton("检测模型", group)
+        owner.sensory_probe_button.clicked.connect(owner._probe_sensory_models)
+        owner.sensory_test_button = QPushButton("测试模型", group)
+        owner.sensory_test_button.clicked.connect(owner._test_sensory_model)
+        owner.sensory_status_label = QLabel("未测试", group)
+        owner.sensory_status_label.setObjectName("secondaryText")
+        owner.sensory_status_label.setWordWrap(True)
+
+        action_row = QWidget(group)
+        action_layout = QHBoxLayout(action_row)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
+        action_layout.addWidget(owner.sensory_probe_button)
+        action_layout.addWidget(owner.sensory_test_button)
+        action_layout.addStretch(1)
+
+        toggles = QWidget(group)
+        toggles_layout = QHBoxLayout(toggles)
+        toggles_layout.setContentsMargins(0, 0, 0, 0)
+        toggles_layout.setSpacing(10)
+        toggles_layout.addWidget(owner.sensory_enabled_check)
+        toggles_layout.addWidget(owner.sensory_context_enabled_check)
+        toggles_layout.addStretch(1)
+
+        form = QFormLayout()
+        form.setContentsMargins(16, 10, 16, 12)
+        form.setSpacing(12)
+        form.addRow("", toggles)
+        form.addRow("上下文预算", owner.sensory_context_budget_spin)
+        form.addRow("感官源", owner.sensory_source_combo)
+        form.addRow("模式", owner.sensory_mode_combo)
+        form.addRow("后端", owner.sensory_backend_combo)
+        form.addRow("Endpoint", owner.sensory_endpoint_edit)
+        form.addRow("模型", owner.sensory_model_edit)
+        form.addRow("API Key", owner.sensory_api_key_edit)
+        form.addRow("超时", owner.sensory_timeout_spin)
+        form.addRow("最低置信度", owner.sensory_confidence_spin)
+        form.addRow("", action_row)
+        form.addRow("状态", owner.sensory_status_label)
+        group.setLayout(form)
+
+        owner.sensory_enabled_check.toggled.connect(owner._sync_sensory_controls)
+        owner.sensory_context_enabled_check.toggled.connect(owner._sync_sensory_controls)
+        owner.sensory_source_combo.currentIndexChanged.connect(owner._handle_sensory_source_changed)
+        owner.sensory_mode_combo.currentIndexChanged.connect(owner._handle_sensory_control_changed)
+        owner.sensory_backend_combo.currentIndexChanged.connect(owner._handle_sensory_backend_changed)
+        owner.sensory_endpoint_edit.textChanged.connect(owner._handle_sensory_control_changed)
+        owner.sensory_model_edit.currentTextChanged.connect(owner._handle_sensory_control_changed)
+        owner.sensory_api_key_edit.textChanged.connect(owner._handle_sensory_control_changed)
+        owner.sensory_timeout_spin.valueChanged.connect(owner._handle_sensory_control_changed)
+        owner.sensory_confidence_spin.valueChanged.connect(owner._handle_sensory_control_changed)
+
+        owner._load_sensory_source_controls(SensorySource.VISION.value, mark_dirty=False)
+        owner._sync_sensory_controls()
+        return group
+
+
+def default_sensory_endpoint_for_backend(backend: str) -> str:
+    normalized = backend.strip().lower()
+    if normalized in {"lmstudio", "lm_studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if normalized == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    if normalized in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    return "https://api.openai.com/v1"
 
 
 class TtsSettingsPage:
