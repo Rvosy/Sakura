@@ -1759,7 +1759,7 @@ def _minimal_tts_settings(
 
 
 def _runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
+    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 

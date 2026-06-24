@@ -1748,8 +1748,8 @@ def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "portrait_scale"
         / uuid.uuid4().hex
+        / "portrait_scale"
     )
     tmp_path.mkdir(parents=True, exist_ok=True)
     portrait_path = tmp_path / "portrait.png"
@@ -1828,8 +1828,8 @@ def test_portrait_controller_never_resizes_parent_window() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "portrait_no_resize"
         / uuid.uuid4().hex
+        / "portrait_no_resize"
     )
     tmp_path.mkdir(parents=True, exist_ok=True)
     portrait_path = tmp_path / "portrait.png"
@@ -7057,8 +7057,8 @@ def _ui_runtime_root(name: str) -> Path:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / name
         / uuid.uuid4().hex
+        / name
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -10532,8 +10532,8 @@ def test_proactive_care_event_reads_recent_conversation_from_history_store() -> 
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "proactive_history"
         / uuid.uuid4().hex
+        / "proactive_history"
         / "history.jsonl"
     )
     store = ChatHistoryStore(history_path)
@@ -10720,8 +10720,8 @@ def test_screen_awareness_redirects_limited_night_health_reminders(monkeypatch) 
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "screen_awareness_health"
         / uuid.uuid4().hex
+        / "screen_awareness_health"
     )
 
     class MinimalWindow:
@@ -11303,8 +11303,8 @@ def test_chat_history_store_round_trips_tone_and_portrait() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "chat_history_segments"
         / uuid.uuid4().hex
+        / "chat_history_segments"
         / "history.jsonl"
     )
     store = ChatHistoryStore(history_path)
@@ -11326,8 +11326,8 @@ def test_chat_history_store_loads_legacy_entries_without_tone_or_portrait() -> N
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "chat_history_legacy"
         / uuid.uuid4().hex
+        / "chat_history_legacy"
         / "history.jsonl"
     )
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -12112,8 +12112,8 @@ def _build_runtime_root_with_character(QPixmap, Qt):  # type: ignore[no-untyped-
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "pet_window_startup"
         / uuid.uuid4().hex
+        / "pet_window_startup"
     )
     config_dir = root / "data" / "config"
     character_dir = root / "characters" / "demo"

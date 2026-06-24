@@ -23,7 +23,7 @@ def _disable_audio_player(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _studio_runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / name / uuid.uuid4().hex
+    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 

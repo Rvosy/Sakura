@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from pathlib import Path
 from collections.abc import Iterable
 from typing import Any
 
@@ -10,6 +11,24 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYTEST_QT_API", "pyside6")
+
+_ORIGINAL_PATH_MKDIR = Path.mkdir
+
+
+def _mkdir_without_private_windows_acl(
+    self: Path,
+    mode: int = 0o777,
+    parents: bool = False,
+    exist_ok: bool = False,
+) -> None:
+    # pytest's 0o700 temp dirs can become unreadable in the Windows sandbox.
+    if os.name == "nt" and mode == 0o700:
+        mode = 0o777
+    return _ORIGINAL_PATH_MKDIR(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+
+if os.name == "nt":
+    Path.mkdir = _mkdir_without_private_windows_acl  # type: ignore[method-assign]
 
 
 _THREAD_ATTR_NAMES = (

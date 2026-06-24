@@ -82,7 +82,7 @@ def test_chat_pipeline_records_event_visual_observation_after_reply() -> None:
             )
 
     runtime = Runtime()
-    path = Path("__pycache__") / "test_runtime" / f"visual_pipeline_{uuid.uuid4().hex}.jsonl"
+    path = Path("temp") / "test_runtime" / f"visual_pipeline_{uuid.uuid4().hex}.jsonl"
     try:
         pipeline = ChatPipeline(
             runtime,  # type: ignore[arg-type]
@@ -144,7 +144,7 @@ def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply()
             )
 
     runtime = Runtime()
-    path = Path("__pycache__") / "test_runtime" / f"visual_chat_{uuid.uuid4().hex}.jsonl"
+    path = Path("temp") / "test_runtime" / f"visual_chat_{uuid.uuid4().hex}.jsonl"
     try:
         pipeline = ChatPipeline(
             runtime,  # type: ignore[arg-type]

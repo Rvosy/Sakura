@@ -41,11 +41,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _runtime_root(name: str) -> Path:
     root = (
         PROJECT_ROOT
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "plugin_advanced"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
