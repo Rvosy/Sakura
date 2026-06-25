@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, QRect  # noqa: E402
 from PySide6.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 
 from app.ui.screen_color_picker import (  # noqa: E402
+    COLOR_PICKER_REFRESH_INTERVAL_MS,
     ScreenColorPickerOverlay,
     sample_pixmap_hex_color,
     sample_desktop_hex_color,
@@ -73,6 +74,19 @@ def test_screen_color_picker_tracks_mouse_without_button_press() -> None:
     overlay = ScreenColorPickerOverlay(desktop, QRect(0, 0, 20, 20))
 
     assert overlay.hasMouseTracking()
+
+
+def test_screen_color_picker_batches_live_capture_refresh() -> None:
+    _qt_app_or_skip()
+    desktop = _desktop(20, 20, 1.0, QRect(1, 1, 2, 2), "#ffffff")
+    overlay = ScreenColorPickerOverlay(desktop, QRect(0, 0, 20, 20))
+
+    overlay._queue_sample_refresh()
+    overlay._queue_sample_refresh()
+
+    assert overlay._sample_refresh_timer.isSingleShot()
+    assert overlay._sample_refresh_timer.interval() == COLOR_PICKER_REFRESH_INTERVAL_MS
+    assert overlay._sample_refresh_timer.isActive()
 
 
 def test_screen_color_picker_current_color_uses_live_region(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -11,6 +11,7 @@ from app.ui.screen_capture import capture_virtual_desktop_pixmap, logical_to_dev
 
 COLOR_PICKER_SAMPLE_SIZE = 17
 COLOR_PICKER_PREVIEW_SIZE = 148
+COLOR_PICKER_REFRESH_INTERVAL_MS = 33
 
 
 def sample_desktop_hex_color(
@@ -81,7 +82,10 @@ class ScreenColorPickerOverlay(QWidget):
         self.desktop_pixmap = desktop_pixmap
         self.virtual_geometry = QRect(virtual_geometry)
         self._sample_cache: tuple[QPixmap, QRect, str | None] | None = None
-        self._sample_refresh_pending = False
+        self._sample_refresh_timer = QTimer(self)
+        self._sample_refresh_timer.setSingleShot(True)
+        self._sample_refresh_timer.setInterval(COLOR_PICKER_REFRESH_INTERVAL_MS)
+        self._sample_refresh_timer.timeout.connect(self._refresh_sample_cache_and_update)
         self._override_cursor = False
         cursor_pos = QCursor.pos() - self.virtual_geometry.topLeft()
         self.cursor_pos = QPoint(
@@ -187,13 +191,11 @@ class ScreenColorPickerOverlay(QWidget):
         return pixmap, global_rect, self._fallback_current_color()
 
     def _queue_sample_refresh(self) -> None:
-        if self._sample_refresh_pending:
+        if self._sample_refresh_timer.isActive():
             return
-        self._sample_refresh_pending = True
-        QTimer.singleShot(0, self._refresh_sample_cache_and_update)
+        self._sample_refresh_timer.start()
 
     def _refresh_sample_cache_and_update(self) -> None:
-        self._sample_refresh_pending = False
         self._refresh_sample_cache()
         self.update()
 
