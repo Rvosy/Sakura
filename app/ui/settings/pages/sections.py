@@ -1054,8 +1054,6 @@ class SystemSettingsPage:
         self,
         debug_settings: DebugLogSettings,
         startup_settings: StartupSettings,
-        bubble_settings: BubbleSettings,
-        backchannel_settings: BackchannelSettings,
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
@@ -1092,6 +1090,45 @@ class SystemSettingsPage:
             "不再拦截点击(可点到下层窗口),也不会再误拖桌宠。"
         )
 
+        startup_form = QFormLayout()
+        startup_form.setContentsMargins(16, 12, 16, 12)
+        startup_form.setSpacing(12)
+        startup_form.addRow("", owner.launch_at_login_check)
+        debug_form = QFormLayout()
+        debug_form.setContentsMargins(16, 12, 16, 12)
+        debug_form.setSpacing(12)
+        debug_form.addRow("", owner.debug_log_enabled_check)
+        debug_form.addRow("", owner.debug_body_enabled_check)
+        debug_form.addRow("", owner.debug_file_enabled_check)
+        debug_form.addRow("", owner.stage_debug_overlay_check)
+        debug_form.addRow("", owner.stage_collision_mask_check)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(12)
+        for title, group_form in (
+            ("启动", startup_form),
+            ("调试日志", debug_form),
+        ):
+            group = QGroupBox(title, tab)
+            group.setLayout(group_form)
+            layout.addWidget(group)
+        layout.addStretch(1)
+        tab.setLayout(layout)
+        return tab
+
+
+class InteractionSettingsPage:
+    def __init__(self, dialog: Any) -> None:
+        self.dialog = dialog
+
+    def build(
+        self,
+        bubble_settings: BubbleSettings,
+        backchannel_settings: BackchannelSettings,
+    ) -> QWidget:
+        owner = self.dialog
+        tab = QWidget(owner)
         owner.subtitle_typing_interval_spin = _NoWheelSpinBox(tab)
         owner.subtitle_typing_interval_spin.setRange(
             SUBTITLE_TYPING_INTERVAL_MIN_MS,
@@ -1177,18 +1214,6 @@ class SystemSettingsPage:
                 )
             )
 
-        startup_form = QFormLayout()
-        startup_form.setContentsMargins(16, 12, 16, 12)
-        startup_form.setSpacing(12)
-        startup_form.addRow("", owner.launch_at_login_check)
-        debug_form = QFormLayout()
-        debug_form.setContentsMargins(16, 12, 16, 12)
-        debug_form.setSpacing(12)
-        debug_form.addRow("", owner.debug_log_enabled_check)
-        debug_form.addRow("", owner.debug_body_enabled_check)
-        debug_form.addRow("", owner.debug_file_enabled_check)
-        debug_form.addRow("", owner.stage_debug_overlay_check)
-        debug_form.addRow("", owner.stage_collision_mask_check)
         subtitle_form = QFormLayout()
         subtitle_form.setContentsMargins(16, 12, 16, 12)
         subtitle_form.setSpacing(12)
@@ -1221,8 +1246,6 @@ class SystemSettingsPage:
         layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(12)
         for title, group_form in (
-            ("启动", startup_form),
-            ("调试日志", debug_form),
             ("字幕与回复", subtitle_form),
             ("气泡", bubble_form),
             ("接话", backchannel_form),

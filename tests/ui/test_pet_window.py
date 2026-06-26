@@ -3374,10 +3374,11 @@ def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
     assert nav is not None
     assert stack is not None
     assert [nav.item(index).text() for index in range(nav.count())] == [
-        "角色",
+        "角色与布局",
         "外观",
         "模型",
         "语音",
+        "交互",
         "隐私",
         "工具",
         "插件",
@@ -3939,6 +3940,7 @@ def test_settings_dialog_styles_tts_bundle_download_window(monkeypatch) -> None:
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         theme_settings=theme,
+        character_theme_overrides={"sakura": theme},
     )
 
     dialog._download_gpt_sovits_bundle()
@@ -4978,10 +4980,11 @@ def test_tauri_settings_save_failure_rolls_back_config_files(monkeypatch) -> Non
     assert window.api_client.settings == ApiClientStub.settings
 
 
-def test_tauri_settings_apply_character_theme_without_saving_global_theme() -> None:
+def test_tauri_settings_apply_character_theme_saves_character_override() -> None:
     from app.ui.pet_window import PetWindow
 
-    saved_theme: list[ThemeSettings] = []
+    saved_theme_preferences: list[ThemeSettings] = []
+    saved_overrides: list[tuple[str, ThemeSettings]] = []
 
     class SettingsServiceStub:
         def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
@@ -5009,7 +5012,10 @@ def test_tauri_settings_apply_character_theme_without_saving_global_theme() -> N
             pass
 
         def save_theme_settings(self, settings):  # type: ignore[no-untyped-def]
-            saved_theme.append(settings)
+            saved_theme_preferences.append(settings.normalized())
+
+        def save_character_theme_override(self, character_id, settings):  # type: ignore[no-untyped-def]
+            saved_overrides.append((character_id, settings.normalized()))
 
         def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
             pass
@@ -5036,12 +5042,47 @@ def test_tauri_settings_apply_character_theme_without_saving_global_theme() -> N
         object(),
     )
     theme = ThemeSettings(primary_color="#123456")
-    result = replace(_build_tauri_settings_result(), theme=theme, theme_changed=False)
+    result = replace(_build_tauri_settings_result(), theme=theme, theme_changed=True)
 
     assert window._apply_tauri_settings_result(result, final=True) is True
 
-    assert saved_theme == []
+    assert saved_theme_preferences == [theme.normalized()]
+    assert saved_overrides == [("sakura", theme.normalized())]
     assert window.theme_settings == theme.normalized()
+
+
+def test_tauri_settings_apply_default_theme_deletes_character_override() -> None:
+    from app.ui.pet_window import PetWindow
+
+    deleted_overrides: list[str] = []
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+        def delete_character_theme_override(self, character_id):  # type: ignore[no-untyped-def]
+            deleted_overrides.append(character_id)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        theme=DEFAULT_THEME_SETTINGS,
+        theme_changed=True,
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert deleted_overrides == ["sakura"]
 
 
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
@@ -5140,7 +5181,6 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
         },
         "memory": {
             "curation": {
-                "enabled": True,
                 "trigger_turns": 8,
                 "backfill_limit": 200,
             }
@@ -5189,6 +5229,7 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
     assert result.character.portrait_scale_percent == 150
     assert result.api.settings.timeout_seconds == 600
     assert result.system_extra.backchannel.delay_ms == 5000
+    assert result.memory_curation.enabled is True
     assert result.memory_curation.trigger_turns == 50
 
 
@@ -5504,30 +5545,41 @@ def test_tauri_settings_request_includes_per_character_theme() -> None:
         display_name="Sakura",
         voice=None,
         theme_settings=ThemeSettings(primary_color="#abcdef"),
+        theme_source="package",
     )
     registry = SimpleNamespace(profiles={"sakura": profile})
     request = build_tauri_settings_request(
         ScreenAwarenessSettings(),
         character_registry=registry,
         current_character=profile,
+        character_theme_overrides={"sakura": ThemeSettings(primary_color="#112233")},
         nonce="nonce",
     )
     characters = request["character"]["characters"]
     assert len(characters) == 1
-    assert characters[0]["theme"]["primary_color"] == "#abcdef"
-    # 每个角色都带齐全部配色字段，供切换时跟随换色。
+    assert characters[0]["theme"]["primary_color"] == "#112233"
+    assert characters[0]["default_theme"]["primary_color"] == "#abcdef"
+    # 每个角色都带齐全部配色字段，供切换/恢复默认时跟随换色。
     assert len(characters[0]["theme"]) == len(request["theme_fields"])
+    assert len(characters[0]["default_theme"]) == len(request["theme_fields"])
 
 
 def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
     source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
 
     assert "function selectedCharacterThemeDefaults()" in source
+    assert "function selectedCharacterTheme()" in source
     assert "themeAiButton: document.getElementById(\"themeAiButton\")" in source
     assert "ttsTestButton: document.getElementById(\"ttsTestButton\")" in source
+    assert "theme-color-popover" in source
     assert "hostCall(\"theme.generate_ai\"" in source
+    assert "hostCall(\"theme.pick_screen_color\"" in source
     assert "hostCall(\"tts.test\"" in source
+    assert "type = \"color\"" not in source
+    assert "current.hide" not in source
     assert "theme_changed: themeChanged" in source
+    assert "setThemeValues(request.theme);" in source
+    assert "setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false });" in source
     assert "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });" in source
 
 
@@ -6010,6 +6062,25 @@ def test_tauri_settings_capability_allows_window_close() -> None:
     assert "core:window:allow-close" in capability["permissions"]
     assert "dialog:allow-open" in capability["permissions"]
     assert "dialog:allow-save" in capability["permissions"]
+
+
+def test_tauri_settings_process_dispatches_screen_color_picker(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    monkeypatch.setattr(tauri_settings, "pick_screen_color", lambda: "#112233")
+
+    assert process._dispatch_rpc("theme.pick_screen_color", {}) == {"color": "#112233"}
+
+    monkeypatch.setattr(tauri_settings, "pick_screen_color", lambda: None)
+
+    assert process._dispatch_rpc("theme.pick_screen_color", {}) == {"cancelled": True}
 
 
 def test_tauri_settings_process_dispatches_memory_rpc_methods() -> None:
@@ -6868,6 +6939,7 @@ def test_settings_dialog_model_popups_follow_current_theme_stylesheet() -> None:
         proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
         theme_settings=themed,
+        character_theme_overrides={"sakura": themed},
     )
 
     dialog.vision_model_combo.set_model_names(["alpha-model", "beta-model"])
@@ -10501,13 +10573,12 @@ def test_settings_dialog_resets_to_character_package_theme() -> None:
     app.processEvents()
 
 
-def test_theme_write_rule_persists_manual_and_ai_theme() -> None:
+def test_character_theme_override_saves_or_deletes_by_default_colors() -> None:
     from app.config.character_loader import (
-        THEME_SOURCE_COMPAT_DEFAULT,
         THEME_SOURCE_PACKAGE,
         CharacterProfile,
     )
-    from app.ui.pet_window import _should_write_character_theme
+    from app.ui.pet_window import _save_character_theme_override
 
     root = _ui_runtime_root("theme_write_rule")
     profile = CharacterProfile(
@@ -10520,22 +10591,23 @@ def test_theme_write_rule_persists_manual_and_ai_theme() -> None:
         theme_settings=DEFAULT_THEME_SETTINGS,
         theme_source=THEME_SOURCE_PACKAGE,
     )
-    compat_profile = CharacterProfile(
-        id="legacy",
-        display_name="Legacy",
-        package_dir=root,
-        card_path=root / "card.md",
-        initial_message="hello",
-        default_portrait_path=root / "portrait.png",
-        theme_settings=DEFAULT_THEME_SETTINGS,
-        theme_source=THEME_SOURCE_COMPAT_DEFAULT,
-    )
+    saved: list[tuple[str, ThemeSettings]] = []
+    deleted: list[str] = []
 
-    assert _should_write_character_theme("ai", profile)
-    assert _should_write_character_theme("ai", compat_profile)
-    assert _should_write_character_theme("manual", profile)
-    assert not _should_write_character_theme("reset", profile)
-    assert not _should_write_character_theme("character", profile)
+    class SettingsServiceStub:
+        def save_character_theme_override(self, character_id, settings):  # type: ignore[no-untyped-def]
+            saved.append((character_id, settings.normalized()))
+
+        def delete_character_theme_override(self, character_id):  # type: ignore[no-untyped-def]
+            deleted.append(character_id)
+
+    service = SettingsServiceStub()
+
+    _save_character_theme_override(service, profile, ThemeSettings(primary_color="#112233"))
+    _save_character_theme_override(service, profile, DEFAULT_THEME_SETTINGS)
+
+    assert saved == [("demo", ThemeSettings(primary_color="#112233").normalized())]
+    assert deleted == ["demo"]
 
 
 def test_theme_ai_worker_sends_portrait_image_and_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -13852,41 +13924,58 @@ def _make_character_profile(theme_settings: ThemeSettings | None, theme_source: 
     )
 
 
-def test_merge_theme_with_character_keeps_user_level_fields() -> None:
+def test_resolve_effective_theme_uses_package_theme_and_user_level_fields() -> None:
     # 角色包主题只贡献配色；visual_effect_mode 和 ai_enabled 是用户级偏好，必须沿用已保存值。
     from app.config.character_loader import THEME_SOURCE_PACKAGE
-    from app.ui.theme import merge_theme_with_character
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="macos_visual_effect", primary_color="#aa11bb", ai_enabled=True)
+    user = ThemeSettings(visual_effect_mode="macos_visual_effect", primary_color="#aa11bb", ai_enabled=True)
     package_theme = ThemeSettings(primary_color="#123456")
     profile = _make_character_profile(package_theme, THEME_SOURCE_PACKAGE)
 
-    merged = merge_theme_with_character(saved, profile)
+    merged = resolve_effective_theme(profile, None, user)
 
     assert merged.visual_effect_mode == "macos_visual_effect"
     assert merged.ai_enabled is True
     assert merged.primary_color == "#123456"
 
 
-def test_merge_theme_with_character_compat_default_returns_saved() -> None:
+def test_resolve_effective_theme_compat_default_ignores_saved_global_colors() -> None:
     from app.config.character_loader import THEME_SOURCE_COMPAT_DEFAULT
-    from app.ui.theme import merge_theme_with_character
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="windows_acrylic", primary_color="#aa11bb")
+    user = ThemeSettings(visual_effect_mode="windows_acrylic", primary_color="#aa11bb")
     profile = _make_character_profile(ThemeSettings(), THEME_SOURCE_COMPAT_DEFAULT)
 
-    merged = merge_theme_with_character(saved, profile)
+    merged = resolve_effective_theme(profile, None, user)
 
     assert merged.visual_effect_mode == "windows_acrylic"
-    assert merged.primary_color == "#aa11bb"
+    assert merged.primary_color == DEFAULT_THEME_SETTINGS.primary_color
 
 
-def test_merge_theme_with_character_without_profile() -> None:
-    from app.ui.theme import merge_theme_with_character
+def test_resolve_effective_theme_override_wins_over_package_theme() -> None:
+    from app.config.character_loader import THEME_SOURCE_PACKAGE
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="solid")
+    user = ThemeSettings(visual_effect_mode="solid", primary_color="#aa11bb")
+    profile = _make_character_profile(ThemeSettings(primary_color="#123456"), THEME_SOURCE_PACKAGE)
+    override = ThemeSettings(primary_color="#abcdef")
 
-    assert merge_theme_with_character(saved, None).visual_effect_mode == "solid"
+    merged = resolve_effective_theme(profile, override, user)
+
+    assert merged.visual_effect_mode == "solid"
+    assert merged.primary_color == "#abcdef"
+
+
+def test_resolve_effective_theme_without_profile() -> None:
+    from app.ui.theme import resolve_effective_theme
+
+    user = ThemeSettings(visual_effect_mode="solid", primary_color="#aa11bb")
+
+    merged = resolve_effective_theme(None, None, user)
+
+    assert merged.visual_effect_mode == "solid"
+    assert merged.primary_color == DEFAULT_THEME_SETTINGS.primary_color
 
 
 def test_character_theme_round_trip_never_stores_visual_effect_mode() -> None:

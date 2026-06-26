@@ -75,7 +75,6 @@ from app.config.character_loader import (
     CharacterProfile,
     CharacterRegistry,
     THEME_SOURCE_COMPAT_DEFAULT,
-    THEME_SOURCE_PACKAGE,
 )
 from app.config.model_slots import find_profile, resolve_model_slot
 from app.config.models import (
@@ -132,8 +131,8 @@ from app.ui.theme import (
     ThemeSettings,
     build_color_button_stylesheet,
     build_settings_dialog_stylesheet,
-    merge_theme_with_character,
     normalize_hex_color,
+    resolve_effective_theme,
     mix,
 )
 from app.ui.window_backdrop import VisualEffectMode
@@ -156,6 +155,7 @@ from app.ui.settings import widgets as settings_widgets
 from app.ui.settings.pages import (
     ApiSettingsPage,
     CharacterSettingsPage,
+    InteractionSettingsPage,
     MemorySettingsPage,
     PluginSettingsPage,
     PrivacySettingsPage,
@@ -203,6 +203,7 @@ class SettingsDialog(QDialog):
         model_selection: ModelSelectionSettings | None = None,
         global_model_names: list[str] | None = None,
         plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
+        character_theme_overrides: dict[str, ThemeSettings] | None = None,
     ) -> None:
         super().__init__(parent)
         if screen_awareness_settings is None:
@@ -228,9 +229,10 @@ class SettingsDialog(QDialog):
         )
         self._global_model_names = []
         self._initial_character_id = current_character.id if current_character is not None else None
-        self.theme_settings = merge_theme_with_character(
-            theme_settings or DEFAULT_THEME_SETTINGS,
+        self.character_theme_overrides = dict(character_theme_overrides or {})
+        self.theme_settings = self._effective_theme_for_profile(
             current_character,
+            theme_settings or DEFAULT_THEME_SETTINGS,
         )
         self.plugin_specs: list[PluginSpec] = PluginDiscovery(self.base_dir).discover()
         self._plugin_specs_by_id = {
@@ -341,7 +343,7 @@ class SettingsDialog(QDialog):
         # 左侧分类导航：一个分类对应一个内容面板，纵向列表便于后续扩展更多设置分类。
         nav_items: list[tuple[str, QWidget]] = [
             (
-                "角色",
+                "角色与布局",
                 self._build_scrollable_tab(
                     CharacterSettingsPage(self).build(character_registry, current_character)
                 ),
@@ -349,6 +351,15 @@ class SettingsDialog(QDialog):
             ("外观", self._build_scrollable_tab(ThemeSettingsPage(self).build())),
             ("模型", self._build_scrollable_tab(ApiSettingsPage(self).build(api_settings, self._api_profiles, self._global_model_names, self._initial_model_selection))),
             ("语音", self._build_scrollable_tab(TtsSettingsPage(self).build(tts_settings))),
+            (
+                "交互",
+                self._build_scrollable_tab(
+                    InteractionSettingsPage(self).build(
+                        self.bubble_settings,
+                        self.backchannel_settings,
+                    )
+                ),
+            ),
             (
                 "隐私",
                 self._build_scrollable_tab(
@@ -380,8 +391,6 @@ class SettingsDialog(QDialog):
                     SystemSettingsPage(self).build(
                         debug_log_settings or DebugLogSettings(),
                         self.startup_settings,
-                        self.bubble_settings,
-                        self.backchannel_settings,
                     )
                 ),
             ),
@@ -2127,6 +2136,31 @@ class SettingsDialog(QDialog):
             visual_effect_mode=visual_effect_mode,
         ).normalized()
 
+    def _theme_override_for_profile(self, profile: CharacterProfile | None) -> ThemeSettings | None:
+        profile_id = str(getattr(profile, "id", "") or "").strip()
+        if not profile_id:
+            return None
+        return self.character_theme_overrides.get(profile_id)
+
+    def _default_theme_for_profile(self, profile: CharacterProfile | None) -> ThemeSettings:
+        from dataclasses import replace
+
+        return replace(
+            resolve_effective_theme(profile, None, self.theme_settings),
+            ai_enabled=False,
+        )
+
+    def _effective_theme_for_profile(
+        self,
+        profile: CharacterProfile | None,
+        user_ui_settings: ThemeSettings | None = None,
+    ) -> ThemeSettings:
+        return resolve_effective_theme(
+            profile,
+            self._theme_override_for_profile(profile),
+            user_ui_settings or self.theme_settings,
+        )
+
     def _set_theme_controls(
         self, settings: ThemeSettings, *, sync_visual_effect: bool = False
     ) -> None:
@@ -2162,10 +2196,10 @@ class SettingsDialog(QDialog):
     def _reset_theme_colors(self) -> None:
         profile = self._selected_character_profile()
         if profile is None:
-            self._set_theme_controls(ThemeSettings())
+            self._set_theme_controls(self._default_theme_for_profile(None))
             self.theme_status_label.setText("已恢复默认 Sakura 粉色配色。")
         else:
-            self._set_theme_controls(profile.theme_settings or DEFAULT_THEME_SETTINGS)
+            self._set_theme_controls(self._default_theme_for_profile(profile))
             if profile.theme_source == THEME_SOURCE_COMPAT_DEFAULT:
                 self.theme_status_label.setText("已恢复默认 Sakura 粉色配色。")
             else:
@@ -2246,7 +2280,7 @@ class SettingsDialog(QDialog):
     def _handle_character_selection_changed(self) -> None:
         profile = self._selected_character_profile()
         if profile is not None and hasattr(self, "theme_color_edits"):
-            self._set_theme_controls(profile.theme_settings or DEFAULT_THEME_SETTINGS)
+            self._set_theme_controls(self._effective_theme_for_profile(profile))
             self._theme_write_mode = "character"
             if hasattr(self, "theme_status_label"):
                 self.theme_status_label.setText(f"已载入角色「{profile.display_name}」的主题。")

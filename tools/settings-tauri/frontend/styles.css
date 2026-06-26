@@ -287,6 +287,21 @@ body {
   border-radius: 999px;
 }
 
+.advanced-section {
+  display: grid;
+  gap: 12px;
+}
+
+.advanced-section > summary {
+  cursor: pointer;
+  color: var(--sakura-primary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
 /* ---------- 资源状态卡 ---------- */
 
 .resource-card {
@@ -560,33 +575,6 @@ textarea:disabled {
   cursor: not-allowed;
 }
 
-input[type="color"] {
-  width: 44px;
-  height: 36px;
-  border: 1px solid var(--sakura-border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  cursor: pointer;
-  padding: 0;
-  overflow: hidden;
-  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
-}
-
-/* 让色块铺满整个取色框，不再留内边距的小方块。 */
-input[type="color"]::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-
-input[type="color"]::-webkit-color-swatch {
-  border: none;
-  border-radius: calc(var(--radius-sm) - 2px);
-}
-
-input[type="color"]:hover {
-  border-color: var(--sakura-primary);
-  box-shadow: var(--shadow-pop);
-}
-
 /* ---------- 自定义下拉框 ---------- */
 /* WebView2 在 Windows 上的原生 <select> 弹层无法被 CSS 主题化，这里用隐藏的原生
    <select> 承载取值，仅替换视觉为可控弹层；弹层用 fixed 定位避开滚动容器裁剪。 */
@@ -821,26 +809,188 @@ input[type="range"].layout-slider::-moz-range-thumb {
 .theme-colors {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 22px;
+  gap: 12px 16px;
 }
 
 .theme-colors .form-row {
-  grid-template-columns: minmax(96px, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: minmax(82px, 1fr) auto;
+  gap: 8px;
 }
 
 .theme-color-control {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .theme-color-control input[type="text"] {
-  flex: 0 0 132px;
-  width: 132px;
-  max-width: 132px;
+  flex: 0 0 108px;
+  width: 108px;
+  max-width: 108px;
   min-width: 0;
+}
+
+.theme-color-swatch {
+  flex: 0 0 52px;
+  width: 52px;
+  height: 36px;
+  min-width: 52px;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 80%, #000 12%);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 55%, transparent);
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+
+.theme-color-swatch:hover,
+.theme-color-row.is-active .theme-color-swatch {
+  border-color: var(--sakura-primary);
+  box-shadow: var(--shadow-pop);
+}
+
+.theme-color-row.is-invalid input[type="text"] {
+  border-color: #d04a4a;
+}
+
+.theme-color-popover {
+  --theme-editor-color: var(--sakura-primary);
+  --theme-editor-hue: 330deg;
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  gap: 12px;
+  width: min(330px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  margin: auto;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--sakura-primary) 45%, var(--sakura-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--sakura-input-bg) 86%, var(--sakura-panel-bg));
+  box-shadow: 0 22px 48px -26px color-mix(in srgb, #000 45%, var(--sakura-primary));
+}
+
+.theme-color-popover::backdrop {
+  background: rgba(20, 31, 35, 0.22);
+}
+
+.theme-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-editor-swatch {
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--theme-editor-color);
+  box-shadow: var(--shadow-pop);
+}
+
+.theme-editor-title {
+  display: grid;
+  min-width: 0;
+}
+
+.theme-editor-title strong {
+  font-size: 16px;
+}
+
+.theme-editor-title span {
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+}
+
+.theme-editor-field {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 150px);
+  gap: 10px;
+  align-items: center;
+  color: var(--sakura-secondary-text);
+  font-weight: 700;
+}
+
+.theme-rgb-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.theme-rgb-row label {
+  display: grid;
+  gap: 5px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.theme-rgb-row input {
+  width: 100%;
+}
+
+.theme-sv-pad,
+.theme-hue-strip {
+  position: relative;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+.theme-sv-pad {
+  height: 174px;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, hsl(var(--theme-editor-hue) 100% 50%));
+}
+
+.theme-hue-strip {
+  height: 20px;
+  background: linear-gradient(
+    to right,
+    #f00,
+    #ff0,
+    #0f0,
+    #0ff,
+    #00f,
+    #f0f,
+    #f00
+  );
+}
+
+.theme-picker-pointer,
+.theme-hue-pointer {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.theme-picker-pointer {
+  width: 15px;
+  height: 15px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65);
+}
+
+.theme-hue-pointer {
+  top: 50%;
+  width: 10px;
+  height: 24px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+
+.theme-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ---------- 模型页动态列表 ---------- */
@@ -1924,11 +2074,11 @@ input.is-invalid:hover,
   }
 
   .theme-colors {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .theme-colors .form-row {
-    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-columns: minmax(72px, 1fr) auto;
   }
 
   .theme-color-control {

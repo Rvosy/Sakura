@@ -67,12 +67,10 @@ from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
 from app.core.app_context import AppContext
 from app.config.character_loader import (
-    THEME_SOURCE_PACKAGE,
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
     load_character_system_prompt,
-    save_character_theme,
 )
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.agent.runtime_events import (
@@ -241,7 +239,7 @@ from app.ui.theme import (
     ThemeSettings,
     build_app_chrome_stylesheet,
     build_message_box_stylesheet,
-    merge_theme_with_character,
+    resolve_effective_theme,
     theme_colors_to_mapping,
 )
 from app.voice import VoicePlaybackController
@@ -582,8 +580,8 @@ class PetWindow(QWidget):
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
-        self.theme_settings = merge_theme_with_character(
-            self.settings_service.load_theme_settings(),
+        self.theme_settings = _effective_character_theme(
+            self.settings_service,
             self.character_profile,
         )
         self.memory_curation_settings = context.memory_curation_settings
@@ -5183,6 +5181,7 @@ class PetWindow(QWidget):
                 "plugin_settings",
                 [],
             ),
+            character_theme_overrides=_load_character_theme_overrides(self.settings_service),
         )
         self.settings_dialog = dialog
         # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
@@ -5237,6 +5236,7 @@ class PetWindow(QWidget):
             tts_settings = self._default_tts_settings()
         api_profiles = self.settings_service.load_api_profiles()
         model_selection = self.settings_service.load_model_selection()
+        character_theme_overrides = _load_character_theme_overrides(self.settings_service)
         runtime_loop_settings = getattr(
             getattr(self, "agent_runtime", None),
             "runtime_loop_settings",
@@ -5262,6 +5262,7 @@ class PetWindow(QWidget):
             theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
             character_registry=getattr(self, "character_registry", None),
             current_character=getattr(self, "character_profile", None),
+            character_theme_overrides=character_theme_overrides,
             portrait_scale_percent=getattr(self, "portrait_scale_percent", 100),
             control_panel_width=getattr(self, "control_panel_width", DEFAULT_CONTROL_PANEL_WIDTH),
             bubble_height=getattr(self, "bubble_height", DEFAULT_BUBBLE_HEIGHT),
@@ -5439,8 +5440,15 @@ class PetWindow(QWidget):
             )
             if callable(save_runtime_loop_settings):
                 save_runtime_loop_settings(result.runtime_loop)
-            if result.theme_changed and result.theme != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
-                self.settings_service.save_theme_settings(result.theme)
+            if result.theme_changed:
+                save_theme_settings = getattr(self.settings_service, "save_theme_settings", None)
+                if callable(save_theme_settings):
+                    save_theme_settings(result.theme)
+                _save_character_theme_override(
+                    self.settings_service,
+                    selected_profile,
+                    result.theme,
+                )
             self.settings_service.save_debug_log_settings(system_basic.debug_log)
             self._save_system_config_values(
                 "ui",
@@ -5832,7 +5840,6 @@ class PetWindow(QWidget):
         api_changed = dialog.result_api_settings != self.api_client.settings
         startup_settings_changed = result_startup_settings != current_startup_settings
         theme_write_mode = getattr(dialog, "result_theme_write_mode", "unchanged")
-        should_write_character_theme = _should_write_character_theme(theme_write_mode, selected_profile)
         try:
             if api_changed:
                 self.settings_service.save_api_settings(dialog.result_api_settings)
@@ -5844,14 +5851,6 @@ class PetWindow(QWidget):
             if model_selection is not None:
                 self.settings_service.save_model_selection(model_selection)
             self.settings_service.save_tts_settings(dialog.result_tts_settings)
-            if should_write_character_theme:
-                save_character_theme(
-                    selected_profile,
-                    result_theme_settings,
-                    source=THEME_SOURCE_PACKAGE,
-                )
-                dialog_character_registry = CharacterRegistry(self.base_dir)
-                selected_profile = dialog_character_registry.get(selected_profile.id)
             self.character_registry = dialog_character_registry
             self.settings_service.save_current_character_id(
                 self.character_registry,
@@ -5873,8 +5872,15 @@ class PetWindow(QWidget):
             if startup_settings_changed:
                 self._apply_launch_at_login_settings(result_startup_settings)
                 self.settings_service.save_startup_settings(result_startup_settings)
-            if result_theme_settings != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
-                self.settings_service.save_theme_settings(result_theme_settings)
+            if theme_write_mode in {"manual", "ai", "reset"}:
+                save_theme_settings = getattr(self.settings_service, "save_theme_settings", None)
+                if callable(save_theme_settings):
+                    save_theme_settings(result_theme_settings)
+                _save_character_theme_override(
+                    self.settings_service,
+                    selected_profile,
+                    result_theme_settings,
+                )
             self._save_system_config_values(
                 "ui",
                 {
@@ -7596,8 +7602,42 @@ def _same_optional_path(left: Path | None, right: Path | None) -> bool:
     return left.resolve() == right.resolve()
 
 
-def _should_write_character_theme(theme_write_mode: object, profile: CharacterProfile) -> bool:
-    return theme_write_mode in {"manual", "ai"}
+def _load_character_theme_overrides(settings_service: object) -> dict[str, ThemeSettings]:
+    load = getattr(settings_service, "load_character_theme_overrides", None)
+    if not callable(load):
+        return {}
+    overrides = load()
+    return overrides if isinstance(overrides, dict) else {}
+
+
+def _effective_character_theme(
+    settings_service: object,
+    profile: CharacterProfile | None,
+) -> ThemeSettings:
+    load_theme = getattr(settings_service, "load_theme_settings", None)
+    user_theme = load_theme() if callable(load_theme) else DEFAULT_THEME_SETTINGS
+    profile_id = str(getattr(profile, "id", "") or "").strip()
+    override = _load_character_theme_overrides(settings_service).get(profile_id)
+    return resolve_effective_theme(profile, override, user_theme)
+
+
+def _save_character_theme_override(
+    settings_service: object,
+    profile: CharacterProfile,
+    theme: ThemeSettings,
+) -> None:
+    profile_id = str(getattr(profile, "id", "") or "").strip()
+    if not profile_id:
+        return
+    base = resolve_effective_theme(profile, None, theme)
+    if theme_colors_to_mapping(theme) == theme_colors_to_mapping(base):
+        delete = getattr(settings_service, "delete_character_theme_override", None)
+        if callable(delete):
+            delete(profile_id)
+        return
+    save = getattr(settings_service, "save_character_theme_override", None)
+    if callable(save):
+        save(profile_id, theme)
 
 
 def _configure_secondary_window(window, *, keep_on_top: bool = False) -> None:  # type: ignore[no-untyped-def]

@@ -14,11 +14,12 @@
           <span class="nav-brand-text">Sakura</span>
         </div>
         <nav class="nav-list">
-          <button class="nav-item is-active" type="button" data-page="character" aria-current="page">角色</button>
+          <button class="nav-item is-active" type="button" data-page="character" aria-current="page">角色与布局</button>
           <button class="nav-item" type="button" data-page="appearance">外观</button>
           <button class="nav-item" type="button" data-page="providers">供应商</button>
           <button class="nav-item" type="button" data-page="model">模型</button>
           <button class="nav-item" type="button" data-page="voice">语音</button>
+          <button class="nav-item" type="button" data-page="interaction">交互</button>
           <button class="nav-item" type="button" data-page="privacy">隐私</button>
           <button class="nav-item" type="button" data-page="tools">工具</button>
           <button class="nav-item" type="button" data-page="plugins">插件</button>
@@ -29,15 +30,15 @@
 
       <section class="detail-card">
         <header class="page-head">
-          <h1 id="pageTitle" class="page-title">角色</h1>
-          <p id="pageSubtitle" class="page-subtitle">选择陪伴角色与立绘布局</p>
+          <h1 id="pageTitle" class="page-title">角色与布局</h1>
+          <p id="pageSubtitle" class="page-subtitle">选择陪伴角色与桌宠布局</p>
         </header>
 
         <div class="page-scroll">
         <section id="page-character" class="settings-page is-active">
           <p class="page-note">拖动滑块时桌宠会实时变化，点「保存」才写入配置。</p>
           <fieldset class="settings-group">
-            <legend>角色与立绘</legend>
+            <legend>角色与桌宠布局</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="characterSelect">
                 <span class="setting-title">当前角色</span>
@@ -230,8 +231,8 @@
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
-          <fieldset class="settings-group">
-            <legend>高级参数</legend>
+          <details class="settings-group advanced-section">
+            <summary>高级参数</summary>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTimeout">
                 <span class="setting-title">超时</span>
@@ -266,7 +267,7 @@
                 <input id="apiMaxTokens" type="number" step="1" />
               </label>
             </div>
-          </fieldset>
+          </details>
         </section>
 
         <section id="page-voice" class="settings-page">
@@ -286,27 +287,6 @@
               </label>
               <select id="ttsProvider"></select>
             </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsWorkDir">
-                <span class="setting-title">工作目录</span>
-                <span class="setting-desc">TTS 引擎运行所在的工作目录路径。</span>
-              </label>
-              <input id="ttsWorkDir" class="wide-input" type="text" />
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsPythonPath">
-                <span class="setting-title">TTS Python</span>
-                <span class="setting-desc">运行 TTS 引擎使用的 Python 解释器路径。</span>
-              </label>
-              <input id="ttsPythonPath" class="wide-input" type="text" />
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsApiUrl">
-                <span class="setting-title">API URL</span>
-                <span class="setting-desc">TTS 服务的接口地址。</span>
-              </label>
-              <input id="ttsApiUrl" class="wide-input" type="text" />
-            </div>
             <div id="ttsBundleNoticeRow" hidden>
               <p id="ttsBundleNotice" class="page-note"></p>
             </div>
@@ -319,13 +299,37 @@
               </div>
               <button id="ttsTestButton" class="secondary-button" type="button">测试语音</button>
             </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="ttsTimeout">
-                <span class="setting-title">超时</span>
-                <span class="setting-desc">等待语音合成完成的最长时间。</span>
-              </label>
-              <span class="field-unit"><input id="ttsTimeout" type="number" step="1" /><span class="unit">秒</span></span>
-            </div>
+            <details class="advanced-section">
+              <summary>高级参数</summary>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsApiUrl">
+                  <span class="setting-title">API URL</span>
+                  <span class="setting-desc">TTS 服务的接口地址。</span>
+                </label>
+                <input id="ttsApiUrl" class="wide-input" type="text" />
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsWorkDir">
+                  <span class="setting-title">工作目录</span>
+                  <span class="setting-desc">TTS 引擎运行所在的工作目录路径。</span>
+                </label>
+                <input id="ttsWorkDir" class="wide-input" type="text" />
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsPythonPath">
+                  <span class="setting-title">TTS Python</span>
+                  <span class="setting-desc">运行 TTS 引擎使用的 Python 解释器路径。</span>
+                </label>
+                <input id="ttsPythonPath" class="wide-input" type="text" />
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="ttsTimeout">
+                  <span class="setting-title">超时</span>
+                  <span class="setting-desc">等待语音合成完成的最长时间。</span>
+                </label>
+                <span class="field-unit"><input id="ttsTimeout" type="number" step="1" /><span class="unit">秒</span></span>
+              </div>
+            </details>
           </fieldset>
         </section>
 
@@ -353,6 +357,87 @@
                 <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
               </div>
             </div>
+          </fieldset>
+        </section>
+
+        <section id="page-interaction" class="settings-page">
+          <fieldset class="settings-group">
+            <legend>字幕与回复</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="subtitleTypingInterval">
+                <span class="setting-title">字幕逐字间隔</span>
+                <span class="setting-desc">字幕逐字显示的间隔时间。</span>
+              </label>
+              <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" /><span class="unit">ms</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="replySegmentPause">
+                <span class="setting-title">回复分段停顿</span>
+                <span class="setting-desc">多段回复之间的停顿时间。</span>
+              </label>
+              <span class="field-unit"><input id="replySegmentPause" type="number" step="1" /><span class="unit">ms</span></span>
+            </div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>气泡</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleAutoHide">
+                <span class="setting-title">气泡自动隐藏</span>
+                <span class="setting-desc">无操作一段时间后自动隐藏气泡。</span>
+              </label>
+              <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleAutoHideDelay">
+                <span class="setting-title">无操作时长</span>
+                <span class="setting-desc">触发自动隐藏前的无操作时长。</span>
+              </label>
+              <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" /><span class="unit">秒</span></span>
+            </div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>接话</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelEnabled">
+                <span class="setting-title">启用快速接话</span>
+                <span class="setting-desc">在你说话间隙快速给出简短回应。</span>
+              </label>
+              <span class="setting-toggle"><input id="backchannelEnabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelMode">
+                <span class="setting-title">模式</span>
+                <span class="setting-desc">接话触发策略：规则 / 混合。</span>
+              </label>
+              <select id="backchannelMode">
+                <option value="rules">规则</option>
+                <option value="hybrid">混合</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelDelay">
+                <span class="setting-title">延迟</span>
+                <span class="setting-desc">接话前的等待延迟。</span>
+              </label>
+              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">ms</span></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelProbability">
+                <span class="setting-title">概率</span>
+                <span class="setting-desc">命中接话的概率（0–1）。</span>
+              </label>
+              <input id="backchannelProbability" type="number" min="0" max="1" step="0.01" />
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="backchannelTtsEnabled">
+                <span class="setting-title">接话语音</span>
+                <span class="setting-desc">接话时同时播放 TTS。</span>
+              </label>
+              <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" /></span>
+            </div>
+            <div id="backchannelResourceCard" class="resource-card"></div>
           </fieldset>
         </section>
 
@@ -406,98 +491,14 @@
               <span class="setting-toggle"><input id="stageCollisionMask" type="checkbox" /></span>
             </div>
           </fieldset>
-
-          <fieldset class="settings-group">
-            <legend>字幕与回复</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="subtitleTypingInterval">
-                <span class="setting-title">字幕逐字间隔</span>
-                <span class="setting-desc">字幕逐字显示的间隔时间。</span>
-              </label>
-              <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" /><span class="unit">ms</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="replySegmentPause">
-                <span class="setting-title">回复分段停顿</span>
-                <span class="setting-desc">多段回复之间的停顿时间。</span>
-              </label>
-              <span class="field-unit"><input id="replySegmentPause" type="number" step="1" /><span class="unit">ms</span></span>
-            </div>
-          </fieldset>
-
-          <fieldset class="settings-group">
-            <legend>气泡</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="bubbleAutoHide">
-                <span class="setting-title">气泡自动隐藏</span>
-                <span class="setting-desc">无操作一段时间后自动隐藏气泡。</span>
-              </label>
-              <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" /></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="bubbleAutoHideDelay">
-                <span class="setting-title">无操作时长</span>
-                <span class="setting-desc">触发自动隐藏前的无操作时长。</span>
-              </label>
-              <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" /><span class="unit">秒</span></span>
-            </div>
-          </fieldset>
-
-          <fieldset class="settings-group">
-            <legend>接话</legend>
-            <div class="setting-row">
-              <label class="setting-row-text" for="backchannelEnabled">
-                <span class="setting-title">启用快速接话</span>
-                <span class="setting-desc">在你说话间隙快速给出简短回应。</span>
-              </label>
-              <span class="setting-toggle"><input id="backchannelEnabled" type="checkbox" /></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="backchannelMode">
-                <span class="setting-title">模式</span>
-                <span class="setting-desc">接话触发策略：规则 / 混合 / 关闭。</span>
-              </label>
-              <select id="backchannelMode">
-                <option value="rules">规则</option>
-                <option value="hybrid">混合</option>
-                <option value="off">关闭</option>
-              </select>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="backchannelDelay">
-                <span class="setting-title">延迟</span>
-                <span class="setting-desc">接话前的等待延迟。</span>
-              </label>
-              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">ms</span></span>
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="backchannelProbability">
-                <span class="setting-title">概率</span>
-                <span class="setting-desc">命中接话的概率（0–1）。</span>
-              </label>
-              <input id="backchannelProbability" type="number" min="0" max="1" step="0.01" />
-            </div>
-            <div class="setting-row">
-              <label class="setting-row-text" for="backchannelTtsEnabled">
-                <span class="setting-title">接话语音</span>
-                <span class="setting-desc">接话时同时播放 TTS。</span>
-              </label>
-              <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" /></span>
-            </div>
-            <div id="backchannelResourceCard" class="resource-card"></div>
-          </fieldset>
         </section>
 
         <section id="page-memory" class="settings-page admin-page">
           <div class="admin-topline">
             <div id="memoryStatusStrip" class="admin-strip"></div>
             <div class="admin-mini-panel">
-              <label class="check-control">
-                <input id="memoryCurationEnabled" type="checkbox" />
-                <span>自动整理</span>
-              </label>
               <label class="compact-number" for="memoryTriggerTurns">
-                <span>频率</span>
+                <span>自动整理频率</span>
                 <input id="memoryTriggerTurns" type="number" step="1" />
                 <span class="unit">轮</span>
               </label>

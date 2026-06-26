@@ -298,17 +298,17 @@ def test_settings_service_loads_and_saves_memory_curation_settings() -> None:
         backfill_limit=200,
     )
 
-    # 仅改 UI 暴露的 enabled/trigger_turns，backfill_limit 用非默认值确认会被一并持久化。
+    # 自动整理不能关闭；即使传入 disabled，也只保存频率与回填上限。
     service.save_memory_curation_settings(
         MemoryCurationSettings(enabled=False, trigger_turns=20, backfill_limit=150)
     )
 
     loaded = service.load_memory_curation_settings()
-    assert loaded.enabled is False
+    assert loaded.enabled is True
     assert loaded.trigger_turns == 20
     assert loaded.backfill_limit == 150
     system = load_yaml_mapping(service.system_config_path)
-    assert system["memory_curation"]["enabled"] is False
+    assert system["memory_curation"]["enabled"] is True
     assert system["memory_curation"]["trigger_turns"] == 20
     assert system["memory_curation"]["backfill_limit"] == 150
 
@@ -506,7 +506,7 @@ def test_settings_service_loads_debug_file_disabled_by_default() -> None:
     assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=False)
 
 
-def test_settings_service_saves_and_loads_theme_settings() -> None:
+def test_settings_service_saves_user_theme_preferences_without_global_colors() -> None:
     root = _runtime_root("yaml_theme")
     service = AppSettingsService(root)
     settings = ThemeSettings(
@@ -522,16 +522,39 @@ def test_settings_service_saves_and_loads_theme_settings() -> None:
         bubble_background_color="#d1d2d3",
         border_color="#c1c2c3",
         ai_enabled=True,
+        visual_effect_mode="solid",
     )
 
     service.save_theme_settings(settings)
     loaded = service.load_theme_settings()
     system = load_yaml_mapping(service.system_config_path)
 
-    assert loaded == settings
+    assert loaded == ThemeSettings(ai_enabled=True, visual_effect_mode="solid")
     for field, _label, _default in THEME_COLOR_FIELDS:
-        assert system["ui"]["theme"][field] == getattr(settings, field)
+        assert system["ui"]["theme"][field] == getattr(DEFAULT_THEME_SETTINGS, field)
     assert system["ui"]["theme"]["ai_enabled"] is True
+    assert system["ui"]["theme"]["visual_effect_mode"] == "solid"
+
+
+def test_settings_service_saves_and_deletes_character_theme_override() -> None:
+    root = _runtime_root("yaml_character_theme_override")
+    service = AppSettingsService(root)
+    settings = ThemeSettings(primary_color="#112233", accent_color="#445566")
+
+    service.save_character_theme_override("N.A.V.I", settings)
+
+    loaded = service.load_character_theme_override("N.A.V.I")
+    system = load_yaml_mapping(service.system_config_path)
+    assert loaded is not None
+    assert loaded.primary_color == "#112233"
+    assert loaded.accent_color == "#445566"
+    assert "visual_effect_mode" not in system["ui"]["character_theme_overrides"]["N.A.V.I"]
+
+    service.delete_character_theme_override("N.A.V.I")
+
+    assert service.load_character_theme_override("N.A.V.I") is None
+    system = load_yaml_mapping(service.system_config_path)
+    assert "character_theme_overrides" not in system.get("ui", {})
 
 
 def test_settings_service_loads_default_theme_for_invalid_values() -> None:
@@ -553,20 +576,7 @@ def test_settings_service_loads_default_theme_for_invalid_values() -> None:
 
     settings = service.load_theme_settings()
 
-    assert settings == ThemeSettings(
-        primary_color=DEFAULT_THEME_SETTINGS.primary_color,
-        primary_hover_color=DEFAULT_THEME_SETTINGS.primary_hover_color,
-        accent_color=DEFAULT_THEME_SETTINGS.accent_color,
-        text_color=DEFAULT_THEME_SETTINGS.text_color,
-        secondary_text_color=DEFAULT_THEME_SETTINGS.secondary_text_color,
-        muted_text_color=DEFAULT_THEME_SETTINGS.muted_text_color,
-        page_background_color=DEFAULT_THEME_SETTINGS.page_background_color,
-        panel_background_color=DEFAULT_THEME_SETTINGS.panel_background_color,
-        input_background_color=DEFAULT_THEME_SETTINGS.input_background_color,
-        bubble_background_color=DEFAULT_THEME_SETTINGS.bubble_background_color,
-        border_color=DEFAULT_THEME_SETTINGS.border_color,
-        ai_enabled=True,
-    )
+    assert settings == ThemeSettings(ai_enabled=True)
 
 
 def test_default_theme_stylesheet_matches_legacy_pet_window_stylesheet() -> None:

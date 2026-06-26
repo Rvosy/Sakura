@@ -134,6 +134,7 @@ from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
     THEME_COLOR_FIELDS,
     ThemeSettings,
+    resolve_effective_theme,
     theme_colors_to_mapping,
     theme_to_mapping,
 )
@@ -145,6 +146,7 @@ from app.ui.settings.workers import (
     _has_exportable_voice_model,
 )
 from app.ui.settings.resource_tasks import settings_resource_task_manager
+from app.ui.screen_color_picker import pick_screen_color
 from app.ui.window_backdrop import VisualEffectMode
 from app.storage.paths import StoragePaths
 from app.voice.tts_bundle import default_provider_bundle_notice, default_provider_bundle_work_dir, list_nvidia_gpus
@@ -400,6 +402,7 @@ def build_tauri_settings_request(
     theme_settings: ThemeSettings | None = None,
     character_registry: CharacterRegistry | None = None,
     current_character: CharacterProfile | None = None,
+    character_theme_overrides: Mapping[str, ThemeSettings] | None = None,
     portrait_scale_percent: int = PORTRAIT_SCALE_DEFAULT_PERCENT,
     control_panel_width: int = DEFAULT_CONTROL_PANEL_WIDTH,
     bubble_height: int = DEFAULT_BUBBLE_HEIGHT,
@@ -443,6 +446,8 @@ def build_tauri_settings_request(
         "character": _character_to_mapping(
             character_registry,
             current_character,
+            theme_settings=theme_settings or DEFAULT_THEME_SETTINGS,
+            character_theme_overrides=character_theme_overrides,
             portrait_scale_percent=portrait_scale_percent,
             control_panel_width=control_panel_width,
             bubble_height=bubble_height,
@@ -866,6 +871,7 @@ class TauriSettingsProcess(QObject):
         theme_settings: ThemeSettings | None = None,
         character_registry: CharacterRegistry | None = None,
         current_character: CharacterProfile | None = None,
+        character_theme_overrides: Mapping[str, ThemeSettings] | None = None,
         portrait_scale_percent: int = PORTRAIT_SCALE_DEFAULT_PERCENT,
         control_panel_width: int = DEFAULT_CONTROL_PANEL_WIDTH,
         bubble_height: int = DEFAULT_BUBBLE_HEIGHT,
@@ -897,6 +903,7 @@ class TauriSettingsProcess(QObject):
         self.theme_settings = theme_settings or DEFAULT_THEME_SETTINGS
         self.character_registry = character_registry
         self.current_character = current_character
+        self.character_theme_overrides = dict(character_theme_overrides or {})
         self.portrait_scale_percent = portrait_scale_percent
         self.control_panel_width = control_panel_width
         self.bubble_height = bubble_height
@@ -1001,6 +1008,7 @@ class TauriSettingsProcess(QObject):
             theme_settings=self.theme_settings,
             character_registry=self.character_registry,
             current_character=self.current_character,
+            character_theme_overrides=self.character_theme_overrides,
             portrait_scale_percent=self.portrait_scale_percent,
             control_panel_width=self.control_panel_width,
             bubble_height=self.bubble_height,
@@ -1317,6 +1325,12 @@ class TauriSettingsProcess(QObject):
         thread.start()
 
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "theme.pick_screen_color":
+            del params
+            color = pick_screen_color()
+            if color is None:
+                return {"cancelled": True}
+            return {"color": color}
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
                 self.plugin_settings_contributions,
@@ -1501,29 +1515,50 @@ def _theme_to_mapping(settings: ThemeSettings | None) -> dict[str, object]:
     return theme_to_mapping(settings or DEFAULT_THEME_SETTINGS)
 
 
-def _character_theme_colors(profile: CharacterProfile | None) -> dict[str, object]:
-    """角色自带主题的配色；用于在设置页切换角色时跟随换色（与 PySide 行为一致）。"""
-    theme = getattr(profile, "theme_settings", None) if profile is not None else None
-    return theme_colors_to_mapping(theme or DEFAULT_THEME_SETTINGS)
+def _character_effective_theme_colors(
+    profile: CharacterProfile | None,
+    override: ThemeSettings | None,
+    user_theme: ThemeSettings | None,
+) -> dict[str, object]:
+    theme = resolve_effective_theme(profile, override, user_theme)
+    return theme_colors_to_mapping(theme)
 
 
-def _character_to_item(profile: CharacterProfile) -> dict[str, object]:
+def _character_default_theme_colors(
+    profile: CharacterProfile | None,
+    user_theme: ThemeSettings | None,
+) -> dict[str, object]:
+    theme = resolve_effective_theme(profile, None, user_theme)
+    return theme_colors_to_mapping(theme)
+
+
+def _character_to_item(
+    profile: CharacterProfile,
+    *,
+    override: ThemeSettings | None = None,
+    user_theme: ThemeSettings | None = None,
+) -> dict[str, object]:
     profile_id = str(getattr(profile, "id", "")).strip()
     return {
         "id": profile_id,
         "display_name": str(getattr(profile, "display_name", "") or profile_id),
         "has_voice": getattr(profile, "voice", None) is not None,
         "has_exportable_voice": _has_exportable_voice_model(profile),
-        "theme": _character_theme_colors(profile),
+        "theme": _character_effective_theme_colors(profile, override, user_theme),
+        "default_theme": _character_default_theme_colors(profile, user_theme),
     }
 
 
 def _character_items(
     character_registry: CharacterRegistry | None,
     current_character: CharacterProfile | None = None,
+    *,
+    character_theme_overrides: Mapping[str, ThemeSettings] | None = None,
+    user_theme: ThemeSettings | None = None,
 ) -> list[dict[str, object]]:
     profiles = getattr(character_registry, "profiles", {}) if character_registry is not None else {}
     characters: list[dict[str, object]] = []
+    overrides = character_theme_overrides or {}
     if isinstance(profiles, Mapping):
         iterable = profiles.values()
     else:
@@ -1531,10 +1566,22 @@ def _character_items(
     for profile in iterable:
         profile_id = str(getattr(profile, "id", "")).strip()
         if profile_id:
-            characters.append(_character_to_item(profile))
+            characters.append(
+                _character_to_item(
+                    profile,
+                    override=overrides.get(profile_id),
+                    user_theme=user_theme,
+                )
+            )
     current_id = str(getattr(current_character, "id", "") or "").strip()
     if current_id and not any(item["id"] == current_id for item in characters):
-        characters.append(_character_to_item(current_character))
+        characters.append(
+            _character_to_item(
+                current_character,
+                override=overrides.get(current_id),
+                user_theme=user_theme,
+            )
+        )
     return characters
 
 
@@ -1542,13 +1589,20 @@ def _character_to_mapping(
     character_registry: CharacterRegistry | None,
     current_character: CharacterProfile | None,
     *,
+    theme_settings: ThemeSettings | None = None,
+    character_theme_overrides: Mapping[str, ThemeSettings] | None = None,
     portrait_scale_percent: int,
     control_panel_width: int,
     bubble_height: int,
     control_panel_vertical_offset: int,
     input_bar_offset: int,
 ) -> dict[str, object]:
-    characters = _character_items(character_registry, current_character)
+    characters = _character_items(
+        character_registry,
+        current_character,
+        character_theme_overrides=character_theme_overrides,
+        user_theme=theme_settings,
+    )
     current_id = str(getattr(current_character, "id", "") or "").strip()
     return {
         "current_character_id": current_id,
@@ -1711,7 +1765,7 @@ def _system_extra_to_mapping(
 def _memory_to_mapping(settings: MemoryCurationSettings) -> dict[str, object]:
     return {
         "curation": {
-            "enabled": bool(settings.enabled),
+            "enabled": True,
             "trigger_turns": _clamp_int_value(settings.trigger_turns, 1, 50),
             "backfill_limit": max(1, int(settings.backfill_limit)),
         },
@@ -2193,7 +2247,7 @@ def _memory_from_mapping_required(mapping: dict[str, Any]) -> MemoryCurationSett
     if not isinstance(curation, dict):
         raise ValueError("Tauri 设置结果缺少记忆整理配置。")
     return MemoryCurationSettings(
-        enabled=_required_bool(curation, "enabled"),
+        enabled=True,
         trigger_turns=_clamp_int_value(_required_int(curation, "trigger_turns"), 1, 50),
         backfill_limit=max(1, _required_int(curation, "backfill_limit")),
     )

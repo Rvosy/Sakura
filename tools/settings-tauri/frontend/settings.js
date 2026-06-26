@@ -62,7 +62,6 @@ const fields = {
   backchannelProbability: document.getElementById("backchannelProbability"),
   backchannelTtsEnabled: document.getElementById("backchannelTtsEnabled"),
   backchannelResourceCard: document.getElementById("backchannelResourceCard"),
-  memoryCurationEnabled: document.getElementById("memoryCurationEnabled"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
   memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
   memoryStatusStrip: document.getElementById("memoryStatusStrip"),
@@ -103,6 +102,7 @@ const fields = {
     providers: document.getElementById("page-providers"),
     model: document.getElementById("page-model"),
     voice: document.getElementById("page-voice"),
+    interaction: document.getElementById("page-interaction"),
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
     system: document.getElementById("page-system"),
@@ -176,6 +176,9 @@ const themeVars = {
   bubble_background_color: "--sakura-bubble-bg",
   border_color: "--sakura-border",
 };
+
+let activeThemeField = "";
+let themeEditor = {};
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -534,16 +537,102 @@ function normalizeColorText(value, fallback) {
   return isHexColor(prefixed) ? prefixed.toLowerCase() : fallback;
 }
 
+function themeFieldInput(id) {
+  return fields.themeColors.querySelector(`[data-theme-field="${id}"]`);
+}
+
+function themeFieldLabel(id) {
+  return request.theme_fields.find((field) => field.id === id)?.label || id;
+}
+
+function themeFieldValue(id) {
+  const input = themeFieldInput(id);
+  return normalizeColorText(input?.value, request.theme_defaults[id]);
+}
+
+function hexToRgb(hex) {
+  const value = normalizeColorText(hex, "#000000").slice(1);
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16),
+  };
+}
+
+function componentToHex(value) {
+  return Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`;
+}
+
+function rgbToHsv({ r, g, b }) {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === red) {
+      h = ((green - blue) / delta) % 6;
+    } else if (max === green) {
+      h = (blue - red) / delta + 2;
+    } else {
+      h = (red - green) / delta + 4;
+    }
+    h *= 60;
+    if (h < 0) {
+      h += 360;
+    }
+  }
+  return {
+    h,
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+}
+
+function hsvToRgb({ h, s, v }) {
+  const chroma = v * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - chroma;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  if (h < 60) {
+    red = chroma; green = x;
+  } else if (h < 120) {
+    red = x; green = chroma;
+  } else if (h < 180) {
+    green = chroma; blue = x;
+  } else if (h < 240) {
+    green = x; blue = chroma;
+  } else if (h < 300) {
+    red = x; blue = chroma;
+  } else {
+    red = chroma; blue = x;
+  }
+  return {
+    r: (red + m) * 255,
+    g: (green + m) * 255,
+    b: (blue + m) * 255,
+  };
+}
+
 const pageMeta = {
-  character: { title: "角色", subtitle: "选择陪伴角色与立绘布局" },
+  character: { title: "角色与布局", subtitle: "选择陪伴角色与桌宠布局" },
   appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
   providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
   model: { title: "模型", subtitle: "功能模型分配与高级参数" },
   voice: { title: "语音", subtitle: "TTS 提供器与语音参数" },
+  interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
   plugins: { title: "插件", subtitle: "启停状态、权限、来源与重启生效预览" },
-  system: { title: "系统", subtitle: "启动、日志、字幕、气泡与接话" },
+  system: { title: "系统", subtitle: "启动、日志与开发者诊断" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
 
@@ -618,12 +707,16 @@ function selectedCharacterHasExportableVoice() {
 }
 
 function selectedCharacterThemeDefaults() {
-  return selectedCharacter()?.theme || request.theme_defaults;
+  return selectedCharacter()?.default_theme || request.theme_defaults;
 }
 
-// 切换角色时跟随载入该角色自带的配色（仅配色，输入栏视觉效果等用户级偏好保留）。
+function selectedCharacterTheme() {
+  return selectedCharacter()?.theme || selectedCharacterThemeDefaults();
+}
+
+// 切换角色时跟随载入该角色的最终配色（仅配色，输入栏视觉效果等用户级偏好保留）。
 function applySelectedCharacterTheme() {
-  setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });
+  setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false });
 }
 
 function ttsProviderDefaults(provider) {
@@ -785,39 +878,48 @@ function setCharacterArchiveBusy(busy) {
 
 function renderThemeControls() {
   fields.themeColors.textContent = "";
+  activeThemeField = activeThemeField || request.theme_fields[0]?.id || "";
+
   request.theme_fields.forEach(({ id, label }) => {
     const row = document.createElement("div");
-    row.className = "form-row";
+    row.className = "form-row theme-color-row";
+    row.dataset.themeRole = id;
     const rowLabel = document.createElement("label");
     rowLabel.htmlFor = `theme-${id}`;
     rowLabel.textContent = label;
     const controls = document.createElement("div");
     controls.className = "theme-color-control";
+
+    const swatchButton = document.createElement("button");
+    swatchButton.type = "button";
+    swatchButton.className = "theme-color-swatch";
+    swatchButton.dataset.themeSwatch = id;
+    swatchButton.title = "调整颜色";
+    swatchButton.addEventListener("click", () => openThemeColorPopover(id, swatchButton));
+
     const textInput = document.createElement("input");
     textInput.id = `theme-${id}`;
     textInput.type = "text";
     textInput.maxLength = 7;
     textInput.placeholder = "#RRGGBB";
     textInput.dataset.themeField = id;
-    const colorInput = document.createElement("input");
-    colorInput.type = "color";
-    colorInput.dataset.themeSwatch = id;
     textInput.addEventListener("input", () => {
-      const fallback = request.theme_defaults[id];
-      const normalized = normalizeColorText(textInput.value, fallback);
-      if (isHexColor(normalized)) {
-        colorInput.value = normalized;
+      syncThemeRole(id);
+      if (id === activeThemeField) {
+        syncThemeEditor();
       }
       markThemeChanged();
     });
-    colorInput.addEventListener("input", () => {
-      textInput.value = colorInput.value;
-      markThemeChanged();
-    });
-    controls.append(textInput, colorInput);
+
+    controls.append(swatchButton, textInput);
     row.append(rowLabel, controls);
     fields.themeColors.append(row);
   });
+
+  fields.themeColors.append(buildThemeEditor());
+  request.theme_fields.forEach(({ id }) => syncThemeRole(id));
+  selectThemeField(activeThemeField, { open: false });
+
   fields.visualEffectMode.textContent = "";
   const currentMode = request.theme.visual_effect_mode;
   const modes = [...request.visual_effect_modes];
@@ -832,14 +934,270 @@ function renderThemeControls() {
   });
 }
 
+function buildThemeEditor() {
+  const editor = document.createElement("dialog");
+  editor.className = "theme-color-popover";
+  editor.hidden = true;
+
+  const head = document.createElement("div");
+  head.className = "theme-editor-head";
+  const swatch = document.createElement("div");
+  swatch.className = "theme-editor-swatch";
+  const title = document.createElement("div");
+  title.className = "theme-editor-title";
+  const label = document.createElement("strong");
+  const key = document.createElement("span");
+  title.append(label, key);
+  head.append(swatch, title);
+
+  const hexRow = document.createElement("label");
+  hexRow.className = "theme-editor-field";
+  hexRow.textContent = "HEX";
+  const hex = document.createElement("input");
+  hex.type = "text";
+  hex.maxLength = 7;
+  hex.placeholder = "#RRGGBB";
+  hex.addEventListener("input", () => {
+    const color = normalizeColorText(hex.value, "");
+    markInvalid(hex, !color);
+    if (color) {
+      updateActiveThemeColor(color);
+    }
+  });
+  hexRow.append(hex);
+
+  const rgb = document.createElement("div");
+  rgb.className = "theme-rgb-row";
+  const rgbInputs = ["R", "G", "B"].map((name) => {
+    const field = document.createElement("label");
+    field.textContent = name;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "255";
+    input.step = "1";
+    input.addEventListener("input", updateThemeFromRgbInputs);
+    field.append(input);
+    rgb.append(field);
+    return input;
+  });
+
+  const svPad = document.createElement("div");
+  svPad.className = "theme-sv-pad";
+  const svPointer = document.createElement("span");
+  svPointer.className = "theme-picker-pointer";
+  svPad.append(svPointer);
+  svPad.addEventListener("pointerdown", updateThemeFromSvPointer);
+  svPad.addEventListener("pointermove", (event) => {
+    if (event.buttons & 1) {
+      updateThemeFromSvPointer(event);
+    }
+  });
+
+  const hue = document.createElement("div");
+  hue.className = "theme-hue-strip";
+  const huePointer = document.createElement("span");
+  huePointer.className = "theme-hue-pointer";
+  hue.append(huePointer);
+  hue.addEventListener("pointerdown", updateThemeFromHuePointer);
+  hue.addEventListener("pointermove", (event) => {
+    if (event.buttons & 1) {
+      updateThemeFromHuePointer(event);
+    }
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "theme-editor-actions";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "secondary-button";
+  pick.textContent = "取色";
+  pick.addEventListener("click", pickActiveThemeColor);
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "primary-button";
+  done.textContent = "完成";
+  done.addEventListener("click", closeThemeColorPopover);
+  actions.append(pick, done);
+
+  editor.append(head, svPad, hue, hexRow, rgb, actions);
+  themeEditor = {
+    root: editor,
+    swatch,
+    label,
+    key,
+    hex,
+    rgbInputs,
+    svPad,
+    svPointer,
+    hue,
+    huePointer,
+    pick,
+  };
+  return editor;
+}
+
+function syncThemeRole(id) {
+  const input = themeFieldInput(id);
+  const color = normalizeColorText(input?.value, "");
+  const fallback = themeFieldValue(id);
+  const row = fields.themeColors.querySelector(`[data-theme-role="${id}"]`);
+  const swatch = fields.themeColors.querySelector(`[data-theme-swatch="${id}"]`);
+  if (row) {
+    row.classList.toggle("is-active", id === activeThemeField);
+    row.classList.toggle("is-invalid", Boolean(input?.value) && !color);
+  }
+  if (swatch) {
+    swatch.style.backgroundColor = color || fallback;
+  }
+}
+
+function selectThemeField(id, options = {}) {
+  if (!request.theme_fields.some((field) => field.id === id)) {
+    activeThemeField = request.theme_fields[0]?.id || "";
+  } else {
+    activeThemeField = id;
+  }
+  request.theme_fields.forEach(({ id: fieldId }) => syncThemeRole(fieldId));
+  syncThemeEditor();
+  if (options.open !== false) {
+    openThemeColorPopover(activeThemeField, fields.themeColors.querySelector(`[data-theme-swatch="${activeThemeField}"]`));
+  }
+}
+
+function syncThemeEditor() {
+  if (!themeEditor.root || !activeThemeField) {
+    return;
+  }
+  const color = themeFieldValue(activeThemeField);
+  const rgb = hexToRgb(color);
+  const hsv = rgbToHsv(rgb);
+  themeEditor.root.style.setProperty("--theme-editor-color", color);
+  themeEditor.root.style.setProperty("--theme-editor-hue", `${hsv.h}deg`);
+  themeEditor.swatch.style.background = color;
+  themeEditor.label.textContent = themeFieldLabel(activeThemeField);
+  themeEditor.key.textContent = activeThemeField;
+  themeEditor.hex.value = color;
+  markInvalid(themeEditor.hex, false);
+  [rgb.r, rgb.g, rgb.b].forEach((value, index) => {
+    themeEditor.rgbInputs[index].value = String(value);
+  });
+  themeEditor.svPointer.style.left = `${hsv.s * 100}%`;
+  themeEditor.svPointer.style.top = `${(1 - hsv.v) * 100}%`;
+  themeEditor.huePointer.style.left = `${(hsv.h / 360) * 100}%`;
+}
+
+function openThemeColorPopover(id) {
+  selectThemeField(id, { open: false });
+  const popover = themeEditor.root;
+  if (!popover) {
+    return;
+  }
+  popover.hidden = false;
+  if (!popover.open) {
+    popover.showModal();
+  }
+  themeEditor.hex.focus();
+  document.addEventListener("keydown", closeThemePopoverOnEscape, true);
+}
+
+function closeThemeColorPopover() {
+  if (themeEditor.root) {
+    if (themeEditor.root.open) {
+      themeEditor.root.close();
+    }
+    themeEditor.root.hidden = true;
+  }
+  document.removeEventListener("keydown", closeThemePopoverOnEscape, true);
+}
+
+function closeThemePopoverOnEscape(event) {
+  if (event.key === "Escape") {
+    closeThemeColorPopover();
+  }
+}
+
+function updateActiveThemeColor(color) {
+  const normalized = normalizeColorText(color, "");
+  const input = themeFieldInput(activeThemeField);
+  if (!normalized || !input) {
+    return;
+  }
+  input.value = normalized;
+  syncThemeRole(activeThemeField);
+  syncThemeEditor();
+  markThemeChanged();
+}
+
+function updateThemeFromRgbInputs() {
+  if (!themeEditor.rgbInputs?.length) {
+    return;
+  }
+  if (themeEditor.rgbInputs.some((input) => input.value === "")) {
+    return;
+  }
+  const [r, g, b] = themeEditor.rgbInputs.map((input) => (
+    Math.min(255, Math.max(0, Number.parseInt(input.value, 10) || 0))
+  ));
+  updateActiveThemeColor(rgbToHex({ r, g, b }));
+}
+
+function updateThemeFromSvPointer(event) {
+  const rect = themeEditor.svPad.getBoundingClientRect();
+  const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+  const y = Math.min(rect.height, Math.max(0, event.clientY - rect.top));
+  const hsv = rgbToHsv(hexToRgb(themeFieldValue(activeThemeField)));
+  updateActiveThemeColor(rgbToHex(hsvToRgb({
+    h: hsv.h,
+    s: rect.width ? x / rect.width : 0,
+    v: rect.height ? 1 - (y / rect.height) : 0,
+  })));
+}
+
+function updateThemeFromHuePointer(event) {
+  const rect = themeEditor.hue.getBoundingClientRect();
+  const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+  const hsv = rgbToHsv(hexToRgb(themeFieldValue(activeThemeField)));
+  updateActiveThemeColor(rgbToHex(hsvToRgb({
+    h: rect.width ? (x / rect.width) * 360 : 0,
+    s: hsv.s,
+    v: hsv.v,
+  })));
+}
+
+async function pickActiveThemeColor() {
+  if (!activeThemeField) {
+    return;
+  }
+  themeEditor.pick.disabled = true;
+  setError("");
+  try {
+    closeThemeColorPopover();
+    const result = await hostCall("theme.pick_screen_color");
+    if (result?.cancelled) {
+      return;
+    }
+    const color = normalizeColorText(result?.color, "");
+    if (!color) {
+      throw new Error("取色结果无效。");
+    }
+    updateActiveThemeColor(color);
+  } catch (error) {
+    setError(`屏幕取色失败：${error}`);
+  } finally {
+    themeEditor.pick.disabled = false;
+  }
+}
+
 function setThemeValues(theme, options = {}) {
   const updateVisualEffect = options.updateVisualEffect !== false;
   request.theme_fields.forEach(({ id }) => {
-    const textInput = fields.themeColors.querySelector(`[data-theme-field="${id}"]`);
-    const colorInput = fields.themeColors.querySelector(`[data-theme-swatch="${id}"]`);
+    const textInput = themeFieldInput(id);
     const color = normalizeColorText(theme[id], request.theme_defaults[id]);
-    textInput.value = color;
-    colorInput.value = color;
+    if (textInput) {
+      textInput.value = color;
+    }
+    syncThemeRole(id);
   });
   if (updateVisualEffect && theme.visual_effect_mode) {
     fields.visualEffectMode.value = theme.visual_effect_mode;
@@ -849,6 +1207,7 @@ function setThemeValues(theme, options = {}) {
     ...theme,
     visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
   });
+  syncThemeEditor();
 }
 
 async function generateAiTheme() {
@@ -2633,10 +2992,7 @@ function renderMemoryStatus() {
     { label: "事件总结", value: counts.episodic },
     { label: "协作规则", value: counts.procedural },
     { label: "当前任务", value: counts.session },
-    {
-      label: "自动整理",
-      value: fields.memoryCurationEnabled.checked ? "启用" : "关闭",
-    },
+    { label: "整理频率", value: `${fields.memoryTriggerTurns.value || request.memory.curation.trigger_turns} 轮` },
   ]);
 }
 
@@ -3527,7 +3883,6 @@ function collectSystemExtraSettings() {
 function collectMemorySettings() {
   return {
     curation: {
-      enabled: fields.memoryCurationEnabled.checked,
       trigger_turns: clampInt(fields.memoryTriggerTurns.value, request.limits.memory_trigger_turns),
       backfill_limit: request.memory.curation.backfill_limit,
     },
@@ -3567,7 +3922,6 @@ function collectSettings() {
 async function load() {
   request = await invoke("load_request");
   resourceState.snapshot = request.resources || {};
-  applyTheme(request.theme);
   renderCharacters();
   renderThemeControls();
   initializeProviderState();
@@ -3654,11 +4008,11 @@ async function load() {
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
   fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
-  fields.backchannelMode.value = request.system_extra.backchannel.mode;
+  fields.backchannelMode.value =
+    request.system_extra.backchannel.mode === "hybrid" ? "hybrid" : "rules";
   fields.backchannelDelay.value = request.system_extra.backchannel.delay_ms;
   fields.backchannelProbability.value = request.system_extra.backchannel.probability;
   fields.backchannelTtsEnabled.checked = request.system_extra.backchannel.tts_enabled;
-  fields.memoryCurationEnabled.checked = request.memory.curation.enabled;
   fields.memoryTriggerTurns.value = request.memory.curation.trigger_turns;
 
   setThemeValues(request.theme);
@@ -3739,7 +4093,7 @@ fields.memoryRefreshButton.addEventListener("click", loadMemories);
 fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
 fields.memoryRevertButton.addEventListener("click", () => fillMemoryEditor(selectedMemory()));
 fields.memoryDeleteButton.addEventListener("click", deleteSelectedMemory);
-fields.memoryCurationEnabled.addEventListener("change", renderMemoryStatus);
+fields.memoryTriggerTurns.addEventListener("input", renderMemoryStatus);
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
 fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
