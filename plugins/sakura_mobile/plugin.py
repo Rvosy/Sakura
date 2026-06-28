@@ -237,13 +237,6 @@ class SakuraMobilePlugin(PluginBase):
             raise RuntimeError("手机端插件尚未初始化。")
         return self._context
 
-
-def _build_settings_panel(plugin: SakuraMobilePlugin, parent: Any = None) -> Any:
-    from plugins.sakura_mobile.settings_panel import SakuraMobileSettingsPanel
-
-    return SakuraMobileSettingsPanel(plugin, parent)
-
-
 def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value

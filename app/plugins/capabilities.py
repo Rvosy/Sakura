@@ -12,7 +12,6 @@ from app.plugins.models import (
     PluginSettingsContribution,
     PromptPatchContribution,
     RendererContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -24,7 +23,6 @@ class PluginCapabilities:
 
     plugin_id: str
     tools: list[ToolContribution] = field(default_factory=list)
-    settings_panels: list[SettingsPanelContribution] = field(default_factory=list)
     plugin_settings: list[PluginSettingsContribution] = field(default_factory=list)
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
@@ -38,7 +36,6 @@ class PluginCapabilityRegistry:
     """插件初始化时使用的能力注册表。"""
 
     tools: list[ToolContribution] = field(default_factory=list)
-    settings_panels: list[SettingsPanelContribution] = field(default_factory=list)
     plugin_settings: list[PluginSettingsContribution] = field(default_factory=list)
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
@@ -48,9 +45,6 @@ class PluginCapabilityRegistry:
 
     def register_tool(self, contribution: ToolContribution) -> None:
         self.tools.append(contribution)
-
-    def register_settings_panel(self, contribution: SettingsPanelContribution) -> None:
-        self.settings_panels.append(contribution)
 
     def register_plugin_settings(self, contribution: PluginSettingsContribution) -> None:
         self.plugin_settings.append(contribution)

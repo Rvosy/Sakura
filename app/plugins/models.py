@@ -9,16 +9,13 @@ from typing import Any, Callable, Sequence
 from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 
-# 宿主当前支持的插件 API 版本集合。
-# 引入不兼容的新版本时，把新版本号一并加入此集合（如 {1, 2}），即可让宿主
-# 同时加载已发布的旧版插件与新版插件，避免一次性破坏全部存量插件。
+# 宿主当前支持的插件 API 版本集合。v2 起不再兼容旧 Qt settings_panel。
 SUPPORTED_API_VERSIONS = frozenset({PLUGIN_API_VERSION})
 
 PERMISSION_TOOL = "tool"
 PERMISSION_TOOLS_TAB = "tools_tab"
-PERMISSION_SETTINGS_PANEL = "settings_panel"
 PERMISSION_PLUGIN_SETTINGS = "plugin_settings"
 PERMISSION_CHAT_UI = "chat_ui"
 PERMISSION_PROMPT_PATCH = "prompt_patch"
@@ -34,7 +31,6 @@ KNOWN_PLUGIN_PERMISSIONS = frozenset(
     {
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
-        PERMISSION_SETTINGS_PANEL,
         PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
@@ -71,17 +67,6 @@ class ToolsTabContribution:
     title: str
     build: Callable[[Any], Any]
     order: float = 100.0
-
-
-@dataclass(frozen=True)
-class SettingsPanelContribution:
-    """插件贡献到设置窗口“插件”页的设置面板。"""
-
-    section_id: str
-    title: str
-    build: Callable[[Any], Any]
-    order: float = 100.0
-    plugin_id: str = ""
 
 
 @dataclass(frozen=True)

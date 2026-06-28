@@ -1940,23 +1940,14 @@ button:active:not(:disabled) {
   box-shadow: none;
 }
 
-#saveButton {
-  border-color: var(--sakura-primary);
-  background: var(--sakura-primary);
-  color: var(--sakura-input-bg);
-}
-
-#saveButton:hover:not(:disabled) {
-  color: var(--sakura-input-bg);
-  filter: brightness(1.05);
-}
-
+#saveButton,
 .primary-button {
   border-color: var(--sakura-primary);
   background: var(--sakura-primary);
   color: var(--sakura-input-bg);
 }
 
+#saveButton:hover:not(:disabled),
 .primary-button:hover:not(:disabled) {
   color: var(--sakura-input-bg);
   filter: brightness(1.05);

@@ -36,6 +36,8 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
+          - os: macos-latest
+            platform: macos-arm64
     runs-on: ${{ matrix.os }}
     env:
       BUNDLE_ARCHIVE: sakura-${{ needs.metadata.outputs.TAG }}-${{ matrix.platform }}.zip
@@ -43,17 +45,47 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download Python 3.12 embeddable runtime
+        if: matrix.platform == 'windows-x64'
         shell: bash
         run: curl -fL -o python-embed.zip "${{ matrix.embed_url }}"
+
+      - name: Download Python 3.12 standalone runtime (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASES_URL="https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250106"
+          RESP=$(curl -sS --connect-timeout 15 --max-time 30 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$RELEASES_URL")
+          ASSET_URL=$(echo "$RESP" | python3 -c "
+          import sys, json
+          rel = json.load(sys.stdin)
+          for a in rel.get('assets', []):
+              n = a.get('name', '')
+              if 'cpython-3.12' in n and 'aarch64-apple-darwin' in n and n.endswith('.tar.gz'):
+                  print(a['browser_download_url'])
+                  raise SystemExit(0)
+          raise SystemExit('no matching asset found')
+          ")
+          curl -fL --connect-timeout 15 --max-time 600 -o python-standalone.tar.gz "$ASSET_URL"
 
       - name: Extract Python to runtime/
         shell: bash
         run: |
           rm -rf runtime
-          mkdir -p runtime
-          unzip -q python-embed.zip -d runtime/
+          if [[ "${{ matrix.platform }}" == "windows-x64" ]]; then
+            mkdir -p runtime
+            unzip -q python-embed.zip -d runtime/
+          else
+            mkdir -p runtime
+            tar -xzf python-standalone.tar.gz -C runtime/ --strip-components=1
+          fi
 
       - name: Setup pip and runtime import path
+        if: matrix.platform == 'windows-x64'
         shell: bash
         run: |
           curl -fL -o runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
@@ -63,11 +95,71 @@ jobs:
           # 追加 .. 让 Python 能找到项目根目录的 app 模块。
           echo '..' >> runtime/python312._pth
 
+      - name: Setup pip (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: ./runtime/bin/python3 -m pip install --upgrade pip -q
+
+      - name: Make scripts executable and tidy layout (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command
+          cat > install.command <<'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$SCRIPT_DIR/scripts/install.sh"
+          EOF
+          cat > start.command <<'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$SCRIPT_DIR/scripts/start.sh"
+          EOF
+          chmod +x install.command start.command
+          rm -f install.bat start.bat
+
       - name: Tidy Windows bundle layout
+        if: matrix.platform == 'windows-x64'
         shell: bash
         run: rm -f install.command start.command python-embed.zip
 
+      - name: Build Tauri settings window (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        working-directory: tools/settings-tauri/src-tauri
+        run: |
+          cargo build --release
+          $exe = Join-Path (Get-Location) 'target/release/sakura-settings.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Missing Tauri settings exe after build: $exe"
+          }
+          $keep = Join-Path $env:RUNNER_TEMP 'sakura-settings.exe'
+          Copy-Item -LiteralPath $exe -Destination $keep -Force
+          Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
+          $releaseDir = Join-Path (Get-Location) 'target/release'
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir 'sakura-settings.exe') -Force
+
+      - name: Build Tauri settings window (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        working-directory: tools/settings-tauri/src-tauri
+        run: |
+          cargo build --release
+          exe="$PWD/target/release/sakura-settings"
+          if [ ! -f "$exe" ]; then
+            echo "Missing Tauri settings binary after build: $exe" >&2
+            exit 1
+          fi
+          keep="$RUNNER_TEMP/sakura-settings"
+          cp "$exe" "$keep"
+          rm -rf target
+          mkdir -p target/release
+          cp "$keep" target/release/sakura-settings
+          chmod +x target/release/sakura-settings
+
       - name: Create bundle archive
+        if: matrix.platform == 'windows-x64'
         shell: pwsh
         # 白名单打包：只放运行软件需要的内容，不带测试、文档、仓库配置和示例图片。
         run: |
@@ -93,7 +185,22 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          if (-not (Test-Path -LiteralPath $settingsExe)) {
+            throw "Missing Tauri settings exe in bundle stage: $settingsExe"
+          }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
+
+      - name: Create bundle archive (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          zip -rq "$BUNDLE_ARCHIVE" \
+            app plugins runtime third_party tools \
+            LICENSE main.py requirements.txt VERSION \
+            scripts/install.sh scripts/start.sh install.command start.command \
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v7

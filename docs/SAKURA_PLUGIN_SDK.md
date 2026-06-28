@@ -17,7 +17,7 @@ plugins/
 `plugin.yaml`：
 
 ```yaml
-api_version: 1
+api_version: 2
 id: my_plugin
 name: My Plugin
 version: 1.0.0
@@ -32,7 +32,7 @@ permissions:
 
 | 字段 | 必填 | 说明 |
 |---|---:|---|
-| `api_version` | 是 | 当前为 `1` |
+| `api_version` | 是 | 当前为 `2` |
 | `id` | 是 | 插件唯一标识，建议使用小写字母、数字和下划线 |
 | `name` | 否 | 设置页和日志中显示的名称 |
 | `version` | 否 | 插件版本 |
@@ -48,8 +48,7 @@ permissions:
 |---|---|
 | `tool` | 注册 Agent 工具 |
 | `tools_tab` | 注册“工具”页扩展 |
-| `plugin_settings` | 注册 Tauri/宿主统一渲染的插件详细设置 |
-| `settings_panel` | 注册旧版 Qt 设置面板（仅旧版 PySide 设置窗兼容保留，Tauri 设置页不渲染） |
+| `plugin_settings` | 注册 Tauri 设置页统一渲染的插件详细设置 |
 | `chat_ui` | 注册聊天输入区控件 |
 | `prompt_patch` | 注册提示词补丁 |
 | `context_provider` | 注册动态上下文提供者 |
@@ -72,20 +71,23 @@ permissions:
 
 ## 插件 API 版本与兼容策略
 
-`api_version` 声明插件面向的契约版本，当前为 `1`。宿主维护一个**受支持版本集合**
-（见 `app.plugins.SUPPORTED_API_VERSIONS`，当前为 `{1}`）；`api_version` 不在集合内的
+`api_version` 声明插件面向的契约版本，当前为 `2`。宿主维护一个**受支持版本集合**
+（见 `app.plugins.SUPPORTED_API_VERSIONS`，当前为 `{2}`）；`api_version` 不在集合内的
 插件会加载失败。
 
-向前兼容策略——在同一 `api_version` 内，宿主只做扩展，不做破坏性修改，已发布插件无需改动即可继续工作：
+v2 是 Tauri-only 设置页后的破坏性版本：v1 插件不再兼容，旧 `settings_panel`
+权限、`SettingsPanelContribution` 和 `register_settings_panel()` 已移除。插件需要把配置
+入口迁移到 `PluginSettingsContribution`，并在 `plugin.yaml` 中声明 `api_version: 2`。
+
+向前兼容策略——在同一 `api_version` 内，宿主只做扩展，不做破坏性修改：
 
 - 新增贡献点、新增权限、新增事件常量与触发点；
 - 给贡献对象（`ToolContribution` 等）或 `RendererCreateContext` 新增**带默认值**的字段；
 - 给 `PluginContext` / `PluginServices` 新增方法；
 - 把当前为最小实现（仅记日志）的服务门面接入真实后端（签名不变）。
 
-需要升级 `api_version` 的**破坏性变更**（例如：删除或重命名已有字段、修改方法签名或
-语义、移除贡献点或权限）发生时，宿主会在过渡期内**同时支持新旧版本**
-（如 `SUPPORTED_API_VERSIONS = {1, 2}`），让存量 v1 插件不被一次性破坏。
+后续需要破坏性变更（例如：删除或重命名已有字段、修改方法签名或语义、移除贡献点或
+权限）时，会继续提升 `api_version`。
 
 插件作者注意：
 - 固定声明 `api_version`
@@ -175,17 +177,14 @@ class MyPlugin(PluginBase):
 | `register_tool()` | `ToolContribution` | Agent 可调用工具 |
 | `register_tools_tab()` | `ToolsTabContribution` | 设置窗口的“工具”页 |
 | `register_plugin_settings()` | `PluginSettingsContribution` | 设置窗口“插件”页的声明式详细设置 |
-| `register_settings_panel()` | `SettingsPanelContribution` | 旧版 Qt 插件设置面板 |
 | `register_chat_ui_widget()` | `ChatUIWidgetContribution` | 主窗口输入栏 |
 | `register_prompt_patch()` | `PromptPatchContribution` | Agent 系统提示词和回复协议 |
 | `register_context_provider()` | `ContextProviderContribution` | 每次构建 prompt 时动态注入上下文 |
 | `register_renderer()` | `RendererContribution` | 角色渲染后端（接管角色显示） |
 
-`PluginSettingsContribution` 使用声明式字段，由 Tauri 设置页和宿主回退 UI 统一渲染。插件通过 `load()` 返回当前值，通过 `save(values)` 保存用户修改；需要刷新状态或测试连接时，可提供 `PluginSettingsAction`。
+`PluginSettingsContribution` 使用声明式字段，由 Tauri 设置页统一渲染。插件通过 `load()` 返回当前值，通过 `save(values)` 保存用户修改；需要刷新状态或测试连接时，可提供 `PluginSettingsAction`。
 
-旧版 `SettingsPanelContribution` 只能在 PySide 设置窗中显示。Tauri 设置迁移后，插件要在新设置页暴露配置，必须改用 `PluginSettingsContribution`；Sakura 内置插件已按这个路径迁移。
-
-旧版 `SettingsPanelContribution` 和聊天 UI 的 `build(parent)` 应返回 PySide6 `QWidget`。构建失败时宿主会显示降级文本，不会阻止 Sakura 启动。
+聊天 UI 的 `build(parent)` 应返回 PySide6 `QWidget`。构建失败时宿主会显示降级文本，不会阻止 Sakura 启动。
 
 `PromptPatchContribution`：
 

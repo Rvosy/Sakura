@@ -45,7 +45,7 @@
 | `app/plugins/services.py` | 新增 `PluginMobileService`，只暴露 `characters()`、`history()`、`chat()` 三个能力。 |
 | `app/plugins/__init__.py` | 导出新增的插件服务类型。 |
 | `app/ui/pet_window.py` | 在桌面主窗口准备好后，将真实角色、历史和聊天回调注入 `PluginMobileService`；手机回合完成时接入原有自动记忆整理计数。 |
-| `plugins/sakura_mobile/` | 插件清单、生命周期、设置面板、HTTP 服务和手机网页界面。 |
+| `plugins/sakura_mobile/` | 插件清单、生命周期、Tauri 设置项、HTTP 服务和手机网页界面。 |
 
 这种设计有两个关键点：
 

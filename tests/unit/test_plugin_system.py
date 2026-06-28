@@ -30,7 +30,6 @@ from app.plugins.models import (
     PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
-    PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     ChatUIWidgetContribution,
@@ -38,7 +37,6 @@ from app.plugins.models import (
     PluginSettingsField,
     PromptPatchContribution,
     RendererContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -84,7 +82,6 @@ class TestPluginCapabilityRegistry:
         reg = PluginCapabilityRegistry()
         reg.register_tool(ToolContribution(name="t1", description="d", parameters={}, handler=None))
         reg.register_tools_tab(ToolsTabContribution(tab_id="tab", title="T", build=lambda p: None))
-        reg.register_settings_panel(SettingsPanelContribution(section_id="s", title="S", build=lambda p: None))
         reg.register_plugin_settings(
             PluginSettingsContribution(
                 section_id="ps",
@@ -96,7 +93,6 @@ class TestPluginCapabilityRegistry:
         reg.register_prompt_patch(PromptPatchContribution(patch_id="p", system_prompt_append="append"))
         assert len(reg.tools) == 1
         assert len(reg.tools_tabs) == 1
-        assert len(reg.settings_panels) == 1
         assert len(reg.plugin_settings) == 1
         assert len(reg.chat_ui_widgets) == 1
         assert len(reg.prompt_patches) == 1
@@ -255,8 +251,8 @@ class TestPluginManager:
         assert registry.get("demo_echo") is not None
         assert registry.execute("demo_echo", {"text": "hi"}).content == {"text": "hi"}
         assert [tab.title for tab in mgr.tools_tabs] == ["Demo 工具"]
-        assert [panel.title for panel in mgr.settings_panels] == ["Demo 设置"]
-        assert [panel.plugin_id for panel in mgr.settings_panels] == ["demo"]
+        assert [settings.title for settings in mgr.plugin_settings] == ["Demo 设置"]
+        assert [settings.plugin_id for settings in mgr.plugin_settings] == ["demo"]
         assert [widget.widget_id for widget in mgr.chat_ui_widgets] == ["demo_widget"]
         assert mgr.prompt_patches[0].system_prompt_append == "demo system"
 
@@ -291,6 +287,28 @@ class TestPluginManager:
 
         assert not results[0].loaded
         assert "未知权限" in str(results[0].error)
+
+    def test_v1_plugin_marks_failed(self) -> None:
+        base = _runtime_root("v1_plugin")
+        _write_demo_plugin(base, api_version=1)
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "插件 API 版本不支持：1" in str(results[0].error)
+        assert "当前支持 2" in str(results[0].error)
+
+    def test_settings_panel_permission_is_not_supported(self) -> None:
+        base = _runtime_root("settings_panel_permission")
+        _write_demo_plugin(base, permissions=(PERMISSION_TOOL, "settings_panel"))
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "未知权限" in str(results[0].error)
+        assert "settings_panel" in str(results[0].error)
 
     def test_missing_capability_permission_marks_plugin_failed(self) -> None:
         base = _runtime_root("missing_capability_permission")
@@ -426,12 +444,6 @@ class TestContributionTypes:
         assert tc.risk == "medium"
         assert tc.requires_confirmation
 
-    def test_settings_panel_contribution(self) -> None:
-        sp = SettingsPanelContribution(section_id="test", title="Test Panel",
-                                       build=lambda p: None, order=50.0)
-        assert sp.section_id == "test"
-        assert sp.order == 50.0
-
     def test_plugin_settings_contribution(self) -> None:
         contribution = PluginSettingsContribution(
             section_id="browser",
@@ -483,11 +495,11 @@ def _write_plugin_manifest(
     permissions: tuple[str, ...] | None = (
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
-        PERMISSION_SETTINGS_PANEL,
         PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),
+    api_version: int = 2,
 ) -> Path:
     plugin_dir = base / "plugins" / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +512,7 @@ def _write_plugin_manifest(
         )
     (plugin_dir / "plugin.yaml").write_text(
         f"""
-api_version: 1
+api_version: {api_version}
 id: {plugin_id}
 name: {plugin_id}
 author: Demo Author
@@ -526,25 +538,27 @@ def _write_demo_plugin(
     permissions: tuple[str, ...] | None = (
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
-        PERMISSION_SETTINGS_PANEL,
         PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),
+    api_version: int = 2,
 ) -> None:
     plugin_dir = _write_plugin_manifest(
         base,
         plugin_id,
         priority=priority,
         permissions=permissions,
+        api_version=api_version,
     )
     plugin_dir.joinpath("plugin.py").write_text(
         f'''
 from app.plugins import PluginBase
 from app.plugins import (
     ChatUIWidgetContribution,
+    PluginSettingsContribution,
+    PluginSettingsField,
     PromptPatchContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -562,7 +576,11 @@ class DemoPlugin(PluginBase):
             handler=lambda args: {{"text": args["text"]}},
         ))
         register.register_tools_tab(ToolsTabContribution("demo_tools", "Demo 工具", lambda parent=None: None))
-        register.register_settings_panel(SettingsPanelContribution("demo_settings", "Demo 设置", lambda parent=None: None))
+        register.register_plugin_settings(PluginSettingsContribution(
+            section_id="demo_settings",
+            title="Demo 设置",
+            fields=(PluginSettingsField("enabled", "启用", "boolean"),),
+        ))
         register.register_chat_ui_widget(ChatUIWidgetContribution("demo_widget", lambda parent=None: None))
         register.register_prompt_patch(PromptPatchContribution("demo_patch", system_prompt_append="demo system"))
 '''.strip(),

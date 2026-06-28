@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
@@ -187,18 +186,6 @@ def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
         "properties": properties,
         "required": required,
     }
-
-
-def _build_settings_panel(plugin_root: Path, parent: Any = None) -> Any:
-    try:
-        from plugins.playwright_browser.settings_tab import PlaywrightBrowserSettingsTab
-    except Exception:
-        try:
-            from PySide6.QtWidgets import QLabel
-        except Exception:
-            return None
-        return QLabel("Playwright 浏览器设置加载失败。")
-    return PlaywrightBrowserSettingsTab(plugin_root, parent)
 
 
 def _browser_label(key: str) -> str:

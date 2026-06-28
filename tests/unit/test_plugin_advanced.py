@@ -87,7 +87,7 @@ def _write_plugin(
         )
     (plugin_dir / "plugin.yaml").write_text(
         f"""
-api_version: 1
+api_version: 2
 id: {plugin_id}
 name: {plugin_id}
 version: 1.0.0

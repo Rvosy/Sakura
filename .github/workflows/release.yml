@@ -98,6 +98,11 @@ jobs:
             update_artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64-update.zip
             runtime_artifact: runtime-windows-x64.zip
             embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
+          - os: macos-latest
+            platform: macos-arm64
+            artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64.zip
+            update_artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64-update.zip
+            runtime_artifact: runtime-macos-arm64.zip
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -196,6 +201,41 @@ jobs:
         shell: bash
         run: rm -f install.command start.command python-embed.zip
 
+      - name: Build Tauri settings window (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        working-directory: tools/settings-tauri/src-tauri
+        run: |
+          cargo build --release
+          $exe = Join-Path (Get-Location) 'target/release/sakura-settings.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Missing Tauri settings exe after build: $exe"
+          }
+          $keep = Join-Path $env:RUNNER_TEMP 'sakura-settings.exe'
+          Copy-Item -LiteralPath $exe -Destination $keep -Force
+          Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
+          $releaseDir = Join-Path (Get-Location) 'target/release'
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir 'sakura-settings.exe') -Force
+
+      - name: Build Tauri settings window (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        working-directory: tools/settings-tauri/src-tauri
+        run: |
+          cargo build --release
+          exe="$PWD/target/release/sakura-settings"
+          if [ ! -f "$exe" ]; then
+            echo "Missing Tauri settings binary after build: $exe" >&2
+            exit 1
+          fi
+          keep="$RUNNER_TEMP/sakura-settings"
+          cp "$exe" "$keep"
+          rm -rf target
+          mkdir -p target/release
+          cp "$keep" target/release/sakura-settings
+          chmod +x target/release/sakura-settings
+
       - name: Create bundle archive (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
@@ -222,6 +262,10 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          if (-not (Test-Path -LiteralPath $settingsExe)) {
+            throw "Missing Tauri settings exe in bundle stage: $settingsExe"
+          }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
 
       - name: Create update archive (Windows)
@@ -249,6 +293,10 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          if (-not (Test-Path -LiteralPath $settingsExe)) {
+            throw "Missing Tauri settings exe in update stage: $settingsExe"
+          }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
 
       - name: Create runtime archive (Windows)
@@ -280,8 +328,20 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
+          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           zip -rq "${{ matrix.artifact }}" \
             app plugins runtime third_party tools \
+            LICENSE main.py requirements.txt VERSION \
+            scripts/install.sh scripts/start.sh install.command start.command \
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
+
+      - name: Create update archive (macOS)
+        if: matrix.platform != 'windows-x64'
+        shell: bash
+        run: |
+          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          zip -rq "${{ matrix.update_artifact }}" \
+            app plugins third_party tools \
             LICENSE main.py requirements.txt VERSION \
             scripts/install.sh scripts/start.sh install.command start.command \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'

@@ -1,8 +1,8 @@
-"""app/ui/settings/workers.py — 设置窗口的后台 Worker。
+"""app/ui/settings/workers.py — Tauri 设置页复用的后台 Worker。
 
-从 settings_dialog.py 拆出：API 连通性测试、模型列表探测、TTS 试听、
-记忆列表加载、嵌入模型导入、主题 AI 生成、角色包导出。
-全部为纯 QObject worker，不持有任何设置页控件。
+覆盖 API 连通性测试、模型列表探测、TTS 试听、记忆列表加载、
+嵌入模型导入、主题 AI 生成、角色包导出。全部为纯 QObject worker，
+不持有任何设置页控件。
 """
 
 from __future__ import annotations

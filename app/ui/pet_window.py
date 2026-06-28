@@ -7,7 +7,6 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -157,13 +156,12 @@ from app.agent.screen_observation import (
     build_screen_observation_user_message,
     capture_screen_image,
 )
-from app.ui.settings_dialog import SettingsDialog
 from app.ui.tauri_settings import (
     TauriSettingsProcess,
     TauriSettingsResult,
     apply_tauri_plugin_settings,
     resolve_tauri_settings_binary,
-    tauri_settings_trial_enabled,
+    tts_settings_from_tauri_result,
 )
 from app.ui.tts_bundle_dialog import (
     cancel_active_tts_bundle_downloads_for_shutdown,
@@ -203,7 +201,6 @@ from app.voice.tts_settings import (
     DEFAULT_GPT_SOVITS_API_URL,
     GPTSoVITSTTSSettings,
     TTSConfigError,
-    TTS_PROVIDER_GENIE,
 )
 from app.voice.tts import (
     NullTTSProvider,
@@ -608,7 +605,6 @@ class PetWindow(QWidget):
         self._registered_secondary_windows: set[QWidget] = set()
         self.history_window: HistoryWindow | None = None
         self.runtime_log_window: RuntimeLogWindow | None = None
-        self.settings_dialog: SettingsDialog | None = None
         self.tauri_settings_process: TauriSettingsProcess | None = None
         self._tauri_original_layout: tuple[int, int, int, int, int] | None = None
         self.messages: list[dict[str, Any]] = []
@@ -2314,7 +2310,6 @@ class PetWindow(QWidget):
     def _raise_open_dialogs(self) -> None:
         # 独立窗口打开时应始终在桌宠卡片之上，避免说话时被卡片盖住。
         for dialog in (
-            getattr(self, "settings_dialog", None),
             getattr(self, "history_window", None),
             getattr(self, "runtime_log_window", None),
         ):
@@ -5100,10 +5095,6 @@ class PetWindow(QWidget):
     def show_settings(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        active_dialog = getattr(self, "settings_dialog", None)
-        if active_dialog is not None:
-            self._activate_settings_dialog(active_dialog)
-            return
         active_process = getattr(self, "tauri_settings_process", None)
         if active_process is not None:
             # 设置页已在独立进程中打开（可能被最小化），右键唤起时还原并前置它，
@@ -5112,106 +5103,16 @@ class PetWindow(QWidget):
             return
         if self._try_show_tauri_settings():
             return
-        self._show_pyside_settings_dialog()
-
-    def _show_pyside_settings_dialog(self) -> None:
-        try:
-            tts_settings = self.settings_service.load_tts_settings(
-                validate_enabled=False,
-                character_profile=self.character_profile,
-            )
-        except (OSError, TTSConfigError) as exc:
-            show_themed_warning(
-                self,
-                "配置读取失败",
-                format_failure_message(
-                    "TTS 配置无法读取，设置页将使用默认值打开。",
-                    "请检查配置文件是否损坏、被占用或没有读取权限。",
-                    exc,
-                ),
-            )
-            tts_settings = self._default_tts_settings()
-
-        screen_awareness_settings = getattr(self, "screen_awareness_settings", None)
-        if screen_awareness_settings is None:
-            screen_awareness_settings = getattr(
-                self,
-                "proactive_care_settings",
-                ScreenAwarenessSettings(),
-            )
-
-        dialog = SettingsDialog(
-            self.api_client.settings,
-            tts_settings,
-            self.base_dir,
-            self.character_registry,
-            self.character_profile,
-            screen_awareness_settings,
-            self.mcp_settings,
-            self.debug_log_settings,
-            self.memory_store,
-            getattr(self.plugin_manager, "tools_tabs", []),
-            getattr(self.plugin_manager, "settings_panels", []),
-            parent=self,
-            portrait_scale_percent=self.portrait_scale_percent,
-            control_panel_width=self.control_panel_width,
-            bubble_height=self.bubble_height,
-            control_panel_vertical_offset=self.control_panel_vertical_offset,
-            input_bar_offset=self.input_bar_offset,
-            subtitle_typing_interval_ms=self.subtitle_typing_interval_ms,
-            reply_segment_pause_ms=self.reply_segment_pause_ms,
-            theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
-            startup_settings=getattr(self, "startup_settings", StartupSettings()),
-            bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
-            backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
-            runtime_loop_settings=getattr(
-                self.agent_runtime,
-                "runtime_loop_settings",
-                RuntimeLoopSettings(),
-            ),
-            on_layout_preview=self._preview_layout,
-            memory_curation_settings=getattr(self, "memory_curation_settings", None),
-            on_prepare_secondary_window=self._prepare_secondary_window,
-            on_present_secondary_window=self._present_registered_secondary_window,
-            on_release_secondary_window=self._release_secondary_window,
-            api_profiles=self.settings_service.load_api_profiles(),
-            model_selection=self.settings_service.load_model_selection(),
-            plugin_settings_contributions=getattr(
-                getattr(self, "plugin_manager", None),
-                "plugin_settings",
-                [],
-            ),
-            character_theme_overrides=_load_character_theme_overrides(self.settings_service),
+        # Tauri-only：二进制缺失或启动失败时不再回退 Qt 弹窗，给出明确提示。
+        show_themed_warning(
+            self,
+            "无法打开设置",
+            "设置程序（sakura-settings）未找到或启动失败。\n"
+            "请确认已构建 tools/settings-tauri，或用环境变量 "
+            "SAKURA_TAURI_SETTINGS_BIN 指定可执行文件路径。",
         )
-        self.settings_dialog = dialog
-        # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
-        self._prepare_secondary_window(dialog)
-        # 记录打开前的立绘缩放与控制组布局，便于取消时回滚实时预览。
-        original_layout = (
-            self.portrait_scale_percent,
-            self.control_panel_width,
-            self.bubble_height,
-            self.control_panel_vertical_offset,
-            self.input_bar_offset,
-        )
-        # 设置期间保持气泡稳定，但隐藏输入栏，避免输入栏挡住设置窗口或跟设置抢层级。
-        bubble_auto_hide = getattr(self, "bubble_auto_hide", None)
-        if bubble_auto_hide is not None:
-            bubble_auto_hide.notify_speaking()
-        # 非模态没有阻塞返回值，结果处理改由 finished 信号驱动；闭包捕获打开前状态用于回滚。
-        dialog.finished.connect(
-            lambda result: self._on_settings_dialog_finished(
-                dialog,
-                result,
-                original_layout,
-                bubble_auto_hide,
-            )
-        )
-        self._present_registered_secondary_window(dialog)
 
     def _try_show_tauri_settings(self) -> bool:
-        if not tauri_settings_trial_enabled():
-            return False
         if resolve_tauri_settings_binary(self.base_dir) is None:
             return False
         settings = getattr(self, "screen_awareness_settings", None)
@@ -5696,352 +5597,9 @@ class PetWindow(QWidget):
         self._sync_secondary_window_state()
         show_themed_warning(
             self,
-            "Tauri 设置页不可用",
-            f"{message}\n\n已回退到原设置页。",
+            "设置页打开失败",
+            f"{message}",
         )
-        self._show_pyside_settings_dialog()
-
-    def _on_settings_dialog_finished(
-        self,
-        dialog: SettingsDialog,
-        dialog_result: int,
-        original_layout: tuple[int, int, int, int, int],
-        bubble_auto_hide: object,
-    ) -> None:
-        """设置窗口关闭后的结果处理（原 exec() 之后的同步逻辑，迁移到非模态信号回调）。"""
-        if getattr(self, "settings_dialog", None) is dialog:
-            self.settings_dialog = None
-        self._unregister_secondary_window(dialog)
-        self._sync_secondary_window_state()
-        # 关闭设置后恢复气泡自动隐藏计时与输入栏常规显隐。
-        if bubble_auto_hide is not None:
-            bubble_auto_hide.notify_settled()
-        if dialog_result != QDialog.DialogCode.Accepted:
-            # 取消/关闭：回滚到打开前的立绘与控制组布局，撤销实时预览的改动。
-            self._preview_layout(*original_layout)
-            return
-        result_subtitle_typing_interval_ms = getattr(
-            dialog,
-            "result_subtitle_typing_interval_ms",
-            self.subtitle_typing_interval_ms,
-        )
-        result_reply_segment_pause_ms = getattr(
-            dialog,
-            "result_reply_segment_pause_ms",
-            self.reply_segment_pause_ms,
-        )
-        result_theme_settings = getattr(
-            dialog,
-            "result_theme_settings",
-            getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
-        )
-        current_startup_settings = getattr(self, "startup_settings", StartupSettings())
-        result_startup_settings = getattr(
-            dialog,
-            "result_startup_settings",
-            current_startup_settings,
-        )
-        result_bubble_settings = getattr(
-            dialog,
-            "result_bubble_settings",
-            getattr(self, "bubble_settings", BubbleSettings()),
-        )
-        result_backchannel_settings = getattr(
-            dialog,
-            "result_backchannel_settings",
-            getattr(self, "backchannel_settings", BackchannelSettings()),
-        )
-        result_runtime_loop_settings = (
-            getattr(dialog, "result_runtime_loop_settings", None)
-            or getattr(self.agent_runtime, "runtime_loop_settings", RuntimeLoopSettings())
-        )
-        # result_memory_curation_settings 在用户未改动时可能为 None，用当前配置兜底。
-        result_memory_curation_settings = (
-            getattr(dialog, "result_memory_curation_settings", None)
-            or getattr(self, "memory_curation_settings", None)
-        )
-        result_screen_awareness_settings = getattr(
-            dialog,
-            "result_screen_awareness_settings",
-            None,
-        )
-        if result_screen_awareness_settings is None:
-            result_screen_awareness_settings = getattr(
-                dialog,
-                "result_proactive_care_settings",
-                None,
-            )
-        result_control_panel_width = getattr(
-            dialog, "result_control_panel_width", self.control_panel_width
-        )
-        result_bubble_height = getattr(
-            dialog, "result_bubble_height", self.bubble_height
-        )
-        result_control_panel_vertical_offset = getattr(
-            dialog,
-            "result_control_panel_vertical_offset",
-            self.control_panel_vertical_offset,
-        )
-        result_input_bar_offset = getattr(
-            dialog, "result_input_bar_offset", self.input_bar_offset
-        )
-        if (
-            dialog.result_api_settings is None
-            or dialog.result_tts_settings is None
-            or dialog.result_character_id is None
-            or result_screen_awareness_settings is None
-            or dialog.result_mcp_settings is None
-            or dialog.result_debug_log_settings is None
-            or result_startup_settings is None
-            or not isinstance(result_startup_settings, StartupSettings)
-            or dialog.result_portrait_scale_percent is None
-            or result_theme_settings is None
-            or result_subtitle_typing_interval_ms is None
-            or result_reply_segment_pause_ms is None
-            or not isinstance(result_runtime_loop_settings, RuntimeLoopSettings)
-        ):
-            return
-        if result_backchannel_settings is None or not isinstance(
-            result_backchannel_settings,
-            BackchannelSettings,
-        ):
-            result_backchannel_settings = getattr(
-                self,
-                "backchannel_settings",
-                BackchannelSettings(),
-            )
-        (
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
-        ) = normalize_subtitle_display_speed(
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
-        )
-
-        dialog_character_registry = getattr(dialog, "character_registry", None) or self.character_registry
-        try:
-            selected_profile = dialog_character_registry.get(dialog.result_character_id)
-        except CharacterConfigError as exc:
-            show_themed_critical(
-                self,
-                "角色配置无效",
-                format_failure_message(
-                    "无法读取当前选择的角色配置。",
-                    "请重新导入或选择一个完整的角色包。",
-                    exc,
-                ),
-            )
-            return
-
-        new_tts_provider = self._create_tts_provider_from_settings(dialog.result_tts_settings)
-        if new_tts_provider is None:
-            return
-
-        api_changed = dialog.result_api_settings != self.api_client.settings
-        startup_settings_changed = result_startup_settings != current_startup_settings
-        theme_write_mode = getattr(dialog, "result_theme_write_mode", "unchanged")
-        try:
-            if api_changed:
-                self.settings_service.save_api_settings(dialog.result_api_settings)
-            # 保存 API 配置集和模型选择（新格式）
-            api_profiles = getattr(dialog, "result_api_profiles", None)
-            model_selection = getattr(dialog, "result_model_selection", None)
-            if api_profiles is not None:
-                self.settings_service.save_api_profiles(api_profiles)
-            if model_selection is not None:
-                self.settings_service.save_model_selection(model_selection)
-            self.settings_service.save_tts_settings(dialog.result_tts_settings)
-            self.character_registry = dialog_character_registry
-            self.settings_service.save_current_character_id(
-                self.character_registry,
-                selected_profile.id,
-            )
-            save_screen_awareness_settings = getattr(
-                self.settings_service,
-                "save_screen_awareness_settings",
-                None,
-            )
-            if callable(save_screen_awareness_settings):
-                save_screen_awareness_settings(result_screen_awareness_settings)
-            else:
-                self.settings_service.save_proactive_care_settings(
-                    result_screen_awareness_settings
-                )
-            self.settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings)
-            self.settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
-            if startup_settings_changed:
-                self._apply_launch_at_login_settings(result_startup_settings)
-                self.settings_service.save_startup_settings(result_startup_settings)
-            if theme_write_mode in {"manual", "ai", "reset"}:
-                save_theme_settings = getattr(self.settings_service, "save_theme_settings", None)
-                if callable(save_theme_settings):
-                    save_theme_settings(result_theme_settings)
-                _save_character_theme_override(
-                    self.settings_service,
-                    selected_profile,
-                    result_theme_settings,
-                )
-            self._save_system_config_values(
-                "ui",
-                {
-                    "portrait_scale_percent": dialog.result_portrait_scale_percent,
-                    "subtitle_typing_interval_ms": result_subtitle_typing_interval_ms,
-                    "reply_segment_pause_ms": result_reply_segment_pause_ms,
-                },
-            )
-            self.settings_service.save_bubble_settings(result_bubble_settings)
-            save_backchannel_settings = getattr(
-                self.settings_service,
-                "save_backchannel_settings",
-                None,
-            )
-            if callable(save_backchannel_settings):
-                save_backchannel_settings(result_backchannel_settings)
-            save_runtime_loop_settings = getattr(
-                self.settings_service,
-                "save_runtime_loop_settings",
-                None,
-            )
-            if callable(save_runtime_loop_settings):
-                save_runtime_loop_settings(result_runtime_loop_settings)
-            if result_memory_curation_settings is not None:
-                self.settings_service.save_memory_curation_settings(
-                    result_memory_curation_settings
-                )
-        except (CharacterConfigError, OSError) as exc:
-            show_themed_critical(
-                self,
-                "保存失败",
-                format_failure_message(
-                    "设置没有保存成功。",
-                    "请检查 data 目录的写入权限和文件占用情况后重试。",
-                    exc,
-                ),
-            )
-            return
-
-        # 更新 API client（新格式统一处理，替代旧 api_changed 块）
-        if api_profiles is not None and model_selection is not None:
-            _update_runtime_api_clients(
-                self,
-                api_profiles=api_profiles,
-                model_selection=model_selection,
-                base_settings=dialog.result_api_settings,
-            )
-        elif api_changed:
-            # 旧格式回退
-            self.api_client.update_settings(dialog.result_api_settings)
-            self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
-        self.agent_runtime.set_runtime_loop_settings(result_runtime_loop_settings)
-        self._apply_layout_settings(
-            portrait_scale_percent=dialog.result_portrait_scale_percent,
-            control_panel_width=result_control_panel_width,
-            bubble_height=result_bubble_height,
-            vertical_offset=result_control_panel_vertical_offset,
-            input_bar_offset=result_input_bar_offset,
-            persist=True,
-        )
-        self._apply_subtitle_display_speed(
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
-        )
-        self._apply_bubble_settings(result_bubble_settings)
-        if result_memory_curation_settings is not None:
-            self.memory_curation_settings = result_memory_curation_settings
-        apply_theme_settings = getattr(self, "_apply_theme_settings", None)
-        if callable(apply_theme_settings):
-            apply_theme_settings(result_theme_settings)
-        else:
-            self.theme_settings = result_theme_settings
-        self.screen_awareness_settings = result_screen_awareness_settings
-        mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
-        self.mcp_settings = dialog.result_mcp_settings
-        self.debug_log_settings = dialog.result_debug_log_settings
-        eval_logger = getattr(self, "backchannel_eval_logger", None)
-        if eval_logger is not None:
-            eval_logger.set_enabled(self.debug_log_settings.enabled)
-        self._apply_stage_debug_overlay(
-            self.debug_log_settings.stage_debug_overlay, refresh=True
-        )
-        self._apply_stage_collision_mask(
-            self.debug_log_settings.stage_collision_mask, refresh=True
-        )
-        self.startup_settings = result_startup_settings
-        sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
-        if callable(sync_screen_awareness_timer):
-            sync_screen_awareness_timer()
-        else:
-            self._sync_proactive_care_timer()
-        discard_backchannel_audio_cache = getattr(
-            self,
-            "_discard_backchannel_audio_cache",
-            None,
-        )
-        if callable(discard_backchannel_audio_cache):
-            discard_backchannel_audio_cache()
-        # 仅在 TTS 配置或角色变化时才重建 provider。无谓重建会在 TTS 服务
-        # 后台探测(warmup)期间退休/替换正被探测的旧 provider,后台 warmup
-        # 线程与主线程并发拆解同一 provider 引发原生闪退(切换接话语音等
-        # 不改 TTS 配置的保存场景尤其高发)。配置等价则保留现有 provider
-        # 及其在途 warmup。
-        character_changed = selected_profile.id != getattr(self.character_profile, "id", None)
-        if _tts_provider_needs_rebuild(
-            self.tts_provider,
-            new_tts_provider,
-            character_changed=character_changed,
-        ):
-            disconnect_tts_error_signal = getattr(self, "_disconnect_tts_error_signal", None)
-            if callable(disconnect_tts_error_signal):
-                disconnect_tts_error_signal(self.tts_provider)
-            keep_local_tts_service = _should_keep_tts_local_service(
-                self.tts_provider,
-                new_tts_provider,
-            )
-            self._retire_tts_provider(
-                self.tts_provider,
-                keep_local_service=keep_local_tts_service,
-            )
-            self.tts_provider = new_tts_provider
-            self.voice_playback_controller.set_provider(new_tts_provider)
-            connect_tts_error_signal = getattr(self, "_connect_tts_error_signal", None)
-            if callable(connect_tts_error_signal):
-                connect_tts_error_signal(new_tts_provider)
-            self._warm_up_tts_playback(new_tts_provider)
-            start_tts_ready_warmup = getattr(self, "_start_tts_ready_warmup", None)
-            if callable(start_tts_ready_warmup):
-                start_tts_ready_warmup(new_tts_provider)
-        else:
-            # 配置与角色均未变:丢弃刚建好的等价 provider(adopt=False,未启动
-            # 服务/播放器,close 为惰性安全操作),保留现有 provider 不动。
-            close_unused = getattr(new_tts_provider, "close", None)
-            if callable(close_unused):
-                try:
-                    close_unused()
-                except Exception as exc:  # noqa: BLE001
-                    debug_log("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
-            debug_log("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
-        self._apply_character(selected_profile)
-        apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
-        if callable(apply_backchannel_settings):
-            apply_backchannel_settings(result_backchannel_settings)
-        else:
-            self.backchannel_settings = result_backchannel_settings
-        if hasattr(self, "tray_icon"):
-            self.tray_icon.setContextMenu(self._build_menu())
-        message = "设置已保存，后续聊天和朗读将使用新配置。"
-        if api_changed:
-            message += "\n\n长期记忆系统正在后台刷新 API 配置。"
-        if mcp_restart_required:
-            message += "\n\nWindows MCP 开关需要重启 Sakura 后才会生效。"
-        if startup_settings_changed:
-            message += "\n\n登录自启动设置已更新。"
-        if getattr(dialog, "result_plugin_config_changed", False):
-            message += "\n\n插件启用状态需要重启 Sakura 后才会生效。"
-        show_themed_information(self, "保存成功", message)
-
-    def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
-        """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
-        self._present_registered_secondary_window(dialog)
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:
@@ -6165,76 +5723,12 @@ class PetWindow(QWidget):
         result_tts: object,
         selected_profile: CharacterProfile,
     ) -> GPTSoVITSTTSSettings:
-        previous = getattr(self, "_tauri_initial_tts_settings", None)
-        if not isinstance(previous, GPTSoVITSTTSSettings):
-            previous = GPTSoVITSTTSSettings(
-                enabled=False,
-                api_url=DEFAULT_GPT_SOVITS_API_URL,
-                ref_audio_path=self.base_dir / "ref" / "VO01_2210.ogg",
-                ref_text_path=self.base_dir / "ref" / "text.txt",
-                ref_text="",
-                ref_lang="ja",
-                text_lang="ja",
-                timeout_seconds=60,
-            )
-
-        enabled = bool(getattr(result_tts, "enabled", False))
-        provider = str(getattr(result_tts, "provider", previous.provider))
-        api_url = str(getattr(result_tts, "api_url", previous.api_url)).strip()
-        timeout_seconds = int(getattr(result_tts, "timeout_seconds", previous.timeout_seconds))
-        work_dir = _optional_tauri_path(getattr(result_tts, "work_dir", ""), self.base_dir)
-        python_path = _optional_tauri_path(getattr(result_tts, "python_path", ""), self.base_dir)
-        tts_config_path = _optional_tauri_path(
-            getattr(result_tts, "tts_config_path", ""),
+        return tts_settings_from_tauri_result(
+            result_tts,
+            selected_profile,
             self.base_dir,
+            previous=getattr(self, "_tauri_initial_tts_settings", None),
         )
-        selected_voice = getattr(selected_profile, "voice", None)
-        if enabled and selected_voice is None:
-            enabled = False
-        ref_lang = (getattr(selected_voice, "ref_lang", None) or previous.ref_lang or "ja")
-        text_lang = (getattr(selected_voice, "text_lang", None) or previous.text_lang or "ja")
-        onnx_model_dir = (
-            StoragePaths(self.base_dir).tts_bundle_onnx_for(selected_profile.id)
-            if provider == TTS_PROVIDER_GENIE
-            else None
-        )
-
-        if selected_voice is None or not hasattr(selected_profile, "package_dir"):
-            settings = GPTSoVITSTTSSettings(
-                enabled=False,
-                api_url=api_url,
-                ref_audio_path=previous.ref_audio_path,
-                ref_text_path=previous.ref_text_path,
-                ref_text=previous.ref_text,
-                provider=provider,
-                work_dir=work_dir,
-                python_path=python_path,
-                tts_config_path=tts_config_path,
-                character_name=getattr(selected_profile, "display_name", selected_profile.id),
-                onnx_model_dir=onnx_model_dir,
-                ref_lang=ref_lang,
-                text_lang=text_lang,
-                timeout_seconds=timeout_seconds,
-                tone_references=previous.tone_references,
-            )
-        else:
-            settings = GPTSoVITSTTSSettings.from_character_profile(
-                character_profile=selected_profile,
-                enabled=enabled,
-                api_url=api_url,
-                ref_lang=ref_lang,
-                text_lang=text_lang,
-                timeout_seconds=timeout_seconds,
-                provider=provider,
-                work_dir=work_dir,
-                python_path=python_path,
-                tts_config_path=tts_config_path,
-                onnx_model_dir=onnx_model_dir,
-                validate_enabled=False,
-            )
-        if previous.playback_backend:
-            settings = replace(settings, playback_backend=previous.playback_backend)
-        return settings
 
     def _create_tts_provider_from_settings(
         self,
@@ -7565,14 +7059,6 @@ def _tts_provider_needs_rebuild(
     return getattr(old_provider, "settings", None) != getattr(new_provider, "settings", None)
 
 
-def _optional_tauri_path(value: object, base_dir: Path) -> Path | None:
-    text = str(value or "").strip().strip('"').strip("'")
-    if not text:
-        return None
-    path = Path(text)
-    return path if path.is_absolute() else base_dir / path
-
-
 def _should_keep_tts_local_service(old_provider: TTSProvider, new_provider: TTSProvider) -> bool:
     old_settings = getattr(old_provider, "settings", None)
     new_settings = getattr(new_provider, "settings", None)
@@ -7654,8 +7140,8 @@ def _configure_secondary_window(window, *, keep_on_top: bool = False) -> None:  
     # 生效），再靠 raise 浮在桌宠之上；桌宠未置顶时副窗口保持普通层，可正常退到后面。
     #
     # 注意：setParent(None) 会重置 window flags，所以必须先 detach、再设 flags。
-    # 窗口的 Python 引用由调用方持有（设置窗口靠 self.settings_dialog，历史/日志窗口靠
-    # self.history_window / self.runtime_log_window），脱离 Qt 对象树后生命周期仍安全。
+    # 窗口的 Python 引用由调用方持有（历史/日志窗口靠 self.history_window /
+    # self.runtime_log_window），脱离 Qt 对象树后生命周期仍安全。
     set_parent = getattr(window, "setParent", None)
     parent = getattr(window, "parent", None)
     if callable(set_parent) and callable(parent) and parent() is not None:

@@ -18,7 +18,6 @@ from app.plugins.models import (
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
     PERMISSION_MOBILE_CHAT,
-    PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     PLUGIN_API_VERSION,
@@ -35,7 +34,6 @@ from app.plugins.models import (
     PromptPatchContribution,
     RendererContribution,
     RendererCreateContext,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -64,7 +62,6 @@ __all__ = [
     "PERMISSION_PROMPT_PATCH",
     "PERMISSION_RENDERER",
     "PERMISSION_MOBILE_CHAT",
-    "PERMISSION_SETTINGS_PANEL",
     "PERMISSION_TOOL",
     "PERMISSION_TOOLS_TAB",
     "PLUGIN_API_VERSION",
@@ -94,7 +91,6 @@ __all__ = [
     "RendererContribution",
     "RendererCreateContext",
     "ScopedEventBus",
-    "SettingsPanelContribution",
     "ToolContribution",
     "ToolsTabContribution",
 ]

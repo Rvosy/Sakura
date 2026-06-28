@@ -5,8 +5,8 @@ import os
 import secrets
 import sys
 import traceback
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -91,7 +91,6 @@ from app.plugins.models import (
     PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
-    PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     PluginSettingsContribution,
@@ -160,7 +159,6 @@ from app.voice.tts_settings import (
     GPTSoVITSTTSSettings,
 )
 
-TAURI_SETTINGS_TRIAL_ENV = "SAKURA_TAURI_SETTINGS_TRIAL"
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
 TAURI_SETTINGS_PROTOCOL_VERSION = 2
 
@@ -173,7 +171,6 @@ TAURI_SETTINGS_RPC_RESULT_MARKER = "@@SAKURA_SETTINGS_RPC_RESULT@@"
 PLUGIN_PERMISSION_LABELS: dict[str, dict[str, str]] = {
     PERMISSION_TOOL: {"group": "工具", "label": "Agent 工具"},
     PERMISSION_TOOLS_TAB: {"group": "UI", "label": "工具页"},
-    PERMISSION_SETTINGS_PANEL: {"group": "UI", "label": "Qt 设置面板"},
     PERMISSION_PLUGIN_SETTINGS: {"group": "UI", "label": "插件设置"},
     PERMISSION_CHAT_UI: {"group": "UI", "label": "聊天 UI"},
     PERMISSION_PROMPT_PATCH: {"group": "上下文", "label": "提示词补丁"},
@@ -288,20 +285,116 @@ class TauriSettingsResult:
     plugins: TauriPluginResult = field(default_factory=TauriPluginResult)
 
 
-class TauriMemoryRpcWorker(QObject):
+def _optional_tauri_path(value: object, base_dir: Path) -> Path | None:
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.is_absolute() else base_dir / path
+
+
+def tts_settings_from_tauri_result(
+    result_tts: object,
+    selected_profile: CharacterProfile,
+    base_dir: Path,
+    *,
+    previous: GPTSoVITSTTSSettings | None = None,
+) -> GPTSoVITSTTSSettings:
+    """把 Tauri 设置页返回的 TTS 结果落成 GPTSoVITSTTSSettings。
+
+    运行期（PetWindow）与首次运行引导共用此转换：``previous`` 提供上次的参考音频/
+    音色等不在 Tauri 页编辑的字段，缺省时退回角色包默认值。
+    """
+    base_dir = Path(base_dir)
+    if not isinstance(previous, GPTSoVITSTTSSettings):
+        previous = GPTSoVITSTTSSettings(
+            enabled=False,
+            api_url=DEFAULT_GPT_SOVITS_API_URL,
+            ref_audio_path=base_dir / "ref" / "VO01_2210.ogg",
+            ref_text_path=base_dir / "ref" / "text.txt",
+            ref_text="",
+            ref_lang="ja",
+            text_lang="ja",
+            timeout_seconds=60,
+        )
+
+    enabled = bool(getattr(result_tts, "enabled", False))
+    provider = str(getattr(result_tts, "provider", previous.provider))
+    api_url = str(getattr(result_tts, "api_url", previous.api_url)).strip()
+    timeout_seconds = int(getattr(result_tts, "timeout_seconds", previous.timeout_seconds))
+    work_dir = _optional_tauri_path(getattr(result_tts, "work_dir", ""), base_dir)
+    python_path = _optional_tauri_path(getattr(result_tts, "python_path", ""), base_dir)
+    tts_config_path = _optional_tauri_path(getattr(result_tts, "tts_config_path", ""), base_dir)
+    selected_voice = getattr(selected_profile, "voice", None)
+    if enabled and selected_voice is None:
+        enabled = False
+    ref_lang = getattr(selected_voice, "ref_lang", None) or previous.ref_lang or "ja"
+    text_lang = getattr(selected_voice, "text_lang", None) or previous.text_lang or "ja"
+    onnx_model_dir = (
+        StoragePaths(base_dir).tts_bundle_onnx_for(selected_profile.id)
+        if provider == TTS_PROVIDER_GENIE
+        else None
+    )
+
+    if selected_voice is None or not hasattr(selected_profile, "package_dir"):
+        settings = GPTSoVITSTTSSettings(
+            enabled=False,
+            api_url=api_url,
+            ref_audio_path=previous.ref_audio_path,
+            ref_text_path=previous.ref_text_path,
+            ref_text=previous.ref_text,
+            provider=provider,
+            work_dir=work_dir,
+            python_path=python_path,
+            tts_config_path=tts_config_path,
+            character_name=getattr(selected_profile, "display_name", selected_profile.id),
+            onnx_model_dir=onnx_model_dir,
+            ref_lang=ref_lang,
+            text_lang=text_lang,
+            timeout_seconds=timeout_seconds,
+            tone_references=previous.tone_references,
+        )
+    else:
+        settings = GPTSoVITSTTSSettings.from_character_profile(
+            character_profile=selected_profile,
+            enabled=enabled,
+            api_url=api_url,
+            ref_lang=ref_lang,
+            text_lang=text_lang,
+            timeout_seconds=timeout_seconds,
+            provider=provider,
+            work_dir=work_dir,
+            python_path=python_path,
+            tts_config_path=tts_config_path,
+            onnx_model_dir=onnx_model_dir,
+            validate_enabled=False,
+        )
+    if previous.playback_backend:
+        settings = replace(settings, playback_backend=previous.playback_backend)
+    return settings
+
+
+class TauriRpcWorker(QObject):
+    """通用 RPC 后台 worker：把同步 ``dispatch(method, params)`` 跑在子线程里。"""
+
     succeeded = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, memory_store: Any | None, method: str, params: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        dispatch: Callable[[str, dict[str, Any]], Any],
+        method: str,
+        params: dict[str, Any],
+    ) -> None:
         super().__init__()
-        self.memory_store = memory_store
+        self._dispatch = dispatch
         self.method = method
         self.params = dict(params)
 
     def run(self) -> None:
         try:
-            result = dispatch_tauri_memory_rpc(self.memory_store, self.method, self.params)
+            result = self._dispatch(self.method, self.params)
         except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
             traceback.print_exc()
             self.failed.emit(str(exc))
@@ -309,36 +402,6 @@ class TauriMemoryRpcWorker(QObject):
             self.succeeded.emit(result)
         finally:
             self.finished.emit()
-
-
-class TauriCharacterRpcWorker(QObject):
-    succeeded = Signal(object)
-    failed = Signal(str)
-    finished = Signal()
-
-    def __init__(self, base_dir: Path, method: str, params: dict[str, Any]) -> None:
-        super().__init__()
-        self.base_dir = Path(base_dir)
-        self.method = method
-        self.params = dict(params)
-
-    def run(self) -> None:
-        try:
-            result = dispatch_tauri_character_rpc(self.base_dir, self.method, self.params)
-        except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
-            traceback.print_exc()
-            self.failed.emit(str(exc))
-        else:
-            self.succeeded.emit(result)
-        finally:
-            self.finished.emit()
-
-
-def tauri_settings_trial_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    value = (environ or os.environ).get(TAURI_SETTINGS_TRIAL_ENV)
-    if value is None:
-        return True
-    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def resolve_tauri_settings_binary(
@@ -352,9 +415,10 @@ def resolve_tauri_settings_binary(
         return path if path.is_file() else None
 
     root = Path(base_dir)
+    binary_name = "sakura-settings.exe" if sys.platform == "win32" else "sakura-settings"
     candidates = (
-        root / "tools" / "settings-tauri" / "src-tauri" / "target" / "release" / "sakura-settings.exe",
-        root / "tools" / "settings-tauri" / "src-tauri" / "target" / "debug" / "sakura-settings.exe",
+        root / "tools" / "settings-tauri" / "src-tauri" / "target" / "release" / binary_name,
+        root / "tools" / "settings-tauri" / "src-tauri" / "target" / "debug" / binary_name,
     )
     for candidate in candidates:
         if candidate.is_file():
@@ -941,8 +1005,6 @@ class TauriSettingsProcess(QObject):
         self._tts_test_rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
-        if not tauri_settings_trial_enabled():
-            return False
         binary = resolve_tauri_settings_binary(self.base_dir)
         if binary is None:
             return False
@@ -1161,6 +1223,31 @@ class TauriSettingsProcess(QObject):
             return
         self._send_rpc_response(request_id, ok=True, result=result)
 
+    def _start_rpc_worker(
+        self,
+        request_id: str,
+        worker: QObject,
+        rpcs: dict[str, tuple[QThread, QObject]],
+        on_success: Callable[..., None],
+        on_failure: Callable[[str], None] | None = None,
+    ) -> None:
+        """统一的 RPC worker 线程生命周期：移线程、登记、连成功/失败/收尾、启动。"""
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+
+        def _default_failure(message: str) -> None:
+            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_failure or _default_failure)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: rpcs.pop(rid, None))
+        thread.start()
+
     def _dispatch_api_probe(self, request_id: str, method: str, params: dict[str, Any]) -> None:
         """在后台线程跑 list_models / test_connection，完成后经 RPC 回传结果。"""
         try:
@@ -1169,14 +1256,10 @@ class TauriSettingsProcess(QObject):
             self._send_rpc_response(request_id, ok=False, error=str(exc))
             return
 
-        thread = QThread(self)
         if method == "api.test_connection":
             worker: QObject = ApiConnectionTestWorker(settings)
         else:
             worker = ApiModelListProbeWorker(settings)
-        worker.moveToThread(thread)
-        self._api_probes[request_id] = (thread, worker)
-        thread.started.connect(worker.run)
 
         def _on_success(payload: Any) -> None:
             if method == "api.test_connection":
@@ -1185,46 +1268,28 @@ class TauriSettingsProcess(QObject):
                 models = [str(item) for item in payload if str(item).strip()]
                 self._send_rpc_response(request_id, ok=True, result={"models": models})
 
-        def _on_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
-
-        worker.succeeded.connect(_on_success)
-        worker.failed.connect(_on_failure)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda rid=request_id: self._api_probes.pop(rid, None))
-        thread.start()
+        self._start_rpc_worker(request_id, worker, self._api_probes, _on_success)
 
     def _dispatch_memory_rpc(self, request_id: str, method: str, params: dict[str, Any]) -> None:
         """在后台线程访问 mem0/Qdrant，避免记忆页加载阻塞 Qt 主事件循环。"""
-        thread = QThread()
-        worker: QObject = TauriMemoryRpcWorker(self.memory_store, method, params)
-        worker.moveToThread(thread)
-        self._memory_rpcs[request_id] = (thread, worker)
-        thread.started.connect(worker.run)
+        worker = TauriRpcWorker(
+            lambda m, p: dispatch_tauri_memory_rpc(self.memory_store, m, p),
+            method,
+            params,
+        )
 
         def _on_success(payload: object) -> None:
             result = payload if isinstance(payload, dict) else {"result": payload}
             self._send_rpc_response(request_id, ok=True, result=result)
 
-        def _on_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
-
-        worker.succeeded.connect(_on_success)
-        worker.failed.connect(_on_failure)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda rid=request_id: self._memory_rpcs.pop(rid, None))
-        thread.start()
+        self._start_rpc_worker(request_id, worker, self._memory_rpcs, _on_success)
 
     def _dispatch_character_rpc(self, request_id: str, method: str, params: dict[str, Any]) -> None:
-        thread = QThread()
-        worker: QObject = TauriCharacterRpcWorker(self.base_dir, method, params)
-        worker.moveToThread(thread)
-        self._character_rpcs[request_id] = (thread, worker)
-        thread.started.connect(worker.run)
+        worker = TauriRpcWorker(
+            lambda m, p: dispatch_tauri_character_rpc(self.base_dir, m, p),
+            method,
+            params,
+        )
 
         def _on_success(payload: object) -> None:
             result = payload if isinstance(payload, dict) else {"result": payload}
@@ -1236,16 +1301,7 @@ class TauriSettingsProcess(QObject):
                 pass
             self._send_rpc_response(request_id, ok=True, result=result)
 
-        def _on_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
-
-        worker.succeeded.connect(_on_success)
-        worker.failed.connect(_on_failure)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda rid=request_id: self._character_rpcs.pop(rid, None))
-        thread.start()
+        self._start_rpc_worker(request_id, worker, self._character_rpcs, _on_success)
 
     def _dispatch_theme_ai_rpc(self, request_id: str, params: dict[str, Any]) -> None:
         try:
@@ -1261,11 +1317,7 @@ class TauriSettingsProcess(QObject):
             self._send_rpc_response(request_id, ok=False, error=str(exc))
             return
 
-        thread = QThread(self)
         worker: QObject = ThemeAiWorker(settings, profile, ai_enabled=True)
-        worker.moveToThread(thread)
-        self._theme_ai_rpcs[request_id] = (thread, worker)
-        thread.started.connect(worker.run)
 
         def _on_success(payload: object) -> None:
             if not isinstance(payload, ThemeSettings):
@@ -1273,16 +1325,7 @@ class TauriSettingsProcess(QObject):
                 return
             self._send_rpc_response(request_id, ok=True, result={"theme": theme_to_mapping(payload)})
 
-        def _on_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
-
-        worker.succeeded.connect(_on_success)
-        worker.failed.connect(_on_failure)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda rid=request_id: self._theme_ai_rpcs.pop(rid, None))
-        thread.start()
+        self._start_rpc_worker(request_id, worker, self._theme_ai_rpcs, _on_success)
 
     def _dispatch_tts_test_rpc(self, request_id: str, params: dict[str, Any]) -> None:
         try:
@@ -1302,11 +1345,7 @@ class TauriSettingsProcess(QObject):
             self._send_rpc_response(request_id, ok=False, error=str(exc))
             return
 
-        thread = QThread(self)
         worker: QObject = TTSTestWorker(settings, base_dir=self.base_dir)
-        worker.moveToThread(thread)
-        self._tts_test_rpcs[request_id] = (thread, worker)
-        thread.started.connect(worker.run)
 
         def _on_success(_settings: object, message: str) -> None:
             self._send_rpc_response(
@@ -1315,16 +1354,7 @@ class TauriSettingsProcess(QObject):
                 result={"message": str(message) or "TTS 服务检测成功。"},
             )
 
-        def _on_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
-
-        worker.succeeded.connect(_on_success)
-        worker.failed.connect(_on_failure)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda rid=request_id: self._tts_test_rpcs.pop(rid, None))
-        thread.start()
+        self._start_rpc_worker(request_id, worker, self._tts_test_rpcs, _on_success)
 
     def _dispatch_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "theme.pick_screen_color":
