@@ -236,4 +236,4 @@ def test_tts_snapshot_warns_for_small_nvidia_gpu(monkeypatch: pytest.MonkeyPatch
     assert snapshot["recommended_key"] == GENIE_TTS.key
     assert snapshot["gpu_status"]["gpt_sovits"]["capable"] is False
     assert snapshot["gpu_status"]["gpt_sovits"]["severity"] == "warning"
-    assert "低于 GPT-SoVITS 的 6GB" in snapshot["gpu_status"]["gpt_sovits"]["message"]
+    assert "运行 GPT-SoVITS 可能吃力" in snapshot["gpu_status"]["gpt_sovits"]["message"]

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -612,48 +613,79 @@ class ApiSettingsPage:
         group.setObjectName("advancedParamsGroup")
         group.setCheckable(True)
         owner.advanced_params_hint = QLabel(
-            "⚠ 如果你不清楚这些参数的作用，请保持默认、不要随意修改。", group
+            "不确定时保持默认即可；只有回复风格或长度不合适时再调整。", group
         )
         owner.advanced_params_hint.setObjectName("advancedParamsHint")
         owner.advanced_params_hint.setWordWrap(True)
 
         owner.llm_temperature_spin = _NoWheelDoubleSpinBox(group)
+        owner.llm_temperature_spin.setFixedWidth(168)
         owner.llm_temperature_spin.setRange(0.0, 2.0)
         owner.llm_temperature_spin.setSingleStep(0.1)
         owner.llm_temperature_spin.setDecimals(2)
         owner.llm_temperature_spin.setValue(
             settings.temperature if settings.temperature is not None else 0.8
         )
+        owner.llm_temperature_spin.setToolTip("数值越高，回复越灵活；多数情况下保持默认就好。")
 
-        owner.llm_top_p_enabled_check = QCheckBox("覆盖 top_p", group)
+        owner.llm_top_p_enabled_check = QCheckBox("自定义", group)
+        owner.llm_top_p_enabled_check.setFixedWidth(72)
+        owner.llm_top_p_enabled_check.setToolTip("开启后手动设置回复用词的多样性。")
         owner.llm_top_p_spin = _NoWheelDoubleSpinBox(group)
+        owner.llm_top_p_spin.setFixedWidth(168)
         owner.llm_top_p_spin.setRange(0.0, 1.0)
         owner.llm_top_p_spin.setSingleStep(0.05)
         owner.llm_top_p_spin.setDecimals(2)
         owner.llm_top_p_spin.setValue(settings.top_p if settings.top_p is not None else 1.0)
+        owner.llm_top_p_spin.setToolTip("数值越低越保守，越高用词选择越丰富。")
         owner.llm_top_p_enabled_check.setChecked(settings.top_p is not None)
         owner.llm_top_p_spin.setEnabled(settings.top_p is not None)
         owner.llm_top_p_enabled_check.toggled.connect(owner.llm_top_p_spin.setEnabled)
 
-        owner.llm_max_tokens_enabled_check = QCheckBox("限制最大输出", group)
+        owner.llm_max_tokens_enabled_check = QCheckBox("自定义", group)
+        owner.llm_max_tokens_enabled_check.setFixedWidth(72)
+        owner.llm_max_tokens_enabled_check.setToolTip("开启后限制单次回复的最长长度。")
         owner.llm_max_tokens_spin = _NoWheelSpinBox(group)
+        owner.llm_max_tokens_spin.setFixedWidth(168)
         owner.llm_max_tokens_spin.setRange(1, 32768)
-        owner.llm_max_tokens_spin.setSuffix(" tokens")
         owner.llm_max_tokens_spin.setValue(
             settings.max_tokens if settings.max_tokens is not None else 2048
         )
+        owner.llm_max_tokens_spin.setToolTip("限制一次回复最多生成多少内容；过小可能让回复被截断。")
         owner.llm_max_tokens_enabled_check.setChecked(settings.max_tokens is not None)
         owner.llm_max_tokens_spin.setEnabled(settings.max_tokens is not None)
         owner.llm_max_tokens_enabled_check.toggled.connect(owner.llm_max_tokens_spin.setEnabled)
 
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(12)
-        form.addRow("温度", owner.llm_temperature_spin)
-        form.addRow(owner.llm_top_p_enabled_check, owner.llm_top_p_spin)
-        form.addRow(owner.llm_max_tokens_enabled_check, owner.llm_max_tokens_spin)
         body = QWidget(group)
-        body.setLayout(form)
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(12)
+        grid.setColumnMinimumWidth(0, 76)
+        grid.setColumnMinimumWidth(1, 72)
+        grid.setColumnStretch(2, 0)
+        grid.setColumnStretch(3, 1)
+
+        def add_advanced_row(
+            row: int,
+            label_text: str,
+            editor: QWidget,
+            toggle: QCheckBox | None = None,
+        ) -> None:
+            label = QLabel(label_text, body)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(label, row, 0)
+            if toggle is not None:
+                grid.addWidget(toggle, row, 1)
+            else:
+                spacer = QWidget(body)
+                spacer.setFixedWidth(72)
+                grid.addWidget(spacer, row, 1)
+            grid.addWidget(editor, row, 2)
+
+        add_advanced_row(0, "创造性", owner.llm_temperature_spin)
+        add_advanced_row(1, "多样性", owner.llm_top_p_spin, owner.llm_top_p_enabled_check)
+        add_advanced_row(2, "回复长度", owner.llm_max_tokens_spin, owner.llm_max_tokens_enabled_check)
 
         group_layout = QVBoxLayout()
         group_layout.setContentsMargins(16, 10, 16, 12)
@@ -1077,17 +1109,15 @@ class SystemSettingsPage:
         owner.debug_body_enabled_check.setEnabled(owner.debug_log_enabled_check.isChecked())
         owner.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
         owner.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
-        owner.stage_debug_overlay_check = QCheckBox("舞台调试框（开发者，画窗口/布局/立绘边界 + DPR）", tab)
+        owner.stage_debug_overlay_check = QCheckBox("显示布局辅助线", tab)
         owner.stage_debug_overlay_check.setChecked(debug_settings.stage_debug_overlay)
         owner.stage_debug_overlay_check.setToolTip(
-            "在桌宠上叠加可视化调试层:红=窗口/碰撞区,绿=布局算出的立绘框,蓝=实际立绘控件,"
-            "并显示逻辑尺寸与 devicePixelRatio,用于排查舞台尺寸/碰撞与 mac HiDPI 问题。"
+            "在桌宠上显示窗口、气泡和立绘边界，方便观察布局是否对齐。通常保持关闭。"
         )
-        owner.stage_collision_mask_check = QCheckBox("舞台碰撞贴合（立绘四周空白可穿透点击，默认开）", tab)
+        owner.stage_collision_mask_check = QCheckBox("透明区域不挡鼠标", tab)
         owner.stage_collision_mask_check.setChecked(debug_settings.stage_collision_mask)
         owner.stage_collision_mask_check.setToolTip(
-            "用 setMask 把窗口命中区裁到「立绘+气泡+输入栏」矩形并集,立绘两侧/角落的透明空白"
-            "不再拦截点击(可点到下层窗口),也不会再误拖桌宠。"
+            "开启后，立绘周围的透明空白不会挡住桌面点击，也不容易误拖动。"
         )
 
         startup_form = QFormLayout()
@@ -1165,11 +1195,11 @@ class InteractionSettingsPage:
         )
         owner.backchannel_mode_combo = _NoWheelComboBox(tab)
         owner.backchannel_mode_combo.addItem("规则模式", "rules")
-        owner.backchannel_mode_combo.addItem("模型增强", "hybrid")
+        owner.backchannel_mode_combo.addItem("智能辅助", "hybrid")
         mode_index = owner.backchannel_mode_combo.findData(normalized_backchannel.mode)
         owner.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
         owner.backchannel_mode_combo.setToolTip(
-            "模型增强会优先使用规则命中；模型缺失或低置信时自动降级。"
+            "优先按稳定规则判断，需要时再用本地模型辅助判断。"
         )
         owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
         owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
@@ -1196,7 +1226,7 @@ class InteractionSettingsPage:
         owner.backchannel_download_model_button.clicked.connect(owner._download_backchannel_model)
         owner.backchannel_import_model_button = QPushButton("导入接话模型", tab)
         owner.backchannel_import_model_button.setToolTip(
-            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供 hybrid 模式离线使用。"
+            f"导入 {BACKCHANNEL_MODEL_CACHE_NAME}.zip，供智能辅助离线使用。"
         )
         owner.backchannel_import_model_button.clicked.connect(owner._import_backchannel_model_archive)
         owner.backchannel_refresh_status_button = QPushButton("重新检测", tab)

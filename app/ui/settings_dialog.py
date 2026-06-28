@@ -962,8 +962,8 @@ class SettingsDialog(QDialog):
             model=model,
         )
         self.proactive_token_estimate_label.setText(
-            f"按原始屏幕 {screen_width}x{screen_height}、高细节估算："
-            f"约 {per_image:,} tokens/张；{image_count} 张约 {total:,} tokens。"
+            f"按当前屏幕 {screen_width}x{screen_height} 估算："
+            f"约 {per_image:,} token/张；{image_count} 张约 {total:,} token。"
         )
 
     def _screen_awareness_estimate_size(self) -> tuple[int, int]:
@@ -1431,9 +1431,9 @@ class SettingsDialog(QDialog):
     def _backchannel_model_status_text(self) -> str:
         if backchannel_model_cached(self.base_dir):
             if self._selected_backchannel_mode() == "hybrid":
-                return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}，模型增强可用。"
-            return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}；切换到模型增强后启用。"
-        return "未导入模型；模型增强会自动使用规则模式降级。"
+                return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}，智能辅助可用。"
+            return f"已导入 {DEFAULT_BACKCHANNEL_EMBEDDING_MODEL}；切换到智能辅助后启用。"
+        return "未导入本地接话模型；当前会使用规则模式。"
 
     def _backchannel_setup_hint_text(self) -> str:
         enabled = self._selected_backchannel_enabled()
@@ -1441,12 +1441,12 @@ class SettingsDialog(QDialog):
         model_ready = backchannel_model_cached(self.base_dir)
 
         if not enabled:
-            return "接话当前关闭；仍可先导入句向量模型备用。"
+            return "接话当前关闭；仍可先导入本地接话模型备用。"
         if mode == "rules":
-            return "规则模式不依赖模型；保存后会用高精度规则触发接话。"
+            return "规则模式不需要本地模型；保存后按明确场景触发接话。"
         if model_ready:
-            return "模型增强已就绪；保存后规则优先，规则无命中时由 probe 分类头补足泛化。"
-        return "已选择模型增强；缺句向量模型或低置信时会自动降级到规则，不会强行接话。"
+            return "智能辅助已就绪；保存后优先使用稳定规则，需要时再由本地模型判断。"
+        return "已选择智能辅助；本地模型未就绪时会先用规则模式，不会强行接话。"
 
     def _selected_backchannel_mode(self) -> str:
         combo = getattr(self, "backchannel_mode_combo", None)

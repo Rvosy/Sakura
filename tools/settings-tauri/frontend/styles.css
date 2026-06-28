@@ -1026,6 +1026,8 @@ input[type="range"].layout-slider::-moz-range-thumb {
   gap: 10px;
   min-width: 0;
   flex-wrap: nowrap;
+  justify-content: flex-end;
+  width: 220px;
 }
 
 .slot-controls .custom-select {
@@ -1034,7 +1036,8 @@ input[type="range"].layout-slider::-moz-range-thumb {
 }
 
 .inline-input input[type="number"] {
-  max-width: 150px;
+  width: 132px;
+  max-width: 132px;
 }
 
 .inline-input input[type="checkbox"] {
@@ -1042,6 +1045,13 @@ input[type="range"].layout-slider::-moz-range-thumb {
   height: 18px;
   accent-color: var(--sakura-primary);
   cursor: pointer;
+}
+
+.inline-input span {
+  flex: none;
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 .align-start {
@@ -1882,6 +1892,11 @@ button:focus-visible,
 .setting-row > textarea {
   width: clamp(320px, 42vw, 560px);
   max-width: none;
+}
+
+.setting-row > input[type="number"] {
+  width: 132px;
+  max-width: 132px;
 }
 
 .setting-row > .custom-select {

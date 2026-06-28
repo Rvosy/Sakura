@@ -36,7 +36,7 @@
 
         <div class="page-scroll">
         <section id="page-character" class="settings-page is-active">
-          <p class="page-note">拖动滑块时桌宠会实时变化，点「保存」才写入配置。</p>
+          <p class="page-note">调整滑块会即时预览，保存后才会正式生效。</p>
           <fieldset class="settings-group">
             <legend>角色与桌宠布局</legend>
             <div class="setting-row">
@@ -227,7 +227,7 @@
         <section id="page-model" class="settings-page">
           <fieldset class="settings-group">
             <legend>模型槽位</legend>
-            <p class="page-note">在「供应商」页配置 API Key 与模型后，这里为各功能分配供应商与模型。</p>
+            <p class="page-note">先添加供应商和可用模型，再在这里分配给聊天、视觉等功能。</p>
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
@@ -242,28 +242,30 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTemperature">
-                <span class="setting-title">温度</span>
-                <span class="setting-desc">越高回复越发散，越低越稳定（0–2）。</span>
+                <span class="setting-title">创造性</span>
+                <span class="setting-desc">越高回复越灵活，越低越稳定（0–2）。</span>
               </label>
               <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTopP">
-                <span class="setting-title">top_p</span>
-                <span class="setting-desc">核采样阈值；勾选后启用并覆盖默认。</span>
+                <span class="setting-title">用词多样性</span>
+                <span class="setting-desc">通常保持关闭；需要更细地控制回复变化时再开启。</span>
               </label>
               <label class="inline-input">
                 <input id="apiTopPEnabled" type="checkbox" />
+                <span>自定义</span>
                 <input id="apiTopP" type="number" min="0" max="1" step="0.01" />
               </label>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiMaxTokens">
-                <span class="setting-title">最大输出</span>
-                <span class="setting-desc">单次回复生成的最大 token 数；勾选后启用。</span>
+                <span class="setting-title">回复长度</span>
+                <span class="setting-desc">通常保持关闭；需要限制单次回复长度时再开启。</span>
               </label>
               <label class="inline-input">
                 <input id="apiMaxTokensEnabled" type="checkbox" />
+                <span>自定义</span>
                 <input id="apiMaxTokens" type="number" step="1" />
               </label>
             </div>
@@ -409,11 +411,11 @@
             <div class="setting-row">
               <label class="setting-row-text" for="backchannelMode">
                 <span class="setting-title">模式</span>
-                <span class="setting-desc">接话触发策略：规则 / 混合。</span>
+                <span class="setting-desc">规则更稳，智能辅助会使用本地模型帮助判断。</span>
               </label>
               <select id="backchannelMode">
                 <option value="rules">规则</option>
-                <option value="hybrid">混合</option>
+                <option value="hybrid">智能辅助</option>
               </select>
             </div>
             <div class="setting-row">
@@ -421,7 +423,7 @@
                 <span class="setting-title">延迟</span>
                 <span class="setting-desc">接话前的等待延迟。</span>
               </label>
-              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">ms</span></span>
+              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">毫秒</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="backchannelProbability">

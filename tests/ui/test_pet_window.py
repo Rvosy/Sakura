@@ -2264,8 +2264,8 @@ def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabl
     assert not dialog.proactive_cooldown_spin.isEnabled()
     assert not dialog.proactive_batch_limit_spin.isEnabled()
     assert not dialog.proactive_token_estimate_label.isEnabled()
-    assert "按原始屏幕" in dialog.proactive_token_estimate_label.text()
-    assert "高细节估算" in dialog.proactive_token_estimate_label.text()
+    assert "按当前屏幕" in dialog.proactive_token_estimate_label.text()
+    assert "token/张" in dialog.proactive_token_estimate_label.text()
     assert "6 张约" in dialog.proactive_token_estimate_label.text()
 
     dialog.proactive_screen_context_enabled_check.setChecked(True)
@@ -3533,6 +3533,56 @@ def test_settings_dialog_insets_advanced_params_group() -> None:
         16,
         16,
     )
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_advanced_params_align_fields_and_use_user_copy() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QGroupBox", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    QGroupBox = qtwidgets.QGroupBox
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("advanced_params_alignment")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+            top_p=0.9,
+            max_tokens=2048,
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    )
+
+    widths = {
+        dialog.llm_temperature_spin.minimumWidth(),
+        dialog.llm_temperature_spin.maximumWidth(),
+        dialog.llm_top_p_spin.minimumWidth(),
+        dialog.llm_top_p_spin.maximumWidth(),
+        dialog.llm_max_tokens_spin.minimumWidth(),
+        dialog.llm_max_tokens_spin.maximumWidth(),
+    }
+    assert widths == {168}
+    assert dialog.llm_top_p_enabled_check.text() == "自定义"
+    assert dialog.llm_max_tokens_enabled_check.text() == "自定义"
+
+    group = dialog.findChild(QGroupBox, "advancedParamsGroup")
+    assert group is not None
+    visible_texts = {label.text() for label in group.findChildren(QLabel)}
+    assert {"创造性", "多样性", "回复长度"}.issubset(visible_texts)
+    assert "覆盖 top_p" not in visible_texts
+    assert "限制最大输出" not in visible_texts
 
     dialog.deleteLater()
     app.processEvents()
@@ -8421,7 +8471,7 @@ def test_settings_dialog_downloads_backchannel_model(monkeypatch) -> None:  # ty
 
     assert _process_events_until(app, lambda: dialog._backchannel_model_download_thread is None)
     assert download_calls == [root]
-    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
+    assert "智能辅助可用" in dialog.backchannel_model_status_label.text()
     dialog.deleteLater()
     app.processEvents()
 
@@ -8456,12 +8506,12 @@ def test_settings_dialog_refreshes_backchannel_setup_status(monkeypatch) -> None
         backchannel_settings=BackchannelSettings(enabled=True, mode="hybrid"),
     )
 
-    assert "未导入模型" in dialog.backchannel_model_status_label.text()
+    assert "未导入本地接话模型" in dialog.backchannel_model_status_label.text()
     cached["ready"] = True
     dialog.backchannel_refresh_status_button.click()
 
-    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
-    assert "缺模型" not in dialog.backchannel_setup_hint_label.text()
+    assert "智能辅助可用" in dialog.backchannel_model_status_label.text()
+    assert "未就绪" not in dialog.backchannel_setup_hint_label.text()
     dialog.deleteLater()
     app.processEvents()
 

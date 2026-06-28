@@ -632,7 +632,7 @@ const pageMeta = {
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
   plugins: { title: "插件", subtitle: "启停状态、权限、来源与重启生效预览" },
-  system: { title: "系统", subtitle: "启动、日志与开发者诊断" },
+  system: { title: "系统", subtitle: "启动、日志与排查工具" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
 
@@ -2598,11 +2598,11 @@ function renderBackchannelResourceCard() {
     ? task.message || "正在处理接话模型。"
     : ready
       ? mode === "hybrid"
-        ? "模型增强已就绪。"
-        : "模型已就绪，切换到模型增强后启用。"
+        ? "智能辅助已就绪。"
+        : "本地接话模型已就绪，切换到智能辅助后启用。"
       : wantsModel
-        ? "模型增强缺少句向量模型，会暂时降级到规则模式。"
-        : "规则模式不依赖模型，可先安装备用。";
+        ? "智能辅助还没有本地接话模型，当前会先用规则模式。"
+        : "规则模式不需要本地模型，可先安装备用。";
   const actions = [
     {
       label: running ? "安装中" : ready ? "重新安装" : "在线安装",
@@ -4018,7 +4018,7 @@ async function load() {
   setThemeValues(request.theme);
   themeChanged = false;
   fields.tokenEstimate.textContent =
-    `按当前屏幕估算：约 ${request.estimated_tokens_per_image.toLocaleString("zh-CN")} tokens/张。`;
+    `按当前屏幕估算：约 ${request.estimated_tokens_per_image.toLocaleString("zh-CN")} token/张。`;
   syncEnabledState();
   syncRuntimeLoopState();
   syncDebugLogState();
