@@ -4647,7 +4647,7 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     assert window.tauri_settings_process is None
 
 
-def test_show_settings_tauri_trial_missing_binary_falls_back_to_pyside(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_show_settings_tauri_missing_binary_falls_back_to_pyside_by_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
 
@@ -4669,7 +4669,6 @@ def test_show_settings_tauri_trial_missing_binary_falls_back_to_pyside(monkeypat
         def show(self) -> None:
             events.append("show")
 
-    monkeypatch.setenv("SAKURA_TAURI_SETTINGS_TRIAL", "1")
     monkeypatch.setenv("SAKURA_TAURI_SETTINGS_BIN", "missing-tauri-settings.exe")
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
 
@@ -4683,6 +4682,15 @@ def test_show_settings_tauri_trial_missing_binary_falls_back_to_pyside(monkeypat
 
     assert events == ["load_tts", "dialog_init", "show"]
     assert getattr(window, "settings_dialog", None) is not None
+
+
+def test_tauri_settings_default_enabled_with_disable_escape_hatch() -> None:
+    from app.ui.tauri_settings import TAURI_SETTINGS_TRIAL_ENV, tauri_settings_trial_enabled
+
+    assert tauri_settings_trial_enabled({}) is True
+    for value in ("0", "false", "False", "no", "off"):
+        assert tauri_settings_trial_enabled({TAURI_SETTINGS_TRIAL_ENV: value}) is False
+    assert tauri_settings_trial_enabled({TAURI_SETTINGS_TRIAL_ENV: "1"}) is True
 
 
 def test_show_settings_tauri_trial_failure_warns_and_falls_back(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -9130,6 +9138,7 @@ def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -
         MemoryStoreStub(),
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
     monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
 
     window.show_settings()
@@ -9275,6 +9284,7 @@ def test_show_settings_saves_and_applies_runtime_loop_settings(monkeypatch) -> N
         MemoryStoreStub(),
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
     monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
 
     window.show_settings()
@@ -9353,6 +9363,7 @@ def test_show_settings_applies_launch_at_login_change(monkeypatch) -> None:  # t
     )
     window.startup_settings = StartupSettings(launch_at_login=False)
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
     monkeypatch.setattr(
         pet_window_module,
         "set_launch_at_login_enabled",
@@ -9408,6 +9419,7 @@ def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # t
         MemoryStoreStub(),
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
 
     # 第一次打开：非模态创建并显示窗口。
     window.show_settings()
@@ -9465,6 +9477,7 @@ def test_show_settings_temporarily_suppresses_topmost_without_reapplying_flags(m
     window.isVisible = lambda: True
     window.raise_ = lambda: raise_events.append("raise")
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
 
     window.show_settings()
 
@@ -9685,6 +9698,7 @@ def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> 
         MemoryStoreStub(),
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
     monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
 
     window.show_settings()
@@ -9774,6 +9788,7 @@ def test_show_settings_reloads_memory_in_background_when_api_changes(monkeypatch
         "show_themed_information",
         lambda _parent, _title, text, **_kwargs: messages.append(str(text)),
     )
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
 
     window.show_settings()
 
@@ -9863,6 +9878,7 @@ def test_show_settings_uses_dialog_refreshed_character_registry(monkeypatch) -> 
         MemoryStoreStub(),
     )
     monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
+    monkeypatch.setattr(pet_window_module, "tauri_settings_trial_enabled", lambda: False)
     monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
 
     window.show_settings()

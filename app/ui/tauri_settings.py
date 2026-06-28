@@ -335,8 +335,10 @@ class TauriCharacterRpcWorker(QObject):
 
 
 def tauri_settings_trial_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    value = (environ or os.environ).get(TAURI_SETTINGS_TRIAL_ENV, "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    value = (environ or os.environ).get(TAURI_SETTINGS_TRIAL_ENV)
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def resolve_tauri_settings_binary(
