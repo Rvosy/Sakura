@@ -1162,8 +1162,7 @@ class MemoryStore:
         return {
             "status": "loading",
             "message": (
-                f"记忆系统正在初始化（已等待 {elapsed} 秒）。"
-                "请告诉主人记忆系统稍后就绪，不要连续重复调用记忆工具。"
+                f"记忆系统正在初始化（已等待 {elapsed} 秒），稍后会自动就绪。"
             ),
             "memories": [],
         }
@@ -1172,8 +1171,7 @@ class MemoryStore:
         return {
             "status": "failed",
             "message": (
-                "长期记忆系统暂时不可用。请告诉主人普通聊天仍可继续，"
-                "不要重复调用记忆工具。"
+                "长期记忆系统暂时不可用，普通聊天仍可继续。"
             ),
             "error": error,
             "memories": [],

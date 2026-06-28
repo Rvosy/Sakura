@@ -459,10 +459,7 @@ def _tts_gpu_status(
         )
 
     capable = any(item["gpt_sovits_capable"] for item in gpu_items)
-    vram_note = (
-        "为避免误判，5.8~5.9GB 显存会按接近 "
-        f"{MIN_GPT_SOVITS_VRAM_GB:.0f}GB 处理。"
-    )
+    vram_note = ""
     if not gpu_items:
         severity = "warning"
         message = "未检测到 NVIDIA 显卡；仍可安装 GPT-SoVITS，但 Genie TTS CPU 整合包通常更稳。"
@@ -475,10 +472,10 @@ def _tts_gpu_status(
         )
     elif gpt_sovits_recommended is not None and gpt_sovits_recommended.key == GPT_SOVITS_NVIDIA50.key:
         severity = "ok"
-        message = "检测到 NVIDIA RTX 50 系显卡，将推荐 50 系专用 GPT-SoVITS 整合包。"
+        message = ""
     else:
         severity = "ok"
-        message = "检测到适合运行 GPT-SoVITS 的 NVIDIA 显卡，将推荐通用整合包。"
+        message = ""
 
     return {
         "has_nvidia": bool(gpu_items),

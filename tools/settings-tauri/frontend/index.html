@@ -36,7 +36,6 @@
 
         <div class="page-scroll">
         <section id="page-character" class="settings-page is-active">
-          <p class="page-note">调整滑块会即时预览，保存后才会正式生效。</p>
           <fieldset class="settings-group">
             <legend>角色与桌宠布局</legend>
             <div class="setting-row">
@@ -227,7 +226,6 @@
         <section id="page-model" class="settings-page">
           <fieldset class="settings-group">
             <legend>模型槽位</legend>
-            <p class="page-note">先添加供应商和可用模型，再在这里分配给聊天、视觉等功能。</p>
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
@@ -235,21 +233,21 @@
             <summary>高级参数</summary>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTimeout">
-                <span class="setting-title">超时</span>
+                <span class="setting-title">超时 (timeout_seconds)</span>
                 <span class="setting-desc">单次请求等待响应的最长时间。</span>
               </label>
               <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTemperature">
-                <span class="setting-title">创造性</span>
+                <span class="setting-title">创造性 (temperature)</span>
                 <span class="setting-desc">越高回复越灵活，越低越稳定（0–2）。</span>
               </label>
               <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTopP">
-                <span class="setting-title">用词多样性</span>
+                <span class="setting-title">用词多样性 (top_p)</span>
                 <span class="setting-desc">通常保持关闭；需要更细地控制回复变化时再开启。</span>
               </label>
               <label class="inline-input">
@@ -260,7 +258,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiMaxTokens">
-                <span class="setting-title">回复长度</span>
+                <span class="setting-title">回复长度 (max_tokens)</span>
                 <span class="setting-desc">通常保持关闭；需要限制单次回复长度时再开启。</span>
               </label>
               <label class="inline-input">
@@ -292,7 +290,12 @@
             <div id="ttsBundleNoticeRow" hidden>
               <p id="ttsBundleNotice" class="page-note"></p>
             </div>
-            <div id="ttsResourceCard" class="resource-card"></div>
+            <details class="resource-foldout">
+              <summary>
+                <span>TTS 整合包</span>
+              </summary>
+              <div id="ttsResourceCard" class="resource-card"></div>
+            </details>
             <input id="ttsConfigPath" type="hidden" />
             <div class="setting-row">
               <div class="setting-row-text">
@@ -439,7 +442,12 @@
               </label>
               <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" /></span>
             </div>
-            <div id="backchannelResourceCard" class="resource-card"></div>
+            <details class="resource-foldout">
+              <summary>
+                <span>接话模型</span>
+              </summary>
+              <div id="backchannelResourceCard" class="resource-card"></div>
+            </details>
           </fieldset>
         </section>
 
@@ -506,7 +514,12 @@
               </label>
             </div>
           </div>
-          <div id="memoryModelResourceCard" class="resource-card"></div>
+          <details class="resource-foldout">
+            <summary>
+              <span>记忆模型</span>
+            </summary>
+            <div id="memoryModelResourceCard" class="resource-card"></div>
+          </details>
           <div class="admin-toolbar">
             <input id="memorySearch" class="admin-search" type="text" placeholder="搜索内容、ID、分类、来源" />
             <select id="memoryLayerFilter"></select>

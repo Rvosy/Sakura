@@ -2542,7 +2542,7 @@ function renderTtsResourceCard() {
     title: `${providerLabel} 整合包`,
     subtitle: muted
       ? "无需内置资源"
-      : selected?.variant_label || resources.gpu_status?.gpt_sovits?.message || resources.platform || "",
+      : selected?.variant_label || resources.platform || "",
     status: muted ? "not_required" : task?.status || "",
     ready,
     muted,
@@ -2583,7 +2583,7 @@ function ttsProviderResourceHint(provider, resources, selected) {
   if (status.severity === "warning") {
     return `${status.message} ${status.vram_note || ""} ${selectedText}`.trim();
   }
-  return `${status.message} ${status.vram_note || ""} ${selectedText}`.trim();
+  return "";
 }
 
 function renderBackchannelResourceCard() {

@@ -196,7 +196,7 @@ def test_tts_snapshot_keeps_58gb_nvidia_as_gptsovits_capable(monkeypatch: pytest
     assert snapshot["recommended_key"] == GPT_SOVITS_STANDARD.key
     assert snapshot["gpt_sovits_recommended_key"] == GPT_SOVITS_STANDARD.key
     assert snapshot["gpu_status"]["gpt_sovits"]["capable"] is True
-    assert "5.8~5.9GB" in snapshot["gpu_status"]["gpt_sovits"]["vram_note"]
+    assert snapshot["gpu_status"]["gpt_sovits"]["vram_note"] == ""
     variants = {bundle["key"]: bundle["variant"] for bundle in snapshot["bundles"]}
     assert variants[GPT_SOVITS_STANDARD.key] == "gpt-sovits-standard"
     assert variants[GPT_SOVITS_NVIDIA50.key] == "gpt-sovits-50"
@@ -217,7 +217,7 @@ def test_tts_snapshot_recommends_nvidia50_bundle_for_50_series(monkeypatch: pyte
 
     assert snapshot["recommended_key"] == GPT_SOVITS_NVIDIA50.key
     assert snapshot["gpt_sovits_recommended_key"] == GPT_SOVITS_NVIDIA50.key
-    assert "50 系" in snapshot["gpu_status"]["gpt_sovits"]["message"]
+    assert snapshot["gpu_status"]["gpt_sovits"]["message"] == ""
 
 
 def test_tts_snapshot_warns_for_small_nvidia_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
