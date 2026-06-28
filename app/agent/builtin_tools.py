@@ -167,7 +167,7 @@ def create_builtin_tool_registry(
                 name="memory_search",
                 description=(
                     "搜索 Sakura 的长期记忆。需要跨会话信息、用户偏好、项目状态或过往约定时使用。"
-                    "首次调用可能返回 status='loading'，这时直接告诉主人记忆系统正在初始化，不要重复调用。"
+                    "首次调用可能返回 status='loading'，这时说明记忆系统正在初始化，等待后再试。"
                 ),
                 parameters={
                     "type": "object",

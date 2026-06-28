@@ -99,7 +99,7 @@ def test_plugin_manager_loads_playwright_browser_plugin() -> None:
         "playwright_evaluate",
     }.issubset(names)
     assert registry.get("playwright_evaluate").requires_confirmation  # type: ignore[union-attr]
-    assert "Playwright 浏览器" in [panel.title for panel in manager.settings_panels]
+    assert "Playwright 浏览器" in [settings.title for settings in manager.plugin_settings]
     assert "Playwright 浏览器" not in [tab.title for tab in manager.tools_tabs]
 
     manager.shutdown_all()

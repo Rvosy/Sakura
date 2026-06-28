@@ -17,9 +17,12 @@ runtime/
 /tts/
 env/
 node_modules/
+tools/settings-tauri/src-tauri/target/
+tools/settings-tauri/src-tauri/gen/
 characters/
 
 .pytest_cache/
+.pytest-basetemp/
 .pytest_tmp/
 .pytest_tmp*/
 .playwright-mcp/

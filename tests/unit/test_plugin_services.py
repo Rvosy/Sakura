@@ -79,7 +79,7 @@ def test_plugin_reaches_input_sink_end_to_end() -> None:
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         """
-api_version: 1
+api_version: 2
 id: input_plugin
 name: Input Plugin
 entry: plugin:InputPlugin
@@ -135,7 +135,7 @@ def test_plugin_manager_shutdown_all_stops_resources_once() -> None:
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         """
-api_version: 1
+api_version: 2
 id: resource_plugin
 name: Resource Plugin
 entry: plugin:ResourcePlugin
@@ -183,11 +183,11 @@ class ResourcePlugin(PluginBase):
 def _runtime_root(name: str) -> Path:
     root = (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "plugin_services"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root

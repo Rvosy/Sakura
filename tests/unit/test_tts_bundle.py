@@ -13,6 +13,7 @@ from app.voice.tts_bundle import (
     GPUInfo,
     TTSBundleEntry,
     cleanup_stale_download_archives,
+    default_provider_bundle_notice,
     default_provider_bundle_work_dir,
     download_and_extract_bundle,
     find_pending_bundle_migrations,
@@ -76,7 +77,7 @@ def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
     assert not archive.with_name(f"{archive.name}.part").exists()
     assert work_dir == (root / "tts" / entry.key).resolve()
     assert (work_dir / "api_v2.py").exists()
-    assert statuses == ["verify", "download", "extract", "cleanup"]
+    assert statuses == ["verify", "download", "extract", "install", "cleanup"]
     assert progress[-1] == 100
 
 
@@ -108,7 +109,7 @@ def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
 
     assert work_dir == (root / "tts" / entry.key).resolve()
     assert not archive.exists()
-    assert statuses == ["verify", "extract", "cleanup"]
+    assert statuses == ["verify", "extract", "install", "cleanup"]
     assert 10 in progress
     assert progress[-1] == 100
 
@@ -360,7 +361,11 @@ def test_tts_bundle_default_provider_work_dir_uses_installed_root(monkeypatch: p
     runtime_python.parent.mkdir(parents=True)
     _write_fake_runtime_python(runtime_python)
 
-    assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
+    assert default_provider_bundle_work_dir(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
+    ) == work_dir.resolve()
 
 
 def test_tts_bundle_default_provider_prefers_short_installed_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -371,7 +376,74 @@ def test_tts_bundle_default_provider_prefers_short_installed_root(monkeypatch: p
     runtime_python.parent.mkdir(parents=True)
     _write_fake_runtime_python(runtime_python)
 
-    assert default_provider_bundle_work_dir("gpt-sovits", root) == work_dir.resolve()
+    assert default_provider_bundle_work_dir(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
+    ) == work_dir.resolve()
+
+
+def test_tts_bundle_default_provider_uses_nvidia50_when_both_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
+    root = _runtime_root("default_provider_both_installed_50")
+    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_STANDARD)
+    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_NVIDIA50)
+
+    work_dir = default_provider_bundle_work_dir(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
+    )
+
+    assert work_dir == (root / "tts" / "g50").resolve()
+    assert default_provider_bundle_notice(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
+    ) == ""
+
+
+def test_tts_bundle_default_provider_uses_standard_when_both_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
+    root = _runtime_root("default_provider_both_installed_40")
+    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_STANDARD)
+    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_NVIDIA50)
+
+    work_dir = default_provider_bundle_work_dir(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
+    )
+
+    assert work_dir == (root / "tts" / "gpt").resolve()
+    assert default_provider_bundle_notice(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
+    ) == ""
+
+
+def test_tts_bundle_notice_warns_when_only_nvidia50_installed_on_non_50_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
+    root = _runtime_root("default_provider_wrong_nvidia50")
+    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_NVIDIA50)
+
+    work_dir = default_provider_bundle_work_dir(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
+    )
+    notice = default_provider_bundle_notice(
+        "gpt-sovits",
+        root,
+        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
+    )
+
+    assert work_dir == root / "tts" / "gpt"
+    assert "50 系" in notice
+    assert "通用" in notice
 
 
 def test_tts_bundle_detects_and_migrates_legacy_install() -> None:
@@ -617,9 +689,34 @@ def test_list_nvidia_gpus_swallows_which_errors(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(tts_bundle.shutil, "which", _boom)
 
-    assert tts_bundle.list_nvidia_gpus() == []
+    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == []
     # 上层推荐逻辑不应被探测异常打断
     assert tts_bundle.recommend_gpt_sovits_bundle() is not None
+
+
+def test_list_nvidia_gpus_uses_ttl_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts_bundle, "_NVIDIA_GPU_CACHE", None)
+    monkeypatch.setattr(tts_bundle.shutil, "which", lambda _name: "nvidia-smi")
+    now = [100.0]
+    calls = {"run": 0}
+
+    class Result:
+        returncode = 0
+        stdout = "NVIDIA GeForce RTX 4070, 12288\n"
+
+    def fake_run(**_kwargs):  # type: ignore[no-untyped-def]
+        calls["run"] += 1
+        return Result()
+
+    monkeypatch.setattr(tts_bundle.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(tts_bundle.subprocess, "run", fake_run)
+
+    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    now[0] += 1
+    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    now[0] += 31
+    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
+    assert calls["run"] == 2
 
 
 def test_tts_bundle_label_includes_approx_size() -> None:
@@ -886,7 +983,7 @@ def _entry(payload: bytes) -> TTSBundleEntry:
 
 
 def _runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
+    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -894,3 +991,11 @@ def _runtime_root(name: str) -> Path:
 def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _install_fake_bundle(root: Path, entry: TTSBundleEntry) -> Path:
+    work_dir = root / "tts" / {"gpt_sovits_v2pro": "gpt", "gpt_sovits_nvidia50": "g50"}[entry.key]
+    runtime_python = work_dir / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    _write_fake_runtime_python(runtime_python)
+    return work_dir

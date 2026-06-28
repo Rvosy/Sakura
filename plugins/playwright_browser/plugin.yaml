@@ -1,4 +1,4 @@
-api_version: 1
+api_version: 2
 id: playwright_browser
 name: Playwright Browser
 author: Chihiro
@@ -9,4 +9,4 @@ enabled: true
 priority: 40
 permissions:
   - tool
-  - settings_panel
+  - plugin_settings

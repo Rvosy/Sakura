@@ -2,48 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QLineEdit
-
 from app.llm.chat_reply import ChatSegment
 from app.ui.theme import DEFAULT_THEME_SETTINGS, build_settings_dialog_stylesheet
-
-
-def test_mobile_settings_panel_shows_token_and_links() -> None:
-    from plugins.sakura_mobile.settings_panel import SakuraMobileSettingsPanel
-
-    app = QApplication.instance() or QApplication([])
-    _ = app
-
-    class Plugin:
-        def config(self) -> dict[str, object]:
-            return {
-                "enabled": True,
-                "host": "0.0.0.0",
-                "port": 8765,
-                "token": "secret",
-            }
-
-        def status(self) -> dict[str, object]:
-            return {
-                **self.config(),
-                "running": True,
-                "error": "",
-                "local_url": "http://127.0.0.1:8765/?token=secret",
-                "lan_urls": ["http://192.168.1.23:8765/?token=secret"],
-            }
-
-    panel = SakuraMobileSettingsPanel(Plugin())
-
-    assert panel.token.echoMode() == QLineEdit.EchoMode.Normal
-    assert panel.token.text() == "secret"
-    assert panel.status_label.text() == "运行中"
-    assert panel.local_url.text() == "http://127.0.0.1:8765/?token=secret"
-    assert panel.lan_url.text() == "http://192.168.1.23:8765/?token=secret"
-
-    panel._copy(panel.local_url.text(), panel.copy_local_button)
-
-    assert QApplication.clipboard().text() == "http://127.0.0.1:8765/?token=secret"
-    assert panel.copy_local_button.text() == "已复制"
 
 
 def test_readonly_link_selection_stays_visible() -> None:

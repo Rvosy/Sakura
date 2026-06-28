@@ -114,7 +114,7 @@ flowchart LR
 │   │   └── visual_observation.py       # 视觉观察记录（JSONL）
 │   ├── ui/                             # UI 组件
 │   │   ├── pet_window.py               # 桌宠主窗口
-│   │   ├── settings_dialog.py          # 设置对话框
+│   │   ├── tauri_settings.py           # Tauri 设置页桥接与请求构建
 │   │   ├── history_window.py           # 历史回看
 │   │   ├── portrait_controller.py      # 立绘控制器
 │   │   ├── subtitle_controller.py      # 字幕控制器

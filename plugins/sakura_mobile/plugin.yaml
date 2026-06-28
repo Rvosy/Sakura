@@ -1,4 +1,4 @@
-api_version: 1
+api_version: 2
 id: sakura_mobile
 name: Sakura Mobile
 author: pa1n9
@@ -8,6 +8,6 @@ entry: plugin:SakuraMobilePlugin
 enabled: true
 priority: 70
 permissions:
-  - settings_panel
+  - plugin_settings
   - event.app
   - mobile_chat

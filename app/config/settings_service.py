@@ -19,16 +19,20 @@ from app.config.model_slots import normalize_provider_models
 from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
-    MODEL_SLOT_THEME_AI,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
 )
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
-from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
+from app.ui.theme import (
+    DEFAULT_THEME_SETTINGS,
+    ThemeSettings,
+    theme_colors_to_mapping,
+    theme_from_mapping,
+    theme_to_mapping,
+)
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
@@ -293,9 +297,7 @@ class AppSettingsService:
             return ModelSelectionSettings(
                 chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
                 vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-                visual_context=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISUAL_CONTEXT)),
                 memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
-                theme_ai=_optional_slot_selection(raw_slots.get(MODEL_SLOT_THEME_AI)),
             )
 
         # #110 旧格式迁移：视觉/文本模型两槽位。
@@ -346,9 +348,7 @@ class AppSettingsService:
         for slot in (
             MODEL_SLOT_CHAT,
             MODEL_SLOT_VISION_CHAT,
-            MODEL_SLOT_VISUAL_CONTEXT,
             MODEL_SLOT_MEMORY_CURATION,
-            MODEL_SLOT_THEME_AI,
         ):
             selection = settings.get(slot)
             if selection is None:
@@ -575,11 +575,71 @@ class AppSettingsService:
 
     def load_theme_settings(self) -> ThemeSettings:
         ui = self._system_section("ui")
-        return theme_from_mapping(ui.get("theme"))
+        saved = theme_from_mapping(ui.get("theme"))
+        return replace(
+            DEFAULT_THEME_SETTINGS,
+            ai_enabled=saved.ai_enabled,
+            visual_effect_mode=saved.visual_effect_mode,
+        )
 
     def save_theme_settings(self, settings: ThemeSettings) -> None:
         ui = self._system_section("ui")
-        ui["theme"] = theme_to_mapping(settings)
+        normalized = (settings or DEFAULT_THEME_SETTINGS).normalized()
+        ui["theme"] = theme_to_mapping(
+            replace(
+                DEFAULT_THEME_SETTINGS,
+                ai_enabled=normalized.ai_enabled,
+                visual_effect_mode=normalized.visual_effect_mode,
+            )
+        )
+        data = load_yaml_mapping(self.system_config_path)
+        data["ui"] = ui
+        save_yaml_mapping(self.system_config_path, data)
+
+    def load_character_theme_overrides(self) -> dict[str, ThemeSettings]:
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        if not isinstance(raw, dict):
+            return {}
+        overrides: dict[str, ThemeSettings] = {}
+        for character_id, value in raw.items():
+            key = str(character_id).strip()
+            if not key or not isinstance(value, dict):
+                continue
+            theme = theme_from_mapping(value).normalized()
+            overrides[key] = ThemeSettings(**theme_colors_to_mapping(theme))
+        return overrides
+
+    def load_character_theme_override(self, character_id: str) -> ThemeSettings | None:
+        return self.load_character_theme_overrides().get(str(character_id).strip())
+
+    def save_character_theme_override(self, character_id: str, settings: ThemeSettings) -> None:
+        key = str(character_id).strip()
+        if not key:
+            raise ValueError("角色主题覆盖缺少角色 ID。")
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        overrides = dict(raw) if isinstance(raw, dict) else {}
+        overrides[key] = theme_colors_to_mapping(settings or DEFAULT_THEME_SETTINGS)
+        ui["character_theme_overrides"] = overrides
+        data = load_yaml_mapping(self.system_config_path)
+        data["ui"] = ui
+        save_yaml_mapping(self.system_config_path, data)
+
+    def delete_character_theme_override(self, character_id: str) -> None:
+        key = str(character_id).strip()
+        if not key:
+            return
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        if not isinstance(raw, dict) or key not in raw:
+            return
+        overrides = dict(raw)
+        overrides.pop(key, None)
+        if overrides:
+            ui["character_theme_overrides"] = overrides
+        else:
+            ui.pop("character_theme_overrides", None)
         data = load_yaml_mapping(self.system_config_path)
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
@@ -677,7 +737,7 @@ class AppSettingsService:
 
         memory = self._system_section("memory_curation")
         return MemoryCurationSettings(
-            enabled=_bool_value(memory.get("enabled"), True),
+            enabled=True,
             trigger_turns=_int_value(memory.get("trigger_turns"), 8),
             backfill_limit=_int_value(memory.get("backfill_limit"), 200),
         )
@@ -688,7 +748,7 @@ class AppSettingsService:
         self.save_system_values(
             "memory_curation",
             {
-                "enabled": bool(settings.enabled),
+                "enabled": True,
                 "trigger_turns": int(settings.trigger_turns),
                 "backfill_limit": int(settings.backfill_limit),
             },

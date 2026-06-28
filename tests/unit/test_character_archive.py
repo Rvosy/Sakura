@@ -424,9 +424,9 @@ def _runtime_root(name: str) -> Path:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "character_archive"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root

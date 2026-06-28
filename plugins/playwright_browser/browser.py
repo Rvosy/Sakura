@@ -8,6 +8,7 @@ from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus
 
 from plugins.playwright_browser.config_model import default_config_path, load_config
+from plugins.playwright_browser.config_model import PlaywrightBrowserConfig
 
 
 T = TypeVar("T")
@@ -21,12 +22,19 @@ _browser_thread_id: int | None = None
 _use_bg_thread = True
 _launch_lock = threading.Lock()
 _plugin_root = Path(__file__).resolve().parent
+_config_loader: Callable[[], PlaywrightBrowserConfig] | None = None
 
 
 def set_plugin_root(plugin_root: str | Path) -> None:
     """设置插件根目录，浏览器启动时会从这里读取持久化配置。"""
     global _plugin_root
     _plugin_root = Path(plugin_root)
+
+
+def set_config_loader(loader: Callable[[], PlaywrightBrowserConfig] | None) -> None:
+    """注入插件配置读取器；为空时回退到旧文件路径。"""
+    global _config_loader
+    _config_loader = loader
 
 
 def navigate(url: str) -> dict[str, str]:
@@ -180,7 +188,7 @@ def _ensure_browser() -> Any:
 
     _playwright = _playwright or sync_playwright().start()
     if _browser is None:
-        cfg = load_config(default_config_path(_plugin_root))
+        cfg = _config_loader() if _config_loader is not None else load_config(default_config_path(_plugin_root))
         cfg.clamp()
         _browser = _launch_configured_browser(_playwright, cfg.browser_type, cfg.headless)
     _context = _context or _browser.new_context()

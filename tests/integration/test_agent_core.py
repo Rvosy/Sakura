@@ -3630,7 +3630,7 @@ def _runtime_json_path(name: str) -> Path:
 
 
 def _runtime_root_path(name: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
+    return Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
 
 
 def _write_memory_model_zip(

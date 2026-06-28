@@ -6,6 +6,7 @@ import sys
 import threading
 import types
 import urllib.error
+import urllib.request
 import uuid
 import wave
 from dataclasses import replace
@@ -101,6 +102,7 @@ from app.voice.tts import (
     purge_tts_cache,
 )
 from app.voice.tts_service import GenieServiceSupervisor, TTSServiceSupervisor
+import app.voice.tts_service as tts_service
 import app.voice.tts_playback as tts_playback
 import app.voice.tts_synthesis as tts_synthesis
 from app.voice.tts_settings import GPTSoVITSTTSSettings, _load_tone_references
@@ -465,6 +467,23 @@ def test_tts_service_probe_uses_tcp_connection_without_get(monkeypatch) -> None:
     assert TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert calls == [(("127.0.0.1", 9880), 1)]
+
+
+def test_tts_direct_urlopen_uses_proxyless_opener(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    assert "ProxyHandler" not in {type(handler).__name__ for handler in tts_service._DIRECT_TTS_OPENER.handlers}
+
+    request = urllib.request.Request("http://127.0.0.1:9881/openapi.json")
+    calls: list[tuple[urllib.request.Request, int]] = []
+
+    def fake_open(request_arg: urllib.request.Request, *, timeout: int) -> str:
+        calls.append((request_arg, timeout))
+        return "ok"
+
+    monkeypatch.setattr(tts_service._DIRECT_TTS_OPENER, "open", fake_open)
+
+    assert tts_service._urlopen_tts_direct(request, timeout=3) == "ok"
+    assert calls == [(request, 3)]
 
 
 def test_tts_service_probe_does_not_start_process_when_port_is_ready(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1128,7 +1147,7 @@ def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None
     def fake_urlopen(*_args: object, **_kwargs: object) -> object:
         raise urllib.error.URLError("bad weights")
 
-    monkeypatch.setattr("app.voice.tts_service.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.voice.tts_service._urlopen_tts_direct", fake_urlopen)
 
     ok = TTSServiceSupervisor._request_weight_switch(
         provider,
@@ -1740,7 +1759,7 @@ def _minimal_tts_settings(
 
 
 def _runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
+    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 

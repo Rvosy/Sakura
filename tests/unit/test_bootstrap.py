@@ -173,10 +173,10 @@ tts:
 def _build_startup_root() -> Path:
     root = (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
-        / "startup_state"
         / uuid.uuid4().hex
+        / "startup_state"
     )
     config_dir = root / "data" / "config"
     character_dir = root / "characters" / "demo"

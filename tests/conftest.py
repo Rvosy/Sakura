@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from pathlib import Path
 from collections.abc import Iterable
 from typing import Any
 
@@ -10,6 +11,33 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYTEST_QT_API", "pyside6")
+
+_ORIGINAL_PATH_MKDIR = Path.mkdir
+_PYTEST_BASETEMP = (Path.cwd() / ".pytest-basetemp").resolve()
+
+
+def _is_pytest_basetemp_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    return resolved == _PYTEST_BASETEMP or _PYTEST_BASETEMP in resolved.parents
+
+
+def _mkdir_without_private_windows_acl(
+    self: Path,
+    mode: int = 0o777,
+    parents: bool = False,
+    exist_ok: bool = False,
+) -> None:
+    # pytest's 0o700 temp dirs can become unreadable in the Windows sandbox.
+    if os.name == "nt" and mode == 0o700 and _is_pytest_basetemp_path(self):
+        mode = 0o777
+    return _ORIGINAL_PATH_MKDIR(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+
+if os.name == "nt":
+    Path.mkdir = _mkdir_without_private_windows_acl  # type: ignore[method-assign]
 
 
 _THREAD_ATTR_NAMES = (
@@ -21,6 +49,34 @@ _THREAD_ATTR_NAMES = (
     "_memory_list_thread",
     "_character_export_thread",
 )
+
+
+class _LocalQtBot:
+    def __init__(self) -> None:
+        self._widgets: list[Any] = []
+
+    def addWidget(self, widget: Any) -> None:  # noqa: N802 - pytest-qt compatibility
+        self._widgets.append(widget)
+
+    def close_widgets(self) -> None:
+        for widget in reversed(self._widgets):
+            try:
+                widget.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                widget.deleteLater()
+            except RuntimeError:
+                pass
+        self._widgets.clear()
+
+
+@pytest.fixture
+def qtbot() -> Iterable[_LocalQtBot]:
+    """Minimal qtbot subset used by local UI tests when pytest-qt is absent."""
+    bot = _LocalQtBot()
+    yield bot
+    bot.close_widgets()
 
 
 @pytest.fixture(autouse=True)

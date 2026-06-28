@@ -14,7 +14,7 @@ import pytest
 
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
-from app.config.settings_service import BackchannelSettings, DebugLogSettings, StartupSettings
+from app.config.settings_service import BackchannelSettings, BubbleSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings
 from app.agent import AgentEvent, AgentResult
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -314,7 +314,6 @@ def test_show_runtime_log_uses_non_modal_show(monkeypatch) -> None:  # type: ign
     host = Host()
     host.theme_settings = DEFAULT_THEME_SETTINGS
     host.runtime_log_window = None
-    host.settings_dialog = None
     host.history_window = None
 
     host.show_runtime_log()
@@ -968,6 +967,64 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
     assert window.messages == []
     assert subtitle.cancelled is True
     assert order == ["backchannel_cancel", "stop_all"]
+
+
+def test_close_external_tools_shutdowns_active_tauri_settings() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class ResourceManagerStub:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop_all(self, _timeout_ms: int) -> None:
+            self.stopped = True
+
+    class SubtitleStub:
+        def cancel_reply_flow(self) -> None:
+            pass
+
+    class TauriProcessStub:
+        def __init__(self) -> None:
+            self.shutdown_called = False
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    class MinimalWindow:
+        close_external_tools = PetWindow.close_external_tools
+        _close_tauri_settings_process_for_shutdown = (
+            PetWindow._close_tauri_settings_process_for_shutdown
+        )
+        _restore_tauri_layout_preview = PetWindow._restore_tauri_layout_preview
+
+        def _preview_layout(self, *layout):  # type: ignore[no-untyped-def]
+            self.restored_layout = layout
+
+        def _sync_secondary_window_state(self) -> None:
+            self.synced = True
+
+    process = TauriProcessStub()
+    window = MinimalWindow()
+    window._shutdown_in_progress = False
+    window.tauri_settings_process = process
+    window._tauri_initial_tts_settings = object()
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window.resource_manager = ResourceManagerStub()
+    window.messages = []
+    window.subtitle_controller = SubtitleStub()
+    window.backchannel_controller = None
+    window.worker_thread = None
+    window._emit_app_closed_event = lambda: None
+    window._stop_speaking_state_watchdog = lambda: None
+
+    window.close_external_tools()
+
+    assert process.shutdown_called is True
+    assert window.tauri_settings_process is None
+    assert window._tauri_initial_tts_settings is None
+    assert window.restored_layout == (100, 640, 128, 0, 0)
+    assert window.synced is True
+    assert window.resource_manager.stopped is True
 
 
 def test_pet_window_registers_runtime_services_in_registry_order() -> None:
@@ -1690,8 +1747,8 @@ def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "portrait_scale"
         / uuid.uuid4().hex
+        / "portrait_scale"
     )
     tmp_path.mkdir(parents=True, exist_ok=True)
     portrait_path = tmp_path / "portrait.png"
@@ -1770,8 +1827,8 @@ def test_portrait_controller_never_resizes_parent_window() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "portrait_no_resize"
         / uuid.uuid4().hex
+        / "portrait_no_resize"
     )
     tmp_path.mkdir(parents=True, exist_ok=True)
     portrait_path = tmp_path / "portrait.png"
@@ -2174,167 +2231,6 @@ def test_deferred_startup_worker_closes_services_when_cancelled_after_move(monke
     assert services.tts_provider.closed == 1
     assert services.mcp_tool_provider.closed == 1
     assert services.plugin_manager.shutdowns == 1
-
-
-def test_settings_dialog_disables_proactive_intervals_when_screen_context_disabled() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(
-            screen_context_enabled=False,
-            check_interval_minutes=20,
-            cooldown_minutes=10,
-            screen_context_batch_limit=6,
-        ),
-    )
-
-    assert dialog.proactive_screen_context_enabled_check.text() == "启用主动屏幕感知（会定期获取屏幕信息）"
-    assert not dialog.proactive_check_interval_spin.isEnabled()
-    assert not dialog.proactive_cooldown_spin.isEnabled()
-    assert not dialog.proactive_batch_limit_spin.isEnabled()
-    assert not dialog.proactive_token_estimate_label.isEnabled()
-    assert "按原始屏幕" in dialog.proactive_token_estimate_label.text()
-    assert "高细节估算" in dialog.proactive_token_estimate_label.text()
-    assert "6 张约" in dialog.proactive_token_estimate_label.text()
-
-    dialog.proactive_screen_context_enabled_check.setChecked(True)
-    app.processEvents()
-    assert dialog.proactive_check_interval_spin.isEnabled()
-    assert dialog.proactive_cooldown_spin.isEnabled()
-    assert dialog.proactive_batch_limit_spin.isEnabled()
-    assert dialog.proactive_token_estimate_label.isEnabled()
-
-    dialog.proactive_screen_context_enabled_check.setChecked(False)
-    app.processEvents()
-    assert not dialog.proactive_check_interval_spin.isEnabled()
-    assert not dialog.proactive_cooldown_spin.isEnabled()
-    assert not dialog.proactive_batch_limit_spin.isEnabled()
-    assert not dialog.proactive_token_estimate_label.isEnabled()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_disables_tts_settings_when_tts_disabled() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_disabled_controls")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    controlled_widgets = (
-        dialog.tts_provider_combo,
-        dialog.tts_api_url_edit,
-        dialog.tts_work_dir_edit,
-        dialog.tts_python_path_edit,
-        dialog.tts_config_path_edit,
-        dialog.tts_timeout_spin,
-    )
-    assert all(not widget.isEnabled() for widget in controlled_widgets)
-    assert dialog.tts_bundle_download_button.isEnabled()
-
-    dialog.tts_enabled_check.setChecked(True)
-    app.processEvents()
-    assert dialog.tts_provider_combo.isEnabled()
-    assert all(
-        not widget.isEnabled()
-        for widget in (
-            dialog.tts_api_url_edit,
-            dialog.tts_work_dir_edit,
-            dialog.tts_python_path_edit,
-            dialog.tts_config_path_edit,
-        )
-    )
-    assert dialog.tts_timeout_spin.isEnabled()
-    assert dialog.tts_bundle_download_button.isEnabled()
-
-    dialog.tts_enabled_check.setChecked(False)
-    app.processEvents()
-    assert all(not widget.isEnabled() for widget in controlled_widgets)
-    assert dialog.tts_bundle_download_button.isEnabled()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_returns_backchannel_settings() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("backchannel_settings_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        backchannel_settings=BackchannelSettings(
-            enabled=False,
-            delay_ms=600,
-            probability=1.0,
-            tts_enabled=False,
-        ),
-    )
-
-    assert not dialog.backchannel_tts_enabled_check.isEnabled()
-    assert dialog.backchannel_download_model_button.isEnabled()
-    assert dialog.backchannel_import_model_button.isEnabled()
-    assert dialog.backchannel_refresh_status_button.isEnabled()
-    dialog.backchannel_enabled_check.setChecked(True)
-    dialog.backchannel_tts_enabled_check.setChecked(True)
-    dialog.backchannel_mode_combo.setCurrentIndex(dialog.backchannel_mode_combo.findData("hybrid"))
-    dialog.backchannel_delay_spin.setValue(900)
-    dialog.backchannel_probability_spin.setValue(0.55)
-    dialog.accept()
-
-    assert dialog.result_backchannel_settings == BackchannelSettings(
-        enabled=True,
-        mode="hybrid",
-        delay_ms=900,
-        probability=0.55,
-        tts_enabled=True,
-    )
-    dialog.deleteLater()
-    app.processEvents()
 
 
 def test_pet_window_backchannel_disk_cache_persists_and_replays(tmp_path: Path) -> None:
@@ -2896,527 +2792,6 @@ def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
     assert window.tts_provider.prepared == [("……おかえり。", "中性")]
 
 
-def test_settings_dialog_backchannel_tts_follows_global_tts_toggle() -> None:
-    """接话语音复选框须与全局 TTS 总开关联动,避免"设置了但不生效"。"""
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("backchannel_tts_linkage_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        backchannel_settings=BackchannelSettings(enabled=True, tts_enabled=False),
-    )
-
-    dialog.tts_enabled_check.setChecked(True)
-    assert dialog.backchannel_tts_enabled_check.isEnabled()
-
-    # 关闭全局 TTS → 接话语音复选框禁用;重新开启 → 恢复。
-    dialog.tts_enabled_check.setChecked(False)
-    assert not dialog.backchannel_tts_enabled_check.isEnabled()
-    dialog.tts_enabled_check.setChecked(True)
-    assert dialog.backchannel_tts_enabled_check.isEnabled()
-
-    # 接话层总开关关闭时,无论全局 TTS 如何都禁用。
-    dialog.backchannel_enabled_check.setChecked(False)
-    assert not dialog.backchannel_tts_enabled_check.isEnabled()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_adds_plugin_settings_panel() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.plugins.models import SettingsPanelContribution
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QLabel = qtwidgets.QLabel
-    QListWidget = qtwidgets.QListWidget
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        settings_panel_contributions=[
-            SettingsPanelContribution(
-                section_id="demo",
-                title="Demo 插件",
-                build=lambda parent=None: QLabel("插件设置", parent),
-            )
-        ],
-    )
-
-    nav = dialog.findChild(QListWidget, "settingsNavList")
-    assert nav is not None
-    assert "插件" in [nav.item(index).text() for index in range(nav.count())]
-    # 设置面板改为按需在独立对话框中构建，这里构建对话框验证贡献已接入。
-    panel_dialog = dialog._build_plugin_settings_dialog("")
-    assert panel_dialog is not None
-    assert any(
-        isinstance(label, QLabel) and label.text() == "插件设置"
-        for label in panel_dialog.findChildren(QLabel)
-    )
-    panel_dialog.deleteLater()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_manages_plugin_enabled_state() -> None:
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel", "QSplitter")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.plugins.discovery import PluginDiscovery
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QTableWidget = qtwidgets.QTableWidget
-    QCheckBox = qtwidgets.QCheckBox
-    QLabel = qtwidgets.QLabel
-    QSplitter = qtwidgets.QSplitter
-    Qt = qtcore.Qt
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("plugin_manager_dialog")
-    plugin_dir = root / "plugins" / "demo"
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.yaml").write_text(
-        """
-api_version: 1
-id: demo
-name: Demo 插件
-description: 用于测试插件管理页。
-version: 1.0.0
-entry: plugin:DemoPlugin
-enabled: true
-priority: 10
-permissions:
-  - settings_panel
-""".strip(),
-        encoding="utf-8",
-    )
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    table = dialog.findChild(QTableWidget, "pluginManagerTable")
-    splitter = dialog.findChild(QSplitter, "pluginManagerSplitter")
-    description_label = dialog.findChild(QLabel, "pluginDetailDescriptionLabel")
-    assert table is not None
-    assert splitter is not None
-    assert description_label is not None
-    assert table.rowCount() == 1
-    assert table.columnCount() == 2
-    assert table.item(0, 1).text() == "Demo 插件"
-    assert description_label.text() == "用于测试插件管理页。"
-
-    checkbox = table.cellWidget(0, 0).findChild(QCheckBox)
-    assert checkbox is not None
-    checkbox.setCheckState(Qt.CheckState.Unchecked)
-    dialog.accept()
-
-    specs = PluginDiscovery(root).discover()
-    assert specs[0].plugin_id == "demo"
-    assert specs[0].enabled is False
-    assert dialog.result_plugin_config_changed is True
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_plugin_detail_switches_settings_panel() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel", "QPushButton")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.plugins.models import SettingsPanelContribution
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QTableWidget = qtwidgets.QTableWidget
-    QLabel = qtwidgets.QLabel
-    QPushButton = qtwidgets.QPushButton
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("plugin_detail_switch")
-    _write_settings_plugin_manifest(
-        root,
-        "demo_a",
-        name="Demo A",
-        description="A 插件介绍",
-        priority=20,
-    )
-    _write_settings_plugin_manifest(
-        root,
-        "demo_b",
-        name="Demo B",
-        description="B 插件介绍",
-        priority=10,
-    )
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        settings_panel_contributions=[
-            SettingsPanelContribution(
-                section_id="demo_b_settings",
-                title="Demo B 设置",
-                build=lambda parent=None: QLabel("B 设置内容", parent),
-                plugin_id="demo_b",
-            )
-        ],
-    )
-
-    table = dialog.findChild(QTableWidget, "pluginManagerTable")
-    title_label = dialog.findChild(QLabel, "pluginDetailTitleLabel")
-    settings_button = dialog.findChild(QPushButton, "pluginOpenSettingsButton")
-    description_label = dialog.findChild(QLabel, "pluginDetailDescriptionLabel")
-    assert table is not None
-    assert title_label is not None
-    assert settings_button is not None
-    assert description_label is not None
-    assert table.rowCount() == 2
-    assert title_label.text() == "Demo A"
-    # Demo A 没有设置贡献：按钮禁用
-    assert settings_button.isEnabled() is False
-
-    table.setCurrentCell(1, 1)
-    app.processEvents()
-
-    assert title_label.text() == "Demo B"
-    assert description_label.text() == "B 插件介绍"
-    # Demo B 有设置贡献：按钮启用，打开对话框可见其设置内容
-    assert settings_button.isEnabled() is True
-    panel_dialog = dialog._build_plugin_settings_dialog("demo_b")
-    assert panel_dialog is not None
-    assert any(
-        isinstance(label, QLabel) and label.text() == "B 设置内容"
-        for label in panel_dialog.findChildren(QLabel)
-    )
-    panel_dialog.deleteLater()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_plugin_detail_shows_disabled_restart_hint() -> None:
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QCheckBox", "QLabel", "QPushButton")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QTableWidget = qtwidgets.QTableWidget
-    QCheckBox = qtwidgets.QCheckBox
-    QLabel = qtwidgets.QLabel
-    QPushButton = qtwidgets.QPushButton
-    Qt = qtcore.Qt
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("plugin_detail_disabled")
-    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    table = dialog.findChild(QTableWidget, "pluginManagerTable")
-    settings_button = dialog.findChild(QPushButton, "pluginOpenSettingsButton")
-    meta_label = dialog.findChild(QLabel, "pluginDetailMetaLabel")
-    assert table is not None
-    assert settings_button is not None
-    assert meta_label is not None
-    # 未启用插件：设置按钮禁用，提示说明需启用并重启
-    assert settings_button.isEnabled() is False
-    assert "未启用" in settings_button.toolTip()
-
-    checkbox = table.cellWidget(0, 0).findChild(QCheckBox)
-    assert checkbox is not None
-    checkbox.setCheckState(Qt.CheckState.Checked)
-    app.processEvents()
-
-    assert "保存并重启" in meta_label.text()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_plugin_settings_build_failure_has_placeholder() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.plugins.models import SettingsPanelContribution
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QLabel = qtwidgets.QLabel
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("plugin_detail_build_failure")
-    _write_settings_plugin_manifest(root, "demo", name="Demo 插件")
-
-    def build_failure(_parent=None):  # type: ignore[no-untyped-def]
-        raise RuntimeError("boom")
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        settings_panel_contributions=[
-            SettingsPanelContribution(
-                section_id="demo_settings",
-                title="Demo 设置",
-                build=build_failure,
-                plugin_id="demo",
-            )
-        ],
-    )
-
-    # 设置面板按需在对话框中构建，构建失败降级为占位提示标签。
-    panel_dialog = dialog._build_plugin_settings_dialog("demo")
-    assert panel_dialog is not None
-    assert any(
-        isinstance(label, QLabel) and label.text() == "Demo 设置 设置加载失败：boom"
-        for label in panel_dialog.findChildren(QLabel)
-    )
-    panel_dialog.deleteLater()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_plugin_page_empty_state() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QLabel", "QPushButton")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QTableWidget = qtwidgets.QTableWidget
-    QLabel = qtwidgets.QLabel
-    QPushButton = qtwidgets.QPushButton
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("plugin_detail_empty")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    table = dialog.findChild(QTableWidget, "pluginManagerTable")
-    title_label = dialog.findChild(QLabel, "pluginDetailTitleLabel")
-    settings_button = dialog.findChild(QPushButton, "pluginOpenSettingsButton")
-    assert table is not None
-    assert title_label is not None
-    assert settings_button is not None
-    assert table.rowCount() == 0
-    assert title_label.text() == "暂无插件"
-    # 无可管理插件：设置按钮禁用
-    assert settings_button.isEnabled() is False
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_uses_grouped_top_level_tabs() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(
-        hasattr(qtwidgets, name)
-        for name in ("QApplication", "QComboBox", "QListWidget", "QStackedWidget")
-    ):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QComboBox = qtwidgets.QComboBox
-    QListWidget = qtwidgets.QListWidget
-    QStackedWidget = qtwidgets.QStackedWidget
-    app = QApplication.instance() or QApplication([])
-    app_stylesheet_before = app.styleSheet()
-    root = _ui_runtime_root("grouped_settings_tabs")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    nav = dialog.findChild(QListWidget, "settingsNavList")
-    stack = dialog.findChild(QStackedWidget, "settingsNavStack")
-    assert nav is not None
-    assert stack is not None
-    assert [nav.item(index).text() for index in range(nav.count())] == [
-        "角色",
-        "外观",
-        "模型",
-        "语音",
-        "隐私",
-        "工具",
-        "插件",
-        "系统",
-    ]
-    assert stack.count() == nav.count()
-    assert dialog.minimumWidth() >= 680
-    assert dialog.minimumHeight() >= 500
-    assert dialog.width() >= 820
-    assert dialog.height() >= 640
-    assert "QWidget#settingsScrollViewport" in dialog.styleSheet()
-    assert "QWidget#settingsPluginTab" in dialog.styleSheet()
-    assert "combobox-popup: 0;" in dialog.styleSheet()
-    assert "QComboBox::drop-down" in dialog.styleSheet()
-    assert "QComboBox::down-arrow" in dialog.styleSheet()
-    assert "QComboBox QAbstractItemView" in dialog.styleSheet()
-    assert "QComboBox QAbstractItemView::item:selected" in dialog.styleSheet()
-    assert "QComboBox QAbstractItemView::item:selected:!active" in dialog.styleSheet()
-    assert "QComboBoxPrivateContainer" not in dialog.styleSheet()
-    assert "settingsComboPopup" not in dialog.styleSheet()
-    assert "QSpinBox::up-button" in dialog.styleSheet()
-    assert "QSpinBox::down-button" in dialog.styleSheet()
-    assert "QLineEdit:disabled" in dialog.styleSheet()
-    assert 'QLineEdit[readOnly="true"]' in dialog.styleSheet()
-    assert "QComboBox:disabled" in dialog.styleSheet()
-    assert "QSpinBox::up-button:disabled" in dialog.styleSheet()
-    assert "QGroupBox QWidget" not in dialog.styleSheet()
-    assert isinstance(dialog.character_combo, QComboBox)
-    assert isinstance(dialog.vision_model_combo, QComboBox)
-    assert isinstance(dialog.tts_provider_combo, QComboBox)
-    assert isinstance(dialog.theme_visual_effect_combo, QComboBox)
-    assert not hasattr(dialog.character_combo, "_popup_frame")
-    assert not hasattr(dialog.vision_model_combo, "_popup_frame")
-    assert app.styleSheet() == app_stylesheet_before
-
-    combo_bottom = dialog.character_combo.mapToGlobal(dialog.character_combo.rect().bottomLeft()).y()
-    dialog.character_combo.showPopup()
-    app.processEvents()
-    assert dialog.character_combo.view().window().geometry().top() >= combo_bottom
-    dialog.character_combo.hidePopup()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_defers_memory_load_until_memory_tab_selected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QListWidget = qtwidgets.QListWidget
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("settings_memory_lazy_load")
-    load_calls: list[str] = []
-    monkeypatch.setattr(
-        SettingsDialog,
-        "_load_memory_entries",
-        lambda self: load_calls.append("load"),
-    )
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        memory_store=object(),  # type: ignore[arg-type]
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    app.processEvents()
-
-    nav = dialog.findChild(QListWidget, "settingsNavList")
-    assert nav is not None
-    titles = [nav.item(index).text() for index in range(nav.count())]
-    memory_row = titles.index("记忆")
-    assert load_calls == []
-
-    nav.setCurrentRow(memory_row)
-    app.processEvents()
-    assert load_calls == ["load"]
-
-    nav.setCurrentRow(0)
-    nav.setCurrentRow(memory_row)
-    app.processEvents()
-    assert load_calls == ["load"]
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
 def _open_settings_memory_tab(dialog, qtwidgets, app=None) -> None:  # type: ignore[no-untyped-def]
     QListWidget = getattr(qtwidgets, "QListWidget", None)
     if QListWidget is None:
@@ -3438,45 +2813,6 @@ def test_settings_dialog_groupbox_title_indicator_has_vertical_room() -> None:
     assert "QGroupBox#advancedParamsGroup::title" in stylesheet
     assert "QGroupBox#advancedParamsGroup::indicator" in stylesheet
     assert "margin-bottom: 2px;" in stylesheet
-
-
-def test_settings_dialog_insets_advanced_params_group() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QGroupBox")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    QGroupBox = qtwidgets.QGroupBox
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("advanced_params_group_insets")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    group = dialog.findChild(QGroupBox, "advancedParamsGroup")
-    assert group is not None
-    layout = group.parentWidget().layout()
-    margins = layout.contentsMargins()
-    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (
-        16,
-        18,
-        16,
-        16,
-    )
-
-    dialog.deleteLater()
-    app.processEvents()
 
 
 def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
@@ -3525,256 +2861,6 @@ def test_pet_window_syncs_plugin_chat_ui_widgets() -> None:
     assert layout.itemAt(1).widget().objectName() == "demoPluginButton"
 
     host.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_exposes_experimental_windows_mcp_restart_setting(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.agent.mcp import DesktopMCP
-
-    # 桌面控制选项按平台展示；固定为 Windows，使断言不依赖 CI 运行平台。
-    monkeypatch.setattr(
-        "app.ui.settings.pages.sections.resolve_desktop_mcp",
-        lambda platform=None: DesktopMCP(server_name="windows", label="Windows MCP"),
-    )
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("mcp_restart_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    labels = [label.text() for label in dialog.findChildren(qtwidgets.QLabel)]
-
-    assert not dialog.windows_mcp_enabled_check.isChecked()
-    assert dialog.windows_mcp_enabled_check.isEnabled()
-    assert "实验性" in dialog.windows_mcp_enabled_check.text()
-    assert "实验性功能" in dialog.windows_mcp_enabled_check.toolTip()
-    assert any("实验性功能" in text for text in labels)
-    assert any("重启 Sakura" in text for text in labels)
-
-    dialog.windows_mcp_enabled_check.setChecked(True)
-    dialog.accept()
-
-    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_desktop_mcp_option_uses_platform_label(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.agent.mcp import DesktopMCP
-
-    # 模拟 macOS：选项文案显示 macOS MCP，开关仍写回 windows_enabled（向后兼容字段）。
-    monkeypatch.setattr(
-        "app.ui.settings.pages.sections.resolve_desktop_mcp",
-        lambda platform=None: DesktopMCP(server_name="macos", label="macOS MCP"),
-    )
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("mcp_macos_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    assert "macOS MCP" in dialog.windows_mcp_enabled_check.text()
-    dialog.windows_mcp_enabled_check.setChecked(True)
-    dialog.accept()
-    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_hides_desktop_mcp_option_when_platform_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    # 模拟无内置桌面控制 MCP 的平台（如 Linux）：不展示该选项，保存时保留原偏好。
-    monkeypatch.setattr(
-        "app.ui.settings.pages.sections.resolve_desktop_mcp",
-        lambda platform=None: None,
-    )
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("mcp_unsupported_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
-    )
-
-    assert dialog.windows_mcp_enabled_check is None
-    dialog.accept()
-    assert dialog.result_mcp_settings == MCPRuntimeSettings(windows_enabled=True)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_saves_runtime_loop_settings() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("runtime_loop_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        runtime_loop_settings=RuntimeLoopSettings(
-            max_agent_steps_per_turn=5,
-            max_tool_calls_per_step=4,
-            max_tool_calls_per_turn=9,
-        ),
-    )
-
-    assert dialog.agent_steps_per_turn_spin.value() == 5
-    assert dialog.tool_calls_per_step_spin.value() == 4
-    assert dialog.tool_calls_per_turn_spin.value() == 9
-
-    dialog.agent_steps_per_turn_spin.setValue(6)
-    dialog.tool_calls_per_step_spin.setValue(5)
-    dialog.tool_calls_per_turn_spin.setValue(11)
-    dialog.accept()
-
-    assert dialog.result_runtime_loop_settings == RuntimeLoopSettings(
-        max_agent_steps_per_turn=6,
-        max_tool_calls_per_step=5,
-        max_tool_calls_per_turn=11,
-    )
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_exposes_tts_bundle_controls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_bundle_controls")
-    bundle_work_dir = root / "tts" / "gpt"
-    monkeypatch.setattr(
-        settings_dialog_module,
-        "default_provider_bundle_work_dir",
-        lambda _provider, _base_dir: bundle_work_dir,
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    labels = [label.text() for label in dialog.findChildren(qtwidgets.QLabel)]
-    custom_index = dialog.tts_provider_combo.findData("custom-gpt-sovits")
-
-    assert any("TTS 工作目录" in text for text in labels)
-    assert any("TTS 提供器" in text for text in labels)
-    assert any("TTS Python" in text for text in labels)
-    assert any("推理配置" in text for text in labels)
-    assert custom_index >= 0
-    assert "macOS/Linux" in dialog.tts_provider_combo.itemText(custom_index)
-    assert dialog.tts_bundle_download_button.text() == "一键下载 TTS 整合包"
-    assert dialog.tts_bundle_download_button.parentWidget() is dialog.tts_enabled_check.parentWidget()
-    assert dialog.tts_voice_import_button.parentWidget() is dialog.character_import_button.parentWidget()
-    assert not dialog.tts_provider_combo.isEnabled()
-    assert dialog.tts_bundle_download_button.isEnabled()
-    dialog.tts_enabled_check.setChecked(True)
-    app.processEvents()
-    assert dialog.tts_provider_combo.isEnabled()
-    bundled_edits = (
-        dialog.tts_api_url_edit,
-        dialog.tts_work_dir_edit,
-        dialog.tts_python_path_edit,
-        dialog.tts_config_path_edit,
-    )
-    assert all(edit.isReadOnly() for edit in bundled_edits)
-    assert all(not edit.isEnabled() for edit in bundled_edits)
-    assert all(edit.text().strip() for edit in bundled_edits)
-    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
-    assert dialog.tts_work_dir_edit.text().endswith(("tts\\gpt", "tts/gpt", "tts\\g50", "tts/g50"))
-    assert dialog.tts_python_path_edit.text().endswith(("runtime\\python.exe", "runtime/python.exe"))
-    assert dialog.tts_config_path_edit.text().endswith((
-        "GPT_SoVITS\\configs\\tts_infer.yaml",
-        "GPT_SoVITS/configs/tts_infer.yaml",
-    ))
-    for edit in bundled_edits:
-        label = dialog._tts_form_layout.labelForField(edit)
-        assert label is not None
-        assert label.isEnabled()
-    settings = dialog._validated_tts_settings()
-    assert settings is not None
-    assert settings.python_path is None
-    assert settings.tts_config_path is None
-    dialog.tts_provider_combo.setCurrentIndex(custom_index)
-    app.processEvents()
-    assert all(edit.isEnabled() for edit in bundled_edits)
-    assert not dialog.tts_python_path_edit.isReadOnly()
-    assert not dialog.tts_config_path_edit.isReadOnly()
-    dialog.deleteLater()
     app.processEvents()
 
 
@@ -3842,1219 +2928,1588 @@ def _make_tts_bundle_dialog_stub():
     return DialogStub
 
 
-def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+class _SignalStub:
+    def __init__(self) -> None:
+        self._slots: list = []
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+    def connect(self, slot) -> None:  # type: ignore[no-untyped-def]
+        self._slots.append(slot)
 
-    root = _ui_runtime_root("tts_bundle_ui")
-    root.mkdir(parents=True, exist_ok=True)
+    def emit(self, *args) -> None:  # type: ignore[no-untyped-def]
+        for slot in list(self._slots):
+            slot(*args)
 
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, start_result: bool = True):  # type: ignore[no-untyped-def]
+    instances = []
+
+    class TauriSettingsProcessStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.kwargs = _kwargs
+            self.completed = _SignalStub()
+            self.applied = _SignalStub()
+            self.apply_requested = _SignalStub()
+            self.cancelled = _SignalStub()
+            self.failed = _SignalStub()
+            self.layout_preview = _SignalStub()
+            self.shutdown_called = False
+            self.apply_responses: list[tuple[str, bool, str]] = []
+            instances.append(self)
+
+        def start(self) -> bool:
+            return start_result
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+        def resolve_apply_request(self, request_id: str, *, ok: bool, error: str = "") -> None:
+            self.apply_responses.append((request_id, ok, error))
+
+    monkeypatch.setattr(pet_window_module, "TauriSettingsProcess", TauriSettingsProcessStub)
+    return instances
+
+
+def _build_tauri_settings_result(
+    *,
+    api_settings: ApiSettings | None = None,
+    character_id: str = "sakura",
+    portrait_scale_percent: int = 150,
+    control_panel_width: int = 700,
+    bubble_height: int = 180,
+    control_panel_vertical_offset: int = 25,
+    input_bar_offset: int = 10,
+):
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import (
+        TauriApiResult,
+        TauriCharacterResult,
+        TauriPluginResult,
+        TauriSettingsResult,
+        TauriSystemBasicResult,
+        TauriSystemExtraResult,
+        TauriTtsResult,
     )
 
-    dialog._download_gpt_sovits_bundle()
-    assert DialogStub.last is not None
-    DialogStub.last.succeeded.emit(_TTSBundleResultStub(root / "tts" / "gpt"))
+    settings = api_settings or ApiSettings(
+        "https://api.changed.example.com/v1",
+        "changed-key",
+        "changed-model",
+    )
+    api_profile = ApiConfigProfile(
+        id="default",
+        alias="默认",
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        models=(settings.model,),
+    )
+    return TauriSettingsResult(
+        screen_awareness=ScreenAwarenessSettings(),
+        mcp=MCPRuntimeSettings(),
+        runtime_loop=RuntimeLoopSettings(max_agent_steps_per_turn=6),
+        system_basic=TauriSystemBasicResult(),
+        theme=DEFAULT_THEME_SETTINGS,
+        character=TauriCharacterResult(
+            character_id=character_id,
+            portrait_scale_percent=portrait_scale_percent,
+            control_panel_width=control_panel_width,
+            bubble_height=bubble_height,
+            control_panel_vertical_offset=control_panel_vertical_offset,
+            input_bar_offset=input_bar_offset,
+        ),
+        api=TauriApiResult(
+            settings=settings,
+            profiles=[api_profile],
+            model_selection=ModelSelectionSettings(
+                chat=ModelSlotSelection(profile_id="default", model=settings.model)
+            ),
+        ),
+        tts=TauriTtsResult(enabled=False, provider="none"),
+        system_extra=TauriSystemExtraResult(),
+    )
 
-    assert dialog.tts_enabled_check.isChecked()
-    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
-    assert dialog.tts_work_dir_edit.text().endswith(("tts\\gpt", "tts/gpt"))
+
+def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
     monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda _settings, accept_values: dialog._complete_accept(accept_values),
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
     )
 
-    dialog.accept()
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.show_settings()
 
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.work_dir == root / "tts" / "gpt"
-    dialog.deleteLater()
-    app.processEvents()
+    # 滑块拖动：实时应用但不持久化。
+    instances[0].layout_preview.emit(
+        {
+            "portrait_scale_percent": 150,
+            "control_panel_width": 720,
+            "bubble_height": 200,
+            "control_panel_vertical_offset": 30,
+            "input_bar_offset": 12,
+        }
+    )
+    assert window.portrait_scale_percent == 150
+    assert window.control_panel_width == 720
+    assert window.bubble_height == 200
+    assert window.control_panel_vertical_offset == 30
+    assert window.input_bar_offset == 12
+    assert window.layout_persisted is False
+
+    # 取消：回滚到打开设置前的布局，且仍不持久化。
+    instances[0].cancelled.emit()
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window.tauri_settings_process is None
 
 
-def test_settings_dialog_download_reuses_active_tts_bundle_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+def test_show_settings_tauri_trial_save_failure_restores_preview_and_closes_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import (
+        TauriApiResult,
+        TauriCharacterResult,
+        TauriSettingsResult,
+        TauriSystemBasicResult,
+        TauriSystemExtraResult,
+        TauriTtsResult,
+    )
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+    critical_messages: list[str] = []
 
-    root = _ui_runtime_root("tts_bundle_reuse")
-    root.mkdir(parents=True, exist_ok=True)
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    provider = ProviderStub()
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._create_tts_provider_from_settings = lambda _settings: provider
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window._tauri_initial_tts_settings = _minimal_tts_settings()
+    window.portrait_scale_percent = 150
+    window.control_panel_width = 700
+    window.bubble_height = 180
+    window.control_panel_vertical_offset = 25
+    window.input_bar_offset = 10
+
+    api_profile = ApiConfigProfile(
+        id="default",
+        alias="默认",
+        base_url="https://api.changed.example.com/v1",
+        api_key="changed-key",
+        models=("changed-model",),
+    )
+    api_settings = ApiSettings(
+        "https://api.changed.example.com/v1",
+        "changed-key",
+        "changed-model",
+    )
+    result = TauriSettingsResult(
+        screen_awareness=ScreenAwarenessSettings(),
+        mcp=MCPRuntimeSettings(),
+        runtime_loop=RuntimeLoopSettings(),
+        system_basic=TauriSystemBasicResult(),
+        theme=DEFAULT_THEME_SETTINGS,
+        character=TauriCharacterResult(
+            character_id="sakura",
+            portrait_scale_percent=150,
+            control_panel_width=700,
+            bubble_height=180,
+            control_panel_vertical_offset=25,
+            input_bar_offset=10,
         ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    dialog._download_gpt_sovits_bundle()
-    first = DialogStub.last
-    dialog._download_gpt_sovits_bundle()
-
-    assert DialogStub.instances == [first]
-    assert first.show_count == 2
-    assert first.raised
-    assert first.activated
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_styles_tts_bundle_download_window(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("tts_bundle_theme")
-    root.mkdir(parents=True, exist_ok=True)
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    theme = ThemeSettings(
-        primary_color="#123456",
-        accent_color="#654321",
-        text_color="#111111",
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
+        api=TauriApiResult(
+            settings=api_settings,
+            profiles=[api_profile],
+            model_selection=ModelSelectionSettings(
+                chat=ModelSlotSelection(profile_id="default", model="changed-model")
+            ),
         ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
+        tts=TauriTtsResult(enabled=False, provider="none"),
+        system_extra=TauriSystemExtraResult(),
+    )
+
+    window._on_tauri_settings_completed(result)
+
+    assert critical_messages
+    assert provider.closed is True
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window._tauri_initial_tts_settings is None
+    assert window._tauri_original_layout is None
+
+
+def test_show_settings_tauri_trial_layout_persist_failure_rolls_back_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, _character_id):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_screen_awareness_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, _section, _values):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProviderStub:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    provider = ProviderStub()
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._create_tts_provider_from_settings = lambda _settings: provider
+    window.raise_layout_persist_error = True
+    window._tauri_original_layout = (100, 640, 128, 0, 0)
+    window._tauri_initial_tts_settings = _minimal_tts_settings()
+    window.portrait_scale_percent = 150
+    window.control_panel_width = 700
+    window.bubble_height = 180
+    window.control_panel_vertical_offset = 25
+    window.input_bar_offset = 10
+
+    window._on_tauri_settings_completed(_build_tauri_settings_result())
+
+    assert critical_messages
+    assert provider.closed is True
+    assert window.api_client.settings == ApiClientStub.settings
+    assert window.agent_runtime.runtime_loop_settings == RuntimeLoopSettings()
+    assert window.portrait_scale_percent == 100
+    assert window.control_panel_width == 640
+    assert window.bubble_height == 128
+    assert window.control_panel_vertical_offset == 0
+    assert window.input_bar_offset == 0
+    assert window.layout_persisted is False
+    assert window._tauri_initial_tts_settings is None
+    assert window._tauri_original_layout is None
+
+
+def test_tauri_settings_save_failure_rolls_back_config_files(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    root = _ui_runtime_root("tauri_save_config_rollback")
+    config_dir = root / "data" / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    api_path = config_dir / "api.yaml"
+    mcp_path = config_dir / "mcp.yaml"
+    old_api = "llm:\n  model: old-model\n"
+    api_path.write_text(old_api, encoding="utf-8")
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            api_path.write_text("llm:\n  model: changed-model\n", encoding="utf-8")
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            mcp_path.write_text("created: true\n", encoding="utf-8")
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "old-model")
+
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.base_dir = root
+
+    window._apply_tauri_settings_result(_build_tauri_settings_result(), final=True)
+
+    assert critical_messages
+    assert api_path.read_text(encoding="utf-8") == old_api
+    assert not mcp_path.exists()
+    assert window.api_client.settings == ApiClientStub.settings
+
+
+def test_tauri_settings_apply_character_theme_saves_character_override() -> None:
+    from app.ui.pet_window import PetWindow
+
+    saved_theme_preferences: list[ThemeSettings] = []
+    saved_overrides: list[tuple[str, ThemeSettings]] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, _character_id):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_screen_awareness_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_theme_settings(self, settings):  # type: ignore[no-untyped-def]
+            saved_theme_preferences.append(settings.normalized())
+
+        def save_character_theme_override(self, character_id, settings):  # type: ignore[no-untyped-def]
+            saved_overrides.append((character_id, settings.normalized()))
+
+        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, _section, _values):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_backchannel_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+        def save_memory_curation_settings(self, _settings):  # type: ignore[no-untyped-def]
+            pass
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    theme = ThemeSettings(primary_color="#123456")
+    result = replace(_build_tauri_settings_result(), theme=theme, theme_changed=True)
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert saved_theme_preferences == [theme.normalized()]
+    assert saved_overrides == [("sakura", theme.normalized())]
+    assert window.theme_settings == theme.normalized()
+
+
+def test_tauri_settings_apply_default_theme_deletes_character_override() -> None:
+    from app.ui.pet_window import PetWindow
+
+    deleted_overrides: list[str] = []
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+        def delete_character_theme_override(self, character_id):  # type: ignore[no-untyped-def]
+            deleted_overrides.append(character_id)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        theme=DEFAULT_THEME_SETTINGS,
+        theme_changed=True,
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert deleted_overrides == ["sakura"]
+
+
+def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
+    return {
+                "version": 2,
+                "nonce": "nonce",
+                "screen_awareness": {
+                    "enabled": True,
+                    "screen_context_enabled": True,
+                    "check_interval_minutes": 5,
+                    "cooldown_minutes": 8,
+                    "screen_context_batch_limit": 4,
+                },
+                "mcp": {
+                    "windows_enabled": True,
+                },
+                "runtime_loop": {
+                    "max_agent_steps_per_turn": 99,
+                    "max_tool_calls_per_step": 8,
+                    "max_tool_calls_per_turn": 2,
+                },
+                "system_basic": {
+                    "debug_log": {
+                        "enabled": False,
+                        "body_enabled": True,
+                        "file_enabled": True,
+                        "stage_debug_overlay": True,
+                        "stage_collision_mask": False,
+                    },
+                    "ui": {
+                        "subtitle_typing_interval_ms": 0,
+                        "reply_segment_pause_ms": 9999,
+                    },
+                    "bubble": {
+                        "auto_hide_enabled": True,
+                        "auto_hide_delay_seconds": 0,
+                    },
+                },
+        "theme": theme_payload,
+        "character": {
+            "current_character_id": "sakura",
+            "layout": {
+                "portrait_scale_percent": 100,
+                "control_panel_width": 640,
+                "bubble_height": 128,
+                "control_panel_vertical_offset": 0,
+                "input_bar_offset": 0,
+            },
+        },
+        "api": {
+            "settings": {
+                "timeout_seconds": 60,
+                "temperature": None,
+                "top_p": None,
+                "max_tokens": None,
+            },
+            "profiles": [
+                {
+                    "id": "default",
+                    "alias": "默认",
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "models": ["test-model"],
+                }
+            ],
+            "model_selection": {
+                "slots": {
+                    "chat": {"profile_id": "default", "model": "test-model"},
+                    "vision_chat": {"profile_id": "", "model": ""},
+                    "memory_curation": {"profile_id": "", "model": ""},
+                }
+            },
+        },
+        "tts": {
+            "enabled": False,
+            "provider": "none",
+            "api_url": "http://127.0.0.1:9880/tts",
+            "work_dir": "",
+            "python_path": "",
+            "tts_config_path": "",
+            "timeout_seconds": 60,
+        },
+        "system_extra": {
+            "startup": {
+                "launch_at_login": False,
+                "launch_at_login_supported": True,
+            },
+            "backchannel": {
+                "enabled": False,
+                "mode": "rules",
+                "delay_ms": 600,
+                "probability": 1.0,
+                "tts_enabled": False,
+                "timeout_ms": 400,
+            },
+        },
+        "memory": {
+            "curation": {
+                "trigger_turns": 8,
+                "backfill_limit": 200,
+            }
+        },
+        "plugins": {"enabled_by_id": {}},
+    }
+
+
+def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    theme_payload = theme_to_mapping(ThemeSettings(primary_color="#123456", ai_enabled=True))
+    theme_payload["primary_color"] = "invalid"
+    theme_payload["visual_effect_mode"] = "invalid"
+    payload = _tauri_settings_result_payload(theme_payload)
+    payload["character"]["layout"]["portrait_scale_percent"] = 999  # type: ignore[index]
+    payload["api"]["settings"]["timeout_seconds"] = 999  # type: ignore[index]
+    payload["system_extra"]["backchannel"]["delay_ms"] = 99999  # type: ignore[index]
+    payload["memory"]["curation"]["trigger_turns"] = 999  # type: ignore[index]
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.mcp == MCPRuntimeSettings(windows_enabled=True)
+    assert result.runtime_loop == RuntimeLoopSettings(
+        max_agent_steps_per_turn=12,
+        max_tool_calls_per_step=8,
+        max_tool_calls_per_turn=8,
+    )
+    assert result.system_basic.debug_log == DebugLogSettings(
+        enabled=False,
+        body_enabled=False,
+        file_enabled=True,
+        stage_debug_overlay=True,
+        stage_collision_mask=False,
+    )
+    assert result.system_basic.subtitle_typing_interval_ms == 5
+    assert result.system_basic.reply_segment_pause_ms == 3000
+    assert result.system_basic.bubble == BubbleSettings(
+        auto_hide_enabled=True,
+        auto_hide_delay_seconds=1,
+    )
+    assert result.theme.primary_color == DEFAULT_THEME_SETTINGS.primary_color
+    assert result.theme.ai_enabled is True
+    assert result.theme.visual_effect_mode == "gaussian_blur"
+    assert result.character.portrait_scale_percent == 150
+    assert result.api.settings.timeout_seconds == 600
+    assert result.system_extra.backchannel.delay_ms == 5000
+    assert result.memory_curation.enabled is True
+    assert result.memory_curation.trigger_turns == 50
+
+
+def test_tauri_settings_result_parser_accepts_hidden_empty_tts_config_path() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["tts"] = {
+        "enabled": True,
+        "provider": "gpt-sovits",
+        "api_url": "http://127.0.0.1:9880/tts",
+        "work_dir": "tts/g50",
+        "python_path": "",
+        "tts_config_path": "",
+        "timeout_seconds": 60,
+    }
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.tts.provider == "gpt-sovits"
+    assert result.tts.work_dir == "tts/g50"
+    assert result.tts.tts_config_path == ""
+
+
+def test_tauri_settings_result_parser_reads_plugin_enabled_overrides() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["plugins"] = {
+        "enabled_by_id": {"demo": False, "required": True},
+        "settings_by_id": {"demo": {"main": {"enabled": True}}},
+    }
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.plugins.enabled_by_id == {"demo": False, "required": True}
+    assert result.plugins.settings_by_id == {"demo": {"main": {"enabled": True}}}
+
+
+def test_tauri_settings_result_parser_recovers_empty_profile_models_from_slots() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["api"]["profiles"][0]["models"] = []  # type: ignore[index]
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.api.profiles[0].models == ("test-model",)
+    assert result.api.settings.model == "test-model"
+
+
+def test_tauri_settings_result_parser_reads_theme_changed_flag() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["theme_changed"] = False
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.theme_changed is False
+
+
+def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+
+    payload = {
+        "version": 2,
+        "nonce": "nonce",
+        "screen_awareness": {
+            "enabled": True,
+            "screen_context_enabled": True,
+            "check_interval_minutes": 5,
+            "cooldown_minutes": 8,
+            "screen_context_batch_limit": 4,
+        },
+        "mcp": {"windows_enabled": True},
+        "runtime_loop": {
+            "max_agent_steps_per_turn": 2,
+            "max_tool_calls_per_step": 2,
+            "max_tool_calls_per_turn": 2,
+        },
+    }
+
+    with pytest.raises(ValueError, match="系统基础配置"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_result_parser_rejects_stale_protocol() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["version"] = 1
+
+    with pytest.raises(ValueError, match="协议不匹配"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_request_includes_theme_colors() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
         mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=theme,
-    )
-
-    dialog._download_gpt_sovits_bundle()
-    download_dialog = DialogStub.last
-    assert download_dialog is not None
-    assert download_dialog.stylesheets[-1] == dialog.styleSheet()
-    assert "QProgressBar::chunk" in download_dialog.stylesheets[-1]
-    assert "#123456" in download_dialog.stylesheets[-1]
-
-    next_theme = ThemeSettings(
-        primary_color="#abcdef",
-        accent_color="#fedcba",
-        text_color="#222222",
-    )
-    dialog._apply_theme_stylesheet(next_theme)
-
-    assert download_dialog.stylesheets[-1] == build_settings_dialog_stylesheet(next_theme)
-    assert "#abcdef" in download_dialog.stylesheets[-1]
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_tts_bundle_download_uses_secondary_window_callbacks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("tts_bundle_secondary_callbacks")
-    root.mkdir(parents=True, exist_ok=True)
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
-    events: list[tuple[str, object]] = []
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
+        runtime_loop_settings=RuntimeLoopSettings(),
+        theme_settings=ThemeSettings(
+            primary_color="#123456",
+            panel_background_color="#abcdef",
+            border_color="#654321",
         ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        on_prepare_secondary_window=lambda window: events.append(("prepare", window)),
-        on_present_secondary_window=lambda window: events.append(("present", window)),
-        on_release_secondary_window=lambda window: events.append(("release", window)),
+        nonce="nonce",
     )
 
-    dialog._download_gpt_sovits_bundle()
-    download_dialog = DialogStub.last
-    assert download_dialog is not None
-    assert events == [("prepare", download_dialog), ("present", download_dialog)]
-    assert download_dialog.show_count == 0
+    assert request["theme"]["primary_color"] == "#123456"
+    assert request["theme"]["panel_background_color"] == "#abcdef"
+    assert request["theme"]["border_color"] == "#654321"
+    assert request["theme"]["visual_effect_mode"] == "gaussian_blur"
+    assert request["theme_defaults"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
+    assert {"id": "primary_color", "label": "主题色"} in request["theme_fields"]
+    assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
 
-    dialog._download_gpt_sovits_bundle()
-    assert events == [
-        ("prepare", download_dialog),
-        ("present", download_dialog),
-        ("present", download_dialog),
+
+def test_tauri_settings_request_includes_tts_provider_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    root = _ui_runtime_root("tauri_request_tts_defaults")
+    gpt_work_dir = root / "tts" / "g50"
+    genie_work_dir = root / "tts" / "cpu"
+
+    def fake_default_provider_bundle_work_dir(
+        provider: str,
+        base_dir: Path,
+        *,
+        gpus: object = None,
+    ) -> Path | None:
+        assert base_dir == root
+        assert gpus == []
+        return {
+            "gpt-sovits": gpt_work_dir,
+            "genie-tts": genie_work_dir,
+        }.get(provider)
+
+    def fake_default_provider_bundle_notice(
+        provider: str,
+        base_dir: Path,
+        *,
+        gpus: object = None,
+    ) -> str:
+        assert base_dir == root
+        assert gpus == []
+        return "下载错了" if provider == "gpt-sovits" else ""
+
+    monkeypatch.setattr(tauri_settings, "list_nvidia_gpus", lambda: [])
+    monkeypatch.setattr(
+        tauri_settings,
+        "default_provider_bundle_work_dir",
+        fake_default_provider_bundle_work_dir,
+    )
+    monkeypatch.setattr(
+        tauri_settings,
+        "default_provider_bundle_notice",
+        fake_default_provider_bundle_notice,
+    )
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        base_dir=root,
+        nonce="nonce",
+    )
+
+    defaults = request["tts"]["provider_defaults"]
+    provider_options = request["tts"]["providers"]
+    assert "none" not in [option["id"] for option in provider_options]
+    assert "关闭" not in [option["label"] for option in provider_options]
+    assert defaults["gpt-sovits"]["api_url"] == "http://127.0.0.1:9880/tts"
+    assert defaults["gpt-sovits"]["work_dir"] == str(gpt_work_dir)
+    assert defaults["gpt-sovits"]["python_path"] == str(gpt_work_dir / "runtime" / "python.exe")
+    assert defaults["gpt-sovits"]["notice"] == "下载错了"
+    assert defaults["genie-tts"]["api_url"] == "http://127.0.0.1:9881/"
+    assert defaults["genie-tts"]["work_dir"] == str(genie_work_dir)
+    assert defaults["genie-tts"]["notice"] == ""
+    assert defaults["custom-gpt-sovits"]["work_dir"] == ""
+    assert defaults["custom-gpt-sovits"]["notice"] == ""
+
+
+def test_tauri_settings_request_uses_real_tts_provider_when_disabled() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        tts_settings=replace(_minimal_tts_settings(), enabled=False, provider="none"),
+        nonce="nonce",
+    )
+
+    assert request["tts"]["enabled"] is False
+    assert request["tts"]["provider"] == "gpt-sovits"
+    assert "none" not in [option["id"] for option in request["tts"]["providers"]]
+
+
+def test_tauri_settings_request_includes_platform_desktop_mcp_metadata(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+    from app.agent.mcp import DesktopMCP
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    monkeypatch.setattr(
+        tauri_settings_module,
+        "resolve_desktop_mcp",
+        lambda: DesktopMCP(server_name="macos", label="macOS MCP"),
+    )
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
+        nonce="nonce",
+    )
+
+    assert request["mcp"]["windows_enabled"] is True
+    assert request["mcp"]["desktop"] == {
+        "supported": True,
+        "label": "macOS MCP",
+        "experimental_text": "实验性功能，供想要尝鲜的用户使用；可能不稳定，请谨慎开启",
+    }
+
+
+def test_tauri_settings_request_preserves_desktop_mcp_preference_when_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    monkeypatch.setattr(tauri_settings_module, "resolve_desktop_mcp", lambda: None)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
+        nonce="nonce",
+    )
+
+    assert request["mcp"]["windows_enabled"] is True
+    assert request["mcp"]["desktop"]["supported"] is False
+
+
+def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+    from app.plugins.models import PluginSettingsContribution, PluginSettingsField
+
+    root = _ui_runtime_root("tauri_request_plugins")
+    _write_settings_plugin_manifest(root, "demo", name="Demo 插件", enabled=False)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        base_dir=root,
+        plugin_settings_contributions=[
+            PluginSettingsContribution(
+                plugin_id="demo",
+                section_id="demo_settings",
+                title="Demo 设置",
+                fields=(PluginSettingsField("enabled", "启用", "boolean", default=True),),
+                load=lambda: {"enabled": False},
+            )
+        ],
+        nonce="nonce",
+    )
+
+    plugin = request["plugins"]["items"][0]
+    assert plugin["id"] == "demo"
+    assert plugin["name"] == "Demo 插件"
+    assert plugin["enabled"] is False
+    assert plugin["permissions"] == ["plugin_settings"]
+    assert plugin["entry"] == "plugin:DemoPlugin"
+    assert request["plugins"]["permission_labels"]["plugin_settings"]["label"] == "插件设置"
+    assert plugin["settings"][0]["section_id"] == "demo_settings"
+    assert plugin["settings"][0]["values"]["enabled"] is False
+    assert {"id": "core_profile", "label": "常驻档案"} in request["memory"]["layers"]
+    assert request["memory"]["defaults"]["layer"] == "semantic"
+    assert request["memory"]["defaults"]["source"] == "manual"
+
+
+def test_apply_tauri_plugin_settings_skips_unchanged_values() -> None:
+    from app.plugins.models import PluginSettingsContribution, PluginSettingsField
+    from app.ui.tauri_settings import apply_tauri_plugin_settings
+
+    saved: list[dict[str, object]] = []
+    contribution = PluginSettingsContribution(
+        plugin_id="demo",
+        section_id="demo_settings",
+        title="Demo 设置",
+        fields=(PluginSettingsField("enabled", "启用", "boolean", default=True),),
+        load=lambda: {"enabled": True},
+        save=lambda values: saved.append(dict(values)),
+    )
+
+    assert apply_tauri_plugin_settings(
+        [contribution],
+        {"demo": {"demo_settings": {"enabled": True}}},
+    ) is False
+    assert saved == []
+
+    assert apply_tauri_plugin_settings(
+        [contribution],
+        {"demo": {"demo_settings": {"enabled": False}}},
+    ) is True
+    assert saved == [{"enabled": False}]
+
+
+def test_tauri_plugin_settings_message_does_not_claim_restart(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+    from app.ui.tauri_settings import TauriPluginResult
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    messages: list[str] = []
+    monkeypatch.setattr(pet_window_module, "apply_tauri_plugin_settings", lambda *_args: True)
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_information",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        plugins=TauriPluginResult(settings_by_id={"demo": {"main": {"enabled": False}}}),
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert messages == ["插件设置已保存并即时生效。"]
+
+
+def test_tauri_settings_mcp_change_message_mentions_restart(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_information",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        mcp=MCPRuntimeSettings(windows_enabled=True),
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert messages == ["桌面控制 MCP 开关需要重启 Sakura 后才会生效。"]
+
+
+def test_tauri_settings_request_includes_per_character_theme() -> None:
+    from types import SimpleNamespace
+
+    from app.ui.tauri_settings import build_tauri_settings_request
+    from app.ui.theme import ThemeSettings
+
+    profile = SimpleNamespace(
+        id="sakura",
+        display_name="Sakura",
+        voice=None,
+        theme_settings=ThemeSettings(primary_color="#abcdef"),
+        theme_source="package",
+    )
+    registry = SimpleNamespace(profiles={"sakura": profile})
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        character_registry=registry,
+        current_character=profile,
+        character_theme_overrides={"sakura": ThemeSettings(primary_color="#112233")},
+        nonce="nonce",
+    )
+    characters = request["character"]["characters"]
+    assert len(characters) == 1
+    assert characters[0]["theme"]["primary_color"] == "#112233"
+    assert characters[0]["default_theme"]["primary_color"] == "#abcdef"
+    # 每个角色都带齐全部配色字段，供切换/恢复默认时跟随换色。
+    assert len(characters[0]["theme"]) == len(request["theme_fields"])
+    assert len(characters[0]["default_theme"]) == len(request["theme_fields"])
+
+
+def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert "function selectedCharacterThemeDefaults()" in source
+    assert "function selectedCharacterTheme()" in source
+    assert "themeAiButton: document.getElementById(\"themeAiButton\")" in source
+    assert "ttsTestButton: document.getElementById(\"ttsTestButton\")" in source
+    assert "theme-color-popover" in source
+    assert "hostCall(\"theme.generate_ai\"" in source
+    assert "hostCall(\"theme.pick_screen_color\"" in source
+    assert "hostCall(\"tts.test\"" in source
+    assert "type = \"color\"" not in source
+    assert "current.hide" not in source
+    assert "theme_changed: themeChanged" in source
+    assert "setThemeValues(request.theme);" in source
+    assert "runThemeTransition(update)" in source
+    assert "setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false, animateTheme: true });" in source
+    assert (
+        "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });"
+        in source
+    )
+
+
+def test_tauri_settings_frontend_disables_dependent_controls() -> None:
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
+
+    assert "function setControlDisabled" in source
+    assert "function syncDesktopMcpControl" in source
+    assert "syncDesktopMcpControl(request.mcp);" in source
+    assert "`${desktop.label} 桌面控制`" in source
+    assert "修改后需重启 Sakura" in source
+    assert "function syncBackchannelState" in source
+    assert "fields.backchannelEnabled.addEventListener(\"change\", syncBackchannelState)" in source
+    assert "setControlDisabled(fields.backchannelMode, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelDelay, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelProbability, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelTtsEnabled, !enabled || !ttsAvailable);" in source
+    assert "setControlDisabled(profileSelect, inherited, { row: false });" in source
+    assert ".model-slot-row.is-inherited .slot-controls .custom-select" in styles
+    assert "overflow-x: hidden;" in styles
+
+
+def test_tauri_settings_theme_ai_uses_vision_slot() -> None:
+    from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
+    from app.ui.tauri_settings import _theme_ai_api_settings
+
+    profiles = [
+        ApiConfigProfile(
+            id="chat",
+            alias="聊天",
+            base_url="https://chat.example/v1",
+            api_key="chat-key",
+            models=("chat-model",),
+        ),
+        ApiConfigProfile(
+            id="vision",
+            alias="视觉",
+            base_url="https://vision.example/v1",
+            api_key="vision-key",
+            models=("vision-model",),
+        ),
     ]
+    settings = _theme_ai_api_settings(
+        ApiSettings("https://default.example/v1", "default-key", "default-model"),
+        profiles,
+        ModelSelectionSettings(
+            chat=ModelSlotSelection(profile_id="chat", model="chat-model"),
+            vision_chat=ModelSlotSelection(profile_id="vision", model="vision-model"),
+        ),
+    )
 
-    download_dialog.finished.emit(settings_dialog_module.QDialog.DialogCode.Rejected)
-
-    assert events[-1] == ("release", download_dialog)
-    assert dialog._tts_bundle_download_dialog is None
-    assert dialog.tts_bundle_download_button.text() == "一键下载 TTS 整合包"
-    dialog.deleteLater()
-    app.processEvents()
+    assert settings.base_url == "https://vision.example/v1"
+    assert settings.model == "vision-model"
 
 
-def test_settings_dialog_reuses_active_tts_bundle_window_with_secondary_callbacks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_character_rpc_validates_paths() -> None:
+    from app.ui.tauri_settings import dispatch_tauri_character_rpc
+
+    root = _ui_runtime_root("tauri_char_path_validation")
+    bad_suffix = root / "bad.txt"
+    bad_suffix.write_text("not an archive", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="扩展名"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.import_archive",
+            {"path": str(bad_suffix)},
+        )
+    with pytest.raises(ValueError, match="文件不存在"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.import_voice_archive",
+            {"path": str(root / "missing.voice"), "character_id": "sakura"},
+        )
+    with pytest.raises(ValueError, match="导出目录不存在"):
+        dispatch_tauri_character_rpc(
+            root,
+            "character.export_archive",
+            {"path": str(root / "missing" / "sakura.char"), "character_id": "sakura", "kind": "card"},
+        )
+
+
+def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+
+    root = _ui_runtime_root("tauri_settings_binary_platform")
+    release_dir = root / "tools" / "settings-tauri" / "src-tauri" / "target" / "release"
+    release_dir.mkdir(parents=True)
+    windows_binary = release_dir / "sakura-settings.exe"
+    macos_binary = release_dir / "sakura-settings"
+    windows_binary.write_text("windows", encoding="utf-8")
+    macos_binary.write_text("macos", encoding="utf-8")
+
+    monkeypatch.setattr(tauri_settings_module.sys, "platform", "win32")
+    assert tauri_settings_module.resolve_tauri_settings_binary(root, environ={}) == windows_binary
+
+    monkeypatch.setattr(tauri_settings_module.sys, "platform", "darwin")
+    assert tauri_settings_module.resolve_tauri_settings_binary(root, environ={}) == macos_binary
+
+
+def test_resolve_tauri_settings_binary_env_override_still_wins(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+    from app.ui.tauri_settings import TAURI_SETTINGS_BIN_ENV
+
+    root = _ui_runtime_root("tauri_settings_binary_env")
+    configured = root / "custom-settings"
+    configured.write_text("custom", encoding="utf-8")
+    release_dir = root / "tools" / "settings-tauri" / "src-tauri" / "target" / "release"
+    release_dir.mkdir(parents=True)
+    (release_dir / "sakura-settings.exe").write_text("windows", encoding="utf-8")
+
+    monkeypatch.setattr(tauri_settings_module.sys, "platform", "win32")
+    assert (
+        tauri_settings_module.resolve_tauri_settings_binary(
+            root,
+            environ={TAURI_SETTINGS_BIN_ENV: str(configured)},
+        )
+        == configured
+    )
+
+
+def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("tts_bundle_active_reuse")
-    root.mkdir(parents=True, exist_ok=True)
-    DialogStub = _make_tts_bundle_dialog_stub()
-    active_dialog = DialogStub(root)
-    monkeypatch.setattr(settings_dialog_module, "active_tts_bundle_download_dialog", lambda: active_dialog)
-    monkeypatch.setattr(
-        settings_dialog_module,
-        "TTSBundleDownloadDialog",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应新建下载窗口")),
+    from app.ui.tauri_settings import (
+        TAURI_LAYOUT_PREVIEW_MARKER,
+        TAURI_SETTINGS_RESULT_MARKER,
+        TauriSettingsProcess,
     )
-    events: list[tuple[str, object]] = []
+    from app.ui.theme import theme_to_mapping
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        on_prepare_secondary_window=lambda window: events.append(("prepare", window)),
-        on_present_secondary_window=lambda window: events.append(("present", window)),
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+    received: list[object] = []
+    completed: list[object] = []
+    process.layout_preview.connect(received.append)
+    process.completed.connect(completed.append)
+
+    marker = TAURI_LAYOUT_PREVIEW_MARKER.encode()
+    result_marker = TAURI_SETTINGS_RESULT_MARKER.encode()
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload_line = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    # 噪声行被忽略；预览行可以跨两次读取拼接。
+    process._process = FakeQProcess(b"webview noise\n" + marker + b'{"portrait_scale_percent": 150,')
+    process._handle_stdout()
+    assert received == []
+
+    process._process = FakeQProcess(
+        b' "control_panel_width": 720}\n' + result_marker + payload_line[:80]
     )
+    process._handle_stdout()
+    assert received == [{"portrait_scale_percent": 150, "control_panel_width": 720}]
+    assert completed == []
 
-    dialog._download_gpt_sovits_bundle()
-
-    assert dialog._tts_bundle_download_dialog is active_dialog
-    assert events == [("prepare", active_dialog), ("present", active_dialog)]
-    assert active_dialog.stylesheets[-1] == dialog.styleSheet()
-    dialog.deleteLater()
-    app.processEvents()
+    process._process = FakeQProcess(payload_line[80:])
+    process._handle_stdout(flush=True)
+    assert len(completed) == 1
+    assert completed[0].screen_awareness.enabled is True
 
 
-def test_settings_dialog_can_close_while_tts_bundle_download_runs(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_process_routes_keep_open_result_to_applied() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+    from app.ui.tauri_settings import TAURI_SETTINGS_RESULT_MARKER, TauriSettingsProcess
+    from app.ui.theme import theme_to_mapping
 
-    root = _ui_runtime_root("tts_bundle_close_settings")
-    root.mkdir(parents=True, exist_ok=True)
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
 
-    class RunningDownloadStub:
-        def is_download_running(self) -> bool:
-            return True
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+    applied: list[object] = []
+    completed: list[object] = []
+    process.applied.connect(applied.append)
+    process.completed.connect(completed.append)
 
-    dialog._tts_bundle_download_dialog = RunningDownloadStub()  # type: ignore[assignment]
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "information",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("设置窗口不应阻止关闭")),
-    )
-    finished: list[int] = []
-    dialog.finished.connect(finished.append)
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["keep_open"] = True
+    line = TAURI_SETTINGS_RESULT_MARKER + json.dumps(payload, ensure_ascii=False) + "\n"
+    process._process = FakeQProcess(line.encode("utf-8"))
 
-    dialog.reject()
+    process._handle_stdout()
 
-    assert finished == [settings_dialog_module.QDialog.DialogCode.Rejected]
-    dialog.deleteLater()
-    app.processEvents()
+    assert len(applied) == 1
+    assert applied[0].screen_awareness.enabled is True
+    assert completed == []
 
 
-def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_process_apply_rpc_waits_for_host_ack() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+    from app.ui.tauri_settings import TauriSettingsProcess
+    from app.ui.theme import theme_to_mapping
 
-    root = _ui_runtime_root("tts_bundle_ui")
-    root.mkdir(parents=True, exist_ok=True)
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
 
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
+        def write(self, data: bytes) -> int:
+            text = data.decode("utf-8")
+            self.writes.append(text)
+            return len(data)
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._nonce = "nonce"
+    process._process = FakeQProcess()
+    applied: list[str] = []
 
-    dialog._download_gpt_sovits_bundle()
-    assert DialogStub.last is not None
-    DialogStub.last.succeeded.emit(
-        _TTSBundleResultStub(root / "tts" / "cpu", provider="genie-tts")
-    )
+    def _ack(request_id: str, result: object) -> None:
+        applied.append(request_id)
+        process.resolve_apply_request(request_id, ok=True)
 
-    assert dialog.tts_enabled_check.isChecked()
-    assert dialog.tts_provider_combo.currentData() == "genie-tts"
-    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9881/"
-    assert dialog.tts_work_dir_edit.text().endswith(("tts\\cpu", "tts/cpu"))
-    monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda _settings, accept_values: dialog._complete_accept(accept_values),
-    )
+    process.apply_requested.connect(_ack)
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
 
-    dialog.accept()
-
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.provider == "genie-tts"
-    assert dialog.result_tts_settings.work_dir == root / "tts" / "cpu"
-    assert dialog.result_tts_settings.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_download_success_fills_macos_gptsovits_paths(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("tts_bundle_macos_ui")
-    work_dir = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_macos" / "GPT-SoVITS"
-    python_path = (
-        root
-        / "data"
-        / "tts_bundles"
-        / "installed"
-        / "gpt_sovits_macos"
-        / "miniforge3"
-        / "envs"
-        / "gpt-sovits310"
-        / "bin"
-        / "python"
-    )
-    tts_config_path = work_dir / "GPT_SoVITS" / "configs" / "tts_infer_sakura_macos.yaml"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    python_path.parent.mkdir(parents=True, exist_ok=True)
-    python_path.write_text("fake", encoding="utf-8")
-    tts_config_path.parent.mkdir(parents=True, exist_ok=True)
-    tts_config_path.write_text("custom: {}", encoding="utf-8")
-
-    DialogStub = _make_tts_bundle_dialog_stub()
-    monkeypatch.setattr(settings_dialog_module, "TTSBundleDownloadDialog", DialogStub)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    dialog._download_gpt_sovits_bundle()
-    assert DialogStub.last is not None
-    DialogStub.last.succeeded.emit(
-        _TTSBundleResultStub(
-            work_dir,
-            provider="custom-gpt-sovits",
-            python_path=python_path,
-            tts_config_path=tts_config_path,
+    process._handle_rpc_request(
+        json.dumps(
+            {
+                "id": "apply-1",
+                "method": "settings.apply",
+                "params": {"settings": payload},
+            },
+            ensure_ascii=False,
         )
     )
 
-    assert dialog.tts_enabled_check.isChecked()
-    assert dialog.tts_provider_combo.currentData() == "custom-gpt-sovits"
-    assert dialog.tts_work_dir_edit.text() == str(work_dir)
-    assert dialog.tts_python_path_edit.text() == str(python_path)
-    assert dialog.tts_config_path_edit.text() == str(tts_config_path)
+    assert applied == ["apply-1"]
+    assert '"ok": true' in process._process.writes[-1]
+
+
+def test_tauri_settings_apply_request_reports_save_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    critical_messages: list[str] = []
+
+    class SettingsServiceStub:
+        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
+            raise OSError("api.yaml locked")
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class ProcessStub:
+        def __init__(self) -> None:
+            self.responses: list[tuple[str, bool, str]] = []
+
+        def resolve_apply_request(self, request_id: str, *, ok: bool, error: str = "") -> None:
+            self.responses.append((request_id, ok, error))
+
     monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda _settings, accept_values: dialog._complete_accept(accept_values),
+        pet_window_module,
+        "show_themed_critical",
+        lambda _parent, _title, message: critical_messages.append(message),
     )
+    process = ProcessStub()
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.tauri_settings_process = process
 
-    dialog.accept()
+    window._on_tauri_settings_apply_requested("apply-1", _build_tauri_settings_result())
 
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.provider == "custom-gpt-sovits"
-    assert dialog.result_tts_settings.work_dir == work_dir
-    assert dialog.result_tts_settings.python_path == python_path
-    assert dialog.result_tts_settings.tts_config_path == tts_config_path
-    dialog.deleteLater()
-    app.processEvents()
+    assert critical_messages
+    assert process.responses == [("apply-1", False, "Tauri 设置没有保存成功。")]
+    assert window.tauri_settings_process is process
 
 
-def test_settings_dialog_skips_tts_test_when_tts_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_capability_allows_window_close() -> None:
+    capability_path = Path("tools/settings-tauri/src-tauri/capabilities/default.json")
+    capability = json.loads(capability_path.read_text(encoding="utf-8"))
+
+    assert "core:window:allow-close" in capability["permissions"]
+    assert "dialog:allow-open" in capability["permissions"]
+    assert "dialog:allow-save" in capability["permissions"]
+
+
+def test_tauri_settings_process_dispatches_screen_color_picker(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    from app.ui.settings_dialog import SettingsDialog
+    import app.ui.tauri_settings as tauri_settings
+    from app.ui.tauri_settings import TauriSettingsProcess
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_disabled")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("TTS 关闭时不应检测")),
-    )
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    monkeypatch.setattr(tauri_settings, "pick_screen_color", lambda: "#112233")
 
-    dialog.accept()
+    assert process._dispatch_rpc("theme.pick_screen_color", {}) == {"color": "#112233"}
 
-    assert dialog.result_tts_settings is not None
-    assert not dialog.result_tts_settings.enabled
-    dialog.deleteLater()
-    app.processEvents()
+    monkeypatch.setattr(tauri_settings, "pick_screen_color", lambda: None)
+
+    assert process._dispatch_rpc("theme.pick_screen_color", {}) == {"cancelled": True}
 
 
-def test_settings_dialog_enabled_tts_skips_test_when_settings_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_process_dispatches_memory_rpc_methods() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+    from app.ui.tauri_settings import TauriSettingsProcess
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_success")
-    character_kwargs = _settings_dialog_character_kwargs(root)
-    profile = character_kwargs["current_character"]
-    assert hasattr(profile, "voice")
-    assert profile.voice is not None
-    tts_settings = GPTSoVITSTTSSettings.from_character_profile(
-        character_profile=profile,
-        enabled=True,
-        api_url="http://127.0.0.1:9880/tts",
-        ref_lang=profile.voice.ref_lang,
-        text_lang=profile.voice.text_lang,
-        timeout_seconds=1,
-        work_dir=root / "tts" / "g50",
-    )
-    monkeypatch.setattr(
-        settings_dialog_module,
-        "default_provider_bundle_work_dir",
-        lambda _provider, _base_dir: root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro",
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=tts_settings,
-        base_dir=root,
-        **character_kwargs,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("TTS 配置未变时不应检测")),
+    class FakeMemoryStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object], bool, bool | None]] = []
+
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("search", dict(arguments), wait, None))
+            return {"status": "loading", "memories": []}
+
+        def create_memory(self, arguments, *, allow_sensitive=False, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("create", dict(arguments), wait, allow_sensitive))
+            return {"memory": {"id": "new", "content": arguments["content"]}, "ok": True}
+
+        def update_memory(self, arguments, *, allow_sensitive=False, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("update", dict(arguments), wait, allow_sensitive))
+            return {"memory": {"id": arguments["id"], "content": arguments["content"]}, "ok": True}
+
+        def forget_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.calls.append(("delete", dict(arguments), wait, None))
+            if arguments["id"] == "bad":
+                return {"status": "failed", "error": "boom", "memories": []}
+            return {"memory": {"id": arguments["id"], "content": ""}}
+
+    store = FakeMemoryStore()
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=store,
     )
 
-    dialog.accept()
+    assert process._dispatch_rpc("memory.search", {"query": "x"})["status"] == "loading"
+    assert process._dispatch_rpc("memory.upsert", {"content": "new"})["memory"]["id"] == "new"
+    assert process._dispatch_rpc("memory.upsert", {"id": "m1", "content": "edit"})["memory"]["id"] == "m1"
+    deleted = process._dispatch_rpc("memory.delete", {"ids": ["m1", "bad"]})
 
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.enabled
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_enabled_tts_tests_when_provider_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_provider_changed")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=replace(_minimal_tts_settings(), enabled=True),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    genie_index = dialog.tts_provider_combo.findData("genie-tts")
-    assert genie_index >= 0
-    dialog.tts_provider_combo.setCurrentIndex(genie_index)
-    calls: list[str] = []
-
-    def fake_start_tts_test(settings, accept_values):  # type: ignore[no-untyped-def]
-        calls.append(settings.provider)
-        dialog._complete_accept(accept_values)
-
-    monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
-
-    dialog.accept()
-
-    assert calls == ["genie-tts"]
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.provider == "genie-tts"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_enabled_tts_tests_when_character_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_character_changed")
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    _build_settings_dialog_character(root, "nanami", "Nanami")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.tts_enabled_check.setChecked(True)
-    nanami_index = dialog.character_combo.findData("nanami")
-    assert nanami_index >= 0
-    dialog.character_combo.setCurrentIndex(nanami_index)
-    calls: list[str] = []
-
-    def fake_start_tts_test(settings, accept_values):  # type: ignore[no-untyped-def]
-        calls.append(settings.character_name)
-        dialog._complete_accept(accept_values)
-
-    monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
-
-    dialog.accept()
-
-    assert calls == ["Nanami"]
-    assert dialog.result_character_id == "nanami"
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.enabled
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_disables_tts_when_selected_character_has_no_voice(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_no_voice")
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura", with_voice=False)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.tts_enabled_check.setChecked(True)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    monkeypatch.setattr(
-        dialog,
-        "_start_tts_settings_test",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("无语音角色不应进入 TTS 服务检测")),
-    )
-
-    dialog.accept()
-
-    assert warnings and "当前角色没有语音包" in warnings[0]
-    assert "参考文本" not in warnings[0]
-    assert not dialog.tts_enabled_check.isChecked()
-    assert dialog.result_tts_settings is not None
-    assert not dialog.result_tts_settings.enabled
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_tts_test_failure_keeps_enabled_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_failure")
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    _build_settings_dialog_character(root, "nanami", "Nanami")
-    work_dir = root / "tts" / "g50"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.tts_enabled_check.setChecked(True)
-    dialog.tts_provider_combo.setCurrentIndex(dialog.tts_provider_combo.findData("gpt-sovits"))
-    dialog.tts_work_dir_edit.setText(str(work_dir))
-    nanami_index = dialog.character_combo.findData("nanami")
-    assert nanami_index >= 0
-    dialog.character_combo.setCurrentIndex(nanami_index)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-
-    def fake_start_tts_test(_settings, accept_values):  # type: ignore[no-untyped-def]
-        dialog._pending_accept_values = accept_values
-        dialog._handle_tts_test_failed("服务启动失败")
-
-    monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
-
-    dialog.accept()
-
-    assert warnings and "服务启动失败" in warnings[0]
-    assert "TTS 设置会保留" in warnings[0]
-    assert "诊断信息（截图时请保留）" in warnings[0]
-    assert dialog.tts_enabled_check.isChecked()
-    assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.enabled
-    assert dialog.result_tts_settings.provider == "gpt-sovits"
-    assert dialog.result_tts_settings.work_dir == work_dir
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_skips_api_test_when_api_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("api_save_unchanged")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        dialog,
-        "_start_api_settings_test",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("API 未变时不应自动测试")),
-    )
-
-    dialog.accept()
-
-    assert dialog.result_api_settings is not None
-    assert dialog.result_api_settings.model == "test-model"
-    assert dialog.result_api_settings.temperature is None
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_tests_api_when_api_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("api_save_changed")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.vision_model_combo.setText("new-model")
-    calls: list[str] = []
-
-    def fake_start_api_test(settings, accept_values=None):  # type: ignore[no-untyped-def]
-        calls.append(settings.model)
-        assert accept_values is not None
-        dialog._continue_accept_after_api_test(accept_values)
-
-    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
-
-    dialog.accept()
-
-    assert calls == ["new-model"]
-    assert dialog.result_api_settings is not None
-    assert dialog.result_api_settings.model == "new-model"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_model_combo_saves_manual_input(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    dialog, app = _build_api_settings_dialog("api_manual_model")
-    dialog.vision_model_combo.setText("manual-model")
-    monkeypatch.setattr(dialog, "_start_api_settings_test", lambda settings, accept_values=None: dialog._continue_accept_after_api_test(accept_values))
-
-    dialog.accept()
-
-    assert dialog.result_api_settings is not None
-    assert dialog.result_api_settings.model == "manual-model"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_model_probe_populates_candidates_and_selects_first(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-
-    dialog, app = _build_api_settings_dialog("api_model_probe_empty", model="")
-    infos: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "information",
-        lambda _parent, _title, message: infos.append(message),
-    )
-
-    dialog._handle_api_model_probe_success(["z-model", "a-model"])
-
-    assert dialog.vision_model_combo.currentText() == "z-model"
-    assert [dialog.vision_model_combo.itemText(index) for index in range(dialog.vision_model_combo.count())] == ["z-model", "a-model"]
-    assert not hasattr(dialog.vision_model_combo, "_popup_list")
-    assert infos and "2" in infos[0]
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_model_popups_follow_current_theme_stylesheet() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-    from app.ui.theme import rgba
-
-    themed = ThemeSettings(
-        input_background_color="#102030",
-        panel_background_color="#203040",
-        text_color="#ddeeff",
-    )
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("api_model_popup_theme")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=themed,
-    )
-
-    dialog.vision_model_combo.set_model_names(["alpha-model", "beta-model"])
-    stylesheet = dialog.styleSheet()
-
-    assert "QComboBox QAbstractItemView" in stylesheet
-    assert rgba("#102030", 246) in stylesheet
-    assert rgba(themed.primary_color, 43) in stylesheet
-    assert "#ddeeff" in stylesheet
-    assert [dialog.vision_model_combo.itemText(index) for index in range(dialog.vision_model_combo.count())] == [
-        "alpha-model",
-        "beta-model",
+    assert deleted["deleted"] == [{"id": "m1", "content": ""}]
+    assert deleted["failed"] == [{"id": "bad", "error": "boom"}]
+    assert store.calls == [
+        ("search", {"query": "x", "limit": 120}, False, None),
+        ("create", {"content": "new"}, False, True),
+        ("update", {"id": "m1", "content": "edit"}, False, True),
+        ("delete", {"id": "m1"}, False, None),
+        ("delete", {"id": "bad"}, False, None),
     ]
-    assert not hasattr(dialog.vision_model_combo, "_popup_list")
-
-    dialog.deleteLater()
-    app.processEvents()
 
 
-def test_settings_dialog_model_probe_keeps_current_input(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_process_writes_memory_rpc_response_line() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
+    from app.ui.tauri_settings import (
+        TAURI_SETTINGS_RPC_MARKER,
+        TAURI_SETTINGS_RPC_RESULT_MARKER,
+        TauriSettingsProcess,
+    )
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
 
-    dialog, app = _build_api_settings_dialog("api_model_probe_keep_input", model="custom-model")
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args: None)
+    class FakeMemoryStore:
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            return {
+                "status": "ready",
+                "count": 1,
+                "memories": [{"id": "m1", "content": arguments["query"], "layer": "semantic"}],
+            }
 
-    dialog._handle_api_model_probe_success(["a-model", "b-model"])
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+            self.writes: list[bytes] = []
 
-    assert dialog.vision_model_combo.currentText() == "custom-model"
-    assert [dialog.vision_model_combo.itemText(index) for index in range(dialog.vision_model_combo.count())] == [
-        "a-model",
-        "b-model",
-    ]
-    dialog.deleteLater()
-    app.processEvents()
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    request = {"id": "rpc-1", "method": "memory.search", "params": {"query": "主人"}}
+    fake = FakeQProcess(
+        (TAURI_SETTINGS_RPC_MARKER + json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=FakeMemoryStore(),
+    )
+    process._process = fake
+
+    process._handle_stdout()
+
+    assert _process_events_until(app, lambda: bool(fake.writes))
+    line = b"".join(fake.writes).decode("utf-8").strip()
+    assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
+    payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])
+    assert payload["id"] == "rpc-1"
+    assert payload["ok"] is True
+    assert payload["result"]["memories"][0]["content"] == "主人"
 
 
-def test_settings_dialog_model_probe_failure_keeps_current_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_tauri_settings_memory_rpc_runs_off_main_thread() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
-    import app.ui.settings_dialog as settings_dialog_module
-
-    dialog, app = _build_api_settings_dialog("api_model_probe_failure", model="current-model")
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
+    from app.ui.tauri_settings import (
+        TAURI_SETTINGS_RPC_MARKER,
+        TAURI_SETTINGS_RPC_RESULT_MARKER,
+        TauriSettingsProcess,
     )
 
-    dialog._handle_api_model_probe_failed("无法连接")
+    class BlockingMemoryStore:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
 
-    assert len(warnings) == 1
-    assert "处理建议" in warnings[0]
-    assert "诊断信息（截图时请保留）：\n无法连接" in warnings[0]
-    assert dialog.vision_model_combo.currentText() == "current-model"
-    assert dialog.result_api_settings is None
-    dialog.deleteLater()
-    app.processEvents()
+        def search_memory(self, arguments, *, wait=True):  # type: ignore[no-untyped-def]
+            self.started.set()
+            assert self.release.wait(2)
+            return {
+                "status": "ready",
+                "count": 1,
+                "memories": [{"id": "m1", "content": arguments["query"], "layer": "semantic"}],
+            }
 
+    class FakeQProcess:
+        def __init__(self, chunk: bytes) -> None:
+            self._chunk = chunk
+            self.writes: list[bytes] = []
 
-def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+        def readAllStandardOutput(self) -> bytes:
+            chunk, self._chunk = self._chunk, b""
+            return chunk
 
-    from PySide6.QtWidgets import QDialogButtonBox
-
-    dialog, app = _build_api_settings_dialog("api_model_probe_busy")
-    save_button = dialog.button_box.button(QDialogButtonBox.StandardButton.Save)
-
-    dialog._active_test_section = "vision"
-    dialog._set_api_model_probe_busy(True)
-
-    assert not dialog.vision_probe_btn.isEnabled()
-    assert not dialog.vision_test_btn.isEnabled()
-    assert save_button is not None
-    assert not save_button.isEnabled()
-    assert save_button.text() == "检测模型..."
-
-    dialog._set_api_model_probe_busy(False)
-
-    assert dialog.vision_probe_btn.isEnabled()
-    assert dialog.vision_test_btn.isEnabled()
-    assert save_button.isEnabled()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_api_test_failure_blocks_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
 
     QApplication = qtwidgets.QApplication
     app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("api_save_failure")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
+    store = BlockingMemoryStore()
+    request = {"id": "rpc-1", "method": "memory.search", "params": {"query": "主人"}}
+    fake = FakeQProcess(
+        (TAURI_SETTINGS_RPC_MARKER + json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
     )
-    dialog.vision_model_combo.setText("bad-model")
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        memory_store=store,
     )
+    process._process = fake
 
-    def fake_start_api_test(_settings, accept_values=None):  # type: ignore[no-untyped-def]
-        dialog._pending_api_accept_values = accept_values
-        dialog._handle_api_test_failed("模型不可用")
+    started_at = time.monotonic()
+    process._handle_stdout()
+    elapsed = time.monotonic() - started_at
 
-    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
+    started = _process_events_until(app, lambda: store.started.is_set(), timeout_ms=3000)
+    store.release.set()
+    if not started:
+        _process_events_until(app, lambda: not process._memory_rpcs, timeout_ms=3000)
 
-    dialog.accept()
+    assert elapsed < 0.2
+    assert not fake.writes
+    assert started
+    assert not fake.writes
 
-    assert warnings and "模型不可用" in warnings[0]
-    assert dialog.result_api_settings is None
-    assert dialog.result_tts_settings is None
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_api_success_continues_to_tts_test(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("api_success_then_tts")
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    _build_settings_dialog_character(root, "nanami", "Nanami")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.vision_model_combo.setText("new-model")
-    dialog.tts_enabled_check.setChecked(True)
-    nanami_index = dialog.character_combo.findData("nanami")
-    assert nanami_index >= 0
-    dialog.character_combo.setCurrentIndex(nanami_index)
-    calls: list[str] = []
-
-    def fake_start_api_test(_settings, accept_values=None):  # type: ignore[no-untyped-def]
-        calls.append("api")
-        assert accept_values is not None
-        dialog._continue_accept_after_api_test(accept_values)
-
-    def fake_start_tts_test(_settings, accept_values):  # type: ignore[no-untyped-def]
-        calls.append("tts")
-        dialog._complete_accept(accept_values)
-
-    monkeypatch.setattr(dialog, "_start_api_settings_test", fake_start_api_test)
-    monkeypatch.setattr(dialog, "_start_tts_settings_test", fake_start_tts_test)
-
-    dialog.accept()
-
-    assert calls == ["api", "tts"]
-    assert dialog.result_api_settings is not None
-    assert dialog.result_api_settings.model == "new-model"
-    assert dialog.result_character_id == "nanami"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_blocks_save_while_tts_test_is_running(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("tts_save_running")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    messages: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "information",
-        lambda _parent, _title, message: messages.append(message),
-    )
-    dialog._tts_test_thread = object()  # type: ignore[assignment]
-
-    dialog.accept()
-
-    assert messages and "TTS 服务检测仍在进行" in messages[0]
-    assert dialog.result_tts_settings is None
-    dialog._tts_test_thread = None
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_import_character_archive_refreshes_combo(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_archive import export_character_archive
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    case_root = _ui_runtime_root("char_import_refresh")
-    root = case_root / "runtime"
-    source_root = case_root / "source"
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    imported_profile = _build_settings_dialog_character(source_root, "nanami", "Nanami")
-    archive_path = case_root / "nanami.char"
-    export_character_archive(imported_profile, archive_path)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), ""),
-    )
-    warnings: list[str] = []
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-
-    dialog._import_character_archive()
-
-    assert warnings == []
-    assert dialog.character_combo.currentData() == "nanami"
-    assert dialog._selected_character_profile().display_name == "Nanami"
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_import_voice_less_character_archive_disables_tts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_archive import export_character_archive
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    case_root = _ui_runtime_root("char_import_no_voice")
-    root = case_root / "runtime"
-    source_root = case_root / "source"
-    current_profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    imported_profile = _build_settings_dialog_character(source_root, "nanami", "Nanami", with_voice=False)
-    archive_path = case_root / "nanami.char"
-    export_character_archive(imported_profile, archive_path)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=current_profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    dialog.tts_enabled_check.setChecked(True)
-    messages: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), ""),
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "information",
-        lambda _parent, _title, message: messages.append(message),
-    )
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
-
-    dialog._import_character_archive()
-
-    assert dialog.character_combo.currentData() == "nanami"
-    assert dialog._selected_character_profile().voice is None
-    assert not dialog.tts_enabled_check.isChecked()
-    assert messages and "没有语音包" in messages[-1]
-    assert "TTS 已自动关闭" in messages[-1]
-    dialog.deleteLater()
-    app.processEvents()
+    assert _process_events_until(app, lambda: bool(fake.writes), timeout_ms=3000)
+    line = b"".join(fake.writes).decode("utf-8").strip()
+    assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
+    payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])
+    assert payload["id"] == "rpc-1"
+    assert payload["ok"] is True
+    assert payload["result"]["memories"][0]["content"] == "主人"
 
 
 def test_pet_window_retires_tts_provider_by_closing_it() -> None:
@@ -5248,8 +4703,8 @@ def _ui_runtime_root(name: str) -> Path:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / name
         / uuid.uuid4().hex
+        / name
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -5268,7 +4723,7 @@ def _write_settings_plugin_manifest(
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "plugin.yaml").write_text(
         f"""
-api_version: 1
+api_version: 2
 id: {plugin_id}
 name: {name}
 description: {description}
@@ -5277,7 +4732,7 @@ entry: plugin:DemoPlugin
 enabled: {str(enabled).lower()}
 priority: {priority}
 permissions:
-  - settings_panel
+  - plugin_settings
 """.strip(),
         encoding="utf-8",
     )
@@ -5286,1573 +4741,6 @@ permissions:
 def _write_fake_runtime_python(path: Path, content: str = "fake") -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
-
-
-def test_settings_dialog_allows_import_without_existing_character_registry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_archive import export_character_archive
-    from app.ui.settings_dialog import SettingsDialog
-
-    case_root = _ui_runtime_root("empty_char_import")
-    root = case_root / "runtime"
-    source_root = case_root / "source"
-    imported_profile = _build_settings_dialog_character(source_root, "nanami", "Nanami")
-    archive_path = case_root / "nanami.char"
-    export_character_archive(imported_profile, archive_path)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=None,
-        current_character=None,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), ""),
-    )
-    warnings: list[str] = []
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda *_args, **_kwargs: warnings.append(str(_args[2] if len(_args) > 2 else "")),
-    )
-
-    assert dialog.character_combo.currentText() == "尚未导入角色"
-    assert not dialog.character_combo.isEnabled()
-    assert not dialog.character_empty_label.isHidden()
-    assert not dialog.character_export_button.isEnabled()
-
-    dialog._import_character_archive()
-
-    assert warnings == []
-    assert dialog.character_combo.isEnabled()
-    assert dialog.character_combo.currentData() == "nanami"
-    assert dialog._selected_character_profile().display_name == "Nanami"
-    assert dialog.character_export_button.isEnabled()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_imports_voice_archive_for_selected_character(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    case_root = _ui_runtime_root("voice_archive_import")
-    root = case_root / "runtime"
-    profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    archive_path = _build_settings_dialog_voice_archive(case_root)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), ""),
-    )
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-
-    dialog._import_character_voice_archive()
-
-    imported = CharacterRegistry(root).get("sakura")
-    assert warnings == []
-    assert dialog.character_combo.currentData() == "sakura"
-    assert imported.voice is not None
-    assert imported.voice.gpt_model_path is not None
-    assert imported.voice.gpt_model_path.read_bytes() == b"imported-gpt"
-    assert imported.voice.ref_lang == "zh"
-    assert imported.voice.text_lang == "zh"
-    settings = dialog._validated_tts_settings(show_warnings=False, validate_enabled=False)
-    assert settings is not None
-    assert settings.ref_lang == "zh"
-    assert settings.text_lang == "zh"
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_export_button_uses_menu_actions(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    Qt = qtcore.Qt
-    case_root = _ui_runtime_root("char_export_menu")
-    root = case_root / "runtime"
-    profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    _build_settings_dialog_character(root, "nanami", "Nanami", with_voice=False)
-    _build_settings_dialog_character(root, "yuki", "Yuki", with_voice_models=False)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    save_dialogs: list[tuple[str, str, str]] = []
-
-    def fake_get_save_file_name(_parent, title, default_path, file_filter):  # type: ignore[no-untyped-def]
-        save_dialogs.append((title, Path(default_path).name, file_filter))
-        return ("", "")
-
-    monkeypatch.setattr(settings_dialog_module.QFileDialog, "getSaveFileName", fake_get_save_file_name)
-
-    assert dialog.character_export_button.text() == "导出"
-    assert dialog.character_export_button.menu() is dialog.character_export_menu
-    assert bool(dialog.character_export_menu.windowFlags() & Qt.WindowType.FramelessWindowHint)
-    assert bool(dialog.character_export_menu.windowFlags() & Qt.WindowType.NoDropShadowWindowHint)
-    assert dialog.character_export_menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    assert [action.text() for action in dialog.character_export_menu.actions()] == [
-        "导出完整包 (.char)",
-        "导出单角色包 (.char)",
-        "导出语音包 (.voice)",
-    ]
-    assert dialog.character_export_full_action.isEnabled()
-    assert dialog.character_export_card_action.isEnabled()
-    assert dialog.character_export_voice_action.isEnabled()
-
-    dialog.character_export_full_action.trigger()
-    dialog.character_export_card_action.trigger()
-    dialog.character_export_voice_action.trigger()
-
-    assert save_dialogs == [
-        ("导出 Sakura 完整角色包", "sakura.char", "Sakura 角色包 (*.char)"),
-        ("导出 Sakura 单角色包", "sakura.card.char", "Sakura 角色包 (*.char)"),
-        ("导出 Sakura TTS 模型包", "sakura.voice", "Sakura TTS 模型包 (*.voice)"),
-    ]
-
-    nanami_index = dialog.character_combo.findData("nanami")
-    assert nanami_index >= 0
-    dialog.character_combo.setCurrentIndex(nanami_index)
-    assert not dialog.character_export_full_action.isEnabled()
-    assert dialog.character_export_card_action.isEnabled()
-    assert not dialog.character_export_voice_action.isEnabled()
-    assert "没有完整语音模型" in dialog.character_export_full_action.toolTip()
-    assert "没有可导出的语音模型" in dialog.character_export_voice_action.toolTip()
-
-    yuki_index = dialog.character_combo.findData("yuki")
-    assert yuki_index >= 0
-    dialog.character_combo.setCurrentIndex(yuki_index)
-    assert not dialog.character_export_full_action.isEnabled()
-    assert dialog.character_export_card_action.isEnabled()
-    assert not dialog.character_export_voice_action.isEnabled()
-    assert "没有完整语音模型" in dialog.character_export_full_action.toolTip()
-    assert "没有可导出的语音模型" in dialog.character_export_voice_action.toolTip()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_exports_character_archive_in_background(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    import app.ui.settings.workers as settings_workers
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    case_root = _ui_runtime_root("char_export_background")
-    root = case_root / "runtime"
-    profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    output_path = case_root / "sakura.char"
-    started = threading.Event()
-    release = threading.Event()
-    exported: dict[str, object] = {}
-    messages: list[str] = []
-
-    def fake_export_character_archive(export_profile, export_path, *, include_voice=True):  # type: ignore[no-untyped-def]
-        exported["profile"] = export_profile
-        exported["path"] = export_path
-        exported["include_voice"] = include_voice
-        started.set()
-        assert release.wait(2)
-        Path(export_path).write_text("done", encoding="utf-8")
-
-    QApplication = qtwidgets.QApplication
-    QDialogButtonBox = qtwidgets.QDialogButtonBox
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getSaveFileName",
-        lambda *_args, **_kwargs: (str(output_path), ""),
-    )
-    monkeypatch.setattr(
-        settings_workers,
-        "export_character_archive",
-        fake_export_character_archive,
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "information",
-        lambda *_args, **_kwargs: messages.append(str(_args[2])),
-    )
-
-    dialog._export_current_character_archive()
-
-    try:
-        assert started.wait(1.5)
-        app.processEvents()
-        assert dialog._character_export_thread is not None
-        assert exported["profile"] == profile
-        assert exported["path"] == output_path
-        assert exported["include_voice"] is True
-        assert not dialog.character_import_button.isEnabled()
-        assert not dialog.character_export_button.isEnabled()
-        assert not dialog.button_box.button(QDialogButtonBox.StandardButton.Save).isEnabled()
-        assert not dialog.button_box.button(QDialogButtonBox.StandardButton.Cancel).isEnabled()
-    finally:
-        release.set()
-
-    assert _process_events_until(app, lambda: dialog._character_export_thread is None)
-
-    assert output_path.read_text(encoding="utf-8") == "done"
-    assert dialog.character_import_button.isEnabled()
-    assert dialog.character_export_button.isEnabled()
-    assert dialog.button_box.button(QDialogButtonBox.StandardButton.Save).isEnabled()
-    assert dialog.button_box.button(QDialogButtonBox.StandardButton.Cancel).isEnabled()
-    assert any(str(output_path) in message for message in messages)
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_formats_memory_time_as_local_timezone() -> None:
-    from app.ui.settings_dialog import _format_memory_time
-
-    utc_time = "2026-06-01T18:42:27Z"
-    expected = datetime.fromisoformat("2026-06-01T18:42:27+00:00").astimezone().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    assert _format_memory_time(utc_time) == expected
-    assert _format_memory_time("2026-06-02T02:42:27+08:00") == expected
-
-
-def test_settings_dialog_loads_memory_after_memory_tab_selected_in_background() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-            self.last_limit: int | None = 20
-
-        def list_memories(self, *, limit: int | None = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            self.last_limit = limit
-            return [
-                {
-                    "id": "memory-001",
-                    "content": "主人喜欢精简的管理界面",
-                    "category": "preference",
-                    "importance": 0.7,
-                    "confidence": 0.9,
-                    "source": "manual",
-                    "updated_at": "2026-06-02T01:00:00Z",
-                }
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    assert dialog.memory_status_label.text() == "打开记忆页时读取长期记忆。"
-    assert memory_store.list_calls == 0
-    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-    assert nav is not None
-    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-    nav.setCurrentRow(memory_row)
-
-    assert dialog.memory_status_label.text() == "正在读取长期记忆..."
-    assert _process_events_until(app, lambda: memory_store.list_calls == 1)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert dialog.memory_status_label.text() == "已加载 1 条记忆"
-    assert memory_store.last_limit is None
-    assert dialog.memory_table.columnCount() == 4
-    assert [
-        dialog.memory_table.horizontalHeaderItem(column).text()
-        for column in range(dialog.memory_table.columnCount())
-    ] == ["", "内容", "层级", "更新时间"]
-    assert dialog.memory_table.item(0, 1).text() == "主人喜欢精简的管理界面"
-    assert "preference" not in [
-        dialog.memory_table.item(0, column).text()
-        for column in range(dialog.memory_table.columnCount())
-        if dialog.memory_table.item(0, column) is not None
-    ]
-    dialog._open_memory_editor(0)
-    assert dialog.memory_category_edit.text() == "preference"
-    assert dialog.memory_source_edit.text() == "manual"
-    # 编辑区是贴合内容的滚动面板:Maximum 纵向策略 + sizeHint 取内容高度,空间充足时贴合
-    # 表单不留空白,窗口压矮时内部滚动而非把各行压重叠。
-    assert isinstance(dialog.memory_editor_container, qtwidgets.QScrollArea)
-    assert dialog.memory_editor_container.widgetResizable()
-    assert (
-        dialog.memory_editor_container.verticalScrollBarPolicy()
-        == qtcore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-    )
-    assert (
-        dialog.memory_editor_container.sizePolicy().verticalPolicy()
-        == qtwidgets.QSizePolicy.Policy.Maximum
-    )
-    # sizeHint 贴合内部表单高度(而非 QScrollArea 默认经验值),才能既不留空白又能随内容收缩。
-    assert (
-        dialog.memory_editor_container.sizeHint().height()
-        >= dialog.memory_editor_content.sizeHint().height()
-    )
-    # 编辑区可见时表格仍不封顶,凭 stretch 随窗口增高。
-    assert not dialog.memory_editor_container.isHidden()
-    assert dialog.memory_table.maximumHeight() == 16777215
-    assert dialog.memory_content_edit.minimumHeight() == 88
-    assert dialog.memory_content_edit.maximumHeight() == 88
-    assert (
-        dialog.memory_content_edit.sizePolicy().verticalPolicy()
-        == qtwidgets.QSizePolicy.Policy.Fixed
-    )
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_sorts_memory_by_latest_time_on_top() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return [
-                {
-                    "id": "memory-old",
-                    "content": "较旧记忆",
-                    "updated_at": "2026-06-01T10:00:00+08:00",
-                },
-                {"id": "memory-missing-time", "content": "缺少时间记忆"},
-                {
-                    "id": "memory-created",
-                    "content": "按创建时间兜底的记忆",
-                    "created_at": "2026-06-02T09:00:00+08:00",
-                },
-                {
-                    "id": "memory-new",
-                    "content": "最新记忆",
-                    "updated_at": "2026-06-03T12:00:00+08:00",
-                },
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    assert memory_store.list_calls == 0
-    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-    assert nav is not None
-    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-    nav.setCurrentRow(memory_row)
-
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert [dialog.memory_table.item(row, 1).text() for row in range(4)] == [
-        "最新记忆",
-        "按创建时间兜底的记忆",
-        "较旧记忆",
-        "缺少时间记忆",
-    ]
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_pins_edited_memory_to_top() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return [
-                {
-                    "id": f"memory-{i:02d}",
-                    "content": f"记忆内容 {i}",
-                    "updated_at": f"2026-06-{20 - i:02d}T10:00:00+08:00",
-                }
-                for i in range(6)
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-    nav.setCurrentRow(memory_row)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    # 列表与编辑区由竖直 QSplitter 隔开,可手动拖动加长。
-    assert isinstance(dialog.memory_list_splitter, qtwidgets.QSplitter)
-    assert dialog.memory_list_splitter.orientation() == qtcore.Qt.Orientation.Vertical
-    assert dialog.memory_list_splitter.count() == 2
-
-    # 初始按时间倒序:memory-00 最新在首行,memory-05 在末行。
-    initial_ids = [str(m.get("id")) for m in dialog._visible_memories]
-    assert initial_ids[0] == "memory-00"
-    assert initial_ids[-1] == "memory-05"
-
-    # 点击末行进入编辑:该项被钉到首行,详情面板展开,不再被遮挡。
-    last_row = len(dialog._visible_memories) - 1
-    dialog._switch_memory_single_selection(last_row)
-    app.processEvents()
-    assert str(dialog._visible_memories[0].get("id")) == "memory-05"
-    assert dialog.memory_table.item(0, 1).text() == "记忆内容 5"
-    assert dialog._active_memory_id == "memory-05"
-    assert not dialog.memory_editor_container.isHidden()
-
-    # 退出编辑后恢复原有时间倒序,不再置顶。
-    dialog._clear_memory_selection()
-    app.processEvents()
-    restored_ids = [str(m.get("id")) for m in dialog._visible_memories]
-    assert restored_ids == initial_ids
-    assert dialog.memory_editor_container.isHidden()
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_memory_loader_thread_is_not_dialog_child() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class BlockingMemoryStore:
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.started.set()
-            assert self.release.wait(2)
-            return []
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = BlockingMemoryStore()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    try:
-        nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-        assert nav is not None
-        memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-        nav.setCurrentRow(memory_row)
-        assert _process_events_until(app, lambda: memory_store.started.is_set())
-        assert dialog._memory_list_thread is not None
-        assert dialog._memory_list_thread.parent() is None
-    finally:
-        memory_store.release.set()
-
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_shows_memory_dependency_download_hint() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-
-        def needs_embedding_model_download(self) -> bool:
-            return True
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return []
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    expected = "长期记忆系统正在初始化，首次启动可能需要下载本地嵌入模型，请稍等。"
-    assert dialog.memory_status_label.text() == "打开记忆页时读取长期记忆。"
-    assert memory_store.list_calls == 0
-    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-    assert nav is not None
-    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-    nav.setCurrentRow(memory_row)
-
-    assert dialog.memory_status_label.text() == expected
-    assert dialog.memory_table.item(0, 1).text() == expected
-    assert _process_events_until(app, lambda: memory_store.list_calls == 1)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert dialog.memory_status_label.text() == "已加载 0 条记忆"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_imports_memory_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QListWidget")):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class ImportResult:
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
-        cache_folder = Path("runtime/hf-cache/hub")
-        snapshot_count = 1
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-            self.imported_paths: list[Path] = []
-
-        def needs_embedding_model_download(self) -> bool:
-            return True
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return []
-
-        def import_embedding_model_archive(self, archive_path: Path) -> ImportResult:
-            self.imported_paths.append(archive_path)
-            return ImportResult()
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("memory_model_import_dialog")
-    archive_path = root / "models--sentence-transformers--all-MiniLM-L6-v2.zip"
-    archive_path.write_bytes(b"zip")
-    memory_store = MemoryStoreStub()
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), "记忆模型 ZIP (*.zip)"),
-    )
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    assert hasattr(dialog, "memory_import_model_button")
-    nav = dialog.findChild(qtwidgets.QListWidget, "settingsNavList")
-    assert nav is not None
-    memory_row = [nav.item(index).text() for index in range(nav.count())].index("记忆")
-    nav.setCurrentRow(memory_row)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog.memory_import_model_button.click()
-
-    assert _process_events_until(app, lambda: dialog._memory_model_import_thread is None)
-    assert memory_store.imported_paths == [archive_path]
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert memory_store.list_calls >= 2
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_downloads_memory_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class DownloadResult:
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
-        cache_folder = Path("runtime/hf-cache/hub")
-        snapshot_count = 1
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-            self.download_calls = 0
-
-        def needs_embedding_model_download(self) -> bool:
-            return self.download_calls == 0
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return []
-
-        def download_embedding_model(self) -> DownloadResult:
-            self.download_calls += 1
-            return DownloadResult()
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=_ui_runtime_root("memory_model_download_dialog"),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    assert hasattr(dialog, "memory_download_model_button")
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog.memory_download_model_button.click()
-
-    assert _process_events_until(app, lambda: dialog._memory_model_download_thread is None)
-    assert memory_store.download_calls == 1
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert memory_store.list_calls >= 2
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_memory_model_download_failure_shows_release_link(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    dialog = type("DialogStub", (), {})()
-    dialog.memory_status_label = type("LabelStub", (), {"setText": lambda self, _text: None})()
-
-    SettingsDialog._handle_memory_model_download_failed(dialog, "HTTP 403")
-
-    assert len(warnings) == 1
-    assert "models--sentence-transformers--all-MiniLM-L6-v2.zip" in warnings[0]
-    assert "诊断信息（截图时请保留）：\nHTTP 403" in warnings[0]
-
-
-def test_settings_dialog_imports_backchannel_model_archive(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class ImportResult:
-        model_name = "BAAI/bge-small-zh-v1.5"
-        cache_folder = Path("runtime/hf-cache/hub")
-        snapshot_count = 1
-
-    imported_paths: list[Path] = []
-
-    def fake_import(archive_path: Path, _base_dir: Path) -> ImportResult:
-        imported_paths.append(archive_path)
-        return ImportResult()
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("backchannel_model_import_dialog")
-    archive_path = root / "models--BAAI--bge-small-zh-v1.5.zip"
-    archive_path.write_bytes(b"zip")
-    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", lambda _base_dir: False)
-    monkeypatch.setattr(settings_dialog_module, "import_backchannel_model_archive", fake_import)
-    monkeypatch.setattr(
-        settings_dialog_module.QFileDialog,
-        "getOpenFileName",
-        lambda *_args, **_kwargs: (str(archive_path), "接话模型 ZIP (*.zip)"),
-    )
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-
-    assert hasattr(dialog, "backchannel_import_model_button")
-    dialog.backchannel_import_model_button.click()
-
-    assert _process_events_until(app, lambda: dialog._backchannel_model_import_thread is None)
-    assert imported_paths == [archive_path]
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_downloads_backchannel_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class DownloadResult:
-        model_name = "BAAI/bge-small-zh-v1.5"
-        cache_folder = Path("runtime/hf-cache/hub")
-        snapshot_count = 1
-
-    cached = {"ready": False}
-    download_calls: list[Path] = []
-
-    def fake_download(base_dir: Path) -> DownloadResult:
-        download_calls.append(base_dir)
-        cached["ready"] = True
-        return DownloadResult()
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("backchannel_model_download_dialog")
-    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", lambda _base_dir: cached["ready"])
-    monkeypatch.setattr(settings_dialog_module, "download_backchannel_model", fake_download)
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "warning", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        backchannel_settings=BackchannelSettings(enabled=True, mode="hybrid"),
-    )
-
-    assert hasattr(dialog, "backchannel_download_model_button")
-    dialog.backchannel_download_model_button.click()
-
-    assert _process_events_until(app, lambda: dialog._backchannel_model_download_thread is None)
-    assert download_calls == [root]
-    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_refreshes_backchannel_setup_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    cached = {"ready": False}
-
-    def fake_cached(_base_dir: Path) -> bool:
-        return cached["ready"]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("backchannel_setup_refresh_dialog")
-    monkeypatch.setattr(settings_dialog_module, "backchannel_model_cached", fake_cached)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        backchannel_settings=BackchannelSettings(enabled=True, mode="hybrid"),
-    )
-
-    assert "未导入模型" in dialog.backchannel_model_status_label.text()
-    cached["ready"] = True
-    dialog.backchannel_refresh_status_button.click()
-
-    assert "模型增强可用" in dialog.backchannel_model_status_label.text()
-    assert "缺模型" not in dialog.backchannel_setup_hint_label.text()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_filters_memory_locally() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return [
-                {"id": "alpha-001", "content": "偏好浅色界面"},
-                {"id": "beta-002", "content": "喜欢批量管理记忆"},
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert memory_store.list_calls == 1
-
-    dialog.memory_search_edit.setText("批量")
-    app.processEvents()
-
-    assert memory_store.list_calls == 1
-    assert dialog.memory_table.rowCount() == 1
-    assert dialog.memory_table.item(0, 1).text() == "喜欢批量管理记忆"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_deletes_selected_memories(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.list_calls = 0
-            self.deleted: list[str] = []
-            self.records = [
-                {"id": "memory-001", "content": "第一条记忆"},
-                {"id": "memory-002", "content": "第二条记忆"},
-                {"id": "memory-003", "content": "第三条记忆"},
-            ]
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            self.list_calls += 1
-            return [record for record in self.records if record["id"] not in self.deleted]
-
-        def forget_memory(self, arguments):  # type: ignore[no-untyped-def]
-            self.deleted.append(arguments["id"])
-            return {"forgotten": {"id": arguments["id"]}}
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: settings_dialog_module.QMessageBox.StandardButton.Yes,
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._set_memory_checked(0, True)
-    dialog._set_memory_checked(1, True)
-    app.processEvents()
-
-    assert dialog.memory_delete_button.isEnabled()
-    assert dialog._selected_memory_ids == {"memory-001", "memory-002"}
-    dialog._delete_memory_entry()
-
-    assert memory_store.deleted == ["memory-001", "memory-002"]
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert memory_store.list_calls == 2
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_reports_partial_memory_delete_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.deleted: list[str] = []
-            self.records = [
-                {"id": "memory-001", "content": "第一条记忆"},
-                {"id": "memory-002", "content": "第二条记忆"},
-            ]
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [record for record in self.records if record["id"] not in self.deleted]
-
-        def forget_memory(self, arguments):  # type: ignore[no-untyped-def]
-            if arguments["id"] == "memory-002":
-                raise RuntimeError("后端删除失败")
-            self.deleted.append(arguments["id"])
-            return {"forgotten": {"id": arguments["id"]}}
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: settings_dialog_module.QMessageBox.StandardButton.Yes,
-    )
-    monkeypatch.setattr(
-        settings_dialog_module.QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._set_memory_checked(0, True)
-    dialog._set_memory_checked(1, True)
-    dialog._delete_memory_entry()
-
-    assert warnings
-    assert "已删除 1 条记忆，另有 1 条删除失败" in warnings[-1]
-    assert "诊断信息（截图时请保留）" in warnings[-1]
-    assert "后端删除失败" in warnings[-1]
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_selects_all_visible_memories_without_native_selection() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [
-                {"id": "memory-001", "content": "第一条记忆"},
-                {"id": "memory-002", "content": "第二条记忆"},
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._toggle_select_all_visible_memories()
-
-    assert dialog._selected_memory_ids == {"memory-001", "memory-002"}
-    assert dialog.memory_select_all_check.isChecked()
-    row_checkbox = dialog.memory_table.cellWidget(0, 0).findChild(qtwidgets.QCheckBox)
-    assert row_checkbox is not None
-    assert row_checkbox.isChecked()
-    assert dialog.memory_table.selectionModel().selectedRows() == []
-    assert dialog.memory_editor_container.isHidden()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_select_all_only_affects_filtered_results() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [
-                {"id": "alpha-001", "content": "浅色界面"},
-                {"id": "beta-002", "content": "批量管理"},
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog.memory_search_edit.setText("批量")
-    dialog._toggle_select_all_visible_memories()
-
-    assert dialog._selected_memory_ids == {"beta-002"}
-    assert dialog.memory_table.rowCount() == 1
-    assert dialog.memory_select_all_check.isChecked()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_single_selection_opens_editor_and_updates_memory(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.updated: list[dict[str, str]] = []
-            self.records = [{"id": "memory-001", "content": "旧内容"}]
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return list(self.records)
-
-        def update_memory(self, arguments, *, allow_sensitive=False):  # type: ignore[no-untyped-def]
-            self.updated.append(
-                {
-                    "id": arguments["id"],
-                    "content": arguments["content"],
-                    "allow_sensitive": str(allow_sensitive),
-                }
-            )
-            self.records[0]["content"] = arguments["content"]
-            return {"memory": self.records[0]}
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._open_memory_editor(0)
-
-    assert not dialog.memory_editor_container.isHidden()
-    assert dialog.memory_save_button.text() == "保存修改"
-    assert dialog.memory_content_edit.toPlainText() == "旧内容"
-    assert dialog.memory_preview_label.text() == ""
-
-    dialog.memory_content_edit.setPlainText("新内容")
-    dialog._save_memory_entry()
-
-    assert memory_store.updated == [
-        {"id": "memory-001", "content": "新内容", "allow_sensitive": "True"}
-    ]
-    assert dialog._selected_memory_ids == {"memory-001"}
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_content_click_switches_to_single_selection() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [
-                {"id": "memory-001", "content": "第一条记忆"},
-                {"id": "memory-002", "content": "第二条记忆"},
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._set_memory_checked(0, True)
-    dialog._handle_memory_item_clicked(dialog.memory_table.item(1, 1))
-
-    assert dialog._selected_memory_ids == {"memory-002"}
-    assert dialog._editing_memory_id == "memory-002"
-    assert dialog.memory_content_edit.toPlainText() == "第二条记忆"
-    assert dialog.memory_selection_label.text() == "已选择 1 条"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_first_column_click_toggles_check_only() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [{"id": "memory-001", "content": "第一条记忆"}]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._handle_memory_item_clicked(dialog.memory_table.item(0, 0))
-
-    assert dialog._selected_memory_ids == {"memory-001"}
-    assert dialog._editing_memory_id is None
-    assert dialog.memory_editor_container.isHidden()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_unchecking_last_selected_memory_collapses_editor() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [{"id": "memory-001", "content": "第一条记忆"}]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._handle_memory_item_clicked(dialog.memory_table.item(0, 1))
-    assert dialog._selected_memory_ids == {"memory-001"}
-    assert not dialog.memory_editor_container.isHidden()
-
-    dialog._set_memory_checked(0, False)
-
-    assert dialog._selected_memory_ids == set()
-    assert dialog._editing_memory_id is None
-    assert dialog.memory_editor_container.isHidden()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_multiple_checked_rows_keep_current_editor() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return [
-                {"id": "memory-001", "content": "第一条记忆"},
-                {"id": "memory-002", "content": "第二条记忆"},
-            ]
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=MemoryStoreStub(),  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-
-    dialog._open_memory_editor(0)
-    assert not dialog.memory_editor_container.isHidden()
-    dialog._set_memory_checked(0, True)
-    dialog._set_memory_checked(1, True)
-
-    assert not dialog.memory_editor_container.isHidden()
-    assert dialog.memory_delete_button.isEnabled()
-    assert dialog.memory_selection_label.text() == "已选择 2 条"
-    assert dialog.memory_content_edit.toPlainText() == "第一条记忆"
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_collapses_manual_memory_entry_after_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.created: list[str] = []
-            self.records: list[dict[str, str]] = []
-
-        def list_memories(self, *, limit: int = 20):  # type: ignore[no-untyped-def]
-            return list(self.records)
-
-        def create_memory(self, arguments, *, allow_sensitive=False):  # type: ignore[no-untyped-def]
-            self.created.append(arguments["content"])
-            self.records.append({"id": "manual-001", "content": arguments["content"]})
-            return {"memory": self.records[-1], "ok": True}
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    memory_store = MemoryStoreStub()
-    monkeypatch.setattr(settings_dialog_module.QMessageBox, "information", lambda *_args, **_kwargs: None)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        memory_store=memory_store,  # type: ignore[arg-type]
-    )
-    _open_settings_memory_tab(dialog, qtwidgets, app)
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    assert not dialog.memory_editor_container.isVisible()
-
-    dialog._all_memories = [{"id": "existing-001", "content": "已有记忆"}]
-    dialog._refresh_memory_table()
-    dialog._set_memory_checked(0, True)
-    dialog.memory_new_button.setChecked(True)
-    dialog.memory_content_edit.setPlainText("手动新增的长期记忆")
-    dialog._save_memory_entry()
-
-    assert "existing-001" not in dialog._selected_memory_ids
-    assert memory_store.created == ["手动新增的长期记忆"]
-    assert not dialog.memory_new_button.isChecked()
-    assert dialog.memory_content_edit.toPlainText() == ""
-    assert _process_events_until(app, lambda: dialog._memory_list_thread is None)
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_show_settings_does_not_save_or_reload_api_when_unchanged(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    calls: dict[str, int] = {"save_api": 0, "update_api": 0, "reload_memory": 0}
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
-            calls["save_api"] += 1
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-    class ApiClientStub:
-        settings = api_settings
-
-        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
-            calls["update_api"] += 1
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            calls["reload_memory"] += 1
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "sakura"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_portrait_scale_percent = 100
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
-
-    window.show_settings()
-
-    assert calls == {"save_api": 0, "update_api": 0, "reload_memory": 0}
 
 
 def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> None:
@@ -6887,7 +4775,6 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
         {
             "api_client": window.api_client,
             "vision_api_client": None,
-            "visual_context_api_client": None,
         },
     )()
     window.memory_store = MemoryStoreStub()
@@ -6900,16 +4787,12 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
             "vision", "Vision", "https://vision.example.com/v1", "vision-key", ("vision-model",)
         ),
         ApiConfigProfile(
-            "visual", "Visual", "https://visual.example.com/v1", "visual-key", ("visual-model",)
-        ),
-        ApiConfigProfile(
             "memory", "Memory", "https://memory.example.com/v1", "memory-key", ("memory-model",)
         ),
     ]
     selection = ModelSelectionSettings(
         chat=ModelSlotSelection("chat", "chat-model"),
         vision_chat=ModelSlotSelection("vision", "vision-model"),
-        visual_context=ModelSlotSelection("visual", "visual-model"),
         memory_curation=ModelSlotSelection("memory", "memory-model"),
     )
 
@@ -6922,280 +4805,7 @@ def test_update_runtime_api_clients_wires_plugin_emitter_to_slot_clients() -> No
 
     assert window.agent_runtime.api_client._event_emit is emit_event
     assert window.agent_runtime.vision_api_client._event_emit is emit_event
-    assert window.agent_runtime.visual_context_api_client._event_emit is emit_event
     assert window.memory_curator.api_client._event_emit is emit_event
-
-
-def test_show_settings_saves_and_applies_runtime_loop_settings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    runtime_settings = RuntimeLoopSettings(
-        max_agent_steps_per_turn=6,
-        max_tool_calls_per_step=5,
-        max_tool_calls_per_turn=11,
-    )
-    saved_runtime_settings: list[RuntimeLoopSettings] = []
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_runtime_loop_settings(self, settings):  # type: ignore[no-untyped-def]
-            saved_runtime_settings.append(settings)
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-    class ApiClientStub:
-        settings = api_settings
-
-        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            pass
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "sakura"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_runtime_loop_settings = runtime_settings
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_portrait_scale_percent = 100
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
-
-    window.show_settings()
-
-    assert saved_runtime_settings == [runtime_settings]
-    assert window.agent_runtime.runtime_loop_settings == runtime_settings
-
-
-def test_show_settings_applies_launch_at_login_change(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    saved_startup_settings: list[StartupSettings] = []
-    applied: list[tuple[Path, bool]] = []
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_startup_settings(self, settings):  # type: ignore[no-untyped-def]
-            saved_startup_settings.append(settings)
-
-        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-    class ApiClientStub:
-        settings = api_settings
-
-        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            pass
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "sakura"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_startup_settings = StartupSettings(launch_at_login=True)
-            self.result_portrait_scale_percent = 100
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    window.startup_settings = StartupSettings(launch_at_login=False)
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(
-        pet_window_module,
-        "set_launch_at_login_enabled",
-        lambda base_dir, enabled: applied.append((base_dir, enabled)),
-    )
-    monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
-
-    window.show_settings()
-
-    assert applied == [(Path("."), True)]
-    assert saved_startup_settings == [StartupSettings(launch_at_login=True)]
-    assert window.startup_settings == StartupSettings(launch_at_login=True)
-
-
-def test_show_settings_reuses_active_dialog_from_tray(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    events: list[str] = []
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            events.append("load_tts")
-            return tts_settings
-
-    class ApiClientStub:
-        settings = api_settings
-
-    class MemoryStoreStub:
-        pass
-
-    class DialogStub:
-        def __init__(self, *_args, **_kwargs) -> None:
-            events.append("dialog_init")
-            self.finished = _NonModalSettingsDialogStub._FinishedSignal()
-
-        def show(self) -> None:
-            # 非模态：show 后窗口保持打开，不触发 finished（不清空 settings_dialog）。
-            events.append("show")
-
-        def raise_(self) -> None:
-            events.append("raise")
-
-        def activateWindow(self) -> None:
-            events.append("activate")
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-
-    # 第一次打开：非模态创建并显示窗口。
-    window.show_settings()
-    # 第二次打开（窗口仍开着）：应激活已有窗口，而不是再建一个。
-    window.show_settings()
-
-    assert events == [
-        "load_tts",
-        "dialog_init",
-        "show",
-        "raise",
-        "activate",
-        "show",
-        "raise",
-        "activate",
-    ]
-    # 窗口仍打开（非模态未关闭），settings_dialog 持有引用。
-    assert getattr(window, "settings_dialog", None) is not None
-
-
-def test_show_settings_temporarily_suppresses_topmost_without_reapplying_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    native_sync_events: list[bool] = []
-    apply_flag_events: list[str] = []
-    raise_events: list[str] = []
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-    class ApiClientStub:
-        settings = api_settings
-
-    class MemoryStoreStub:
-        pass
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        _dialog_result = pet_window_module.QDialog.DialogCode.Rejected
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    window.always_on_top_enabled = True
-    window._sync_native_topmost_state = (
-        lambda: native_sync_events.append(window._secondary_windows_suppress_topmost)
-    )
-    window._apply_window_flags = lambda: apply_flag_events.append("apply_flags")
-    window.isVisible = lambda: True
-    window.raise_ = lambda: raise_events.append("raise")
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-
-    window.show_settings()
-
-    assert native_sync_events == [True, False]
-    assert apply_flag_events == []
-    assert raise_events == ["raise"]
-    assert window._secondary_windows_suppress_topmost is False
 
 
 def test_registered_secondary_window_suppresses_topmost_until_hidden() -> None:
@@ -7342,259 +4952,6 @@ def test_secondary_window_quiesce_leaves_input_bar_polling_enabled() -> None:
     assert bubble_polling_events == [False, True]
 
 
-def test_show_settings_saves_and_applies_subtitle_display_speed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-    saved_ui_values: dict[str, object] = {}
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_system_values(self, section, values):  # type: ignore[no-untyped-def]
-            assert section == "ui"
-            saved_ui_values.update(values)
-
-    class ApiClientStub:
-        settings = api_settings
-
-        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            pass
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "sakura"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_portrait_scale_percent = 100
-            self.result_subtitle_typing_interval_ms = 80
-            self.result_reply_segment_pause_ms = 900
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
-
-    window.show_settings()
-
-    assert saved_ui_values == {
-        "portrait_scale_percent": 100,
-        "subtitle_typing_interval_ms": 80,
-        "reply_segment_pause_ms": 900,
-    }
-    assert window.subtitle_typing_interval_ms == 80
-    assert window.reply_segment_pause_ms == 900
-    assert window.subtitle_controller.display_speeds == [(80, 900)]
-
-
-
-def test_show_settings_reloads_memory_in_background_when_api_changes(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    old_settings = ApiSettings("https://old.example.com/v1", "old-key", "old-model")
-    new_settings = ApiSettings("https://new.example.com/v1", "new-key", "new-model")
-    tts_settings = _minimal_tts_settings()
-    calls: dict[str, object] = {"save_api": 0, "updated": None, "reloaded": None, "wait": None}
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, settings):  # type: ignore[no-untyped-def]
-            calls["save_api"] = int(calls["save_api"]) + 1
-            calls["saved"] = settings
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-    class ApiClientStub:
-        settings = old_settings
-
-        def update_settings(self, settings):  # type: ignore[no-untyped-def]
-            calls["updated"] = settings
-            self.settings = settings
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, settings, *, wait=False):  # type: ignore[no-untyped-def]
-            calls["reloaded"] = settings
-            calls["wait"] = wait
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.result_api_settings = new_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "sakura"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_portrait_scale_percent = 100
-
-    messages: list[str] = []
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(
-        pet_window_module,
-        "show_themed_information",
-        lambda _parent, _title, text, **_kwargs: messages.append(str(text)),
-    )
-
-    window.show_settings()
-
-    assert calls["save_api"] == 1
-    assert calls["saved"] == new_settings
-    assert calls["updated"] == new_settings
-    assert calls["reloaded"] == new_settings
-    assert calls["wait"] is False
-    assert "长期记忆系统正在后台刷新 API 配置" in messages[-1]
-
-
-def test_show_settings_uses_dialog_refreshed_character_registry(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-
-    class ImportedProfile:
-        id = "imported"
-        display_name = "Imported"
-
-    imported_profile = ImportedProfile()
-
-    class ImportedRegistry:
-        def get(self, character_id: str):  # type: ignore[no-untyped-def]
-            assert character_id == "imported"
-            return imported_profile
-
-    imported_registry = ImportedRegistry()
-
-    class SettingsServiceStub:
-        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
-            return tts_settings
-
-        def save_api_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_tts_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_current_character_id(self, registry, character_id):  # type: ignore[no-untyped-def]
-            assert registry is imported_registry
-            assert character_id == "imported"
-
-        def save_proactive_care_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_mcp_runtime_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_debug_log_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_bubble_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-        def save_system_values(self, *_args):  # type: ignore[no-untyped-def]
-            pass
-
-    class ApiClientStub:
-        settings = api_settings
-
-        def update_settings(self, _settings):  # type: ignore[no-untyped-def]
-            pass
-
-    class MemoryStoreStub:
-        def reload_api_settings(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            pass
-
-    class DialogStub(_NonModalSettingsDialogStub):
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-            self.character_registry = imported_registry
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "imported"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_debug_log_settings = DebugLogSettings()
-            self.result_portrait_scale_percent = 100
-
-    window = _minimal_settings_window(
-        PetWindow,
-        SettingsServiceStub(),
-        ApiClientStub(),
-        MemoryStoreStub(),
-    )
-    monkeypatch.setattr(pet_window_module, "SettingsDialog", DialogStub)
-    monkeypatch.setattr(pet_window_module, "show_themed_information", lambda *_args, **_kwargs: None)
-
-    window.show_settings()
-
-    assert window.character_registry is imported_registry
-    assert window.character_profile is imported_profile
-
-
 def test_main_detects_missing_character_packages() -> None:
     import main as sakura_main
 
@@ -7606,6 +4963,175 @@ def test_main_detects_missing_character_packages() -> None:
     character_dir.mkdir()
     (character_dir / "character.json").write_text("{}", encoding="utf-8")
     assert not sakura_main._character_packages_missing(root)
+
+
+def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import main as sakura_main
+    from app.config.models import ModelSelectionSettings
+
+    root = _ui_runtime_root("first_run_tauri_layout")
+    saved_system_values: dict[str, dict[str, object]] = {}
+    app_context = object()
+    tts_settings = _minimal_tts_settings()
+    result = _build_tauri_settings_result(
+        portrait_scale_percent=155,
+        control_panel_width=730,
+        bubble_height=210,
+        control_panel_vertical_offset=35,
+        input_bar_offset=18,
+    )
+
+    class EventLoopStub:
+        def exec(self) -> None:
+            pass
+
+        def quit(self) -> None:
+            pass
+
+    class SettingsServiceStub:
+        def __init__(self, *, base_dir: Path) -> None:
+            assert base_dir == root
+
+        def load_api_settings(self):  # type: ignore[no-untyped-def]
+            return result.api.settings
+
+        def load_api_profiles(self):  # type: ignore[no-untyped-def]
+            return result.api.profiles
+
+        def load_model_selection(self):  # type: ignore[no-untyped-def]
+            return ModelSelectionSettings()
+
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return tts_settings
+
+        def load_startup_settings(self):  # type: ignore[no-untyped-def]
+            return StartupSettings()
+
+        def load_screen_awareness_settings(self):  # type: ignore[no-untyped-def]
+            return result.screen_awareness
+
+        def load_mcp_runtime_settings(self):  # type: ignore[no-untyped-def]
+            return result.mcp
+
+        def load_runtime_loop_settings(self):  # type: ignore[no-untyped-def]
+            return result.runtime_loop
+
+        def load_debug_log_settings(self):  # type: ignore[no-untyped-def]
+            return result.system_basic.debug_log
+
+        def load_theme_settings(self):  # type: ignore[no-untyped-def]
+            return DEFAULT_THEME_SETTINGS
+
+        def save_api_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_api_profiles(self, _profiles) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_model_selection(self, _selection) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_tts_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_current_character_id(self, _registry, character_id: str) -> None:  # type: ignore[no-untyped-def]
+            assert character_id == "sakura"
+
+        def save_screen_awareness_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_mcp_runtime_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_runtime_loop_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_debug_log_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_theme_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def save_system_values(self, section: str, values: dict[str, object]) -> None:
+            saved_system_values[section] = dict(values)
+
+    class CharacterRegistryStub:
+        def __init__(self, base_dir: Path) -> None:
+            assert base_dir == root
+
+        def get(self, character_id: str):  # type: ignore[no-untyped-def]
+            assert character_id == "sakura"
+            return type("CharacterProfileStub", (), {"id": "sakura"})()
+
+    class TauriSettingsProcessStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.completed = _SignalStub()
+            self.apply_requested = _SignalStub()
+            self.cancelled = _SignalStub()
+            self.failed = _SignalStub()
+            self.shutdown_called = False
+
+        def start(self) -> bool:
+            self.completed.emit(result)
+            return True
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+        def resolve_apply_request(self, _request_id: str, *, ok: bool, error: str = "") -> None:
+            assert ok is True
+            assert error == ""
+
+    monkeypatch.setattr(sakura_main, "QEventLoop", EventLoopStub)
+    monkeypatch.setattr(sakura_main, "AppSettingsService", SettingsServiceStub)
+    monkeypatch.setattr(sakura_main, "CharacterRegistry", CharacterRegistryStub)
+    monkeypatch.setattr(sakura_main, "TauriSettingsProcess", TauriSettingsProcessStub)
+    monkeypatch.setattr(
+        sakura_main,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings"),
+    )
+    monkeypatch.setattr(
+        sakura_main,
+        "tts_settings_from_tauri_result",
+        lambda *_args, **_kwargs: tts_settings,
+    )
+    monkeypatch.setattr(sakura_main, "build_initial_app_context", lambda _base_dir: app_context)
+
+    assert sakura_main._open_first_run_settings(root) is app_context
+    assert saved_system_values["ui"] == {
+        "portrait_scale_percent": 155,
+        "control_panel_width": 730,
+        "bubble_height": 210,
+        "control_panel_vertical_offset": 35,
+        "input_bar_offset": 18,
+        "subtitle_typing_interval_ms": result.system_basic.subtitle_typing_interval_ms,
+        "reply_segment_pause_ms": result.system_basic.reply_segment_pause_ms,
+    }
+
+
+def test_main_first_run_missing_tauri_binary_fails_without_starting_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import main as sakura_main
+
+    root = _ui_runtime_root("first_run_missing_tauri_binary")
+    started_process = False
+
+    class SettingsServiceStub:
+        def __init__(self, *, base_dir: Path) -> None:
+            assert base_dir == root
+
+    class TauriSettingsProcessStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            nonlocal started_process
+            started_process = True
+
+    monkeypatch.setattr(sakura_main, "AppSettingsService", SettingsServiceStub)
+    monkeypatch.setattr(sakura_main, "TauriSettingsProcess", TauriSettingsProcessStub)
+    monkeypatch.setattr(sakura_main, "resolve_tauri_settings_binary", lambda _base_dir: None)
+
+    with pytest.raises(RuntimeError, match="未找到设置程序"):
+        sakura_main._open_first_run_settings(root)
+    assert started_process is False
 
 
 def test_main_selfcheck_runs_before_single_instance_guard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -7797,274 +5323,6 @@ def test_tts_migration_dialog_marks_fast_migration_done() -> None:
     app.processEvents()
 
 
-def test_main_first_run_settings_saves_imported_character_and_builds_context(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import main as sakura_main
-    from app.config.character_loader import CharacterRegistry
-
-    root = _ui_runtime_root("first_run_settings") / "runtime"
-    api_settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
-    tts_settings = _minimal_tts_settings()
-
-    class DialogStub:
-        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-            self.base_dir = kwargs["base_dir"]
-            _build_settings_dialog_character(self.base_dir, "imported", "Imported")
-            self.character_registry = CharacterRegistry(self.base_dir)
-            self.result_api_settings = api_settings
-            self.result_tts_settings = tts_settings
-            self.result_character_id = "imported"
-            self.result_proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
-            self.result_mcp_settings = MCPRuntimeSettings(windows_enabled=False)
-            self.result_runtime_loop_settings = RuntimeLoopSettings()
-            self.result_debug_log_settings = DebugLogSettings(enabled=True, body_enabled=False)
-            self.result_startup_settings = StartupSettings()
-            self.result_portrait_scale_percent = 125
-            self.result_subtitle_typing_interval_ms = 70
-            self.result_reply_segment_pause_ms = 800
-
-        def exec(self):  # type: ignore[no-untyped-def]
-            return sakura_main.QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(sakura_main, "SettingsDialog", DialogStub)
-
-    context = sakura_main._open_first_run_settings(root)
-
-    assert context is not None
-    assert context.character_profile.id == "imported"
-    assert context.character_profile.display_name == "Imported"
-    assert (root / "data" / "config" / "characters.yaml").read_text(encoding="utf-8").strip() == (
-        "current_character_id: imported"
-    )
-    assert "portrait_scale_percent: 125" in (
-        root / "data" / "config" / "system_config.yaml"
-    ).read_text(encoding="utf-8")
-    system_config = (root / "data" / "config" / "system_config.yaml").read_text(encoding="utf-8")
-    assert "subtitle_typing_interval_ms: 70" in system_config
-    assert "reply_segment_pause_ms: 800" in system_config
-
-
-def test_settings_dialog_returns_portrait_scale_percent() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.config.character_loader import CharacterProfile
-    from app.ui.settings_dialog import SettingsDialog
-
-    class CharacterRegistryStub:
-        def __init__(self, profile: CharacterProfile) -> None:
-            self.profile = profile
-
-        def all(self) -> list[CharacterProfile]:
-            return [self.profile]
-
-        def get(self, character_id: str) -> CharacterProfile:
-            assert character_id == self.profile.id
-            return self.profile
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    profile = CharacterProfile(
-        id="sakura",
-        display_name="夜乃桜",
-        package_dir=Path("."),
-        card_path=Path("card.md"),
-        initial_message="hello",
-        default_portrait_path=Path("portrait.png"),
-    )
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=Path("."),
-        character_registry=CharacterRegistryStub(profile),  # type: ignore[arg-type]
-        current_character=profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        portrait_scale_percent=100,
-    )
-
-    dialog.portrait_scale_spin.setValue(125)
-    dialog.accept()
-
-    assert dialog.result_portrait_scale_percent == 125
-    assert dialog.portrait_scale_slider.value() == 125
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_returns_control_panel_layout() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("control_panel_layout_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        control_panel_width=600,
-        bubble_height=150,
-        control_panel_vertical_offset=30,
-    )
-
-    # 构造时把当前值回填到控件
-    assert dialog.control_panel_width_spin.value() == 600
-    assert dialog.bubble_height_spin.value() == 150
-    assert dialog.control_panel_offset_spin.value() == 30
-
-    # 修改后 accept 回收归一化结果
-    dialog.control_panel_width_spin.setValue(720)
-    dialog.bubble_height_spin.setValue(200)
-    dialog.control_panel_offset_spin.setValue(-40)
-    dialog.accept()
-
-    assert dialog.result_control_panel_width == 720
-    assert dialog.result_bubble_height == 200
-    assert dialog.result_control_panel_vertical_offset == -40
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_emits_control_panel_layout_preview() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("control_panel_preview_dialog")
-    previews: list[tuple[int, int, int, int, int]] = []
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        control_panel_width=600,
-        bubble_height=150,
-        control_panel_vertical_offset=0,
-        on_layout_preview=lambda p, w, h, o, i: previews.append((p, w, h, o, i)),
-    )
-
-    # 构造时的初始 setValue 不应触发预览（信号连接在赋值之后）
-    assert previews == []
-
-    # 修改某个滑块即实时触发预览，参数为当前三项取值
-    dialog.bubble_height_spin.setValue(180)
-    assert previews
-    assert previews[-1] == (100, 600, 180, 0, 0)
-
-    dialog.control_panel_width_spin.setValue(720)
-    assert previews[-1] == (100, 720, 180, 0, 0)
-
-    # 立绘缩放也接入实时预览
-    dialog.portrait_scale_spin.setValue(120)
-    assert previews[-1] == (120, 720, 180, 0, 0)
-
-    # 输入框下移也接入实时预览
-    dialog.input_bar_offset_spin.setValue(40)
-    assert previews[-1] == (120, 720, 180, 0, 40)
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_returns_subtitle_display_speed() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("subtitle_display_speed_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        subtitle_typing_interval_ms=60,
-        reply_segment_pause_ms=500,
-    )
-
-    assert dialog.subtitle_typing_interval_spin.value() == 60
-    assert dialog.reply_segment_pause_spin.value() == 500
-
-    dialog.subtitle_typing_interval_spin.setValue(90)
-    dialog.reply_segment_pause_spin.setValue(1200)
-    dialog.accept()
-
-    assert dialog.result_subtitle_typing_interval_ms == 90
-    assert dialog.result_reply_segment_pause_ms == 1200
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_returns_launch_at_login_setting(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    import app.ui.settings_dialog as settings_dialog_module
-    from app.ui.settings_dialog import SettingsDialog
-
-    monkeypatch.setattr(settings_dialog_module, "is_launch_at_login_supported", lambda: True)
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("launch_at_login_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        startup_settings=StartupSettings(launch_at_login=True),
-    )
-
-    assert dialog.launch_at_login_check.isChecked()
-
-    dialog.launch_at_login_check.setChecked(False)
-    dialog.accept()
-
-    assert dialog.result_startup_settings == StartupSettings(launch_at_login=False)
-    dialog.deleteLater()
-    app.processEvents()
-
-
 def _theme_settings(*, ai_enabled: bool = False) -> ThemeSettings:
     return ThemeSettings(
         primary_color="#112233",
@@ -8101,259 +5359,12 @@ def _theme_json() -> str:
     )
 
 
-def test_settings_dialog_returns_theme_settings() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("theme_settings_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(
-            primary_color="#112233",
-            primary_hover_color="#223344",
-            accent_color="#445566",
-            text_color="#070809",
-            ai_enabled=False,
-        ),
-    )
-
-    dialog.theme_primary_edit.setText("#223344")
-    dialog.theme_accent_edit.setText("#556677")
-    dialog.theme_text_edit.setText("#111111")
-    dialog.theme_color_edits["primary_hover_color"].setText("#334455")
-    dialog.theme_color_edits["secondary_text_color"].setText("#222222")
-    dialog.theme_color_edits["muted_text_color"].setText("#333333")
-    dialog.theme_color_edits["page_background_color"].setText("#f8f8f8")
-    dialog.theme_color_edits["panel_background_color"].setText("#eeeeee")
-    dialog.theme_color_edits["input_background_color"].setText("#ffffff")
-    dialog.theme_color_edits["bubble_background_color"].setText("#dddddd")
-    dialog.theme_color_edits["border_color"].setText("#cccccc")
-    dialog.accept()
-
-    assert dialog.result_theme_settings == ThemeSettings(
-        primary_color="#223344",
-        primary_hover_color="#334455",
-        accent_color="#556677",
-        text_color="#111111",
-        secondary_text_color="#222222",
-        muted_text_color="#333333",
-        page_background_color="#f8f8f8",
-        panel_background_color="#eeeeee",
-        input_background_color="#ffffff",
-        bubble_background_color="#dddddd",
-        border_color="#cccccc",
-        ai_enabled=False,
-    )
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_downgrades_saved_windows_acrylic_to_gaussian(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui import window_backdrop as window_backdrop_module
-    from app.ui.settings_dialog import SettingsDialog
-    from app.ui.window_backdrop import VisualEffectMode
-
-    monkeypatch.setattr(window_backdrop_module.sys, "platform", "win32")
-    monkeypatch.setattr(window_backdrop_module, "_windows_build", lambda: 22631)
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("theme_settings_windows_acrylic_downgrade")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(visual_effect_mode=VisualEffectMode.WINDOWS_ACRYLIC),
-    )
-
-    labels = [
-        dialog.theme_visual_effect_combo.itemText(index)
-        for index in range(dialog.theme_visual_effect_combo.count())
-    ]
-    assert "Windows 亚克力模糊" not in labels
-    assert dialog.theme_visual_effect_combo.currentData() == VisualEffectMode.GAUSSIAN_BLUR
-
-    dialog.accept()
-
-    assert dialog.result_theme_settings is not None
-    assert dialog.result_theme_settings.visual_effect_mode == VisualEffectMode.GAUSSIAN_BLUR
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_character_selection_loads_character_theme() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("character_theme_switch")
-    sakura = _build_settings_dialog_character(
-        root,
-        "sakura",
-        "Sakura",
-        theme={"primary_color": "#102030", "accent_color": "#405060", "source": "package"},
-    )
-    _build_settings_dialog_character(
-        root,
-        "nanami",
-        "Nanami",
-        theme={"primary_color": "#abcdef", "accent_color": "#123456", "source": "package"},
-    )
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=sakura,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(primary_color="#999999"),
-    )
-
-    assert dialog.theme_primary_edit.text() == "#102030"
-    assert dialog.theme_accent_edit.text() == "#405060"
-
-    target_index = dialog.character_combo.findData("nanami")
-    assert target_index >= 0
-    dialog.character_combo.setCurrentIndex(target_index)
-    app.processEvents()
-    dialog.accept()
-
-    assert dialog.theme_primary_edit.text() == "#abcdef"
-    assert dialog.theme_accent_edit.text() == "#123456"
-    assert dialog.result_theme_write_mode == "character"
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_resets_default_theme_colors() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("theme_reset_dialog")
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(
-            primary_color="#112233",
-            primary_hover_color="#223344",
-            accent_color="#445566",
-            text_color="#070809",
-            ai_enabled=True,
-        ),
-    )
-
-    dialog._reset_theme_colors()
-
-    assert dialog.theme_primary_edit.text() == DEFAULT_THEME_SETTINGS.primary_color
-    assert dialog.theme_accent_edit.text() == DEFAULT_THEME_SETTINGS.accent_color
-    assert dialog.theme_text_edit.text() == DEFAULT_THEME_SETTINGS.text_color
-    assert dialog.theme_color_edits["input_background_color"].text() == DEFAULT_THEME_SETTINGS.input_background_color
-    assert dialog._selected_theme_settings() == ThemeSettings(ai_enabled=False).normalized()
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_settings_dialog_resets_to_character_package_theme() -> None:
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.config.character_loader import CharacterRegistry
-    from app.ui.settings_dialog import SettingsDialog
-
-    root = _ui_runtime_root("theme_reset_character_package")
-    profile = _build_settings_dialog_character(
-        root,
-        "sakura",
-        "Sakura",
-        theme={"primary_color": "#102030", "accent_color": "#405060", "source": "package"},
-    )
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        character_registry=CharacterRegistry(root),
-        current_character=profile,
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(primary_color="#999999", accent_color="#888888", ai_enabled=True),
-    )
-
-    dialog._reset_theme_colors()
-
-    assert dialog.theme_primary_edit.text() == "#102030"
-    assert dialog.theme_accent_edit.text() == "#405060"
-    assert dialog._selected_theme_settings() == profile.theme_settings
-
-    dialog.deleteLater()
-    app.processEvents()
-
-
-def test_theme_write_rule_persists_manual_and_ai_theme() -> None:
+def test_character_theme_override_saves_or_deletes_by_default_colors() -> None:
     from app.config.character_loader import (
-        THEME_SOURCE_COMPAT_DEFAULT,
         THEME_SOURCE_PACKAGE,
         CharacterProfile,
     )
-    from app.ui.pet_window import _should_write_character_theme
+    from app.ui.pet_window import _save_character_theme_override
 
     root = _ui_runtime_root("theme_write_rule")
     profile = CharacterProfile(
@@ -8366,153 +5377,23 @@ def test_theme_write_rule_persists_manual_and_ai_theme() -> None:
         theme_settings=DEFAULT_THEME_SETTINGS,
         theme_source=THEME_SOURCE_PACKAGE,
     )
-    compat_profile = CharacterProfile(
-        id="legacy",
-        display_name="Legacy",
-        package_dir=root,
-        card_path=root / "card.md",
-        initial_message="hello",
-        default_portrait_path=root / "portrait.png",
-        theme_settings=DEFAULT_THEME_SETTINGS,
-        theme_source=THEME_SOURCE_COMPAT_DEFAULT,
-    )
+    saved: list[tuple[str, ThemeSettings]] = []
+    deleted: list[str] = []
 
-    assert _should_write_character_theme("ai", profile)
-    assert _should_write_character_theme("ai", compat_profile)
-    assert _should_write_character_theme("manual", profile)
-    assert not _should_write_character_theme("reset", profile)
-    assert not _should_write_character_theme("character", profile)
+    class SettingsServiceStub:
+        def save_character_theme_override(self, character_id, settings):  # type: ignore[no-untyped-def]
+            saved.append((character_id, settings.normalized()))
 
+        def delete_character_theme_override(self, character_id):  # type: ignore[no-untyped-def]
+            deleted.append(character_id)
 
-def test_theme_ai_worker_sends_portrait_image_and_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    pytest.importorskip("PySide6.QtCore")
-    import app.ui.settings_dialog as settings_dialog
+    service = SettingsServiceStub()
 
-    root = _ui_runtime_root("theme_ai_worker")
-    profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    calls: dict[str, object] = {}
+    _save_character_theme_override(service, profile, ThemeSettings(primary_color="#112233"))
+    _save_character_theme_override(service, profile, DEFAULT_THEME_SETTINGS)
 
-    class FakeClient:
-        def __init__(self, settings: ApiSettings) -> None:
-            calls["settings"] = settings
-
-        def complete_raw(self, system_prompt, messages, **kwargs):  # type: ignore[no-untyped-def]
-            calls["system_prompt"] = system_prompt
-            calls["messages"] = messages
-            calls["kwargs"] = kwargs
-            return _theme_json()
-
-    import app.ui.settings.workers as settings_workers
-    monkeypatch.setattr(settings_workers, "OpenAICompatibleClient", FakeClient)
-    events: list[ThemeSettings] = []
-    worker = settings_workers.ThemeAiWorker(
-        ApiSettings("https://api.example.com/v1", "test-key", "test-model"),
-        profile,
-        ai_enabled=True,
-    )
-    worker.succeeded.connect(events.append)
-    worker.run()
-
-    assert events == [_theme_settings(ai_enabled=True)]
-    assert "只返回 JSON" in str(calls["system_prompt"])
-    assert "primary_hover_color" in str(calls["system_prompt"])
-    content = calls["messages"][0]["content"]  # type: ignore[index]
-    assert content[1]["type"] == "image_url"
-    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
-
-
-def test_settings_dialog_ai_theme_success_and_failure_keep_current(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root("theme_ai_dialog")
-
-    class FakeThread(qtcore.QObject):
-        started = qtcore.Signal()
-        finished = qtcore.Signal()
-
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-
-        def start(self) -> None:
-            self.started.emit()
-
-        def quit(self) -> None:
-            self.finished.emit()
-
-    class SuccessWorker(qtcore.QObject):
-        succeeded = qtcore.Signal(object)
-        failed = qtcore.Signal(str)
-        finished = qtcore.Signal()
-
-        def __init__(self, *_args, **_kwargs) -> None:
-            super().__init__()
-
-        def moveToThread(self, _thread) -> None:  # type: ignore[no-untyped-def]
-            pass
-
-        def run(self) -> None:
-            self.succeeded.emit(_theme_settings(ai_enabled=True))
-            self.finished.emit()
-
-    class FailedWorker(SuccessWorker):
-        def run(self) -> None:
-            self.failed.emit("vision unsupported")
-            self.finished.emit()
-
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model="test-model",
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-        theme_settings=ThemeSettings(
-            primary_color="#aabbcc",
-            primary_hover_color="#aa99bb",
-            accent_color="#bbccdd",
-            text_color="#111111",
-            secondary_text_color="#222222",
-            muted_text_color="#333333",
-            page_background_color="#f8f8f8",
-            panel_background_color="#eeeeee",
-            input_background_color="#ffffff",
-            bubble_background_color="#dddddd",
-            border_color="#cccccc",
-            ai_enabled=True,
-        ),
-    )
-    monkeypatch.setattr("app.ui.settings_dialog.QThread", FakeThread)
-    monkeypatch.setattr("app.ui.settings.workers.ThemeAiWorker", SuccessWorker)
-
-    dialog._generate_ai_theme()
-
-    assert dialog.theme_primary_edit.text() == "#112233"
-    assert dialog.theme_accent_edit.text() == "#445566"
-    assert dialog.theme_text_edit.text() == "#070809"
-
-    monkeypatch.setattr("app.ui.settings.workers.ThemeAiWorker", FailedWorker)
-    dialog.theme_primary_edit.setText("#aabbcc")
-    dialog.theme_accent_edit.setText("#bbccdd")
-    dialog.theme_text_edit.setText("#111111")
-    dialog._generate_ai_theme()
-
-    assert dialog.theme_primary_edit.text() == "#aabbcc"
-    assert dialog.theme_accent_edit.text() == "#bbccdd"
-    assert dialog.theme_text_edit.text() == "#111111"
-    assert "保留当前配色" in dialog.theme_status_label.text()
-    dialog.deleteLater()
-    app.processEvents()
+    assert saved == [("demo", ThemeSettings(primary_color="#112233").normalized())]
+    assert deleted == ["demo"]
 
 
 def test_proactive_care_batches_screenshots_until_cooldown(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -8729,8 +5610,8 @@ def test_proactive_care_event_reads_recent_conversation_from_history_store() -> 
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "proactive_history"
         / uuid.uuid4().hex
+        / "proactive_history"
         / "history.jsonl"
     )
     store = ChatHistoryStore(history_path)
@@ -8917,8 +5798,8 @@ def test_screen_awareness_redirects_limited_night_health_reminders(monkeypatch) 
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "screen_awareness_health"
         / uuid.uuid4().hex
+        / "screen_awareness_health"
     )
 
     class MinimalWindow:
@@ -9500,8 +6381,8 @@ def test_chat_history_store_round_trips_tone_and_portrait() -> None:
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "chat_history_segments"
         / uuid.uuid4().hex
+        / "chat_history_segments"
         / "history.jsonl"
     )
     store = ChatHistoryStore(history_path)
@@ -9523,8 +6404,8 @@ def test_chat_history_store_loads_legacy_entries_without_tone_or_portrait() -> N
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "chat_history_legacy"
         / uuid.uuid4().hex
+        / "chat_history_legacy"
         / "history.jsonl"
     )
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -10180,7 +7061,6 @@ def _build_minimal_manual_screenshot_window(text: str):
     return window, requests, history
 
 
-
 def _build_minimal_proactive_window(
     *,
     screen_context_enabled: bool,
@@ -10309,8 +7189,8 @@ def _build_runtime_root_with_character(QPixmap, Qt):  # type: ignore[no-untyped-
         Path(__file__).resolve().parents[2]
         / "temp"
         / "test_runtime"
-        / "pet_window_startup"
         / uuid.uuid4().hex
+        / "pet_window_startup"
     )
     config_dir = root / "data" / "config"
     character_dir = root / "characters" / "demo"
@@ -10364,65 +7244,6 @@ memory_curation:
     return root
 
 
-def _build_settings_dialog_character(
-    root: Path,
-    character_id: str,
-    display_name: str,
-    theme: dict[str, object] | None = None,
-    *,
-    with_voice: bool = True,
-    with_voice_models: bool = True,
-):
-    from app.config.character_loader import CharacterRegistry
-
-    character_dir = root / "characters" / character_id
-    character_dir.mkdir(parents=True, exist_ok=True)
-    (character_dir / "card.md").write_text("system prompt", encoding="utf-8")
-    (character_dir / "portrait.png").write_bytes(b"portrait")
-    character_data = {
-        "id": character_id,
-        "display_name": display_name,
-        "initial_message": "hello",
-        "card": "card.md",
-        "portrait": {
-            "default": "portrait.png",
-        },
-    }
-    if with_voice:
-        (character_dir / "voice" / "models").mkdir(parents=True, exist_ok=True)
-        (character_dir / "voice" / "refs" / "tone_refs").mkdir(parents=True, exist_ok=True)
-        (character_dir / "voice" / "refs" / "tone_refs" / "neutral.wav").write_bytes(b"wav")
-        (character_dir / "voice" / "refs" / "ref.txt").write_text(
-            "voice/refs/tone_refs/neutral.wav|JA|テスト|中性\n",
-            encoding="utf-8",
-        )
-        voice_data = {
-            "tone_refs": "voice/refs/ref.txt",
-            "ref_lang": "ja",
-            "text_lang": "ja",
-        }
-        if with_voice_models:
-            (character_dir / "voice" / "models" / "gpt.ckpt").write_bytes(b"gpt")
-            (character_dir / "voice" / "models" / "sovits.pth").write_bytes(b"sovits")
-            voice_data.update(
-                {
-                    "gpt_model": "voice/models/gpt.ckpt",
-                    "sovits_model": "voice/models/sovits.pth",
-                }
-            )
-        character_data["voice"] = voice_data
-    if theme is not None:
-        character_data["theme"] = theme
-    (character_dir / "character.json").write_text(
-        json.dumps(
-            character_data,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    return CharacterRegistry(root).get(character_id)
-
-
 def _build_settings_dialog_voice_archive(root: Path) -> Path:
     from app.config.character_archive import VOICE_ARCHIVE_FORMAT, VOICE_ARCHIVE_VERSION
 
@@ -10450,80 +7271,6 @@ def _build_settings_dialog_voice_archive(root: Path) -> Path:
         zf.writestr("voice/refs/tone_refs/imported.wav", b"wav")
         zf.writestr("voice/refs/ref.txt", "voice/refs/tone_refs/imported.wav|ZH|你好|中性\n")
     return archive_path
-
-
-class _NonModalSettingsDialogStub:
-    """非模态设置窗口的测试桩：模拟 finished 信号与 show/raise_ 等接口。
-
-    show_settings 已从模态 exec() 改为非模态 show() + finished 信号回调，
-    这里在 show() 时同步 emit finished(Accepted)，保持「调用 show_settings 后
-    结果处理同步完成」的测试语义。子类只需在 __init__ 里填好 result_* 属性。
-    """
-
-    class _FinishedSignal:
-        def __init__(self) -> None:
-            self._slots: list = []
-
-        def connect(self, slot) -> None:  # type: ignore[no-untyped-def]
-            self._slots.append(slot)
-
-        def emit(self, result: int) -> None:
-            for slot in list(self._slots):
-                slot(result)
-
-    _dialog_result = None  # 子类可覆盖；None 表示用 QDialog.DialogCode.Accepted
-
-    def __init__(self, *_args, **_kwargs) -> None:
-        self.finished = _NonModalSettingsDialogStub._FinishedSignal()
-
-    def _resolved_result(self) -> int:
-        import app.ui.pet_window as pet_window_module
-
-        if self._dialog_result is not None:
-            return self._dialog_result
-        return pet_window_module.QDialog.DialogCode.Accepted
-
-    def show(self) -> None:
-        # 非模态打开后立即「关闭」，同步触发结果处理回调。
-        self.finished.emit(self._resolved_result())
-
-    def raise_(self) -> None:  # noqa: N802 - 匹配 Qt 接口名
-        pass
-
-    def activateWindow(self) -> None:  # noqa: N802 - 匹配 Qt 接口名
-        pass
-
-
-def _settings_dialog_character_kwargs(root: Path) -> dict[str, object]:
-    from app.config.character_loader import CharacterRegistry
-
-    profile = _build_settings_dialog_character(root, "sakura", "Sakura")
-    return {
-        "character_registry": CharacterRegistry(root),
-        "current_character": profile,
-    }
-
-
-def _build_api_settings_dialog(name: str, *, model: str = "test-model"):
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    from app.ui.settings_dialog import SettingsDialog
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _ui_runtime_root(name)
-    dialog = SettingsDialog(
-        api_settings=ApiSettings(
-            base_url="https://api.example.com/v1",
-            api_key="test-key",
-            model=model,
-        ),
-        tts_settings=_minimal_tts_settings(),
-        base_dir=root,
-        **_settings_dialog_character_kwargs(root),
-        proactive_care_settings=ProactiveCareSettings(screen_context_enabled=True),
-        mcp_settings=MCPRuntimeSettings(windows_enabled=False),
-    )
-    return dialog, app
 
 
 def _minimal_tts_settings() -> GPTSoVITSTTSSettings:
@@ -10589,86 +7336,6 @@ def test_tts_ready_warmup_worker_reports_failure() -> None:
     assert events == [("failed", "启动失败"), ("finished", "")]
 
 
-def test_tts_test_worker_keeps_provider_after_success(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    pytest.importorskip("PySide6.QtCore")
-    import app.ui.settings_dialog as settings_dialog
-
-    closed: list[bool] = []
-    created: list[tuple[GPTSoVITSTTSSettings, Path | None, bool]] = []
-
-    class FakeProvider:
-        def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
-            self.settings = settings
-
-        def ensure_ready(self) -> tuple[bool, str]:
-            return True, "ok"
-
-        def close(self) -> None:
-            closed.append(True)
-
-    import app.ui.settings.workers as settings_workers
-    base_dir = Path("runtime-root")
-
-    def fake_create_tts_provider(
-        settings: GPTSoVITSTTSSettings,
-        *,
-        base_dir: Path | None = None,
-        adopt_existing_service: bool = True,
-    ) -> FakeProvider:
-        created.append((settings, base_dir, adopt_existing_service))
-        return FakeProvider(settings)
-
-    monkeypatch.setattr(settings_workers, "create_tts_provider", fake_create_tts_provider)
-
-    worker = settings_workers.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
-    worker.run()
-
-    assert closed == []
-    assert created and created[0][1] == base_dir
-    assert created[0][2] is False
-
-
-def test_tts_test_worker_closes_provider_after_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    pytest.importorskip("PySide6.QtCore")
-    import app.ui.settings_dialog as settings_dialog
-
-    events: list[str] = []
-    created: list[tuple[GPTSoVITSTTSSettings, Path | None, bool]] = []
-
-    class FakeProvider:
-        def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
-            self.settings = settings
-
-        def ensure_ready(self) -> tuple[bool, str]:
-            return False, "启动失败"
-
-        def close(self) -> None:
-            events.append("closed")
-
-    import app.ui.settings.workers as settings_workers
-    base_dir = Path("runtime-root")
-
-    def fake_create_tts_provider(
-        settings: GPTSoVITSTTSSettings,
-        *,
-        base_dir: Path | None = None,
-        adopt_existing_service: bool = True,
-    ) -> FakeProvider:
-        created.append((settings, base_dir, adopt_existing_service))
-        return FakeProvider(settings)
-
-    monkeypatch.setattr(settings_workers, "create_tts_provider", fake_create_tts_provider)
-
-    worker = settings_workers.TTSTestWorker(_minimal_tts_settings(), base_dir=base_dir)
-    worker.failed.connect(lambda _message: events.append("failed"))
-    worker.finished.connect(lambda: events.append("finished"))
-    worker.run()
-
-    assert events == ["failed", "closed", "finished"]
-    assert created and created[0][1] == base_dir
-    assert created[0][2] is False
-
-
 def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.config.models import ModelSelectionSettings
@@ -10698,8 +7365,20 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
 
     class MinimalSettingsWindow:
         show_settings = pet_window_cls.show_settings
-        _on_settings_dialog_finished = pet_window_cls._on_settings_dialog_finished
-        _activate_settings_dialog = pet_window_cls._activate_settings_dialog
+        _try_show_tauri_settings = pet_window_cls._try_show_tauri_settings
+        _on_tauri_settings_completed = pet_window_cls._on_tauri_settings_completed
+        _on_tauri_settings_applied = pet_window_cls._on_tauri_settings_applied
+        _on_tauri_settings_apply_requested = pet_window_cls._on_tauri_settings_apply_requested
+        _apply_tauri_settings_result = pet_window_cls._apply_tauri_settings_result
+        _on_tauri_settings_cancelled = pet_window_cls._on_tauri_settings_cancelled
+        _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
+        _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview
+        _restore_tauri_layout_preview = pet_window_cls._restore_tauri_layout_preview
+        _abort_tauri_settings_apply = pet_window_cls._abort_tauri_settings_apply
+        _close_unused_tauri_tts_provider = pet_window_cls._close_unused_tauri_tts_provider
+        _close_tauri_settings_process_for_shutdown = (
+            pet_window_cls._close_tauri_settings_process_for_shutdown
+        )
         _preview_layout = pet_window_cls._preview_layout
         _prepare_secondary_window = pet_window_cls._prepare_secondary_window
         _present_registered_secondary_window = pet_window_cls._present_registered_secondary_window
@@ -10719,6 +7398,11 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _apply_subtitle_display_speed = pet_window_cls._apply_subtitle_display_speed
         _apply_launch_at_login_settings = pet_window_cls._apply_launch_at_login_settings
         _apply_bubble_settings = pet_window_cls._apply_bubble_settings
+        _tts_settings_from_tauri_result = pet_window_cls._tts_settings_from_tauri_result
+
+        def _apply_theme_settings(self, theme_settings):  # type: ignore[no-untyped-def]
+            self.theme_settings = theme_settings.normalized()
+            self.applied_theme_settings = self.theme_settings
 
         def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
             self.stage_debug_overlay_applied = (enabled, refresh)
@@ -10738,6 +7422,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
             vertical_offset,
             input_bar_offset,
             persist: bool,
+            raise_on_persist_error: bool = False,
         ) -> None:
             self.portrait_scale_percent = portrait_scale_percent
             self.control_panel_width = control_panel_width
@@ -10745,6 +7430,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
             self.control_panel_vertical_offset = vertical_offset
             self.input_bar_offset = input_bar_offset
             self.layout_persisted = persist
+            if getattr(self, "raise_layout_persist_error", False) and raise_on_persist_error:
+                raise OSError("layout.yaml locked")
 
         def _sync_proactive_care_timer(self) -> None:
             pass
@@ -10769,10 +7456,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.base_dir = Path(".")
     window.character_registry = CharacterRegistryStub()
     window.character_profile = CharacterProfileStub()
+    window.tauri_settings_process = None
     window.proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
     window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
     window.debug_log_settings = DebugLogSettings()
     window.startup_settings = StartupSettings()
+    window.theme_settings = DEFAULT_THEME_SETTINGS
     window.memory_store = memory_store
     window.agent_runtime = AgentRuntimeStub()
     window.plugin_manager = PluginManagerStub()
@@ -11673,41 +8362,58 @@ def _make_character_profile(theme_settings: ThemeSettings | None, theme_source: 
     )
 
 
-def test_merge_theme_with_character_keeps_user_level_fields() -> None:
+def test_resolve_effective_theme_uses_package_theme_and_user_level_fields() -> None:
     # 角色包主题只贡献配色；visual_effect_mode 和 ai_enabled 是用户级偏好，必须沿用已保存值。
     from app.config.character_loader import THEME_SOURCE_PACKAGE
-    from app.ui.theme import merge_theme_with_character
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="macos_visual_effect", primary_color="#aa11bb", ai_enabled=True)
+    user = ThemeSettings(visual_effect_mode="macos_visual_effect", primary_color="#aa11bb", ai_enabled=True)
     package_theme = ThemeSettings(primary_color="#123456")
     profile = _make_character_profile(package_theme, THEME_SOURCE_PACKAGE)
 
-    merged = merge_theme_with_character(saved, profile)
+    merged = resolve_effective_theme(profile, None, user)
 
     assert merged.visual_effect_mode == "macos_visual_effect"
     assert merged.ai_enabled is True
     assert merged.primary_color == "#123456"
 
 
-def test_merge_theme_with_character_compat_default_returns_saved() -> None:
+def test_resolve_effective_theme_compat_default_ignores_saved_global_colors() -> None:
     from app.config.character_loader import THEME_SOURCE_COMPAT_DEFAULT
-    from app.ui.theme import merge_theme_with_character
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="windows_acrylic", primary_color="#aa11bb")
+    user = ThemeSettings(visual_effect_mode="windows_acrylic", primary_color="#aa11bb")
     profile = _make_character_profile(ThemeSettings(), THEME_SOURCE_COMPAT_DEFAULT)
 
-    merged = merge_theme_with_character(saved, profile)
+    merged = resolve_effective_theme(profile, None, user)
 
     assert merged.visual_effect_mode == "windows_acrylic"
-    assert merged.primary_color == "#aa11bb"
+    assert merged.primary_color == DEFAULT_THEME_SETTINGS.primary_color
 
 
-def test_merge_theme_with_character_without_profile() -> None:
-    from app.ui.theme import merge_theme_with_character
+def test_resolve_effective_theme_override_wins_over_package_theme() -> None:
+    from app.config.character_loader import THEME_SOURCE_PACKAGE
+    from app.ui.theme import resolve_effective_theme
 
-    saved = ThemeSettings(visual_effect_mode="solid")
+    user = ThemeSettings(visual_effect_mode="solid", primary_color="#aa11bb")
+    profile = _make_character_profile(ThemeSettings(primary_color="#123456"), THEME_SOURCE_PACKAGE)
+    override = ThemeSettings(primary_color="#abcdef")
 
-    assert merge_theme_with_character(saved, None).visual_effect_mode == "solid"
+    merged = resolve_effective_theme(profile, override, user)
+
+    assert merged.visual_effect_mode == "solid"
+    assert merged.primary_color == "#abcdef"
+
+
+def test_resolve_effective_theme_without_profile() -> None:
+    from app.ui.theme import resolve_effective_theme
+
+    user = ThemeSettings(visual_effect_mode="solid", primary_color="#aa11bb")
+
+    merged = resolve_effective_theme(None, None, user)
+
+    assert merged.visual_effect_mode == "solid"
+    assert merged.primary_color == DEFAULT_THEME_SETTINGS.primary_color
 
 
 def test_character_theme_round_trip_never_stores_visual_effect_mode() -> None:

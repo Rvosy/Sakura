@@ -121,26 +121,33 @@ def theme_to_mapping(settings: ThemeSettings) -> dict[str, object]:
     return data
 
 
+def resolve_effective_theme(
+    profile: CharacterProfile | None,
+    override: ThemeSettings | None = None,
+    user_ui_settings: ThemeSettings | None = None,
+) -> ThemeSettings:
+    """角色主题颜色优先级：用户覆盖 > 角色包主题 > 内置默认粉色。"""
+    from app.config.character_loader import THEME_SOURCE_PACKAGE
+
+    user = (user_ui_settings or DEFAULT_THEME_SETTINGS).normalized()
+    if override is not None:
+        colors = override.normalized()
+    elif profile is not None and getattr(profile, "theme_source", None) == THEME_SOURCE_PACKAGE:
+        colors = (profile.theme_settings or DEFAULT_THEME_SETTINGS).normalized()
+    else:
+        colors = DEFAULT_THEME_SETTINGS
+    return replace(
+        colors,
+        visual_effect_mode=user.visual_effect_mode,
+        ai_enabled=user.ai_enabled,
+    )
+
+
 def merge_theme_with_character(
     saved_settings: ThemeSettings,
     profile: CharacterProfile | None,
 ) -> ThemeSettings:
-    """合并已保存主题与角色包主题，保留用户级偏好字段。
-
-    角色包主题只贡献配色；visual_effect_mode 和 ai_enabled 是用户级偏好
-    （character.json 不序列化这两个字段），始终沿用已保存的值。
-    """
-    from app.config.character_loader import THEME_SOURCE_PACKAGE
-
-    saved = saved_settings.normalized()
-    if profile is not None and profile.theme_source == THEME_SOURCE_PACKAGE:
-        theme = (profile.theme_settings or DEFAULT_THEME_SETTINGS).normalized()
-        return replace(
-            theme,
-            visual_effect_mode=saved.visual_effect_mode,
-            ai_enabled=saved.ai_enabled,
-        )
-    return saved
+    return resolve_effective_theme(profile, None, saved_settings)
 
 
 def theme_colors_to_mapping(settings: ThemeSettings) -> dict[str, object]:

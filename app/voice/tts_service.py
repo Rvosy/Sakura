@@ -50,7 +50,13 @@ from app.voice.tts_types import (
     _set_service_state,
 )
 
+_DIRECT_TTS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX = 180
+
+
+def _urlopen_tts_direct(request: urllib.request.Request, *, timeout: int) -> object:
+    """Local TTS endpoints must not inherit user/system HTTP proxies."""
+    return _DIRECT_TTS_OPENER.open(request, timeout=timeout)
 
 
 def _service_project_root(base_dir: Path | None = None) -> Path:
@@ -496,7 +502,7 @@ def _probe_gpt_sovits_http(api_url: str, timeout: int) -> bool:
     probe_url = urlunparse(parsed._replace(path=base_path or "/", query=""))
     request = urllib.request.Request(url=probe_url, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout):
+        with _urlopen_tts_direct(request, timeout=timeout):
             pass
     except urllib.error.HTTPError:
         # 任何 HTTP 状态码都说明服务 HTTP 层已就绪
@@ -512,7 +518,7 @@ def _probe_genie_api_url(api_url: str, timeout: int) -> bool:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _urlopen_tts_direct(request, timeout=timeout) as response:
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         debug_log("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
@@ -1083,7 +1089,7 @@ class TTSServiceSupervisor:
         request = urllib.request.Request(url=url, method="GET")
         try:
             debug_log("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
-            with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
+            with _urlopen_tts_direct(request, timeout=self.settings.timeout_seconds) as response:
                 response.read()
                 debug_log(
                     "TTS",
@@ -1504,7 +1510,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _urlopen_tts_direct(request, timeout=timeout) as response:
             return response.read()
 
     def _genie_character_name(self) -> str:

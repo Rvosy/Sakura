@@ -172,6 +172,8 @@ _MIGRATING_DIR_NAME = ".migrating"
 _MIGRATION_STATE_FILE = ".sakura_migration.json"
 _MIGRATION_TEMP_SUFFIX = ".__sakura_tmp__"
 _MIGRATION_COPY_CHUNK_SIZE = 16 * 1024 * 1024
+_NVIDIA_GPU_CACHE_TTL_SECONDS = 30.0
+_NVIDIA_GPU_CACHE: tuple[float, list[GPUInfo]] | None = None
 
 
 def format_platform_summary() -> str:
@@ -181,7 +183,19 @@ def format_platform_summary() -> str:
         return f"{platform.system()} {platform.release()}"
 
 
-def list_nvidia_gpus() -> list[GPUInfo]:
+def list_nvidia_gpus(*, force_refresh: bool = False) -> list[GPUInfo]:
+    global _NVIDIA_GPU_CACHE
+    now = time.monotonic()
+    if not force_refresh and _NVIDIA_GPU_CACHE is not None:
+        cached_at, cached = _NVIDIA_GPU_CACHE
+        if now - cached_at < _NVIDIA_GPU_CACHE_TTL_SECONDS:
+            return list(cached)
+    gpus = _probe_nvidia_gpus()
+    _NVIDIA_GPU_CACHE = (now, list(gpus))
+    return gpus
+
+
+def _probe_nvidia_gpus() -> list[GPUInfo]:
     # GPU 探测属于尽力而为：任何异常都按“未检测到 GPU”处理，避免拖垮设置页等调用方的构造。
     # 注意 shutil.which 也需保护——当 sys.platform 被伪造为 win32（如测试）但宿主非 Windows 时，
     # 其内部会访问 _winapi.NeedCurrentDirectoryForExePath，而非 Windows 上 _winapi 为 None 会抛 AttributeError。
@@ -320,7 +334,12 @@ def default_bundle_work_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
     return short_dir
 
 
-def default_provider_bundle_work_dir(provider: str, base_dir: Path) -> Path | None:
+def default_provider_bundle_work_dir(
+    provider: str,
+    base_dir: Path,
+    *,
+    gpus: list[GPUInfo] | None = None,
+) -> Path | None:
     """按 provider 选择整合包默认工作目录，自定义外部 provider 不返回目录。"""
 
     normalized = provider.strip().lower().replace("_", "-")
@@ -331,13 +350,34 @@ def default_provider_bundle_work_dir(provider: str, base_dir: Path) -> Path | No
 
     if not any(is_bundle_supported(entry) for entry in GPT_SOVITS_BUNDLES):
         return None
-    for entry in GPT_SOVITS_BUNDLES:
-        if not is_bundle_supported(entry):
-            continue
-        if _is_bundle_installed(entry, base_dir):
-            return default_bundle_work_dir(entry, base_dir)
-    recommended = recommend_gpt_sovits_bundle()
+    recommended = recommend_gpt_sovits_bundle(gpus)
     return default_bundle_work_dir(recommended, base_dir) if recommended is not None else None
+
+
+def default_provider_bundle_notice(
+    provider: str,
+    base_dir: Path,
+    *,
+    gpus: list[GPUInfo] | None = None,
+) -> str:
+    normalized = provider.strip().lower().replace("_", "-")
+    if normalized not in {"gpt-sovits", "gpt-so-vits", "gptsovits"}:
+        return ""
+    recommended = recommend_gpt_sovits_bundle(gpus)
+    if recommended is None or _is_bundle_installed(recommended, base_dir):
+        return ""
+    installed = [
+        entry
+        for entry in GPT_SOVITS_BUNDLES
+        if entry != recommended and is_bundle_supported(entry) and _is_bundle_installed(entry, base_dir)
+    ]
+    if not installed:
+        return ""
+    installed_labels = "、".join(entry.label for entry in installed)
+    return (
+        f"检测到已安装 {installed_labels}，但当前显卡推荐 {recommended.label}。"
+        "请下载匹配显卡的 GPT-SoVITS 整合包。"
+    )
 
 
 def is_provider_bundle_work_dir(path: Path, base_dir: Path) -> bool:
@@ -568,6 +608,7 @@ def download_and_extract_bundle(
     error = extract(archive, tmp_dir)
     if error is not None:
         raise RuntimeError(f"解压 TTS 整合包失败：{error}")
+    _emit_status(on_status, "install")
     work_dir = _replace_installed_bundle_from_extract(tmp_dir, installed_dir)
     _emit_status(on_status, "cleanup")
     _cleanup_archive(archive)
