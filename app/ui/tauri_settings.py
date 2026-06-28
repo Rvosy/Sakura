@@ -23,7 +23,12 @@ from app.agent.memory import (
     MEMORY_LAYER_LABELS,
     MEMORY_LAYERS,
 )
-from app.agent.mcp import MCPRuntimeSettings, normalize_mcp_runtime_settings
+from app.agent.mcp import (
+    DESKTOP_MCP_EXPERIMENTAL_TEXT,
+    MCPRuntimeSettings,
+    normalize_mcp_runtime_settings,
+    resolve_desktop_mcp,
+)
 from app.agent.runtime_limits import (
     MAX_CONFIGURABLE_AGENT_STEPS_PER_TURN,
     MAX_CONFIGURABLE_TOOL_CALLS_PER_STEP,
@@ -1505,8 +1510,14 @@ def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str,
 
 
 def _mcp_to_mapping(settings: MCPRuntimeSettings) -> dict[str, object]:
+    desktop = resolve_desktop_mcp()
     return {
         "windows_enabled": bool(settings.windows_enabled),
+        "desktop": {
+            "supported": desktop is not None,
+            "label": desktop.label if desktop is not None else "",
+            "experimental_text": DESKTOP_MCP_EXPERIMENTAL_TEXT,
+        },
     }
 
 

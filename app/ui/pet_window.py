@@ -5425,6 +5425,11 @@ class PetWindow(QWidget):
             base_settings=result.api.settings,
         )
         self.screen_awareness_settings = settings
+        mcp_restart_required = result.mcp != getattr(
+            self,
+            "mcp_settings",
+            MCPRuntimeSettings(),
+        )
         self.mcp_settings = result.mcp
         agent_runtime = getattr(self, "agent_runtime", None)
         set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
@@ -5522,17 +5527,18 @@ class PetWindow(QWidget):
                 result.character.control_panel_vertical_offset,
                 result.character.input_bar_offset,
             )
+        messages: list[str] = []
+        if mcp_restart_required:
+            messages.append("桌面控制 MCP 开关需要重启 Sakura 后才会生效。")
         if plugin_enabled_changed:
-            show_themed_information(
-                self,
-                "设置已保存",
-                "插件启用状态需要重启 Sakura 后才会生效。",
-            )
+            messages.append("插件启用状态需要重启 Sakura 后才会生效。")
         elif plugin_settings_changed:
+            messages.append("插件设置已保存并即时生效。")
+        if messages:
             show_themed_information(
                 self,
                 "设置已保存",
-                "插件设置已保存并即时生效。",
+                "\n\n".join(messages),
             )
         return True
 

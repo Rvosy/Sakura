@@ -3777,6 +3777,47 @@ def test_tauri_settings_request_uses_real_tts_provider_when_disabled() -> None:
     assert "none" not in [option["id"] for option in request["tts"]["providers"]]
 
 
+def test_tauri_settings_request_includes_platform_desktop_mcp_metadata(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+    from app.agent.mcp import DesktopMCP
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    monkeypatch.setattr(
+        tauri_settings_module,
+        "resolve_desktop_mcp",
+        lambda: DesktopMCP(server_name="macos", label="macOS MCP"),
+    )
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
+        nonce="nonce",
+    )
+
+    assert request["mcp"]["windows_enabled"] is True
+    assert request["mcp"]["desktop"] == {
+        "supported": True,
+        "label": "macOS MCP",
+        "experimental_text": "实验性功能，供想要尝鲜的用户使用；可能不稳定，请谨慎开启",
+    }
+
+
+def test_tauri_settings_request_preserves_desktop_mcp_preference_when_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings_module
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    monkeypatch.setattr(tauri_settings_module, "resolve_desktop_mcp", lambda: None)
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        mcp_settings=MCPRuntimeSettings(windows_enabled=True),
+        nonce="nonce",
+    )
+
+    assert request["mcp"]["windows_enabled"] is True
+    assert request["mcp"]["desktop"]["supported"] is False
+
+
 def test_tauri_settings_request_includes_plugins_and_memory_admin_metadata() -> None:
     from app.ui.tauri_settings import build_tauri_settings_request
     from app.plugins.models import PluginSettingsContribution, PluginSettingsField
@@ -3877,6 +3918,41 @@ def test_tauri_plugin_settings_message_does_not_claim_restart(monkeypatch) -> No
     assert messages == ["插件设置已保存并即时生效。"]
 
 
+def test_tauri_settings_mcp_change_message_mentions_restart(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_information",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    result = replace(
+        _build_tauri_settings_result(),
+        mcp=MCPRuntimeSettings(windows_enabled=True),
+    )
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert messages == ["桌面控制 MCP 开关需要重启 Sakura 后才会生效。"]
+
+
 def test_tauri_settings_request_includes_per_character_theme() -> None:
     from types import SimpleNamespace
 
@@ -3935,6 +4011,10 @@ def test_tauri_settings_frontend_disables_dependent_controls() -> None:
     styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
 
     assert "function setControlDisabled" in source
+    assert "function syncDesktopMcpControl" in source
+    assert "syncDesktopMcpControl(request.mcp);" in source
+    assert "`${desktop.label} 桌面控制`" in source
+    assert "修改后需重启 Sakura" in source
     assert "function syncBackchannelState" in source
     assert "fields.backchannelEnabled.addEventListener(\"change\", syncBackchannelState)" in source
     assert "setControlDisabled(fields.backchannelMode, !enabled);" in source

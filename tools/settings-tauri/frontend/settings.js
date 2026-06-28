@@ -308,6 +308,23 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
   refreshSelect(control);
 }
 
+function syncDesktopMcpControl(mcp) {
+  const desktop = mcp.desktop || { supported: true, label: "Windows MCP", experimental_text: "" };
+  const row = fields.windowsMcp.closest(".setting-row");
+  if (row) {
+    row.hidden = !desktop.supported;
+  }
+  const title = row?.querySelector(".setting-title");
+  const desc = row?.querySelector(".setting-desc");
+  if (title && desktop.label) {
+    title.textContent = `${desktop.label} 桌面控制`;
+  }
+  if (desc) {
+    const experimental = desktop.experimental_text ? `${desktop.experimental_text}。` : "";
+    desc.textContent = `${experimental}允许桌宠通过 MCP 操作桌面与应用，修改后需重启 Sakura。`;
+  }
+}
+
 function clearMemoryRetry() {
   window.clearTimeout(memoryRetryTimer);
   memoryRetryTimer = null;
@@ -4040,6 +4057,7 @@ async function load() {
   fields.checkInterval.value = settings.check_interval_minutes;
   fields.cooldown.value = settings.cooldown_minutes;
   fields.batchLimit.value = settings.screen_context_batch_limit;
+  syncDesktopMcpControl(request.mcp);
   fields.windowsMcp.checked = request.mcp.windows_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
   fields.toolCallsPerStep.value = request.runtime_loop.max_tool_calls_per_step;
