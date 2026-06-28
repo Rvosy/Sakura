@@ -14,17 +14,62 @@
           <span class="nav-brand-text">Sakura</span>
         </div>
         <nav class="nav-list">
-          <button class="nav-item is-active" type="button" data-page="character" aria-current="page">角色与布局</button>
-          <button class="nav-item" type="button" data-page="appearance">外观</button>
-          <button class="nav-item" type="button" data-page="providers">供应商</button>
-          <button class="nav-item" type="button" data-page="model">模型</button>
-          <button class="nav-item" type="button" data-page="voice">语音</button>
-          <button class="nav-item" type="button" data-page="interaction">交互</button>
-          <button class="nav-item" type="button" data-page="privacy">隐私</button>
-          <button class="nav-item" type="button" data-page="tools">工具</button>
-          <button class="nav-item" type="button" data-page="plugins">插件</button>
-          <button class="nav-item" type="button" data-page="system">系统</button>
-          <button class="nav-item" type="button" data-page="memory">记忆</button>
+          <div class="nav-group" role="group" aria-labelledby="navgrp-character">
+            <p class="nav-group-label" id="navgrp-character">角色</p>
+            <button class="nav-item is-active" type="button" data-page="character" aria-current="page">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg></span>
+              <span class="nav-item-label">角色与布局</span>
+            </button>
+            <button class="nav-item" type="button" data-page="appearance">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></span>
+              <span class="nav-item-label">外观</span>
+            </button>
+          </div>
+          <div class="nav-group" role="group" aria-labelledby="navgrp-ai">
+            <p class="nav-group-label" id="navgrp-ai">智能</p>
+            <button class="nav-item" type="button" data-page="providers">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg></span>
+              <span class="nav-item-label">供应商</span>
+            </button>
+            <button class="nav-item" type="button" data-page="model">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></span>
+              <span class="nav-item-label">模型</span>
+            </button>
+            <button class="nav-item" type="button" data-page="voice">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>
+              <span class="nav-item-label">语音</span>
+            </button>
+            <button class="nav-item" type="button" data-page="memory">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg></span>
+              <span class="nav-item-label">记忆</span>
+            </button>
+          </div>
+          <div class="nav-group" role="group" aria-labelledby="navgrp-behavior">
+            <p class="nav-group-label" id="navgrp-behavior">行为</p>
+            <button class="nav-item" type="button" data-page="interaction">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg></span>
+              <span class="nav-item-label">交互</span>
+            </button>
+            <button class="nav-item" type="button" data-page="privacy">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></span>
+              <span class="nav-item-label">隐私</span>
+            </button>
+            <button class="nav-item" type="button" data-page="tools">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+              <span class="nav-item-label">工具</span>
+            </button>
+          </div>
+          <div class="nav-group" role="group" aria-labelledby="navgrp-system">
+            <p class="nav-group-label" id="navgrp-system">系统</p>
+            <button class="nav-item" type="button" data-page="plugins">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 7.5a2.5 2.5 0 1 0-3-3V2H7v2.5a2.5 2.5 0 1 1-3 3H2v11a1 1 0 0 0 1 1h11v-2.5a2.5 2.5 0 1 1 3-3H19.5V7.5z"/></svg></span>
+              <span class="nav-item-label">插件</span>
+            </button>
+            <button class="nav-item" type="button" data-page="system">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg></span>
+              <span class="nav-item-label">系统</span>
+            </button>
+          </div>
         </nav>
       </aside>
 

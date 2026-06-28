@@ -92,6 +92,7 @@ const fields = {
   saveButton: document.getElementById("saveButton"),
   applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
+  pageHead: document.querySelector(".page-head"),
   pageTitle: document.getElementById("pageTitle"),
   pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
@@ -296,6 +297,17 @@ function markInvalid(input, invalid) {
   }
 }
 
+function setControlDisabled(control, disabled, { row = true } = {}) {
+  if (!control) {
+    return;
+  }
+  control.disabled = Boolean(disabled);
+  if (row) {
+    control.closest(".setting-row")?.classList.toggle("is-disabled", Boolean(disabled));
+  }
+  refreshSelect(control);
+}
+
 function clearMemoryRetry() {
   window.clearTimeout(memoryRetryTimer);
   memoryRetryTimer = null;
@@ -387,6 +399,15 @@ function runThemeTransition(update) {
   transition.finished.finally(() => {
     document.documentElement.classList.remove("is-theme-view-transition");
   });
+}
+
+function replayMotion(element, className) {
+  if (!element || reduceMotionQuery?.matches) {
+    return;
+  }
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
 }
 
 function markThemeChanged() {
@@ -674,6 +695,7 @@ function showPage(page) {
   if (meta) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = meta.subtitle;
+    replayMotion(fields.pageHead, "is-switching");
   }
   // 进入「模型」页时按当前供应商重建槽位选项（供应商可能在另一页被改过）。
   if (page === "model" && request) {
@@ -690,9 +712,9 @@ function showPage(page) {
 
 function syncEnabledState() {
   const enabled = fields.enabled.checked;
-  fields.checkInterval.disabled = !enabled;
-  fields.cooldown.disabled = !enabled;
-  fields.batchLimit.disabled = !enabled;
+  setControlDisabled(fields.checkInterval, !enabled);
+  setControlDisabled(fields.cooldown, !enabled);
+  setControlDisabled(fields.batchLimit, !enabled);
 }
 
 function syncRuntimeLoopState() {
@@ -704,11 +726,11 @@ function syncRuntimeLoopState() {
 }
 
 function syncDebugLogState() {
-  fields.debugBodyEnabled.disabled = !fields.debugLogEnabled.checked;
+  setControlDisabled(fields.debugBodyEnabled, !fields.debugLogEnabled.checked);
 }
 
 function syncBubbleState() {
-  fields.bubbleAutoHideDelay.disabled = !fields.bubbleAutoHide.checked;
+  setControlDisabled(fields.bubbleAutoHideDelay, !fields.bubbleAutoHide.checked);
 }
 
 function selectedCharacter() {
@@ -801,20 +823,33 @@ function syncTtsState() {
   if (!hasVoice) {
     fields.ttsEnabled.checked = false;
   }
-  fields.ttsEnabled.disabled = !hasVoice;
+  setControlDisabled(fields.ttsEnabled, !hasVoice);
   const active = fields.ttsEnabled.checked && fields.ttsProvider.value !== "none";
   const bundledProvider = isBundledTtsProvider(fields.ttsProvider.value);
-  fields.ttsApiUrl.disabled = !active;
-  fields.ttsTimeout.disabled = !active;
-  fields.ttsWorkDir.disabled = !active || bundledProvider;
-  fields.ttsPythonPath.disabled = !active || bundledProvider;
+  setControlDisabled(fields.ttsApiUrl, !active);
+  setControlDisabled(fields.ttsTimeout, !active);
+  setControlDisabled(fields.ttsWorkDir, !active || bundledProvider);
+  setControlDisabled(fields.ttsPythonPath, !active || bundledProvider);
   fields.ttsWorkDir.readOnly = false;
   fields.ttsPythonPath.readOnly = false;
   fields.ttsConfigPath.disabled = true;
-  fields.ttsTestButton.disabled = !active;
+  setControlDisabled(fields.ttsTestButton, !active);
   syncTtsBundleNotice();
+  syncBackchannelState({ renderResource: false });
   if (request) {
     renderTtsResourceCard();
+  }
+}
+
+function syncBackchannelState({ renderResource = true } = {}) {
+  const enabled = fields.backchannelEnabled.checked;
+  const ttsAvailable = fields.ttsEnabled.checked && !fields.ttsEnabled.disabled && fields.ttsProvider.value !== "none";
+  setControlDisabled(fields.backchannelMode, !enabled);
+  setControlDisabled(fields.backchannelDelay, !enabled);
+  setControlDisabled(fields.backchannelProbability, !enabled);
+  setControlDisabled(fields.backchannelTtsEnabled, !enabled || !ttsAvailable);
+  if (renderResource) {
+    renderBackchannelResourceCard();
   }
 }
 
@@ -850,8 +885,8 @@ function handleTtsProviderChange() {
 }
 
 function syncApiAdvancedState() {
-  fields.apiTopP.disabled = !fields.apiTopPEnabled.checked;
-  fields.apiMaxTokens.disabled = !fields.apiMaxTokensEnabled.checked;
+  setControlDisabled(fields.apiTopP, !fields.apiTopPEnabled.checked, { row: false });
+  setControlDisabled(fields.apiMaxTokens, !fields.apiMaxTokensEnabled.checked, { row: false });
 }
 
 function renderCharacters() {
@@ -1972,13 +2007,14 @@ function syncSlotInheritState(slot) {
     }
   }
   if (profileSelect) {
-    profileSelect.disabled = inherited;
-    refreshSelect(profileSelect);
+    setControlDisabled(profileSelect, inherited, { row: false });
   }
   if (modelSelect) {
-    modelSelect.disabled = inherited;
-    refreshSelect(modelSelect);
+    setControlDisabled(modelSelect, inherited, { row: false });
   }
+  fields.modelSlots
+    .querySelector(`[data-slot="${slot}"]`)
+    ?.classList.toggle("is-inherited", inherited);
 }
 
 function refreshModelSlots() {
@@ -2313,6 +2349,7 @@ function renderResourceCard(container, model) {
   }
   container.textContent = "";
   container.classList.toggle("is-muted", Boolean(model.muted));
+  container.classList.toggle("is-running", model.status === "running" || model.status === "queued");
   const head = document.createElement("div");
   head.className = "resource-card__head";
   const titleWrap = document.createElement("div");
@@ -3718,6 +3755,13 @@ function updateSliderOutput(fieldKey) {
   if (output) {
     output.textContent = input.value;
   }
+  if (input) {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const value = Number(input.value);
+    const progress = max > min ? ((value - min) / (max - min)) * 100 : 0;
+    input.style.setProperty("--slider-progress", `${Math.max(0, Math.min(100, progress))}%`);
+  }
 }
 
 let layoutPreviewPending = false;
@@ -4019,7 +4063,7 @@ async function load() {
   applyTtsProviderDefaults(lastTtsProvider);
 
   fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
-  fields.launchAtLogin.disabled = !request.system_extra.startup.launch_at_login_supported;
+  setControlDisabled(fields.launchAtLogin, !request.system_extra.startup.launch_at_login_supported);
   fields.debugLogEnabled.checked = request.system_basic.debug_log.enabled;
   fields.debugBodyEnabled.checked = request.system_basic.debug_log.body_enabled;
   fields.debugFileEnabled.checked = request.system_basic.debug_log.file_enabled;
@@ -4047,6 +4091,7 @@ async function load() {
   syncBubbleState();
   syncApiAdvancedState();
   syncTtsState();
+  syncBackchannelState();
   syncCharacterArchiveState();
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.ttsProvider);
@@ -4092,7 +4137,7 @@ fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
 fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
 fields.ttsTestButton.addEventListener("click", testTtsSettings);
-fields.backchannelEnabled.addEventListener("change", renderBackchannelResourceCard);
+fields.backchannelEnabled.addEventListener("change", syncBackchannelState);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.themeAiButton.addEventListener("click", generateAiTheme);

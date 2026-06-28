@@ -5637,8 +5637,28 @@ def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
     assert "current.hide" not in source
     assert "theme_changed: themeChanged" in source
     assert "setThemeValues(request.theme);" in source
-    assert "setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false });" in source
-    assert "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });" in source
+    assert "runThemeTransition(update)" in source
+    assert "setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false, animateTheme: true });" in source
+    assert (
+        "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });"
+        in source
+    )
+
+
+def test_tauri_settings_frontend_disables_dependent_controls() -> None:
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
+
+    assert "function setControlDisabled" in source
+    assert "function syncBackchannelState" in source
+    assert "fields.backchannelEnabled.addEventListener(\"change\", syncBackchannelState)" in source
+    assert "setControlDisabled(fields.backchannelMode, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelDelay, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelProbability, !enabled);" in source
+    assert "setControlDisabled(fields.backchannelTtsEnabled, !enabled || !ttsAvailable);" in source
+    assert "setControlDisabled(profileSelect, inherited, { row: false });" in source
+    assert ".model-slot-row.is-inherited .slot-controls .custom-select" in styles
+    assert "overflow-x: hidden;" in styles
 
 
 def test_tauri_settings_theme_ai_uses_vision_slot() -> None:
