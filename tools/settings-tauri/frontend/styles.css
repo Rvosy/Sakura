@@ -66,6 +66,23 @@ body {
   display: none !important;
 }
 
+html.is-theme-view-transition::view-transition-old(root),
+html.is-theme-view-transition::view-transition-new(root) {
+  animation-duration: 0.82s;
+  animation-timing-function: cubic-bezier(0.32, 0, 0.18, 1);
+  animation-fill-mode: both;
+  mix-blend-mode: normal;
+}
+
+html.is-theme-view-transition::view-transition-old(root) {
+  animation-name: none;
+}
+
+html.is-theme-view-transition::view-transition-new(root) {
+  animation-name: theme-curtain-in;
+  z-index: 2;
+}
+
 /* ---------- 整体布局 ---------- */
 
 .settings-shell {
@@ -2088,6 +2105,15 @@ input.is-invalid:hover,
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@keyframes theme-curtain-in {
+  from {
+    clip-path: polygon(0 0, 0 0, 0 0, 0 0);
+  }
+  to {
+    clip-path: polygon(0 0, 160% 0, 100% 160%, 0 100%);
   }
 }
 

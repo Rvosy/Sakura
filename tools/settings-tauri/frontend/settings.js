@@ -177,6 +177,8 @@ const themeVars = {
   border_color: "--sakura-border",
 };
 
+const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
+
 let activeThemeField = "";
 let themeEditor = {};
 
@@ -372,6 +374,18 @@ function applyTheme(theme) {
     if (isHexColor(value)) {
       style.setProperty(cssVar, value);
     }
+  });
+}
+
+function runThemeTransition(update) {
+  if (reduceMotionQuery?.matches || typeof document.startViewTransition !== "function") {
+    update();
+    return;
+  }
+  document.documentElement.classList.add("is-theme-view-transition");
+  const transition = document.startViewTransition(update);
+  transition.finished.finally(() => {
+    document.documentElement.classList.remove("is-theme-view-transition");
   });
 }
 
@@ -716,7 +730,7 @@ function selectedCharacterTheme() {
 
 // 切换角色时跟随载入该角色的最终配色（仅配色，输入栏视觉效果等用户级偏好保留）。
 function applySelectedCharacterTheme() {
-  setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false });
+  setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false, animateTheme: true });
 }
 
 function ttsProviderDefaults(provider) {
@@ -1191,23 +1205,31 @@ async function pickActiveThemeColor() {
 
 function setThemeValues(theme, options = {}) {
   const updateVisualEffect = options.updateVisualEffect !== false;
-  request.theme_fields.forEach(({ id }) => {
-    const textInput = themeFieldInput(id);
-    const color = normalizeColorText(theme[id], request.theme_defaults[id]);
-    if (textInput) {
-      textInput.value = color;
+  const animateTheme = options.animateTheme === true;
+  const update = () => {
+    request.theme_fields.forEach(({ id }) => {
+      const textInput = themeFieldInput(id);
+      const color = normalizeColorText(theme[id], request.theme_defaults[id]);
+      if (textInput) {
+        textInput.value = color;
+      }
+      syncThemeRole(id);
+    });
+    if (updateVisualEffect && theme.visual_effect_mode) {
+      fields.visualEffectMode.value = theme.visual_effect_mode;
+      refreshSelect(fields.visualEffectMode);
     }
-    syncThemeRole(id);
-  });
-  if (updateVisualEffect && theme.visual_effect_mode) {
-    fields.visualEffectMode.value = theme.visual_effect_mode;
-    refreshSelect(fields.visualEffectMode);
+    applyTheme({
+      ...theme,
+      visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
+    });
+    syncThemeEditor();
+  };
+  if (animateTheme) {
+    runThemeTransition(update);
+    return;
   }
-  applyTheme({
-    ...theme,
-    visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
-  });
-  syncThemeEditor();
+  update();
 }
 
 async function generateAiTheme() {
@@ -1225,7 +1247,7 @@ async function generateAiTheme() {
     if (!result?.theme) {
       throw new Error("AI 返回的主题格式无效。");
     }
-    setThemeValues(result.theme);
+    setThemeValues(result.theme, { animateTheme: true });
     themeChanged = true;
     notify("AI 配色已生成。", "success");
   } catch (error) {
@@ -4075,7 +4097,7 @@ fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard)
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.themeAiButton.addEventListener("click", generateAiTheme);
 fields.resetThemeButton.addEventListener("click", () => {
-  setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false });
+  setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });
   themeChanged = true;
 });
 fields.debugLogEnabled.addEventListener("change", syncDebugLogState);
