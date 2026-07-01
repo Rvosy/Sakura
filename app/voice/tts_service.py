@@ -30,6 +30,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 from app.core.debug_log import debug_log
 from app.core.gui_log import record_tts_service_output
+from app.core.http_client import urlopen_direct_for_loopback
 from app.llm.chat_reply import DEFAULT_TONE
 from app.storage.paths import StoragePaths
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
@@ -496,7 +497,7 @@ def _probe_gpt_sovits_http(api_url: str, timeout: int) -> bool:
     probe_url = urlunparse(parsed._replace(path=base_path or "/", query=""))
     request = urllib.request.Request(url=probe_url, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout):
+        with urlopen_direct_for_loopback(request, timeout=timeout):
             pass
     except urllib.error.HTTPError:
         # 任何 HTTP 状态码都说明服务 HTTP 层已就绪
@@ -512,7 +513,7 @@ def _probe_genie_api_url(api_url: str, timeout: int) -> bool:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         debug_log("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
@@ -1083,7 +1084,7 @@ class TTSServiceSupervisor:
         request = urllib.request.Request(url=url, method="GET")
         try:
             debug_log("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
-            with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
+            with urlopen_direct_for_loopback(request, timeout=self.settings.timeout_seconds) as response:
                 response.read()
                 debug_log(
                     "TTS",
@@ -1504,7 +1505,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             return response.read()
 
     def _genie_character_name(self) -> str:

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.core.debug_log import debug_log
+from app.core.http_client import urlopen_direct_for_loopback
 from app.core.interaction import set_interaction_id
 from app.llm.chat_reply import DEFAULT_TONE
 from app.voice import audio_checks as _audio_checks
@@ -197,7 +198,7 @@ class GPTSoVITSSynthesisEngine:
             )
 
             try:
-                with urllib.request.urlopen(
+                with urlopen_direct_for_loopback(
                     http_request,
                     timeout=settings.timeout_seconds,
                 ) as response:

@@ -1128,7 +1128,7 @@ def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None
     def fake_urlopen(*_args: object, **_kwargs: object) -> object:
         raise urllib.error.URLError("bad weights")
 
-    monkeypatch.setattr("app.voice.tts_service.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.voice.tts_service.urlopen_direct_for_loopback", fake_urlopen)
 
     ok = TTSServiceSupervisor._request_weight_switch(
         provider,

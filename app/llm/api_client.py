@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
-from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.core.debug_log import debug_log, summarize_messages
+from app.core.http_client import urlopen_direct_for_loopback
+from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.llm.prompt_templates import build_segmented_reply_instruction
 
 
@@ -518,7 +519,7 @@ class OpenAICompatibleClient:
             check_cancelled(cancel_checker)
             started_at = time.perf_counter()
             try:
-                with urllib.request.urlopen(
+                with urlopen_direct_for_loopback(
                     request,
                     timeout=self.settings.timeout_seconds,
                 ) as response:

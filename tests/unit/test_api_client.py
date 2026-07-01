@@ -649,6 +649,41 @@ def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-u
     assert "temperature" not in captured["payload"]
 
 
+def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="http://127.0.0.1:11434/v1", api_key="key", model="local-model")
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+    def fake_urlopen_direct_for_loopback(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "app.llm.api_client.urlopen_direct_for_loopback",
+        fake_urlopen_direct_for_loopback,
+    )
+
+    assert client.test_connection() == "OK"
+    assert captured == {
+        "url": "http://127.0.0.1:11434/v1/chat/completions",
+        "timeout": 60,
+    }
+
+
 def test_list_models_allows_empty_model_but_requires_key() -> None:
     client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "", ""))
 
