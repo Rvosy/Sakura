@@ -63,6 +63,20 @@ from app.config.defaults import (
     DEFAULT_PROFILE_ID,
     DEFAULT_TEXT_MODEL,
 )
+from app.config.defaults import (
+    DEFAULT_BUTTON_FONT_SIZE,
+    DEFAULT_INPUT_FONT_SIZE,
+    DEFAULT_NAME_FONT_SIZE,
+    DEFAULT_SPEECH_FONT_SIZE,
+    SPEECH_FONT_SIZE_MAX,
+    SPEECH_FONT_SIZE_MIN,
+    NAME_FONT_SIZE_MIN,
+    NAME_FONT_SIZE_MAX,
+    INPUT_FONT_SIZE_MIN,
+    INPUT_FONT_SIZE_MAX,
+    BUTTON_FONT_SIZE_MIN,
+    BUTTON_FONT_SIZE_MAX,
+)
 from app.config.model_slots import normalize_provider_models, resolve_model_slot
 from app.config.models import (
     MODEL_SLOT_CHAT,
@@ -231,6 +245,10 @@ class TauriSystemBasicResult:
     subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS
     reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS
     bubble: BubbleSettings = field(default_factory=BubbleSettings)
+    speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE
+    name_font_size: int = DEFAULT_NAME_FONT_SIZE
+    input_font_size: int = DEFAULT_INPUT_FONT_SIZE
+    button_font_size: int = DEFAULT_BUTTON_FONT_SIZE
 
 
 @dataclass(frozen=True)
@@ -491,6 +509,11 @@ def build_tauri_settings_request(
     model: str | None = None,
     parent_widget: QWidget | None = None,
     nonce: str | None = None,
+    # 字体大小
+    speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE,
+    name_font_size: int = DEFAULT_NAME_FONT_SIZE,
+    input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
+    button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
 ) -> dict[str, Any]:
     normalized_screen_awareness = screen_awareness_settings.normalized()
     normalized_mcp = normalize_mcp_runtime_settings(mcp_settings or MCPRuntimeSettings())
@@ -512,6 +535,10 @@ def build_tauri_settings_request(
             normalized_subtitle[0],
             normalized_subtitle[1],
             normalized_bubble,
+            speech_font_size=speech_font_size,
+            name_font_size=name_font_size,
+            input_font_size=input_font_size,
+            button_font_size=button_font_size,
         ),
         "theme": _theme_to_mapping(theme_settings),
         "character": _character_to_mapping(
@@ -611,6 +638,22 @@ def build_tauri_settings_request(
             "input_bar_offset": [
                 MIN_INPUT_BAR_OFFSET,
                 MAX_INPUT_BAR_OFFSET,
+            ],
+            "speech_font_size": [
+                SPEECH_FONT_SIZE_MIN,
+                SPEECH_FONT_SIZE_MAX,
+            ],
+            "name_font_size": [
+                NAME_FONT_SIZE_MIN,
+                NAME_FONT_SIZE_MAX,
+            ],
+            "input_font_size": [
+                INPUT_FONT_SIZE_MIN,
+                INPUT_FONT_SIZE_MAX,
+            ],
+            "button_font_size": [
+                BUTTON_FONT_SIZE_MIN,
+                BUTTON_FONT_SIZE_MAX,
             ],
             "api_timeout_seconds": [1, 600],
             "api_temperature": [0, 2],
@@ -738,6 +781,22 @@ def parse_tauri_settings_payload(
                 auto_hide_enabled=_required_bool(bubble, "auto_hide_enabled"),
                 auto_hide_delay_seconds=_required_int(bubble, "auto_hide_delay_seconds"),
             ).normalized(),
+            speech_font_size=_clamp_int_value(
+                ui.get("speech_font_size"),
+                SPEECH_FONT_SIZE_MIN, SPEECH_FONT_SIZE_MAX,
+            ),
+            name_font_size=_clamp_int_value(
+                ui.get("name_font_size"),
+                NAME_FONT_SIZE_MIN, NAME_FONT_SIZE_MAX,
+            ),
+            input_font_size=_clamp_int_value(
+                ui.get("input_font_size"),
+                INPUT_FONT_SIZE_MIN, INPUT_FONT_SIZE_MAX,
+            ),
+            button_font_size=_clamp_int_value(
+                ui.get("button_font_size"),
+                BUTTON_FONT_SIZE_MIN, BUTTON_FONT_SIZE_MAX,
+            ),
         ),
         theme=_theme_from_mapping_required(theme),
         theme_changed=_optional_bool(raw.get("theme_changed"), default=True),
@@ -961,6 +1020,11 @@ class TauriSettingsProcess(QObject):
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
+        # 字体大小
+        speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE,
+        name_font_size: int = DEFAULT_NAME_FONT_SIZE,
+        input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
+        button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
     ) -> None:
         super().__init__(parent)
         self.base_dir = Path(base_dir)
@@ -980,6 +1044,11 @@ class TauriSettingsProcess(QObject):
         self.bubble_height = bubble_height
         self.control_panel_vertical_offset = control_panel_vertical_offset
         self.input_bar_offset = input_bar_offset
+        # 字体大小
+        self.speech_font_size = speech_font_size
+        self.name_font_size = name_font_size
+        self.input_font_size = input_font_size
+        self.button_font_size = button_font_size
         self.api_settings = api_settings or _default_api_settings()
         self.api_profiles = api_profiles
         self.model_selection = model_selection
@@ -1083,6 +1152,10 @@ class TauriSettingsProcess(QObject):
             bubble_height=self.bubble_height,
             control_panel_vertical_offset=self.control_panel_vertical_offset,
             input_bar_offset=self.input_bar_offset,
+            speech_font_size=self.speech_font_size,
+            name_font_size=self.name_font_size,
+            input_font_size=self.input_font_size,
+            button_font_size=self.button_font_size,
             api_settings=self.api_settings,
             api_profiles=self.api_profiles,
             model_selection=self.model_selection,
@@ -1534,6 +1607,11 @@ def _system_basic_to_mapping(
     subtitle_typing_interval_ms: int,
     reply_segment_pause_ms: int,
     bubble: BubbleSettings,
+    *,
+    speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE,
+    name_font_size: int = DEFAULT_NAME_FONT_SIZE,
+    input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
+    button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
 ) -> dict[str, object]:
     return {
         "debug_log": {
@@ -1546,6 +1624,10 @@ def _system_basic_to_mapping(
         "ui": {
             "subtitle_typing_interval_ms": int(subtitle_typing_interval_ms),
             "reply_segment_pause_ms": int(reply_segment_pause_ms),
+            "speech_font_size": int(speech_font_size),
+            "name_font_size": int(name_font_size),
+            "input_font_size": int(input_font_size),
+            "button_font_size": int(button_font_size),
         },
         "bubble": {
             "auto_hide_enabled": bool(bubble.auto_hide_enabled),

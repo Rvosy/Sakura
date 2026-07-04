@@ -213,7 +213,14 @@ def build_color_button_stylesheet(color: str) -> str:
     )
 
 
-def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
+def build_pet_window_stylesheet(
+    settings: ThemeSettings,
+    *,
+    speech_font_size: int = 15,
+    name_font_size: int = 10,
+    input_font_size: int = 13,
+    button_font_size: int = 11,
+) -> str:
     theme = settings.normalized()
     return f"""
 #speechBubble {{
@@ -223,12 +230,12 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
 }}
 #speakerName {{
     color: {theme.primary_color};
-    font-size: 13px;
+    font-size: {name_font_size}px;
     font-weight: 700;
 }}
 #speechText {{
     color: {theme.text_color};
-    font-size: 19px;
+    font-size: {speech_font_size}px;
     line-height: 1.35;
 }}
 #ttsErrorText {{
@@ -273,7 +280,7 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid rgba(255, 255, 255, 218);
     border-radius: 19px;
     color: {mix(theme.text_color, "#000000", 0.08)};
-    font-size: 15px;
+    font-size: {input_font_size}px;
     font-weight: 700;
     padding: 3px 16px;
     selection-background-color: {rgba(theme.primary_color, 92)};
@@ -298,7 +305,7 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid rgba(255, 255, 255, 150);
     border-radius: 19px;
     color: white;
-    font-size: 15px;
+    font-size: {button_font_size}px;
     font-weight: 800;
     padding: 4px 12px;
 }}

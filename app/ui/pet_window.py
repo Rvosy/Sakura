@@ -96,6 +96,20 @@ from app.config.models import (
     ApiConfigProfile,
     ModelSelectionSettings,
 )
+from app.config.defaults import (
+    DEFAULT_BUTTON_FONT_SIZE,
+    DEFAULT_INPUT_FONT_SIZE,
+    DEFAULT_NAME_FONT_SIZE,
+    DEFAULT_SPEECH_FONT_SIZE,
+    SPEECH_FONT_SIZE_MIN,
+    SPEECH_FONT_SIZE_MAX,
+    NAME_FONT_SIZE_MIN,
+    NAME_FONT_SIZE_MAX,
+    INPUT_FONT_SIZE_MIN,
+    INPUT_FONT_SIZE_MAX,
+    BUTTON_FONT_SIZE_MIN,
+    BUTTON_FONT_SIZE_MAX,
+)
 from app.config.settings_service import BackchannelSettings, BubbleSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
@@ -623,6 +637,11 @@ class PetWindow(QWidget):
         self.bubble_height = self._load_bubble_height()
         self.control_panel_vertical_offset = self._load_control_panel_vertical_offset()
         self.input_bar_offset = self._load_input_bar_offset()
+        # 字体大小
+        self.speech_font_size = self._load_speech_font_size()
+        self.name_font_size = self._load_name_font_size()
+        self.input_font_size = self._load_input_font_size()
+        self.button_font_size = self._load_button_font_size()
         # 自适应文本气泡高度（None = 使用用户设置的 bubble_height）
         self._auto_fit_bubble_height: int | None = None
         (
@@ -2322,9 +2341,14 @@ class PetWindow(QWidget):
             self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
     def _apply_fonts(self) -> None:
-        text_font = _rounded_chinese_font(13, QFont.Weight.Bold)
-        name_font = _rounded_japanese_font(10, QFont.Weight.Bold)
-        button_font = _rounded_chinese_font(11, QFont.Weight.ExtraBold)
+        speech_size = getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE)
+        name_size = getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE)
+        input_size = getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE)
+        button_size = getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE)
+
+        text_font = _rounded_chinese_font(input_size, QFont.Weight.Bold)
+        name_font = _rounded_japanese_font(name_size, QFont.Weight.Bold)
+        button_font = _rounded_chinese_font(button_size, QFont.Weight.ExtraBold)
 
         self.name_label.setFont(name_font)
         self._apply_speech_font()
@@ -2333,10 +2357,11 @@ class PetWindow(QWidget):
         self.send_button.setFont(button_font)
 
     def _apply_speech_font(self) -> None:
+        speech_size = getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE)
         if self.subtitle_language == SUBTITLE_LANGUAGE_ZH:
-            self.speech_label.setFont(_rounded_chinese_font(15, QFont.Weight.Medium))
+            self.speech_label.setFont(_rounded_chinese_font(speech_size, QFont.Weight.Medium))
             return
-        self.speech_label.setFont(_rounded_japanese_font(15, QFont.Weight.Medium))
+        self.speech_label.setFont(_rounded_japanese_font(speech_size, QFont.Weight.Medium))
 
     def _current_portrait_size(self) -> tuple[int, int]:
         """当前立绘标签实际尺寸；标签尚未贴图时回退到按缩放的名义尺寸。"""
@@ -5173,6 +5198,10 @@ class PetWindow(QWidget):
                 DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
             ),
             input_bar_offset=getattr(self, "input_bar_offset", DEFAULT_INPUT_BAR_OFFSET),
+            speech_font_size=getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+            name_font_size=getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE),
+            input_font_size=getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE),
+            button_font_size=getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE),
             api_settings=api_settings,
             api_profiles=api_profiles,
             model_selection=model_selection,
@@ -5357,6 +5386,10 @@ class PetWindow(QWidget):
                     "portrait_scale_percent": result.character.portrait_scale_percent,
                     "subtitle_typing_interval_ms": system_basic.subtitle_typing_interval_ms,
                     "reply_segment_pause_ms": system_basic.reply_segment_pause_ms,
+                    "speech_font_size": system_basic.speech_font_size,
+                    "name_font_size": system_basic.name_font_size,
+                    "input_font_size": system_basic.input_font_size,
+                    "button_font_size": system_basic.button_font_size,
                 },
             )
             self.settings_service.save_bubble_settings(system_basic.bubble)
@@ -5457,6 +5490,12 @@ class PetWindow(QWidget):
             system_basic.reply_segment_pause_ms,
         )
         self._apply_bubble_settings(system_basic.bubble)
+        # 应用字体设置
+        self.speech_font_size = system_basic.speech_font_size
+        self.name_font_size = system_basic.name_font_size
+        self.input_font_size = system_basic.input_font_size
+        self.button_font_size = system_basic.button_font_size
+        self._apply_fonts()
         self.startup_settings = result_startup_settings
         self.memory_curation_settings = result.memory_curation
         sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
@@ -5996,6 +6035,46 @@ class PetWindow(QWidget):
             system_values.get("input_bar_offset", DEFAULT_INPUT_BAR_OFFSET)
         )
 
+    def _load_speech_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return max(
+            SPEECH_FONT_SIZE_MIN,
+            min(
+                SPEECH_FONT_SIZE_MAX,
+                int(system_values.get("speech_font_size", DEFAULT_SPEECH_FONT_SIZE)),
+            ),
+        )
+
+    def _load_name_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return max(
+            NAME_FONT_SIZE_MIN,
+            min(
+                NAME_FONT_SIZE_MAX,
+                int(system_values.get("name_font_size", DEFAULT_NAME_FONT_SIZE)),
+            ),
+        )
+
+    def _load_input_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return max(
+            INPUT_FONT_SIZE_MIN,
+            min(
+                INPUT_FONT_SIZE_MAX,
+                int(system_values.get("input_font_size", DEFAULT_INPUT_FONT_SIZE)),
+            ),
+        )
+
+    def _load_button_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return max(
+            BUTTON_FONT_SIZE_MIN,
+            min(
+                BUTTON_FONT_SIZE_MAX,
+                int(system_values.get("button_font_size", DEFAULT_BUTTON_FONT_SIZE)),
+            ),
+        )
+
     def _load_subtitle_display_speed(self) -> tuple[int, int]:
         system_values = self._load_system_config_values("ui")
         return normalize_subtitle_display_speed(
@@ -6352,7 +6431,15 @@ class PetWindow(QWidget):
 
     def _apply_theme_settings(self, theme_settings: ThemeSettings) -> None:
         self.theme_settings = (theme_settings or DEFAULT_THEME_SETTINGS).normalized()
-        self.setStyleSheet(pet_window_stylesheet(self.theme_settings))
+        self.setStyleSheet(
+            pet_window_stylesheet(
+                self.theme_settings,
+                speech_font_size=getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+                name_font_size=getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE),
+                input_font_size=getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE),
+                button_font_size=getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE),
+            )
+        )
         self._apply_app_chrome_stylesheet()
         self._apply_card_window_theme()
         if self.history_window is not None:

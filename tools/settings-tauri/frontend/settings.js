@@ -64,6 +64,10 @@ const fields = {
   backchannelResourceCard: document.getElementById("backchannelResourceCard"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
   memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
+  speechFontSize: document.getElementById("speechFontSize"),
+  nameFontSize: document.getElementById("nameFontSize"),
+  inputFontSize: document.getElementById("inputFontSize"),
+  buttonFontSize: document.getElementById("buttonFontSize"),
   memoryStatusStrip: document.getElementById("memoryStatusStrip"),
   memorySearch: document.getElementById("memorySearch"),
   memoryLayerFilter: document.getElementById("memoryLayerFilter"),
@@ -3932,6 +3936,22 @@ function collectSystemBasicSettings() {
         fields.replySegmentPause.value,
         limits.reply_segment_pause_ms,
       ),
+      speech_font_size: clampInt(
+        fields.speechFontSize.value,
+        limits.speech_font_size,
+      ),
+      name_font_size: clampInt(
+        fields.nameFontSize.value,
+        limits.name_font_size,
+      ),
+      input_font_size: clampInt(
+        fields.inputFontSize.value,
+        limits.input_font_size,
+      ),
+      button_font_size: clampInt(
+        fields.buttonFontSize.value,
+        limits.button_font_size,
+      ),
     },
     bubble: {
       auto_hide_enabled: fields.bubbleAutoHide.checked,
@@ -4043,6 +4063,10 @@ async function load() {
   setNumericBounds(fields.ttsTimeout, request.limits.tts_timeout_seconds);
   setNumericBounds(fields.backchannelDelay, request.limits.backchannel_delay_ms);
   setNumericBounds(fields.memoryTriggerTurns, request.limits.memory_trigger_turns);
+  setNumericBounds(fields.speechFontSize, request.limits.speech_font_size);
+  setNumericBounds(fields.nameFontSize, request.limits.name_font_size);
+  setNumericBounds(fields.inputFontSize, request.limits.input_font_size);
+  setNumericBounds(fields.buttonFontSize, request.limits.button_font_size);
 
   const layout = request.character.layout;
   fields.portraitScale.value = layout.portrait_scale_percent;
@@ -4089,6 +4113,10 @@ async function load() {
   fields.stageCollisionMask.checked = request.system_basic.debug_log.stage_collision_mask;
   fields.subtitleTypingInterval.value = request.system_basic.ui.subtitle_typing_interval_ms;
   fields.replySegmentPause.value = request.system_basic.ui.reply_segment_pause_ms;
+  fields.speechFontSize.value = request.system_basic.ui.speech_font_size;
+  fields.nameFontSize.value = request.system_basic.ui.name_font_size;
+  fields.inputFontSize.value = request.system_basic.ui.input_font_size;
+  fields.buttonFontSize.value = request.system_basic.ui.button_font_size;
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
   fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
@@ -4136,6 +4164,11 @@ layoutSliders.forEach((fieldKey) => {
   };
   fields[fieldKey].addEventListener("input", preview);
   fields[fieldKey].addEventListener("change", preview);
+});
+["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"].forEach((fieldKey) => {
+  const update = () => updateSliderOutput(fieldKey);
+  fields[fieldKey].addEventListener("input", update);
+  fields[fieldKey].addEventListener("change", update);
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
