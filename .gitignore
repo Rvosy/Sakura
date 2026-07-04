@@ -40,6 +40,7 @@ data/memory/
 data/memory.json
 data/memory_curation_state.json
 data/reminders.json
+data/screen_awareness_state.json
 data/visual_observations/
 data/runtime_events/
 data/notes/
@@ -66,6 +67,8 @@ plugins/playwright_browser/__pycache__/
 plugins/playwright_browser/**/*.py[cod]
 # 用户态运行配置：发布包不携带，覆盖升级不冲掉（必须位于上方 ! 白名单之后）
 plugins/playwright_browser/config.json
+
+data/plugins/sakura_mobile/config.json
 
 # 备份文件
 *.bak
