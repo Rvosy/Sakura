@@ -5275,10 +5275,19 @@ class PetWindow(QWidget):
                 input_font_size=_value("input_font_size", self.input_font_size),
                 button_font_size=_value("button_font_size", self.button_font_size),
             )
+        # 拖动滑块时自动显示气泡和输入栏，方便实时查看效果
+        bubble_auto_hide = getattr(self, "bubble_auto_hide", None)
+        if bubble_auto_hide is not None:
+            bubble_auto_hide.handle_pet_clicked()
+        input_animator = getattr(self, "input_bar_animator", None)
+        if input_animator is not None:
+            # force_visible = True 使 input_card 同步 show()，不依赖焦点也不依赖 hover。
+            input_animator.set_force_visible(True)
 
     @Slot(object)
     def _on_tauri_settings_completed(self, result: object) -> None:
         # 「保存」：应用并关闭窗口。
+        self._release_tauri_preview_force_state()
         process = self.tauri_settings_process
         self.tauri_settings_process = None
         shutdown = getattr(process, "shutdown", None)
@@ -5636,8 +5645,15 @@ class PetWindow(QWidget):
         if original_layout is not None:
             self._preview_layout(*original_layout)
 
+    def _release_tauri_preview_force_state(self) -> None:
+        """释放 Tauri 设置预览期间的 force_visible（恢复常规显隐逻辑）。"""
+        input_animator = getattr(self, "input_bar_animator", None)
+        if input_animator is not None:
+            input_animator.set_force_visible(False)
+
     @Slot()
     def _on_tauri_settings_cancelled(self) -> None:
+        self._release_tauri_preview_force_state()
         self.tauri_settings_process = None
         self._tauri_initial_tts_settings = None
         self._restore_tauri_layout_preview()
