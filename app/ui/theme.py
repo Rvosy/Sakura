@@ -6,6 +6,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from app.config.defaults import (
+    DEFAULT_BUTTON_FONT_SIZE,
+    DEFAULT_INPUT_FONT_SIZE,
+    DEFAULT_NAME_FONT_SIZE,
+    DEFAULT_SPEECH_FONT_SIZE,
+)
+
 if TYPE_CHECKING:
     from app.config.character_loader import CharacterProfile
 
@@ -216,10 +223,10 @@ def build_color_button_stylesheet(color: str) -> str:
 def build_pet_window_stylesheet(
     settings: ThemeSettings,
     *,
-    speech_font_size: int = 15,
-    name_font_size: int = 10,
-    input_font_size: int = 13,
-    button_font_size: int = 11,
+    speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE,
+    name_font_size: int = DEFAULT_NAME_FONT_SIZE,
+    input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
+    button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
 ) -> str:
     theme = settings.normalized()
     return f"""

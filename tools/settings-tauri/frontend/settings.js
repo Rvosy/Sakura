@@ -4117,6 +4117,10 @@ async function load() {
   fields.nameFontSize.value = request.system_basic.ui.name_font_size;
   fields.inputFontSize.value = request.system_basic.ui.input_font_size;
   fields.buttonFontSize.value = request.system_basic.ui.button_font_size;
+  updateSliderOutput("speechFontSize");
+  updateSliderOutput("nameFontSize");
+  updateSliderOutput("inputFontSize");
+  updateSliderOutput("buttonFontSize");
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
   fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
