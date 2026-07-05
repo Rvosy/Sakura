@@ -5468,6 +5468,12 @@ class PetWindow(QWidget):
         set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
         if callable(set_runtime_loop_settings):
             set_runtime_loop_settings(result.runtime_loop)
+        # 先更新字体实例属性，再生成主题样式表，确保 QSS 使用新值。
+        self.speech_font_size = system_basic.speech_font_size
+        self.name_font_size = system_basic.name_font_size
+        self.input_font_size = system_basic.input_font_size
+        self.button_font_size = system_basic.button_font_size
+        self._apply_fonts()
         apply_theme_settings = getattr(self, "_apply_theme_settings", None)
         if callable(apply_theme_settings):
             apply_theme_settings(result.theme)
@@ -5490,12 +5496,6 @@ class PetWindow(QWidget):
             system_basic.reply_segment_pause_ms,
         )
         self._apply_bubble_settings(system_basic.bubble)
-        # 应用字体设置
-        self.speech_font_size = system_basic.speech_font_size
-        self.name_font_size = system_basic.name_font_size
-        self.input_font_size = system_basic.input_font_size
-        self.button_font_size = system_basic.button_font_size
-        self._apply_fonts()
         self.startup_settings = result_startup_settings
         self.memory_curation_settings = result.memory_curation
         sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
