@@ -7374,6 +7374,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
         _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview
         _restore_tauri_layout_preview = pet_window_cls._restore_tauri_layout_preview
+        _release_tauri_preview_force_state = pet_window_cls._release_tauri_preview_force_state
+        _apply_fonts_values = pet_window_cls._apply_fonts_values
         _abort_tauri_settings_apply = pet_window_cls._abort_tauri_settings_apply
         _close_unused_tauri_tts_provider = pet_window_cls._close_unused_tauri_tts_provider
         _close_tauri_settings_process_for_shutdown = (
@@ -7441,6 +7443,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
 
         def _warm_up_tts_playback(self, provider):  # type: ignore[no-untyped-def]
             self.warmed_tts_provider = provider
+
+        def _apply_fonts(self) -> None:
+            pass
+
+        def setStyleSheet(self, stylesheet: str) -> None:
+            pass
 
         def _save_system_config_values(self, section, values):  # type: ignore[no-untyped-def]
             self.settings_service.save_system_values(section, values)
