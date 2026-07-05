@@ -5263,6 +5263,18 @@ class PetWindow(QWidget):
             _value("control_panel_vertical_offset", self.control_panel_vertical_offset),
             _value("input_bar_offset", self.input_bar_offset),
         )
+        # 字体拖动时实时预览（打字机模式下只更新 QFont，不持久化）
+        speech_font_size = payload.get("speech_font_size")
+        name_font_size = payload.get("name_font_size")
+        input_font_size = payload.get("input_font_size")
+        button_font_size = payload.get("button_font_size")
+        if any(v is not None for v in (speech_font_size, name_font_size, input_font_size, button_font_size)):
+            self._preview_fonts(
+                speech_font_size=_value("speech_font_size", self.speech_font_size),
+                name_font_size=_value("name_font_size", self.name_font_size),
+                input_font_size=_value("input_font_size", self.input_font_size),
+                button_font_size=_value("button_font_size", self.button_font_size),
+            )
 
     @Slot(object)
     def _on_tauri_settings_completed(self, result: object) -> None:
@@ -5469,11 +5481,12 @@ class PetWindow(QWidget):
         if callable(set_runtime_loop_settings):
             set_runtime_loop_settings(result.runtime_loop)
         # 先更新字体实例属性，再生成主题样式表，确保 QSS 使用新值。
-        self.speech_font_size = system_basic.speech_font_size
-        self.name_font_size = system_basic.name_font_size
-        self.input_font_size = system_basic.input_font_size
-        self.button_font_size = system_basic.button_font_size
-        self._apply_fonts()
+        self._apply_fonts_values(
+            speech_font_size=system_basic.speech_font_size,
+            name_font_size=system_basic.name_font_size,
+            input_font_size=system_basic.input_font_size,
+            button_font_size=system_basic.button_font_size,
+        )
         apply_theme_settings = getattr(self, "_apply_theme_settings", None)
         if callable(apply_theme_settings):
             apply_theme_settings(result.theme)
@@ -6407,6 +6420,44 @@ class PetWindow(QWidget):
             vertical_offset=vertical_offset,
             input_bar_offset=input_bar_offset,
             persist=False,
+        )
+
+    def _preview_fonts(
+        self,
+        speech_font_size: int,
+        name_font_size: int,
+        input_font_size: int,
+        button_font_size: int,
+    ) -> None:
+        """字体滑块拖动时实时更新 QFont/QSS，不持久化。"""
+        self._apply_fonts_values(
+            speech_font_size=speech_font_size,
+            name_font_size=name_font_size,
+            input_font_size=input_font_size,
+            button_font_size=button_font_size,
+        )
+
+    def _apply_fonts_values(
+        self,
+        speech_font_size: int,
+        name_font_size: int,
+        input_font_size: int,
+        button_font_size: int,
+    ) -> None:
+        """用指定值更新 QFont 和 QSS（预览/应用共用入口）。"""
+        self.speech_font_size = speech_font_size
+        self.name_font_size = name_font_size
+        self.input_font_size = input_font_size
+        self.button_font_size = button_font_size
+        self._apply_fonts()
+        self.setStyleSheet(
+            pet_window_stylesheet(
+                self.theme_settings,
+                speech_font_size=speech_font_size,
+                name_font_size=name_font_size,
+                input_font_size=input_font_size,
+                button_font_size=button_font_size,
+            )
         )
 
     def _apply_subtitle_display_speed(

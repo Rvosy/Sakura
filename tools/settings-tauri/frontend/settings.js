@@ -3801,6 +3801,41 @@ function requestLayoutPreview() {
   });
 }
 
+let fontPreviewPending = false;
+function requestFontPreview() {
+  if (!request) {
+    return;
+  }
+  fontPreviewPending = true;
+  requestAnimationFrame(async () => {
+    fontPreviewPending = false;
+    try {
+      await invoke("preview_layout", {
+        layout: {
+          speech_font_size: clampInt(
+            fields.speechFontSize.value,
+            request.limits.speech_font_size,
+          ),
+          name_font_size: clampInt(
+            fields.nameFontSize.value,
+            request.limits.name_font_size,
+          ),
+          input_font_size: clampInt(
+            fields.inputFontSize.value,
+            request.limits.input_font_size,
+          ),
+          button_font_size: clampInt(
+            fields.buttonFontSize.value,
+            request.limits.button_font_size,
+          ),
+        },
+      });
+    } catch (error) {
+      // 实时预览失败不应打断编辑
+    }
+  });
+}
+
 function collectScreenAwarenessSettings() {
   const limits = request.limits;
   const enabled = fields.enabled.checked;
@@ -4170,9 +4205,12 @@ layoutSliders.forEach((fieldKey) => {
   fields[fieldKey].addEventListener("change", preview);
 });
 ["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"].forEach((fieldKey) => {
-  const update = () => updateSliderOutput(fieldKey);
-  fields[fieldKey].addEventListener("input", update);
-  fields[fieldKey].addEventListener("change", update);
+  const preview = () => {
+    updateSliderOutput(fieldKey);
+    requestFontPreview();
+  };
+  fields[fieldKey].addEventListener("input", preview);
+  fields[fieldKey].addEventListener("change", preview);
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
