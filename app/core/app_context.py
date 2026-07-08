@@ -4,61 +4,67 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry
-from app.agent.mcp import MCPRuntimeSettings, MCPToolProvider
+from app.agent.mcp import MCPToolProvider
+from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.memory_curator import MemoryCurator, MemoryCurationSettings, MemoryCurationState
-from app.config.settings_service import AppSettingsService, DebugLogSettings, StartupSettings
-from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.settings_service import AppSettingsService
+from app.config.models import DebugLogSettings
+from app.core.extensions import ExtensionRegistry
+from app.core.resource_manager import ResourceRegistry
+from app.llm.api_client import ApiSettings
+from app.plugins.manager import PluginManager
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
-from app.core.extensions import ExtensionRegistry
-from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
-from app.plugins.manager import PluginManager
-from app.core.resource_manager import ResourceRegistry
+from app.voice.tts import TTSProvider
 
 
 @dataclass(frozen=True)
 class CoreServices:
-    """聊天运行时和工具注册等核心服务。"""
+    """首帧和后台启动都需要的基础核心服务。"""
 
-    api_client: OpenAICompatibleClient
+    api_client: object
     tool_registry: ToolRegistry
     agent_runtime: AgentRuntime
 
 
 @dataclass(frozen=True)
 class StorageServices:
-    """本地持久化存储服务。"""
+    """数据持久化与状态存储。"""
 
-    memory_store: MemoryStore
-    reminder_store: ReminderStore
-    history_store: ChatHistoryStore
-    visual_observation_store: VisualObservationStore
-    runtime_event_log: RuntimeEventLog
+    memory_store: MemoryStore | None = None
+    history_store: ChatHistoryStore | None = None
+    visual_observation_store: VisualObservationStore | None = None
+    runtime_event_log: RuntimeEventLog | None = None
+    reminder_store: ReminderStore | None = None
 
 
 @dataclass(frozen=True)
 class FeatureServices:
-    """可选功能和后台维护服务。"""
+    """可选/后台初始化的功能扩展。"""
 
-    settings_service: AppSettingsService
-    extension_registry: ExtensionRegistry
-    mcp_tool_provider: MCPToolProvider | None
-    plugin_manager: PluginManager
-    mcp_settings: MCPRuntimeSettings
-    debug_log_settings: DebugLogSettings
-    startup_settings: StartupSettings
-    memory_curation_settings: MemoryCurationSettings
-    memory_curation_state: MemoryCurationState
-    memory_curator: MemoryCurator
-    screen_awareness_settings: ScreenAwarenessSettings
+    settings_service: AppSettingsService | None = None
+    extension_registry: ExtensionRegistry | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
+    plugin_manager: PluginManager | None = None
+    mcp_settings: MCPRuntimeSettings | None = None
+    debug_log_settings: DebugLogSettings | None = None
+    startup_settings: object | None = None
+    memory_curation_settings: MemoryCurationSettings | None = None
+    memory_curation_state: MemoryCurationState | None = None
+    memory_curator: MemoryCurator | None = None
+    screen_awareness_settings: object | None = None
 
 
 @dataclass(frozen=True)
 class AppContext:
-    """应用启动阶段组装出的核心依赖。"""
+    """按业务边界分组的运行时上下文；调用方应通过 core / storage / features 显式声明依赖范围。
+
+    废弃：不再提供 20+ 个 @property 快捷方式。若旧代码仍使用 ctx.api_client，
+    请改为 ctx.core.api_client；ctx.history_store 改为 ctx.storage.history_store；
+    ctx.mcp_settings 改为 ctx.features.mcp_settings，以此类推。
+    """
 
     base_dir: Path
     settings_service: AppSettingsService
@@ -69,83 +75,11 @@ class AppContext:
     tts_provider: TTSProvider
     core: CoreServices
     storage: StorageServices
-    features: FeatureServices
     resource_registry: ResourceRegistry
+    features: FeatureServices
     startup_initializing: bool = False
 
+    # 保留向后兼容的迁移别名（将在后续版本中移除）
     @property
-    def api_client(self) -> OpenAICompatibleClient:
-        return self.core.api_client
-
-    @property
-    def tool_registry(self) -> ToolRegistry:
-        return self.core.tool_registry
-
-    @property
-    def agent_runtime(self) -> AgentRuntime:
-        return self.core.agent_runtime
-
-    @property
-    def memory_store(self) -> MemoryStore:
-        return self.storage.memory_store
-
-    @property
-    def reminder_store(self) -> ReminderStore:
-        return self.storage.reminder_store
-
-    @property
-    def history_store(self) -> ChatHistoryStore:
-        return self.storage.history_store
-
-    @property
-    def visual_observation_store(self) -> VisualObservationStore:
-        return self.storage.visual_observation_store
-
-    @property
-    def runtime_event_log(self) -> RuntimeEventLog:
-        return self.storage.runtime_event_log
-
-    @property
-    def extension_registry(self) -> ExtensionRegistry:
-        return self.features.extension_registry
-
-    @property
-    def mcp_tool_provider(self) -> MCPToolProvider | None:
-        return self.features.mcp_tool_provider
-
-    @property
-    def plugin_manager(self) -> PluginManager:
-        return self.features.plugin_manager
-
-    @property
-    def mcp_settings(self) -> MCPRuntimeSettings:
-        return self.features.mcp_settings
-
-    @property
-    def debug_log_settings(self) -> DebugLogSettings:
-        return self.features.debug_log_settings
-
-    @property
-    def startup_settings(self) -> StartupSettings:
-        return self.features.startup_settings
-
-    @property
-    def memory_curation_settings(self) -> MemoryCurationSettings:
-        return self.features.memory_curation_settings
-
-    @property
-    def memory_curation_state(self) -> MemoryCurationState:
-        return self.features.memory_curation_state
-
-    @property
-    def memory_curator(self) -> MemoryCurator:
-        return self.features.memory_curator
-
-    @property
-    def screen_awareness_settings(self) -> ScreenAwarenessSettings:
-        return self.features.screen_awareness_settings
-
-    @property
-    def proactive_care_settings(self) -> ScreenAwarenessSettings:
-        """兼容旧调用点；新代码请使用 screen_awareness_settings。"""
+    def proactive_care_settings(self) -> object | None:
         return self.features.screen_awareness_settings
