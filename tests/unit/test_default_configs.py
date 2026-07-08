@@ -96,6 +96,33 @@ servers:
         assert not servers["macos"].enabled
         assert servers["macos"].command == "{uvx}"
 
+    def test_existing_malformed_mcp_logs_and_continues(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import app.config.default_configs as default_configs_module
+
+        logs: list[tuple[str, str, dict[str, object] | None]] = []
+        monkeypatch.setattr(
+            default_configs_module,
+            "log_event",
+            lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+        )
+        base = _make_base("malformed_mcp")
+        paths = StoragePaths(base)
+        paths.config_dir.mkdir(parents=True, exist_ok=True)
+        broken_yaml = "enabled: [\n"
+        paths.mcp_config().write_text(broken_yaml, encoding="utf-8")
+
+        created = ensure_default_configs(base)
+
+        assert "mcp.yaml" not in created
+        assert paths.mcp_config().read_text(encoding="utf-8") == broken_yaml
+        assert any(
+            channel == "Config"
+            and message == "默认 MCP 配置补齐失败"
+            and payload is not None
+            and payload.get("path") == str(paths.mcp_config())
+            for channel, message, payload in logs
+        )
+
     def test_idempotent(self) -> None:
         base = _make_base("idem")
         first = ensure_default_configs(base)

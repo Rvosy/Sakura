@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage
 from app.llm.prompts.runtime import ContextPolicy
 from app.llm.prompts.types import (
@@ -125,14 +125,14 @@ def _collect_provider_fragments(
         try:
             provided = provider.build_context(request)
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者执行失败，已跳过",
                 {"provider_id": provider.provider_id, "error": str(exc)},
             )
             continue
         if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
-            debug_log(
+            log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者返回类型无效，已跳过",
                 {"provider_id": provider.provider_id},
@@ -140,7 +140,7 @@ def _collect_provider_fragments(
             continue
         for index, fragment in enumerate(provided):
             if not isinstance(fragment, ContextFragment):
-                debug_log(
+                log_event(
                     "ContextOrchestrator",
                     "插件上下文片段类型无效，已跳过",
                     {"provider_id": provider.provider_id, "index": index},

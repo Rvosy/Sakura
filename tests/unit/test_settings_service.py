@@ -205,7 +205,14 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     )
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
     service.save_mcp_runtime_settings(MCPRuntimeSettings(windows_enabled=True))
-    service.save_debug_log_settings(DebugLogSettings(enabled=True, body_enabled=True, file_enabled=True))
+    service.save_debug_log_settings(
+        DebugLogSettings(
+            enabled=True,
+            body_enabled=True,
+            file_enabled=True,
+            profile="verbose",
+        )
+    )
     service.save_startup_settings(StartupSettings(launch_at_login=True))
     service.save_screen_awareness_settings(
         ScreenAwarenessSettings(
@@ -230,6 +237,8 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert system["debug"]["enabled"] is True
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True
+    assert system["debug"]["profile"] == "debug"
+    assert "raw_tts_service_enabled" not in system["debug"]
     assert system["startup"]["launch_at_login"] is True
     assert system["screen_awareness"]["check_interval_minutes"] == 5
 
@@ -489,21 +498,57 @@ def test_settings_service_saves_and_loads_custom_gpt_sovits_settings() -> None:
 def test_settings_service_loads_debug_log_settings() -> None:
     root = _runtime_root("yaml_debug")
     service = AppSettingsService(root)
-    service.save_system_values("debug", {"enabled": True, "body_enabled": False, "file_enabled": True})
+    service.save_system_values(
+        "debug",
+        {
+            "enabled": True,
+            "body_enabled": False,
+            "file_enabled": True,
+            "profile": "trace",
+            "raw_tts_service_enabled": True,
+        },
+    )
 
     settings = service.load_debug_log_settings()
 
-    assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=True)
+    assert settings == DebugLogSettings(
+        enabled=True,
+        body_enabled=False,
+        file_enabled=True,
+        profile="trace",
+    )
 
 
-def test_settings_service_loads_debug_file_disabled_by_default() -> None:
+def test_settings_service_save_debug_log_settings_removes_legacy_raw_tts_key() -> None:
+    root = _runtime_root("yaml_debug_remove_raw")
+    service = AppSettingsService(root)
+    service.save_system_values("debug", {"raw_tts_service_enabled": False, "file_enabled": False})
+
+    service.save_debug_log_settings(DebugLogSettings(file_enabled=True))
+
+    system = load_yaml_mapping(service.system_config_path)
+    assert "raw_tts_service_enabled" not in system["debug"]
+    assert system["debug"]["file_enabled"] is True
+
+
+def test_settings_service_loads_debug_file_enabled_by_default() -> None:
     root = _runtime_root("yaml_debug_legacy")
     service = AppSettingsService(root)
     service.save_system_values("debug", {"enabled": True, "body_enabled": False})
 
     settings = service.load_debug_log_settings()
 
-    assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=False)
+    assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=True)
+
+
+def test_settings_service_respects_explicit_debug_file_disabled() -> None:
+    root = _runtime_root("yaml_debug_file_disabled")
+    service = AppSettingsService(root)
+    service.save_system_values("debug", {"enabled": True, "file_enabled": False})
+
+    settings = service.load_debug_log_settings()
+
+    assert settings.file_enabled is False
 
 
 def test_settings_service_saves_user_theme_preferences_without_global_colors() -> None:

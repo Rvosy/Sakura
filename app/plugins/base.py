@@ -27,12 +27,12 @@ class PluginContext:
     services: Any = None  # PluginServices；测试或旧路径可能为 None
 
     def log(self, message: str, data: dict[str, Any] | None = None) -> None:
-        """写入 Sakura 调试日志。"""
+        """写入 Sakura 运行日志。"""
         try:
-            from app.core.debug_log import debug_log
+            from app.core.runtime_log import log_event
         except Exception:
             return
-        debug_log(
+        log_event(
             f"Plugin:{self.manifest.plugin_id}",
             message,
             data or {},

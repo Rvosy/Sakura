@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from app.core.debug_log import debug_log
-from app.core.gui_log import record_tts_service_output
+from app.core.http_client import urlopen_direct_for_loopback
+from app.core.runtime_log import log_event, log_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.storage.paths import StoragePaths
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
@@ -187,7 +187,7 @@ def _find_listening_tcp_pid(port: int) -> int | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        debug_log("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
         return None
     if result.returncode != 0:
         return None
@@ -219,7 +219,7 @@ def _find_listening_tcp_pid_lsof(port: int) -> int | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        debug_log("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
         return None
     if result.returncode != 0:
         return None
@@ -267,7 +267,7 @@ def _query_windows_process_command_line(pid: int) -> str | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        debug_log("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
         return None
     if result.returncode != 0:
         return None
@@ -287,7 +287,7 @@ def _query_posix_process_command_line(pid: int) -> str | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        debug_log("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
         return None
     if result.returncode != 0:
         return None
@@ -383,7 +383,7 @@ def _terminate_process_tree(process: _LocalProcessHandle, timeout: int) -> None:
             if process.poll() is not None:
                 return
         except (OSError, subprocess.TimeoutExpired) as exc:
-            debug_log("TTS", "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭", {"pid": pid, "error": str(exc)})
+            log_event("TTS", "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭", {"pid": pid, "error": str(exc)})
 
     process.terminate()
     try:
@@ -502,7 +502,7 @@ def _probe_gpt_sovits_http(api_url: str, timeout: int) -> bool:
     probe_url = urlunparse(parsed._replace(path=base_path or "/", query=""))
     request = urllib.request.Request(url=probe_url, method="GET")
     try:
-        with _urlopen_tts_direct(request, timeout=timeout):
+        with urlopen_direct_for_loopback(request, timeout=timeout):
             pass
     except urllib.error.HTTPError:
         # 任何 HTTP 状态码都说明服务 HTTP 层已就绪
@@ -518,15 +518,15 @@ def _probe_genie_api_url(api_url: str, timeout: int) -> bool:
         method="GET",
     )
     try:
-        with _urlopen_tts_direct(request, timeout=timeout) as response:
+        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
-        debug_log("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
+        log_event("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
         return False
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        debug_log("TTS", "Genie API 端点探测返回非 JSON", {"api_url": api_url})
+        log_event("TTS", "Genie API 端点探测返回非 JSON", {"api_url": api_url})
         return False
     paths = payload.get("paths")
     if not isinstance(paths, dict):
@@ -636,18 +636,25 @@ def _iter_tts_service_segments(stream):  # type: ignore[no-untyped-def]
 
 
 def _read_local_tts_output(stream, log_path: Path, provider: str) -> None:  # type: ignore[no-untyped-def]
+    log_file = None
     try:
-        with log_path.open("a", encoding="utf-8") as log_file:
-            for segment in _iter_tts_service_segments(stream):
-                line = segment.rstrip("\r\n")
-                if not line.strip():
-                    continue
-                log_file.write(f"{line}\n")
-                log_file.flush()
-                record_tts_service_output(provider, line)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("a", encoding="utf-8")
+        for segment in _iter_tts_service_segments(stream):
+            line = segment.rstrip("\r\n")
+            if not line.strip():
+                continue
+            log_file.write(f"{line}\n")
+            log_file.flush()
+            log_tts_service_output(provider, line)
     except Exception as exc:  # noqa: BLE001
-        debug_log("TTS", "本地 TTS 服务输出读取失败", {"provider": provider, "error": str(exc)})
+        log_event("TTS", "本地 TTS 服务输出读取失败", {"provider": provider, "error": str(exc)})
     finally:
+        if log_file is not None:
+            try:
+                log_file.close()
+            except Exception:
+                pass
         try:
             stream.close()
         except Exception:
@@ -799,15 +806,14 @@ class TTSServiceSupervisor:
         fail_callback: Callable[[str], None],
     ) -> bool:
         if _provider_is_closed(self):
-            debug_log("TTS", "Provider 已关闭，跳过服务探测", {"api_url": self.settings.api_url})
+            log_event("TTS", "Provider 已关闭，跳过服务探测", {"api_url": self.settings.api_url})
             return False
         if self._service_checked:
-            debug_log("TTS", "服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
         endpoint = _parse_service_endpoint(self.settings.api_url)
         if endpoint is None:
-            debug_log("TTS", "服务地址无效", {"api_url": self.settings.api_url})
+            log_event("TTS", "服务地址无效", {"api_url": self.settings.api_url})
             _set_service_state(self, TTSServiceState.FAILED, {"reason": "invalid_api_url"})
             fail_callback(f"GPT-SoVITS 服务地址无效：{self.settings.api_url}")
             return False
@@ -820,7 +826,7 @@ class TTSServiceSupervisor:
             TTSServiceSupervisor._adopt_existing_local_service(self, host, port)
             self._service_checked = True
             _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
-            debug_log("TTS", "服务探测成功", {"api_url": self.settings.api_url})
+            log_event("TTS", "服务探测成功", {"api_url": self.settings.api_url})
             return True
 
         if self.settings.work_dir is None:
@@ -852,7 +858,7 @@ class TTSServiceSupervisor:
             return False
         self._service_checked = True
         _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
-        debug_log(
+        log_event(
             "TTS",
             "本地 GPT-SoVITS 服务启动并探测成功",
             {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
@@ -874,7 +880,7 @@ class TTSServiceSupervisor:
         if not _is_restartable_local_tts_service_failure(status_code, error_body):
             return False
         if self.settings.work_dir is None:
-            debug_log(
+            log_event(
                 "TTS",
                 "GPT-SoVITS 服务疑似管道断开，但非本地整合包，不自动重启",
                 {"status": status_code, "error_body": error_body},
@@ -888,14 +894,14 @@ class TTSServiceSupervisor:
             host, port = endpoint
             TTSServiceSupervisor._adopt_existing_local_service(self, host, port)
         if self._server_process is None:
-            debug_log(
+            log_event(
                 "TTS",
                 "GPT-SoVITS 服务疑似管道断开，但未能定位本地服务进程",
                 {"status": status_code, "api_url": self.settings.api_url},
             )
             return False
 
-        debug_log(
+        log_event(
             "TTS",
             "GPT-SoVITS 服务疑似管道断开，重启本地服务后重试",
             {
@@ -919,7 +925,7 @@ class TTSServiceSupervisor:
             if process is None:
                 return
             _track_local_process(self, process)
-        debug_log(
+        log_event(
             "TTS",
             "接管已有本地 TTS 服务进程，退出时将一并清理",
             {
@@ -951,21 +957,23 @@ class TTSServiceSupervisor:
             "purpose": purpose,
         }
         try:
-            debug_log(
+            log_event(
                 "TTS",
                 f"探测 {service_name} 端口",
                 payload,
+                verbosity=3,
             )
             with socket.create_connection((host, port), timeout=timeout):
                 pass
         except TimeoutError:
-            debug_log("TTS", _probe_failure_message(service_name, purpose, timeout=True), payload)
+            log_event("TTS", _probe_failure_message(service_name, purpose, timeout=True), payload, verbosity=3)
             return False
         except OSError as exc:
-            debug_log(
+            log_event(
                 "TTS",
                 _probe_failure_message(service_name, purpose, timeout=False),
                 {**payload, "reason": str(exc)},
+                verbosity=3,
             )
             return False
         return True
@@ -1001,7 +1009,7 @@ class TTSServiceSupervisor:
         # close()/_stop_local_service 并发拆解子进程。_stop_local_service 用同一把可重入锁。
         with self._service_lifecycle_lock:
             if self._server_process is not None and self._server_process.poll() is None:
-                debug_log("TTS", "本地 GPT-SoVITS 进程已启动，跳过重复启动", {"work_dir": str(work_dir)})
+                log_event("TTS", "本地 GPT-SoVITS 进程已启动，跳过重复启动", {"work_dir": str(work_dir)})
                 return True
 
         try:
@@ -1038,11 +1046,11 @@ class TTSServiceSupervisor:
                 "GPT-SoVITS",
             )
         except OSError as exc:
-            debug_log("TTS", "本地 GPT-SoVITS 服务启动失败", {"work_dir": str(work_dir), "error": str(exc)})
+            log_event("TTS", "本地 GPT-SoVITS 服务启动失败", {"work_dir": str(work_dir), "error": str(exc)})
             fail_callback(f"GPT-SoVITS 服务启动失败：{exc}")
             return False
 
-        debug_log(
+        log_event(
             "TTS",
             "已启动本地 GPT-SoVITS 服务",
             {
@@ -1058,7 +1066,6 @@ class TTSServiceSupervisor:
         fail_callback: Callable[[str], None],
     ) -> bool:
         if self._weights_ready:
-            debug_log("TTS", "角色权重已就绪，跳过切换")
             return True
 
         for endpoint, path in (
@@ -1067,12 +1074,12 @@ class TTSServiceSupervisor:
         ):
             if path is None:
                 continue
-            debug_log("TTS", "准备切换角色权重", {"endpoint": endpoint, "path": path})
+            log_event("TTS", "准备切换角色权重", {"endpoint": endpoint, "path": path})
             if not self._request_weight_switch(endpoint, path, fail_callback):
                 return False
 
         self._weights_ready = True
-        debug_log("TTS", "角色权重切换完成")
+        log_event("TTS", "角色权重切换完成")
         return True
 
     def _request_weight_switch(
@@ -1088,10 +1095,10 @@ class TTSServiceSupervisor:
         )
         request = urllib.request.Request(url=url, method="GET")
         try:
-            debug_log("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
-            with _urlopen_tts_direct(request, timeout=self.settings.timeout_seconds) as response:
+            log_event("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
+            with urlopen_direct_for_loopback(request, timeout=self.settings.timeout_seconds) as response:
                 response.read()
-                debug_log(
+                log_event(
                     "TTS",
                     "权重切换成功",
                     {
@@ -1102,7 +1109,7 @@ class TTSServiceSupervisor:
                 )
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            debug_log(
+            log_event(
                 "TTS",
                 "权重切换 HTTP 失败",
                 {
@@ -1117,7 +1124,7 @@ class TTSServiceSupervisor:
             )
             return False
         except urllib.error.URLError as exc:
-            debug_log(
+            log_event(
                 "TTS",
                 "权重切换请求失败",
                 {
@@ -1129,7 +1136,7 @@ class TTSServiceSupervisor:
             fail_callback(f"GPT-SoVITS 切换权重失败（{endpoint}, {weights_path}）：{exc.reason}")
             return False
         except TimeoutError:
-            debug_log("TTS", "权重切换超时", {"endpoint": endpoint, "weights_path": weights_path})
+            log_event("TTS", "权重切换超时", {"endpoint": endpoint, "weights_path": weights_path})
             fail_callback(f"GPT-SoVITS 切换权重超时（{endpoint}, {weights_path}）。")
             return False
         return True
@@ -1151,16 +1158,16 @@ class TTSServiceSupervisor:
             if process.poll() is not None:
                 _track_local_process(self, None)
                 return
-        debug_log("TTS", "关闭本地 TTS 服务进程", {"pid": process.pid, "provider": self.settings.provider})
+        log_event("TTS", "关闭本地 TTS 服务进程", {"pid": process.pid, "provider": self.settings.provider})
         try:
             _terminate_process_tree(process, timeout=5)
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "本地 TTS 服务正常关闭失败，尝试强制结束", {"pid": process.pid, "error": str(exc)})
+            log_event("TTS", "本地 TTS 服务正常关闭失败，尝试强制结束", {"pid": process.pid, "error": str(exc)})
             try:
                 process.kill()
                 process.wait(timeout=5)
             except Exception as kill_exc:  # noqa: BLE001
-                debug_log("TTS", "本地 TTS 服务强制结束失败", {"pid": process.pid, "error": str(kill_exc)})
+                log_event("TTS", "本地 TTS 服务强制结束失败", {"pid": process.pid, "error": str(kill_exc)})
         finally:
             _track_local_process(self, None)
 
@@ -1216,10 +1223,10 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
         fail_callback: Callable[[str], None],
     ) -> bool:
         if _provider_is_closed(self):
-            debug_log("TTS", "Provider 已关闭，跳过 Genie 服务探测", {"api_url": self.settings.api_url})
+            log_event("TTS", "Provider 已关闭，跳过 Genie 服务探测", {"api_url": self.settings.api_url})
             return False
         if self._service_checked:
-            debug_log("TTS", "Genie 服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
+            log_event("TTS", "Genie 服务探测已完成，跳过重复探测", {"api_url": self.settings.api_url})
             return True
 
         endpoint = _parse_service_endpoint(self.settings.api_url)
@@ -1237,7 +1244,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
                 GenieServiceSupervisor._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
                 _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
-                debug_log("TTS", "Genie 服务探测成功", {"api_url": self.settings.api_url})
+                log_event("TTS", "Genie 服务探测成功", {"api_url": self.settings.api_url})
                 return True
             # 端口通但不是 Genie（典型：被 GPT-SoVITS 占用 9880）→ 尝试备用端口
             fallback_port = GenieServiceSupervisor._select_fallback_port(self, host, port, timeout)
@@ -1251,7 +1258,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             old_api_url = self.settings.api_url
             self.settings = replace(self.settings, api_url=_replace_url_port(self.settings.api_url, fallback_port))
             port = fallback_port
-            debug_log(
+            log_event(
                 "TTS",
                 "Genie 端口被其他 TTS 服务占用，已切换到备用端口",
                 {"old_api_url": old_api_url, "api_url": self.settings.api_url},
@@ -1263,7 +1270,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
                 GenieServiceSupervisor._adopt_existing_local_service(self, host, port)
                 self._service_checked = True
                 _set_service_state(self, TTSServiceState.READY, {"via": "fallback_port"})
-                debug_log("TTS", "Genie 备用端口已有可用服务", {"api_url": self.settings.api_url})
+                log_event("TTS", "Genie 备用端口已有可用服务", {"api_url": self.settings.api_url})
                 return True
 
         if self.settings.work_dir is None:
@@ -1293,7 +1300,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             return False
         self._service_checked = True
         _set_service_state(self, TTSServiceState.READY, {"via": "local_start"})
-        debug_log(
+        log_event(
             "TTS",
             "本地 Genie TTS 服务启动并探测成功",
             {"api_url": self.settings.api_url, "work_dir": str(self.settings.work_dir)},
@@ -1317,7 +1324,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             return False
 
         if self._server_process is not None and self._server_process.poll() is None:
-            debug_log("TTS", "本地 Genie TTS 进程已启动，跳过重复启动", {"work_dir": str(work_dir)})
+            log_event("TTS", "本地 Genie TTS 进程已启动，跳过重复启动", {"work_dir": str(work_dir)})
             return True
 
         try:
@@ -1356,7 +1363,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             fail_callback(f"Genie TTS 服务启动失败：{exc}")
             return False
 
-        debug_log(
+        log_event(
             "TTS",
             "已启动本地 Genie TTS 服务",
             {"work_dir": str(work_dir), "pid": self._server_process.pid, "api_url": self.settings.api_url},
@@ -1510,7 +1517,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with _urlopen_tts_direct(request, timeout=timeout) as response:
+        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             return response.read()
 
     def _genie_character_name(self) -> str:

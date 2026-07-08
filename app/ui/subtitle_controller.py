@@ -13,7 +13,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QLabel
 
 from app.llm.chat_reply import ChatSegment
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.voice import VoicePlaybackController
 
 # 字幕逐字显示速度。
@@ -74,6 +74,7 @@ class SubtitleController(QObject):
         self.current_segment: ChatSegment | None = None
         self.reply_sequence_id = 0
         self.reply_advance_token = 0
+        self.current_segment_token = 0
         self.current_segment_sequence_id: int | None = None
         self.current_segment_speech_done = False
         self.current_segment_tts_done = True
@@ -114,7 +115,7 @@ class SubtitleController(QObject):
                     "segment_count": len(clean_segments),
                 },
             )
-            debug_log(
+            log_event(
                 "PetWindow",
                 "当前回复未播完，后续分段已排队",
                 {
@@ -175,7 +176,7 @@ class SubtitleController(QObject):
             "queued_reply_segments_cleared_for_action",
             {"cleared_batch_count": cleared_count},
         )
-        debug_log(
+        log_event(
             "PetWindow",
             "已清理待确认动作相关的排队回复",
             {"cleared_batch_count": cleared_count},
@@ -262,6 +263,7 @@ class SubtitleController(QObject):
     def reset_current_segment_progress(self) -> None:
         self.voice_playback.discard_prepared()
         self.current_segment = None
+        self.current_segment_token += 1
         self.reply_advance_token += 1
         self.current_segment_sequence_id = None
         self.current_segment_speech_done = False
@@ -278,7 +280,7 @@ class SubtitleController(QObject):
                 "segment_count": len(self.pending_reply_segments),
             },
         )
-        debug_log(
+        log_event(
             "PetWindow",
             "准备分段展示回复",
             {
@@ -294,18 +296,9 @@ class SubtitleController(QObject):
             return
 
         segment = self.pending_reply_segments.pop(0)
-        debug_log(
-            "PetWindow",
-            "展示下一段回复",
-            {
-                "sequence_id": sequence_id,
-                "text": segment.text,
-                "tone": segment.tone,
-                "portrait": segment.portrait,
-                "remaining_segments": len(self.pending_reply_segments),
-            },
-        )
         self.current_segment = segment
+        self.current_segment_token += 1
+        segment_token = self.current_segment_token
         self.current_segment_sequence_id = sequence_id
         self.current_segment_speech_done = False
         self.current_segment_tts_done = False
@@ -315,17 +308,18 @@ class SubtitleController(QObject):
         self.voice_playback.speak_segment(
             segment,
             sequence_id,
-            on_started=lambda: self._start_segment_speech(sequence_id),
-            on_finished=lambda: self._mark_segment_tts_done(sequence_id),
+            on_started=lambda: self._start_segment_speech(sequence_id, segment_token),
+            on_finished=lambda: self._mark_segment_tts_done(sequence_id, segment_token),
         )
         self.voice_playback.prepare_next(
             self.pending_reply_segments[0] if self.pending_reply_segments else None
         )
 
-    def _start_segment_speech(self, sequence_id: int) -> None:
+    def _start_segment_speech(self, sequence_id: int, segment_token: int | None = None) -> None:
         if (
             sequence_id != self.reply_sequence_id
             or sequence_id != self.current_segment_sequence_id
+            or (segment_token is not None and segment_token != self.current_segment_token)
             or self.current_segment is None
         ):
             return
@@ -340,16 +334,24 @@ class SubtitleController(QObject):
         self._apply_segment(self.current_segment)
         self.set_speech(self.current_segment.display_text(self.subtitle_language), pulse=True)
 
-    def _mark_segment_speech_done(self, sequence_id: int) -> None:
-        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+    def _mark_segment_speech_done(self, sequence_id: int, segment_token: int | None = None) -> None:
+        if (
+            sequence_id != self.reply_sequence_id
+            or sequence_id != self.current_segment_sequence_id
+            or (segment_token is not None and segment_token != self.current_segment_token)
+        ):
             return
         self.current_segment_speech_done = True
         self._log_stage("segment_text_render_done", {"sequence_id": sequence_id})
         self._end_interaction_if_reply_done()
         self._schedule_next_reply_segment_if_ready(sequence_id)
 
-    def _mark_segment_tts_done(self, sequence_id: int) -> None:
-        if sequence_id != self.reply_sequence_id or sequence_id != self.current_segment_sequence_id:
+    def _mark_segment_tts_done(self, sequence_id: int, segment_token: int | None = None) -> None:
+        if (
+            sequence_id != self.reply_sequence_id
+            or sequence_id != self.current_segment_sequence_id
+            or (segment_token is not None and segment_token != self.current_segment_token)
+        ):
             return
         self.current_segment_tts_done = True
         self._log_stage("segment_tts_done", {"sequence_id": sequence_id})
@@ -434,7 +436,10 @@ class SubtitleController(QObject):
         if self.speech_index >= len(self.speech_text):
             self.speech_timer.stop()
             if self.current_segment_sequence_id is not None:
-                self._mark_segment_speech_done(self.current_segment_sequence_id)
+                self._mark_segment_speech_done(
+                    self.current_segment_sequence_id,
+                    self.current_segment_token,
+                )
 
     def _show_waiting_indicator_frame(self) -> None:
         if not self.waiting_indicator_active:

@@ -8,7 +8,8 @@ from app.agent.actions import PendingToolAction
 from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.runtime import AgentRuntime
 from app.agent.tools import Tool, ToolRegistry
-from app.llm.api_client import ChatCompletionTurn, NativeToolCall
+from app.llm.api_client import ApiRequestError, ChatCompletionTurn, NativeToolCall
+from app.llm.chat_reply import parse_chat_reply
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.manager import PluginManager
 
@@ -46,6 +47,32 @@ class NativeFakeClient:
 
     def chat(self, _system_prompt, _messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("原生 tool_calls 流程不应回退到普通 chat 总结。")
+
+
+class NativeToolResultFallbackClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.chat_messages: list[dict[str, Any]] = []
+
+    def complete_with_tools(self, system_prompt, messages, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": [dict(message) for message in messages],
+                "kwargs": kwargs,
+            }
+        )
+        if len(self.calls) == 1:
+            return _tool_turn("call_1", "echo_tool", {"value": "ok"})
+        raise ApiRequestError(
+            "API HTTP 400: function_response.name: [REQUIRED_FIELD_MISSING]"
+        )
+
+    def chat(self, _system_prompt, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        self.chat_messages = [dict(message) for message in messages]
+        return parse_chat_reply(
+            '{"segments":[{"ja":"確認できたよ。","zh":"确认好了。","tone":"中性"}]}'
+        )
 
 
 def _tool_turn(call_id: str, name: str, arguments: dict[str, Any]) -> ChatCompletionTurn:
@@ -231,7 +258,36 @@ def test_agent_runtime_uses_native_tool_role_messages() -> None:
     assert second_messages[-2]["tool_calls"][0]["id"] == "call_1"
     assert second_messages[-1]["role"] == "tool"
     assert second_messages[-1]["tool_call_id"] == "call_1"
+    assert second_messages[-1]["name"] == "echo_tool"
     assert '"echo": "ok"' in second_messages[-1]["content"]
+
+
+def test_agent_runtime_falls_back_to_text_summary_when_native_tool_result_rejected() -> None:
+    registry = ToolRegistry(
+        [
+            Tool(
+                name="echo_tool",
+                description="Echo",
+                parameters={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+                handler=lambda arguments: {"echo": arguments["value"]},
+            )
+        ]
+    )
+    client = NativeToolResultFallbackClient()
+    runtime = AgentRuntime(client, "system", tools=registry)  # type: ignore[arg-type]
+
+    result = runtime.handle_user_message([{"role": "user", "content": "测试工具"}])
+
+    assert result.reply.translation == "确认好了。"
+    assert [action.payload["tool_name"] for action in result.actions] == ["echo_tool"]
+    assert len(client.calls) == 2
+    assert all(message["role"] != "tool" for message in client.chat_messages)
+    assert "工具执行结果如下" in str(client.chat_messages)
+    assert '"echo": "ok"' in str(client.chat_messages)
 
 
 def test_pending_confirmation_keeps_native_tool_call_id() -> None:

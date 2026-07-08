@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text, rename_with_retry
 from app.storage.paths import StoragePaths
 
@@ -113,7 +113,7 @@ class MigrationRunner:
         from_version = self.current_version()
         results: list[MigrationResult] = []
         for step in self.pending():
-            debug_log("Migration", f"migration.{step.name}.started", {"to_version": step.version})
+            log_event("Migration", f"migration.{step.name}.started", {"to_version": step.version})
             backup_dir = (
                 self.paths.migration_backup_dir
                 / f"{time.strftime('%Y%m%d-%H%M%S')}_{step.name}"
@@ -127,14 +127,14 @@ class MigrationRunner:
                 step.apply(context)
                 self._write_version(step.version)
             except Exception as exc:  # noqa: BLE001 - 迁移失败不允许炸掉启动
-                debug_log(
+                log_event(
                     "Migration",
                     f"migration.{step.name}.failed",
                     {"error": str(exc), "backup_dir": str(backup_dir)},
                 )
                 results.append(MigrationResult(name=step.name, status="failed", error=str(exc)))
                 break
-            debug_log(
+            log_event(
                 "Migration",
                 f"migration.{step.name}.completed",
                 {"version": step.version, "backup_dir": str(backup_dir)},
@@ -176,7 +176,7 @@ def _migrate_dotenv(context: MigrationContext) -> None:
 
     env_path = context.base_dir / ".env"
     if not env_path.is_file():
-        debug_log("Migration", "migration.v0_to_v1.env.skipped", {"reason": "no .env"})
+        log_event("Migration", "migration.v0_to_v1.env.skipped", {"reason": "no .env"})
         return
     context.backup_file(env_path)
     context.backup_file(context.paths.api_config())
@@ -196,7 +196,7 @@ def _migrate_dotenv(context: MigrationContext) -> None:
         if key not in migrated
     ]
     rename_with_retry(env_path, env_path.with_name(env_path.name + _ENV_MIGRATED_SUFFIX))
-    debug_log(
+    log_event(
         "Migration",
         "migration.v0_to_v1.env.applied",
         {"migrated": sorted(migrated), "skipped": skipped_keys, "errors": result.get("errors", [])},
@@ -231,7 +231,7 @@ def _migrate_legacy_single_chat_history(context: MigrationContext) -> None:
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(legacy_path, target)
-        debug_log(
+        log_event(
             "Migration",
             "migration.v0_to_v1.legacy_history.applied",
             {"target": str(target)},
@@ -299,7 +299,7 @@ def _merge_variant_files_in_dir(
         stems = [f.name[: -len(".jsonl")] for f in group]
         registered = [s for s in stems if s in registered_ids]
         if len(registered) != 1:
-            debug_log(
+            log_event(
                 "Migration",
                 "migration.v1_to_v2.variant.skipped",
                 {
@@ -318,7 +318,7 @@ def _merge_variant_files_in_dir(
             context.backup_file(variant)
             _merge_jsonl(variant, canonical)
             rename_with_retry(variant, variant.with_name(variant.name + _ENV_MIGRATED_SUFFIX))
-            debug_log(
+            log_event(
                 "Migration",
                 "migration.v1_to_v2.variant.merged",
                 {"dir": directory.name, "variant": variant.name, "into": canonical.name},
@@ -364,7 +364,7 @@ def _migrate_v2_to_v3(context: MigrationContext) -> None:
     system_path = context.paths.system_config()
     data = load_yaml_mapping(system_path)
     if "screen_awareness" in data:
-        debug_log(
+        log_event(
             "Migration",
             "migration.v2_to_v3.screen_awareness.skipped",
             {"reason": "screen_awareness 已存在"},
@@ -376,7 +376,7 @@ def _migrate_v2_to_v3(context: MigrationContext) -> None:
     context.backup_file(system_path)
     data["screen_awareness"] = dict(proactive)
     save_yaml_mapping(system_path, data)
-    debug_log(
+    log_event(
         "Migration",
         "migration.v2_to_v3.screen_awareness.applied",
         {"copied_keys": sorted(data["screen_awareness"].keys())},

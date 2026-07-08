@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
-from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
-from app.core.debug_log import debug_log, summarize_messages
+from app.core.http_client import urlopen_direct_for_loopback
+from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
+from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
+from app.core.runtime_log import log_event, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
 
 
-MAX_API_RETRY_ATTEMPTS = 3
 API_RETRY_DELAY_SECONDS = 0.8
 STRUCTURED_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 ChatMessage = dict[str, Any]
@@ -161,7 +162,7 @@ class OpenAICompatibleClient:
                 "Authorization": f"Bearer {self.settings.api_key}",
             },
         )
-        debug_log(
+        log_event(
             "API",
             "准备检测模型列表",
             {
@@ -178,7 +179,7 @@ class OpenAICompatibleClient:
             raise ApiRequestError(f"API 返回格式无法解析：{response_body}") from exc
 
         model_ids = _parse_model_ids(data)
-        debug_log(
+        log_event(
             "API",
             "模型列表探测完成",
             {
@@ -212,7 +213,7 @@ class OpenAICompatibleClient:
         check_cancelled(cancel_checker)
 
         reply = sanitize_reply_tones(parse_chat_reply(content), reply_tones)
-        debug_log(
+        log_event(
             "API",
             "聊天回复解析完成",
             {
@@ -247,12 +248,13 @@ class OpenAICompatibleClient:
             temperature=temperature,
             chat_params=chat_params,
         )
-        debug_log(
+        log_event(
             "API",
             "准备发送聊天补全请求",
             {
                 "base_url": _normalize_openai_base_url(self.settings.base_url),
                 "configured_base_url": self.settings.base_url,
+                "endpoint_host": urlparse(_normalize_openai_base_url(self.settings.base_url)).netloc,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
                 "temperature": temperature,
@@ -281,7 +283,7 @@ class OpenAICompatibleClient:
                     temperature=temperature,
                     chat_params=chat_params,
                 )
-                debug_log(
+                log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
                     {"error": str(exc)},
@@ -301,7 +303,15 @@ class OpenAICompatibleClient:
         reasoning = data["choices"][0]["message"].get("reasoning_content", "")
         content = (str(reasoning) + "\n" + str(content)).strip()
         result = str(content).strip()
-        debug_log("API", "模型原始文本返回", {"content": result})
+        log_event(
+            "API",
+            "模型原始文本返回",
+            {
+                "content": result,
+                "reply_chars": len(result),
+                "usage": _summarize_token_usage(data.get("usage")),
+            },
+        )
         return result
 
     def complete_with_tools(
@@ -337,12 +347,13 @@ class OpenAICompatibleClient:
             temperature=temperature,
             chat_params=chat_params,
         )
-        debug_log(
+        log_event(
             "API",
             "准备发送原生工具聊天补全请求",
             {
                 "base_url": _normalize_openai_base_url(self.settings.base_url),
                 "configured_base_url": self.settings.base_url,
+                "endpoint_host": urlparse(_normalize_openai_base_url(self.settings.base_url)).netloc,
                 "model": self.settings.model,
                 "timeout_seconds": self.settings.timeout_seconds,
                 "temperature": temperature,
@@ -373,7 +384,7 @@ class OpenAICompatibleClient:
                     temperature=temperature,
                     chat_params=chat_params,
                 )
-                debug_log(
+                log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
                     {"error": str(exc)},
@@ -397,15 +408,18 @@ class OpenAICompatibleClient:
         if not tool_calls:
             tool_calls = _parse_pseudo_tool_calls_from_content(content)
         normalized_message = _normalize_assistant_message(raw_message, content, tool_calls)
-        debug_log(
+        log_event(
             "API",
             "原生工具模型返回",
             {
                 "content": str(content or "").strip(),
+                "reply_chars": len(str(content or "").strip()),
+                "tool_call_count": len(tool_calls),
                 "tool_calls": [
                     {"id": call.id, "name": call.name, "arguments": call.arguments}
                     for call in tool_calls
                 ],
+                "usage": _summarize_token_usage(data.get("usage")),
             },
         )
         return ChatCompletionTurn(
@@ -424,7 +438,7 @@ class OpenAICompatibleClient:
         fallback_payload = dict(payload)
         for param in self._unsupported_chat_params:
             fallback_payload.pop(param, None)
-        while True:
+        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
             check_cancelled(cancel_checker)
             try:
                 return self._post_chat_completions(
@@ -435,22 +449,31 @@ class OpenAICompatibleClient:
                 if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
                     self._unsupported_chat_params.add("response_format")
                     fallback_payload.pop("response_format", None)
-                    debug_log(
+                    log_event(
                         "API",
                         "结构化 response_format 不受支持，已回退普通请求",
-                        {"error": str(exc)},
+                        {
+                            "attempt": attempt,
+                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "error": str(exc),
+                        },
                     )
                     continue
                 if "temperature" in fallback_payload and _is_temperature_unsupported_error(exc):
                     self._unsupported_chat_params.add("temperature")
                     fallback_payload.pop("temperature", None)
-                    debug_log(
+                    log_event(
                         "API",
                         "模型不支持自定义 temperature，已回退默认温度",
-                        {"error": str(exc)},
+                        {
+                            "attempt": attempt,
+                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "error": str(exc),
+                        },
                     )
                     continue
                 raise
+        raise ApiRequestError("API 兼容性自动回退已达到最大次数。")
 
     def _ensure_chat_config(self, api_key_message: str) -> None:
         if not self.settings.api_key:
@@ -487,16 +510,6 @@ class OpenAICompatibleClient:
             },
         )
 
-        debug_log(
-            "API",
-            "HTTP 请求体已构建",
-            {
-                "url": url,
-                "configured_base_url": self.settings.base_url,
-                "bytes": len(body),
-                "payload": payload,
-            },
-        )
         model_name = payload.get("model")
         self._emit_llm_event("llm.request.started", {"model": model_name})
         try:
@@ -523,20 +536,21 @@ class OpenAICompatibleClient:
         cancel_checker: CancelChecker | None = None,
     ) -> str:
         last_error: BaseException | None = None
-        for attempt in range(1, MAX_API_RETRY_ATTEMPTS + 1):
+        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
             check_cancelled(cancel_checker)
             started_at = time.perf_counter()
             try:
-                with urllib.request.urlopen(
+                with urlopen_direct_for_loopback(
                     request,
                     timeout=self.settings.timeout_seconds,
                 ) as response:
                     response_body = response.read().decode("utf-8")
-                    debug_log(
+                    log_event(
                         "API",
                         "HTTP 请求成功",
                         {
                             "attempt": attempt,
+                            "endpoint_host": urlparse(request.full_url).netloc,
                             "status": getattr(response, "status", None),
                             "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                             "response_body": response_body,
@@ -545,64 +559,68 @@ class OpenAICompatibleClient:
                     return response_body
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
-                debug_log(
+                log_event(
                     "API",
                     "HTTP 请求失败",
                     {
                         "attempt": attempt,
+                        "endpoint_host": urlparse(request.full_url).netloc,
                         "status": exc.code,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error_body": error_body,
                     },
                 )
-                if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_API_RETRY_ATTEMPTS:
+                if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
-                debug_log(
+                log_event(
                     "API",
                     "URL 请求失败",
                     {
                         "attempt": attempt,
+                        "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "reason": str(exc.reason),
                     },
                 )
-                if attempt == MAX_API_RETRY_ATTEMPTS:
+                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
                 last_error = exc
             except TimeoutError as exc:
-                debug_log(
+                log_event(
                     "API",
                     "请求超时",
                     {
                         "attempt": attempt,
+                        "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                     },
                 )
-                if attempt == MAX_API_RETRY_ATTEMPTS:
+                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError("API 请求超时。") from exc
                 last_error = exc
             except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
-                debug_log(
+                log_event(
                     "API",
                     "连接中断",
                     {
                         "attempt": attempt,
+                        "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error": str(exc),
                     },
                 )
-                if attempt == MAX_API_RETRY_ATTEMPTS:
+                if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
                 last_error = exc
 
-            debug_log(
+            log_event(
                 "API",
                 "准备重试请求",
                 {
                     "attempt": attempt,
-                    "max_attempts": MAX_API_RETRY_ATTEMPTS,
+                    "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
                     "delay_seconds": API_RETRY_DELAY_SECONDS * attempt,
                     "last_error": str(last_error),
                 },
@@ -674,6 +692,11 @@ def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:
     )
 
 
+
+def _has_tool_messages(messages: list[ChatMessage]) -> bool:
+    return any(msg.get("role") == "tool" for msg in messages)
+
+
 def _build_chat_completion_payload(
     *,
     model: str,
@@ -683,14 +706,24 @@ def _build_chat_completion_payload(
     chat_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 OpenAI 兼容请求体，并丢弃已知非标准参数。"""
+    # 当 messages 中包含 role:tool 且尾部为 system 运行时上下文时，
+    # 将尾部 system 消息合并到主 system prompt，避免干扰代理的
+    # tool_call_id -> functionResponse.name 翻译。
+    _system_prompt = system_prompt
+    _messages = list(messages)
+    if _has_tool_messages(_messages) and _messages and _messages[-1].get("role") == "system":
+        tail_content = _messages[-1].get("content", "")
+        if isinstance(tail_content, str) and tail_content.strip():
+            _system_prompt = f"{_system_prompt.strip()}\n\n{tail_content.strip()}"
+        _messages = _messages[:-1]
     payload = {
         "model": model,
         "messages": [
             {
                 "role": "system",
-                "content": system_prompt.strip(),
+                "content": _system_prompt.strip(),
             },
-            *messages,
+            *_messages,
         ],
     }
     payload["temperature"] = temperature
@@ -737,6 +770,22 @@ def _filter_supported_chat_params(params: dict[str, Any]) -> dict[str, Any]:
             continue
         filtered[key] = value
     return filtered
+
+
+def _summarize_token_usage(usage: Any) -> dict[str, Any]:
+    if not isinstance(usage, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "input_tokens",
+        "output_tokens",
+    ):
+        if key in usage:
+            summary[key] = usage[key]
+    return summary
 
 
 def _ensure_json_keyword_for_json_object_response(payload: dict[str, Any]) -> None:
@@ -935,21 +984,17 @@ def _normalize_assistant_message(
         "content": content if isinstance(content, str) else "",
     }
     if tool_calls:
-        raw_tool_calls = raw_message.get("tool_calls")
-        if isinstance(raw_tool_calls, list):
-            message["tool_calls"] = raw_tool_calls
-        else:
-            message["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.name,
-                        "arguments": call.arguments_json,
-                    },
-                }
-                for call in tool_calls
-            ]
+        message["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": call.arguments_json,
+                },
+            }
+            for call in tool_calls
+        ]
     return message
 
 

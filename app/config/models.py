@@ -127,15 +127,16 @@ class ModelSelectionSettings:
         return self.chat.model
 
 
-# ---- 调试日志 ----
+# ---- 运行日志 ----
 
 @dataclass(frozen=True)
 class DebugLogSettings:
-    """调试日志配置。"""
+    """运行日志配置。"""
 
     enabled: bool = False
     body_enabled: bool = False
-    file_enabled: bool = False
+    file_enabled: bool = True
+    profile: str = "info"
     # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
     stage_debug_overlay: bool = False
     # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。

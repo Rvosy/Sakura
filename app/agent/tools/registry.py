@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agent.actions import PendingToolAction
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 
 ToolHandler = Callable[[dict[str, Any]], Any]
@@ -132,18 +132,6 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
-        debug_log(
-            "ToolRegistry",
-            "注册工具",
-            {
-                "name": tool.name,
-                "group": tool.group,
-                "risk": tool.risk,
-                "requires_confirmation": tool.requires_confirmation,
-                "source": tool.source,
-                "capability": tool.capability,
-            },
-        )
 
     def register_from_provider(self, provider: object) -> int:
         """从 ToolProvider 批量注册工具。
@@ -152,7 +140,7 @@ class ToolRegistry:
         """
         contribute = getattr(provider, "contribute_tools", None)
         if contribute is None:
-            debug_log(
+            log_event(
                 "ToolRegistry",
                 "Provider 不支持 contribute_tools",
                 {"provider": type(provider).__name__},
@@ -308,7 +296,7 @@ class ToolRegistry:
         permission_policy 参数接受 ToolPermissionPolicy 实例，用于集中控制确认逻辑。
         """
         tool = self.get(name)
-        debug_log(
+        log_event(
             "ToolRegistry",
             "准备工具执行",
             {
@@ -338,7 +326,7 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具参数无效", result.to_dict())
+            log_event("ToolRegistry", "工具参数无效", result.to_dict())
             return result
 
         action = PendingToolAction.create(
@@ -347,7 +335,7 @@ class ToolRegistry:
             reason=reason,
             tool_call_id=tool_call_id,
         )
-        debug_log("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -361,7 +349,7 @@ class ToolRegistry:
                 content="",
                 error=f"未知工具：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if tool.handler is None:
             result = ToolExecutionResult(
@@ -370,7 +358,7 @@ class ToolRegistry:
                 content="",
                 error=f"工具未配置处理器：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if not isinstance(arguments, dict):
             result = ToolExecutionResult(
@@ -379,11 +367,11 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
 
         try:
-            debug_log(
+            log_event(
                 "ToolRegistry",
                 "开始执行工具",
                 {
@@ -405,7 +393,7 @@ class ToolRegistry:
                 content="",
                 error=str(exc),
             )
-            debug_log("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
             self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
             return result
         result = ToolExecutionResult(
@@ -413,7 +401,7 @@ class ToolRegistry:
             success=True,
             content=content,
         )
-        debug_log("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
         self._emit_tool_event("tool.finished", {"name": name})
         return result
 

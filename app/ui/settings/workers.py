@@ -25,7 +25,7 @@ from app.config.character_archive import (
     export_character_voice_archive,
 )
 from app.config.character_loader import CharacterProfile
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
 from app.ui.theme import parse_ai_theme_response
@@ -119,7 +119,7 @@ class TTSTestWorker(QObject):
                     try:
                         close()
                     except Exception as exc:  # noqa: BLE001
-                        debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
+                        log_event("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
             self.finished.emit()
 
 

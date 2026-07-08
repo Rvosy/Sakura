@@ -47,6 +47,65 @@ def test_curator_adds_memory_from_first_person_view() -> None:
     assert "主人喜欢猫" in user_content
 
 
+def test_curator_updates_system_prompt_for_next_curation() -> None:
+    store = FakeMemoryStore()
+    api = FakeCurationApiClient(['{"operations":[]}', '{"operations":[]}'])
+    curator = MemoryCurator(api, store, system_prompt="旧角色人格卡")
+
+    curator.curate_entries([_entry("user", "第一轮对话")])
+    curator.set_system_prompt("新角色人格卡")
+    curator.curate_entries([_entry("user", "第二轮对话")])
+
+    first_prompt = str(api.calls[0]["system_prompt"])
+    second_prompt = str(api.calls[1]["system_prompt"])
+    assert "旧角色人格卡" in first_prompt
+    assert "新角色人格卡" not in first_prompt
+    assert "新角色人格卡" in second_prompt
+    assert "旧角色人格卡" not in second_prompt
+
+
+def test_curator_snapshot_keeps_prompt_and_store_context() -> None:
+    active_store = FakeMemoryStore()
+    snapshot_store = FakeMemoryStore()
+    api = FakeCurationApiClient(['{"operations":[]}'])
+    curator = MemoryCurator(api, active_store, system_prompt="旧角色人格卡")
+
+    snapshot = curator.snapshot(memory_store=snapshot_store)
+    curator.set_system_prompt("新角色人格卡")
+
+    snapshot.curate_entries([_entry("user", "整理旧角色对话")])
+
+    prompt = str(api.calls[0]["system_prompt"])
+    assert "旧角色人格卡" in prompt
+    assert "新角色人格卡" not in prompt
+    assert snapshot.memory_store is snapshot_store
+
+
+def test_scoped_memory_store_keeps_scope_after_parent_switch() -> None:
+    mem0 = ScopeRecordingMem0()
+    root = _runtime_json_path("scoped_memory_store")
+    root.mkdir(parents=True, exist_ok=True)
+    store = MemoryStore(base_dir=root, scope_id="old-character", memory_client=mem0)
+    scoped_store = store.scoped("old-character")
+
+    store.set_scope("new-character")
+    scoped_store.list_memories(limit=1)
+    scoped_store.create_memory(
+        {"content": "旧角色记忆", "source": "self_curation"},
+        allow_sensitive=True,
+    )
+
+    assert mem0.get_all_calls == [{"user_id": "old-character"}]
+    assert mem0.add_calls == [
+        {
+            "content": "旧角色记忆",
+            "user_id": "old-character",
+            "metadata_scope": "old-character",
+            "infer": False,
+        }
+    ]
+
+
 def test_curator_updates_and_deletes_existing_memories() -> None:
     store = FakeMemoryStore(
         existing=[
@@ -251,6 +310,19 @@ def test_memory_curation_state_waits_until_trigger_turns() -> None:
     assert state.pending_turns() == DEFAULT_AUTO_MEMORY_TRIGGER_TURNS
 
 
+def test_memory_curation_state_consumes_pending_turns_without_advancing_history() -> None:
+    state = MemoryCurationState(_runtime_json_path("memory_curation_state_consume"))
+    state.mark_processed(12)
+    for _ in range(5):
+        state.increment_pending_turns()
+
+    state.consume_pending_turns(3)
+
+    snapshot = state.snapshot()
+    assert snapshot["processed_history_count"] == 12
+    assert snapshot["pending_turns"] == 2
+
+
 def test_memory_entries_ignore_tone_and_portrait_metadata() -> None:
     entries = _entries_for_model(
         [
@@ -382,6 +454,31 @@ class CancellingCurationApiClient(FakeCurationApiClient):
         raw = super().complete_raw(system_prompt, messages, **chat_params)
         self.token.cancel()
         return raw
+
+
+class ScopeRecordingMem0:
+    def __init__(self) -> None:
+        self.get_all_calls: list[dict[str, str]] = []
+        self.add_calls: list[dict[str, object]] = []
+
+    def get_all(self, *, filters, top_k):  # type: ignore[no-untyped-def]
+        self.get_all_calls.append(dict(filters))
+        return []
+
+    def add(self, content, *, user_id, metadata, infer):  # type: ignore[no-untyped-def]
+        self.add_calls.append(
+            {
+                "content": content,
+                "user_id": user_id,
+                "metadata_scope": metadata.get("scope"),
+                "infer": infer,
+            }
+        )
+        return {
+            "id": "memory-001",
+            "memory": content,
+            "metadata": metadata,
+        }
 
 
 class FakeMem0WithCurationCache:

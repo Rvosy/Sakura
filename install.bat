@@ -48,7 +48,7 @@ echo.
 echo [1/2] 安装 Python 依赖...
 echo.
 
-"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple --no-warn-script-location
+"%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
 
 if errorlevel 1 (
     echo.

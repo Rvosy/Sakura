@@ -5,7 +5,7 @@ from typing import Any
 
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.cancellation import CancelChecker, check_cancelled
-from app.core.debug_log import debug_log, summarize_messages
+from app.core.runtime_log import log_event, summarize_messages
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
@@ -35,7 +35,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        debug_log(
+        log_event(
             "ChatWorker",
             "开始处理用户消息",
             {
@@ -63,7 +63,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        debug_log("ChatWorker", "开始处理已确认动作", action.to_dict())
+        log_event("ChatWorker", "开始处理已确认动作", action.to_dict())
         return self.agent_runtime.handle_confirmed_action(
             action,
             progress_callback=progress_callback,
@@ -77,7 +77,7 @@ class ChatPipeline:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        debug_log("ChatWorker", "开始处理已取消动作", action.to_dict())
+        log_event("ChatWorker", "开始处理已取消动作", action.to_dict())
         return self.agent_runtime.handle_cancelled_action(action)
 
     def run_event(
@@ -88,7 +88,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        debug_log(
+        log_event(
             "EventWorker",
             "开始处理主动事件",
             {
@@ -117,17 +117,17 @@ class ChatPipeline:
         if self.visual_observation_store is None or not visual_observation_jobs:
             return
         if result.visual_observation is None:
-            debug_log(log_scope, "视觉观察摘要缺失，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
+            log_event(log_scope, "视觉观察摘要缺失，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
         record = visual_observation_record_from_summary(
             visual_observation_jobs[0],
             result.visual_observation,
         )
         if record is None:
-            debug_log(log_scope, "视觉观察摘要为空，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
+            log_event(log_scope, "视觉观察摘要为空，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
         self.visual_observation_store.append(record)
-        debug_log(
+        log_event(
             log_scope,
             "视觉观察记录已保存",
             {

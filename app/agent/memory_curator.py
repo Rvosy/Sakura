@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.agent.memory import (
     DEFAULT_MEMORY_CONFIDENCE,
     DEFAULT_MEMORY_IMPORTANCE,
@@ -100,6 +100,11 @@ class MemoryCurationState:
             state["backfill_completed"] = bool(backfill_completed)
         self._save(state)
 
+    def consume_pending_turns(self, consumed_turns: int) -> None:
+        state = self.snapshot()
+        state["pending_turns"] = max(0, int(state["pending_turns"]) - max(0, consumed_turns))
+        self._save(state)
+
     def mark_history_cleared(self) -> None:
         state = self.snapshot()
         state["processed_history_count"] = 0
@@ -144,6 +149,21 @@ class MemoryCurator:
 
     def set_api_client(self, api_client: Any) -> None:
         self.api_client = api_client
+
+    def set_system_prompt(self, system_prompt: str) -> None:
+        self.system_prompt = (system_prompt or "").strip()
+
+    def snapshot(
+        self,
+        *,
+        memory_store: MemoryStore | None = None,
+        system_prompt: str | None = None,
+    ) -> "MemoryCurator":
+        return MemoryCurator(
+            self.api_client,
+            memory_store or self.memory_store,
+            system_prompt=self.system_prompt if system_prompt is None else system_prompt,
+        )
 
     def curate_entries(
         self,
@@ -201,7 +221,7 @@ class MemoryCurator:
         except OperationCancelled:
             raise
         except Exception as exc:  # 记忆读取失败不应中断整理，退化为只新增。
-            debug_log("Memory", "记忆整理读取现有记忆失败", {"error": str(exc)})
+            log_event("Memory", "记忆整理读取现有记忆失败", {"error": str(exc)})
             return []
 
     def _build_self_curation_system_prompt(self) -> str:
@@ -232,7 +252,7 @@ class MemoryCurator:
             cancel_checker=cancel_checker,
         )
         operations = _parse_curation_operations(raw)
-        debug_log(
+        log_event(
             "Memory",
             "第一人称记忆整理抽取完成",
             {
@@ -275,7 +295,7 @@ class MemoryCurator:
             importance = _bounded_float(operation.get("importance"), DEFAULT_MEMORY_IMPORTANCE)
             if action in {"add", "update"}:
                 if confidence < MIN_AUTO_WRITE_CONFIDENCE:
-                    debug_log(
+                    log_event(
                         "Memory",
                         "跳过低置信记忆候选",
                         {"op": action, "layer": layer, "confidence": confidence},
@@ -283,11 +303,11 @@ class MemoryCurator:
                     ignored += 1
                     continue
                 if looks_like_sensitive_memory(content):
-                    debug_log("Memory", "跳过疑似敏感记忆候选", {"op": action, "layer": layer})
+                    log_event("Memory", "跳过疑似敏感记忆候选", {"op": action, "layer": layer})
                     ignored += 1
                     continue
                 if operations_per_layer.get(layer, 0) >= MAX_CURATION_OPERATIONS_PER_LAYER:
-                    debug_log("Memory", "跳过超出单层写入上限的记忆候选", {"layer": layer})
+                    log_event("Memory", "跳过超出单层写入上限的记忆候选", {"layer": layer})
                     ignored += 1
                     continue
             try:
@@ -344,7 +364,7 @@ class MemoryCurator:
                     event_counts["ADD"] = event_counts.get("ADD", 0) + 1
                 elif action == "update":
                     if memory_id not in existing_ids or not content:
-                        debug_log(
+                        log_event(
                             "Memory",
                             "跳过无效的记忆更新操作",
                             {"id": memory_id, "has_content": bool(content)},
@@ -368,7 +388,7 @@ class MemoryCurator:
                     event_counts["UPDATE"] = event_counts.get("UPDATE", 0) + 1
                 elif action == "delete":
                     if memory_id not in existing_ids:
-                        debug_log("Memory", "跳过无效的记忆删除操作", {"id": memory_id})
+                        log_event("Memory", "跳过无效的记忆删除操作", {"id": memory_id})
                         ignored += 1
                         continue
                     self.memory_store.delete_memory({"id": memory_id})
@@ -378,7 +398,7 @@ class MemoryCurator:
                 else:
                     ignored += 1
             except Exception as exc:  # 单条写回失败只跳过，保留其它可用结果。
-                debug_log(
+                log_event(
                     "Memory",
                     "记忆整理写回失败",
                     {"op": action, "id": memory_id, "error": str(exc)},
@@ -504,7 +524,7 @@ def _format_existing_memories(memories: list[dict[str, Any]]) -> str:
         lines.append(line)
         used += len(line) + 1
     if truncated:
-        debug_log(
+        log_event(
             "Memory",
             "现有记忆超出注入预算已截断",
             {"included": len(lines), "total": len(memories)},

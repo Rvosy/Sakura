@@ -11,6 +11,7 @@ from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tools import Tool, ToolRegistry
+from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -275,6 +276,14 @@ def create_builtin_tool_registry(
             group="default",
             risk="low",
         )
+    )
+    log_event(
+        "ToolRegistry",
+        "内置工具注册完成",
+        {
+            "tool_count": len(registry._tools),
+            "tool_names": sorted(registry._tools.keys()),
+        },
     )
     return registry
 

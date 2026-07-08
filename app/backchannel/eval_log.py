@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.backchannel.models import BackchannelLabel
 from app.backchannel.resolver import BackchannelChoice
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 # 接话评测日志:记录每次分类的(输入, 预测标签, 选中模板),供事后人工
 # 标注 gold_intent 后用 tuning.sweep 网格调参。默认关闭,仅 debug 时落盘;
@@ -54,4 +54,4 @@ class BackchannelEvalLogger:
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError as exc:
-            debug_log("Backchannel", "评测日志写入失败", {"path": str(self._path), "error": str(exc)})
+            log_event("Backchannel", "评测日志写入失败", {"path": str(self._path), "error": str(exc)})

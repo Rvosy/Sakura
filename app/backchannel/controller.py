@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice, TemplateResolver
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 if TYPE_CHECKING:
     from app.config.settings_service import BackchannelSettings
@@ -170,7 +170,7 @@ class BackchannelController(QObject):
             try:
                 label = self._classifier.classify(text)
             except Exception as exc:  # noqa: BLE001
-                debug_log("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
+                log_event("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
                 label = None
             if not self._shutdown:
                 try:
@@ -199,7 +199,7 @@ class BackchannelController(QObject):
             return
         # 丢弃 in-flight 真实结果(token 置空),本轮按无标签落兜底。
         self._inflight_token = None
-        debug_log("Backchannel", "后台分类超时,本轮按无标签落兜底")
+        log_event("Backchannel", "后台分类超时,本轮按无标签落兜底")
         self._finish_classification(self._inflight_text, None)
 
     def _finish_classification(self, text: str, label: "BackchannelLabel | None") -> None:
