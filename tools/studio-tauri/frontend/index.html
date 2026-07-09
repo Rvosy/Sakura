@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 角色工作室</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="settings-shell studio-shell">
+      <aside class="nav-card" aria-label="角色工作室导航">
+        <div class="nav-brand">
+          <span class="nav-brand-mark">S</span>
+          <span class="nav-brand-text">角色工作室</span>
+        </div>
+        <nav class="nav-list">
+          <div class="nav-group" role="group" aria-labelledby="navgrp-studio">
+            <p class="nav-group-label" id="navgrp-studio">工作区</p>
+            <button class="nav-item is-active" type="button" data-page="library" aria-current="page">
+              <span class="nav-item-icon">◆</span>
+              <span class="nav-item-label">角色列表</span>
+            </button>
+            <button class="nav-item" type="button" data-page="basic">
+              <span class="nav-item-icon">◇</span>
+              <span class="nav-item-label">基础信息</span>
+            </button>
+            <button class="nav-item" type="button" data-page="card">
+              <span class="nav-item-icon">✦</span>
+              <span class="nav-item-label">人设卡</span>
+            </button>
+            <button class="nav-item" type="button" data-page="portrait">
+              <span class="nav-item-icon">◈</span>
+              <span class="nav-item-label">立绘</span>
+            </button>
+            <button class="nav-item" type="button" data-page="theme">
+              <span class="nav-item-icon">✧</span>
+              <span class="nav-item-label">配色</span>
+            </button>
+          </div>
+        </nav>
+      </aside>
+
+      <section class="detail-card">
+        <header class="page-head">
+          <h1 id="pageTitle" class="page-title">角色列表</h1>
+          <p id="pageSubtitle" class="page-subtitle">打开本地角色或创建新角色</p>
+        </header>
+
+        <div class="page-scroll">
+          <section id="page-library" class="settings-page is-active">
+            <fieldset class="settings-group">
+              <legend>本地角色</legend>
+              <div class="studio-toolbar">
+                <input id="characterSearch" type="search" placeholder="搜索角色" autocomplete="off" />
+                <button id="refreshCharactersButton" type="button" class="secondary-button">刷新</button>
+                <button id="newCharacterButton" type="button" class="secondary-button">新建角色</button>
+              </div>
+              <div id="characterList" class="character-list"></div>
+            </fieldset>
+          </section>
+
+          <section id="page-basic" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>基础信息</legend>
+              <div class="setting-row">
+                <label class="setting-row-text" for="characterId">
+                  <span class="setting-title">角色 ID</span>
+                  <span class="setting-desc">保存后的本地目录名。</span>
+                </label>
+                <input id="characterId" type="text" autocomplete="off" />
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="displayName">
+                  <span class="setting-title">显示名称</span>
+                  <span class="setting-desc">设置页和桌宠界面显示的名字。</span>
+                </label>
+                <input id="displayName" type="text" autocomplete="off" />
+              </div>
+              <div class="setting-row setting-row-block">
+                <label class="setting-row-text" for="initialMessage">
+                  <span class="setting-title">开场白</span>
+                  <span class="setting-desc">角色首次进入对话时使用。</span>
+                </label>
+                <textarea id="initialMessage" rows="4"></textarea>
+              </div>
+              <div id="voiceStatusRow" class="setting-row" hidden>
+                <div class="setting-row-text">
+                  <span class="setting-title">语音</span>
+                  <span id="voiceStatus" class="setting-desc"></span>
+                </div>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-card" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>人设卡</legend>
+              <div class="setting-row setting-row-block">
+                <label class="setting-row-text" for="cardText">
+                  <span class="setting-title">系统人设</span>
+                  <span class="setting-desc">保存为角色包内的 card.md。</span>
+                </label>
+                <textarea id="cardText" class="code-textarea" rows="16"></textarea>
+              </div>
+              <div class="setting-row setting-row-block">
+                <label class="setting-row-text" for="replyToneInput">
+                  <span class="setting-title">回复语气</span>
+                  <span class="setting-desc">用逗号分隔多个语气标签。</span>
+                </label>
+                <input id="replyToneInput" type="text" autocomplete="off" />
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-portrait" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>立绘</legend>
+              <div class="setting-row">
+                <label class="setting-row-text" for="defaultPortrait">
+                  <span class="setting-title">默认立绘</span>
+                  <span class="setting-desc">角色包内相对路径。</span>
+                </label>
+                <div class="path-control">
+                  <input id="defaultPortrait" type="text" autocomplete="off" />
+                  <button id="importDefaultPortraitButton" type="button" class="secondary-button">导入</button>
+                </div>
+              </div>
+              <div class="setting-row setting-row-block">
+                <div class="setting-row-text">
+                  <span class="setting-title">表情立绘</span>
+                  <span class="setting-desc">标签与图片路径的映射。</span>
+                </div>
+                <div id="expressionList" class="expression-list"></div>
+                <button id="addExpressionButton" type="button" class="secondary-button">添加表情</button>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-theme" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>角色配色</legend>
+              <div id="themeFields" class="theme-grid"></div>
+            </fieldset>
+          </section>
+        </div>
+
+        <footer class="settings-footer">
+          <p id="errorText" class="error-text" role="alert"></p>
+          <div class="footer-actions">
+            <button id="exportButton" type="button" class="secondary-button">导出 .char</button>
+            <button id="cancelButton" type="button" class="secondary-button">关闭</button>
+            <button id="saveButton" type="button">保存</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <script type="module" src="./studio.js"></script>
+  </body>
+</html>

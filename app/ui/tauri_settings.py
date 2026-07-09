@@ -958,6 +958,7 @@ class TauriSettingsProcess(QObject):
         memory_curation_settings: MemoryCurationSettings | None = None,
         memory_store: Any | None = None,
         plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
+        studio_launcher: Callable[[str | None], bool] | None = None,
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
@@ -990,6 +991,7 @@ class TauriSettingsProcess(QObject):
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
         self.memory_store = memory_store
         self.plugin_settings_contributions = list(plugin_settings_contributions or [])
+        self.studio_launcher = studio_launcher
         self.resource_tasks = settings_resource_task_manager(
             self.base_dir,
             memory_store=self.memory_store,
@@ -1368,6 +1370,13 @@ class TauriSettingsProcess(QObject):
             if color is None:
                 return {"cancelled": True}
             return {"color": color}
+        if method == "studio.launch":
+            if self.studio_launcher is None:
+                raise ValueError("角色工作室启动器不可用。")
+            character_id = str(params.get("character_id") or "").strip() or None
+            if not self.studio_launcher(character_id):
+                raise ValueError("角色工作室未启动，请先构建 Tauri 角色工作室。")
+            return {"message": "角色工作室已打开。"}
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
                 self.plugin_settings_contributions,

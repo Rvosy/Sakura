@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+import uuid
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+
+from app.config.character_studio import CharacterStudioService
+from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_to_mapping
+
+TAURI_STUDIO_BIN_ENV = "SAKURA_TAURI_STUDIO_BIN"
+TAURI_STUDIO_PROTOCOL_VERSION = 1
+TAURI_STUDIO_RPC_MARKER = "@@SAKURA_STUDIO_RPC@@"
+TAURI_STUDIO_RPC_RESULT_MARKER = "@@SAKURA_STUDIO_RPC_RESULT@@"
+
+
+def resolve_tauri_studio_binary(base_dir: Path, environ: Mapping[str, str] | None = None) -> Path | None:
+    env = environ or os.environ
+    configured = env.get(TAURI_STUDIO_BIN_ENV)
+    if configured:
+        path = Path(configured)
+        return path if path.is_file() else None
+
+    root = Path(base_dir)
+    binary_name = "sakura-studio.exe" if sys.platform == "win32" else "sakura-studio"
+    candidates = (
+        root / "tools" / "studio-tauri" / "src-tauri" / "target" / "release" / binary_name,
+        root / "tools" / "studio-tauri" / "src-tauri" / "target" / "debug" / binary_name,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def build_tauri_studio_request(
+    base_dir: Path,
+    *,
+    initial_character_id: str = "",
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    service = CharacterStudioService(base_dir)
+    theme = theme_to_mapping(DEFAULT_THEME_SETTINGS)
+    return {
+        "version": TAURI_STUDIO_PROTOCOL_VERSION,
+        "nonce": nonce or uuid.uuid4().hex,
+        "initial_character_id": str(initial_character_id or ""),
+        "characters": service.list_characters(current_character_id=str(initial_character_id or "")),
+        "theme": theme,
+        "theme_fields": list(theme.keys()),
+    }
+
+
+def dispatch_tauri_studio_rpc(base_dir: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if not method.startswith("studio."):
+        raise ValueError(f"未知 Tauri Studio RPC 方法：{method}")
+    service = CharacterStudioService(base_dir)
+    if method == "studio.list_characters":
+        current_character_id = str(params.get("current_character_id") or "")
+        return {"characters": service.list_characters(current_character_id=current_character_id)}
+    if method == "studio.open_character":
+        return service.open_character(_required_str(params, "character_id"))
+    if method == "studio.create_character":
+        doc = params.get("doc")
+        if not isinstance(doc, dict):
+            raise ValueError("studio.create_character 需要 doc 对象。")
+        return service.create_character(doc)
+    if method == "studio.save_draft":
+        doc = params.get("doc")
+        if not isinstance(doc, dict):
+            raise ValueError("studio.save_draft 需要 doc 对象。")
+        return service.save_draft(doc, _required_path(params, "package_dir"))
+    if method == "studio.save_character":
+        doc = params.get("doc")
+        if not isinstance(doc, dict):
+            raise ValueError("studio.save_character 需要 doc 对象。")
+        return service.save_character(
+            doc,
+            _required_path(params, "package_dir"),
+            current_character_id=str(params.get("current_character_id") or ""),
+        )
+    if method == "studio.import_portrait":
+        return service.import_portrait(
+            _required_path(params, "package_dir"),
+            _required_path(params, "path"),
+            label=str(params.get("label") or "default"),
+        )
+    if method == "studio.export_archive":
+        return service.export_archive(
+            _required_path(params, "package_dir"),
+            _required_path(params, "path"),
+            include_voice=bool(params.get("include_voice")),
+        )
+    raise ValueError(f"未知 Tauri Studio RPC 方法：{method}")
+
+
+class TauriStudioProcess(QObject):
+    closed = Signal()
+    failed = Signal(str)
+
+    def __init__(self, base_dir: Path, *, initial_character_id: str = "", parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.base_dir = Path(base_dir)
+        self.initial_character_id = str(initial_character_id or "")
+        self._process: QProcess | None = None
+        self._request_payload = b""
+        self._stdout_buffer = ""
+        self._done = False
+
+    def start(self) -> bool:
+        binary = resolve_tauri_studio_binary(self.base_dir)
+        if binary is None:
+            return False
+        request = build_tauri_studio_request(
+            self.base_dir,
+            initial_character_id=self.initial_character_id,
+        )
+        process = QProcess(self)
+        process.setProgram(str(binary))
+        process.setArguments([])
+        process.setWorkingDirectory(str(self.base_dir))
+        process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
+        process.started.connect(self._send_request)
+        process.finished.connect(self._handle_finished)
+        process.errorOccurred.connect(self._handle_error)
+        process.readyReadStandardOutput.connect(self._handle_stdout)
+        self._process = process
+        self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        process.start()
+        return True
+
+    def focus_window(self) -> bool:
+        from app.ui.tauri_settings import _restore_windows_for_pid
+
+        process = self._process
+        if process is None:
+            return False
+        try:
+            pid = int(process.processId())
+        except (TypeError, ValueError):
+            return False
+        return pid > 0 and sys.platform == "win32" and _restore_windows_for_pid(pid)
+
+    def shutdown(self, timeout_ms: int = 1000) -> None:
+        self._done = True
+        process = self._process
+        if process is not None:
+            try:
+                process.closeWriteChannel()
+            except RuntimeError:
+                pass
+            try:
+                if process.state() != QProcess.ProcessState.NotRunning:
+                    process.terminate()
+                    if not process.waitForFinished(timeout_ms):
+                        process.kill()
+                        process.waitForFinished(timeout_ms)
+            except RuntimeError:
+                pass
+        self._process = None
+
+    def _send_request(self) -> None:
+        process = self._process
+        if process is None or self._done:
+            return
+        try:
+            process.write(self._request_payload + b"\n")
+        except RuntimeError as exc:
+            self._done = True
+            self.failed.emit(f"Tauri 角色工作室请求发送失败：{exc}")
+
+    def _handle_stdout(self, *, flush: bool = False) -> None:
+        process = self._process
+        if process is None:
+            return
+        chunk = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if not chunk and not flush:
+            return
+        self._stdout_buffer += chunk
+        *lines, self._stdout_buffer = self._stdout_buffer.split("\n")
+        if flush and self._stdout_buffer:
+            lines.append(self._stdout_buffer)
+            self._stdout_buffer = ""
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(TAURI_STUDIO_RPC_MARKER):
+                self._handle_rpc_request(stripped[len(TAURI_STUDIO_RPC_MARKER):])
+
+    def _handle_rpc_request(self, payload: str) -> None:
+        request: dict[str, Any] | None = None
+        try:
+            parsed = json.loads(payload)
+            if not isinstance(parsed, dict):
+                raise ValueError("RPC 请求必须是对象。")
+            request = parsed
+            request_id = request.get("id")
+            method = request.get("method")
+            params = request.get("params", {})
+            if not isinstance(request_id, str) or not request_id:
+                raise ValueError("RPC 请求缺少 id。")
+            if not isinstance(method, str) or not method:
+                raise ValueError("RPC 请求缺少 method。")
+            if not isinstance(params, dict):
+                raise ValueError("RPC params 必须是对象。")
+            result = dispatch_tauri_studio_rpc(self.base_dir, method, params)
+        except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
+            request_id = ""
+            if isinstance(request, dict):
+                request_id = str(request.get("id") or "")
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+        self._send_rpc_response(request_id, ok=True, result=result)
+
+    def _send_rpc_response(
+        self,
+        request_id: str,
+        *,
+        ok: bool,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        process = self._process
+        if process is None:
+            return
+        payload = {
+            "id": request_id,
+            "ok": ok,
+            "result": result if ok else None,
+            "error": "" if ok else error,
+        }
+        line = TAURI_STUDIO_RPC_RESULT_MARKER + json.dumps(payload, ensure_ascii=False) + "\n"
+        process.write(line.encode("utf-8"))
+
+    def _handle_finished(self, _exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+        self._handle_stdout(flush=True)
+        self._done = True
+        self._process = None
+        self.closed.emit()
+
+    def _handle_error(self, error: QProcess.ProcessError) -> None:
+        self._done = True
+        self.failed.emit(f"Tauri 角色工作室启动失败：{error.name}")
+
+
+def _required_str(mapping: dict[str, Any], key: str) -> str:
+    value = str(mapping.get(key) or "").strip()
+    if not value:
+        raise ValueError(f"缺少字段：{key}")
+    return value
+
+
+def _required_path(mapping: dict[str, Any], key: str) -> Path:
+    return Path(_required_str(mapping, key))

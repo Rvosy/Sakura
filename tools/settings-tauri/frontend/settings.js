@@ -5,6 +5,8 @@ const fields = {
   characterImportButton: document.getElementById("characterImportButton"),
   ttsVoiceImportButton: document.getElementById("ttsVoiceImportButton"),
   characterExportButton: document.getElementById("characterExportButton"),
+  characterStudioCurrentButton: document.getElementById("characterStudioCurrentButton"),
+  characterStudioOpenButton: document.getElementById("characterStudioOpenButton"),
   characterArchiveHint: document.getElementById("characterArchiveHint"),
   portraitScale: document.getElementById("portraitScale"),
   controlPanelWidth: document.getElementById("controlPanelWidth"),
@@ -928,6 +930,8 @@ function syncCharacterArchiveState() {
   fields.characterImportButton.disabled = characterArchiveBusy;
   fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
   fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
+  fields.characterStudioCurrentButton.disabled = characterArchiveBusy || !hasCharacter;
+  fields.characterStudioOpenButton.disabled = characterArchiveBusy;
   fields.saveButton.disabled = characterArchiveBusy;
   fields.applyButton.disabled = characterArchiveBusy;
   fields.cancelButton.disabled = characterArchiveBusy;
@@ -2279,6 +2283,15 @@ async function exportCharacterArchive() {
       kind,
     });
     applyCharacterRpcResult(result, { dirty: false });
+  });
+}
+
+async function launchCharacterStudio(characterId = "") {
+  await runCharacterArchiveAction(async () => {
+    const result = await hostCall("studio.launch", { character_id: characterId || "" });
+    if (result?.message) {
+      notify(result.message, "success");
+    }
   });
 }
 
@@ -4143,6 +4156,11 @@ fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
 fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
+fields.characterStudioCurrentButton.addEventListener("click", () => {
+  const character = selectedCharacter();
+  launchCharacterStudio(character?.id || "");
+});
+fields.characterStudioOpenButton.addEventListener("click", () => launchCharacterStudio(""));
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);

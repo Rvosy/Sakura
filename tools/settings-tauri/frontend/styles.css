@@ -890,6 +890,10 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.studio-controls {
+  max-width: 420px;
+}
+
 input[type="range"].layout-slider {
   --slider-progress: 0%;
   flex: 1;

@@ -4650,6 +4650,80 @@ def test_tauri_character_rpc_validates_paths() -> None:
         )
 
 
+def test_tauri_settings_dispatches_studio_launch_callback() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    calls: list[str] = []
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda character_id: calls.append(character_id or "") or True,
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": "sakura"})
+
+    assert calls == ["sakura"]
+    assert result["message"] == "角色工作室已打开。"
+
+
+def test_tauri_settings_dispatches_studio_launch_failure() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: False,
+    )
+
+    with pytest.raises(ValueError, match="角色工作室"):
+        process._dispatch_rpc("studio.launch", {"character_id": "sakura"})
+
+
+def test_tauri_settings_frontend_has_studio_buttons_without_publish_wording() -> None:
+    index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert "characterStudioCurrentButton" in index
+    assert "characterStudioOpenButton" in index
+    assert "hostCall(\"studio.launch\"" in source
+    assert "发布" not in index
+    assert "发布" not in source
+
+
+def test_tauri_studio_frontend_matches_settings_language() -> None:
+    index = Path("tools/studio-tauri/frontend/index.html").read_text(encoding="utf-8")
+    source = Path("tools/studio-tauri/frontend/studio.js").read_text(encoding="utf-8")
+    styles = Path("tools/studio-tauri/frontend/styles.css").read_text(encoding="utf-8")
+
+    assert "nav-card" in index
+    assert "detail-card" in index
+    assert "page-head" in index
+    assert "settings-group" in index
+    assert "角色工作室" in index
+    assert "保存" in index
+    assert "发布" not in index
+    assert "发布" not in source
+    assert "hostCall(\"studio.list_characters\"" in source
+    assert "hostCall(\"studio.open_character\"" in source
+    assert "hostCall(\"studio.create_character\"" in source
+    assert "hostCall(\"studio.save_character\"" in source
+    assert "hostCall(\"studio.import_portrait\"" in source
+    assert "hostCall(\"studio.export_archive\"" in source
+    assert "--sakura-primary" in styles
+    assert "--motion-medium" in styles
+    assert ".settings-page.is-active" in styles
+
+
 def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.tauri_settings as tauri_settings_module
 

@@ -164,6 +164,7 @@ from app.ui.tauri_settings import (
     resolve_tauri_settings_binary,
     tts_settings_from_tauri_result,
 )
+from app.ui.tauri_studio import TauriStudioProcess, resolve_tauri_studio_binary
 from app.ui.tts_bundle_dialog import (
     cancel_active_tts_bundle_downloads_for_shutdown,
     has_active_tts_bundle_download,
@@ -636,6 +637,7 @@ class PetWindow(QWidget):
         self.history_window: HistoryWindow | None = None
         self.runtime_log_window: RuntimeLogWindow | None = None
         self.tauri_settings_process: TauriSettingsProcess | None = None
+        self.tauri_studio_process: TauriStudioProcess | None = None
         self._tauri_original_layout: tuple[int, int, int, int, int] | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
@@ -1399,6 +1401,13 @@ class PetWindow(QWidget):
         )
         if callable(close_tauri_settings):
             close_tauri_settings()
+        close_tauri_studio = getattr(
+            self,
+            "_close_tauri_studio_process_for_shutdown",
+            None,
+        )
+        if callable(close_tauri_studio):
+            close_tauri_studio()
         self._emit_app_closed_event()
         self._stop_speaking_state_watchdog()
         self.messages = _without_transient_progress_messages(self.messages)
@@ -5297,6 +5306,7 @@ class PetWindow(QWidget):
                 "plugin_settings",
                 [],
             ),
+            studio_launcher=getattr(self, "_open_tauri_studio_from_settings", None),
             model=getattr(api_settings, "model", None),
             parent_widget=self if isinstance(self, QWidget) else None,
             parent=self if isinstance(self, QObject) else None,
@@ -5323,6 +5333,48 @@ class PetWindow(QWidget):
         # Tauri 设置窗口存活期间临时取消桌宠原生置顶，否则置顶立绘会盖住系统取色器的放大预览。
         self._set_secondary_windows_topmost_suppressed(True)
         return True
+
+    def _open_tauri_studio_from_settings(self, character_id: str | None = None) -> bool:
+        active_process = getattr(self, "tauri_studio_process", None)
+        if active_process is not None:
+            active_process.focus_window()
+            return True
+        if resolve_tauri_studio_binary(self.base_dir) is None:
+            return False
+        initial_character_id = str(character_id or getattr(self.character_profile, "id", "") or "")
+        process = TauriStudioProcess(
+            self.base_dir,
+            initial_character_id=initial_character_id,
+            parent=self if isinstance(self, QObject) else None,
+        )
+        process.closed.connect(self._on_tauri_studio_closed)
+        process.failed.connect(self._on_tauri_studio_failed)
+        if not process.start():
+            return False
+        self.tauri_studio_process = process
+        return True
+
+    @Slot()
+    def _on_tauri_studio_closed(self) -> None:
+        self.tauri_studio_process = None
+        try:
+            self.character_registry = CharacterRegistry(self.base_dir)
+        except Exception:  # noqa: BLE001 - closing the editor should not crash the pet window.
+            pass
+
+    @Slot(str)
+    def _on_tauri_studio_failed(self, message: str) -> None:
+        self.tauri_studio_process = None
+        show_themed_critical(self, "角色工作室", message)
+
+    def _close_tauri_studio_process_for_shutdown(self) -> None:
+        process = getattr(self, "tauri_studio_process", None)
+        if process is None:
+            return
+        self.tauri_studio_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
     @Slot(object)
     def _on_tauri_settings_layout_preview(self, payload: object) -> None:
