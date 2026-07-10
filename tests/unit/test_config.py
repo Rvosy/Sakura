@@ -23,6 +23,7 @@ from app.config.defaults import (
 )
 from app.config.migrations import _parse_dotenv, _coerce_type, migrate_env_to_yaml
 from app.config.models import ApiSettings, DebugLogSettings
+from app.config.yaml_config import load_yaml_mapping
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_config"
@@ -137,6 +138,35 @@ class TestMigration:
             result = migrate_env_to_yaml(env_path, api_yaml, system_yaml)
             assert "BASE_URL" in result["migrated"]
             assert "API_KEY" in result["migrated"]
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_migrate_proactive_env_keys_to_screen_awareness(self) -> None:
+        base = _make_test_dir("migrate_proactive_env")
+        try:
+            config_dir = base / "data" / "config"
+            config_dir.mkdir(parents=True)
+            env_path = base / ".env"
+            env_path.write_text(
+                "PROACTIVE_CARE_ENABLED=false\n"
+                "PROACTIVE_SCREEN_CONTEXT_ENABLED=true\n"
+                "PROACTIVE_CHECK_INTERVAL_MINUTES=5\n"
+                "PROACTIVE_COOLDOWN_MINUTES=17\n",
+                encoding="utf-8",
+            )
+            api_yaml = config_dir / "api.yaml"
+            api_yaml.write_text("llm: {}\n", encoding="utf-8")
+            system_yaml = config_dir / "system_config.yaml"
+            system_yaml.write_text("{}\n", encoding="utf-8")
+
+            migrate_env_to_yaml(env_path, api_yaml, system_yaml)
+            system = load_yaml_mapping(system_yaml)
+
+            assert system["screen_awareness"]["enabled"] is False
+            assert system["screen_awareness"]["screen_context_enabled"] is True
+            assert system["screen_awareness"]["check_interval_minutes"] == 5
+            assert system["screen_awareness"]["cooldown_minutes"] == 17
+            assert "proactive_care" not in system
         finally:
             shutil.rmtree(base, ignore_errors=True)
 

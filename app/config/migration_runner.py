@@ -30,7 +30,7 @@ from app.storage.paths import StoragePaths
 
 CONFIG_VERSION_KEY = "config_version"
 # 当前代码期望的数据形态版本；新增迁移步骤时同步 +1
-CURRENT_CONFIG_VERSION = 3
+CURRENT_CONFIG_VERSION = 4
 
 
 @dataclass
@@ -359,28 +359,101 @@ def _line_timestamp(line: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _migration_bool_value(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _migration_int_value(value: object, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_legacy_screen_awareness(raw: dict[str, object]) -> dict[str, bool | int]:
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+
+    defaults = ScreenAwarenessSettings()
+    settings = ScreenAwarenessSettings(
+        enabled=_migration_bool_value(raw.get("enabled"), defaults.enabled),
+        screen_context_enabled=_migration_bool_value(
+            raw.get("screen_context_enabled"), defaults.screen_context_enabled
+        ),
+        check_interval_minutes=_migration_int_value(
+            raw.get("check_interval_minutes"), defaults.check_interval_minutes
+        ),
+        cooldown_minutes=_migration_int_value(
+            raw.get("cooldown_minutes"), defaults.cooldown_minutes
+        ),
+        screen_context_batch_limit=_migration_int_value(
+            raw.get("screen_context_batch_limit"), defaults.screen_context_batch_limit
+        ),
+    ).normalized()
+    return {
+        "enabled": settings.enabled,
+        "screen_context_enabled": settings.screen_context_enabled,
+        "check_interval_minutes": settings.check_interval_minutes,
+        "cooldown_minutes": settings.cooldown_minutes,
+        "screen_context_batch_limit": settings.screen_context_batch_limit,
+    }
+
+
 def _migrate_v2_to_v3(context: MigrationContext) -> None:
-    """复制旧 proactive_care 配置到 screen_awareness；旧段保留用于回滚。"""
+    """把旧 proactive_care 配置规范化到 screen_awareness。"""
     system_path = context.paths.system_config()
     data = load_yaml_mapping(system_path)
     if "screen_awareness" in data:
-        log_event(
-            "Migration",
-            "migration.v2_to_v3.screen_awareness.skipped",
-            {"reason": "screen_awareness 已存在"},
-        )
+        if not isinstance(data["screen_awareness"], dict):
+            context.backup_file(system_path)
+            raise ValueError("screen_awareness 配置节必须是对象")
         return
-    proactive = data.get("proactive_care")
-    if not isinstance(proactive, dict):
-        proactive = {}
+
+    if "proactive_care" not in data:
+        context.backup_file(system_path)
+        data["screen_awareness"] = {}
+        save_yaml_mapping(system_path, data)
+        return
+
+    legacy = data["proactive_care"]
     context.backup_file(system_path)
-    data["screen_awareness"] = dict(proactive)
+    if not isinstance(legacy, dict):
+        raise ValueError("proactive_care 配置节必须是对象")
+    data["screen_awareness"] = _normalize_legacy_screen_awareness(legacy)
     save_yaml_mapping(system_path, data)
-    log_event(
-        "Migration",
-        "migration.v2_to_v3.screen_awareness.applied",
-        {"copied_keys": sorted(data["screen_awareness"].keys())},
-    )
+
+
+# ---------------------------------------------------------------------------
+# v3 → v4：删除退役的 proactive_care 配置节
+# ---------------------------------------------------------------------------
+
+
+def _migrate_v3_to_v4(context: MigrationContext) -> None:
+    system_path = context.paths.system_config()
+    data = load_yaml_mapping(system_path)
+    if "proactive_care" not in data:
+        return
+
+    context.backup_file(system_path)
+    legacy = data["proactive_care"]
+    if "screen_awareness" in data:
+        if not isinstance(data["screen_awareness"], dict):
+            raise ValueError("screen_awareness 配置节必须是对象")
+    else:
+        if not isinstance(legacy, dict):
+            raise ValueError("proactive_care 配置节必须是对象")
+        data["screen_awareness"] = _normalize_legacy_screen_awareness(legacy)
+
+    del data["proactive_care"]
+    save_yaml_mapping(system_path, data)
 
 
 ALL_MIGRATIONS: list[MigrationStep] = [
@@ -401,5 +474,11 @@ ALL_MIGRATIONS: list[MigrationStep] = [
         name="v2_to_v3",
         description="旧主动配置迁移为主动屏幕感知配置",
         apply=_migrate_v2_to_v3,
+    ),
+    MigrationStep(
+        version=4,
+        name="v3_to_v4",
+        description="删除退役的旧主动配置节",
+        apply=_migrate_v3_to_v4,
     ),
 ]
