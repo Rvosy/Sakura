@@ -3198,7 +3198,7 @@ def test_vision_unsupported_error_gets_local_fallback_reply() -> None:
     assert not result.actions
 
 
-def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
+def test_screen_awareness_check_tool_prompt_uses_single_segment_heading() -> None:
     prompt = build_screen_awareness_check_tool_system_prompt(
         "你是 Sakura。",
         ["中性"],
@@ -3227,12 +3227,12 @@ def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
     assert "不确定时就普通问候" not in prompt
 
 
-def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
+def test_screen_awareness_check_event_prompt_reuses_segment_rules() -> None:
     prompt = build_event_system_prompt(
         "你是 Sakura。",
         ["中性"],
         ["站立待机"],
-        event_type="proactive_check",
+        event_type="screen_awareness_check",
     )
 
     assert prompt.count("分段规则：") == 1
@@ -3244,8 +3244,8 @@ def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
     assert "只有画面确实为空、黑屏、桌面无内容" in prompt
 
 
-def test_proactive_check_event_generates_segmented_reply() -> None:
-    class ProactiveClient:
+def test_screen_awareness_check_event_generates_segmented_reply() -> None:
+    class ScreenAwarenessClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3260,7 +3260,7 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveClient()
+    client = ScreenAwarenessClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3268,7 +3268,7 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "check_interval_minutes": 20,
@@ -3288,11 +3288,11 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
     assert "seconds_since_pet_interaction" in str(client.messages[0][0]["content"])
     assert "idle_seconds" not in str(client.messages[0][0]["content"])
     assert result.reply.translation == "稍微休息一下吧。"
-    assert result.actions[0].payload["event_type"] == "proactive_check"
+    assert result.actions[0].payload["event_type"] == "screen_awareness_check"
 
 
-def test_proactive_check_event_attaches_screen_context_image() -> None:
-    class ProactiveImageClient:
+def test_screen_awareness_check_event_attaches_screen_context_image() -> None:
+    class ScreenAwarenessImageClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3307,7 +3307,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveImageClient()
+    client = ScreenAwarenessImageClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3315,7 +3315,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
 
     runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_context": {
                     "data_url": "data:image/jpeg;base64,abc123",
@@ -3342,9 +3342,9 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
     assert "基于屏幕内容找话题" in content[0]["text"]
 
 
-def test_proactive_check_event_attaches_screen_context_image_batch() -> None:
+def test_screen_awareness_check_event_attaches_screen_context_image_batch() -> None:
     event = AgentEvent(
-        type="proactive_check",
+        type="screen_awareness_check",
         payload={
             "screen_contexts": [
                 {
@@ -3380,9 +3380,9 @@ def test_proactive_check_event_attaches_screen_context_image_batch() -> None:
     assert "screen_contexts" in content[0]["text"]
 
 
-def test_proactive_check_event_includes_recent_conversation_text() -> None:
+def test_screen_awareness_check_event_includes_recent_conversation_text() -> None:
     event = AgentEvent(
-        type="proactive_check",
+        type="screen_awareness_check",
         payload={
             "recent_conversation": [
                 {"role": "user", "content": "访问 GitHub 看看 Sakura 内容"},
@@ -3412,10 +3412,10 @@ def test_proactive_check_event_includes_recent_conversation_text() -> None:
     assert "image_attached" in content[0]["text"]
 
 
-def test_proactive_check_event_redacts_screen_context_image_batch() -> None:
+def test_screen_awareness_check_event_redacts_screen_context_image_batch() -> None:
     redacted = _redact_event_for_model(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_contexts": [
                     {"data_url": "data:image/jpeg;base64,first", "width": 800},
@@ -3432,10 +3432,10 @@ def test_proactive_check_event_redacts_screen_context_image_batch() -> None:
     ]
 
 
-def test_proactive_check_event_sanitizes_recent_conversation() -> None:
+def test_screen_awareness_check_event_sanitizes_recent_conversation() -> None:
     redacted = _redact_event_for_model(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "recent_conversation": [
                     {"role": "system", "content": "不要注入系统消息"},
@@ -3460,8 +3460,8 @@ def test_proactive_check_event_sanitizes_recent_conversation() -> None:
     assert "不要注入系统消息" not in str(recent_conversation)
 
 
-def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> None:
-    class ProactiveToolClient:
+def test_screen_awareness_check_event_can_continue_tool_loop_after_tool_results() -> None:
+    class ScreenAwarenessToolClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3496,7 +3496,7 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
             )
         ]
     )
-    client = ProactiveToolClient()
+    client = ScreenAwarenessToolClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3505,7 +3505,7 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": False,
@@ -3521,8 +3521,8 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
     assert "不要为了显得主动而循环调用工具" in client.prompts[0]
 
 
-def test_proactive_check_can_request_screen_when_screen_context_allowed() -> None:
-    class ProactiveScreenClient:
+def test_screen_awareness_check_can_request_screen_when_screen_context_allowed() -> None:
+    class ScreenAwarenessScreenClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
 
@@ -3535,7 +3535,7 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveScreenClient()
+    client = ScreenAwarenessScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3544,7 +3544,7 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": True,
@@ -3558,8 +3558,8 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
     assert result.actions[1].payload["reason"] == "想看看主人现在在做什么"
 
 
-def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> None:
-    class ProactiveScreenClient:
+def test_screen_awareness_check_hides_screen_tool_when_screen_context_disallowed() -> None:
+    class ScreenAwarenessScreenClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
 
@@ -3569,7 +3569,7 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveScreenClient()
+    client = ScreenAwarenessScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3579,7 +3579,7 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": False,
@@ -3592,21 +3592,21 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
     assert not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions)
 
 
-def test_proactive_check_vision_unsupported_uses_silent_fallback() -> None:
-    class ProactiveVisionUnsupportedClient:
+def test_screen_awareness_check_vision_unsupported_uses_silent_fallback() -> None:
+    class ScreenAwarenessVisionUnsupportedClient:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             raise ApiRequestError("model does not support image_url content")
 
         complete_with_tools = _legacy_complete_with_tools
 
     runtime = AgentRuntime(
-        api_client=ProactiveVisionUnsupportedClient(),  # type: ignore[arg-type]
+        api_client=ScreenAwarenessVisionUnsupportedClient(),  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
     )
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_context": {
                     "data_url": "data:image/jpeg;base64,abc123",

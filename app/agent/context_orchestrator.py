@@ -69,7 +69,7 @@ def build_context_request(
         character_id=character_id.strip(),
         character_name=character_name.strip(),
         source=source if source in {"chat", "event", "confirmed_action"} else "chat",  # type: ignore[arg-type]
-        mode=mode if mode in {"normal", "proactive"} else "normal",  # type: ignore[arg-type]
+        mode=mode if mode in {"normal", "screen_awareness"} else "normal",  # type: ignore[arg-type]
         event_type=event_type.strip(),
         step_index=max(0, step_index),
         remaining_steps=max(0, remaining_steps),

@@ -376,22 +376,13 @@ class TestVisionFallback:
         assert result.visual_observation["summary"] == "截图里是模型设置页。"
 
 
-class TestProactiveEventFlow:
+class TestScreenAwarenessEventFlow:
     """主动事件流程验证"""
 
     def test_unsupported_event_type_returns_fallback(self) -> None:
         runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
         result = runtime.handle_event(AgentEvent(type="unknown_event", payload={}))
         assert len(result.reply.segments) > 0
-
-    def test_proactive_check_enters_tool_loop(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(client, _dummy_system_prompt())
-        event = AgentEvent(type="proactive_check", payload={
-            "screen_context_allowed": False, "recent_conversation": [],
-        })
-        runtime.handle_event(event)
-        assert client.complete_with_tools.called
 
     def test_screen_awareness_check_enters_tool_loop(self) -> None:
         client = _dummy_api_client()
@@ -410,6 +401,31 @@ class TestProactiveEventFlow:
         })
         runtime.handle_event(event)
         assert client.chat.called
+
+
+def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.agent.runtime as runtime_module
+
+    logs = []
+    monkeypatch.setattr(
+        runtime_module,
+        "log_event",
+        lambda channel, message, payload=None, **kwargs: logs.append(
+            (channel, message, payload)
+        ),
+    )
+    client = _dummy_api_client()
+    runtime = AgentRuntime(client, _dummy_system_prompt())
+
+    with pytest.raises(ValueError, match="不支持的主动事件类型：proactive_check"):
+        runtime.handle_event(AgentEvent(type="proactive_check", payload={}))
+    assert not client.complete_with_tools.called
+    assert client.mock_calls == []
+    assert (
+        "AgentRuntime",
+        "拒绝退役主动事件",
+        {"event_type": "proactive_check", "handler": "AgentRuntime.handle_event"},
+    ) in logs
 
 
 class TestAgentRuntimeBasics:

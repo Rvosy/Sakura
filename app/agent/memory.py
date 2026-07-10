@@ -1717,7 +1717,7 @@ def looks_like_sensitive_memory(content: str) -> bool:
 
 
 def _query_needs_procedural_memory(query: str, mode: str) -> bool:
-    if mode in {"tool", "proactive"}:
+    if mode in {"tool", "screen_awareness"}:
         return True
     text = query.lower()
     keywords = (

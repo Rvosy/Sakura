@@ -44,7 +44,7 @@ class ContextRequest:
     character_id: str = ""
     character_name: str = ""
     source: Literal["chat", "event", "confirmed_action"] = "chat"
-    mode: Literal["normal", "proactive"] = "normal"
+    mode: Literal["normal", "screen_awareness"] = "normal"
     event_type: str = ""
     step_index: int = 0
     remaining_steps: int = 0

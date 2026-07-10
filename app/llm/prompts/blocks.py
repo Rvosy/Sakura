@@ -101,7 +101,7 @@ def build_segment_protocol(
     return render_blocks(blocks)
 
 
-def build_proactive_check_segment_rules() -> str:
+def build_screen_awareness_check_segment_rules() -> str:
     return "\n".join(
         [
             "- 输出 1-4 段自然小消息；内容少就少分段，信息丰富才展开。",
@@ -132,7 +132,7 @@ def context_acquisition_strategy_block(*, allow_screen_observation: bool) -> Pro
     return PromptBlock(None, "主动获取上下文策略：\n" + "\n".join(rules))
 
 
-def proactive_reply_decision_flow_block() -> PromptBlock:
+def screen_awareness_reply_decision_flow_block() -> PromptBlock:
     return PromptBlock(
         "主动屏幕感知回复决策流程",
         "\n".join(
@@ -147,7 +147,7 @@ def proactive_reply_decision_flow_block() -> PromptBlock:
     )
 
 
-def proactive_scene_strategy_block() -> PromptBlock:
+def screen_awareness_scene_strategy_block() -> PromptBlock:
     return PromptBlock(
         "主动屏幕感知场景策略",
         "\n".join(
@@ -163,7 +163,7 @@ def proactive_scene_strategy_block() -> PromptBlock:
     )
 
 
-def proactive_web_research_rules_block() -> PromptBlock:
+def screen_awareness_web_research_rules_block() -> PromptBlock:
     """主动屏幕感知可用的后台 Web 搜索边界。"""
 
     return PromptBlock(
@@ -182,7 +182,7 @@ def proactive_web_research_rules_block() -> PromptBlock:
     )
 
 
-def proactive_rules_block(*, include_tool_rules: bool = False) -> PromptBlock:
+def screen_awareness_rules_block(*, include_tool_rules: bool = False) -> PromptBlock:
     rules = [
         "- 这是低打扰主动屏幕感知，不是用户主动提问；核心目标是根据一段时间内的屏幕变化找自然话题，不要把每次截图都当成新话题。",
         "- recent_conversation 是最近完整对话历史，不只是 Sakura 自己的上一句；用它判断上下文、进展、已给建议和重复话题。",
@@ -208,7 +208,7 @@ def proactive_rules_block(*, include_tool_rules: bool = False) -> PromptBlock:
     return PromptBlock("主动屏幕感知核心规则", "\n".join(rules))
 
 
-def proactive_reply_examples_block() -> PromptBlock:
+def screen_awareness_reply_examples_block() -> PromptBlock:
     return PromptBlock(
         "主动屏幕感知回复示例",
         "\n".join(

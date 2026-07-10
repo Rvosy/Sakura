@@ -59,7 +59,7 @@ from app.llm.prompt_templates import (
     build_agent_reply_protocol,
     build_context_acquisition_strategy,
     build_event_system_prompt,
-    build_proactive_check_tool_system_prefix,
+    build_screen_awareness_check_tool_system_prefix,
     build_segmented_reply_instruction,
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
@@ -478,7 +478,7 @@ class AgentRuntime:
         *,
         allow_screen_observation: bool,
         turn_started_at: float,
-        proactive_mode: bool = False,
+        screen_awareness_mode: bool = False,
         context_source: str = "chat",
         event_type: str = "",
         event_payload: dict[str, Any] | None = None,
@@ -535,7 +535,7 @@ class AgentRuntime:
                 request = build_context_request(
                     working_messages,
                     source=context_source,
-                    mode="proactive" if proactive_mode else "normal",
+                    mode="screen_awareness" if screen_awareness_mode else "normal",
                     event_type=event_type,
                     step_index=step_index,
                     remaining_steps=loop_settings.max_agent_steps_per_turn - step_index - 1,
@@ -558,12 +558,12 @@ class AgentRuntime:
                     memory_fragments=turn_memory_fragments,
                 )
                 prompt_build = (
-                    self._build_proactive_tool_prompt_result(
+                    self._build_screen_awareness_tool_prompt_result(
                         snapshot,
                         extra_instructions=planning_extra_instructions,
                         include_visual_observation=include_visual_observation,
                     )
-                    if proactive_mode
+                    if screen_awareness_mode
                     else self._build_tool_prompt_result(
                         snapshot,
                         allow_screen_observation=allow_screen_observation,
@@ -1140,7 +1140,14 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        if event.type not in {"reminder_due", "screen_awareness_check", "proactive_check"}:
+        if event.type == "proactive_check":
+            log_event(
+                "AgentRuntime",
+                "拒绝退役主动事件",
+                {"event_type": event.type, "handler": "AgentRuntime.handle_event"},
+            )
+            raise ValueError(f"不支持的主动事件类型：{event.type}")
+        if event.type not in {"reminder_due", "screen_awareness_check"}:
             return AgentResult(reply=parse_chat_reply("未対応のイベントだよ。"))
 
         log_event("AgentRuntime", "处理主动事件", {"event": {"type": event.type, "payload": event.payload}})
@@ -1152,7 +1159,7 @@ class AgentRuntime:
                 "event_payload": event.payload,
             },
         )
-        if event.type in {"screen_awareness_check", "proactive_check"}:
+        if event.type == "screen_awareness_check":
             screen_context_allowed = bool(event.payload.get("screen_context_allowed"))
             allow_screen_observation = (
                 screen_context_allowed
@@ -1162,12 +1169,12 @@ class AgentRuntime:
                 event_messages,
                 allow_screen_observation=allow_screen_observation,
                 turn_started_at=time.perf_counter(),
-                proactive_mode=True,
+                screen_awareness_mode=True,
                 context_source="event",
                 event_type=event.type,
                 event_payload=event.payload,
                 initial_actions=[event_action],
-                vision_unsupported_reply=_build_proactive_vision_unsupported_reply(),
+                vision_unsupported_reply=_build_screen_awareness_vision_unsupported_reply(),
                 progress_callback=progress_callback,
                 cancel_checker=cancel_checker,
             )
@@ -1175,7 +1182,7 @@ class AgentRuntime:
         snapshot = self._build_single_context_snapshot(
             event_messages,
             source="event",
-            mode="proactive" if event.type in {"screen_awareness_check", "proactive_check"} else "normal",
+            mode="screen_awareness" if event.type == "screen_awareness_check" else "normal",
             event_type=event.type,
             event_payload=event.payload,
         )
@@ -1196,7 +1203,7 @@ class AgentRuntime:
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
                 log_event("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
-                return AgentResult(reply=_build_proactive_vision_unsupported_reply())
+                return AgentResult(reply=_build_screen_awareness_vision_unsupported_reply())
             raise
         return AgentResult(
             reply=reply,
@@ -1342,14 +1349,14 @@ class AgentRuntime:
             visible_browser_mode=visible_browser_mode,
         ).system_prompt
 
-    def _build_proactive_tool_prompt_result(
+    def _build_screen_awareness_tool_prompt_result(
         self,
         snapshot: ContextSnapshot | None,
         *,
         extra_instructions: str = "",
         include_visual_observation: bool = False,
     ):
-        proactive_rules = build_proactive_check_tool_system_prefix(
+        screen_awareness_rules = build_screen_awareness_check_tool_system_prefix(
             "",
             self.reply_tones,
             self.reply_portraits,
@@ -1359,7 +1366,7 @@ class AgentRuntime:
         )
         sections = [
             *self._persona_sections(),
-            PromptSection("agent.proactive", proactive_rules),
+            PromptSection("agent.screen_awareness", screen_awareness_rules),
             *(
                 [PromptSection("reply.visual_observation", _VISUAL_OBSERVATION_REPLY_INSTRUCTION)]
                 if include_visual_observation
@@ -1367,11 +1374,11 @@ class AgentRuntime:
             ),
         ]
         return self._prompt_runtime().build(
-            PromptRecipe("proactive_tool_loop", sections), snapshot
+            PromptRecipe("screen_awareness_tool_loop", sections), snapshot
         )
 
-    def _build_proactive_tool_system_prompt(self, extra_instructions: str = "") -> str:
-        return self._build_proactive_tool_prompt_result(
+    def _build_screen_awareness_tool_system_prompt(self, extra_instructions: str = "") -> str:
+        return self._build_screen_awareness_tool_prompt_result(
             None, extra_instructions=extra_instructions
         ).system_prompt
 
@@ -2230,7 +2237,7 @@ def _normalize_image_detail(value: Any, *, default: str = "low") -> str:
 def _format_event_for_model(event: AgentEvent) -> str:
     instruction = (
         "主动屏幕感知事件如下，请基于屏幕内容找话题：可以评论变化、接续任务、询问卡点、轻量协助或保持安静感；不要把时间或停留时长自动泛化成休息建议。"
-        if event.type in {"screen_awareness_check", "proactive_check"}
+        if event.type == "screen_awareness_check"
         else "主动事件如下，请生成要直接说给用户听的提醒："
     )
     return instruction + "\n" + json.dumps(
@@ -2304,7 +2311,7 @@ def _redact_screen_context_for_model(screen_context: dict[str, Any]) -> dict[str
     return redacted_context
 
 
-def _build_proactive_vision_unsupported_reply() -> ChatReply:
+def _build_screen_awareness_vision_unsupported_reply() -> ChatReply:
     return ChatReply([])
 
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import app.llm.prompt_templates as prompt_templates
 from app.agent.actions import AgentEvent, AgentResult
 from app.agent.runtime import AgentRuntime
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.llm.chat_reply import parse_chat_reply
 from app.llm.prompt_templates import (
     build_event_system_prompt,
+    build_screen_awareness_check_reply_protocol,
+    build_screen_awareness_check_tool_system_prefix,
     build_screen_awareness_check_tool_system_prompt,
     build_screen_awareness_tool_loop_rules,
     build_segmented_reply_instruction,
@@ -15,7 +18,7 @@ from app.llm.prompt_templates import (
 from app.plugins.models import PromptPatchContribution
 
 
-def _build_proactive_tool_prompt() -> str:
+def _build_screen_awareness_tool_prompt() -> str:
     return build_screen_awareness_check_tool_system_prompt(
         "角色设定",
         ["中性"],
@@ -29,8 +32,8 @@ def _build_proactive_tool_prompt() -> str:
     )
 
 
-def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
-    prompt = _build_proactive_tool_prompt()
+def test_screen_awareness_check_tool_prompt_contains_background_web_rules() -> None:
+    prompt = _build_screen_awareness_tool_prompt()
 
     assert "【主动屏幕感知后台 Web 搜索规则】" in prompt
     assert "web__web_search" in prompt
@@ -40,7 +43,7 @@ def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
     assert "不主动做人肉式识别" in prompt
 
 
-def test_proactive_check_tool_prompt_places_web_rules_before_loop_limits() -> None:
+def test_screen_awareness_check_tool_prompt_places_web_rules_before_loop_limits() -> None:
     prompt = build_screen_awareness_check_tool_system_prompt(
         "角色设定",
         None,
@@ -60,8 +63,8 @@ def test_proactive_check_tool_prompt_places_web_rules_before_loop_limits() -> No
     assert scene_index < web_index < loop_index
 
 
-def test_proactive_check_tool_prompt_requires_history_and_image_fusion() -> None:
-    prompt = _build_proactive_tool_prompt()
+def test_screen_awareness_check_tool_prompt_requires_history_and_image_fusion() -> None:
+    prompt = _build_screen_awareness_tool_prompt()
 
     assert "recent_conversation 当作最近完整对话历史" in prompt
     assert "用户和 Sakura 的最近对话" in prompt
@@ -83,7 +86,7 @@ def test_reminder_event_prompt_does_not_include_background_web_research_rules() 
     assert "web__fetch_url" not in prompt
 
 
-def test_proactive_tool_loop_rules_contains_background_web_research_rules() -> None:
+def test_screen_awareness_tool_loop_rules_contains_background_web_research_rules() -> None:
     rules = build_screen_awareness_tool_loop_rules()
 
     assert "【主动屏幕感知后台 Web 搜索规则】" in rules
@@ -111,12 +114,12 @@ def test_agent_reply_protocol_guides_ja_translation_self_check() -> None:
 
 
 def test_prompt_lengths_stay_compact() -> None:
-    proactive_tool_prompt = _build_proactive_tool_prompt()
-    proactive_event_prompt = build_event_system_prompt(
+    screen_awareness_tool_prompt = _build_screen_awareness_tool_prompt()
+    screen_awareness_event_prompt = build_event_system_prompt(
         "角色设定",
         ["中性"],
         ["站立待机"],
-        event_type="proactive_check",
+        event_type="screen_awareness_check",
     )
     reminder_prompt = build_event_system_prompt(
         "角色设定",
@@ -125,8 +128,8 @@ def test_prompt_lengths_stay_compact() -> None:
         event_type="reminder_due",
     )
 
-    assert len(proactive_tool_prompt) < 3600
-    assert len(proactive_event_prompt) < 2200
+    assert len(screen_awareness_tool_prompt) < 3600
+    assert len(screen_awareness_event_prompt) < 2200
     assert len(reminder_prompt) < 700
 
 
@@ -166,16 +169,16 @@ def test_agent_runtime_prompt_patches_apply_to_prompt_builders() -> None:
     ]
 
     tool_prompt = AgentRuntime._build_tool_system_prompt(runtime)
-    proactive_prompt = AgentRuntime._build_proactive_tool_system_prompt(runtime)
+    screen_awareness_prompt = AgentRuntime._build_screen_awareness_tool_system_prompt(runtime)
     event_prompt = AgentRuntime._build_event_reply_prompt(runtime, "reminder_due")
     final_prompt = AgentRuntime._build_final_reply_prompt(runtime)
 
-    for prompt in [tool_prompt, proactive_prompt, event_prompt, final_prompt]:
+    for prompt in [tool_prompt, screen_awareness_prompt, event_prompt, final_prompt]:
         assert "插件系统补丁" in prompt
         assert "回复时保留插件约定" in prompt
 
 
-def test_proactive_event_does_not_pass_duplicate_loop_rules(monkeypatch) -> None:
+def test_screen_awareness_event_does_not_pass_duplicate_loop_rules(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_run_tool_loop(self: AgentRuntime, messages: list[dict], **kwargs: object) -> AgentResult:
@@ -193,7 +196,7 @@ def test_proactive_event_does_not_pass_duplicate_loop_rules(monkeypatch) -> None
 
     runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_context_allowed": True,
                 "recent_conversation": "用户和 Sakura 的最近对话",
@@ -202,5 +205,24 @@ def test_proactive_event_does_not_pass_duplicate_loop_rules(monkeypatch) -> None
         )
     )
 
-    assert captured["proactive_mode"] is True
+    assert captured["screen_awareness_mode"] is True
     assert "planning_extra_instructions" not in captured
+
+
+def test_prompt_templates_only_export_screen_awareness_helpers() -> None:
+    assert callable(build_screen_awareness_check_reply_protocol)
+    assert callable(build_screen_awareness_check_tool_system_prefix)
+    assert callable(build_screen_awareness_check_tool_system_prompt)
+
+    for name in (
+        "build_proactive_check_reply_protocol",
+        "build_proactive_check_tool_system_prefix",
+        "build_proactive_check_tool_system_prompt",
+        "build_proactive_reply_decision_flow",
+        "build_proactive_reply_examples",
+        "build_proactive_rules",
+        "build_proactive_scene_strategy_rules",
+        "build_proactive_tool_loop_rules",
+        "build_proactive_web_research_rules",
+    ):
+        assert not hasattr(prompt_templates, name)
