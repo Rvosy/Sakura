@@ -4671,6 +4671,71 @@ def test_tauri_settings_dispatches_studio_launch_callback() -> None:
     assert result["message"] == "角色工作室已打开。"
 
 
+def test_tauri_settings_dispatches_studio_launch_refreshes_characters() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    root = _ui_runtime_root("tauri_studio_refresh")
+    character_dir = root / "characters" / "demo"
+    character_dir.mkdir(parents=True)
+    (character_dir / "card.md").write_text("card", encoding="utf-8")
+    (character_dir / "portrait.png").write_bytes(b"png")
+    (character_dir / "character.json").write_text(
+        json.dumps(
+            {
+                "id": "demo",
+                "display_name": "Demo",
+                "card": "card.md",
+                "portrait": {"default": "portrait.png"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = TauriSettingsProcess(
+        base_dir=root,
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: {
+            "refresh_characters": True,
+            "current_character_id": "",
+        },
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": ""})
+
+    assert result["current_character_id"] == "demo"
+    assert result["characters"][0]["id"] == "demo"
+    assert result["message"] == "角色列表已刷新。"
+
+
+def test_tauri_settings_dispatches_studio_launch_refreshes_empty_characters() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    root = _ui_runtime_root("tauri_studio_refresh_empty")
+    process = TauriSettingsProcess(
+        base_dir=root,
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: {
+            "refresh_characters": True,
+            "current_character_id": "",
+        },
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": ""})
+
+    assert result["current_character_id"] == ""
+    assert result["characters"] == []
+    assert result["message"] == "角色列表已刷新。"
+
+
 def test_tauri_settings_dispatches_studio_launch_failure() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -4702,6 +4767,13 @@ def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
     assert "fields.characterEditorButton.disabled = characterArchiveBusy;" in source
     assert "characterStudioCurrentButton" not in source
     assert "characterStudioOpenButton" not in source
+    assert 'typeof result?.current_character_id === "string"' in source
+    assert "if (applyTheme && selectedCharacter()) {" in source
+    studio_launch_source = source.split("async function launchCharacterStudio()", 1)[1].split(
+        "function resourcesSnapshot()", 1
+    )[0]
+    assert "applyCharacterRpcResult(result, { dirty: true, applyTheme: true });" in studio_launch_source
+    assert "} else if (result?.message) {" in studio_launch_source
 
 
 def test_tauri_studio_frontend_matches_settings_language() -> None:
@@ -4727,6 +4799,8 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "confirmDiscardChanges" in source
     assert "function editorSnapshot()" in source
     assert "function validateThemeInputs()" in source
+    assert "function validateExpressionInputs()" in source
+    assert source.count("!validateThemeInputs() || !validateExpressionInputs()") == 2
     assert "{ dirty: true }" in source
     assert "displayName === null" in source
     assert "hostCall(\"studio.list_characters\"" not in source
@@ -4747,6 +4821,10 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "refreshSelect(fields.studioCharacterSelect)" in source
     assert 'done.className = "primary-button"' in source
     assert 'event.key === "ArrowDown"' in source
+    assert 'event.key === "Tab"' in source
+    assert 'trigger.setAttribute("aria-labelledby"' in source
+    assert 'menu.addEventListener("focusout"' in source
+    assert "fields.studioCharacterSelect.__customSelect?.focus();" in source
     assert index.count("<svg") >= 4
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles
@@ -5668,12 +5746,71 @@ def test_main_detects_missing_character_packages() -> None:
     assert not sakura_main._character_packages_missing(root)
 
 
+def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import main as sakura_main
+
+    root = _ui_runtime_root("first_run_studio")
+    calls: list[tuple[str, object]] = []
+    studio_processes: list[object] = []
+
+    class EventLoopStub:
+        def exec(self) -> None:
+            calls.append(("loop_exec", None))
+            studio_processes[0].closed.emit()  # type: ignore[attr-defined]
+
+        def quit(self) -> None:
+            calls.append(("loop_quit", None))
+
+    class TauriStudioProcessStub:
+        def __init__(
+            self,
+            base_dir: Path,
+            *,
+            initial_character_id: str = "",
+            parent=None,
+        ) -> None:  # type: ignore[no-untyped-def]
+            calls.append(("init", (base_dir, initial_character_id, parent)))
+            self.closed = _SignalStub()
+            self.failed = _SignalStub()
+            studio_processes.append(self)
+
+        def start(self) -> bool:
+            calls.append(("start", None))
+            return True
+
+        def shutdown(self) -> None:
+            calls.append(("shutdown", None))
+
+    monkeypatch.setattr(sakura_main, "QEventLoop", EventLoopStub)
+    monkeypatch.setattr(sakura_main, "TauriStudioProcess", TauriStudioProcessStub)
+    monkeypatch.setattr(
+        sakura_main,
+        "resolve_tauri_studio_binary",
+        lambda _base_dir: Path("sakura-studio"),
+    )
+
+    result = sakura_main._open_first_run_studio(root, "sakura")
+
+    assert result == {
+        "refresh_characters": True,
+        "current_character_id": "sakura",
+    }
+    assert calls == [
+        ("init", (root, "sakura", None)),
+        ("start", None),
+        ("loop_exec", None),
+        ("loop_quit", None),
+        ("shutdown", None),
+    ]
+
+
 def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import main as sakura_main
     from app.config.models import ModelSelectionSettings
 
     root = _ui_runtime_root("first_run_tauri_layout")
     saved_system_values: dict[str, dict[str, object]] = {}
+    studio_launchers: list[object] = []
     app_context = object()
     tts_settings = _minimal_tts_settings()
     result = _build_tauri_settings_result(
@@ -5767,12 +5904,13 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
             return type("CharacterProfileStub", (), {"id": "sakura"})()
 
     class TauriSettingsProcessStub:
-        def __init__(self, *_args, **_kwargs) -> None:
+        def __init__(self, *_args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             self.completed = _SignalStub()
             self.apply_requested = _SignalStub()
             self.cancelled = _SignalStub()
             self.failed = _SignalStub()
             self.shutdown_called = False
+            studio_launchers.append(kwargs.get("studio_launcher"))
 
         def start(self) -> bool:
             self.completed.emit(result)
@@ -5802,6 +5940,8 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     monkeypatch.setattr(sakura_main, "build_initial_app_context", lambda _base_dir: app_context)
 
     assert sakura_main._open_first_run_settings(root) is app_context
+    assert len(studio_launchers) == 1
+    assert callable(studio_launchers[0])
     assert saved_system_values["ui"] == {
         "portrait_scale_percent": 155,
         "control_panel_width": 730,

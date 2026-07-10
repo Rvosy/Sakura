@@ -99,15 +99,30 @@ function enhanceSelect(select) {
   const trigger = document.createElement("button");
   trigger.type = "button";
   trigger.className = "custom-select__trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
   const label = document.createElement("span");
   label.className = "custom-select__label";
+  const controlLabel = select.id
+    ? document.querySelector(`label[for="${select.id}"]`)
+    : null;
+  if (controlLabel) {
+    controlLabel.id = controlLabel.id || `${select.id}-label`;
+    label.id = `${select.id}-value`;
+    trigger.setAttribute("aria-labelledby", `${controlLabel.id} ${label.id}`);
+  }
   const caret = document.createElement("span");
   caret.className = "custom-select__caret";
   caret.setAttribute("aria-hidden", "true");
   trigger.append(label, caret);
   const menu = document.createElement("div");
   menu.className = "custom-select__menu";
+  menu.id = "studio-character-menu";
   menu.setAttribute("role", "listbox");
+  if (controlLabel) {
+    menu.setAttribute("aria-labelledby", controlLabel.id);
+  }
+  trigger.setAttribute("aria-controls", menu.id);
 
   select.parentNode.insertBefore(wrapper, select);
   wrapper.append(trigger, select);
@@ -124,10 +139,13 @@ function enhanceSelect(select) {
       const item = document.createElement("div");
       item.className = "custom-select__option";
       item.setAttribute("role", "option");
+      item.tabIndex = -1;
       item.textContent = option.textContent;
       if (option.value === select.value) {
         item.classList.add("is-selected");
         item.setAttribute("aria-selected", "true");
+      } else {
+        item.setAttribute("aria-selected", "false");
       }
       if (option.disabled) {
         item.classList.add("is-disabled");
@@ -143,9 +161,34 @@ function enhanceSelect(select) {
         }
         syncTrigger();
         closeMenu();
+        trigger.focus();
+      });
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          focusRelativeMenuOption(item, event.key === "ArrowDown" ? 1 : -1);
+        } else if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          item.click();
+        } else if (event.key === "Tab") {
+          event.preventDefault();
+          closeMenu();
+          trigger.focus();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closeMenu();
+          trigger.focus();
+        }
       });
       menu.append(item);
     });
+  }
+
+  function focusRelativeMenuOption(current, direction) {
+    const items = Array.from(menu.querySelectorAll(".custom-select__option:not(.is-disabled)"));
+    const currentIndex = items.indexOf(current);
+    const nextIndex = Math.min(items.length - 1, Math.max(0, currentIndex + direction));
+    items[nextIndex]?.focus();
   }
 
   function positionMenu() {
@@ -175,6 +218,13 @@ function enhanceSelect(select) {
     }
   }
 
+  menu.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (!menu.contains(next) && next !== trigger) {
+      closeMenu();
+    }
+  });
+
   function openMenu() {
     if (select.disabled) {
       return;
@@ -184,14 +234,18 @@ function enhanceSelect(select) {
     menu.classList.add("is-open");
     positionMenu();
     wrapper.classList.add("is-open");
+    trigger.setAttribute("aria-expanded", "true");
     document.addEventListener("pointerdown", onDocumentPointer, true);
     document.addEventListener("keydown", onKeydown, true);
     window.addEventListener("scroll", closeMenu, true);
     window.addEventListener("resize", closeMenu, true);
+    const selected = menu.querySelector(".custom-select__option.is-selected:not(.is-disabled)");
+    (selected || menu.querySelector(".custom-select__option:not(.is-disabled)"))?.focus();
   }
 
   function closeMenu() {
     wrapper.classList.remove("is-open");
+    trigger.setAttribute("aria-expanded", "false");
     menu.classList.remove("is-open");
     menu.remove();
     document.removeEventListener("pointerdown", onDocumentPointer, true);
@@ -228,7 +282,10 @@ function enhanceSelect(select) {
     }
   });
   select.addEventListener("change", syncTrigger);
-  select.__customSelect = { refresh: syncTrigger };
+  select.__customSelect = {
+    refresh: syncTrigger,
+    focus: () => trigger.focus(),
+  };
   syncTrigger();
 }
 
@@ -834,6 +891,7 @@ async function selectCharacter(characterId) {
       throw error;
     }
   });
+  fields.studioCharacterSelect.__customSelect?.focus();
 }
 
 async function createCharacter() {
@@ -903,12 +961,51 @@ function validateThemeInputs() {
   return false;
 }
 
+function validateExpressionInputs() {
+  const rows = Array.from(fields.expressionList.querySelectorAll(".expression-row"));
+  const labels = new Set();
+  rows.forEach((row) => {
+    row.querySelectorAll("input").forEach((input) => input.classList.remove("is-invalid"));
+  });
+  for (const row of rows) {
+    const labelInput = row.querySelector("[data-expression-label]");
+    const pathInput = row.querySelector("[data-expression-path]");
+    const label = labelInput.value.trim();
+    const path = pathInput.value.trim();
+    let message = "";
+    let focusTarget = labelInput;
+    if (!label && !path) {
+      message = "请填写或删除空的表情立绘行。";
+      labelInput.classList.add("is-invalid");
+      pathInput.classList.add("is-invalid");
+    } else if (!label) {
+      message = "请填写表情标签。";
+      labelInput.classList.add("is-invalid");
+    } else if (!path) {
+      message = `请填写表情「${label}」的图片路径。`;
+      pathInput.classList.add("is-invalid");
+      focusTarget = pathInput;
+    } else if (labels.has(label)) {
+      message = `表情标签重复：${label}`;
+      labelInput.classList.add("is-invalid");
+    }
+    if (message) {
+      switchPage("portrait");
+      focusTarget.focus();
+      setError(message);
+      return false;
+    }
+    labels.add(label);
+  }
+  return true;
+}
+
 async function saveCharacter() {
   if (!currentDoc || !currentPackageDir) {
     setError("请先打开或新建角色。");
     return;
   }
-  if (!validateThemeInputs()) {
+  if (!validateThemeInputs() || !validateExpressionInputs()) {
     return;
   }
   await runBusy(async () => {
@@ -933,6 +1030,9 @@ async function saveCharacter() {
 async function exportCharacter() {
   if (!currentDoc || !currentPackageDir) {
     setError("请先打开或新建角色。");
+    return;
+  }
+  if (!validateThemeInputs() || !validateExpressionInputs()) {
     return;
   }
   const defaultPath = `${fields.characterId.value.trim() || "character"}.char`;

@@ -464,7 +464,9 @@ textarea {
   cursor: pointer;
 }
 
-.custom-select__option:hover {
+.custom-select__option:hover,
+.custom-select__option:focus-visible {
+  outline: none;
   background: var(--tint-faint);
   color: var(--sakura-primary);
 }

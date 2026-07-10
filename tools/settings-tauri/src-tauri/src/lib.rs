@@ -16,7 +16,7 @@ const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
 const CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
 const PROTOCOL_VERSION: u8 = 2;
 const DEFAULT_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const CHARACTER_ARCHIVE_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const LONG_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -69,19 +69,32 @@ impl HostRpc {
             return Err(error);
         }
 
-        match rx.recv_timeout(host_rpc_timeout(method)) {
-            Ok(response) if response.ok => Ok(response.result.unwrap_or(Value::Null)),
-            Ok(response) => Err(response
+        let response = match host_rpc_timeout(method) {
+            Some(timeout) => match rx.recv_timeout(timeout) {
+                Ok(response) => response,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC timed out".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC channel disconnected".to_string());
+                }
+            },
+            None => match rx.recv() {
+                Ok(response) => response,
+                Err(_) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC channel disconnected".to_string());
+                }
+            },
+        };
+        if response.ok {
+            Ok(response.result.unwrap_or(Value::Null))
+        } else {
+            Err(response
                 .error
-                .unwrap_or_else(|| "host RPC returned an error".to_string())),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.remove_pending(&id);
-                Err("host RPC timed out".to_string())
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.remove_pending(&id);
-                Err("host RPC channel disconnected".to_string())
-            }
+                .unwrap_or_else(|| "host RPC returned an error".to_string()))
         }
     }
 
@@ -132,12 +145,19 @@ fn settings_result_payload(
     Ok(Value::Object(payload))
 }
 
-fn host_rpc_timeout(method: &str) -> Duration {
+fn host_rpc_timeout(method: &str) -> Option<Duration> {
     match method {
+        "studio.launch" => None,
         "character.import_archive"
         | "character.import_voice_archive"
-        | "character.export_archive" => CHARACTER_ARCHIVE_RPC_TIMEOUT,
-        _ => DEFAULT_HOST_RPC_TIMEOUT,
+        | "character.export_archive" => Some(LONG_HOST_RPC_TIMEOUT),
+        _ => Some(DEFAULT_HOST_RPC_TIMEOUT),
+    }
+}
+
+fn clear_pending_rpcs(pending: &Arc<Mutex<HashMap<String, mpsc::Sender<RpcResponse>>>>) {
+    if let Ok(mut pending) = pending.lock() {
+        pending.clear();
     }
 }
 
@@ -265,6 +285,7 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
                 Err(_) => break,
             }
         }
+        clear_pending_rpcs(&pending);
     });
     Ok((value, rpc))
 }
@@ -332,22 +353,40 @@ mod tests {
     }
 
     #[test]
-    fn uses_long_timeout_for_character_archive_rpc() {
+    fn uses_expected_timeout_for_host_rpc() {
         assert_eq!(
             host_rpc_timeout("character.import_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
         assert_eq!(
             host_rpc_timeout("character.import_voice_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
         assert_eq!(
             host_rpc_timeout("character.export_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
+        assert_eq!(host_rpc_timeout("studio.launch"), None);
         assert_eq!(
             host_rpc_timeout("api.test_connection"),
-            Duration::from_secs(30)
+            Some(Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn clearing_pending_rpcs_disconnects_waiters() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        pending
+            .lock()
+            .expect("pending map should lock")
+            .insert("rpc-1".to_string(), tx);
+
+        clear_pending_rpcs(&pending);
+
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 }

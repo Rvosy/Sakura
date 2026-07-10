@@ -56,7 +56,7 @@ from app.config.character_archive import (
     import_character_archive,
     import_character_voice_archive,
 )
-from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.character_loader import CharacterConfigError, CharacterProfile, CharacterRegistry
 from app.config.defaults import (
     DEFAULT_BASE_URL,
     DEFAULT_PROFILE_ALIAS,
@@ -958,7 +958,7 @@ class TauriSettingsProcess(QObject):
         memory_curation_settings: MemoryCurationSettings | None = None,
         memory_store: Any | None = None,
         plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
-        studio_launcher: Callable[[str | None], bool] | None = None,
+        studio_launcher: Callable[[str | None], bool | Mapping[str, object]] | None = None,
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
@@ -1374,8 +1374,41 @@ class TauriSettingsProcess(QObject):
             if self.studio_launcher is None:
                 raise ValueError("角色工作室启动器不可用。")
             character_id = str(params.get("character_id") or "").strip() or None
-            if not self.studio_launcher(character_id):
+            launch_result = self.studio_launcher(character_id)
+            if not launch_result:
                 raise ValueError("角色工作室未启动，请先构建 Tauri 角色工作室。")
+            if isinstance(launch_result, Mapping) and bool(
+                launch_result.get("refresh_characters")
+            ):
+                preferred_id = str(
+                    launch_result.get("current_character_id") or character_id or ""
+                ).strip()
+                try:
+                    registry = CharacterRegistry(self.base_dir)
+                except CharacterConfigError:
+                    self.character_registry = None
+                    self.current_character = None
+                    return {
+                        "current_character_id": "",
+                        "characters": [],
+                        "message": "角色列表已刷新。",
+                    }
+
+                try:
+                    current = registry.get(preferred_id) if preferred_id else None
+                except CharacterConfigError:
+                    current = None
+                if current is None:
+                    profiles = registry.all()
+                    current = profiles[0] if profiles else None
+                current_id = str(getattr(current, "id", "") or "")
+                self.character_registry = registry
+                self.current_character = current
+                return _character_rpc_result(
+                    registry,
+                    current_id,
+                    message="角色列表已刷新。",
+                )
             return {"message": "角色工作室已打开。"}
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(

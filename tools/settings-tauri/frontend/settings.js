@@ -2190,19 +2190,20 @@ function applyCharacterRpcResult(result, { dirty = true, applyTheme = false } = 
   if (Array.isArray(result?.characters)) {
     request.character.characters = result.characters;
   }
-  if (result?.current_character_id) {
+  const hasCurrentCharacterId = typeof result?.current_character_id === "string";
+  if (hasCurrentCharacterId) {
     request.character.current_character_id = result.current_character_id;
   }
   renderCharacters();
   refreshSelect(fields.characterSelect);
-  if (result?.current_character_id) {
+  if (hasCurrentCharacterId) {
     fields.characterSelect.value = result.current_character_id;
     refreshSelect(fields.characterSelect);
   }
   if (result?.disable_tts) {
     fields.ttsEnabled.checked = false;
   }
-  if (applyTheme) {
+  if (applyTheme && selectedCharacter()) {
     applySelectedCharacterTheme();
   }
   syncTtsState();
@@ -2288,7 +2289,9 @@ async function launchCharacterStudio() {
   await runCharacterArchiveAction(async () => {
     const character = selectedCharacter();
     const result = await hostCall("studio.launch", { character_id: character?.id || "" });
-    if (result?.message) {
+    if (Array.isArray(result?.characters)) {
+      applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
+    } else if (result?.message) {
       notify(result.message, "success");
     }
   });
