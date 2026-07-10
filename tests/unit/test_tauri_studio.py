@@ -51,6 +51,7 @@ def test_resolve_tauri_studio_binary_uses_env_and_platform(monkeypatch, tmp_path
 def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path) -> None:
     from app.config.character_studio import CharacterStudioService
     from app.ui.tauri_studio import build_tauri_studio_request
+    from app.ui.theme import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 
     _write_minimal_character(tmp_path)
 
@@ -60,8 +61,31 @@ def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path
     assert request["nonce"] == "nonce"
     assert request["initial_character_id"] == "sakura"
     assert request["characters"][0]["id"] == "sakura"
-    assert request["theme_fields"]
+    assert request["theme"] == theme_to_mapping(DEFAULT_THEME_SETTINGS)
+    assert request["theme_defaults"] == theme_to_mapping(DEFAULT_THEME_SETTINGS)
+    assert request["theme_fields"] == [
+        {"id": field, "label": label}
+        for field, label, _default in THEME_COLOR_FIELDS
+    ]
     assert CharacterStudioService(tmp_path).list_characters(current_character_id="sakura")[0]["is_current"] is True
+
+
+def test_dispatch_tauri_studio_rpc_picks_screen_color(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_studio as tauri_studio
+
+    monkeypatch.setattr(tauri_studio, "pick_screen_color", lambda: "#112233")
+    assert tauri_studio.dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.pick_screen_color",
+        {},
+    ) == {"color": "#112233"}
+
+    monkeypatch.setattr(tauri_studio, "pick_screen_color", lambda: None)
+    assert tauri_studio.dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.pick_screen_color",
+        {},
+    ) == {"cancelled": True}
 
 
 def test_dispatch_tauri_studio_rpc_routes_core_methods(tmp_path: Path) -> None:

@@ -11,7 +11,8 @@ from typing import Any
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from app.config.character_studio import CharacterStudioService
-from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_to_mapping
+from app.ui.screen_color_picker import pick_screen_color
+from app.ui.theme import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 
 TAURI_STUDIO_BIN_ENV = "SAKURA_TAURI_STUDIO_BIN"
 TAURI_STUDIO_PROTOCOL_VERSION = 1
@@ -52,13 +53,22 @@ def build_tauri_studio_request(
         "initial_character_id": str(initial_character_id or ""),
         "characters": service.list_characters(current_character_id=str(initial_character_id or "")),
         "theme": theme,
-        "theme_fields": list(theme.keys()),
+        "theme_defaults": theme_to_mapping(DEFAULT_THEME_SETTINGS),
+        "theme_fields": [
+            {"id": field, "label": label}
+            for field, label, _default in THEME_COLOR_FIELDS
+        ],
     }
 
 
 def dispatch_tauri_studio_rpc(base_dir: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
     if not method.startswith("studio."):
         raise ValueError(f"未知 Tauri Studio RPC 方法：{method}")
+    if method == "studio.pick_screen_color":
+        color = pick_screen_color()
+        if color is None:
+            return {"cancelled": True}
+        return {"color": color}
     service = CharacterStudioService(base_dir)
     if method == "studio.list_characters":
         current_character_id = str(params.get("current_character_id") or "")
