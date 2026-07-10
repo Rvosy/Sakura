@@ -142,7 +142,7 @@ class TauriStudioProcess(QObject):
         self._process = process
         self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
         process.start()
-        return True
+        return not self._done and self._process is process
 
     def focus_window(self) -> bool:
         from app.ui.tauri_settings import _restore_windows_for_pid
@@ -246,14 +246,26 @@ class TauriStudioProcess(QObject):
         line = TAURI_STUDIO_RPC_RESULT_MARKER + json.dumps(payload, ensure_ascii=False) + "\n"
         process.write(line.encode("utf-8"))
 
-    def _handle_finished(self, _exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+    def _handle_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self._handle_stdout(flush=True)
+        if self._done:
+            self._process = None
+            return
         self._done = True
         self._process = None
+        if exit_status != QProcess.ExitStatus.NormalExit or exit_code != 0:
+            self.failed.emit(
+                "Tauri 角色工作室异常退出"
+                f"（exit_code={exit_code}），请重建角色工作室或检查 {TAURI_STUDIO_BIN_ENV}。"
+            )
+            return
         self.closed.emit()
 
     def _handle_error(self, error: QProcess.ProcessError) -> None:
+        if self._done:
+            return
         self._done = True
+        self._process = None
         self.failed.emit(f"Tauri 角色工作室启动失败：{error.name}")
 
 

@@ -159,3 +159,89 @@ def test_tauri_studio_process_writes_rpc_response_line(tmp_path: Path) -> None:
     assert payload["id"] == "rpc-1"
     assert payload["ok"] is True
     assert payload["result"]["characters"] == []
+
+
+def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_studio as tauri_studio
+
+    binary = tmp_path / "tools" / "studio-tauri" / "src-tauri" / "target" / "debug" / "sakura-studio.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"not executable")
+    failed_to_start = tauri_studio.QProcess.ProcessError.FailedToStart
+
+    class SignalStub:
+        def __init__(self) -> None:
+            self.callbacks = []
+
+        def connect(self, callback) -> None:  # type: ignore[no-untyped-def]
+            self.callbacks.append(callback)
+
+        def emit(self, *args) -> None:  # type: ignore[no-untyped-def]
+            for callback in list(self.callbacks):
+                callback(*args)
+
+    class FakeQProcess:
+        def __init__(self, _parent) -> None:  # type: ignore[no-untyped-def]
+            self.started = SignalStub()
+            self.finished = SignalStub()
+            self.errorOccurred = SignalStub()
+            self.readyReadStandardOutput = SignalStub()
+
+        def setProgram(self, _program: str) -> None:  # noqa: N802
+            pass
+
+        def setArguments(self, _arguments: list[str]) -> None:  # noqa: N802
+            pass
+
+        def setWorkingDirectory(self, _directory: str) -> None:  # noqa: N802
+            pass
+
+        def setProcessEnvironment(self, _environment) -> None:  # noqa: N802, ANN001
+            pass
+
+        def start(self) -> None:
+            self.errorOccurred.emit(failed_to_start)
+
+    monkeypatch.setattr(tauri_studio, "QProcess", FakeQProcess)
+    process = tauri_studio.TauriStudioProcess(tmp_path)
+    failures: list[str] = []
+    process.failed.connect(failures.append)
+
+    assert process.start() is False
+    assert process._process is None
+    assert failures and "启动失败" in failures[0]
+
+
+def test_tauri_studio_process_reports_abnormal_exit(tmp_path: Path) -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_studio import TauriStudioProcess
+    from PySide6.QtCore import QProcess
+
+    class FakeQProcess:
+        def readAllStandardOutput(self) -> bytes:  # noqa: N802
+            return b""
+
+    process = TauriStudioProcess(tmp_path)
+    process._process = FakeQProcess()
+    failures: list[str] = []
+    closed: list[bool] = []
+    process.failed.connect(failures.append)
+    process.closed.connect(lambda: closed.append(True))
+
+    process._handle_finished(7, QProcess.ExitStatus.CrashExit)
+
+    assert failures and "异常退出" in failures[0]
+    assert closed == []
+    assert process._process is None

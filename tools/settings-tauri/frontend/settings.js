@@ -929,7 +929,7 @@ function syncCharacterArchiveState() {
   fields.characterImportButton.disabled = characterArchiveBusy;
   fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
   fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
-  fields.characterEditorButton.disabled = characterArchiveBusy || !hasCharacter;
+  fields.characterEditorButton.disabled = characterArchiveBusy;
   fields.saveButton.disabled = characterArchiveBusy;
   fields.applyButton.disabled = characterArchiveBusy;
   fields.cancelButton.disabled = characterArchiveBusy;
@@ -2287,11 +2287,7 @@ async function exportCharacterArchive() {
 async function launchCharacterStudio() {
   await runCharacterArchiveAction(async () => {
     const character = selectedCharacter();
-    if (!character) {
-      setError("请先选择一个角色。");
-      return;
-    }
-    const result = await hostCall("studio.launch", { character_id: character.id });
+    const result = await hostCall("studio.launch", { character_id: character?.id || "" });
     if (result?.message) {
       notify(result.message, "success");
     }

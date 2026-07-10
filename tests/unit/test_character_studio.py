@@ -116,6 +116,19 @@ def test_character_studio_create_import_portrait_and_save_new_character(tmp_path
     assert (profile.package_dir / "portraits" / "default.png").read_bytes() == b"new portrait"
 
 
+def test_character_studio_create_rejects_installed_character_id(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "duplicate_character")
+    _write_character(root, "sakura", "Sakura")
+    service = CharacterStudioService(root)
+
+    with pytest.raises(ValueError, match="角色 ID 已存在"):
+        service.create_character({"id": "sakura", "display_name": "Replacement"})
+
+    assert (root / "characters" / "sakura" / "voice" / "refs" / "ref.txt").exists()
+
+
 def test_character_studio_save_existing_preserves_voice_and_exports_char(tmp_path: Path) -> None:
     from app.config.character_studio import CharacterStudioService
 

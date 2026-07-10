@@ -4698,7 +4698,8 @@ def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
     assert "characterStudioCurrentButton" not in index
     assert "characterStudioOpenButton" not in index
     assert "角色工作室</legend>" not in index
-    assert 'hostCall("studio.launch", { character_id: character.id })' in source
+    assert 'hostCall("studio.launch", { character_id: character?.id || "" })' in source
+    assert "fields.characterEditorButton.disabled = characterArchiveBusy;" in source
     assert "characterStudioCurrentButton" not in source
     assert "characterStudioOpenButton" not in source
 
@@ -4724,6 +4725,10 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "发布" not in source
     assert "editingCharacterId" in source
     assert "confirmDiscardChanges" in source
+    assert "function editorSnapshot()" in source
+    assert "function validateThemeInputs()" in source
+    assert "{ dirty: true }" in source
+    assert "displayName === null" in source
     assert "hostCall(\"studio.list_characters\"" not in source
     assert "hostCall(\"studio.open_character\"" in source
     assert "hostCall(\"studio.create_character\"" in source
@@ -4741,6 +4746,7 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "enhanceSelect(fields.studioCharacterSelect)" in source
     assert "refreshSelect(fields.studioCharacterSelect)" in source
     assert 'done.className = "primary-button"' in source
+    assert 'event.key === "ArrowDown"' in source
     assert index.count("<svg") >= 4
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles

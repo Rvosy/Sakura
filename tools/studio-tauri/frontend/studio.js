@@ -200,8 +200,32 @@ function enhanceSelect(select) {
     window.removeEventListener("resize", closeMenu, true);
   }
 
+  function selectRelativeOption(direction) {
+    const options = Array.from(select.options).filter((option) => !option.disabled);
+    if (!options.length) {
+      return;
+    }
+    const currentIndex = options.findIndex((option) => option.value === select.value);
+    const nextIndex = currentIndex < 0
+      ? (direction > 0 ? 0 : options.length - 1)
+      : Math.min(options.length - 1, Math.max(0, currentIndex + direction));
+    const option = options[nextIndex];
+    if (option.value !== select.value) {
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncTrigger();
+  }
+
   trigger.addEventListener("click", () => {
     wrapper.classList.contains("is-open") ? closeMenu() : openMenu();
+  });
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      closeMenu();
+      selectRelativeOption(event.key === "ArrowDown" ? 1 : -1);
+    }
   });
   select.addEventListener("change", syncTrigger);
   select.__customSelect = { refresh: syncTrigger };
@@ -233,7 +257,7 @@ function switchPage(page) {
 }
 
 function isDirty() {
-  return Boolean(currentDoc) && JSON.stringify(collectDoc()) !== baseline;
+  return Boolean(currentDoc) && editorSnapshot() !== baseline;
 }
 
 function confirmDiscardChanges() {
@@ -291,8 +315,16 @@ function collectDoc() {
   };
 }
 
+function editorSnapshot() {
+  const expressionRows = Array.from(fields.expressionList.querySelectorAll(".expression-row"), (row) => ({
+    label: row.querySelector("[data-expression-label]").value,
+    path: row.querySelector("[data-expression-path]").value,
+  }));
+  return JSON.stringify({ doc: collectDoc(), expressionRows });
+}
+
 function markBaseline() {
-  baseline = JSON.stringify(collectDoc());
+  baseline = editorSnapshot();
   refreshDirty();
 }
 
@@ -302,7 +334,7 @@ function refreshDirty() {
   fields.saveButton.classList.toggle("has-changes", Boolean(dirty));
 }
 
-function setCurrentDoc(payload, draftCharacter = null) {
+function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   currentPackageDir = payload.package_dir || "";
   currentDoc = payload.doc || null;
   if (Array.isArray(payload.characters)) {
@@ -313,7 +345,12 @@ function setCurrentDoc(payload, draftCharacter = null) {
   renderCharacterOptions();
   renderEditor();
   switchPage("basic");
-  markBaseline();
+  if (options.dirty === true) {
+    baseline = "";
+    refreshDirty();
+  } else {
+    markBaseline();
+  }
 }
 
 function renderEditor() {
@@ -807,16 +844,24 @@ async function createCharacter() {
   if (!id) {
     return;
   }
-  const displayName = window.prompt("显示名称：", id) || id;
+  const characterId = id.trim();
+  if ((request.characters || []).some((character) => character.id === characterId)) {
+    setError(`角色 ID 已存在：${characterId}。请从下拉菜单直接打开该角色。`);
+    return;
+  }
+  const displayName = window.prompt("显示名称：", characterId);
+  if (displayName === null) {
+    return;
+  }
   await runBusy(async () => {
     const payload = await hostCall("studio.create_character", {
-      doc: { id, display_name: displayName },
+      doc: { id: characterId, display_name: displayName.trim() || characterId },
     });
     setCurrentDoc(payload, {
       id: payload.doc.id,
       display_name: payload.doc.display_name,
       source: "draft",
-    });
+    }, { dirty: true });
   });
 }
 
@@ -845,9 +890,25 @@ async function importDefaultPortrait() {
   });
 }
 
+function validateThemeInputs() {
+  const invalidInput = Array.from(fields.themeFields.querySelectorAll("[data-theme-field]"))
+    .find((input) => !normalizeColorText(input.value, ""));
+  if (!invalidInput) {
+    return true;
+  }
+  syncThemeRole(invalidInput.dataset.themeField);
+  switchPage("theme");
+  invalidInput.focus();
+  setError("请先修正无效的主题颜色，格式应为 #RRGGBB。");
+  return false;
+}
+
 async function saveCharacter() {
   if (!currentDoc || !currentPackageDir) {
     setError("请先打开或新建角色。");
+    return;
+  }
+  if (!validateThemeInputs()) {
     return;
   }
   await runBusy(async () => {
@@ -863,6 +924,7 @@ async function saveCharacter() {
     editingCharacterId = currentDoc.id || editingCharacterId;
     temporaryCharacter = null;
     renderCharacterOptions();
+    renderEditor();
     markBaseline();
     notify(payload.message || "已保存。", "success");
   });
@@ -954,7 +1016,7 @@ async function load() {
   const initialId = characters.some((item) => item.id === request.initial_character_id)
     ? request.initial_character_id
     : (characters[0]?.id || "");
-  editingCharacterId = initialId;
+  editingCharacterId = "";
   renderCharacterOptions();
   if (initialId) {
     await openCharacter(initialId);

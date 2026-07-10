@@ -232,6 +232,8 @@ class CharacterStudioService:
         if not isinstance(payload, dict):
             raise ValueError("角色数据必须是对象。")
         safe_id = _validate_character_id(str(payload.get("id") or ""))
+        if (self.characters_dir / safe_id).exists():
+            raise ValueError(f"角色 ID 已存在：{safe_id}。请直接打开该角色进行编辑。")
         display_name = str(payload.get("display_name") or safe_id).strip() or safe_id
         package_dir = self._draft_package_dir(safe_id)
         if package_dir.exists():
