@@ -4740,6 +4740,7 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "updateThemeFromHuePointer" in source
     assert "enhanceSelect(fields.studioCharacterSelect)" in source
     assert "refreshSelect(fields.studioCharacterSelect)" in source
+    assert 'done.className = "primary-button"' in source
     assert index.count("<svg") >= 4
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles
@@ -4749,8 +4750,11 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert ".theme-sv-pad" in styles
     assert "grid-template-columns: 176px minmax(0, 1fr)" in styles
     assert ".custom-select__trigger" in styles
+    assert "#saveButton,\n.primary-button" in styles
     assert "overflow-x: hidden" in styles
     assert "@media (max-width: 940px)" in styles
+    assert ".studio-shell {\n    grid-template-columns: 1fr;" not in styles
+    assert ".nav-card {\n    display: none;" not in styles
 
 
 def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]

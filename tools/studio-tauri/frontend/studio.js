@@ -596,6 +596,7 @@ function buildThemeEditor() {
   pick.addEventListener("click", pickActiveThemeColor);
   const done = document.createElement("button");
   done.type = "button";
+  done.className = "primary-button";
   done.textContent = "完成";
   done.addEventListener("click", closeThemeColorPopover);
   actions.append(pick, done);
