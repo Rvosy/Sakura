@@ -117,7 +117,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { request, rpc })
-        .invoke_handler(tauri::generate_handler![load_request, host_call, close_studio])
+        .invoke_handler(tauri::generate_handler![
+            load_request,
+            host_call,
+            close_studio
+        ])
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -225,9 +229,7 @@ mod tests {
     fn ignores_invalid_rpc_response_lines() {
         assert!(parse_rpc_response_line("plain log").is_none());
         assert!(parse_rpc_response_line("@@SAKURA_STUDIO_RPC_RESULT@@not-json").is_none());
-        assert!(
-            parse_rpc_response_line(r#"@@SAKURA_STUDIO_RPC_RESULT@@{"id":"rpc-1"}"#).is_none()
-        );
+        assert!(parse_rpc_response_line(r#"@@SAKURA_STUDIO_RPC_RESULT@@{"id":"rpc-1"}"#).is_none());
     }
 
     #[test]
