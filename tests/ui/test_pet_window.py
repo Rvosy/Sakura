@@ -7062,7 +7062,7 @@ def test_proactive_care_capture_interval_allows_timer_jitter() -> None:
     assert not window._should_capture_proactive_screen_context(58.9)
     assert window._should_capture_proactive_screen_context(59.2)
 
-    window.last_proactive_screen_context_at = 60.0
+    window.last_screen_awareness_context_at = 60.0
     assert not window._should_capture_proactive_screen_context(118.9)
     assert window._should_capture_proactive_screen_context(119.2)
 
@@ -7252,7 +7252,7 @@ def test_user_activity_keeps_pending_proactive_screenshot_batch(monkeypatch) -> 
     )
     window.proactive_screen_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
     window.proactive_screen_context_batch_started_at = 60
-    window.last_proactive_screen_context_at = 60
+    window.last_screen_awareness_context_at = 60
     window.proactive_screen_context_dropped_count = 2
     monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: 300.0)
 
@@ -7261,7 +7261,7 @@ def test_user_activity_keeps_pending_proactive_screenshot_batch(monkeypatch) -> 
     assert window.last_user_activity_at == 300.0
     assert window.proactive_screen_contexts == [{"data_url": "data:image/jpeg;base64,old"}]
     assert window.proactive_screen_context_batch_started_at == 60
-    assert window.last_proactive_screen_context_at == 60
+    assert window.last_screen_awareness_context_at == 60
     assert window.proactive_screen_context_dropped_count == 2
 
 
@@ -7273,7 +7273,7 @@ def test_send_message_clears_pending_proactive_screenshot_batch(monkeypatch) -> 
     minimal_window.pending_manual_screen_observation = None
     minimal_window.proactive_screen_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
     minimal_window.proactive_screen_context_batch_started_at = 60
-    minimal_window.last_proactive_screen_context_at = 60
+    minimal_window.last_screen_awareness_context_at = 60
     minimal_window.proactive_screen_context_dropped_count = 2
     minimal_window._clear_proactive_screen_context_batch = (
         pet_window_module.PetWindow._clear_proactive_screen_context_batch.__get__(
@@ -7288,7 +7288,7 @@ def test_send_message_clears_pending_proactive_screenshot_batch(monkeypatch) -> 
     assert len(requests) == 1
     assert minimal_window.proactive_screen_contexts == []
     assert minimal_window.proactive_screen_context_batch_started_at is None
-    assert minimal_window.last_proactive_screen_context_at is None
+    assert minimal_window.last_screen_awareness_context_at is None
     assert minimal_window.proactive_screen_context_dropped_count == 0
 
 
@@ -8531,7 +8531,7 @@ def _build_minimal_proactive_window(
         _mark_user_activity = PetWindow._mark_user_activity
 
     window = MinimalProactiveWindow()
-    window.proactive_care_settings = ProactiveCareSettings(
+    window.screen_awareness_settings = ScreenAwarenessSettings(
         enabled=screen_context_enabled,
         screen_context_enabled=screen_context_enabled,
         check_interval_minutes=check_interval_minutes,
@@ -8552,8 +8552,8 @@ def _build_minimal_proactive_window(
     window.current_segment_speech_done = True
     window.current_segment_tts_done = True
     window.last_user_activity_at = 0.0
-    window.last_proactive_care_at = None
-    window.last_proactive_screen_context_at = None
+    window.last_screen_awareness_at = None
+    window.last_screen_awareness_context_at = None
     window.proactive_screen_context_batch_started_at = None
     window.proactive_screen_contexts = []
     window.proactive_screen_context_dropped_count = 0
@@ -8880,7 +8880,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
             if getattr(self, "raise_layout_persist_error", False) and raise_on_persist_error:
                 raise OSError("layout.yaml locked")
 
-        def _sync_proactive_care_timer(self) -> None:
+        def _sync_screen_awareness_timer(self) -> None:
             pass
 
         def _apply_character(self, profile):  # type: ignore[no-untyped-def]
@@ -8910,7 +8910,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.character_registry = CharacterRegistryStub()
     window.character_profile = CharacterProfileStub()
     window.tauri_settings_process = None
-    window.proactive_care_settings = ProactiveCareSettings(screen_context_enabled=True)
+    window.screen_awareness_settings = ScreenAwarenessSettings(screen_context_enabled=True)
     window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
     window.debug_log_settings = DebugLogSettings()
     window.startup_settings = StartupSettings()

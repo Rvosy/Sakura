@@ -256,6 +256,21 @@ def test_settings_service_loads_and_saves_startup_settings() -> None:
     assert system["startup"]["launch_at_login"] is True
 
 
+def test_screen_awareness_loader_does_not_fall_back_to_proactive_care() -> None:
+    service = AppSettingsService(_runtime_root("screen_awareness_no_legacy_fallback"))
+    service.save_system_values(
+        "proactive_care",
+        {"enabled": False, "check_interval_minutes": 99},
+    )
+
+    assert service.load_screen_awareness_settings() == ScreenAwarenessSettings()
+
+
+def test_settings_service_exposes_only_screen_awareness_methods() -> None:
+    assert not hasattr(AppSettingsService, "load_proactive_care_settings")
+    assert not hasattr(AppSettingsService, "save_proactive_care_settings")
+
+
 def test_settings_service_loads_and_saves_bubble_settings() -> None:
     root = _runtime_root("yaml_bubble")
     service = AppSettingsService(root)

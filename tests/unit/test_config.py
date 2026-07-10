@@ -36,6 +36,23 @@ def _make_test_dir(name: str) -> Path:
     return path
 
 
+def test_settings_stack_has_no_runtime_proactive_care_names() -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_files = (
+        "app/config/settings_service.py",
+        "app/config/defaults.py",
+        "app/core/app_context.py",
+        "app/ui/settings_dialog.py",
+        "app/ui/settings/pages/sections.py",
+        "app/ui/history_window.py",
+        "main.py",
+    )
+    for relative in runtime_files:
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "proactive_care" not in source
+        assert "proactive_" not in source
+
+
 class TestApiSettings:
     """ApiSettings 模型"""
 

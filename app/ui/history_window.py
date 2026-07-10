@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
+from app.agent.screen_awareness import SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 from app.agent.screen_observation import (
     MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER,
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -36,7 +36,7 @@ _VISUAL_ID_SUFFIX_RE = re.compile(r"，视觉记录\s+visual_id=[^\]\s]+")
 _HISTORY_MARKER_DISPLAY_TEXT = {
     MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER: "（已附上你框选的画面）",
     SCREEN_OBSERVATION_HISTORY_MARKER: "（已看过当前屏幕）",
-    PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER: "刚才留意了一下屏幕状态。",
+    SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER: "刚才留意了一下屏幕状态。",
 }
 _RENDER_BATCH_SIZE = 40
 

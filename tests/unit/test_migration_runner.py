@@ -41,9 +41,10 @@ def test_data_migration_failure_message_keeps_step_error() -> None:
 
     message = _format_data_migration_failure(report)
 
-    assert "处理建议" in message
-    assert "data/logs/sakura-runtime.log" in message
-    assert "诊断信息（截图时请保留）：\nv1_to_v2: WinError 5" in message
+    assert "原数据没有被覆盖" in message
+    assert "受影响功能本次可能使用默认值或暂不可用" in message
+    assert "兼容模式" not in message
+    assert "v1_to_v2: WinError 5" in message
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_migration_runner"

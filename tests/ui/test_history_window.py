@@ -67,7 +67,7 @@ if importlib.util.find_spec("PySide6") is None:
     sys.modules["PySide6.QtCore"] = qtcore_module
     sys.modules["PySide6.QtWidgets"] = qtwidgets_module
 
-from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
+from app.agent.screen_awareness import SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 from app.agent.screen_observation import (
     MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER,
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -137,15 +137,15 @@ def test_entry_view_model_humanizes_screen_observation_markers() -> None:
         "ja",
         "桜",
     )
-    proactive_view = _entry_view_model(
-        _entry("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER),
+    screen_awareness_view = _entry_view_model(
+        _entry("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER),
         "ja",
         "桜",
     )
 
     assert manual_view.content == "你了解这个游戏吗\n（已附上你框选的画面）"
     assert autonomous_view.content == "（已看过当前屏幕）"
-    assert proactive_view.content == "刚才留意了一下屏幕状态。"
+    assert screen_awareness_view.content == "刚才留意了一下屏幕状态。"
     assert "visual_id" not in manual_view.content
     assert "visual_id" not in autonomous_view.content
 

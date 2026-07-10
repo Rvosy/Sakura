@@ -653,8 +653,6 @@ class AppSettingsService:
 
     def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
         screen_awareness = self._system_section("screen_awareness")
-        if not screen_awareness:
-            screen_awareness = self._system_section("proactive_care")
         return ScreenAwarenessSettings(
             enabled=_bool_value(screen_awareness.get("enabled"), True),
             screen_context_enabled=_bool_value(
@@ -686,14 +684,6 @@ class AppSettingsService:
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
         }
         save_yaml_mapping(self.system_config_path, data)
-
-    def load_proactive_care_settings(self) -> ScreenAwarenessSettings:
-        """兼容旧调用点；新代码请使用 load_screen_awareness_settings。"""
-        return self.load_screen_awareness_settings()
-
-    def save_proactive_care_settings(self, settings: ScreenAwarenessSettings) -> None:
-        """兼容旧调用点；新代码请使用 save_screen_awareness_settings。"""
-        self.save_screen_awareness_settings(settings)
 
     def load_bubble_settings(self) -> BubbleSettings:
         ui = self._system_section("ui")

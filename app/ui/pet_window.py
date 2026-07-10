@@ -632,9 +632,7 @@ class PetWindow(QWidget):
         self.subtitle_language = self._load_subtitle_language()
         self.screen_observation_enabled = self._load_screen_observation_enabled()
         self.autonomous_screen_observation_enabled = self._load_autonomous_screen_observation_enabled()
-        self.screen_awareness_settings = getattr(context, "screen_awareness_settings", None)
-        if self.screen_awareness_settings is None:
-            self.screen_awareness_settings = context.proactive_care_settings
+        self.screen_awareness_settings = context.screen_awareness_settings
         self.model_vision_enabled = self.screen_observation_enabled
         self.agent_runtime.set_model_vision_enabled(self.model_vision_enabled)
         self.agent_runtime.set_autonomous_screen_observation_enabled(
@@ -1056,63 +1054,6 @@ class PetWindow(QWidget):
             application.aboutToQuit.connect(self.close_external_tools)
             if sys.platform == "darwin":
                 application.installEventFilter(self)
-
-    @property
-    def proactive_care_settings(self) -> Any:
-        """兼容旧属性；新代码请使用 screen_awareness_settings。"""
-        return self.screen_awareness_settings
-
-    @proactive_care_settings.setter
-    def proactive_care_settings(self, value: Any) -> None:
-        self.screen_awareness_settings = value
-
-    @property
-    def proactive_care_timer(self) -> QTimer:
-        return self.screen_awareness_timer
-
-    @proactive_care_timer.setter
-    def proactive_care_timer(self, value: QTimer) -> None:
-        self.screen_awareness_timer = value
-
-    @property
-    def last_proactive_care_at(self) -> float | None:
-        return self.last_screen_awareness_at
-
-    @last_proactive_care_at.setter
-    def last_proactive_care_at(self, value: float | None) -> None:
-        self.last_screen_awareness_at = value
-
-    @property
-    def last_proactive_screen_context_at(self) -> float | None:
-        return self.last_screen_awareness_context_at
-
-    @last_proactive_screen_context_at.setter
-    def last_proactive_screen_context_at(self, value: float | None) -> None:
-        self.last_screen_awareness_context_at = value
-
-    @property
-    def proactive_screen_context_batch_started_at(self) -> float | None:
-        return self.screen_awareness_context_batch_started_at
-
-    @proactive_screen_context_batch_started_at.setter
-    def proactive_screen_context_batch_started_at(self, value: float | None) -> None:
-        self.screen_awareness_context_batch_started_at = value
-
-    @property
-    def proactive_screen_contexts(self) -> list[dict[str, Any]]:
-        return self.screen_awareness_contexts
-
-    @proactive_screen_contexts.setter
-    def proactive_screen_contexts(self, value: list[dict[str, Any]]) -> None:
-        self.screen_awareness_contexts = value
-
-    @property
-    def proactive_screen_context_dropped_count(self) -> int:
-        return self.screen_awareness_context_dropped_count
-
-    @proactive_screen_context_dropped_count.setter
-    def proactive_screen_context_dropped_count(self, value: int) -> None:
-        self.screen_awareness_context_dropped_count = value
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -3755,10 +3696,7 @@ class PetWindow(QWidget):
         return True
 
     def _current_screen_awareness_settings(self) -> Any:
-        settings = getattr(self, "screen_awareness_settings", None)
-        if settings is not None:
-            return settings
-        return getattr(self, "proactive_care_settings")
+        return self.screen_awareness_settings
 
     def _should_capture_screen_awareness_context(self, now: float) -> bool:
         settings = self._current_screen_awareness_settings()
@@ -5261,9 +5199,7 @@ class PetWindow(QWidget):
     def _try_show_tauri_settings(self) -> bool:
         if resolve_tauri_settings_binary(self.base_dir) is None:
             return False
-        settings = getattr(self, "screen_awareness_settings", None)
-        if settings is None:
-            settings = getattr(self, "proactive_care_settings", ScreenAwarenessSettings())
+        settings = self.screen_awareness_settings
         api_settings = getattr(getattr(self, "api_client", None), "settings", None)
         try:
             tts_settings = self.settings_service.load_tts_settings(
@@ -5546,15 +5482,7 @@ class PetWindow(QWidget):
                 self.character_registry,
                 selected_profile.id,
             )
-            save_screen_awareness_settings = getattr(
-                self.settings_service,
-                "save_screen_awareness_settings",
-                None,
-            )
-            if callable(save_screen_awareness_settings):
-                save_screen_awareness_settings(settings)
-            else:
-                self.settings_service.save_proactive_care_settings(settings)
+            self.settings_service.save_screen_awareness_settings(settings)
             save_mcp_runtime_settings = getattr(
                 self.settings_service,
                 "save_mcp_runtime_settings",
@@ -5698,11 +5626,7 @@ class PetWindow(QWidget):
         self._apply_bubble_settings(system_basic.bubble)
         self.startup_settings = result_startup_settings
         self.memory_curation_settings = result.memory_curation
-        sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
-        if callable(sync_screen_awareness_timer):
-            sync_screen_awareness_timer()
-        else:
-            self._sync_proactive_care_timer()
+        self._sync_screen_awareness_timer()
         discard_backchannel_audio_cache = getattr(
             self,
             "_discard_backchannel_audio_cache",
