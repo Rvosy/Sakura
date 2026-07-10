@@ -4689,15 +4689,18 @@ def test_tauri_settings_dispatches_studio_launch_failure() -> None:
         process._dispatch_rpc("studio.launch", {"character_id": "sakura"})
 
 
-def test_tauri_settings_frontend_has_studio_buttons_without_publish_wording() -> None:
+def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
     index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
     source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
 
-    assert "characterStudioCurrentButton" in index
-    assert "characterStudioOpenButton" in index
-    assert "hostCall(\"studio.launch\"" in source
-    assert "发布" not in index
-    assert "发布" not in source
+    assert 'id="characterEditorButton"' in index
+    assert 'class="character-select-controls"' in index
+    assert "characterStudioCurrentButton" not in index
+    assert "characterStudioOpenButton" not in index
+    assert "角色工作室</legend>" not in index
+    assert 'hostCall("studio.launch", { character_id: character.id })' in source
+    assert "characterStudioCurrentButton" not in source
+    assert "characterStudioOpenButton" not in source
 
 
 def test_tauri_studio_frontend_matches_settings_language() -> None:
