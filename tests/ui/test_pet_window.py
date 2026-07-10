@@ -4730,9 +4730,20 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "hostCall(\"studio.save_character\"" in source
     assert "hostCall(\"studio.import_portrait\"" in source
     assert "hostCall(\"studio.export_archive\"" in source
+    assert 'class="theme-colors"' in index
+    assert "themeLabels" not in source
+    assert "request.theme_fields.forEach(({ id, label })" in source
+    assert 'className = "theme-color-popover"' in source
+    assert 'hostCall("studio.pick_screen_color")' in source
+    assert "updateThemeFromRgbInputs" in source
+    assert "updateThemeFromSvPointer" in source
+    assert "updateThemeFromHuePointer" in source
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles
     assert ".settings-page.is-active" in styles
+    assert ".theme-color-swatch" in styles
+    assert ".theme-color-popover" in styles
+    assert ".theme-sv-pad" in styles
 
 
 def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]

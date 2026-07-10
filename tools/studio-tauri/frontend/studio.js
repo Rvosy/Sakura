@@ -38,20 +38,6 @@ const pageMeta = {
   theme: { title: "配色", subtitle: "角色包自带主题色" },
 };
 
-const themeLabels = {
-  primary_color: "主色",
-  primary_hover_color: "主色悬停",
-  accent_color: "强调色",
-  text_color: "正文",
-  secondary_text_color: "次级文字",
-  muted_text_color: "弱文字",
-  page_background_color: "页面背景",
-  panel_background_color: "面板背景",
-  input_background_color: "输入背景",
-  bubble_background_color: "气泡背景",
-  border_color: "边框",
-};
-
 const themeVars = {
   primary_color: "--sakura-primary",
   primary_hover_color: "--sakura-primary-hover",
@@ -73,6 +59,8 @@ let baseline = "";
 let busy = false;
 let editingCharacterId = "";
 let temporaryCharacter = null;
+let activeThemeField = "";
+let themeEditor = {};
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -156,8 +144,8 @@ function renderCharacterOptions() {
 
 function collectDoc() {
   const theme = { ...(currentDoc?.theme || {}) };
-  fields.themeFields.querySelectorAll("[data-theme-key]").forEach((input) => {
-    theme[input.dataset.themeKey] = input.value.trim();
+  fields.themeFields.querySelectorAll("[data-theme-field]").forEach((input) => {
+    theme[input.dataset.themeField] = input.value.trim();
   });
   const expressions = {};
   fields.expressionList.querySelectorAll(".expression-row").forEach((row) => {
@@ -217,7 +205,12 @@ function renderEditor() {
   fields.voiceStatusRow.hidden = false;
   fields.voiceStatus.textContent = doc.voice ? "已保留现有语音配置" : "未配置语音";
   renderExpressions(doc.expressions || {});
-  renderTheme(doc.theme || request.theme || {});
+  const theme = {
+    ...(request.theme_defaults || request.theme || {}),
+    ...(doc.theme || {}),
+  };
+  applyTheme(theme);
+  renderTheme(theme);
   refreshControls();
 }
 
@@ -252,32 +245,403 @@ function addExpressionRow(label = "", path = "") {
   fields.expressionList.append(row);
 }
 
+function normalizeColorText(value, fallback) {
+  const text = String(value || "").trim();
+  const prefixed = text.startsWith("#") ? text : `#${text}`;
+  return /^#[0-9a-fA-F]{6}$/.test(prefixed) ? prefixed.toLowerCase() : fallback;
+}
+
+function themeFieldInput(id) {
+  return fields.themeFields.querySelector(`[data-theme-field="${id}"]`);
+}
+
+function themeFieldValue(id) {
+  const fallback = request?.theme_defaults?.[id] || "#000000";
+  return normalizeColorText(themeFieldInput(id)?.value, fallback);
+}
+
+function applyTheme(theme) {
+  (request?.theme_fields || []).forEach(({ id }) => {
+    const color = normalizeColorText(theme?.[id], request.theme_defaults?.[id] || "");
+    if (color && themeVars[id]) {
+      document.documentElement.style.setProperty(themeVars[id], color);
+    }
+  });
+}
+
+function hexToRgb(hex) {
+  const value = normalizeColorText(hex, "#000000").slice(1);
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16),
+  };
+}
+
+function componentToHex(value) {
+  return Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`;
+}
+
+function rgbToHsv({ r, g, b }) {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === red) {
+      h = ((green - blue) / delta) % 6;
+    } else if (max === green) {
+      h = (blue - red) / delta + 2;
+    } else {
+      h = (red - green) / delta + 4;
+    }
+    h *= 60;
+    if (h < 0) {
+      h += 360;
+    }
+  }
+  return {
+    h,
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+}
+
+function hsvToRgb({ h, s, v }) {
+  const chroma = v * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - chroma;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  if (h < 60) {
+    red = chroma; green = x;
+  } else if (h < 120) {
+    red = x; green = chroma;
+  } else if (h < 180) {
+    green = chroma; blue = x;
+  } else if (h < 240) {
+    green = x; blue = chroma;
+  } else if (h < 300) {
+    red = x; blue = chroma;
+  } else {
+    red = chroma; blue = x;
+  }
+  return {
+    r: (red + m) * 255,
+    g: (green + m) * 255,
+    b: (blue + m) * 255,
+  };
+}
+
 function renderTheme(theme) {
+  closeThemeColorPopover();
   fields.themeFields.textContent = "";
-  Object.keys(themeVars).forEach((key) => {
-    const row = document.createElement("label");
-    row.className = "theme-field";
-    const swatch = document.createElement("span");
-    swatch.className = "theme-swatch";
-    const text = document.createElement("span");
-    text.textContent = themeLabels[key] || key;
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = theme[key] || "";
-    input.dataset.themeKey = key;
-    const update = () => {
-      const color = input.value.trim() || "transparent";
-      swatch.style.background = color;
-      if (themeVars[key] && color !== "transparent") {
-        document.documentElement.style.setProperty(themeVars[key], color);
+  const themeFields = Array.isArray(request?.theme_fields) ? request.theme_fields : [];
+  if (!themeFields.some(({ id }) => id === activeThemeField)) {
+    activeThemeField = themeFields[0]?.id || "";
+  }
+
+  request.theme_fields.forEach(({ id, label }) => {
+    const row = document.createElement("div");
+    row.className = "form-row theme-color-row";
+    row.dataset.themeRole = id;
+    const rowLabel = document.createElement("label");
+    rowLabel.htmlFor = `theme-${id}`;
+    rowLabel.textContent = label;
+    const controls = document.createElement("div");
+    controls.className = "theme-color-control";
+    const swatchButton = document.createElement("button");
+    swatchButton.type = "button";
+    swatchButton.className = "theme-color-swatch";
+    swatchButton.dataset.themeSwatch = id;
+    swatchButton.title = "调整颜色";
+    swatchButton.addEventListener("click", () => openThemeColorPopover(id));
+    const textInput = document.createElement("input");
+    textInput.id = `theme-${id}`;
+    textInput.type = "text";
+    textInput.maxLength = 7;
+    textInput.placeholder = "#RRGGBB";
+    textInput.value = normalizeColorText(theme?.[id], request.theme_defaults?.[id] || "");
+    textInput.dataset.themeField = id;
+    textInput.addEventListener("input", () => {
+      const color = normalizeColorText(textInput.value, "");
+      if (color && themeVars[id]) {
+        document.documentElement.style.setProperty(themeVars[id], color);
+      }
+      syncThemeRole(id);
+      if (id === activeThemeField) {
+        syncThemeEditor();
       }
       refreshDirty();
-    };
-    input.addEventListener("input", update);
-    row.append(swatch, text, input);
+    });
+    controls.append(swatchButton, textInput);
+    row.append(rowLabel, controls);
     fields.themeFields.append(row);
-    update();
   });
+
+  fields.themeFields.append(buildThemeEditor());
+  request.theme_fields.forEach(({ id }) => syncThemeRole(id));
+  selectThemeField(activeThemeField, { open: false });
+}
+
+function buildThemeEditor() {
+  const editor = document.createElement("dialog");
+  editor.className = "theme-color-popover";
+  editor.hidden = true;
+
+  const head = document.createElement("div");
+  head.className = "theme-editor-head";
+  const swatch = document.createElement("div");
+  swatch.className = "theme-editor-swatch";
+  const title = document.createElement("div");
+  title.className = "theme-editor-title";
+  const label = document.createElement("strong");
+  const key = document.createElement("span");
+  title.append(label, key);
+  head.append(swatch, title);
+
+  const hexRow = document.createElement("label");
+  hexRow.className = "theme-editor-field";
+  hexRow.textContent = "HEX";
+  const hex = document.createElement("input");
+  hex.type = "text";
+  hex.maxLength = 7;
+  hex.placeholder = "#RRGGBB";
+  hex.addEventListener("input", () => {
+    const color = normalizeColorText(hex.value, "");
+    hex.classList.toggle("is-invalid", !color);
+    if (color) {
+      updateActiveThemeColor(color);
+    }
+  });
+  hexRow.append(hex);
+
+  const rgb = document.createElement("div");
+  rgb.className = "theme-rgb-row";
+  const rgbInputs = ["R", "G", "B"].map((name) => {
+    const field = document.createElement("label");
+    field.textContent = name;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "255";
+    input.step = "1";
+    input.addEventListener("input", updateThemeFromRgbInputs);
+    field.append(input);
+    rgb.append(field);
+    return input;
+  });
+
+  const svPad = document.createElement("div");
+  svPad.className = "theme-sv-pad";
+  const svPointer = document.createElement("span");
+  svPointer.className = "theme-picker-pointer";
+  svPad.append(svPointer);
+  svPad.addEventListener("pointerdown", updateThemeFromSvPointer);
+  svPad.addEventListener("pointermove", (event) => {
+    if (event.buttons & 1) {
+      updateThemeFromSvPointer(event);
+    }
+  });
+
+  const hue = document.createElement("div");
+  hue.className = "theme-hue-strip";
+  const huePointer = document.createElement("span");
+  huePointer.className = "theme-hue-pointer";
+  hue.append(huePointer);
+  hue.addEventListener("pointerdown", updateThemeFromHuePointer);
+  hue.addEventListener("pointermove", (event) => {
+    if (event.buttons & 1) {
+      updateThemeFromHuePointer(event);
+    }
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "theme-editor-actions";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "secondary-button";
+  pick.textContent = "取色";
+  pick.addEventListener("click", pickActiveThemeColor);
+  const done = document.createElement("button");
+  done.type = "button";
+  done.textContent = "完成";
+  done.addEventListener("click", closeThemeColorPopover);
+  actions.append(pick, done);
+
+  editor.append(head, svPad, hue, hexRow, rgb, actions);
+  editor.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeThemeColorPopover();
+  });
+  themeEditor = {
+    root: editor,
+    swatch,
+    label,
+    key,
+    hex,
+    rgbInputs,
+    svPad,
+    svPointer,
+    hue,
+    huePointer,
+    pick,
+  };
+  return editor;
+}
+
+function syncThemeRole(id) {
+  const input = themeFieldInput(id);
+  const color = normalizeColorText(input?.value, "");
+  const row = fields.themeFields.querySelector(`[data-theme-role="${id}"]`);
+  const swatch = fields.themeFields.querySelector(`[data-theme-swatch="${id}"]`);
+  row?.classList.toggle("is-active", id === activeThemeField);
+  row?.classList.toggle("is-invalid", Boolean(input?.value) && !color);
+  if (swatch) {
+    swatch.style.backgroundColor = color || themeFieldValue(id);
+  }
+}
+
+function selectThemeField(id, options = {}) {
+  const themeFields = Array.isArray(request?.theme_fields) ? request.theme_fields : [];
+  activeThemeField = themeFields.some((field) => field.id === id)
+    ? id
+    : (themeFields[0]?.id || "");
+  themeFields.forEach(({ id: fieldId }) => syncThemeRole(fieldId));
+  syncThemeEditor();
+  if (options.open !== false) {
+    openThemeColorPopover(activeThemeField);
+  }
+}
+
+function syncThemeEditor() {
+  if (!themeEditor.root || !activeThemeField) {
+    return;
+  }
+  const color = themeFieldValue(activeThemeField);
+  const rgb = hexToRgb(color);
+  const hsv = rgbToHsv(rgb);
+  const field = request.theme_fields.find(({ id }) => id === activeThemeField);
+  themeEditor.root.style.setProperty("--theme-editor-color", color);
+  themeEditor.root.style.setProperty("--theme-editor-hue", `${hsv.h}deg`);
+  themeEditor.swatch.style.background = color;
+  themeEditor.label.textContent = field?.label || activeThemeField;
+  themeEditor.key.textContent = activeThemeField;
+  themeEditor.hex.value = color;
+  themeEditor.hex.classList.remove("is-invalid");
+  [rgb.r, rgb.g, rgb.b].forEach((value, index) => {
+    themeEditor.rgbInputs[index].value = String(value);
+  });
+  themeEditor.svPointer.style.left = `${hsv.s * 100}%`;
+  themeEditor.svPointer.style.top = `${(1 - hsv.v) * 100}%`;
+  themeEditor.huePointer.style.left = `${(hsv.h / 360) * 100}%`;
+}
+
+function openThemeColorPopover(id) {
+  if (!id || !themeEditor.root) {
+    return;
+  }
+  selectThemeField(id, { open: false });
+  themeEditor.root.hidden = false;
+  if (!themeEditor.root.open) {
+    themeEditor.root.showModal();
+  }
+  themeEditor.hex.focus();
+  document.addEventListener("keydown", closeThemePopoverOnEscape, true);
+}
+
+function closeThemeColorPopover() {
+  if (themeEditor.root) {
+    if (themeEditor.root.open) {
+      themeEditor.root.close();
+    }
+    themeEditor.root.hidden = true;
+  }
+  document.removeEventListener("keydown", closeThemePopoverOnEscape, true);
+}
+
+function closeThemePopoverOnEscape(event) {
+  if (event.key === "Escape") {
+    closeThemeColorPopover();
+  }
+}
+
+function updateActiveThemeColor(color) {
+  const normalized = normalizeColorText(color, "");
+  const input = themeFieldInput(activeThemeField);
+  if (!normalized || !input) {
+    return;
+  }
+  input.value = normalized;
+  document.documentElement.style.setProperty(themeVars[activeThemeField], normalized);
+  syncThemeRole(activeThemeField);
+  syncThemeEditor();
+  refreshDirty();
+}
+
+function updateThemeFromRgbInputs() {
+  if (!themeEditor.rgbInputs?.length || themeEditor.rgbInputs.some((input) => input.value === "")) {
+    return;
+  }
+  const [r, g, b] = themeEditor.rgbInputs.map((input) => (
+    Math.min(255, Math.max(0, Number.parseInt(input.value, 10) || 0))
+  ));
+  updateActiveThemeColor(rgbToHex({ r, g, b }));
+}
+
+function updateThemeFromSvPointer(event) {
+  const rect = themeEditor.svPad.getBoundingClientRect();
+  const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+  const y = Math.min(rect.height, Math.max(0, event.clientY - rect.top));
+  const hsv = rgbToHsv(hexToRgb(themeFieldValue(activeThemeField)));
+  updateActiveThemeColor(rgbToHex(hsvToRgb({
+    h: hsv.h,
+    s: rect.width ? x / rect.width : 0,
+    v: rect.height ? 1 - (y / rect.height) : 0,
+  })));
+}
+
+function updateThemeFromHuePointer(event) {
+  const rect = themeEditor.hue.getBoundingClientRect();
+  const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+  const hsv = rgbToHsv(hexToRgb(themeFieldValue(activeThemeField)));
+  updateActiveThemeColor(rgbToHex(hsvToRgb({
+    h: rect.width ? (x / rect.width) * 360 : 0,
+    s: hsv.s,
+    v: hsv.v,
+  })));
+}
+
+async function pickActiveThemeColor() {
+  if (!activeThemeField) {
+    return;
+  }
+  themeEditor.pick.disabled = true;
+  setError("");
+  try {
+    closeThemeColorPopover();
+    const result = await hostCall("studio.pick_screen_color");
+    if (result?.cancelled) {
+      return;
+    }
+    const color = normalizeColorText(result?.color, "");
+    if (!color) {
+      throw new Error("取色结果无效。");
+    }
+    updateActiveThemeColor(color);
+  } catch (error) {
+    setError(`屏幕取色失败：${error}`);
+  } finally {
+    themeEditor.pick.disabled = false;
+  }
 }
 
 async function openCharacter(characterId) {
@@ -457,11 +821,7 @@ async function closeStudio() {
 
 async function load() {
   request = await invoke("load_request");
-  Object.entries(themeVars).forEach(([key, cssVar]) => {
-    if (request.theme?.[key]) {
-      document.documentElement.style.setProperty(cssVar, request.theme[key]);
-    }
-  });
+  applyTheme(request.theme || request.theme_defaults || {});
   const characters = Array.isArray(request.characters) ? request.characters : [];
   const initialId = characters.some((item) => item.id === request.initial_character_id)
     ? request.initial_character_id
