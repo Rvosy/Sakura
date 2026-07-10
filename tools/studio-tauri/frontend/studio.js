@@ -90,6 +90,128 @@ async function hostCall(method, params = {}) {
   return invoke("host_call", { method, params });
 }
 
+function enhanceSelect(select) {
+  if (!select || select.__customSelect) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "custom-select";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "custom-select__trigger";
+  const label = document.createElement("span");
+  label.className = "custom-select__label";
+  const caret = document.createElement("span");
+  caret.className = "custom-select__caret";
+  caret.setAttribute("aria-hidden", "true");
+  trigger.append(label, caret);
+  const menu = document.createElement("div");
+  menu.className = "custom-select__menu";
+  menu.setAttribute("role", "listbox");
+
+  select.parentNode.insertBefore(wrapper, select);
+  wrapper.append(trigger, select);
+
+  function syncTrigger() {
+    const option = select.options[select.selectedIndex];
+    label.textContent = option ? option.textContent : "";
+    trigger.disabled = select.disabled;
+  }
+
+  function buildMenu() {
+    menu.textContent = "";
+    Array.from(select.options).forEach((option) => {
+      const item = document.createElement("div");
+      item.className = "custom-select__option";
+      item.setAttribute("role", "option");
+      item.textContent = option.textContent;
+      if (option.value === select.value) {
+        item.classList.add("is-selected");
+        item.setAttribute("aria-selected", "true");
+      }
+      if (option.disabled) {
+        item.classList.add("is-disabled");
+        item.setAttribute("aria-disabled", "true");
+      }
+      item.addEventListener("click", () => {
+        if (option.disabled) {
+          return;
+        }
+        if (select.value !== option.value) {
+          select.value = option.value;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        syncTrigger();
+        closeMenu();
+      });
+      menu.append(item);
+    });
+  }
+
+  function positionMenu() {
+    const rect = trigger.getBoundingClientRect();
+    const maxWidth = Math.max(120, window.innerWidth - 16);
+    menu.style.minWidth = `${rect.width}px`;
+    menu.style.width = "max-content";
+    menu.style.maxWidth = `${maxWidth}px`;
+    const menuWidth = Math.min(menu.offsetWidth, maxWidth);
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))}px`;
+    const menuHeight = menu.offsetHeight;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    menu.style.top = spaceBelow < menuHeight + 12 && rect.top > spaceBelow
+      ? `${Math.max(8, rect.top - 6 - menuHeight)}px`
+      : `${rect.bottom + 6}px`;
+  }
+
+  function onDocumentPointer(event) {
+    if (!wrapper.contains(event.target) && !menu.contains(event.target)) {
+      closeMenu();
+    }
+  }
+
+  function onKeydown(event) {
+    if (event.key === "Escape") {
+      closeMenu();
+    }
+  }
+
+  function openMenu() {
+    if (select.disabled) {
+      return;
+    }
+    buildMenu();
+    document.body.append(menu);
+    menu.classList.add("is-open");
+    positionMenu();
+    wrapper.classList.add("is-open");
+    document.addEventListener("pointerdown", onDocumentPointer, true);
+    document.addEventListener("keydown", onKeydown, true);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu, true);
+  }
+
+  function closeMenu() {
+    wrapper.classList.remove("is-open");
+    menu.classList.remove("is-open");
+    menu.remove();
+    document.removeEventListener("pointerdown", onDocumentPointer, true);
+    document.removeEventListener("keydown", onKeydown, true);
+    window.removeEventListener("scroll", closeMenu, true);
+    window.removeEventListener("resize", closeMenu, true);
+  }
+
+  trigger.addEventListener("click", () => {
+    wrapper.classList.contains("is-open") ? closeMenu() : openMenu();
+  });
+  select.addEventListener("change", syncTrigger);
+  select.__customSelect = { refresh: syncTrigger };
+  syncTrigger();
+}
+
+function refreshSelect(select) {
+  select?.__customSelect?.refresh();
+}
+
 function switchPage(page) {
   if (!fields.pages[page]) {
     return;
@@ -140,6 +262,7 @@ function renderCharacterOptions() {
     fields.studioCharacterSelect.append(option);
   });
   fields.studioCharacterSelect.value = editingCharacterId;
+  refreshSelect(fields.studioCharacterSelect);
 }
 
 function collectDoc() {
@@ -655,10 +778,12 @@ async function selectCharacter(characterId) {
   const previousId = editingCharacterId;
   if (!characterId || characterId === previousId) {
     fields.studioCharacterSelect.value = previousId;
+    refreshSelect(fields.studioCharacterSelect);
     return;
   }
   if (!confirmDiscardChanges()) {
     fields.studioCharacterSelect.value = previousId;
+    refreshSelect(fields.studioCharacterSelect);
     return;
   }
   await runBusy(async () => {
@@ -667,6 +792,7 @@ async function selectCharacter(characterId) {
       setCurrentDoc(payload);
     } catch (error) {
       fields.studioCharacterSelect.value = previousId;
+      refreshSelect(fields.studioCharacterSelect);
       throw error;
     }
   });
@@ -790,6 +916,7 @@ function refreshControls() {
   fields.importDefaultPortraitButton.disabled = busy || !hasDoc;
   fields.newCharacterButton.disabled = busy;
   fields.studioCharacterSelect.disabled = busy || fields.studioCharacterSelect.options.length === 0;
+  refreshSelect(fields.studioCharacterSelect);
   fields.navItems.forEach((item) => {
     item.disabled = busy || !hasDoc;
   });
@@ -857,4 +984,5 @@ fields.cancelButton.addEventListener("click", closeStudio);
 ].forEach((element) => element.addEventListener("input", refreshDirty));
 
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
+enhanceSelect(fields.studioCharacterSelect);
 load().catch((error) => setError(String(error)));

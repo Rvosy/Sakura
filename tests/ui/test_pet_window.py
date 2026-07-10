@@ -4738,12 +4738,19 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "updateThemeFromRgbInputs" in source
     assert "updateThemeFromSvPointer" in source
     assert "updateThemeFromHuePointer" in source
+    assert "enhanceSelect(fields.studioCharacterSelect)" in source
+    assert "refreshSelect(fields.studioCharacterSelect)" in source
+    assert index.count("<svg") >= 4
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles
     assert ".settings-page.is-active" in styles
     assert ".theme-color-swatch" in styles
     assert ".theme-color-popover" in styles
     assert ".theme-sv-pad" in styles
+    assert "grid-template-columns: 176px minmax(0, 1fr)" in styles
+    assert ".custom-select__trigger" in styles
+    assert "overflow-x: hidden" in styles
+    assert "@media (max-width: 940px)" in styles
 
 
 def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
