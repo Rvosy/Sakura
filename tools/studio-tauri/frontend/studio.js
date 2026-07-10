@@ -5,15 +5,12 @@ const fields = {
   pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
-    library: document.getElementById("page-library"),
     basic: document.getElementById("page-basic"),
     card: document.getElementById("page-card"),
     portrait: document.getElementById("page-portrait"),
     theme: document.getElementById("page-theme"),
   },
-  characterSearch: document.getElementById("characterSearch"),
-  refreshCharactersButton: document.getElementById("refreshCharactersButton"),
-  characterList: document.getElementById("characterList"),
+  studioCharacterSelect: document.getElementById("studioCharacterSelect"),
   newCharacterButton: document.getElementById("newCharacterButton"),
   characterId: document.getElementById("characterId"),
   displayName: document.getElementById("displayName"),
@@ -35,7 +32,6 @@ const fields = {
 };
 
 const pageMeta = {
-  library: { title: "角色列表", subtitle: "打开本地角色或创建新角色" },
   basic: { title: "基础信息", subtitle: "名称、开场白与语音状态" },
   card: { title: "人设卡", subtitle: "系统人设与回复语气" },
   portrait: { title: "立绘", subtitle: "默认立绘与表情映射" },
@@ -75,6 +71,8 @@ let currentPackageDir = "";
 let currentDoc = null;
 let baseline = "";
 let busy = false;
+let editingCharacterId = "";
+let temporaryCharacter = null;
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -124,43 +122,36 @@ function switchPage(page) {
   fields.pageHead.classList.add("is-switching");
 }
 
-async function refreshCharacters() {
-  const result = await hostCall("studio.list_characters", {
-    current_character_id: request?.initial_character_id || "",
-  });
-  request.characters = Array.isArray(result.characters) ? result.characters : [];
-  renderCharacters();
+function isDirty() {
+  return Boolean(currentDoc) && JSON.stringify(collectDoc()) !== baseline;
 }
 
-function renderCharacters() {
-  const query = fields.characterSearch.value.trim().toLowerCase();
-  const items = (request?.characters || []).filter((item) => {
-    const haystack = `${item.display_name || ""} ${item.id || ""}`.toLowerCase();
-    return !query || haystack.includes(query);
-  });
-  fields.characterList.textContent = "";
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-text";
-    empty.textContent = "没有匹配的角色。";
-    fields.characterList.append(empty);
-    return;
+function confirmDiscardChanges() {
+  return !isDirty() || window.confirm("当前修改尚未保存，继续操作将丢失这些修改。是否继续？");
+}
+
+function characterOptionLabel(character) {
+  const label = character.display_name || character.id;
+  return character.source === "draft" ? `${label}（新建）` : label;
+}
+
+function characterOptions() {
+  const installed = Array.isArray(request?.characters) ? request.characters : [];
+  if (!temporaryCharacter || installed.some((item) => item.id === temporaryCharacter.id)) {
+    return installed;
   }
-  items.forEach((character) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "character-row";
-    row.dataset.id = character.id;
-    const title = document.createElement("span");
-    title.className = "character-row-title";
-    title.textContent = character.display_name || character.id;
-    const meta = document.createElement("span");
-    meta.className = "character-row-meta";
-    meta.textContent = `${character.id}${character.is_current ? " · 当前" : ""}${character.has_voice ? " · 含语音" : ""}`;
-    row.append(title, meta);
-    row.addEventListener("click", () => openCharacter(character.id));
-    fields.characterList.append(row);
+  return [temporaryCharacter, ...installed];
+}
+
+function renderCharacterOptions() {
+  fields.studioCharacterSelect.textContent = "";
+  characterOptions().forEach((character) => {
+    const option = document.createElement("option");
+    option.value = character.id;
+    option.textContent = characterOptionLabel(character);
+    fields.studioCharacterSelect.append(option);
   });
+  fields.studioCharacterSelect.value = editingCharacterId;
 }
 
 function collectDoc() {
@@ -195,18 +186,20 @@ function markBaseline() {
 }
 
 function refreshDirty() {
-  const dirty = currentDoc && JSON.stringify(collectDoc()) !== baseline;
+  const dirty = isDirty();
   document.body.classList.toggle("is-dirty", Boolean(dirty));
   fields.saveButton.classList.toggle("has-changes", Boolean(dirty));
 }
 
-function setCurrentDoc(payload) {
+function setCurrentDoc(payload, draftCharacter = null) {
   currentPackageDir = payload.package_dir || "";
   currentDoc = payload.doc || null;
   if (Array.isArray(payload.characters)) {
     request.characters = payload.characters;
-    renderCharacters();
   }
+  editingCharacterId = currentDoc?.id || "";
+  temporaryCharacter = draftCharacter;
+  renderCharacterOptions();
   renderEditor();
   switchPage("basic");
   markBaseline();
@@ -294,7 +287,31 @@ async function openCharacter(characterId) {
   });
 }
 
+async function selectCharacter(characterId) {
+  const previousId = editingCharacterId;
+  if (!characterId || characterId === previousId) {
+    fields.studioCharacterSelect.value = previousId;
+    return;
+  }
+  if (!confirmDiscardChanges()) {
+    fields.studioCharacterSelect.value = previousId;
+    return;
+  }
+  await runBusy(async () => {
+    try {
+      const payload = await hostCall("studio.open_character", { character_id: characterId });
+      setCurrentDoc(payload);
+    } catch (error) {
+      fields.studioCharacterSelect.value = previousId;
+      throw error;
+    }
+  });
+}
+
 async function createCharacter() {
+  if (!confirmDiscardChanges()) {
+    return;
+  }
   const id = window.prompt("角色 ID：", "");
   if (!id) {
     return;
@@ -304,7 +321,11 @@ async function createCharacter() {
     const payload = await hostCall("studio.create_character", {
       doc: { id, display_name: displayName },
     });
-    setCurrentDoc(payload);
+    setCurrentDoc(payload, {
+      id: payload.doc.id,
+      display_name: payload.doc.display_name,
+      source: "draft",
+    });
   });
 }
 
@@ -346,9 +367,11 @@ async function saveCharacter() {
     });
     if (Array.isArray(payload.characters)) {
       request.characters = payload.characters;
-      renderCharacters();
     }
     currentDoc = payload.doc || collectDoc();
+    editingCharacterId = currentDoc.id || editingCharacterId;
+    temporaryCharacter = null;
+    renderCharacterOptions();
     markBaseline();
     notify(payload.message || "已保存。", "success");
   });
@@ -401,8 +424,31 @@ function refreshControls() {
   fields.saveButton.disabled = busy || !hasDoc;
   fields.exportButton.disabled = busy || !hasDoc;
   fields.importDefaultPortraitButton.disabled = busy || !hasDoc;
-  fields.refreshCharactersButton.disabled = busy;
   fields.newCharacterButton.disabled = busy;
+  fields.studioCharacterSelect.disabled = busy || fields.studioCharacterSelect.options.length === 0;
+  fields.navItems.forEach((item) => {
+    item.disabled = busy || !hasDoc;
+  });
+  [
+    fields.characterId,
+    fields.displayName,
+    fields.initialMessage,
+    fields.cardText,
+    fields.replyToneInput,
+    fields.defaultPortrait,
+    fields.addExpressionButton,
+  ].forEach((element) => {
+    element.disabled = busy || !hasDoc;
+  });
+  if (hasDoc && currentDoc.id) {
+    fields.characterId.disabled = true;
+  }
+  fields.expressionList.querySelectorAll("input, button").forEach((element) => {
+    element.disabled = busy || !hasDoc;
+  });
+  fields.themeFields.querySelectorAll("input, button").forEach((element) => {
+    element.disabled = busy || !hasDoc;
+  });
 }
 
 async function closeStudio() {
@@ -416,17 +462,22 @@ async function load() {
       document.documentElement.style.setProperty(cssVar, request.theme[key]);
     }
   });
-  renderCharacters();
-  if (request.initial_character_id) {
-    await openCharacter(request.initial_character_id);
+  const characters = Array.isArray(request.characters) ? request.characters : [];
+  const initialId = characters.some((item) => item.id === request.initial_character_id)
+    ? request.initial_character_id
+    : (characters[0]?.id || "");
+  editingCharacterId = initialId;
+  renderCharacterOptions();
+  if (initialId) {
+    await openCharacter(initialId);
   } else {
+    renderEditor();
     refreshControls();
   }
 }
 
 fields.navItems.forEach((item) => item.addEventListener("click", () => switchPage(item.dataset.page)));
-fields.characterSearch.addEventListener("input", renderCharacters);
-fields.refreshCharactersButton.addEventListener("click", () => runBusy(refreshCharacters));
+fields.studioCharacterSelect.addEventListener("change", (event) => selectCharacter(event.target.value));
 fields.newCharacterButton.addEventListener("click", createCharacter);
 fields.importDefaultPortraitButton.addEventListener("click", importDefaultPortrait);
 fields.addExpressionButton.addEventListener("click", () => {

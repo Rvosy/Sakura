@@ -4714,9 +4714,17 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "settings-group" in index
     assert "角色工作室" in index
     assert "保存" in index
+    assert 'id="studioCharacterSelect"' in index
+    assert 'id="newCharacterButton"' in index
+    assert 'data-page="library"' not in index
+    assert 'id="page-library"' not in index
+    assert 'id="characterSearch"' not in index
+    assert 'id="refreshCharactersButton"' not in index
     assert "发布" not in index
     assert "发布" not in source
-    assert "hostCall(\"studio.list_characters\"" in source
+    assert "editingCharacterId" in source
+    assert "confirmDiscardChanges" in source
+    assert "hostCall(\"studio.list_characters\"" not in source
     assert "hostCall(\"studio.open_character\"" in source
     assert "hostCall(\"studio.create_character\"" in source
     assert "hostCall(\"studio.save_character\"" in source
