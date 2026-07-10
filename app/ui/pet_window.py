@@ -5352,11 +5352,13 @@ class PetWindow(QWidget):
         if not process.start():
             return False
         self.tauri_studio_process = process
+        self._sync_secondary_window_state()
         return True
 
     @Slot()
     def _on_tauri_studio_closed(self) -> None:
         self.tauri_studio_process = None
+        self._sync_secondary_window_state()
         try:
             self.character_registry = CharacterRegistry(self.base_dir)
         except Exception:  # noqa: BLE001 - closing the editor should not crash the pet window.
@@ -5365,6 +5367,7 @@ class PetWindow(QWidget):
     @Slot(str)
     def _on_tauri_studio_failed(self, message: str) -> None:
         self.tauri_studio_process = None
+        self._sync_secondary_window_state()
         show_themed_critical(self, "角色工作室", message)
 
     def _close_tauri_studio_process_for_shutdown(self) -> None:
@@ -5375,6 +5378,7 @@ class PetWindow(QWidget):
         shutdown = getattr(process, "shutdown", None)
         if callable(shutdown):
             shutdown()
+        self._sync_secondary_window_state()
 
     @Slot(object)
     def _on_tauri_settings_layout_preview(self, payload: object) -> None:
@@ -6267,9 +6271,12 @@ class PetWindow(QWidget):
             self._is_secondary_window_visible(window)
             for window in tuple(getattr(self, "_registered_secondary_windows", set()))
         )
-        # Tauri 设置是独立进程、不在副窗口登记表里，但它存活期间同样要压低桌宠置顶，
-        # 否则置顶立绘会盖住系统取色器的放大预览。
-        tauri_active = getattr(self, "tauri_settings_process", None) is not None
+        # Tauri 设置与角色工作室是独立进程、不在副窗口登记表里，但它们存活期间同样要
+        # 压低桌宠置顶，否则置顶立绘会盖住系统取色器的放大预览。
+        tauri_active = (
+            getattr(self, "tauri_settings_process", None) is not None
+            or getattr(self, "tauri_studio_process", None) is not None
+        )
         self._set_secondary_windows_topmost_suppressed(
             has_visible_secondary_window or tauri_active
         )

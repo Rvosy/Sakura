@@ -5514,6 +5514,32 @@ def test_registered_secondary_window_suppresses_topmost_until_hidden() -> None:
     assert raise_events == ["raise"]
 
 
+def test_pet_window_syncs_topmost_while_tauri_studio_is_active() -> None:
+    from app.ui.pet_window import PetWindow
+
+    native_sync_events: list[bool] = []
+
+    class Host:
+        _sync_secondary_window_state = PetWindow._sync_secondary_window_state
+        _is_secondary_window_visible = PetWindow._is_secondary_window_visible
+        _set_secondary_windows_topmost_suppressed = (
+            PetWindow._set_secondary_windows_topmost_suppressed
+        )
+
+        def __init__(self) -> None:
+            self._registered_secondary_windows = set()
+            self._secondary_windows_suppress_topmost = False
+            self.tauri_settings_process = None
+            self.tauri_studio_process = object()
+
+        def _sync_native_topmost_state(self) -> None:
+            native_sync_events.append(self._secondary_windows_suppress_topmost)
+
+    Host()._sync_secondary_window_state()
+
+    assert native_sync_events == [True]
+
+
 def test_pet_window_syncs_topmost_for_all_registered_secondary_windows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
