@@ -942,14 +942,6 @@ class ResourceManager(QObject):
         """当前窗口/协调器共享的 App 级资源域。"""
         return self._registry
 
-    @property
-    def _resources(self) -> list[StoppableResource]:
-        return self._registry._resources
-
-    @property
-    def _lingering_threads(self) -> list[threading.Thread]:
-        return self._registry._lingering_threads
-
     # ---- Phase 2：worker 工厂与批量关闭 ----------------------------------
 
     def spawn_qt_worker(
@@ -1114,23 +1106,6 @@ class ResourceManager(QObject):
         self._registry._unregister(resource)
 
     # ---- Phase 1：关闭机制、lingering 线程、wrapper 保留 -----------------
-
-    def stop_qt_thread(
-        self,
-        thread: QThread | None,
-        worker: QObject | None,
-        *,
-        label: str,
-        timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
-    ) -> bool:
-        """停止一个未经 spawn 注册的裸 QThread（Phase 1 委托入口）。
-
-        返回 ``True`` 表示已干净停止（或线程为空 / RuntimeError）；``False`` 表示
-        超时转入 lingering。调用方据此决定是否清空自身持有的 thread/worker 属性。
-        """
-        return self._stop_thread_mechanics(
-            thread, worker, label=label, timeout_ms=timeout_ms
-        )
 
     def _stop_thread_mechanics(
         self,

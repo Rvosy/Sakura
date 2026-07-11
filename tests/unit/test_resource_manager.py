@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -97,44 +98,14 @@ class _OwnerStub:
     pass
 
 
-# --- stop_qt_thread mechanics（Phase 1 入口） ------------------------------
+def test_legacy_qt_resource_facades_are_removed() -> None:
+    assert not hasattr(ResourceManager, "stop_qt_thread")
+    assert not hasattr(ResourceManager, "_resources")
+    assert not hasattr(ResourceManager, "_lingering_threads")
 
-
-def test_stop_qt_thread_clean_runs_cancel_interrupt_quit_wait() -> None:
-    _qt_app_or_skip()
-    mgr = ResourceManager()
-    thread = _ThreadStub(running=True, wait_result=True)
-    worker = _WorkerStub()
-
-    assert mgr.stop_qt_thread(thread, worker, label="worker_thread") is True
-    assert worker.cancelled is True
-    assert thread.interrupted is True
-    assert thread.quit_called is True
-    assert thread.waits == [1000]
-    assert mgr._lingering == []
-
-
-def test_stop_qt_thread_none_thread_is_clean() -> None:
-    _qt_app_or_skip()
-    mgr = ResourceManager()
-    assert mgr.stop_qt_thread(None, None, label="missing") is True
-
-
-def test_stop_qt_thread_timeout_lingers_then_releases_on_finished() -> None:
-    _qt_app_or_skip()
-    mgr = ResourceManager()
-    thread = _ThreadStub(running=True, wait_result=False)
-    worker = _WorkerStub()
-
-    assert mgr.stop_qt_thread(thread, worker, label="worker_thread") is False
-    assert len(mgr._lingering) == 1
-    assert mgr._lingering[0][0] is thread
-
-    # 线程在后台真正结束后触发 finished，释放并 deleteLater。
-    thread.finished.emit()
-    assert mgr._lingering == []
-    assert thread.deleted is True
-    assert worker.deleted is True
+    root = Path(__file__).resolve().parents[2]
+    pet_window_source = (root / "app/ui/pet_window.py").read_text(encoding="utf-8")
+    assert "_retain_qobject_wrappers_until_deleted" not in pet_window_source
 
 
 # --- QtWorkerResource.stop ------------------------------------------------
@@ -162,7 +133,7 @@ def test_resource_stop_clean_finalizes_nulls_owner_and_runs_business() -> None:
     assert thread.deleted is True
     assert worker.deleted is True
     assert business == [1]
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
 
     # 二次 finished 不应重复 finalize。
     res._on_thread_finished()
@@ -205,7 +176,7 @@ def test_resource_stop_timeout_lingers_and_unregisters() -> None:
     mgr._register(res)
 
     assert res.stop() is False
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
     assert len(mgr._lingering) == 1
     assert res.thread is None
     # lingering 路径不应清空宿主属性（与旧 _shutdown_qthread 行为一致）。
@@ -377,7 +348,7 @@ def test_spawn_qt_worker_normal_completion_finalizes() -> None:
     assert owner.worker_thread is None  # type: ignore[attr-defined]
     assert owner.the_worker is None  # type: ignore[attr-defined]
     assert seen == [(None, None)]
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
     assert res.is_running() is False
 
 
@@ -409,7 +380,7 @@ def test_spawn_qt_worker_unregistered_is_skipped_by_stop_all() -> None:
         label="mig_thread",
     )
     # 不进入 stop_all 清单，但仍会在线程结束时自动 finalize。
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
     _spin_until(lambda: owner.mig_thread is None)  # type: ignore[attr-defined]
     assert owner.mig_worker is None  # type: ignore[attr-defined]
 
@@ -422,7 +393,7 @@ def test_thread_resource_track_and_is_running() -> None:
     mgr = ResourceManager()
     res = mgr.track_python_thread(label="synth")
     assert isinstance(res, ThreadResource)
-    assert res in mgr._resources
+    assert res in mgr.registry._resources
     assert res.is_running() is False
 
     done = threading.Event()
@@ -445,9 +416,9 @@ def test_thread_resource_stop_clean_when_thread_done() -> None:
 
     assert res.stop() is True
     assert res.state is ResourceState.STOPPED
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
     assert res.thread is None
-    assert mgr._lingering_threads == []
+    assert mgr.registry._lingering_threads == []
 
 
 def test_thread_resource_stop_cancel_unblocks_then_joins() -> None:
@@ -469,8 +440,8 @@ def test_thread_resource_stop_cancel_unblocks_then_joins() -> None:
     # cancel 会设事件让线程退出，join 成功 → 干净停止。
     assert res.stop(timeout_ms=2000) is True
     assert cancelled == [True]
-    assert res not in mgr._resources
-    assert mgr._lingering_threads == []
+    assert res not in mgr.registry._resources
+    assert mgr.registry._lingering_threads == []
 
 
 def test_thread_resource_stop_timeout_lingers() -> None:
@@ -484,8 +455,8 @@ def test_thread_resource_stop_timeout_lingers() -> None:
 
     # 没有 cancel，线程仍阻塞 → join 超时转 lingering。
     assert res.stop(timeout_ms=100) is False
-    assert res not in mgr._resources
-    assert thread in mgr._lingering_threads
+    assert res not in mgr.registry._resources
+    assert thread in mgr.registry._lingering_threads
     assert res.thread is None
     block.set()  # 收尾，避免线程残留
     thread.join(2)
@@ -503,7 +474,7 @@ def test_thread_group_spawn_tracks_non_daemon_thread() -> None:
     thread = res.spawn(lambda: release.wait(2), name="backchannel-1")
 
     assert isinstance(res, ThreadGroupResource)
-    assert res in mgr._resources
+    assert res in mgr.registry._resources
     assert thread is not None
     assert thread.daemon is False
     assert res.state is ResourceState.READY
@@ -523,7 +494,7 @@ def test_thread_group_completed_thread_removes_itself() -> None:
     assert res.is_running() is False
     assert res._threads == set()
     # 线程自然结束后资源仍可复用，直到显式 stop。
-    assert res in mgr._resources
+    assert res in mgr.registry._resources
 
 
 def test_thread_group_stop_cancel_unblocks_all_threads() -> None:
@@ -544,8 +515,8 @@ def test_thread_group_stop_cancel_unblocks_all_threads() -> None:
     assert res.stop(timeout_ms=1000) is True
     assert cancelled == [True]
     assert res.state is ResourceState.STOPPED
-    assert res not in mgr._resources
-    assert mgr._lingering_threads == []
+    assert res not in mgr.registry._resources
+    assert mgr.registry._lingering_threads == []
 
 
 def test_thread_group_stop_uses_one_deadline_and_lingers() -> None:
@@ -562,9 +533,9 @@ def test_thread_group_stop_uses_one_deadline_and_lingers() -> None:
     elapsed = time.monotonic() - started_at
 
     assert elapsed < 0.25
-    assert res not in mgr._resources
-    assert first in mgr._lingering_threads
-    assert second in mgr._lingering_threads
+    assert res not in mgr.registry._resources
+    assert first in mgr.registry._lingering_threads
+    assert second in mgr.registry._lingering_threads
     assert res.is_running() is True
     release.set()
     first.join(2)
@@ -623,7 +594,7 @@ def test_process_resource_stop_terminates() -> None:
     assert proc.terminated is True
     assert res.process is None
     assert res.state is ResourceState.STOPPED
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
 
 
 def test_process_resource_stop_when_already_exited_skips_terminate() -> None:
@@ -635,7 +606,7 @@ def test_process_resource_stop_when_already_exited_skips_terminate() -> None:
 
     assert res.stop() is True
     assert proc.terminated is False
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
 
 
 def test_process_resource_stop_uses_custom_terminator() -> None:
@@ -665,7 +636,7 @@ def test_process_resource_detach_keeps_process_alive() -> None:
     assert proc.terminated is False
     assert proc.killed is False
     assert res.process is None
-    assert res not in mgr._resources
+    assert res not in mgr.registry._resources
     # detach 之后 stop 是干净的 no-op。
     assert res.stop() is True
 
@@ -719,5 +690,5 @@ def test_stop_all_mixes_qt_thread_and_process_resources() -> None:
 
     mgr.stop_all()
     assert proc.terminated is True
-    assert process_res not in mgr._resources
-    assert thread_res not in mgr._resources
+    assert process_res not in mgr.registry._resources
+    assert thread_res not in mgr.registry._resources

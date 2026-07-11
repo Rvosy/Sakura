@@ -3457,10 +3457,6 @@ class PetWindow(QWidget):
             self.screen_observation_followup_in_progress = False
             self._resume_screen_observation_followup_cleanup()
 
-    def _retain_qobject_wrappers_until_deleted(self, *objects: QObject | None) -> None:
-        """委托资源管理器保留退役 wrapper，避开 Shiboken 双重析构窗口。"""
-        self.resource_manager.retain_wrappers(*objects)
-
     def _resume_screen_observation_followup_cleanup(self) -> None:
         if getattr(self, "_shutdown_in_progress", False):
             return
