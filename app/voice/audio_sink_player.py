@@ -22,14 +22,14 @@ class AudioSinkPlayer(QObject):
     不依赖 Windows 多媒体后端的 EndOfMedia / StoppedState 回调。
 
     完成判定逻辑：
-    1. 优先由 QAudioSink 状态变化触发：IdleState + all_pcm_written + ever_active
+    1. 优先由 QAudioSink 状态变化触发：IdleState + all_pcm_written
        → reason = "idle_after_all_pcm_written"
     2. PCM 全部写入后启动短 drain 定时器兜底：
        → reason = "drain_after_all_pcm_written"
-    3. 异常路径（stop/cancel/error）：
+    3. 异常路径（stop/error）：
        → reason = "stopped" / "write_error" / "callback_error"
 
-    fallback_timeout 只应在 AudioSink 彻底无响应时由外层 Provider 触发。
+    fallback_timeout 只应在 AudioSink 彻底无响应时由外层播放端点触发。
     """
 
     # 播放开始信号
@@ -56,10 +56,8 @@ class AudioSinkPlayer(QObject):
         self._started_at: float = 0.0
 
         # --- 状态机 ---
-        self._ever_active: bool = False
         self._all_pcm_written: bool = False
         self._finishing: bool = False
-        self._finished_emitted: bool = False
 
     # ---- 公开 API ----
 
@@ -72,10 +70,8 @@ class AudioSinkPlayer(QObject):
         self._audio_path = audio_path
         self._write_offset = 0
         self._started_at = 0.0
-        self._ever_active = False
         self._all_pcm_written = False
         self._finishing = False
-        self._finished_emitted = False
 
         # 1. 使用 wave 打开文件并校验格式
         try:
@@ -169,10 +165,6 @@ class AudioSinkPlayer(QObject):
     def stop(self) -> None:
         """停止播放（由外部调用，如丢弃音频）。"""
         self._finish_once("stopped")
-
-    def cancel(self) -> None:
-        """取消播放（等同于 stop）。"""
-        self.stop()
 
     # ---- 内部实现 ----
 
@@ -310,25 +302,13 @@ class AudioSinkPlayer(QObject):
             self._finish_once("write_error")
 
     @Slot()
-    @Slot()
     def _finish_if_drained(self) -> None:
         if self._finishing:
             return
         if not self._all_pcm_written:
             return
 
-        state_name_drain = "unknown"
-        try:
-            sink_obj = self._sink
-            if sink_obj is not None:
-                st = sink_obj.state()
-                state_name_drain = st.name if hasattr(st, "name") else str(st)
-            else:
-                state_name_drain = "no_sink"
-        except Exception:
-            pass
-
-        # drain timer fired, all PCM consumed, finish regardless of ever_active
+        # 所有 PCM 写入后的 drain 定时器已触发，结束本次播放。
         self._finish_once("drain_after_all_pcm_written")
 
     def _on_sink_state_changed(self) -> None:
@@ -342,13 +322,6 @@ class AudioSinkPlayer(QObject):
 
         state_name = state.name if hasattr(state, "name") else str(state)
 
-        is_active = "ActiveState" in state_name
-        is_idle = "IdleState" in state_name
-
-        # 跟踪是否曾经进入 ActiveState
-        if "ActiveState" in state_name:
-            self._ever_active = True
-
         # 核心：IdleState + all_pcm_written = 自然播放完成
         if (
             "IdleState" in state_name
@@ -359,11 +332,10 @@ class AudioSinkPlayer(QObject):
 
     def _finish_once(self, reason: str) -> None:
         """统一 finish 入口，保证 exactly once。"""
-        if self._finishing or self._finished_emitted:
+        if self._finishing:
             return
 
         self._finishing = True
-        self._finished_emitted = True
 
         self._stop_write_timer()
 
@@ -390,7 +362,6 @@ class AudioSinkPlayer(QObject):
         self._write_offset = 0
         self._total_pcm_bytes = 0
         self._all_pcm_written = False
-        self._ever_active = False
 
         log_event(
             "TTS",

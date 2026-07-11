@@ -270,7 +270,7 @@ def test_sink_player_accepts_valid_16bit_stereo_wav() -> None:
     assert total_pcm_bytes > 0
 
 
-def test_sink_player_do_finish_is_exactly_once() -> None:
+def test_sink_player_finish_is_exactly_once() -> None:
     """_do_finish 必须 exactly once，重复调用被忽略。"""
     player = AudioSinkPlayer()
     finish_reasons: list[str] = []
@@ -283,15 +283,13 @@ def test_sink_player_do_finish_is_exactly_once() -> None:
     assert finish_reasons == ["first"]
 
 
-def test_sink_player_cancel_calls_do_finish() -> None:
-    """cancel 应触发 finish。"""
+def test_sink_completion_has_one_state_source() -> None:
     player = AudioSinkPlayer()
-    finish_reasons: list[str] = []
-    player.finished.connect(lambda reason, path: finish_reasons.append(reason))
 
-    player._finish_once("stopped")
-
-    assert finish_reasons == ["stopped"]
+    assert hasattr(player, "_finishing")
+    assert not hasattr(player, "_finished_emitted")
+    assert not hasattr(player, "_ever_active")
+    assert not hasattr(player, "cancel")
 
 
 def test_sink_player_start_returns_false_on_invalid_wav() -> None:
@@ -355,5 +353,7 @@ def test_sink_player_start_returns_true_for_valid_wav() -> None:
     _write_test_wav(path, channels=1, sample_width=2, sample_rate=16000, frame_count=1600)
 
     player = AudioSinkPlayer()
-    ok = player.start(path)
-    assert ok is True
+    try:
+        assert player.start(path) is True
+    finally:
+        player.stop()
