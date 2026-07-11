@@ -1322,6 +1322,21 @@ class PetWindow(QWidget):
             suppress()
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        migration_thread = getattr(self, "tts_migration_thread", None)
+        try:
+            migration_running = bool(
+                migration_thread is not None and migration_thread.isRunning()
+            )
+        except RuntimeError:
+            migration_running = False
+        if migration_running:
+            QMessageBox.information(
+                self,
+                "TTS 数据迁移中",
+                "请等待 TTS 数据迁移完成后再退出 Sakura。",
+            )
+            event.ignore()
+            return
         if has_active_tts_bundle_download():
             reply = QMessageBox.question(
                 self,

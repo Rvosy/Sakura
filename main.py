@@ -689,7 +689,7 @@ def _start_tts_migration_or_deferred(base_dir: Path, pet_window: PetWindow) -> N
     worker = TTSBundleMigrationWorker(migrations)
     pet_window.tts_migration_dialog = dialog
     dialog.show()
-    # register=False：迁移是启动期一次性任务，退出时不应被 stop_all 打断。
+    # register=False：迁移不被 stop_all 打断；PetWindow 在运行期间拒绝关闭。
     pet_window.resource_manager.spawn_qt_worker(
         worker,
         parent=pet_window,

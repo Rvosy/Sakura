@@ -1584,6 +1584,87 @@ def test_emit_app_closed_event_logs_once_with_interrupted_flag() -> None:
     assert len(window.runtime_event_queue) == 0
 
 
+def test_close_event_waits_for_running_tts_migration(
+    pet_window, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtGui import QCloseEvent
+
+    import app.ui.pet_window as pet_window_module
+
+    class MigrationThreadStub:
+        def isRunning(self) -> bool:
+            return True
+
+    closed: list[bool] = []
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pet_window,
+        "tts_migration_thread",
+        MigrationThreadStub(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "has_active_tts_bundle_download",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        pet_window,
+        "close_external_tools",
+        lambda: closed.append(True),
+    )
+    monkeypatch.setattr(
+        pet_window_module.QMessageBox,
+        "information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    event = QCloseEvent()
+
+    pet_window.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert closed == []
+    assert messages == [
+        ("TTS 数据迁移中", "请等待 TTS 数据迁移完成后再退出 Sakura。")
+    ]
+
+
+def test_close_event_continues_for_invalid_tts_migration_wrapper(
+    pet_window, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtGui import QCloseEvent
+
+    import app.ui.pet_window as pet_window_module
+
+    class InvalidMigrationThreadStub:
+        def isRunning(self) -> bool:
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    closed: list[bool] = []
+    monkeypatch.setattr(
+        pet_window,
+        "tts_migration_thread",
+        InvalidMigrationThreadStub(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "has_active_tts_bundle_download",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        pet_window,
+        "close_external_tools",
+        lambda: closed.append(True),
+    )
+    event = QCloseEvent()
+
+    pet_window.closeEvent(event)
+
+    assert event.isAccepted()
+    assert closed == [True]
+
+
 def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
     from app.core.resource_manager import QtWorkerResource, ResourceManager
     from app.ui.pet_window import PetWindow, TRANSIENT_PROGRESS_MESSAGE_KEY
