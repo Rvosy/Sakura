@@ -19,6 +19,7 @@ from PySide6.QtCore import (  # noqa: E402
     Slot,
 )
 
+import app.core.resource_manager as resource_manager_module  # noqa: E402
 from app.core.resource_manager import (  # noqa: E402
     AsyncLoopResource,
     ProcessResource,
@@ -64,6 +65,7 @@ class _ThreadStub:
         self.quit_called = False
         self.waits: list[int] = []
         self.deleted = False
+        self.parent_value: object | None = object()
 
     def requestInterruption(self) -> None:
         self.interrupted = True
@@ -80,6 +82,9 @@ class _ThreadStub:
 
     def deleteLater(self) -> None:
         self.deleted = True
+
+    def setParent(self, parent: object | None) -> None:
+        self.parent_value = parent
 
 
 class _WorkerStub:
@@ -177,10 +182,23 @@ def test_resource_stop_timeout_lingers_and_unregisters() -> None:
 
     assert res.stop() is False
     assert res not in mgr.registry._resources
-    assert len(mgr._lingering) == 1
+    assert mgr._lingering == [(thread, worker)]
     assert res.thread is None
-    # lingering 路径不应清空宿主属性（与旧 _shutdown_qthread 行为一致）。
-    assert owner.t is thread  # type: ignore[attr-defined]
+    assert owner.t is None  # type: ignore[attr-defined]
+    assert owner.w is None  # type: ignore[attr-defined]
+    assert thread.parent_value is None
+
+    callback = thread.finished.callbacks[-1]
+    assert getattr(callback, "__self__", None) is mgr
+    assert getattr(callback, "__name__", "") == "_release_finished_lingering"
+
+    mgr._release_lingering(thread)
+
+    assert mgr._lingering == []
+    assert thread in mgr._retired_wrappers
+    assert worker in mgr._retired_wrappers
+    assert worker.deleted is True
+    assert thread.deleted is True
 
 
 def test_null_owner_attrs_skips_reassigned_worker() -> None:
@@ -288,22 +306,33 @@ def test_async_loop_resource_submit_stop_and_restart() -> None:
 # --- retain_wrappers / prune ---------------------------------------------
 
 
-def test_retain_wrappers_prunes_invalid(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_wrapper_prune_retries_until_cpp_object_is_invalid(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _qt_app_or_skip()
     mgr = ResourceManager()
-    valid = QObject()
-    invalid = QObject()
+    wrapper = QObject()
+    valid = True
+    callbacks: list[object] = []
 
     fake = types.ModuleType("shiboken6")
-    fake.isValid = lambda obj: obj is valid  # type: ignore[attr-defined]
+    fake.isValid = lambda _obj: valid  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "shiboken6", fake)
+    monkeypatch.setattr(
+        resource_manager_module.QTimer,
+        "singleShot",
+        staticmethod(lambda _delay, callback: callbacks.append(callback)),
+    )
 
-    mgr.retain_wrappers(valid, invalid, None)
-    assert valid in mgr._retired_wrappers
-    assert invalid in mgr._retired_wrappers
+    mgr._retain_wrappers(wrapper)
+    assert len(callbacks) == 1
 
-    mgr._prune_wrappers()
-    assert mgr._retired_wrappers == [valid]
+    callbacks.pop(0)()
+    assert mgr._retired_wrappers == [wrapper]
+    assert len(callbacks) == 1
+
+    valid = False
+    callbacks.pop(0)()
+    assert mgr._retired_wrappers == []
+    assert callbacks == []
 
 
 # --- spawn_qt_worker（真实 QThread） --------------------------------------

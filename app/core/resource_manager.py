@@ -183,6 +183,7 @@ class QtWorkerResource:
             return True
         # 超时 lingering：manager 已持有 (thread, worker) 引用并接管 deleteLater；
         # 标记 finalized 以避免线程真正结束时与 lingering 释放重复清理。
+        self._null_owner_attrs()
         self._finalized = True
         self._manager._unregister(self)
         self.thread = None
@@ -197,9 +198,7 @@ class QtWorkerResource:
             return
         self._finalized = True
         thread, worker = self.thread, self.worker
-        self._manager.retain_wrappers(thread, worker)
-        _delete_later_quietly(worker)
-        _delete_later_quietly(thread)
+        self._manager._retire_qobjects(worker, thread)
         self._null_owner_attrs()
         self.thread = None
         self.worker = None
@@ -1144,17 +1143,23 @@ class ResourceManager(QObject):
     def _keep_lingering(self, thread: QThread, worker: QObject | None) -> None:
         if any(item_thread is thread for item_thread, _worker in self._lingering):
             return
+        try:
+            thread.setParent(None)
+        except RuntimeError as exc:
+            log_event("ResourceManager", "后台线程脱离窗口父对象失败", {"error": str(exc)})
         self._lingering.append((thread, worker))
         try:
-            thread.finished.connect(
-                lambda _thread=thread: self._release_lingering(_thread)
-            )
+            thread.finished.connect(self._release_finished_lingering)
         except RuntimeError:
             self._release_lingering(thread)
 
     def _keep_lingering_thread(self, thread: threading.Thread, label: str) -> None:
         """登记一个 join 超时的裸 Python 线程。"""
         self._registry._keep_lingering_thread(thread, label)
+
+    def _release_finished_lingering(self) -> None:
+        if isinstance(thread := self.sender(), QThread):
+            self._release_lingering(thread)
 
     def _release_lingering(self, thread: QThread) -> None:
         remaining: list[tuple[QThread, QObject | None]] = []
@@ -1165,10 +1170,14 @@ class ResourceManager(QObject):
                 continue
             remaining.append((item_thread, item_worker))
         self._lingering = remaining
-        _delete_later_quietly(released_worker)
+        self._retire_qobjects(released_worker, thread)
+
+    def _retire_qobjects(self, worker: QObject | None, thread: QThread | None) -> None:
+        self._retain_wrappers(thread, worker)
+        _delete_later_quietly(worker)
         _delete_later_quietly(thread)
 
-    def retain_wrappers(self, *objects: QObject | None) -> None:
+    def _retain_wrappers(self, *objects: QObject | None) -> None:
         """退役 QObject wrapper 暂存 1 秒后再 prune，避开 Shiboken 双重析构窗口。
 
         queued 信号可能在 Qt 正在销毁同一 QObject 时到达 Python；若此刻丢掉最后一个
@@ -1195,3 +1204,5 @@ class ResourceManager(QObject):
             except (RuntimeError, TypeError):
                 pass
         self._retired_wrappers = alive
+        if alive:
+            QTimer.singleShot(WRAPPER_RETENTION_MS, self._prune_wrappers)

@@ -1601,6 +1601,7 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
             self.interrupted = False
             self.quit_called = False
             self.waits: list[int] = []
+            self.parent_value: object | None = object()
 
         def requestInterruption(self) -> None:
             self.interrupted = True
@@ -1614,6 +1615,9 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
         def wait(self, timeout: int) -> bool:
             self.waits.append(timeout)
             return False
+
+        def setParent(self, parent: object | None) -> None:
+            self.parent_value = parent
 
     class WorkerStub:
         def __init__(self) -> None:
@@ -1684,6 +1688,9 @@ def test_close_external_tools_cancels_and_keeps_lingering_thread() -> None:
     assert thread.quit_called is True
     assert thread.waits == [1000]
     assert manager._lingering == [(thread, worker)]
+    assert thread.parent_value is None
+    assert window.worker_thread is None
+    assert window.worker is None
     assert window.messages == []
     assert subtitle.cancelled is True
     assert order == ["backchannel_cancel", "stop_all"]
