@@ -1224,7 +1224,6 @@ def test_local_tts_output_reader_writes_raw_log_and_software_summary(monkeypatch
         "app.core.runtime_log._load_debug_values",
         lambda: {"profile": "trace", "file_enabled": False},
     )
-    monkeypatch.setattr("app.core.runtime_log._load_logging_values", lambda: {})
 
     class Stream:
         def __init__(self) -> None:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import app.core.runtime_log as runtime_log_module
 from app.core.gui_log import GUI_LOG_SCOPE_PROGRAM, clear_gui_logs, get_gui_log_buffer
 from app.core.runtime_log import (
     _close_file_logger_for_tests,
@@ -16,6 +17,11 @@ from app.core.runtime_log import (
     log_event,
     sanitize_console_log_data,
 )
+
+
+def test_runtime_log_has_one_persisted_config_source() -> None:
+    assert not hasattr(runtime_log_module, "_load_logging_values")
+    assert not hasattr(runtime_log_module, "gui_log_enabled")
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +123,6 @@ def test_file_log_enabled_by_default(monkeypatch) -> None:  # type: ignore[no-un
     log_path = _runtime_log_path("file_enabled_by_default")
     monkeypatch.setattr("app.core.runtime_log._FILE_LOG_PATH", log_path)
     monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {})
-    monkeypatch.setattr("app.core.runtime_log._load_logging_values", lambda: {})
 
     log_event("API", "HTTP 请求成功", {"status": 200})
 
@@ -128,7 +133,6 @@ def test_file_log_can_be_disabled_explicitly(monkeypatch) -> None:  # type: igno
     log_path = _runtime_log_path("file_disabled_explicitly")
     monkeypatch.setattr("app.core.runtime_log._FILE_LOG_PATH", log_path)
     monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"file_enabled": False})
-    monkeypatch.setattr("app.core.runtime_log._load_logging_values", lambda: {})
 
     log_event("API", "HTTP 请求成功", {"status": 200})
 

@@ -69,7 +69,6 @@ def test_gui_log_compacts_api_tool_and_tts_timeline() -> None:
 
 def test_gui_log_routes_tts_service_summary_to_tts_scope(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"profile": "info", "file_enabled": False})
-    monkeypatch.setattr("app.core.runtime_log._load_logging_values", lambda: {})
 
     log_tts_service_output("GPT-SoVITS", "########## 合成音频 ##########")
     log_tts_service_output("GPT-SoVITS", "实际输入的目标文本(切句后): ['そんなの当たり前だっ。']")
