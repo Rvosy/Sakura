@@ -88,17 +88,9 @@ def test_runtime_has_no_proactive_care_compatibility_path() -> None:
 
     runtime_source = (root / "app/agent/runtime.py").read_text(encoding="utf-8")
     for name in forbidden:
-        if name != "proactive_check":
-            assert name not in runtime_source
-    assert runtime_source.count('"proactive_check"') == 1
-    assert 'if event.type == "proactive_check":' in runtime_source
+        assert name not in runtime_source
     assert 'raise ValueError(f"不支持的主动事件类型：{event.type}")' in runtime_source
-    runtime_without_guard = "\n".join(
-        line
-        for line in runtime_source.splitlines()
-        if '"proactive_check"' not in line
-    )
-    assert "proactive" not in runtime_without_guard.lower()
+    assert "proactive" not in runtime_source.lower()
 
 
 class TestApiSettings:

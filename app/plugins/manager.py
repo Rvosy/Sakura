@@ -235,8 +235,8 @@ class PluginManager:
         """向拥有对应权限的插件派发生命周期事件。"""
         hook = _EVENT_HOOKS.get(event_type)
         if hook is None:
-            log_event("PluginManager", "忽略未知插件事件", {"event_type": event_type})
-            return
+            log_event("PluginManager", "拒绝未知插件事件", {"event_type": event_type})
+            raise ValueError(f"未知插件事件：{event_type}")
         hook_name, permission = hook
         event = PluginEvent(event_type=event_type, payload=payload or {}, source=source)
         for plugin, manifest in list(self._active_plugins):

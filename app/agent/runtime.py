@@ -1140,15 +1140,13 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        if event.type == "proactive_check":
+        if event.type not in {"reminder_due", "screen_awareness_check"}:
             log_event(
                 "AgentRuntime",
-                "拒绝退役主动事件",
-                {"event_type": event.type, "handler": "AgentRuntime.handle_event"},
+                "拒绝不支持的主动事件",
+                {"event_type": event.type},
             )
             raise ValueError(f"不支持的主动事件类型：{event.type}")
-        if event.type not in {"reminder_due", "screen_awareness_check"}:
-            return AgentResult(reply=parse_chat_reply("未対応のイベントだよ。"))
 
         log_event("AgentRuntime", "处理主动事件", {"event": {"type": event.type, "payload": event.payload}})
         event_messages = _build_event_messages(event)

@@ -489,6 +489,28 @@ class TestPluginManager:
 
         assert mgr.loaded_count == 1
 
+    def test_emit_event_rejects_unknown_host_event(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import app.plugins.manager as manager_module
+
+        logs = []
+        monkeypatch.setattr(
+            manager_module,
+            "log_event",
+            lambda channel, message, payload=None, **kwargs: logs.append(
+                (channel, message, payload)
+            ),
+        )
+        manager = PluginManager(_runtime_root("unknown_event"))
+
+        with pytest.raises(ValueError, match="未知插件事件：message.typo"):
+            manager.emit_event("message.typo")
+
+        assert (
+            "PluginManager",
+            "拒绝未知插件事件",
+            {"event_type": "message.typo"},
+        ) in logs
+
     def test_plugin_load_result(self) -> None:
         spec = PluginSpec(entry="test:Test")
         result = PluginLoadResult(spec=spec, error="load failed")
