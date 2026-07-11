@@ -691,7 +691,6 @@ class PetWindow(QWidget):
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
-        self.pending_screen_observation_event_reminder_id: str | None = None
         self.pending_visual_observation_jobs: list[VisualObservationJob] = []
         self.pending_event_visual_observation_jobs: list[VisualObservationJob] = []
         self.plugin_chat_ui_widget_instances: list[QWidget] = []
@@ -705,9 +704,6 @@ class PetWindow(QWidget):
         self.resource_manager = ResourceManager(self, registry=context.resource_registry)
         self._register_runtime_service_resources()
         self.screen_observation_followup_in_progress = False
-        self.active_reminder_id: str | None = None
-        self.active_reminder_text = ""
-        self.active_event_type = ""
         self.active_event: AgentEvent | None = None
         self.memory_status_message_active = False
         self.memory_status_last_status = ""
@@ -3266,7 +3262,6 @@ class PetWindow(QWidget):
         self,
         result: AgentResult,
         event: AgentEvent | None,
-        reminder_id: str | None,
     ) -> bool:
         screen_action = _first_screen_observation_request(result)
         if screen_action is None:
@@ -3307,7 +3302,6 @@ class PetWindow(QWidget):
             {
                 "kind": "event_followup",
                 "event": event,
-                "reminder_id": reminder_id,
                 "reason": reason,
                 **self._screen_awareness_encode_options(),
             },
@@ -3328,8 +3322,6 @@ class PetWindow(QWidget):
             self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的主动事件。"))
             self._resume_screen_observation_followup_cleanup()
             return
-        reminder_id = context.get("reminder_id")
-        reminder_id = reminder_id if isinstance(reminder_id, str) else None
         reason = str(context.get("reason", "")).strip()
         payload = dict(event.payload)
         payload["screen_context"] = {
@@ -3342,7 +3334,6 @@ class PetWindow(QWidget):
         payload["screen_observation_requested_by_model"] = True
         payload["screen_observation_reason"] = reason
         self.pending_screen_observation_event = AgentEvent(type=event.type, payload=payload)
-        self.pending_screen_observation_event_reminder_id = reminder_id
         self.screen_observation_followup_in_progress = False
         visual_id = generate_visual_observation_id()
         self.pending_event_visual_observation_jobs = [
@@ -3643,8 +3634,7 @@ class PetWindow(QWidget):
             return False
         if (
             self.worker_thread is not None
-            or self.active_reminder_id is not None
-            or self.active_event_type
+            or self.active_event is not None
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
@@ -3815,24 +3805,21 @@ class PetWindow(QWidget):
         if had_batch:
             log_event("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
 
-    def _run_event_worker(self, event: AgentEvent, reminder_id: str | None = None) -> None:
+    def _run_event_worker(self, event: AgentEvent) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        if self.worker_thread is not None or self.active_reminder_id is not None or self.active_event_type:
+        if self.worker_thread is not None or self.active_event is not None:
             return
 
         self._begin_interaction(event.type)
         self._log_interaction_stage(
             "event_worker_start",
             {
-                "reminder_id": reminder_id,
+                "reminder_id": event.payload.get("id"),
                 "event": {"type": event.type, "payload": event.payload},
             },
         )
         self.active_event = event
-        self.active_event_type = event.type
-        self.active_reminder_id = reminder_id
-        self.active_reminder_text = str(event.payload.get("text", ""))
         self._set_busy(True)
         worker = EventWorker(
             self.agent_runtime,
@@ -3860,30 +3847,34 @@ class PetWindow(QWidget):
 
     @Slot(object)
     def _handle_event_reply(self, result: AgentResult) -> None:
+        self.messages = _without_transient_progress_messages(self.messages)
         if getattr(self, "_shutdown_in_progress", False):
-            self.messages = _without_transient_progress_messages(self.messages)
             self._clear_active_event()
             return
-        self.messages = _without_transient_progress_messages(self.messages)
+        event = self.active_event
+        event_type = event.type if event else ""
+        reminder_id = (
+            str(event.payload.get("id", "")).strip()
+            if event is not None and event.type == "reminder_due"
+            else ""
+        )
         self._log_interaction_stage(
             "event_result_received",
-            {"event_type": self.active_event_type, "segments": len(result.reply.segments)},
+            {"event_type": event_type, "segments": len(result.reply.segments)},
         )
-        event = self.active_event
-        reminder_id = self.active_reminder_id
-        if self._queue_event_screen_observation_followup(result, event, reminder_id):
+        if self._queue_event_screen_observation_followup(result, event):
             self._clear_active_event()
             return
         result = self._filter_screen_awareness_reply(result, event)
         self._clear_active_event()
         if not result.reply.text.strip() and not result.reply.translation.strip() and not result.actions:
             self._log_interaction_stage("event_silent", {"event_type": event.type if event else ""})
-            if reminder_id is not None:
+            if reminder_id:
                 self._mark_reminder_completed(reminder_id)
             self._end_interaction("event_silent")
             return
         self._consume_agent_result(result)
-        if reminder_id is not None:
+        if reminder_id:
             self._mark_reminder_completed(reminder_id)
 
     def _filter_screen_awareness_reply(
@@ -3952,14 +3943,14 @@ class PetWindow(QWidget):
     @Slot(str)
     def _handle_event_error(self, message: str) -> None:
         self.messages = _without_transient_progress_messages(self.messages)
-        if getattr(self, "_shutdown_in_progress", False):
-            self._clear_active_event()
-            return
-        event_type = self.active_event_type
-        self._log_interaction_stage("event_error", {"event_type": event_type, "message": message})
-        reminder_id = self.active_reminder_id
-        reminder_text = self.active_reminder_text
+        event = self.active_event
         self._clear_active_event()
+        if getattr(self, "_shutdown_in_progress", False):
+            return
+        event_type = event.type if event else ""
+        self._log_interaction_stage("event_error", {"event_type": event_type, "message": message})
+        reminder_id = str(event.payload.get("id", "")).strip() if event else ""
+        reminder_text = str(event.payload.get("text", "")) if event else ""
         log_event("Event", "主动事件生成失败", {"error": message})
         if event_type == "reminder_due":
             result = AgentResult(
@@ -3980,14 +3971,11 @@ class PetWindow(QWidget):
             # 主动感知失败时静默结束本轮交互。若不结束，active_interaction_id 会一直占用，
             # _can_run_screen_awareness 会持续返回 False，导致此后不再触发任何主动感知。
             self._end_interaction("screen_awareness_error_silent")
-        if reminder_id is not None:
+        if event_type == "reminder_due" and reminder_id:
             self._mark_reminder_completed(reminder_id)
 
     def _clear_active_event(self) -> None:
         self.active_event = None
-        self.active_event_type = ""
-        self.active_reminder_id = None
-        self.active_reminder_text = ""
 
     def _mark_reminder_completed(self, reminder_id: str) -> None:
         try:
@@ -4034,7 +4022,6 @@ class PetWindow(QWidget):
         if getattr(self, "_shutdown_in_progress", False):
             self.pending_screen_observation_messages = None
             self.pending_screen_observation_event = None
-            self.pending_screen_observation_event_reminder_id = None
             self.screen_observation_followup_in_progress = False
             return
         if self.screen_observation_followup_in_progress:
@@ -4051,14 +4038,12 @@ class PetWindow(QWidget):
             return
         if self.pending_screen_observation_event is not None:
             event = self.pending_screen_observation_event
-            reminder_id = self.pending_screen_observation_event_reminder_id
             self.pending_screen_observation_event = None
-            self.pending_screen_observation_event_reminder_id = None
             self._log_interaction_stage(
                 "event_screen_observation_worker_restart",
                 {"event_type": event.type},
             )
-            self._run_event_worker(event, reminder_id)
+            self._run_event_worker(event)
             return
         self._set_busy(False)
         self._log_interaction_stage("ui_busy_disabled")
@@ -4480,20 +4465,16 @@ class PetWindow(QWidget):
         return result
 
     def _mobile_chat_busy(self) -> bool:
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        is_reply_sequence_active = getattr(subtitle_controller, "is_reply_sequence_active", None)
-        reply_sequence_active = callable(is_reply_sequence_active) and bool(is_reply_sequence_active())
         return bool(
             self.worker_thread is not None
             or self._active_mobile_chat_request is not None
             or self._mobile_chat_requests
-            or self.active_reminder_id is not None
-            or self.active_event_type
+            or self.active_event is not None
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
             or self.screen_observation_encode_thread is not None
-            or reply_sequence_active
+            or self.subtitle_controller.is_reply_sequence_active()
         )
 
     @Slot(object)
@@ -5865,7 +5846,7 @@ class PetWindow(QWidget):
     def _check_due_reminders(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        if self.worker_thread is not None or self.active_reminder_id is not None:
+        if self.worker_thread is not None or self.active_event is not None:
             return
         try:
             due_reminders = self.reminder_store.due_reminders()
@@ -5901,8 +5882,7 @@ class PetWindow(QWidget):
                     "text": reminder_text,
                     "trigger_at": reminder_trigger_at,
                 },
-            ),
-            reminder_id,
+            )
         )
 
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:

@@ -169,6 +169,28 @@ def test_resource_stop_clean_finalizes_nulls_owner_and_runs_business() -> None:
     assert business == [1]
 
 
+def test_resource_finalizer_nulls_owner_before_business_callback() -> None:
+    _qt_app_or_skip()
+    owner = _OwnerStub()
+    thread = _ThreadStub(running=True, wait_result=True)
+    worker = _WorkerStub()
+    owner.t, owner.w = thread, worker
+    seen = []
+    resource = QtWorkerResource(
+        ResourceManager(),
+        thread,
+        worker,
+        owner=owner,
+        thread_attr="t",
+        worker_attr="w",
+        on_finished=lambda: seen.append((owner.t, owner.w)),
+    )
+
+    resource._on_thread_finished()
+
+    assert seen == [(None, None)]
+
+
 def test_resource_stop_timeout_lingers_and_unregisters() -> None:
     _qt_app_or_skip()
     mgr = ResourceManager()
@@ -331,7 +353,7 @@ def test_spawn_qt_worker_normal_completion_finalizes() -> None:
 
     owner = _Owner()
     mgr = ResourceManager()
-    business: list[bool] = []
+    seen = []
     worker = _Worker()
 
     res = mgr.spawn_qt_worker(
@@ -341,18 +363,20 @@ def test_spawn_qt_worker_normal_completion_finalizes() -> None:
         thread_attr="worker_thread",
         worker_attr="the_worker",
         quit_on=[worker.finished],
-        on_finished=lambda: business.append(True),
+        on_finished=lambda: seen.append(
+            (owner.worker_thread, owner.the_worker)  # type: ignore[attr-defined]
+        ),
         label="worker_thread",
     )
 
     assert owner.worker_thread is not None  # type: ignore[attr-defined]
     assert owner.the_worker is worker  # type: ignore[attr-defined]
 
-    _spin_until(lambda: owner.worker_thread is None)  # type: ignore[attr-defined]
+    _spin_until(lambda: bool(seen))
 
     assert owner.worker_thread is None  # type: ignore[attr-defined]
     assert owner.the_worker is None  # type: ignore[attr-defined]
-    assert business == [True]
+    assert seen == [(None, None)]
     assert res not in mgr._resources
     assert res.is_running() is False
 

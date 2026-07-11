@@ -1659,110 +1659,296 @@ def test_shutdown_ignores_late_progress_and_reply() -> None:
     assert window.messages == []
 
 
-def test_silent_screen_awareness_reply_ends_interaction() -> None:
-    from app.ui.pet_window import PetWindow, TRANSIENT_PROGRESS_MESSAGE_KEY
+def test_silent_screen_awareness_reply_ends_interaction(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import TRANSIENT_PROGRESS_MESSAGE_KEY
 
-    class MinimalWindow:
-        _handle_event_reply = PetWindow._handle_event_reply
-        _clear_active_event = PetWindow._clear_active_event
-
-        def __init__(self) -> None:
-            self._shutdown_in_progress = False
-            self.messages = [
-                {"role": "assistant", "content": "途中", TRANSIENT_PROGRESS_MESSAGE_KEY: True}
-            ]
-            self.active_event = AgentEvent(type="screen_awareness_check", payload={})
-            self.active_event_type = "screen_awareness_check"
-            self.active_reminder_id = None
-            self.active_reminder_text = ""
-            self.active_interaction_id = "interaction-1"
-            self.logged = []
-            self.ended = []
-
-        def _log_interaction_stage(self, *args):  # type: ignore[no-untyped-def]
-            self.logged.append(args)
-
-        def _queue_event_screen_observation_followup(self, *args):  # type: ignore[no-untyped-def]
-            return False
-
-        def _filter_screen_awareness_reply(self, result, event):  # type: ignore[no-untyped-def]
-            return result
-
-        def _consume_agent_result(self, _result):  # type: ignore[no-untyped-def]
-            raise AssertionError("静默主动事件不应进入回复展示")
-
-        def _mark_reminder_completed(self, _reminder_id):  # type: ignore[no-untyped-def]
-            raise AssertionError("本用例没有提醒 id")
-
-        def _end_interaction(self, outcome: str) -> None:
-            self.ended.append(outcome)
-            self.active_interaction_id = ""
-
-    window = MinimalWindow()
-    result = AgentResult(reply=ChatReply([]), actions=[])
-
-    window._handle_event_reply(result)
-
-    assert window.messages == []
-    assert window.active_event_type == ""
-    assert window.active_interaction_id == ""
-    assert window.ended == ["event_silent"]
-
-
-def test_event_error_cleans_transient_progress_during_shutdown() -> None:
-    from app.ui.pet_window import PetWindow, TRANSIENT_PROGRESS_MESSAGE_KEY
-
-    class MinimalWindow:
-        _handle_event_error = PetWindow._handle_event_error
-
-        def _clear_active_event(self) -> None:
-            self.active_event_type = ""
-
-    window = MinimalWindow()
-    window._shutdown_in_progress = True
-    window.active_event_type = "custom"
-    window.messages = [
+    pet_window.messages = [
         {"role": "assistant", "content": "途中", TRANSIENT_PROGRESS_MESSAGE_KEY: True}
     ]
-
-    window._handle_event_error("late error")
-
-    assert window.messages == []
-    assert window.active_event_type == ""
-
-
-def test_screen_awareness_event_error_ends_interaction(pet_window) -> None:  # type: ignore[no-untyped-def]
-    """主动感知 API 失败时必须结束交互，否则 active_interaction_id 卡住会让后续主动感知永久停摆。"""
-    window = pet_window
-    window._shutdown_in_progress = False
-    window.messages = []
-    window.active_event = None
-    window.active_event_type = "screen_awareness_check"
-    window.active_reminder_id = None
-    window.active_reminder_text = ""
-    window.active_interaction_id = "interaction-3"
-    window.logged = []
-    window.ended = []
-    window._log_interaction_stage = lambda *args: window.logged.append(args)
-    window._consume_agent_result = lambda _result: (_ for _ in ()).throw(
-        AssertionError("静默主动感知失败不应进入回复展示")
+    pet_window.active_event = AgentEvent(type="screen_awareness_check", payload={})
+    pet_window.active_interaction_id = "interaction-1"
+    ended = []
+    consumed = []
+    monkeypatch.setattr(
+        pet_window,
+        "_queue_event_screen_observation_followup",
+        lambda result, event: False,
     )
-    window._mark_reminder_completed = lambda _reminder_id: (_ for _ in ()).throw(
-        AssertionError("本用例没有提醒 id")
+    monkeypatch.setattr(
+        pet_window,
+        "_filter_screen_awareness_reply",
+        lambda result, event: result,
+    )
+    monkeypatch.setattr(pet_window, "_consume_agent_result", consumed.append)
+
+    def end(outcome: str) -> None:
+        ended.append(outcome)
+        pet_window.active_interaction_id = ""
+
+    monkeypatch.setattr(pet_window, "_end_interaction", end)
+
+    pet_window._handle_event_reply(AgentResult(reply=ChatReply([]), actions=[]))
+
+    assert pet_window.messages == []
+    assert pet_window.active_event is None
+    assert consumed == []
+    assert ended == ["event_silent"]
+
+
+def test_event_error_cleans_transient_progress_during_shutdown(pet_window) -> None:
+    from app.ui.pet_window import TRANSIENT_PROGRESS_MESSAGE_KEY
+
+    pet_window.active_event = AgentEvent(type="custom", payload={})
+    pet_window.messages = [
+        {"role": "assistant", "content": "途中", TRANSIENT_PROGRESS_MESSAGE_KEY: True}
+    ]
+    pet_window._shutdown_in_progress = True
+    try:
+        pet_window._handle_event_error("late error")
+    finally:
+        pet_window._shutdown_in_progress = False
+
+    assert pet_window.messages == []
+    assert pet_window.active_event is None
+
+
+def test_screen_awareness_event_error_ends_interaction(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.active_event = AgentEvent(type="screen_awareness_check", payload={})
+    pet_window.active_interaction_id = "interaction-3"
+    ended = []
+
+    def end(outcome: str) -> None:
+        ended.append(outcome)
+        pet_window.active_interaction_id = ""
+
+    monkeypatch.setattr(pet_window, "_end_interaction", end)
+
+    pet_window._handle_event_error("API 请求超时。")
+
+    assert pet_window.active_event is None
+    assert pet_window.active_interaction_id == ""
+    assert ended == ["screen_awareness_error_silent"]
+
+
+def test_reminder_event_error_uses_active_event_payload(pet_window, monkeypatch) -> None:
+    pet_window.active_event = AgentEvent(
+        type="reminder_due",
+        payload={"id": "reminder-1", "text": "喝水"},
+    )
+    completed: list[str] = []
+    consumed: list[AgentResult] = []
+    monkeypatch.setattr(pet_window, "_mark_reminder_completed", completed.append)
+    monkeypatch.setattr(pet_window, "_consume_agent_result", consumed.append)
+
+    pet_window._handle_event_error("network error")
+
+    assert pet_window.active_event is None
+    assert completed == ["reminder-1"]
+    assert consumed[0].reply.segments[0].translation == "到时间了：喝水"
+    for name in ("active_event_type", "active_reminder_id", "active_reminder_text"):
+        assert not hasattr(pet_window, name)
+
+
+def test_reminder_event_reply_marks_payload_id_after_consuming_result(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    event = AgentEvent(
+        type="reminder_due",
+        payload={"id": "reminder-1", "text": "喝水"},
+    )
+    result = AgentResult(reply=ChatReply([ChatSegment("時間だよ。", translation="到时间了。")]))
+    order = []
+    pet_window.active_event = event
+    monkeypatch.setattr(
+        pet_window,
+        "_queue_event_screen_observation_followup",
+        lambda current, active_event: False,
+    )
+    monkeypatch.setattr(
+        pet_window,
+        "_filter_screen_awareness_reply",
+        lambda current, active_event: current,
     )
 
-    def end_interaction(outcome: str) -> None:
-        window.ended.append(outcome)
-        window.active_interaction_id = ""
+    def consume(current: AgentResult) -> None:
+        assert pet_window.active_event is None
+        assert current is result
+        order.append("consume")
 
-    window._end_interaction = end_interaction
+    def complete(reminder_id: str) -> None:
+        assert pet_window.active_event is None
+        order.append(("complete", reminder_id))
 
-    window._handle_event_error("API 请求超时。")
+    monkeypatch.setattr(pet_window, "_consume_agent_result", consume)
+    monkeypatch.setattr(pet_window, "_mark_reminder_completed", complete)
 
-    assert window.active_event_type == ""
-    # 关键断言：交互已结束，active_interaction_id 被清空，主动感知总闸不会被永久卡住
-    assert window.active_interaction_id == ""
-    assert window.ended == ["screen_awareness_error_silent"]
+    pet_window._handle_event_reply(result)
+
+    assert order == ["consume", ("complete", "reminder-1")]
+
+
+def test_due_reminder_passes_single_agent_event_argument(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    pet_window.reminder_store = SimpleNamespace(
+        due_reminders=lambda: [
+            {
+                "id": "reminder-1",
+                "text": "喝水",
+                "trigger_at": "2026-07-11T12:00:00+08:00",
+            }
+        ]
+    )
+    events = []
+    monkeypatch.setattr(pet_window, "_run_event_worker", events.append)
+
+    pet_window._check_due_reminders()
+
+    assert events == [
+        AgentEvent(
+            type="reminder_due",
+            payload={
+                "id": "reminder-1",
+                "text": "喝水",
+                "trigger_at": "2026-07-11T12:00:00+08:00",
+            },
+        )
+    ]
+
+
+def test_due_reminder_does_not_start_while_active_event_exists(pet_window) -> None:
+    class ReminderStore:
+        def due_reminders(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("active event 应在读取提醒前阻止本轮检查")
+
+    pet_window.active_event = AgentEvent(type="screen_awareness_check", payload={})
+    pet_window.reminder_store = ReminderStore()
+
+    pet_window._check_due_reminders()
+
+
+def test_screen_awareness_does_not_start_while_active_event_exists(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.active_event = AgentEvent(type="reminder_due", payload={"id": "r1"})
+    pet_window.input_edit.clear()
+    pet_window.speech_timer.stop()
+    pet_window.active_interaction_id = ""
+    monkeypatch.setattr(pet_window, "_screen_awareness_context_allowed", lambda: True)
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "current_segment_in_progress",
+        lambda: False,
+    )
+
+    assert not pet_window._can_run_screen_awareness()
+
+
+def test_cleanup_worker_restarts_pending_event_from_payload_only(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    event = AgentEvent(
+        type="reminder_due",
+        payload={"id": "reminder-1", "text": "喝水", "screen_context": {}},
+    )
+    pet_window.pending_screen_observation_event = event
+    restarted: list[AgentEvent] = []
+    monkeypatch.setattr(pet_window, "_run_event_worker", restarted.append)
+
+    pet_window._cleanup_worker()
+
+    assert restarted == [event]
+    assert not hasattr(pet_window, "pending_screen_observation_event_reminder_id")
+
+
+def _event_followup_inputs() -> tuple[AgentEvent, ScreenObservation]:
+    return (
+        AgentEvent(
+            type="screen_awareness_check",
+            payload={"id": "reminder-1", "text": "喝水"},
+        ),
+        ScreenObservation(
+            data_url="data:image/jpeg;base64,screen",
+            width=320,
+            height=180,
+            captured_at="2026-07-11T12:00:01+08:00",
+            screen_name="primary",
+        ),
+    )
+
+
+def test_event_followup_restarts_once_when_worker_finishes_before_encode(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    event, observation = _event_followup_inputs()
+    restarted = []
+    busy = []
+    pet_window.worker_thread = None
+    pet_window.screen_observation_followup_in_progress = True
+    monkeypatch.setattr(pet_window, "_run_event_worker", restarted.append)
+    monkeypatch.setattr(pet_window, "_set_busy", busy.append)
+    monkeypatch.setattr(pet_window, "_record_history", lambda *args: None)
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: callback(),
+    )
+
+    pet_window._cleanup_worker()
+    assert restarted == []
+    assert busy == []
+
+    pet_window._finish_event_screen_observation_followup(
+        {"event": event, "reason": "看看屏幕"},
+        observation,
+    )
+
+    assert len(restarted) == 1
+    assert restarted[0].payload["id"] == "reminder-1"
+    assert busy == []
+
+
+def test_event_followup_waits_for_worker_finalizer_when_encode_finishes_first(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    event, observation = _event_followup_inputs()
+    restarted = []
+    busy = []
+    pet_window.worker_thread = object()
+    pet_window.screen_observation_followup_in_progress = True
+    monkeypatch.setattr(pet_window, "_run_event_worker", restarted.append)
+    monkeypatch.setattr(pet_window, "_set_busy", busy.append)
+    monkeypatch.setattr(pet_window, "_record_history", lambda *args: None)
+
+    pet_window._finish_event_screen_observation_followup(
+        {"event": event, "reason": "看看屏幕"},
+        observation,
+    )
+    assert restarted == []
+    assert busy == []
+
+    pet_window.worker_thread = None
+    pet_window._cleanup_worker()
+
+    assert len(restarted) == 1
+    assert restarted[0].payload["id"] == "reminder-1"
+    assert busy == []
 
 
 def test_speaking_state_timeout_cancels_reply_and_ends_interaction() -> None:
@@ -6703,7 +6889,7 @@ def test_screen_awareness_batches_screenshots_until_cooldown(
         check_interval_minutes=1,
         cooldown_minutes=2,
     )
-    window._run_event_worker = lambda event, reminder_id=None: events.append(event)
+    window._run_event_worker = events.append
     window._record_history = lambda *args: history.append(args)
 
     observations: list[ScreenObservation] = []
@@ -7071,7 +7257,7 @@ def test_screen_awareness_disabled_does_not_capture_or_send(
         check_interval_minutes=1,
         cooldown_minutes=1,
     )
-    window._run_event_worker = lambda event, reminder_id=None: events.append(event)
+    window._run_event_worker = events.append
 
     def fail_capture(_window):  # type: ignore[no-untyped-def]
         raise AssertionError("关闭主动屏幕获取时不应该截图")
