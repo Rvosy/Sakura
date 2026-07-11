@@ -46,27 +46,6 @@ EVENT_TOOL_FAILED = "tool.failed"
 # TTS
 EVENT_TTS_STARTED = "tts.started"
 EVENT_TTS_FINISHED = "tts.finished"
-EVENT_TTS_FAILED = "tts.failed"
-
-# 以下事件名已预留常量，但本轮尚未接入真实触发点，后续待接入：
-# 桌宠交互
-EVENT_PET_CLICKED = "pet.clicked"  # TODO: 后续接入桌宠点击触发点
-EVENT_PET_DRAGGED = "pet.dragged"  # TODO: 后续接入桌宠拖拽触发点
-EVENT_PET_HIDDEN = "pet.hidden"  # TODO: 后续接入桌宠隐藏触发点
-EVENT_PET_REOPENED = "pet.reopened"  # TODO: 后续接入桌宠重新打开触发点
-
-# 用户活跃状态
-EVENT_USER_IDLE = "user.idle"  # TODO: 后续接入用户空闲检测
-EVENT_USER_RETURNED = "user.returned"  # TODO: 后续接入用户返回检测
-
-# 屏幕感知
-EVENT_SCREEN_CHANGED = "screen.changed"  # TODO: 后续接入屏幕变化检测
-EVENT_SCREEN_SUMMARY_UPDATED = "screen.summary.updated"  # TODO: 后续接入屏幕摘要更新
-EVENT_SCREEN_ERROR_DETECTED = "screen.error_detected"  # TODO: 后续接入屏幕异常检测
-
-# Agent 思考
-EVENT_AGENT_THINKING_STARTED = "agent.thinking.started"  # TODO: 后续接入 Agent 思考开始
-EVENT_AGENT_THINKING_FINISHED = "agent.thinking.finished"  # TODO: 后续接入 Agent 思考结束
 
 
 class PluginEventBus:

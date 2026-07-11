@@ -24,15 +24,8 @@ from app.plugins.events import (
     EVENT_LLM_REQUEST_FAILED,
     EVENT_LLM_REQUEST_FINISHED,
     EVENT_LLM_REQUEST_STARTED,
-    EVENT_PET_CLICKED,
-    EVENT_PET_DRAGGED,
-    EVENT_PET_HIDDEN,
-    EVENT_PET_REOPENED,
-    EVENT_TTS_FAILED,
     EVENT_TTS_FINISHED,
     EVENT_TTS_STARTED,
-    EVENT_USER_IDLE,
-    EVENT_USER_RETURNED,
 )
 from app.plugins.models import RendererContribution, RendererCreateContext
 from app.renderers.base import CharacterRenderer
@@ -46,22 +39,15 @@ if TYPE_CHECKING:
 # 渲染器在事件总线上的归属标识；卸载时按此一次性清理全部订阅。
 RENDERER_PLUGIN_ID = "__renderer__"
 
-# 渲染器订阅并转发给后端的事件集合（部分事件宿主尚未派发，待派发后自动生效）。
+# 渲染器订阅并转发给后端的真实宿主事件集合。
 RENDERER_EVENTS: tuple[str, ...] = (
     EVENT_APP_STARTED,
     EVENT_APP_CLOSING,
     EVENT_TTS_STARTED,
     EVENT_TTS_FINISHED,
-    EVENT_TTS_FAILED,
     EVENT_LLM_REQUEST_STARTED,
     EVENT_LLM_REQUEST_FINISHED,
     EVENT_LLM_REQUEST_FAILED,
-    EVENT_PET_CLICKED,
-    EVENT_PET_DRAGGED,
-    EVENT_PET_HIDDEN,
-    EVENT_PET_REOPENED,
-    EVENT_USER_IDLE,
-    EVENT_USER_RETURNED,
 )
 
 

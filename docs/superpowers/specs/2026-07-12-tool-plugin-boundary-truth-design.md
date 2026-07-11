@@ -94,7 +94,7 @@
 - `screen.changed`、`screen.summary.updated`、`screen.error_detected`
 - `agent.thinking.started`、`agent.thinking.finished`
 
-同步从 `RendererManager.RENDERER_EVENTS` 删除对应订阅。保留并验证真实派发的 app、LLM 与 TTS 事件。工具和聊天事件虽真实存在，但 renderer 当前没有消费契约，本轮不擅自扩展 renderer 行为。
+同步从 `RendererManager.RENDERER_EVENTS` 删除对应订阅。`tts.failed` 同样没有生产 emit 点，因此连同预留常量一起删除；只保留并验证真实派发的 app、LLM 以及 TTS started/finished 事件。工具和聊天事件虽真实存在，但 renderer 当前没有消费契约，本轮不擅自扩展 renderer 行为。
 
 ## 7. 错误处理与兼容边界
 

@@ -374,7 +374,7 @@ Review：两类未知宿主事件都在任何业务副作用前失败；模型�
 - Modify: `tests/unit/test_renderer_manager.py`
 
 **Interfaces:**
-- Produces: `RENDERER_EVENTS` 只含 app、LLM、TTS 真实事件。
+- Produces: `RENDERER_EVENTS` 只含有生产 emit 点的 app、LLM、TTS started/finished 事件。
 
 - [ ] **Step 1: 写真实事件表失败测试**
 
@@ -386,7 +386,6 @@ def test_renderer_subscribes_only_to_host_emitted_events() -> None:
         EVENT_LLM_REQUEST_FAILED,
         EVENT_LLM_REQUEST_FINISHED,
         EVENT_LLM_REQUEST_STARTED,
-        EVENT_TTS_FAILED,
         EVENT_TTS_FINISHED,
         EVENT_TTS_STARTED,
     )
@@ -397,7 +396,6 @@ def test_renderer_subscribes_only_to_host_emitted_events() -> None:
         EVENT_APP_CLOSING,
         EVENT_TTS_STARTED,
         EVENT_TTS_FINISHED,
-        EVENT_TTS_FAILED,
         EVENT_LLM_REQUEST_STARTED,
         EVENT_LLM_REQUEST_FINISHED,
         EVENT_LLM_REQUEST_FAILED,
@@ -414,13 +412,13 @@ Expected: `RENDERER_EVENTS` 仍额外包含 pet/user 预留事件，测试失败
 
 - [ ] **Step 3: 删除未派发常量与订阅**
 
-从 `app/plugins/events.py` 删除第 4-6 节全部未接线预留常量；从 renderer import 和 `RENDERER_EVENTS` 删除对应名称。保留 app、LLM、TTS、chat、tool 的真实事件常量。
+从 `app/plugins/events.py` 删除第 4-6 节全部未接线预留常量以及同样无生产 emit 点的 `EVENT_TTS_FAILED`；从 renderer import 和 `RENDERER_EVENTS` 删除对应名称。保留 app、LLM、TTS started/finished、chat、tool 的真实事件常量。
 
 - [ ] **Step 4: 运行 GREEN 与全仓扫描**
 
 ```powershell
 .\runtime\python.exe -m pytest tests/unit/test_renderer_manager.py tests/unit/test_plugin_advanced.py tests/ui/test_pet_window.py -q -k "renderer or plugin_bus or app_closed or tts"
-rg -n "EVENT_PET_|EVENT_USER_|EVENT_SCREEN_|EVENT_AGENT_" app plugins tests
+rg -n "(^|[^A-Z_])EVENT_(PET|USER|SCREEN|AGENT)_" app plugins tests
 ```
 
 Expected: pytest 通过；`rg` 无输出。
@@ -446,7 +444,7 @@ Review：只删除没有 emit 点的声明；真实 app/LLM/TTS renderer 转发�
 rg -n "BuiltinToolProvider|register_from_provider|_handler_from_callable" app plugins
 rg -n "def _normalize_tool_handler" app/plugins
 rg -n '"proactive_check"' app/agent/runtime.py
-rg -n "EVENT_PET_|EVENT_USER_|EVENT_SCREEN_|EVENT_AGENT_" app plugins tests
+rg -n "(^|[^A-Z_])EVENT_(PET|USER|SCREEN|AGENT)_" app plugins tests
 ```
 
 Expected: 第一、三、四条无输出；第二条只命中 `app/plugins/capabilities.py` 一次。
