@@ -936,7 +936,6 @@ class PetWindow(QWidget):
         self.send_button.setObjectName("sendButton")
         self.send_button.setFixedHeight(38)
         self.send_button.clicked.connect(self._handle_send_button_clicked)
-        self.reply_waiting_ui_active = False
 
         self.screenshot_button = QToolButton(self.input_bar)
         self.screenshot_button.setObjectName("screenshotButton")
@@ -1607,19 +1606,20 @@ class PetWindow(QWidget):
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.handle_pet_clicked()
-        # 模型未在思考时，让输入栏现身并把焦点移入输入框。
+        # 模型未在工作时，让输入栏现身并把焦点移入输入框。
         # 先 set_force_visible(True) 使 input_card 同步 show()（hidden widget 无法接收焦点），
         # 设完焦点后立即释放 force_visible——_input_bar_pinned 会通过焦点继续维持可见。
         # 思考中不浮现：避免用户点击桌宠时反而让输入栏被焦点固定、无法随思考态收起。
-        if not getattr(self, "reply_waiting_ui_active", False):
-            animator = getattr(self, "input_bar_animator", None)
-            input_edit = getattr(self, "input_edit", None)
-            if animator is not None:
-                animator.set_force_visible(True)
-            if input_edit is not None:
-                input_edit.setFocus()
-            if animator is not None:
-                animator.set_force_visible(False)
+        worker_busy = (
+            self.worker_thread is not None
+            or self.screen_observation_followup_in_progress
+            or self.pending_screen_observation_messages is not None
+            or self.pending_screen_observation_event is not None
+        )
+        if not worker_busy:
+            self.input_bar_animator.set_force_visible(True)
+            self.input_edit.setFocus()
+            self.input_bar_animator.set_force_visible(False)
 
     def _apply_bubble_settings(self, settings: BubbleSettings) -> None:
         """应用气泡无操作自动隐藏配置到控制器（设置保存后调用）。"""
@@ -2105,44 +2105,28 @@ class PetWindow(QWidget):
     def _reply_waiting_placeholder_text(self) -> str:
         return f"{self.character_profile.display_name}正在思考中…"
 
-    def _set_reply_waiting_ui(self, waiting: bool) -> None:
+    def _sync_reply_waiting_ui(self, waiting: bool) -> None:
         """切换回复等待期间的输入区状态：保留输入能力，只提示当前正在等待。"""
-        if getattr(self, "startup_initializing", False):
-            waiting = False
-        was_waiting = bool(getattr(self, "reply_waiting_ui_active", False))
-        self.reply_waiting_ui_active = waiting
-        if hasattr(self, "input_edit"):
-            self.input_edit.setPlaceholderText(
-                self._reply_waiting_placeholder_text()
-                if waiting
-                else self._normal_input_placeholder_text()
-            )
-            self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
-        if hasattr(self, "send_button"):
-            self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
-        release_empty_focus = getattr(self, "_release_empty_input_focus_after_reply_waiting", None)
-        if (waiting or (was_waiting and not waiting)) and callable(release_empty_focus):
-            release_empty_focus()
-        self._sync_input_bar_waiting_visibility()
+        if self.startup_initializing:
+            return
+        was_waiting = bool(self.input_edit.property("replyWaiting"))
+        self.input_edit.setPlaceholderText(
+            self._reply_waiting_placeholder_text()
+            if waiting
+            else self._normal_input_placeholder_text()
+        )
+        self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
+        self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
+        if waiting or was_waiting:
+            self._release_empty_input_focus_after_reply_waiting()
+        self.input_bar_animator.sync()
 
     def _release_empty_input_focus_after_reply_waiting(self) -> None:
         """回复等待切换时释放空输入框焦点，避免输入栏被焦点状态固定。"""
-        input_edit = getattr(self, "input_edit", None)
-        text = getattr(input_edit, "text", None)
-        if callable(text) and str(text()).strip():
+        if self.input_edit.text().strip():
             return
-        has_focus = getattr(input_edit, "hasFocus", None)
-        if not callable(has_focus) or not has_focus():
-            return
-        clear_focus = getattr(input_edit, "clearFocus", None)
-        if callable(clear_focus):
-            clear_focus()
-
-    def _sync_input_bar_waiting_visibility(self) -> None:
-        animator = getattr(self, "input_bar_animator", None)
-        sync = getattr(animator, "sync", None)
-        if callable(sync):
-            sync()
+        if self.input_edit.hasFocus():
+            self.input_edit.clearFocus()
 
     def _set_widget_dynamic_property(self, widget: QWidget | None, name: str, value: object) -> None:
         if widget is None:
@@ -3029,7 +3013,6 @@ class PetWindow(QWidget):
 
     def _show_waiting_reply_placeholder(self) -> None:
         """显示模型回复等待动效，并阻止自动隐藏在等待期间藏起气泡。"""
-        self._set_reply_waiting_ui(True)
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.notify_speaking()
@@ -4726,9 +4709,7 @@ class PetWindow(QWidget):
             self.send_button.setText("初始化")
         else:
             self.send_button.setText("等待" if busy else "发送")
-            set_reply_waiting_ui = getattr(self, "_set_reply_waiting_ui", None)
-            if callable(set_reply_waiting_ui):
-                set_reply_waiting_ui(busy)
+            self._sync_reply_waiting_ui(busy)
         self._log_interaction_stage("set_busy", {"busy": busy})
         update_reply_history_buttons = getattr(self, "_update_reply_history_buttons", None)
         if update_reply_history_buttons is not None:

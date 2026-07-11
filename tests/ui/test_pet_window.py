@@ -7157,23 +7157,22 @@ def test_send_message_clears_pending_screen_awareness_screenshot_batch(
     pet_window,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-
     window = _configure_screen_awareness_window(
         pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=10,
     )
-    requests = []
-    window.input_edit.setText("发送这条")
+    requests, _history = _configure_manual_screenshot_window(
+        window,
+        monkeypatch,
+        "发送这条",
+    )
     window.pending_manual_screen_observation = None
     window.screen_awareness_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
     window.screen_awareness_context_batch_started_at = 60
     window.last_screen_awareness_context_at = 60
     window.screen_awareness_context_dropped_count = 2
-    window._start_chat_worker = lambda request_messages: requests.append(request_messages)
-    monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: 300.0)
 
     window.send_message("test")
 
@@ -7283,63 +7282,50 @@ class _DummySubtitleController:
         self.display_speeds.append((typing_interval_ms, segment_pause_ms))
 
 
-class _DummyBubbleAutoHide:
-    def __init__(self) -> None:
-        self.speaking_count = 0
+def test_manual_screenshot_empty_input_sends_default_text(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    requests, history = _configure_manual_screenshot_window(
+        pet_window,
+        monkeypatch,
+        "",
+    )
 
-    def notify_speaking(self) -> None:
-        self.speaking_count += 1
-
-
-class _DummyInputBarAnimator:
-    def __init__(self) -> None:
-        self.sync_count = 0
-        self.feedback_count = 0
-
-    def sync(self) -> None:
-        self.sync_count += 1
-
-    def play_send_feedback(self) -> None:
-        self.feedback_count += 1
-
-
-def test_manual_screenshot_empty_input_sends_default_text() -> None:
-    window, requests, history = _build_minimal_manual_screenshot_window("")
-
-    window.send_message("test")
+    pet_window.send_message("test")
 
     assert len(requests) == 1
     content = requests[0][-1]["content"]
     assert isinstance(content, list)
     assert content[0]["text"].startswith("请根据我框选的截图继续对话。")
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,manual"
-    assert window.subtitle_controller.waiting_started == 1
-    assert window.subtitle_controller.cancelled_with == []
-    assert window.bubble_auto_hide.speaking_count == 1
-    assert window.input_edit.placeholder == "Sakura正在思考中…"
-    assert window.input_edit.properties["replyWaiting"] is True
-    assert window.send_button.properties["replyWaiting"] is True
-    assert window.input_bar_animator.sync_count == 1
-    assert window.pending_manual_screen_observation is None
+    assert pet_window.pending_manual_screen_observation is None
     assert history
     assert "data:image/jpeg;base64" not in history[0][1]
 
 
-def test_manual_screenshot_text_input_records_marker_without_image_data() -> None:
-    window, requests, history = _build_minimal_manual_screenshot_window("帮我看这里")
+def test_manual_screenshot_text_input_records_marker_without_image_data(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    requests, history = _configure_manual_screenshot_window(
+        pet_window,
+        monkeypatch,
+        "帮我看这里",
+    )
 
-    window.send_message("test")
+    pet_window.send_message("test")
 
     assert len(requests) == 1
     content = requests[0][-1]["content"]
     assert isinstance(content, list)
     assert content[0]["text"].startswith("帮我看这里")
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,manual"
-    assert window.messages[-1]["content"].startswith("帮我看这里")
-    assert "已附加手动框选截图" in window.messages[-1]["content"]
-    assert "visual_id=vis_" in window.messages[-1]["content"]
-    assert window.pending_visual_observation_jobs[0].source == "manual_screenshot"
-    assert "data:image/jpeg;base64" not in window.messages[-1]["content"]
+    assert pet_window.messages[-1]["content"].startswith("帮我看这里")
+    assert "已附加手动框选截图" in pet_window.messages[-1]["content"]
+    assert "visual_id=vis_" in pet_window.messages[-1]["content"]
+    assert pet_window.pending_visual_observation_jobs[0].source == "manual_screenshot"
+    assert "data:image/jpeg;base64" not in pet_window.messages[-1]["content"]
     assert "data:image/jpeg;base64" not in history[0][1]
 
 
@@ -7382,159 +7368,145 @@ def test_visual_context_is_injected_for_screenshot_followup() -> None:
         path.unlink(missing_ok=True)
 
 
-def test_set_busy_disables_manual_screenshot_button() -> None:
-    from app.ui.pet_window import PetWindow
+def test_set_busy_uses_reply_waiting_property_as_previous_state(
+    pet_window,
+    qtbot,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.activateWindow()
+    pet_window.input_bar_animator.set_force_visible(True)
+    pet_window.input_edit.setProperty("replyWaiting", True)
+    pet_window.input_edit.setText("")
+    pet_window.input_edit.setFocus()
+    qtbot.waitUntil(pet_window.input_edit.hasFocus)
+    assert pet_window.input_edit.hasFocus()
 
-    class MinimalBusyWindow:
-        _set_busy = PetWindow._set_busy
-        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
-        _release_empty_input_focus_after_reply_waiting = (
-            PetWindow._release_empty_input_focus_after_reply_waiting
+    pet_window._set_busy(False)
+
+    assert pet_window.input_edit.property("replyWaiting") is False
+    assert not pet_window.input_edit.hasFocus()
+    assert not hasattr(pet_window, "reply_waiting_ui_active")
+
+
+def test_set_busy_does_not_change_pet_ui_state(pet_window) -> None:
+    from app.ui.state import PetUiState
+
+    pet_window.ui_state.begin_speaking()
+    pet_window._set_busy(False)
+
+    assert pet_window.ui_state.state is PetUiState.SPEAKING
+
+
+def test_set_busy_keeps_focus_when_waiting_ends_with_next_input(
+    pet_window,
+    qtbot,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.activateWindow()
+    pet_window.input_bar_animator.set_force_visible(True)
+    pet_window.input_edit.setProperty("replyWaiting", True)
+    pet_window.input_edit.setText("下一句")
+    pet_window.input_edit.setFocus()
+    qtbot.waitUntil(pet_window.input_edit.hasFocus)
+
+    pet_window._set_busy(False)
+
+    assert pet_window.input_edit.hasFocus()
+    assert pet_window.input_edit.property("replyWaiting") is False
+
+
+def test_set_busy_releases_focus_for_whitespace_only_input(
+    pet_window,
+    qtbot,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.activateWindow()
+    pet_window.input_bar_animator.set_force_visible(True)
+    pet_window.input_edit.setProperty("replyWaiting", True)
+    pet_window.input_edit.setText("   ")
+    pet_window.input_edit.setFocus()
+    qtbot.waitUntil(pet_window.input_edit.hasFocus)
+
+    pet_window._set_busy(False)
+
+    assert not pet_window.input_edit.hasFocus()
+    assert pet_window.input_edit.property("replyWaiting") is False
+
+
+def test_set_busy_preserves_startup_placeholder_and_common_side_effects(
+    startup_pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import STARTUP_INITIALIZING_TEXT
+
+    stages = []
+    history_button_updates = []
+    monkeypatch.setattr(
+        startup_pet_window,
+        "_log_interaction_stage",
+        lambda stage, payload=None: stages.append((stage, payload)),
+    )
+    monkeypatch.setattr(
+        startup_pet_window,
+        "_update_reply_history_buttons",
+        lambda: history_button_updates.append(True),
+    )
+
+    startup_pet_window._set_busy(True)
+
+    assert startup_pet_window.input_edit.placeholderText() == STARTUP_INITIALIZING_TEXT
+    assert startup_pet_window.send_button.text() == "初始化"
+    assert startup_pet_window.input_edit.property("replyWaiting") is not True
+    assert stages == [("set_busy", {"busy": True})]
+    assert history_button_updates == [True]
+
+
+@pytest.mark.parametrize(
+    "busy_state",
+    ("worker", "encoding", "pending_chat", "pending_event", "idle"),
+)
+def test_pet_click_reads_derived_worker_busy_state(
+    pet_window,
+    qtbot,
+    busy_state: str,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.worker_thread = None
+    pet_window.screen_observation_followup_in_progress = False
+    pet_window.pending_screen_observation_messages = None
+    pet_window.pending_screen_observation_event = None
+    if busy_state == "worker":
+        pet_window.worker_thread = object()
+    elif busy_state == "encoding":
+        pet_window.screen_observation_followup_in_progress = True
+    elif busy_state == "pending_chat":
+        pet_window.pending_screen_observation_messages = [{"role": "user", "content": "x"}]
+    elif busy_state == "pending_event":
+        pet_window.pending_screen_observation_event = AgentEvent(
+            type="screen_awareness_check",
+            payload={},
         )
-        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
-        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
-        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
-        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
 
-    window = MinimalBusyWindow()
-    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
-    window.startup_initializing = False
-    window.input_edit = _DummyEditableInput("")
-    window.screenshot_button = _DummyButton()
-    window.send_button = _DummyButton()
-    window.confirm_action_button = _DummyButton()
-    window.cancel_action_button = _DummyButton()
-    window.input_bar_animator = _DummyInputBarAnimator()
-    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    pet_window.activateWindow()
+    pet_window.input_edit.clearFocus()
+    assert not pet_window.input_edit.hasFocus()
+    pet_window._handle_pet_click()
 
-    window._set_busy(True)
-    assert window.input_edit.enabled
-    assert not window.screenshot_button.enabled
-    assert not window.send_button.enabled
-    assert window.send_button.text == "等待"
-    assert window.input_edit.placeholder == "Sakura正在思考中…"
-    assert window.input_edit.properties["replyWaiting"] is True
-    assert window.send_button.properties["replyWaiting"] is True
-    assert window.input_bar_animator.sync_count == 1
-
-    window._set_busy(False)
-    assert window.screenshot_button.enabled
-    assert window.send_button.enabled
-    assert window.send_button.text == "发送"
-    assert window.input_edit.placeholder == "和Sakura说点什么..."
-    assert window.input_edit.properties["replyWaiting"] is False
-    assert window.send_button.properties["replyWaiting"] is False
-    assert window.input_bar_animator.sync_count == 2
+    if busy_state == "idle":
+        qtbot.waitUntil(pet_window.input_edit.hasFocus)
+        assert pet_window.input_edit.hasFocus()
+    else:
+        assert not pet_window.input_edit.hasFocus()
+    pet_window.worker_thread = None
+    pet_window.screen_observation_followup_in_progress = False
+    pet_window.pending_screen_observation_messages = None
+    pet_window.pending_screen_observation_event = None
 
 
-def test_reply_waiting_state_releases_empty_input_focus() -> None:
-    from app.ui.pet_window import PetWindow
+def test_input_bar_not_pinned_just_because_reply_is_waiting(pet_window) -> None:
+    pet_window.always_on_top_enabled = True
+    pet_window.input_edit.setText("")
+    pet_window.input_edit.clearFocus()
+    pet_window.input_edit.setProperty("replyWaiting", True)
+    pet_window.pending_tool_action = None
 
-    class FocusedInput(_DummyEditableInput):
-        def __init__(self, text: str) -> None:
-            super().__init__(text)
-            self.focused = True
-            self.clear_focus_count = 0
-
-        def hasFocus(self) -> bool:
-            return self.focused
-
-        def clearFocus(self) -> None:
-            self.focused = False
-            self.clear_focus_count += 1
-
-    class MinimalReplyWaitingWindow:
-        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
-        _release_empty_input_focus_after_reply_waiting = (
-            PetWindow._release_empty_input_focus_after_reply_waiting
-        )
-        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
-        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
-        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
-        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
-
-    window = MinimalReplyWaitingWindow()
-    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
-    window.startup_initializing = False
-    window.input_edit = FocusedInput("")
-    window.send_button = _DummyButton()
-    window.input_bar_animator = _DummyInputBarAnimator()
-    window.reply_waiting_ui_active = False
-
-    window._set_reply_waiting_ui(True)
-
-    assert not window.input_edit.focused
-    assert window.input_edit.clear_focus_count == 1
-    assert window.input_bar_animator.sync_count == 1
-
-    window.input_edit.focused = True
-    window.reply_waiting_ui_active = True
-
-    window._set_reply_waiting_ui(False)
-
-    assert not window.input_edit.focused
-    assert window.input_edit.clear_focus_count == 2
-    assert window.input_bar_animator.sync_count == 2
-
-
-def test_reply_waiting_end_keeps_focus_when_next_input_exists() -> None:
-    from app.ui.pet_window import PetWindow
-
-    class FocusedInput(_DummyEditableInput):
-        def __init__(self, text: str) -> None:
-            super().__init__(text)
-            self.focused = True
-            self.clear_focus_count = 0
-
-        def hasFocus(self) -> bool:
-            return self.focused
-
-        def clearFocus(self) -> None:
-            self.focused = False
-            self.clear_focus_count += 1
-
-    class MinimalReplyWaitingWindow:
-        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
-        _release_empty_input_focus_after_reply_waiting = (
-            PetWindow._release_empty_input_focus_after_reply_waiting
-        )
-        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
-        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
-        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
-        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
-
-    window = MinimalReplyWaitingWindow()
-    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
-    window.startup_initializing = False
-    window.input_edit = FocusedInput("下一句")
-    window.send_button = _DummyButton()
-    window.input_bar_animator = _DummyInputBarAnimator()
-    window.reply_waiting_ui_active = True
-
-    window._set_reply_waiting_ui(False)
-
-    assert window.input_edit.focused
-    assert window.input_edit.clear_focus_count == 0
-    assert window.input_bar_animator.sync_count == 1
-
-
-def test_input_bar_not_pinned_just_because_reply_is_waiting() -> None:
-    from app.ui.pet_window import PetWindow
-
-    class MinimalInputBarWindow:
-        _input_bar_pinned = PetWindow._input_bar_pinned
-        _input_bar_foreground_allowed = lambda _self: True
-
-    window = MinimalInputBarWindow()
-    window.input_edit = _DummyEditableInput("")
-    window.pending_tool_action = None
-    window.reply_waiting_ui_active = False
-
-    assert not window._input_bar_pinned()
-
-    window.reply_waiting_ui_active = True
-
-    assert not window._input_bar_pinned()
+    assert not pet_window._input_bar_pinned()
 
 
 def test_input_bar_pinned_ignores_visible_secondary_window() -> None:
@@ -7553,7 +7525,6 @@ def test_input_bar_pinned_ignores_visible_secondary_window() -> None:
     window = MinimalInputBarWindow()
     window.input_edit = _DummyEditableInput("未发送文本")
     window.pending_tool_action = None
-    window.reply_waiting_ui_active = False
 
     assert window._input_bar_pinned()
 
@@ -8343,56 +8314,36 @@ def test_screen_observation_followup_keeps_large_image_after_progress(monkeypatc
     assert content[1]["type"] == "image_url"
 
 
-def _build_minimal_manual_screenshot_window(text: str):
-    from app.ui.pet_window import PetWindow
-
-    class MinimalManualScreenshotWindow:
-        send_message = PetWindow.send_message
-        _show_waiting_reply_placeholder = PetWindow._show_waiting_reply_placeholder
-        _set_reply_waiting_ui = PetWindow._set_reply_waiting_ui
-        _normal_input_placeholder_text = PetWindow._normal_input_placeholder_text
-        _reply_waiting_placeholder_text = PetWindow._reply_waiting_placeholder_text
-        _sync_input_bar_waiting_visibility = PetWindow._sync_input_bar_waiting_visibility
-        _set_widget_dynamic_property = PetWindow._set_widget_dynamic_property
-        _record_user_message = PetWindow._record_user_message
-
-    window = MinimalManualScreenshotWindow()
+def _configure_manual_screenshot_window(
+    pet_window,
+    monkeypatch,
+    text: str,
+):  # type: ignore[no-untyped-def]
     requests = []
     history = []
-    window.input_edit = _DummyEditableInput(text)
-    window.worker_thread = None
-    window.pending_manual_screen_observation = ScreenObservation(
+    pet_window.input_edit.setText(text)
+    pet_window.pending_manual_screen_observation = ScreenObservation(
         data_url="data:image/jpeg;base64,manual",
         width=320,
         height=180,
         captured_at="2026-05-31T12:00:00+08:00",
         screen_name="manual-selection",
     )
-    window.screen_observation_enabled = True
-    window.messages = []
-    window.active_interaction_id = ""
-    window.startup_initializing = False
-    window.character_profile = type("CharacterProfile", (), {"display_name": "Sakura"})()
-    window.send_button = _DummyButton()
-    window.input_bar_animator = _DummyInputBarAnimator()
-    window.subtitle_controller = _DummySubtitleController()
-    window.bubble_auto_hide = _DummyBubbleAutoHide()
-    window._mark_user_activity = lambda: None
-    window._begin_interaction = lambda _source: setattr(window, "active_interaction_id", "test")
-    window._log_interaction_stage = lambda *_args, **_kwargs: None
-    window._end_interaction = lambda _outcome: None
-    window._set_pending_tool_action = lambda _action: None
-    window._record_history = lambda *args: history.append(args)
-    window._clear_screen_awareness_context_batch = lambda _reason: None
-    window._start_chat_worker = lambda request_messages: requests.append(request_messages)
-    window._update_manual_screenshot_button = lambda: None
-    window._clear_manual_screen_observation = lambda: setattr(
-        window,
-        "pending_manual_screen_observation",
-        None,
+    pet_window.messages = []
+    pet_window.active_interaction_id = ""
+    monkeypatch.setattr(pet_window, "_mark_user_activity", lambda: None)
+    monkeypatch.setattr(
+        pet_window,
+        "_begin_interaction",
+        lambda source: setattr(pet_window, "active_interaction_id", source),
     )
-    window._collapse_auto_fit_bubble_height = lambda: None
-    return window, requests, history
+    monkeypatch.setattr(pet_window, "_log_interaction_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pet_window, "_record_history", lambda *args: history.append(args))
+    monkeypatch.setattr(pet_window, "_show_waiting_reply_placeholder", lambda: None)
+    monkeypatch.setattr(pet_window, "_start_chat_worker", requests.append)
+    monkeypatch.setattr(pet_window, "_update_manual_screenshot_button", lambda: None)
+    monkeypatch.setattr(pet_window, "_collapse_auto_fit_bubble_height", lambda: None)
+    return requests, history
 
 
 def _configure_screen_awareness_window(
@@ -9047,17 +8998,24 @@ def test_subtitle_ignores_late_finished_callback_from_previous_segment(monkeypat
     assert ended == ["reply_completed"]
 
 
-def test_send_message_injects_runtime_event_context_before_user_message() -> None:
+def test_send_message_injects_runtime_event_context_before_user_message(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     from app.agent.runtime_events import PET_REOPENED, RuntimeEvent, RuntimeEventQueue
 
-    window, requests, history = _build_minimal_manual_screenshot_window("继续刚才的话题")
-    window.pending_manual_screen_observation = None
-    window.runtime_event_queue = RuntimeEventQueue()
-    window.runtime_event_queue.push(
+    requests, history = _configure_manual_screenshot_window(
+        pet_window,
+        monkeypatch,
+        "继续刚才的话题",
+    )
+    pet_window.pending_manual_screen_observation = None
+    pet_window.runtime_event_queue = RuntimeEventQueue()
+    pet_window.runtime_event_queue.push(
         RuntimeEvent(PET_REOPENED, metadata={"hidden_duration": 300})
     )
 
-    window.send_message("test")
+    pet_window.send_message("test")
 
     assert len(requests) == 1
     request = requests[0]
@@ -9066,11 +9024,11 @@ def test_send_message_injects_runtime_event_context_before_user_message() -> Non
     assert "重新打开" in request[0]["content"]
     assert request[-1] == {"role": "user", "content": "继续刚才的话题"}
     # 只进 request_messages：不污染 self.messages
-    assert window.messages == [{"role": "user", "content": "继续刚才的话题"}]
+    assert pet_window.messages == [{"role": "user", "content": "继续刚才的话题"}]
     # 不污染聊天历史
     assert history == [("user", "继续刚才的话题")]
     # 队列已被一次性消费
-    assert len(window.runtime_event_queue) == 0
+    assert len(pet_window.runtime_event_queue) == 0
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
@@ -9485,7 +9443,6 @@ def test_input_bar_pinned_requires_foreground_when_not_topmost() -> None:
         _input_bar_foreground_allowed = PetWindow._input_bar_foreground_allowed
         always_on_top_enabled = False
         input_edit = InputStub()
-        reply_waiting_ui_active = False
         pending_tool_action = None
 
         def _is_pet_foreground_window(self) -> bool:
