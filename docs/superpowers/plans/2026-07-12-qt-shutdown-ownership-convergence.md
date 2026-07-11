@@ -83,10 +83,12 @@ mgr.registry._lingering_threads
 
 ```powershell
 .\runtime\python.exe -m pytest tests/unit/test_resource_manager.py tests/ui/test_backchannel_controller.py -q
-rg -n "stop_qt_thread|_retain_qobject_wrappers_until_deleted|def _resources|def _lingering_threads" app plugins
+rg -n "stop_qt_thread|_retain_qobject_wrappers_until_deleted|def _lingering_threads" app plugins
 ```
 
-Expected：测试通过；`rg` 无输出。
+Expected：测试通过；`rg` 无输出。`test_legacy_qt_resource_facades_are_removed`
+单独验证 `ResourceManager._resources` 已删除，避免误报保留的
+`ResourceRegistry._resources` 真实状态观察点。
 
 - [ ] **Step 5: 提交并双 review**
 
@@ -379,7 +381,7 @@ Review：门禁必须早于下载检查和 `_shutdown_in_progress`；无效 wrap
 - [ ] **Step 1: 结构扫描**
 
 ```powershell
-rg -n "stop_qt_thread|_retain_qobject_wrappers_until_deleted|def _resources|def _lingering_threads" app plugins
+rg -n "stop_qt_thread|_retain_qobject_wrappers_until_deleted|def _lingering_threads" app plugins
 rg -n "thread\.finished\.connect\(lambda|(^|[^_])retain_wrappers\(" app/core/resource_manager.py
 rg -n "setParent\(None\)|_release_finished_lingering|_retire_qobjects" app/core/resource_manager.py
 ```
