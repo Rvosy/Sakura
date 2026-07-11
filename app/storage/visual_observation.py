@@ -102,31 +102,6 @@ class VisualObservationStore:
                 break
         return records
 
-    def search(self, keyword: str, limit: int = 3) -> list[VisualObservationRecord]:
-        normalized = keyword.strip().casefold()
-        if not normalized:
-            return self.recent(limit=limit)
-
-        records: list[VisualObservationRecord] = []
-        for item in reversed(self._load_raw_records()):
-            record = _record_from_dict(item)
-            if record is None:
-                continue
-            haystack = "\n".join(
-                [
-                    record.summary,
-                    *record.visible_texts,
-                    *record.uncertain_texts,
-                    *record.notable_elements,
-                ]
-            ).casefold()
-            if normalized not in haystack:
-                continue
-            records.append(record)
-            if len(records) >= limit:
-                break
-        return records
-
     def _load_raw_records(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []

@@ -19,6 +19,10 @@ def test_legacy_visual_summarizer_is_removed() -> None:
     assert not hasattr(visual_observation_module, "summarize_visual_observation")
 
 
+def test_unused_visual_observation_search_is_removed() -> None:
+    assert not hasattr(VisualObservationStore, "search")
+
+
 def test_visual_observation_record_from_summary_redacts_sensitive_text() -> None:
     record = visual_observation_record_from_summary(
         VisualObservationJob(
