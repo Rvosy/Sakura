@@ -70,6 +70,26 @@ class TestPluginManifest:
         assert m.required is False
 
 
+def _registered_plugin_handler(handler, *, decorator: bool):  # type: ignore[no-untyped-def]
+    registry = PluginCapabilityRegistry()
+    if decorator:
+        registry.tool(
+            name="demo",
+            description="demo",
+            parameters={"type": "object", "properties": {}},
+        )(handler)
+    else:
+        registry.register_tool(
+            ToolContribution(
+                name="demo",
+                description="demo",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+            )
+        )
+    return registry.tools[0].handler
+
+
 class TestPluginCapabilityRegistry:
     """能力注册表"""
 
@@ -125,6 +145,57 @@ class TestPluginCapabilityRegistry:
         assert len(reg.tools) == 1
         assert reg.tools[0].parameters["required"] == ["value"]
         assert reg.tools[0].handler({"value": "ok"}) == {"value": "ok"}  # type: ignore[misc]
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_receives_argument_dict(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(
+            lambda arguments: arguments["text"],
+            decorator=decorator,
+        )
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_maps_named_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(
+            lambda text, count=1: text * count,
+            decorator=decorator,
+        )
+        assert handler is not None
+        assert handler({"text": "a", "count": 2}) == "aa"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_zero_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(lambda: "ok", decorator=decorator)
+        assert handler is not None
+        assert handler({}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_keyword_only_arguments(self, decorator: bool) -> None:
+        def keyword_only(*, text: str) -> str:
+            return text
+
+        handler = _registered_plugin_handler(keyword_only, decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_var_keyword_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(lambda **kwargs: kwargs, decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == {"text": "ok"}
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_falls_back_when_signature_is_unavailable(self, decorator: bool) -> None:
+        class Uninspectable:
+            __signature__ = "invalid"
+
+            def __call__(self, arguments):  # type: ignore[no-untyped-def]
+                return arguments["text"]
+
+        handler = _registered_plugin_handler(Uninspectable(), decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
 
 
 class TestPluginDiscovery:

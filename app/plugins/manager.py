@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import inspect
 import re
 import sys
 from dataclasses import dataclass, field, replace
@@ -584,59 +583,13 @@ def _contribution_to_app_tool(contribution: ToolContribution) -> Tool:
         name=contribution.name,
         description=contribution.description,
         parameters=contribution.parameters,
-        handler=_normalize_tool_handler(contribution.handler),
+        handler=contribution.handler,
         requires_confirmation=contribution.requires_confirmation,
         group=contribution.group,
         risk=contribution.risk,
         capability=contribution.capability,
         source="plugin",
     )
-
-
-def _normalize_tool_handler(handler: Any) -> Any:
-    """兼容 handler(args) 与 handler(**kwargs) 两种插件写法。"""
-
-    if handler is None or not callable(handler):
-        return None
-    try:
-        parameters = list(inspect.signature(handler).parameters.values())
-    except (TypeError, ValueError):
-        return lambda arguments: handler(arguments)
-    if not parameters:
-        return lambda _arguments: handler()
-    if len(parameters) == 1:
-        parameter = parameters[0]
-        annotation = parameter.annotation
-        if (
-            parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            }
-            and (
-                parameter.name in {"args", "arguments"}
-                or annotation in {dict, dict[str, Any]}
-            )
-        ):
-            return lambda arguments: handler(arguments)
-
-    def wrapped(arguments: dict[str, Any]) -> Any:
-        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
-            return handler(**arguments)
-        kwargs = {
-            parameter.name: arguments[parameter.name]
-            for parameter in parameters
-            if parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            }
-            and parameter.name in arguments
-        }
-        return handler(**kwargs)
-
-    return wrapped
 
 
 def _shutdown_quietly(plugin: PluginBase) -> None:
