@@ -26,8 +26,10 @@ from app.ui.theme import (
     build_pet_window_stylesheet,
     build_settings_dialog_stylesheet,
 )
-from app.agent.proactive_care import ProactiveCareSettings
-from app.agent.screen_awareness import ScreenAwarenessSettings
+from app.agent.screen_awareness import (
+    SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER,
+    ScreenAwarenessSettings,
+)
 from app.agent.screen_observation import ScreenObservation
 from app.voice.tts_settings import GPTSoVITSTTSSettings
 from app.storage.visual_observation import VisualObservationRecord, VisualObservationStore
@@ -1729,39 +1731,31 @@ def test_event_error_cleans_transient_progress_during_shutdown() -> None:
     assert window.active_event_type == ""
 
 
-def test_screen_awareness_event_error_ends_interaction() -> None:
+def test_screen_awareness_event_error_ends_interaction(pet_window) -> None:  # type: ignore[no-untyped-def]
     """主动感知 API 失败时必须结束交互，否则 active_interaction_id 卡住会让后续主动感知永久停摆。"""
-    from app.ui.pet_window import PetWindow
+    window = pet_window
+    window._shutdown_in_progress = False
+    window.messages = []
+    window.active_event = None
+    window.active_event_type = "screen_awareness_check"
+    window.active_reminder_id = None
+    window.active_reminder_text = ""
+    window.active_interaction_id = "interaction-3"
+    window.logged = []
+    window.ended = []
+    window._log_interaction_stage = lambda *args: window.logged.append(args)
+    window._consume_agent_result = lambda _result: (_ for _ in ()).throw(
+        AssertionError("静默主动感知失败不应进入回复展示")
+    )
+    window._mark_reminder_completed = lambda _reminder_id: (_ for _ in ()).throw(
+        AssertionError("本用例没有提醒 id")
+    )
 
-    class MinimalWindow:
-        _handle_event_error = PetWindow._handle_event_error
-        _clear_active_event = PetWindow._clear_active_event
+    def end_interaction(outcome: str) -> None:
+        window.ended.append(outcome)
+        window.active_interaction_id = ""
 
-        def __init__(self) -> None:
-            self._shutdown_in_progress = False
-            self.messages = []
-            self.active_event = None
-            self.active_event_type = "screen_awareness_check"
-            self.active_reminder_id = None
-            self.active_reminder_text = ""
-            self.active_interaction_id = "interaction-3"
-            self.logged = []
-            self.ended = []
-
-        def _log_interaction_stage(self, *args):  # type: ignore[no-untyped-def]
-            self.logged.append(args)
-
-        def _consume_agent_result(self, _result):  # type: ignore[no-untyped-def]
-            raise AssertionError("静默主动感知失败不应进入回复展示")
-
-        def _mark_reminder_completed(self, _reminder_id):  # type: ignore[no-untyped-def]
-            raise AssertionError("本用例没有提醒 id")
-
-        def _end_interaction(self, outcome: str) -> None:
-            self.ended.append(outcome)
-            self.active_interaction_id = ""
-
-    window = MinimalWindow()
+    window._end_interaction = end_interaction
 
     window._handle_event_error("API 请求超时。")
 
@@ -2611,24 +2605,10 @@ def test_pet_window_defaults_autonomous_screen_observation_to_enabled() -> None:
     assert MinimalWindow()._load_autonomous_screen_observation_enabled()
 
 
-def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    qtgui = pytest.importorskip("PySide6.QtGui")
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+def test_pet_window_locks_controls_during_startup_initialization(startup_pet_window) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import STARTUP_INITIALIZING_TEXT
 
-    from app.agent.memory import MemoryStore
-    from app.core.bootstrap import build_initial_app_context
-    from app.ui.pet_window import PetWindow, STARTUP_INITIALIZING_TEXT
-
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _build_runtime_root_with_character(qtgui.QPixmap, qtcore.Qt)
-    monkeypatch.setattr(MemoryStore, "preload", lambda *a, **kw: None)
-    context = build_initial_app_context(root)
-    monkeypatch.setattr(PetWindow, "_maybe_start_memory_backfill", lambda _self: None)
-    window = PetWindow(context)
+    window = startup_pet_window
 
     assert window.startup_initializing
     assert window.speech_label.text() == STARTUP_INITIALIZING_TEXT
@@ -2647,23 +2627,15 @@ def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) ->
     assert quit_action.isEnabled()
 
     menu.deleteLater()
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    qtgui = pytest.importorskip("PySide6.QtGui")
-    qtcore = pytest.importorskip("PySide6.QtCore")
-    if not hasattr(qtwidgets, "QApplication"):
-        pytest.skip("当前测试环境只提供了 PySide6 stub。")
-
-    from app.agent.memory import MemoryStore
-    from app.core.bootstrap import DeferredStartupServices, build_initial_app_context
+def test_pet_window_unlocks_after_deferred_services_are_applied(
+    startup_pet_window,
+    qtbot,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.core.bootstrap import DeferredStartupServices
     from app.core.extensions import ExtensionRegistry
     from app.plugins.manager import PluginManager
-    from app.ui.pet_window import PetWindow
     from app.voice.tts import NullTTSProvider
 
     class WarmableTTSProvider(NullTTSProvider):
@@ -2673,26 +2645,20 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
         def warm_up_playback(self) -> None:
             self.warm_up_count += 1
 
-    QApplication = qtwidgets.QApplication
-    app = QApplication.instance() or QApplication([])
-    root = _build_runtime_root_with_character(qtgui.QPixmap, qtcore.Qt)
-    monkeypatch.setattr(MemoryStore, "preload", lambda *a, **kw: None)
-    context = build_initial_app_context(root)
-    monkeypatch.setattr(PetWindow, "_maybe_start_memory_backfill", lambda _self: None)
-    window = PetWindow(context)
+    window = startup_pet_window
     tts_provider = WarmableTTSProvider()
     services = DeferredStartupServices(
         tts_provider=tts_provider,
-        tool_registry=context.tool_registry,
+        tool_registry=window.tool_registry,
         extension_registry=ExtensionRegistry(),
-        plugin_manager=PluginManager(base_dir=root),
-        mcp_settings=context.mcp_settings,
+        plugin_manager=PluginManager(base_dir=window.base_dir),
+        mcp_settings=window.mcp_settings,
         mcp_tool_provider=None,
         errors=("TTS 配置无效，已禁用：参考音频不存在",),
     )
 
     window.apply_deferred_services(services)
-    app.processEvents()
+    qtbot.wait(1)
 
     assert not window.startup_initializing
     assert window.input_edit.isEnabled()
@@ -2703,9 +2669,6 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
     assert "TTS 配置无效" in window.tts_error_label.text()
     assert tts_provider.warm_up_count == 1
 
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_shutdown_closes_late_deferred_services() -> None:
@@ -6724,82 +6687,24 @@ def test_character_theme_override_saves_or_deletes_by_default_colors() -> None:
     assert deleted == ["demo"]
 
 
-def test_proactive_care_batches_screenshots_until_cooldown(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_batches_screenshots_until_cooldown(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     current_time = {"value": 0.0}
     captures: list[str] = []
     events = []
     history = []
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=2,
-        events=events,
-        history=history,
     )
-
-    observations: list[ScreenObservation] = []
-
-    def fake_capture(_window):  # type: ignore[no-untyped-def]
-        index = len(captures) + 1
-        data_url = f"data:image/jpeg;base64,{index}"
-        captures.append(data_url)
-        observation = ScreenObservation(
-            data_url=data_url,
-            width=800,
-            height=600,
-            captured_at=f"2026-05-30T12:0{index}:00+08:00",
-            screen_name="DISPLAY1",
-        )
-        observations.append(observation)
-        return object()
-
-    monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: current_time["value"])
-    monkeypatch.setattr(pet_window_module, "capture_screen_image", fake_capture)
-    window._start_screen_observation_encode = lambda _captured, context: (
-        window._finish_proactive_screen_context(context, observations[-1]) or True
-    )
-
-    current_time["value"] = 60
-    window._check_proactive_care()
-    assert captures == ["data:image/jpeg;base64,1"]
-    assert events == []
-
-    current_time["value"] = 120
-    window._check_proactive_care()
-    assert captures == ["data:image/jpeg;base64,1", "data:image/jpeg;base64,2"]
-    assert events == []
-
-    current_time["value"] = 180
-    window._check_proactive_care()
-
-    assert captures == [
-        "data:image/jpeg;base64,1",
-        "data:image/jpeg;base64,2",
-        "data:image/jpeg;base64,3",
-    ]
-    assert len(events) == 1
-    assert [context["data_url"] for context in events[0].payload["screen_contexts"]] == captures
-    assert events[0].payload["screen_context_count"] == 3
-    assert history
-    assert window.proactive_screen_contexts == []
-
-
-def test_screen_awareness_batches_screenshots_until_cooldown(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.ui.pet_window as pet_window_module
-
-    current_time = {"value": 0.0}
-    captures: list[str] = []
-    events = []
-    history = []
-    window = _build_minimal_screen_awareness_window(
-        screen_context_enabled=True,
-        check_interval_minutes=1,
-        cooldown_minutes=2,
-        events=events,
-        history=history,
-    )
+    window._run_event_worker = lambda event, reminder_id=None: events.append(event)
+    window._record_history = lambda *args: history.append(args)
 
     observations: list[ScreenObservation] = []
 
@@ -6843,7 +6748,10 @@ def test_screen_awareness_batches_screenshots_until_cooldown(monkeypatch) -> Non
     assert window.screen_awareness_contexts == []
 
 
-def test_screen_context_cache_log_uses_summary_without_image_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_context_cache_log_uses_summary_without_image_payload(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     logs: list[tuple[str, str, dict[str, object] | None]] = []
@@ -6860,36 +6768,21 @@ def test_screen_context_cache_log_uses_summary_without_image_payload(monkeypatch
         captured_at="2026-05-30T12:01:00+08:00",
         screen_name="DISPLAY1",
     )
-    cases = [
-        (
-            _build_minimal_screen_awareness_window(
-                screen_context_enabled=True,
-                check_interval_minutes=1,
-                cooldown_minutes=2,
-                screen_context_batch_limit=2,
-            ),
-            "_finish_screen_awareness_context",
-        ),
-        (
-            _build_minimal_proactive_window(
-                screen_context_enabled=True,
-                check_interval_minutes=1,
-                cooldown_minutes=2,
-                screen_context_batch_limit=2,
-            ),
-            "_finish_proactive_screen_context",
-        ),
-    ]
-
-    for window, finish_name in cases:
-        getattr(window, finish_name)({"captured_at_monotonic": 1.0}, observation)
+    window = _configure_screen_awareness_window(
+        pet_window,
+        screen_context_enabled=True,
+        check_interval_minutes=1,
+        cooldown_minutes=2,
+        screen_context_batch_limit=2,
+    )
+    window._finish_screen_awareness_context({"captured_at_monotonic": 1.0}, observation)
 
     payloads = [
         payload
         for channel, message, payload in logs
         if channel == "ScreenAwareness" and message == "主动屏幕上下文已缓存"
     ]
-    assert len(payloads) == 2
+    assert len(payloads) == 1
     for payload in payloads:
         assert payload is not None
         assert payload["screen"] == "DISPLAY1 800x600"
@@ -6904,11 +6797,15 @@ def test_screen_context_cache_log_uses_summary_without_image_payload(monkeypatch
         assert "data:image" not in str(payload)
 
 
-def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_capture_uses_selected_resolution(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     contexts: list[dict[str, object]] = []
-    window = _build_minimal_screen_awareness_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=2,
@@ -6924,23 +6821,23 @@ def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:
     assert contexts[0]["detail"] == "high"
 
 
-def test_proactive_care_event_includes_recent_conversation() -> None:
-    from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
-    from app.ui.pet_window import PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT
+def test_screen_awareness_event_includes_recent_conversation(pet_window) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
 
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=2,
     )
     window.messages = [
-        {"role": "system", "content": PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER},
+        {"role": "system", "content": SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER},
         {"role": "user", "content": "访问 GitHub 看看 Sakura 内容"},
         {"role": "assistant", "content": "我打开看看。"},
         {"role": "assistant", "content": "稍微休息一下吧。"},
     ]
 
-    event = window._build_proactive_care_event(300.0)
+    event = window._build_screen_awareness_event(300.0)
 
     assert event.payload["recent_conversation"] == [
         {"role": "user", "content": "访问 GitHub 看看 Sakura 内容"},
@@ -6948,9 +6845,9 @@ def test_proactive_care_event_includes_recent_conversation() -> None:
         {"role": "assistant", "content": "稍微休息一下吧。"},
     ]
     assert event.payload["recent_conversation_summary_hint"] == (
-        PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT
+        SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
     )
-    assert PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER not in str(
+    assert SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER not in str(
         event.payload["recent_conversation"]
     )
 
@@ -6985,50 +6882,46 @@ def test_screen_awareness_visual_job_uses_recent_conversation_as_focus() -> None
     assert "帮我看看模型配置哪里不对" in jobs[0].user_text
 
 
-def test_proactive_care_event_reads_recent_conversation_from_history_store() -> None:
-    from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
+def test_screen_awareness_event_reads_recent_conversation_from_history_store(
+    pet_window,
+) -> None:  # type: ignore[no-untyped-def]
     from app.storage.chat_history import ChatHistoryStore
-    from app.ui.pet_window import PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT
+    from app.ui.pet_window import SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
 
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=2,
     )
-    history_path = (
-        Path(__file__).resolve().parents[2]
-        / "temp"
-        / "test_runtime"
-        / uuid.uuid4().hex
-        / "proactive_history"
-        / "history.jsonl"
-    )
+    history_path = Path(window.base_dir) / "data" / "history" / "recent.jsonl"
     store = ChatHistoryStore(history_path)
-    store.append("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER)
+    store.append("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER)
     store.append("user", "刚才已经提醒过我喝水了")
     store.append("assistant", "水を飲んでって言ったばかりだよ。", "我刚提醒过你喝水。")
     window.history_store = store
     window.subtitle_language = "zh"
     window.messages = []
 
-    event = window._build_proactive_care_event(300.0)
+    event = window._build_screen_awareness_event(300.0)
 
     assert event.payload["recent_conversation"] == [
         {"role": "user", "content": "刚才已经提醒过我喝水了"},
         {"role": "assistant", "content": "我刚提醒过你喝水。"},
     ]
     assert event.payload["recent_conversation_summary_hint"] == (
-        PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT
+        SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
     )
-    assert PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER not in str(
+    assert SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER not in str(
         event.payload["recent_conversation"]
     )
 
 
-def test_proactive_recent_conversation_limits_count_and_content() -> None:
-    from app.ui.pet_window import PROACTIVE_RECENT_CONVERSATION_CONTENT_LIMIT
+def test_screen_awareness_recent_conversation_limits_count_and_content(pet_window) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import SCREEN_AWARENESS_RECENT_CONVERSATION_CONTENT_LIMIT
 
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=2,
@@ -7039,39 +6932,44 @@ def test_proactive_recent_conversation_limits_count_and_content() -> None:
     ]
     window.messages.append({"role": "assistant", "content": "很长" * 500})
 
-    event = window._build_proactive_care_event(300.0)
+    event = window._build_screen_awareness_event(300.0)
     recent_conversation = event.payload["recent_conversation"]
 
     assert len(recent_conversation) == 12
     assert recent_conversation[0] == {"role": "user", "content": "第 2 条"}
     assert recent_conversation[-1]["role"] == "assistant"
     assert len(recent_conversation[-1]["content"]) == (
-        PROACTIVE_RECENT_CONVERSATION_CONTENT_LIMIT
+        SCREEN_AWARENESS_RECENT_CONVERSATION_CONTENT_LIMIT
     )
     assert recent_conversation[-1]["content"].endswith("…")
 
 
-def test_proactive_care_capture_interval_allows_timer_jitter() -> None:
-    window = _build_minimal_proactive_window(
+def test_screen_awareness_capture_interval_allows_timer_jitter(pet_window) -> None:  # type: ignore[no-untyped-def]
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=10,
     )
     window.last_user_activity_at = 0.0
 
-    assert not window._should_capture_proactive_screen_context(58.9)
-    assert window._should_capture_proactive_screen_context(59.2)
+    assert not window._should_capture_screen_awareness_context(58.9)
+    assert window._should_capture_screen_awareness_context(59.2)
 
     window.last_screen_awareness_context_at = 60.0
-    assert not window._should_capture_proactive_screen_context(118.9)
-    assert window._should_capture_proactive_screen_context(119.2)
+    assert not window._should_capture_screen_awareness_context(118.9)
+    assert window._should_capture_screen_awareness_context(119.2)
 
 
-def test_proactive_care_keeps_recent_screenshot_batch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_keeps_recent_screenshot_batch(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     captures = []
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=10,
@@ -7094,15 +6992,15 @@ def test_proactive_care_keeps_recent_screenshot_batch(monkeypatch) -> None:  # t
 
     monkeypatch.setattr(pet_window_module, "capture_screen_image", fake_capture)
     window._start_screen_observation_encode = lambda _captured, context: (
-        window._finish_proactive_screen_context(context, observations[-1]) or True
+        window._finish_screen_awareness_context(context, observations[-1]) or True
     )
 
     for index in range(8):
-        window._capture_proactive_screen_context(float(index * 60))
+        window._capture_screen_awareness_context(float(index * 60))
 
-    assert len(window.proactive_screen_contexts) == 6
-    assert window.proactive_screen_context_dropped_count == 2
-    assert [context["data_url"] for context in window.proactive_screen_contexts] == [
+    assert len(window.screen_awareness_contexts) == 6
+    assert window.screen_awareness_context_dropped_count == 2
+    assert [context["data_url"] for context in window.screen_awareness_contexts] == [
         "data:image/jpeg;base64,3",
         "data:image/jpeg;base64,4",
         "data:image/jpeg;base64,5",
@@ -7112,11 +7010,15 @@ def test_proactive_care_keeps_recent_screenshot_batch(monkeypatch) -> None:  # t
     ]
 
 
-def test_proactive_care_uses_configured_screenshot_batch_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_uses_configured_screenshot_batch_limit(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     captures = []
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=10,
@@ -7140,32 +7042,36 @@ def test_proactive_care_uses_configured_screenshot_batch_limit(monkeypatch) -> N
 
     monkeypatch.setattr(pet_window_module, "capture_screen_image", fake_capture)
     window._start_screen_observation_encode = lambda _captured, context: (
-        window._finish_proactive_screen_context(context, observations[-1]) or True
+        window._finish_screen_awareness_context(context, observations[-1]) or True
     )
 
     for index in range(5):
-        window._capture_proactive_screen_context(float(index * 60))
+        window._capture_screen_awareness_context(float(index * 60))
 
-    assert len(window.proactive_screen_contexts) == 3
-    assert window.proactive_screen_context_dropped_count == 2
-    assert [context["data_url"] for context in window.proactive_screen_contexts] == [
+    assert len(window.screen_awareness_contexts) == 3
+    assert window.screen_awareness_context_dropped_count == 2
+    assert [context["data_url"] for context in window.screen_awareness_contexts] == [
         "data:image/jpeg;base64,3",
         "data:image/jpeg;base64,4",
         "data:image/jpeg;base64,5",
     ]
 
 
-def test_proactive_care_disabled_does_not_capture_or_send(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_disabled_does_not_capture_or_send(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     current_time = {"value": 600.0}
     events = []
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=False,
         check_interval_minutes=1,
         cooldown_minutes=1,
-        events=events,
     )
+    window._run_event_worker = lambda event, reminder_id=None: events.append(event)
 
     def fail_capture(_window):  # type: ignore[no-untyped-def]
         raise AssertionError("关闭主动屏幕获取时不应该截图")
@@ -7173,41 +7079,19 @@ def test_proactive_care_disabled_does_not_capture_or_send(monkeypatch) -> None: 
     monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: current_time["value"])
     monkeypatch.setattr(pet_window_module, "capture_screen_image", fail_capture)
 
-    window._check_proactive_care()
+    window._check_screen_awareness()
 
     assert events == []
-    assert window.proactive_screen_contexts == []
+    assert window.screen_awareness_contexts == []
 
 
-def test_screen_awareness_redirects_limited_night_health_reminders(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_redirects_limited_night_health_reminders(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
-    from app.ui.pet_window import PetWindow
-
-    runtime_root = (
-        Path(__file__).resolve().parents[2]
-        / "temp"
-        / "test_runtime"
-        / uuid.uuid4().hex
-        / "screen_awareness_health"
-    )
-
-    class MinimalWindow:
-        _filter_screen_awareness_reply = PetWindow._filter_screen_awareness_reply
-        _screen_awareness_health_reminder_seen = PetWindow._screen_awareness_health_reminder_seen
-        _record_screen_awareness_health_reminder = PetWindow._record_screen_awareness_health_reminder
-        _screen_awareness_state_path = PetWindow._screen_awareness_state_path
-        _load_screen_awareness_state = PetWindow._load_screen_awareness_state
-        _save_screen_awareness_state = PetWindow._save_screen_awareness_state
-
-        def __init__(self) -> None:
-            self.base_dir = runtime_root
-            self._logged = []
-
-        def _log_interaction_stage(self, *args):  # type: ignore[no-untyped-def]
-            self._logged.append(args)
-
     monkeypatch.setattr(pet_window_module, "_screen_awareness_night_key", lambda: "2026-06-12")
-    window = MinimalWindow()
+    window = pet_window
     event = AgentEvent(
         type="screen_awareness_check",
         payload={
@@ -7242,54 +7126,62 @@ def test_screen_awareness_redirects_limited_night_health_reminders(monkeypatch) 
     assert "休息" not in second.reply.translation
 
 
-def test_user_activity_keeps_pending_proactive_screenshot_batch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_user_activity_keeps_pending_screen_awareness_screenshot_batch(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
-    window = _build_minimal_proactive_window(
+    window = _configure_screen_awareness_window(
+        pet_window,
         screen_context_enabled=True,
         check_interval_minutes=1,
         cooldown_minutes=10,
     )
-    window.proactive_screen_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
-    window.proactive_screen_context_batch_started_at = 60
+    window.screen_awareness_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
+    window.screen_awareness_context_batch_started_at = 60
     window.last_screen_awareness_context_at = 60
-    window.proactive_screen_context_dropped_count = 2
+    window.screen_awareness_context_dropped_count = 2
     monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: 300.0)
 
     window._mark_user_activity()
 
     assert window.last_user_activity_at == 300.0
-    assert window.proactive_screen_contexts == [{"data_url": "data:image/jpeg;base64,old"}]
-    assert window.proactive_screen_context_batch_started_at == 60
+    assert window.screen_awareness_contexts == [{"data_url": "data:image/jpeg;base64,old"}]
+    assert window.screen_awareness_context_batch_started_at == 60
     assert window.last_screen_awareness_context_at == 60
-    assert window.proactive_screen_context_dropped_count == 2
+    assert window.screen_awareness_context_dropped_count == 2
 
 
-def test_send_message_clears_pending_proactive_screenshot_batch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_send_message_clears_pending_screen_awareness_screenshot_batch(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
-    window = _build_minimal_manual_screenshot_window("发送这条")
-    minimal_window, requests, _history = window
-    minimal_window.pending_manual_screen_observation = None
-    minimal_window.proactive_screen_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
-    minimal_window.proactive_screen_context_batch_started_at = 60
-    minimal_window.last_screen_awareness_context_at = 60
-    minimal_window.proactive_screen_context_dropped_count = 2
-    minimal_window._clear_proactive_screen_context_batch = (
-        pet_window_module.PetWindow._clear_proactive_screen_context_batch.__get__(
-            minimal_window,
-            type(minimal_window),
-        )
+    window = _configure_screen_awareness_window(
+        pet_window,
+        screen_context_enabled=True,
+        check_interval_minutes=1,
+        cooldown_minutes=10,
     )
+    requests = []
+    window.input_edit.setText("发送这条")
+    window.pending_manual_screen_observation = None
+    window.screen_awareness_contexts = [{"data_url": "data:image/jpeg;base64,old"}]
+    window.screen_awareness_context_batch_started_at = 60
+    window.last_screen_awareness_context_at = 60
+    window.screen_awareness_context_dropped_count = 2
+    window._start_chat_worker = lambda request_messages: requests.append(request_messages)
     monkeypatch.setattr(pet_window_module.time, "perf_counter", lambda: 300.0)
 
-    minimal_window.send_message("test")
+    window.send_message("test")
 
     assert len(requests) == 1
-    assert minimal_window.proactive_screen_contexts == []
-    assert minimal_window.proactive_screen_context_batch_started_at is None
-    assert minimal_window.last_screen_awareness_context_at is None
-    assert minimal_window.proactive_screen_context_dropped_count == 0
+    assert window.screen_awareness_contexts == []
+    assert window.screen_awareness_context_batch_started_at is None
+    assert window.last_screen_awareness_context_at is None
+    assert window.screen_awareness_context_dropped_count == 0
 
 
 class _DummyTextInput:
@@ -8491,7 +8383,7 @@ def _build_minimal_manual_screenshot_window(text: str):
     window._end_interaction = lambda _outcome: None
     window._set_pending_tool_action = lambda _action: None
     window._record_history = lambda *args: history.append(args)
-    window._clear_proactive_screen_context_batch = lambda _reason: None
+    window._clear_screen_awareness_context_batch = lambda _reason: None
     window._start_chat_worker = lambda request_messages: requests.append(request_messages)
     window._update_manual_screenshot_button = lambda: None
     window._clear_manual_screen_observation = lambda: setattr(
@@ -8503,187 +8395,36 @@ def _build_minimal_manual_screenshot_window(text: str):
     return window, requests, history
 
 
-def _build_minimal_proactive_window(
+def _configure_screen_awareness_window(
+    pet_window,
     *,
     screen_context_enabled: bool,
     check_interval_minutes: int,
     cooldown_minutes: int,
     screen_context_batch_limit: int = 6,
-    events=None,  # type: ignore[no-untyped-def]
-    history=None,  # type: ignore[no-untyped-def]
-):
-    from app.ui.pet_window import PetWindow
-
-    class MinimalProactiveWindow:
-        _current_screen_awareness_settings = PetWindow._current_screen_awareness_settings
-        _screen_awareness_encode_options = PetWindow._screen_awareness_encode_options
-        _can_run_proactive_care = PetWindow._can_run_proactive_care
-        _check_proactive_care = PetWindow._check_proactive_care
-        _should_capture_proactive_screen_context = (
-            PetWindow._should_capture_proactive_screen_context
-        )
-        _capture_proactive_screen_context = PetWindow._capture_proactive_screen_context
-        _finish_proactive_screen_context = PetWindow._finish_proactive_screen_context
-        _should_send_proactive_care_batch = PetWindow._should_send_proactive_care_batch
-        _build_proactive_care_event = PetWindow._build_proactive_care_event
-        _proactive_screen_context_allowed = PetWindow._proactive_screen_context_allowed
-        _clear_proactive_screen_context_batch = PetWindow._clear_proactive_screen_context_batch
-        _mark_user_activity = PetWindow._mark_user_activity
-
-    window = MinimalProactiveWindow()
-    window.screen_awareness_settings = ScreenAwarenessSettings(
+):  # type: ignore[no-untyped-def]
+    pet_window.screen_awareness_settings = ScreenAwarenessSettings(
         enabled=screen_context_enabled,
         screen_context_enabled=screen_context_enabled,
         check_interval_minutes=check_interval_minutes,
         cooldown_minutes=cooldown_minutes,
         screen_context_batch_limit=screen_context_batch_limit,
     )
-    window.worker_thread = None
-    window.active_reminder_id = None
-    window.active_event_type = ""
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.screen_observation_followup_in_progress = False
-    window.screen_observation_encode_thread = None
-    window.active_interaction_id = ""
-    window.input_edit = _DummyTextInput()
-    window.speech_timer = _DummyTimer()
-    window.current_segment_sequence_id = None
-    window.current_segment_speech_done = True
-    window.current_segment_tts_done = True
-    window.last_user_activity_at = 0.0
-    window.last_screen_awareness_at = None
-    window.last_screen_awareness_context_at = None
-    window.proactive_screen_context_batch_started_at = None
-    window.proactive_screen_contexts = []
-    window.proactive_screen_context_dropped_count = 0
-    window.confirm_action_button = _DummyButton()
-    window.cancel_action_button = _DummyButton()
-    captured_events = events if events is not None else []
-    captured_history = history if history is not None else []
-    window._run_event_worker = lambda event, reminder_id=None: captured_events.append(event)
-    window._record_history = lambda *args: captured_history.append(args)
-    return window
-
-
-def _build_minimal_screen_awareness_window(
-    *,
-    screen_context_enabled: bool,
-    check_interval_minutes: int,
-    cooldown_minutes: int,
-    screen_context_batch_limit: int = 6,
-    events=None,  # type: ignore[no-untyped-def]
-    history=None,  # type: ignore[no-untyped-def]
-):
-    from app.ui.pet_window import PetWindow
-
-    class MinimalScreenAwarenessWindow:
-        _current_screen_awareness_settings = PetWindow._current_screen_awareness_settings
-        _can_run_screen_awareness = PetWindow._can_run_screen_awareness
-        _check_screen_awareness = PetWindow._check_screen_awareness
-        _should_capture_screen_awareness_context = (
-            PetWindow._should_capture_screen_awareness_context
-        )
-        _capture_screen_awareness_context = PetWindow._capture_screen_awareness_context
-        _finish_screen_awareness_context = PetWindow._finish_screen_awareness_context
-        _should_send_screen_awareness_batch = PetWindow._should_send_screen_awareness_batch
-        _build_screen_awareness_event = PetWindow._build_screen_awareness_event
-        _screen_awareness_context_allowed = PetWindow._screen_awareness_context_allowed
-        _screen_awareness_encode_options = PetWindow._screen_awareness_encode_options
-        _clear_screen_awareness_context_batch = PetWindow._clear_screen_awareness_context_batch
-
-    window = MinimalScreenAwarenessWindow()
-    window.screen_awareness_settings = ScreenAwarenessSettings(
-        enabled=screen_context_enabled,
-        screen_context_enabled=screen_context_enabled,
-        check_interval_minutes=check_interval_minutes,
-        cooldown_minutes=cooldown_minutes,
-        screen_context_batch_limit=screen_context_batch_limit,
-    )
-    window.worker_thread = None
-    window.active_reminder_id = None
-    window.active_event_type = ""
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.screen_observation_followup_in_progress = False
-    window.screen_observation_encode_thread = None
-    window.active_interaction_id = ""
-    window.input_edit = _DummyTextInput()
-    window.speech_timer = _DummyTimer()
-    window.current_segment_sequence_id = None
-    window.current_segment_speech_done = True
-    window.current_segment_tts_done = True
-    window.last_user_activity_at = 0.0
-    window.last_screen_awareness_at = None
-    window.last_screen_awareness_context_at = None
-    window.screen_awareness_context_batch_started_at = None
-    window.screen_awareness_contexts = []
-    window.screen_awareness_context_dropped_count = 0
-    captured_events = events if events is not None else []
-    captured_history = history if history is not None else []
-    window._run_event_worker = lambda event, reminder_id=None: captured_events.append(event)
-    window._record_history = lambda *args: captured_history.append(args)
-    return window
-
-
-def _build_runtime_root_with_character(QPixmap, Qt):  # type: ignore[no-untyped-def]
-    root = (
-        Path(__file__).resolve().parents[2]
-        / "temp"
-        / "test_runtime"
-        / uuid.uuid4().hex
-        / "pet_window_startup"
-    )
-    config_dir = root / "data" / "config"
-    character_dir = root / "characters" / "demo"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    character_dir.mkdir(parents=True, exist_ok=True)
-
-    (config_dir / "api.yaml").write_text(
-        """
-llm:
-  base_url: https://api.example.com/v1
-  api_key: test-key
-  model: test-model
-tts:
-  provider: none
-  enabled: false
-""".strip(),
-        encoding="utf-8",
-    )
-    (config_dir / "characters.yaml").write_text(
-        "current_character_id: demo\n",
-        encoding="utf-8",
-    )
-    (config_dir / "system_config.yaml").write_text(
-        """
-ui:
-  portrait_scale_percent: 100
-memory_curation:
-  enabled: false
-""".strip(),
-        encoding="utf-8",
-    )
-    (character_dir / "card.md").write_text("system prompt", encoding="utf-8")
-    portrait_path = character_dir / "portrait.png"
-    portrait = QPixmap(320, 480)
-    portrait.fill(Qt.GlobalColor.white)
-    assert portrait.save(str(portrait_path))
-    (character_dir / "character.json").write_text(
-        """
-{
-  "id": "demo",
-  "display_name": "Demo",
-  "initial_message": "hello",
-  "card": "card.md",
-  "portrait": {
-    "default": "portrait.png"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-    return root
+    pet_window.worker_thread = None
+    pet_window.active_event = None
+    pet_window.pending_tool_action = None
+    pet_window.pending_screen_observation_messages = None
+    pet_window.pending_screen_observation_event = None
+    pet_window.screen_observation_followup_in_progress = False
+    pet_window.screen_observation_encode_thread = None
+    pet_window.active_interaction_id = ""
+    pet_window.last_user_activity_at = 0.0
+    pet_window.last_screen_awareness_at = None
+    pet_window.last_screen_awareness_context_at = None
+    pet_window.screen_awareness_context_batch_started_at = None
+    pet_window.screen_awareness_contexts = []
+    pet_window.screen_awareness_context_dropped_count = 0
+    return pet_window
 
 
 def _build_settings_dialog_voice_archive(root: Path) -> Path:

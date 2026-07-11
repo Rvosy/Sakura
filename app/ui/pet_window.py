@@ -318,7 +318,6 @@ _INTERACTION_STAGE_LABELS = {
     "tts_error_visible": "TTS 错误已显示",
     "interaction_finished": "交互结束",
 }
-LEGACY_PROACTIVE_EVENT_TYPE = "proactive_check"
 SCREEN_AWARENESS_VISUAL_SOURCE = "screen_awareness_context"
 SCREEN_AWARENESS_STATE_FILE = "screen_awareness_state.json"
 SCREEN_AWARENESS_HEALTH_TOPIC = "health_reminder"
@@ -338,11 +337,6 @@ SCREEN_AWARENESS_HEALTH_KEYWORDS = (
     "补水",
 )
 
-# 兼容旧测试和旧插件引用；新代码请使用 SCREEN_AWARENESS_*。
-PROACTIVE_RECENT_CONVERSATION_LIMIT = SCREEN_AWARENESS_RECENT_CONVERSATION_LIMIT
-PROACTIVE_RECENT_CONVERSATION_CONTENT_LIMIT = SCREEN_AWARENESS_RECENT_CONVERSATION_CONTENT_LIMIT
-PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT = SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
-PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER = SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 REPLY_HISTORY_PANEL_WIDTH = 34
 REPLY_HISTORY_PANEL_HEIGHT = 70
 
@@ -3021,15 +3015,7 @@ class PetWindow(QWidget):
             },
         )
         self._record_user_message(recorded_user_text)
-        clear_screen_awareness_batch = getattr(
-            self,
-            "_clear_screen_awareness_context_batch",
-            None,
-        )
-        if callable(clear_screen_awareness_batch):
-            clear_screen_awareness_batch("sent_user_message")
-        else:
-            self._clear_proactive_screen_context_batch("sent_user_message")
+        self._clear_screen_awareness_context_batch("sent_user_message")
         if manual_observation is not None:
             self.pending_manual_screen_observation = None
             self._update_manual_screenshot_button()
@@ -3449,7 +3435,7 @@ class PetWindow(QWidget):
             self._finish_chat_screen_observation_followup(context, observation)
         elif kind == "event_followup":
             self._finish_event_screen_observation_followup(context, observation)
-        elif kind in {"screen_awareness_context", "proactive_context"}:
+        elif kind == "screen_awareness_context":
             self._finish_screen_awareness_context(context, observation)
         elif kind == "manual":
             self._finish_manual_screen_observation(observation)
@@ -3472,7 +3458,7 @@ class PetWindow(QWidget):
             log_event("PetWindow", "主动事件屏幕观察失败", {"error": message})
             self._consume_agent_result(_build_screen_observation_failed_result(message))
             self._resume_screen_observation_followup_cleanup()
-        elif kind in {"screen_awareness_context", "proactive_context"}:
+        elif kind == "screen_awareness_context":
             log_event("ScreenAwareness", "主动屏幕上下文编码失败", {"error": message})
         elif kind == "manual":
             show_themed_warning(
@@ -3846,201 +3832,6 @@ class PetWindow(QWidget):
         if had_batch:
             log_event("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
 
-    # 兼容旧方法名；新代码请使用 screen_awareness 命名。
-    def _check_proactive_care(self) -> None:
-        if getattr(self, "startup_initializing", False):
-            return
-        if not self._can_run_proactive_care():
-            return
-
-        now = time.perf_counter()
-        if self._should_capture_proactive_screen_context(now):
-            self._capture_proactive_screen_context(now)
-        if not self._should_send_proactive_care_batch(now):
-            return
-
-        event = self._build_proactive_care_event(now)
-        self.pending_event_visual_observation_jobs = [
-            *getattr(self, "pending_event_visual_observation_jobs", []),
-            *_build_screen_awareness_visual_observation_jobs(event),
-        ]
-        self.last_proactive_care_at = now
-        self._record_history("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER)
-        self._clear_proactive_screen_context_batch("sent")
-        self._run_event_worker(event)
-
-    def _can_run_proactive_care(self) -> bool:
-        if not self._proactive_screen_context_allowed():
-            return False
-        if (
-            self.worker_thread is not None
-            or self.active_reminder_id is not None
-            or self.active_event_type
-            or self.pending_tool_action is not None
-            or self.pending_screen_observation_messages is not None
-            or self.screen_observation_followup_in_progress
-            or self.screen_observation_encode_thread is not None
-            or self.active_interaction_id
-        ):
-            return False
-        if self.input_edit.text().strip() or self.speech_timer.isActive():
-            return False
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.current_segment_in_progress():
-            return False
-        if subtitle_controller is None and getattr(self, "current_segment_sequence_id", None) is not None and (
-            not getattr(self, "current_segment_speech_done", True)
-            or not getattr(self, "current_segment_tts_done", True)
-        ):
-            return False
-        return True
-
-    def _should_capture_proactive_screen_context(self, now: float) -> bool:
-        settings = PetWindow._current_screen_awareness_settings(self)
-        check_interval_seconds = settings.check_interval_minutes * 60
-        seconds_since_pet_interaction = now - self.last_user_activity_at
-        if (
-            seconds_since_pet_interaction + SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS
-            < check_interval_seconds
-        ):
-            return False
-        if self.last_proactive_screen_context_at is None:
-            return True
-        return (
-            now - self.last_proactive_screen_context_at + SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS
-            >= check_interval_seconds
-        )
-
-    def _capture_proactive_screen_context(self, now: float) -> None:
-        self.last_proactive_screen_context_at = now
-        try:
-            captured = capture_screen_image(self)
-        except RuntimeError as exc:
-            log_event("ScreenAwareness", "主动屏幕上下文获取失败", {"error": str(exc)})
-            return
-        if not self._start_screen_observation_encode(
-            captured,
-            {
-                "kind": "screen_awareness_context",
-                "captured_at_monotonic": now,
-                **self._screen_awareness_encode_options(),
-            },
-        ):
-            log_event("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次截图")
-            return
-
-    def _finish_proactive_screen_context(
-        self,
-        context_data: dict[str, Any],
-        observation: ScreenObservation,
-    ) -> None:
-        captured_at_monotonic = context_data.get("captured_at_monotonic")
-        if not isinstance(captured_at_monotonic, (int, float)):
-            captured_at_monotonic = time.perf_counter()
-        context = {
-            "data_url": observation.data_url,
-            "width": observation.width,
-            "height": observation.height,
-            "captured_at": observation.captured_at,
-            "screen_name": observation.screen_name,
-        }
-        if not self.proactive_screen_contexts:
-            self.proactive_screen_context_batch_started_at = float(captured_at_monotonic)
-        self.proactive_screen_contexts.append(context)
-        batch_limit = (
-            PetWindow._current_screen_awareness_settings(self)
-            .normalized()
-            .screen_context_batch_limit
-        )
-        while len(self.proactive_screen_contexts) > batch_limit:
-            self.proactive_screen_contexts.pop(0)
-            self.proactive_screen_context_dropped_count += 1
-        batch_count = len(self.proactive_screen_contexts)
-        screen_name = observation.screen_name or "screen"
-        resolution = f"{observation.width}x{observation.height}"
-        log_event(
-            "ScreenAwareness",
-            "主动屏幕上下文已缓存",
-            {
-                "screen": f"{screen_name} {resolution}",
-                "screen_name": screen_name,
-                "resolution": resolution,
-                "width": observation.width,
-                "height": observation.height,
-                "captured_at": observation.captured_at,
-                "batch": f"{batch_count}/{batch_limit}",
-                "batch_count": batch_count,
-                "batch_limit": batch_limit,
-                "dropped_count": self.proactive_screen_context_dropped_count,
-                "image_chars": len(observation.data_url),
-            },
-        )
-
-    def _should_send_proactive_care_batch(self, now: float) -> bool:
-        if not self.proactive_screen_contexts:
-            return False
-        if self.proactive_screen_context_batch_started_at is None:
-            return False
-        return (
-            now - self.proactive_screen_context_batch_started_at
-            >= PetWindow._current_screen_awareness_settings(self).cooldown_minutes * 60
-        )
-
-    def _build_proactive_care_event(self, now: float | None = None) -> AgentEvent:
-        now = time.perf_counter() if now is None else now
-        screen_contexts = [dict(context) for context in self.proactive_screen_contexts]
-        settings = PetWindow._current_screen_awareness_settings(self)
-        payload: dict[str, Any] = {
-            "triggered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "seconds_since_pet_interaction": int(now - self.last_user_activity_at),
-            "check_interval_minutes": settings.check_interval_minutes,
-            "cooldown_minutes": settings.cooldown_minutes,
-            "screen_context_allowed": self._proactive_screen_context_allowed(),
-            "screen_context_count": len(screen_contexts),
-            "screen_context_dropped_count": self.proactive_screen_context_dropped_count,
-        }
-        recent_conversation = _build_screen_awareness_recent_conversation_for_window(self)
-        if recent_conversation:
-            payload["recent_conversation"] = recent_conversation
-            payload["recent_conversation_summary_hint"] = (
-                SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
-            )
-        if screen_contexts:
-            payload["screen_contexts"] = screen_contexts
-            payload["screen_context_window_started_at"] = screen_contexts[0].get("captured_at", "")
-            payload["screen_context_window_ended_at"] = screen_contexts[-1].get("captured_at", "")
-            log_event(
-                "ScreenAwareness",
-                "主动屏幕上下文批次已附加",
-                {
-                    "batch_count": len(screen_contexts),
-                    "dropped_count": self.proactive_screen_context_dropped_count,
-                    "started_at": payload["screen_context_window_started_at"],
-                    "ended_at": payload["screen_context_window_ended_at"],
-                },
-            )
-        return AgentEvent(type=LEGACY_PROACTIVE_EVENT_TYPE, payload=payload)
-
-    def _proactive_screen_context_allowed(self) -> bool:
-        return PetWindow._current_screen_awareness_settings(self).allows_screen_context()
-
-    def _sync_proactive_care_timer(self) -> None:
-        if self._proactive_screen_context_allowed():
-            if not self.proactive_care_timer.isActive():
-                self.proactive_care_timer.start()
-        else:
-            self.proactive_care_timer.stop()
-            self._clear_proactive_screen_context_batch("disabled")
-
-    def _clear_proactive_screen_context_batch(self, reason: str) -> None:
-        had_batch = bool(self.proactive_screen_contexts)
-        self.proactive_screen_contexts = []
-        self.proactive_screen_context_batch_started_at = None
-        self.last_proactive_screen_context_at = None
-        self.proactive_screen_context_dropped_count = 0
-        if had_batch:
-            log_event("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
-
     def _run_event_worker(self, event: AgentEvent, reminder_id: str | None = None) -> None:
         if getattr(self, "startup_initializing", False):
             return
@@ -4204,7 +3995,7 @@ class PetWindow(QWidget):
         elif _is_screen_awareness_event_type(event_type):
             self._log_interaction_stage("screen_awareness_error_silent")
             # 主动感知失败时静默结束本轮交互。若不结束，active_interaction_id 会一直占用，
-            # _can_run_proactive_care 会持续返回 False，导致此后不再触发任何主动感知。
+            # _can_run_screen_awareness 会持续返回 False，导致此后不再触发任何主动感知。
             self._end_interaction("screen_awareness_error_silent")
         if reminder_id is not None:
             self._mark_reminder_completed(reminder_id)
@@ -6970,7 +6761,7 @@ def _add_runtime_event_context_to_messages(
 
 
 def _is_screen_awareness_event_type(event_type: str) -> bool:
-    return event_type in {SCREEN_AWARENESS_EVENT_TYPE, LEGACY_PROACTIVE_EVENT_TYPE}
+    return event_type == SCREEN_AWARENESS_EVENT_TYPE
 
 
 def _is_screen_awareness_health_reply(reply: ChatReply) -> bool:

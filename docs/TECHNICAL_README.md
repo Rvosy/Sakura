@@ -65,7 +65,6 @@ flowchart LR
 │   │   ├── screen_awareness.py         # 主动屏幕感知策略
 │   │   ├── screen_tools.py             # 屏幕观察工具
 │   │   ├── screen_observation.py       # 屏幕观察入口
-│   │   ├── proactive_care.py           # 主动关怀
 │   │   ├── tool_policy.py              # 工具路由策略
 │   │   ├── tool_routing.py             # 浏览器/屏幕工具路由纯函数
 │   │   ├── tools/                      # 统一工具注册系统

@@ -53,6 +53,54 @@ def test_settings_stack_has_no_runtime_proactive_care_names() -> None:
         assert "proactive_" not in source
 
 
+def test_runtime_has_no_proactive_care_compatibility_path() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert not (root / "app/agent/proactive_care.py").exists()
+
+    excluded = {
+        root / "app/config/migration_runner.py",
+        root / "app/config/migrations.py",
+        root / "app/agent/runtime.py",
+    }
+    checked = [root / "main.py"]
+    checked.extend(path for path in (root / "app").rglob("*.py") if path not in excluded)
+    checked.extend((root / "plugins").rglob("*.py"))
+    forbidden = (
+        "LEGACY_PROACTIVE_EVENT_TYPE",
+        "proactive_check",
+        "ProactiveCare",
+        "PROACTIVE_",
+        "_check_proactive_care",
+        "proactive_care_settings",
+        "proactive_care_timer",
+        "proactive_screen_contexts",
+        "proactive_context",
+        "proactive_mode",
+        "build_proactive",
+        "agent.proactive",
+        "proactive_tool_loop",
+    )
+    for path in checked:
+        source = path.read_text(encoding="utf-8")
+        assert "proactive" not in source.lower()
+        for name in forbidden:
+            assert name not in source
+
+    runtime_source = (root / "app/agent/runtime.py").read_text(encoding="utf-8")
+    for name in forbidden:
+        if name != "proactive_check":
+            assert name not in runtime_source
+    assert runtime_source.count('"proactive_check"') == 1
+    assert 'if event.type == "proactive_check":' in runtime_source
+    assert 'raise ValueError(f"不支持的主动事件类型：{event.type}")' in runtime_source
+    runtime_without_guard = "\n".join(
+        line
+        for line in runtime_source.splitlines()
+        if '"proactive_check"' not in line
+    )
+    assert "proactive" not in runtime_without_guard.lower()
+
+
 class TestApiSettings:
     """ApiSettings 模型"""
 
