@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from app.core.mobile_chat_bridge import MobileChatBusyError
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.ui.theme import mix, theme_from_mapping
 
 
@@ -72,7 +72,7 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
             "tcp_connection_accepted",
             {"client": _client_address_text(client_address)},
         )
-        debug_log(
+        log_event(
             "Mobile",
             "TCP connection accepted",
             {"client": _client_address_text(client_address)},
@@ -86,7 +86,7 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
             "http_connection_handler_failed",
             {"client": _client_address_text(client_address)},
         )
-        debug_log(
+        log_event(
             "Mobile",
             "HTTP connection handler failed",
             {"client": _client_address_text(client_address)},
@@ -249,7 +249,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             self.end_headers()
 
         def log_message(self, format: str, *args: object) -> None:
-            debug_log("Mobile", "HTTP 请求", {"message": format % args})
+            log_event("Mobile", "HTTP 请求", {"message": format % args})
 
         def _log_request_start(self, method: str, path: str) -> None:
             request_info = {
@@ -261,14 +261,14 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 "user_agent": self.headers.get("User-Agent", ""),
             }
             _write_mobile_access_log(service.base_dir, "http_request_received", request_info)
-            debug_log(
+            log_event(
                 "Mobile",
                 "HTTP request received",
                 request_info,
             )
 
         def _log_client_disconnected(self) -> None:
-            debug_log("Mobile", "HTTP client disconnected", {"client": _client_address_text(self.client_address)})
+            log_event("Mobile", "HTTP client disconnected", {"client": _client_address_text(self.client_address)})
 
         def _read_json_body(self) -> dict[str, Any]:
             length = _safe_int(self.headers.get("Content-Length"), 0)
