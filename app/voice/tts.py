@@ -53,12 +53,7 @@ from app.voice.tts_synthesis import (  # noqa: F401
     _write_raw_float_or_pcm_as_wav,
     _write_raw_pcm_as_wav,
 )
-# 播放端点已抽到 tts_playback.py；re-export 端点类与兜底常量供既有测试导入。
-from app.voice.tts_playback import (  # noqa: F401
-    TTSPlaybackEndpoint,
-    _AUDIO_FINISH_FALLBACK_GRACE_MS,
-    _AUDIO_FINISH_FALLBACK_MAX_MS,
-)
+from app.voice.tts_playback import TTSPlaybackEndpoint
 
 
 def _resolve_project_root(base_dir: Path | None = None) -> Path:

@@ -1568,6 +1568,27 @@ def test_audio_sink_start_failure_uses_media_player_fallback(monkeypatch) -> Non
     assert provider._playback._current_audio == audio_path
 
 
+def test_stale_sink_completion_does_not_finish_current_audio(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
+    endpoint = provider._playback
+    root = _runtime_root("stale_sink_finished")
+    stale = root / "stale.wav"
+    current = root / "current.wav"
+    endpoint._current_audio = current
+    finished: list[str] = []
+    played: list[bool] = []
+    monkeypatch.setattr(endpoint, "_finish_current_audio", finished.append)
+    monkeypatch.setattr(endpoint, "_play_next", lambda: played.append(True))
+
+    endpoint._on_sink_finished("idle_after_all_pcm_written", str(stale))
+
+    assert finished == []
+    assert played == []
+    assert endpoint._current_audio == current
+    endpoint._current_audio = None
+    provider.close()
+
+
 def test_voice_playback_controller_falls_back_to_subtitle_callbacks_on_tts_error() -> None:
     from app.llm.chat_reply import ChatSegment
 

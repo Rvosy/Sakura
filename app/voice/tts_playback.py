@@ -40,8 +40,8 @@ _AUDIO_CLEANUP_DELAY_MS = 5000
 _AUDIO_CLEANUP_MAX_ATTEMPTS = 5
 _AUDIO_FINISH_FALLBACK_GRACE_MS = 1500
 _AUDIO_FINISH_FALLBACK_MIN_MS = 2000
-# 播放完成兜底的上限：时长无法解析或异常超长时按此值兜底，防止流程永久挂起
-_AUDIO_FINISH_FALLBACK_MAX_MS = 60_000
+# 时长意外无法解析时的保守兜底，防止流程永久挂起
+_AUDIO_FINISH_FALLBACK_UNKNOWN_MS = 60_000
 
 def _load_qt_multimedia() -> tuple[type[Any], type[Any]]:
     global QAudioOutput, QMediaPlayer
@@ -444,6 +444,18 @@ class TTSPlaybackEndpoint(QObject):
     @Slot(str, str)
     def _on_sink_finished(self, reason: str, audio_path_str: str) -> None:
         """AudioSinkPlayer 播放完成回调。"""
+        finished_path = Path(audio_path_str)
+        if self._current_audio != finished_path:
+            log_event(
+                "TTS",
+                "忽略过期的 AudioSink 完成信号",
+                {
+                    "finished_audio": str(finished_path),
+                    "current_audio": str(self._current_audio) if self._current_audio else "",
+                    "reason": reason,
+                },
+            )
+            return
         try:
             self._finish_current_audio(reason)
             self._play_next()
@@ -565,16 +577,19 @@ class TTSPlaybackEndpoint(QObject):
         duration_ms = _audio_checks._wav_duration_ms(audio_path)
         if duration_ms is None:
             # 时长读不出（文件损坏/被占用）更要兜底——这是播放器最可能卡死的场景；
-            # 用保守上限兜住，绝不能因解析失败而放弃兜底导致对话流程挂起
+            # 用固定未知时长兜住，绝不能因解析失败而放弃兜底导致对话流程挂起
             log_event(
                 "TTS",
-                "无法读取音频时长，使用上限时长兜底",
-                {"audio_path": audio_path, "delay_ms": _AUDIO_FINISH_FALLBACK_MAX_MS},
+                "无法读取音频时长，使用未知时长兜底",
+                {"audio_path": audio_path, "delay_ms": _AUDIO_FINISH_FALLBACK_UNKNOWN_MS},
             )
-            duration_ms = _AUDIO_FINISH_FALLBACK_MAX_MS
-        delay_ms = max(
-            _AUDIO_FINISH_FALLBACK_MIN_MS,
-            min(duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS, _AUDIO_FINISH_FALLBACK_MAX_MS),
+        delay_ms = (
+            _AUDIO_FINISH_FALLBACK_UNKNOWN_MS
+            if duration_ms is None
+            else max(
+                _AUDIO_FINISH_FALLBACK_MIN_MS,
+                duration_ms + _AUDIO_FINISH_FALLBACK_GRACE_MS,
+            )
         )
         QTimer.singleShot(
             delay_ms,
