@@ -207,105 +207,46 @@ def test_apply_character_syncs_memory_curator_prompt(monkeypatch) -> None:
     ) in events
 
 
-def test_start_memory_curation_snapshots_prompt_and_scope() -> None:
+def test_start_memory_curation_sets_context_before_spawning_worker(
+    pet_window,
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     from app.storage.chat_history import ChatHistoryEntry
-    from app.ui.pet_window import PetWindow
+    from app.ui.pet_window import _MemoryCurationRunContext
 
-    captured: dict[str, object] = {}
+    _configure_memory_curation_window(pet_window, tmp_path)
+    captured = {}
 
-    class ProfileStub:
-        id = "old-character"
+    def capture(worker, **_kwargs):  # type: ignore[no-untyped-def]
+        captured["run_at_spawn"] = pet_window.memory_curation_run
+        captured["worker"] = worker
 
-    class ScopedStoreStub:
-        def __init__(self, scope_id: str) -> None:
-            self.scope_id = scope_id
+    monkeypatch.setattr(pet_window.resource_manager, "spawn_qt_worker", capture)
+    started_prompt = pet_window.system_prompt
+    entries = [
+        ChatHistoryEntry("2026-07-11T10:00:00+08:00", "user", "旧角色对话")
+    ]
 
-    class MemoryStoreStub:
-        def __init__(self) -> None:
-            self.scope_id = "old-character"
-            self.scoped_calls: list[str] = []
-
-        def scoped(self, scope_id: str) -> ScopedStoreStub:
-            self.scoped_calls.append(scope_id)
-            return ScopedStoreStub(scope_id)
-
-        def set_scope(self, scope_id: str) -> None:
-            self.scope_id = scope_id
-
-    class CuratorStub:
-        def __init__(self, *, system_prompt: str, memory_store) -> None:  # type: ignore[no-untyped-def]
-            self.system_prompt = system_prompt
-            self.memory_store = memory_store
-
-        def snapshot(self, *, memory_store, system_prompt):  # type: ignore[no-untyped-def]
-            return CuratorStub(system_prompt=system_prompt, memory_store=memory_store)
-
-        def set_system_prompt(self, system_prompt: str) -> None:
-            self.system_prompt = system_prompt
-
-    class WorkerStub:
-        finished = object()
-        failed = object()
-        cancelled = object()
-
-        def __init__(self, curator, entries):  # type: ignore[no-untyped-def]
-            self.curator = curator
-            self.entries = entries
-            captured["worker"] = self
-
-    class ResourceManagerStub:
-        def spawn_qt_worker(self, worker, **kwargs):  # type: ignore[no-untyped-def]
-            captured["spawned_worker"] = worker
-            captured["spawn_kwargs"] = kwargs
-
-    class MinimalWindow:
-        _start_memory_curation = PetWindow._start_memory_curation
-
-        def _handle_memory_curation_finished(self, _result):  # type: ignore[no-untyped-def]
-            pass
-
-        def _handle_memory_curation_failed(self, _message):  # type: ignore[no-untyped-def]
-            pass
-
-        def _handle_memory_curation_cancelled(self):  # type: ignore[no-untyped-def]
-            pass
-
-        def _cleanup_memory_curation_worker(self):  # type: ignore[no-untyped-def]
-            pass
-
-    memory_store = MemoryStoreStub()
-    window = MinimalWindow()
-    window.memory_curation_thread = None
-    window.memory_curator = CuratorStub(
-        system_prompt="旧角色人格卡",
-        memory_store=memory_store,
+    pet_window._start_memory_curation(
+        entries,
+        mode="auto",
+        target_history_count=8,
+        consumed_turns=3,
     )
-    window.memory_store = memory_store
-    window.character_profile = ProfileStub()
-    window.system_prompt = "旧角色人格卡"
-    window.resource_manager = ResourceManagerStub()
 
-    import app.ui.pet_window as pet_window_module
-
-    original_worker = pet_window_module.MemoryCurationWorker
-    pet_window_module.MemoryCurationWorker = WorkerStub
-    try:
-        window._start_memory_curation(
-            [ChatHistoryEntry("2026-06-01T10:00:00+08:00", "user", "旧角色对话")],
-            mode="auto",
-            target_history_count=1,
-            consumed_turns=1,
-        )
-    finally:
-        pet_window_module.MemoryCurationWorker = original_worker
-
-    memory_store.set_scope("new-character")
-    window.memory_curator.set_system_prompt("新角色人格卡")
-
-    worker = captured["worker"]
-    assert memory_store.scoped_calls == ["old-character"]
-    assert worker.curator.system_prompt == "旧角色人格卡"  # type: ignore[attr-defined]
-    assert worker.curator.memory_store.scope_id == "old-character"  # type: ignore[attr-defined]
+    run = pet_window.memory_curation_run
+    assert run == _MemoryCurationRunContext(
+        mode="auto",
+        character_id=pet_window.character_profile.id,
+        target_history_count=8,
+        consumed_turns=3,
+    )
+    assert captured["run_at_spawn"] is run
+    pet_window.memory_store.set_scope("new-character")
+    pet_window.memory_curator.set_system_prompt("新角色人格卡")
+    assert captured["worker"].curator.system_prompt == started_prompt
+    assert captured["worker"].curator.memory_store.scope_id == run.character_id
 
 
 def test_renderer_replaces_default_portrait_suppresses_png_labels() -> None:
@@ -864,14 +805,6 @@ def test_auto_memory_turn_log_includes_trigger_progress(monkeypatch, tmp_path) -
     ]
 
 
-class _MemoryRetrySubtitleController:
-    def __init__(self) -> None:
-        self.messages: list[str] = []
-
-    def show_text_immediately(self, message: str) -> None:
-        self.messages.append(message)
-
-
 class _MemoryRetryHistoryStore:
     def __init__(self, entries) -> None:  # type: ignore[no-untyped-def]
         self.entries = list(entries)
@@ -880,69 +813,269 @@ class _MemoryRetryHistoryStore:
         return list(self.entries)
 
 
-def _build_memory_retry_window(tmp_path, *, trigger_turns: int = 3, entries=None):  # type: ignore[no-untyped-def]
+def _configure_memory_curation_window(
+    pet_window,
+    tmp_path,
+    *,
+    trigger_turns: int = 3,
+    entries=None,
+):  # type: ignore[no-untyped-def]
     from app.agent.memory_curator import MemoryCurationSettings, MemoryCurationState
     from app.storage.chat_history import ChatHistoryEntry
-    from app.ui.pet_window import PetWindow
-
-    class MinimalMemoryWindow:
-        _record_completed_memory_turn = PetWindow._record_completed_memory_turn
-        _maybe_start_auto_memory_curation = PetWindow._maybe_start_auto_memory_curation
-        _memory_curation_can_start = PetWindow._memory_curation_can_start
-        _handle_memory_curation_finished = PetWindow._handle_memory_curation_finished
-        _handle_memory_curation_failed = PetWindow._handle_memory_curation_failed
-        _cleanup_memory_curation_worker = PetWindow._cleanup_memory_curation_worker
-        _show_auto_memory_curation_stopped_message = (
-            PetWindow._show_auto_memory_curation_stopped_message
-        )
-
-        def _start_memory_curation(
-            self,
-            entries,  # type: ignore[no-untyped-def]
-            *,
-            mode: str,
-            target_history_count: int,
-            consumed_turns: int,
-        ) -> None:
-            self.started.append(  # type: ignore[attr-defined]
-                {
-                    "entries": list(entries),
-                    "mode": mode,
-                    "target_history_count": target_history_count,
-                    "consumed_turns": consumed_turns,
-                }
-            )
 
     if entries is None:
         entries = [
             ChatHistoryEntry("2026-06-28T21:09:14+08:00", "user", "第一轮"),
             ChatHistoryEntry("2026-06-28T21:09:20+08:00", "assistant", "第二轮"),
         ]
-    window = MinimalMemoryWindow()
-    window.memory_curation_settings = MemoryCurationSettings(
+    pet_window.memory_curation_settings = MemoryCurationSettings(
         enabled=True,
         trigger_turns=trigger_turns,
     )
-    window.memory_curation_state = MemoryCurationState(tmp_path / "memory_curation_state.json")
-    window.history_store = _MemoryRetryHistoryStore(entries)
-    window.worker_thread = None
-    window.memory_curation_thread = None
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.pending_screen_observation_event = None
-    window.screen_observation_followup_in_progress = False
-    window.startup_initializing = False
-    window.memory_curation_mode = ""
-    window.memory_curation_target_history_count = 0
-    window.memory_curation_consumed_turns = 0
-    window._auto_memory_curation_failure_attempts = 0
-    window._suppress_auto_memory_curation_restart = False
-    window.subtitle_controller = _MemoryRetrySubtitleController()
-    window.started = []
-    return window
+    pet_window.memory_curation_state = MemoryCurationState(
+        tmp_path / "memory_curation_state.json"
+    )
+    pet_window.history_store = _MemoryRetryHistoryStore(entries)
+    pet_window.worker_thread = None
+    pet_window.memory_curation_thread = None
+    pet_window.pending_tool_action = None
+    pet_window.pending_screen_observation_messages = None
+    pet_window.pending_screen_observation_event = None
+    pet_window.screen_observation_followup_in_progress = False
+    pet_window.memory_curation_run = None
+    pet_window._auto_memory_curation_failure_attempts = 0
+    pet_window._suppress_auto_memory_curation_restart = False
+    return pet_window
 
 
-def test_auto_memory_curation_failure_retries_first_two_attempts(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def _set_memory_curation_run(
+    pet_window,
+    *,
+    mode: str = "auto",
+    character_id: str | None = None,
+    target_history_count: int = 8,
+    consumed_turns: int = 3,
+):  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import _MemoryCurationRunContext
+
+    run = _MemoryCurationRunContext(
+        mode=mode,
+        character_id=character_id or pet_window.character_profile.id,
+        target_history_count=target_history_count,
+        consumed_turns=consumed_turns,
+    )
+    pet_window.memory_curation_run = run
+    return run
+
+
+def test_memory_curation_run_context_is_frozen() -> None:
+    from dataclasses import FrozenInstanceError
+    from app.ui.pet_window import _MemoryCurationRunContext
+
+    run = _MemoryCurationRunContext("auto", "demo", 8, 3)
+    with pytest.raises(FrozenInstanceError):
+        run.mode = "backfill"  # type: ignore[misc]
+
+
+def test_start_memory_curation_clears_context_when_spawn_fails(
+    pet_window,
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.storage.chat_history import ChatHistoryEntry
+
+    _configure_memory_curation_window(pet_window, tmp_path)
+
+    def fail_spawn(worker, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(pet_window.resource_manager, "spawn_qt_worker", fail_spawn)
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        pet_window._start_memory_curation(
+            [ChatHistoryEntry("2026-07-11T10:00:00+08:00", "user", "对话")],
+            mode="auto",
+            target_history_count=1,
+            consumed_turns=1,
+        )
+
+    assert pet_window.memory_curation_run is None
+
+
+def test_memory_curation_finished_without_run_context_logs_state_error(
+    pet_window,
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.memory_curator import MemoryCurationResult
+    import app.ui.pet_window as pet_window_module
+
+    _configure_memory_curation_window(pet_window, tmp_path)
+    logs = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **kwargs: logs.append(
+            (channel, message, payload)
+        ),
+    )
+    pet_window.memory_curation_run = None
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._suppress_auto_memory_curation_restart = True
+    before = pet_window.memory_curation_state.snapshot()
+
+    pet_window._handle_memory_curation_finished(
+        MemoryCurationResult(processed_entries=3)
+    )
+
+    assert pet_window.memory_curation_state.snapshot() == before
+    assert pet_window._auto_memory_curation_failure_attempts == 2
+    assert pet_window._suppress_auto_memory_curation_restart is True
+    assert (
+        "Memory",
+        "记忆整理回调缺少运行上下文",
+        {"callback": "finished"},
+    ) in logs
+
+
+def test_memory_curation_failed_without_run_context_skips_retry(
+    pet_window,
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    _configure_memory_curation_window(pet_window, tmp_path)
+    for _ in range(3):
+        pet_window.memory_curation_state.increment_pending_turns()
+    before = pet_window.memory_curation_state.snapshot()
+    pet_window._auto_memory_curation_failure_attempts = 1
+    pet_window.memory_curation_run = None
+    logs = []
+    messages = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **kwargs: logs.append(
+            (channel, message, payload)
+        ),
+    )
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "show_text_immediately",
+        messages.append,
+    )
+
+    pet_window._handle_memory_curation_failed("network error")
+
+    assert pet_window.memory_curation_state.snapshot() == before
+    assert pet_window._auto_memory_curation_failure_attempts == 1
+    assert pet_window._suppress_auto_memory_curation_restart is False
+    assert messages == []
+    assert (
+        "Memory",
+        "记忆整理回调缺少运行上下文",
+        {"callback": "failed"},
+    ) in logs
+
+
+def test_memory_curation_cleanup_clears_context_before_auto_restart(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.ui.pet_window import _MemoryCurationRunContext
+    import app.ui.pet_window as pet_window_module
+
+    observed = []
+    pet_window.memory_curation_run = _MemoryCurationRunContext("auto", "demo", 8, 3)
+    monkeypatch.setattr(
+        pet_window,
+        "_maybe_start_auto_memory_curation",
+        lambda: observed.append(pet_window.memory_curation_run),
+    )
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda _delay, callback: callback(),
+    )
+
+    pet_window._cleanup_memory_curation_worker()
+
+    assert observed == [None]
+
+
+def test_memory_curation_cleanup_during_shutdown_clears_without_restart(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    _set_memory_curation_run(pet_window)
+    timers = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: timers.append((delay, callback)),
+    )
+    pet_window._shutdown_in_progress = True
+    try:
+        pet_window._cleanup_memory_curation_worker()
+    finally:
+        pet_window._shutdown_in_progress = False
+
+    assert pet_window.memory_curation_run is None
+    assert timers == []
+
+
+def test_memory_curation_late_callbacks_during_shutdown_skip_context_error(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.memory_curator import MemoryCurationResult
+    import app.ui.pet_window as pet_window_module
+
+    logs = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **kwargs: logs.append(message),
+    )
+    pet_window.memory_curation_run = None
+    pet_window._shutdown_in_progress = True
+    try:
+        pet_window._handle_memory_curation_finished(
+            MemoryCurationResult(processed_entries=1)
+        )
+        pet_window._handle_memory_curation_failed("late error")
+    finally:
+        pet_window._shutdown_in_progress = False
+
+    assert "记忆整理回调缺少运行上下文" not in logs
+
+
+def test_apply_character_keeps_inflight_memory_curation_context(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    run = _set_memory_curation_run(pet_window)
+    next_profile = replace(
+        pet_window.character_profile,
+        id="character-b",
+        display_name="Character B",
+    )
+    monkeypatch.setattr(pet_window, "_emit_plugin_event", lambda *args, **kwargs: None)
+
+    pet_window._apply_character(next_profile)
+
+    assert pet_window.memory_curation_run is run
+    pet_window.memory_curation_run = None
+
+
+def test_auto_memory_curation_failure_retries_first_two_attempts(
+    pet_window,
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     timers = []
@@ -951,143 +1084,144 @@ def test_auto_memory_curation_failure_retries_first_two_attempts(monkeypatch, tm
         "singleShot",
         lambda delay, callback: timers.append((delay, callback)),
     )
-    window = _build_memory_retry_window(tmp_path)
+    _configure_memory_curation_window(pet_window, tmp_path)
 
     for _ in range(2):
-        window.memory_curation_mode = "auto"
-        window.memory_curation_consumed_turns = 9
-        window._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
-        window._cleanup_memory_curation_worker()
+        run = _set_memory_curation_run(pet_window, consumed_turns=9)
+        pet_window._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
+        assert pet_window.memory_curation_run is run
+        pet_window._cleanup_memory_curation_worker()
+        assert pet_window.memory_curation_run is None
 
     assert len(timers) == 2
     assert [callback.__name__ for _delay, callback in timers] == [
         "_maybe_start_auto_memory_curation",
         "_maybe_start_auto_memory_curation",
     ]
-    assert window._auto_memory_curation_failure_attempts == 2
-    assert window.subtitle_controller.messages == []
+    assert pet_window._auto_memory_curation_failure_attempts == 2
 
 
 def test_auto_memory_curation_third_failure_stops_restart_and_consumes_pending(
+    pet_window,
     monkeypatch,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
-    logs: list[tuple[str, str, dict[str, object] | None]] = []
-    monkeypatch.setattr(
-        pet_window_module,
-        "log_event",
-        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
-    )
+    _configure_memory_curation_window(pet_window, tmp_path)
+    for _ in range(9):
+        pet_window.memory_curation_state.increment_pending_turns()
     timers = []
     monkeypatch.setattr(
         pet_window_module.QTimer,
         "singleShot",
         lambda delay, callback: timers.append((delay, callback)),
     )
-    window = _build_memory_retry_window(tmp_path)
-    window.memory_curation_state.mark_processed(12)
-    for _ in range(9):
-        window.memory_curation_state.increment_pending_turns()
-    window._auto_memory_curation_failure_attempts = 2
-    window.memory_curation_mode = "auto"
-    window.memory_curation_consumed_turns = 9
-
-    window._handle_memory_curation_failed("insufficient_user_quota")
-    window._cleanup_memory_curation_worker()
-
-    snapshot = window.memory_curation_state.snapshot()
+    messages = []
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "show_text_immediately",
+        messages.append,
+    )
+    run = _set_memory_curation_run(pet_window, consumed_turns=9)
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._handle_memory_curation_failed("insufficient_user_quota")
+    assert pet_window.memory_curation_state.pending_turns() == 0
+    assert pet_window._auto_memory_curation_failure_attempts == 0
+    assert pet_window._suppress_auto_memory_curation_restart is True
+    assert pet_window.memory_curation_run is run
+    pet_window._cleanup_memory_curation_worker()
+    assert pet_window.memory_curation_run is None
     assert timers == []
-    assert snapshot["processed_history_count"] == 12
-    assert snapshot["pending_turns"] == 0
-    assert window._auto_memory_curation_failure_attempts == 0
-    assert window.subtitle_controller.messages == [
+    assert messages == [
         "自动记忆整理连续失败，已停止本轮，稍后会在下次整理时再试"
     ]
-    assert any(message == "自动记忆整理连续失败" for _channel, message, _payload in logs)
 
 
-def test_auto_memory_curation_success_resets_failure_count(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_auto_memory_curation_success_resets_failure_count(
+    pet_window,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     from app.agent.memory_curator import MemoryCurationResult
 
-    window = _build_memory_retry_window(tmp_path)
+    _configure_memory_curation_window(pet_window, tmp_path)
     for _ in range(3):
-        window.memory_curation_state.increment_pending_turns()
-    window._auto_memory_curation_failure_attempts = 2
-    window._suppress_auto_memory_curation_restart = True
-    window.memory_curation_mode = "auto"
-    window.memory_curation_target_history_count = 8
-    window.memory_curation_consumed_turns = 3
+        pet_window.memory_curation_state.increment_pending_turns()
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._suppress_auto_memory_curation_restart = True
+    run = _set_memory_curation_run(pet_window)
 
-    window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
+    pet_window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
 
-    snapshot = window.memory_curation_state.snapshot()
-    assert window._auto_memory_curation_failure_attempts == 0
-    assert window._suppress_auto_memory_curation_restart is False
+    snapshot = pet_window.memory_curation_state.snapshot()
+    assert pet_window._auto_memory_curation_failure_attempts == 0
+    assert pet_window._suppress_auto_memory_curation_restart is False
     assert snapshot["processed_history_count"] == 8
     assert snapshot["pending_turns"] == 0
+    assert pet_window.memory_curation_run is run
 
 
-def test_auto_memory_curation_finish_after_character_switch_skips_progress(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_auto_memory_curation_finish_after_character_switch_skips_progress(
+    pet_window,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     from app.agent.memory_curator import MemoryCurationResult
 
-    window = _build_memory_retry_window(tmp_path)
-    window.memory_curation_state.mark_processed(12)
+    _configure_memory_curation_window(pet_window, tmp_path)
+    pet_window.memory_curation_state.mark_processed(12)
     for _ in range(3):
-        window.memory_curation_state.increment_pending_turns()
-    window._auto_memory_curation_failure_attempts = 2
-    window._suppress_auto_memory_curation_restart = True
-    window.memory_curation_mode = "auto"
-    window.memory_curation_target_history_count = 8
-    window.memory_curation_consumed_turns = 3
-    window.memory_curation_character_id = "character-a"
-    window.character_profile = type("Profile", (), {"id": "character-b"})()
+        pet_window.memory_curation_state.increment_pending_turns()
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._suppress_auto_memory_curation_restart = True
+    run = _set_memory_curation_run(pet_window, character_id="character-a")
+    pet_window.character_profile = replace(pet_window.character_profile, id="character-b")
 
-    window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
+    pet_window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
 
-    snapshot = window.memory_curation_state.snapshot()
-    assert window._auto_memory_curation_failure_attempts == 0
-    assert window._suppress_auto_memory_curation_restart is False
+    snapshot = pet_window.memory_curation_state.snapshot()
+    assert pet_window._auto_memory_curation_failure_attempts == 0
+    assert pet_window._suppress_auto_memory_curation_restart is False
     assert snapshot["processed_history_count"] == 12
     assert snapshot["pending_turns"] == 3
+    assert pet_window.memory_curation_run is run
 
 
 def test_auto_memory_curation_third_failure_after_character_switch_keeps_pending(
+    pet_window,
     monkeypatch,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
+    _configure_memory_curation_window(pet_window, tmp_path)
+    pet_window.memory_curation_state.mark_processed(12)
+    for _ in range(9):
+        pet_window.memory_curation_state.increment_pending_turns()
     timers = []
     monkeypatch.setattr(
         pet_window_module.QTimer,
         "singleShot",
         lambda delay, callback: timers.append((delay, callback)),
     )
-    window = _build_memory_retry_window(tmp_path)
-    window.memory_curation_state.mark_processed(12)
-    for _ in range(9):
-        window.memory_curation_state.increment_pending_turns()
-    window._auto_memory_curation_failure_attempts = 2
-    window.memory_curation_mode = "auto"
-    window.memory_curation_consumed_turns = 9
-    window.memory_curation_character_id = "character-a"
-    window.character_profile = type("Profile", (), {"id": "character-b"})()
-
-    window._handle_memory_curation_failed("insufficient_user_quota")
-    window._cleanup_memory_curation_worker()
-
-    snapshot = window.memory_curation_state.snapshot()
-    assert snapshot["processed_history_count"] == 12
-    assert snapshot["pending_turns"] == 9
-    assert window._auto_memory_curation_failure_attempts == 0
-    assert window.memory_curation_character_id == ""
-    assert window.subtitle_controller.messages == []
+    run = _set_memory_curation_run(
+        pet_window,
+        character_id="character-a",
+        consumed_turns=9,
+    )
+    pet_window.character_profile = replace(pet_window.character_profile, id="character-b")
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._handle_memory_curation_failed("insufficient_user_quota")
+    assert pet_window.memory_curation_state.pending_turns() == 9
+    assert pet_window._auto_memory_curation_failure_attempts == 0
+    assert pet_window._suppress_auto_memory_curation_restart is False
+    assert pet_window.memory_curation_run is run
+    pet_window._cleanup_memory_curation_worker()
+    assert pet_window.memory_curation_run is None
     assert len(timers) == 1
 
 
 def test_auto_memory_curation_can_start_after_next_trigger_turns(
+    pet_window,
     monkeypatch,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1099,28 +1233,34 @@ def test_auto_memory_curation_can_start_after_next_trigger_turns(
         "singleShot",
         lambda delay, callback: timers.append((delay, callback)),
     )
-    window = _build_memory_retry_window(tmp_path, trigger_turns=2)
+    _configure_memory_curation_window(pet_window, tmp_path, trigger_turns=2)
+    started = []
+    monkeypatch.setattr(
+        pet_window,
+        "_start_memory_curation",
+        lambda entries, **kwargs: started.append({"entries": entries, **kwargs}),
+    )
     for _ in range(2):
-        window.memory_curation_state.increment_pending_turns()
-    window._auto_memory_curation_failure_attempts = 2
-    window.memory_curation_mode = "auto"
-    window.memory_curation_consumed_turns = 2
-    window._handle_memory_curation_failed("API 返回格式无法解析")
-    window._cleanup_memory_curation_worker()
-    assert window.memory_curation_state.pending_turns() == 0
+        pet_window.memory_curation_state.increment_pending_turns()
+    _set_memory_curation_run(pet_window, consumed_turns=2)
+    pet_window._auto_memory_curation_failure_attempts = 2
+    pet_window._handle_memory_curation_failed("API 返回格式无法解析")
+    pet_window._cleanup_memory_curation_worker()
+    assert pet_window.memory_curation_state.pending_turns() == 0
     assert timers == []
 
-    window._record_completed_memory_turn()
-    window._record_completed_memory_turn()
+    pet_window._record_completed_memory_turn()
+    pet_window._record_completed_memory_turn()
 
     assert len(timers) == 1
     timers[0][1]()
-    assert len(window.started) == 1
-    assert window.started[0]["mode"] == "auto"
-    assert window.started[0]["consumed_turns"] == 2
+    assert len(started) == 1
+    assert started[0]["mode"] == "auto"
+    assert started[0]["consumed_turns"] == 2
 
 
 def test_auto_memory_choices_empty_failures_stop_after_three_requests(
+    pet_window,
     monkeypatch,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1133,29 +1273,32 @@ def test_auto_memory_choices_empty_failures_stop_after_three_requests(
         "singleShot",
         lambda _delay, callback: callbacks.append(callback),
     )
-    window = _build_memory_retry_window(tmp_path, trigger_turns=3)
+    _configure_memory_curation_window(pet_window, tmp_path, trigger_turns=3)
     for _ in range(3):
-        window.memory_curation_state.increment_pending_turns()
-    window.request_count = 0
+        pet_window.memory_curation_state.increment_pending_turns()
+    request_count = 0
 
     def fail_start(
-        self,
         entries,  # type: ignore[no-untyped-def]
         *,
         mode: str,
         target_history_count: int,
         consumed_turns: int,
     ) -> None:
+        nonlocal request_count
         _ = entries
-        self.request_count += 1
-        self.memory_curation_mode = mode
-        self.memory_curation_target_history_count = target_history_count
-        self.memory_curation_consumed_turns = consumed_turns
-        self._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
-        self._cleanup_memory_curation_worker()
+        request_count += 1
+        _set_memory_curation_run(
+            pet_window,
+            mode=mode,
+            target_history_count=target_history_count,
+            consumed_turns=consumed_turns,
+        )
+        pet_window._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
+        pet_window._cleanup_memory_curation_worker()
 
-    window._start_memory_curation = fail_start.__get__(window, type(window))
-    callbacks.append(window._maybe_start_auto_memory_curation)
+    monkeypatch.setattr(pet_window, "_start_memory_curation", fail_start)
+    callbacks.append(pet_window._maybe_start_auto_memory_curation)
 
     iterations = 0
     while callbacks and iterations < 10:
@@ -1163,12 +1306,23 @@ def test_auto_memory_choices_empty_failures_stop_after_three_requests(
         callback = callbacks.pop(0)
         callback()
 
-    assert window.request_count == MAX_AUTO_RETRY_ATTEMPTS
+    assert request_count == MAX_AUTO_RETRY_ATTEMPTS
     assert callbacks == []
-    assert window.memory_curation_state.pending_turns() == 0
-    assert window.subtitle_controller.messages == [
-        "自动记忆整理连续失败，已停止本轮，稍后会在下次整理时再试"
-    ]
+    assert pet_window.memory_curation_state.pending_turns() == 0
+
+
+def test_pet_window_memory_curation_has_single_context(pet_window) -> None:
+    import app.ui.pet_window as pet_window_module
+
+    source = Path(pet_window_module.__file__).read_text(encoding="utf-8")
+    assert pet_window.memory_curation_run is None
+    for name in (
+        "memory_curation_mode",
+        "memory_curation_character_id",
+        "memory_curation_target_history_count",
+        "memory_curation_consumed_turns",
+    ):
+        assert name not in source
 
 
 def test_memory_failure_dialog_is_deferred_until_startup_window_is_visible(monkeypatch) -> None:  # type: ignore[no-untyped-def]

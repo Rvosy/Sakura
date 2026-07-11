@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -563,6 +564,14 @@ def _screen_observation_max_edge_from_context(context: dict[str, Any]) -> int:
     return max(1, max_edge)
 
 
+@dataclass(frozen=True)
+class _MemoryCurationRunContext:
+    mode: str
+    character_id: str
+    target_history_count: int
+    consumed_turns: int
+
+
 class PetWindow(QWidget):
     memory_status_changed = Signal(str, str)
     # 插件请求把文本填入输入框；用信号 marshal 回 UI 线程（ASR 等可能在后台线程触发）。
@@ -651,10 +660,7 @@ class PetWindow(QWidget):
         self.worker: ChatWorker | EventWorker | None = None
         self.memory_curation_thread: QThread | None = None
         self.memory_curation_worker: MemoryCurationWorker | None = None
-        self.memory_curation_mode = ""
-        self.memory_curation_target_history_count = 0
-        self.memory_curation_consumed_turns = 0
-        self.memory_curation_character_id = ""
+        self.memory_curation_run: _MemoryCurationRunContext | None = None
         self._auto_memory_curation_failure_attempts = 0
         self._suppress_auto_memory_curation_restart = False
         self.drag_anchor: QPoint | None = None
@@ -4159,106 +4165,124 @@ class PetWindow(QWidget):
         target_history_count: int,
         consumed_turns: int,
     ) -> None:
-        if not entries or self.memory_curation_thread is not None:
+        if not entries or self.memory_curation_thread is not None or (
+            self.memory_curation_run is not None
+        ):
             return
-        character_id = self.character_profile.id
+        run = _MemoryCurationRunContext(
+            mode, self.character_profile.id, target_history_count, consumed_turns
+        )
         log_event(
             "Memory",
             "启动记忆整理",
             {
-                "mode": mode,
-                "character_id": character_id,
+                "mode": run.mode,
+                "character_id": run.character_id,
                 "entry_count": len(entries),
-                "target_history_count": target_history_count,
-                "consumed_turns": consumed_turns,
-                "auto_attempt": (
-                    getattr(self, "_auto_memory_curation_failure_attempts", 0) + 1
-                    if mode == "auto"
-                    else None
-                ),
-                "max_auto_attempts": MAX_AUTO_RETRY_ATTEMPTS if mode == "auto" else None,
+                "target_history_count": run.target_history_count,
+                "consumed_turns": run.consumed_turns,
+                "auto_attempt": self._auto_memory_curation_failure_attempts + 1
+                if run.mode == "auto"
+                else None,
+                "max_auto_attempts": MAX_AUTO_RETRY_ATTEMPTS
+                if run.mode == "auto"
+                else None,
             },
         )
-        self.memory_curation_mode = mode
-        self.memory_curation_target_history_count = target_history_count
-        self.memory_curation_consumed_turns = consumed_turns
-        self.memory_curation_character_id = character_id
         worker_curator = self.memory_curator.snapshot(
-            memory_store=self.memory_store.scoped(character_id),
+            memory_store=self.memory_store.scoped(run.character_id),
             system_prompt=self.system_prompt,
         )
         worker = MemoryCurationWorker(worker_curator, entries)
-        self.resource_manager.spawn_qt_worker(
-            worker,
-            parent=self,
-            owner=self,
-            thread_attr="memory_curation_thread",
-            worker_attr="memory_curation_worker",
-            signal_bindings=[
-                (worker.finished, self._handle_memory_curation_finished),
-                (worker.failed, self._handle_memory_curation_failed),
-            ],
-            quit_on=[worker.finished, worker.failed, worker.cancelled],
-            on_finished=self._cleanup_memory_curation_worker,
-        )
+        self.memory_curation_run = run
+        try:
+            self.resource_manager.spawn_qt_worker(
+                worker,
+                parent=self,
+                owner=self,
+                thread_attr="memory_curation_thread",
+                worker_attr="memory_curation_worker",
+                signal_bindings=[
+                    (worker.finished, self._handle_memory_curation_finished),
+                    (worker.failed, self._handle_memory_curation_failed),
+                ],
+                quit_on=[worker.finished, worker.failed, worker.cancelled],
+                on_finished=self._cleanup_memory_curation_worker,
+            )
+        except Exception:
+            self.memory_curation_run = None
+            raise
 
     @Slot(object)
     def _handle_memory_curation_finished(self, result: MemoryCurationResult) -> None:
-        if getattr(self, "_shutdown_in_progress", False):
+        if self._shutdown_in_progress:
             return
-        mode = self.memory_curation_mode
+        run = self.memory_curation_run
+        if run is None:
+            log_event("Memory", "记忆整理回调缺少运行上下文", {"callback": "finished"})
+            return
         self._auto_memory_curation_failure_attempts = 0
         self._suppress_auto_memory_curation_restart = False
         log_event(
             "Memory",
             "记忆整理完成",
             {
-                "mode": mode,
+                "mode": run.mode,
                 "result": result,
-                "target_history_count": self.memory_curation_target_history_count,
-                "consumed_turns": self.memory_curation_consumed_turns,
+                "target_history_count": run.target_history_count,
+                "consumed_turns": run.consumed_turns,
             },
         )
-        if _memory_curation_character_changed(self):
+        current_character_id = self.character_profile.id
+        if run.character_id != current_character_id:
             log_event(
                 "Memory",
                 "记忆整理完成但角色已切换，跳过进度写入",
-                _memory_curation_character_payload(self),
+                {
+                    "curation_character_id": run.character_id,
+                    "current_character_id": current_character_id,
+                },
             )
             return
         self.memory_curation_state.mark_processed(
-            self.memory_curation_target_history_count,
-            consumed_turns=self.memory_curation_consumed_turns,
-            backfill_completed=True if mode == "backfill" else None,
+            run.target_history_count,
+            consumed_turns=run.consumed_turns,
+            backfill_completed=True if run.mode == "backfill" else None,
         )
 
     @Slot(str)
     def _handle_memory_curation_failed(self, message: str) -> None:
-        if getattr(self, "_shutdown_in_progress", False):
+        if self._shutdown_in_progress:
             return
-        mode = self.memory_curation_mode
+        run = self.memory_curation_run
+        if run is None:
+            log_event("Memory", "记忆整理回调缺少运行上下文", {"callback": "failed"})
+            return
         attempt = 0
-        if mode == "auto":
-            attempt = getattr(self, "_auto_memory_curation_failure_attempts", 0) + 1
+        if run.mode == "auto":
+            attempt = self._auto_memory_curation_failure_attempts + 1
             self._auto_memory_curation_failure_attempts = attempt
         log_event(
             "Memory",
             "记忆整理失败",
             {
-                "mode": mode,
+                "mode": run.mode,
                 "attempt": attempt or None,
-                "max_attempts": MAX_AUTO_RETRY_ATTEMPTS if mode == "auto" else None,
+                "max_attempts": MAX_AUTO_RETRY_ATTEMPTS
+                if run.mode == "auto"
+                else None,
                 "error": message,
             },
         )
-        if mode == "auto" and attempt >= MAX_AUTO_RETRY_ATTEMPTS:
-            consumed_turns = max(0, int(self.memory_curation_consumed_turns))
-            if _memory_curation_character_changed(self):
+        if run.mode == "auto" and attempt >= MAX_AUTO_RETRY_ATTEMPTS:
+            consumed_turns = max(0, int(run.consumed_turns))
+            if run.character_id != self.character_profile.id:
                 log_event(
                     "Memory",
                     "自动记忆整理连续失败但角色已切换，跳过当前角色进度消费",
                     {
-                        **_memory_curation_character_payload(self),
+                        "curation_character_id": run.character_id,
+                        "current_character_id": self.character_profile.id,
                         "attempt": attempt,
                         "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
                         "consumed_turns": consumed_turns,
@@ -4285,22 +4309,16 @@ class PetWindow(QWidget):
 
     @Slot()
     def _cleanup_memory_curation_worker(self) -> None:
-        self.memory_curation_mode = ""
-        self.memory_curation_target_history_count = 0
-        self.memory_curation_consumed_turns = 0
-        self.memory_curation_character_id = ""
-        if getattr(self, "_shutdown_in_progress", False):
+        self.memory_curation_run = None
+        if self._shutdown_in_progress:
             return
-        if getattr(self, "_suppress_auto_memory_curation_restart", False):
+        if self._suppress_auto_memory_curation_restart:
             self._suppress_auto_memory_curation_restart = False
             return
         QTimer.singleShot(0, self._maybe_start_auto_memory_curation)
 
     def _show_auto_memory_curation_stopped_message(self, message: str) -> None:
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        show_text_immediately = getattr(subtitle_controller, "show_text_immediately", None)
-        if callable(show_text_immediately):
-            show_text_immediately(message)
+        self.subtitle_controller.show_text_immediately(message)
 
     @Slot(object)
     def apply_deferred_services(self, services: "DeferredStartupServices") -> None:
@@ -6616,25 +6634,6 @@ class PetWindow(QWidget):
         from app.core.bootstrap import create_visual_observation_store
 
         return create_visual_observation_store(self.base_dir, profile)
-
-
-def _memory_curation_character_changed(window: object) -> bool:
-    started_character_id = str(getattr(window, "memory_curation_character_id", "") or "")
-    current_profile = getattr(window, "character_profile", None)
-    current_character_id = str(getattr(current_profile, "id", "") or "")
-    return bool(
-        started_character_id
-        and current_character_id
-        and started_character_id != current_character_id
-    )
-
-
-def _memory_curation_character_payload(window: object) -> dict[str, str]:
-    current_profile = getattr(window, "character_profile", None)
-    return {
-        "curation_character_id": str(getattr(window, "memory_curation_character_id", "") or ""),
-        "current_character_id": str(getattr(current_profile, "id", "") or ""),
-    }
 
 
 def _build_screen_observation_disabled_result() -> AgentResult:
