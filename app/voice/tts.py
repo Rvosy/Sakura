@@ -122,9 +122,6 @@ class TTSProvider(Protocol):
     def discard_prepared(self, handle: TTSPreparedAudio) -> None:
         """丢弃不再需要的预生成音频。"""
 
-    def warm_up_playback(self) -> None:
-        """提前初始化本地播放器，避免第一句朗读承担冷启动成本。"""
-
     def ensure_ready(self) -> tuple[bool, str]:
         """同步检测并预热 TTS 服务，不生成或播放音频。"""
 
@@ -188,9 +185,6 @@ class NullTTSProvider:
         log_event("TTS", "丢弃静音预生成句柄", {"text": handle.text, "tone": handle.tone})
         handle.cancelled = True
 
-    def warm_up_playback(self) -> None:
-        log_event("TTS", "静音 Provider 跳过播放器预热")
-
     def ensure_ready(self) -> tuple[bool, str]:
         log_event("TTS", "静音 Provider 跳过服务检测")
         return True, "TTS 已关闭。"
@@ -231,7 +225,7 @@ class GPTSoVITSTTSProvider(QObject):
         )
         # 播放端点拆到 TTSPlaybackEndpoint（UI 主线程子对象，随本协调器 moveToThread）；
         # error_occurred re-emit 给本协调器供 PetWindow 连接。
-        self._playback = self._create_playback_endpoint(settings)
+        self._playback = self._create_playback_endpoint()
         self._playback.error_occurred.connect(self.error_occurred)
         # 合成队列拆到 TTSSynthesisQueue；以播放端点为 sink 把结果投回播放队列。
         self._synthesis_queue = self._create_synthesis_queue()
@@ -272,11 +266,10 @@ class GPTSoVITSTTSProvider(QObject):
             is_closed=self._is_closed,
         )
 
-    def _create_playback_endpoint(self, settings: _GPTSoVITSTTSSettings) -> TTSPlaybackEndpoint:
+    def _create_playback_endpoint(self) -> TTSPlaybackEndpoint:
         return TTSPlaybackEndpoint(
             self,
             cache_dir=self._tts_cache_dir,
-            playback_backend=getattr(settings, "playback_backend", "") or "",
             is_closed=self._is_closed,
         )
 
@@ -351,10 +344,6 @@ class GPTSoVITSTTSProvider(QObject):
         # 队列侧丢弃待合成请求，播放侧清理已入播放队列的临时音频。
         self._synthesis_queue.discard_pending(handle)
         self._playback.discard_prepared(handle)
-
-    def warm_up_playback(self) -> None:
-        """提前初始化本地播放器；委托给播放端点。"""
-        self._playback.warm_up_playback()
 
     def ensure_ready(self) -> tuple[bool, str]:
         """同步检测并预热本地 TTS 服务，委托给服务监督。"""

@@ -12,9 +12,6 @@ from pathlib import Path
 from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import DEFAULT_TONE
 
-TTS_PLAYBACK_BACKEND_AUDIO_SINK = "audio_sink"
-TTS_PLAYBACK_BACKEND_MEDIA_PLAYER = "media_player"
-
 TTS_PROVIDER_NONE = "none"
 TTS_PROVIDER_GPT_SOVITS = "gpt-sovits"
 TTS_PROVIDER_CUSTOM_GPT_SOVITS = "custom-gpt-sovits"
@@ -59,7 +56,6 @@ class GPTSoVITSTTSSettings:
     text_lang: str = "ja"
     timeout_seconds: int = 60
     tone_references: dict[str, list[ToneReference]] = field(default_factory=dict)
-    playback_backend: str = ""
 
     @classmethod
     def from_character_profile(

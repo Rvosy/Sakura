@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -370,7 +370,6 @@ class AppSettingsService:
         character_profile: CharacterProfile | None = None,
     ) -> GPTSoVITSTTSSettings:
         data = self._api_section("tts")
-        playback_backend = str(data.get("playback_backend", "")).strip()
         gpt_sovits = _mapping(data.get("gpt_sovits"))
         genie_tts = _mapping(data.get("genie_tts"))
         provider = str(data.get("provider", "")).strip().lower()
@@ -430,8 +429,6 @@ class AppSettingsService:
                 onnx_model_dir=onnx_model_dir,
                 validate_enabled=validate_enabled,
             )
-            if playback_backend:
-                settings = replace(settings, playback_backend=playback_backend)
         else:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
                 onnx_model_dir = StoragePaths(self.base_dir).tts_bundle_onnx_for("default")
@@ -451,8 +448,6 @@ class AppSettingsService:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
             )
-            if playback_backend:
-                settings = replace(settings, playback_backend=playback_backend)
         if settings.enabled and validate_enabled:
             settings.validate()
         return settings

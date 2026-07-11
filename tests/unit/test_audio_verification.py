@@ -137,7 +137,6 @@ class TestPlayNextSkipsInvalidAudio:
         stub._current_finished = None
         stub._current_started_emitted = False
         stub._playback_finish_token = 0
-        stub._playback_backend = "media_player"
         stub._pending_audio = [
             (bad, None, None, None, "坏的"),
             (good, None, None, None, "好的"),

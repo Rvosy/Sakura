@@ -886,7 +886,6 @@ class PetWindow(QWidget):
         )
         self.speech_timer = self.subtitle_controller.speech_timer
         if not self.startup_initializing:
-            QTimer.singleShot(0, self._warm_up_current_tts_playback)
             QTimer.singleShot(0, self._start_current_tts_ready_warmup)
 
         bubble_header = QHBoxLayout()
@@ -4340,7 +4339,6 @@ class PetWindow(QWidget):
         self.tts_provider = services.tts_provider
         self.voice_playback_controller.set_provider(services.tts_provider)
         self._connect_tts_error_signal(services.tts_provider)
-        self._warm_up_tts_playback(services.tts_provider)
         self._start_tts_ready_warmup(services.tts_provider)
         self._prepare_backchannel_audio_cache()
         self.tool_registry = services.tool_registry
@@ -4613,25 +4611,6 @@ class PetWindow(QWidget):
             disconnect(self._show_tts_error)
         except (TypeError, RuntimeError):
             pass
-
-    def _warm_up_current_tts_playback(self) -> None:
-        self._warm_up_tts_playback(self.tts_provider)
-
-    def _warm_up_tts_playback(self, provider: TTSProvider) -> None:
-        warm_up = getattr(provider, "warm_up_playback", None)
-        if not callable(warm_up):
-            return
-        try:
-            warm_up()
-        except Exception as exc:  # noqa: BLE001
-            log_event(
-                "TTS",
-                "播放器预热请求失败",
-                {
-                    "provider": type(provider).__name__,
-                    "error": str(exc),
-                },
-            )
 
     def _start_current_tts_ready_warmup(self) -> None:
         self._start_tts_ready_warmup(self.tts_provider)
@@ -5427,7 +5406,6 @@ class PetWindow(QWidget):
             connect_tts_error_signal = getattr(self, "_connect_tts_error_signal", None)
             if callable(connect_tts_error_signal):
                 connect_tts_error_signal(new_tts_provider)
-            self._warm_up_tts_playback(new_tts_provider)
             start_tts_ready_warmup = getattr(self, "_start_tts_ready_warmup", None)
             if callable(start_tts_ready_warmup):
                 start_tts_ready_warmup(new_tts_provider)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import os
 import sys
 import threading
@@ -9,7 +10,7 @@ import urllib.error
 import urllib.request
 import uuid
 import wave
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,7 @@ from app.voice.tts_service import GenieServiceSupervisor, TTSServiceSupervisor
 import app.voice.tts_service as tts_service
 import app.voice.tts_playback as tts_playback
 import app.voice.tts_synthesis as tts_synthesis
+import app.voice.tts_settings as tts_settings_module
 from app.voice.tts_settings import GPTSoVITSTTSSettings, _load_tone_references
 from app.core.gui_log import GUI_LOG_SCOPE_TTS, clear_gui_logs, get_gui_log_buffer
 from app.voice import VoicePlaybackController
@@ -393,7 +395,6 @@ def test_invalid_playback_endpoint_discards_result_without_qt_emit(tmp_path: Pat
     endpoint = tts_playback.TTSPlaybackEndpoint(
         parent,
         cache_dir=tmp_path,
-        playback_backend="",
         is_closed=lambda: False,
     )
     audio_path = tmp_path / "invalid-endpoint.wav"
@@ -1275,18 +1276,42 @@ def test_gptsovits_charmap_http_error_gets_actionable_message() -> None:
     assert "原始响应" in message
 
 
-def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import app.voice.tts as tts_module
+def _force_media_player_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str] | None = None,
+) -> None:
+    class SignalStub:
+        def connect(self, *_args: object, **_kwargs: object) -> None:
+            pass
 
+        def disconnect(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class FailingSinkPlayer:
+        def __init__(self) -> None:
+            self.started = SignalStub()
+            self.finished = SignalStub()
+            self.error = SignalStub()
+
+        def start(self, _audio_path: Path) -> bool:
+            if calls is not None:
+                calls.append("sink")
+            return False
+
+    monkeypatch.setattr(
+        tts_playback,
+        "_create_audio_sink_player",
+        lambda _parent: FailingSinkPlayer(),
+    )
+
+
+def test_media_player_is_lazy_until_audio_sink_fallback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[str] = []
 
     class TimerStub:
         @staticmethod
         def singleShot(interval: int, callback) -> None:  # type: ignore[no-untyped-def]
             calls.append("timer")
-            # 只立即执行 warm_up 的 0 延迟回调；播放完成兜底（delay>0）仅记录
-            if interval == 0:
-                callback()
 
     class SignalStub:
         def connect(self, *_args: object, **_kwargs: object) -> None:
@@ -1327,25 +1352,17 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
     monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
     monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
     monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
+    _force_media_player_fallback(monkeypatch, calls)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    # 本测试验证 QMediaPlayer 预热复用；旧版靠"假文件让 sink 失败再 fallback"
-    # 隐式走到 media_player，播放前校验引入后显式指定后端
-    provider._playback._playback_backend = "media_player"
-
     assert calls == []
 
-    provider.warm_up_playback()
-
-    assert calls == ["timer", "audio", "player"]
-
-    warmup_audio = _runtime_root("warmup_play") / "dummy.wav"
-    _write_silence_wav(warmup_audio, frame_count=1600, frame_rate=16000)
-    provider._playback._pending_audio.append((warmup_audio, None, None, None, ""))
+    audio_path = _runtime_root("lazy_media_fallback") / "dummy.wav"
+    _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
+    provider._playback._pending_audio.append((audio_path, None, None, None, ""))
     provider._playback._play_next()
 
-    # 播放后会追加一个播放完成兜底定时器（delay>0，仅记录不执行）
-    assert calls == ["timer", "audio", "player", "source", "play", "timer"]
+    assert calls == ["sink", "audio", "player", "source", "play", "timer"]
 
 
 def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1395,7 +1412,7 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
     monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    _force_media_player_fallback(monkeypatch)
     monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
     stopped_root = _runtime_root("stopped_state_finish")
     first_audio = stopped_root / "first.wav"
@@ -1489,7 +1506,7 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
     monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    _force_media_player_fallback(monkeypatch)
     monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
     provider._playback._pending_audio.append(
         (
@@ -1528,22 +1545,6 @@ def test_audio_sink_start_failure_uses_media_player_fallback(monkeypatch) -> Non
     audio_path = root / "first.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    class SignalStub:
-        def connect(self, _callback):  # type: ignore[no-untyped-def]
-            pass
-
-        def disconnect(self):  # type: ignore[no-untyped-def]
-            pass
-
-    class FailingSinkPlayer:
-        def __init__(self) -> None:
-            self.started = SignalStub()
-            self.finished = SignalStub()
-            self.error = SignalStub()
-
-        def start(self, _audio_path: Path) -> bool:
-            return False
-
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     provider._playback._pending_audio.append(
         (
@@ -1554,7 +1555,7 @@ def test_audio_sink_start_failure_uses_media_player_fallback(monkeypatch) -> Non
             "",
         )
     )
-    monkeypatch.setattr(tts_playback, "_create_audio_sink_player", lambda _parent: FailingSinkPlayer())
+    _force_media_player_fallback(monkeypatch)
     monkeypatch.setattr(
         provider._playback,
         "_play_next_with_media_player",
@@ -2073,24 +2074,16 @@ def test_handle_media_status_passes_reason_to_finish(monkeypatch) -> None:  # ty
     assert finish_reasons == ["end_of_media"]
 
 
-def test_playback_backend_is_configurable() -> None:
-    """playback backend should be readable from settings, defaulting to media_player."""
-    from dataclasses import replace as dc_replace
-    from app.voice.tts_settings import (
-        TTS_PLAYBACK_BACKEND_MEDIA_PLAYER,
-        TTS_PLAYBACK_BACKEND_AUDIO_SINK,
-    )
-
-    # Default
-    settings = _minimal_tts_settings()
-    assert settings.playback_backend == ""
-    provider = GPTSoVITSTTSProvider(settings)
-    assert provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
-
-    # Explicitly set audio_sink
-    sink_settings = dc_replace(settings, playback_backend=TTS_PLAYBACK_BACKEND_AUDIO_SINK)
-    sink_provider = GPTSoVITSTTSProvider(sink_settings)
-    assert sink_provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
+def test_tts_playback_has_no_external_backend_selector() -> None:
+    assert "playback_backend" not in {
+        item.name for item in fields(GPTSoVITSTTSSettings)
+    }
+    assert not hasattr(tts_settings_module, "TTS_PLAYBACK_BACKEND_AUDIO_SINK")
+    assert not hasattr(tts_settings_module, "TTS_PLAYBACK_BACKEND_MEDIA_PLAYER")
+    assert "playback_backend" not in inspect.signature(
+        tts_playback.TTSPlaybackEndpoint
+    ).parameters
+    assert not hasattr(GPTSoVITSTTSProvider, "warm_up_playback")
 
 
 # === 新增：TTS 缓存目录（data/cache/tts）测试 ===

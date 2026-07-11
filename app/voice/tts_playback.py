@@ -13,7 +13,6 @@ Qt 信号/slot。
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +25,6 @@ except ImportError:  # pragma: no cover - 仅供无真实 PySide6 的最小测�
 
 from app.core.runtime_log import log_event
 from app.voice import audio_checks as _audio_checks
-from app.voice.tts_settings import (
-    TTS_PLAYBACK_BACKEND_AUDIO_SINK as _TTS_PLAYBACK_BACKEND_AUDIO_SINK,
-)
 from app.voice.tts_types import TTSCallback, TTSPreparedAudio, _provider_is_closed
 
 if TYPE_CHECKING:
@@ -39,9 +35,6 @@ if TYPE_CHECKING:
 
 QAudioOutput: type[Any] | None = None
 QMediaPlayer: type[Any] | None = None
-
-# 默认使用 AudioSink 后端
-_DEFAULT_PLAYBACK_BACKEND = _TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
 _AUDIO_CLEANUP_DELAY_MS = 5000
 _AUDIO_CLEANUP_MAX_ATTEMPTS = 5
@@ -83,7 +76,6 @@ class TTSPlaybackEndpoint(QObject):
         parent: QObject,
         *,
         cache_dir: Path,
-        playback_backend: str,
         is_closed,
     ) -> None:
         super().__init__(parent)
@@ -103,9 +95,7 @@ class TTSPlaybackEndpoint(QObject):
         self._current_finished: TTSCallback | None = None
         self._current_started_emitted = False
         self._finishing_audio = False
-        self._playback_warmup_requested = False
         self._playback_finish_token = 0
-        self._playback_backend: str = playback_backend or _DEFAULT_PLAYBACK_BACKEND
         self._sink_player: "AudioSinkPlayer | None" = None
         self._audio_output: "QAudioOutputType | None" = None
         self._player: "QMediaPlayerType | None" = None
@@ -150,39 +140,6 @@ class TTSPlaybackEndpoint(QObject):
         """把一对 started/finished 回调 marshal 回 UI 线程执行（空文本等直通场景）。"""
         self._started.emit(on_started)
         self._finished.emit(on_finished)
-
-    def warm_up_playback(self) -> None:
-        """把 Qt Multimedia 的冷启动提前到空闲阶段完成。"""
-
-        if self._player is not None:
-            log_event("TTS", "Qt 多媒体播放器已初始化，跳过预热")
-            return
-        if self._playback_warmup_requested:
-            log_event("TTS", "Qt 多媒体播放器预热已排队，跳过重复请求")
-            return
-        self._playback_warmup_requested = True
-        log_event("TTS", "安排 Qt 多媒体播放器预热")
-        QTimer.singleShot(0, self._warm_up_playback)
-
-    @Slot()
-    def _warm_up_playback(self) -> None:
-        started_at = time.perf_counter()
-        try:
-            if self._player is not None:
-                log_event("TTS", "Qt 多媒体播放器已初始化，预热无需执行")
-                return
-            log_event("TTS", "开始预热 Qt 多媒体播放器")
-            self._ensure_player()
-            log_event(
-                "TTS",
-                "Qt 多媒体播放器预热完成",
-                {"elapsed_ms": int((time.perf_counter() - started_at) * 1000)},
-            )
-        except Exception as exc:  # noqa: BLE001
-            log_event("TTS", "Qt 多媒体播放器预热失败", {"error": str(exc)})
-            self._failed.emit(f"Qt 多媒体播放器预热失败：{exc}")
-        finally:
-            self._playback_warmup_requested = False
 
     @Slot(str, object, object, str)
     def _enqueue_audio(
@@ -396,7 +353,6 @@ class TTSPlaybackEndpoint(QObject):
             "开始播放音频",
             {
                 "text": text,
-                "backend": self._playback_backend,
                 "audio_path": str(audio_path),
                 "file_size": audio_path.stat().st_size if audio_path.exists() else 0,
                 "pending_audio": len(self._pending_audio),
@@ -416,10 +372,7 @@ class TTSPlaybackEndpoint(QObject):
             self._play_next()
             return
 
-        if self._playback_backend == _TTS_PLAYBACK_BACKEND_AUDIO_SINK:
-            self._play_next_with_sink()
-        else:
-            self._play_next_with_media_player()
+        self._play_next_with_sink()
 
     def _play_next_with_media_player(self) -> None:
         """旧 QMediaPlayer 播放后端。"""

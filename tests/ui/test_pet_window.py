@@ -2978,15 +2978,15 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(
     from app.plugins.manager import PluginManager
     from app.voice.tts import NullTTSProvider
 
-    class WarmableTTSProvider(NullTTSProvider):
+    class ServiceReadyTTSProvider(NullTTSProvider):
         def __init__(self) -> None:
-            self.warm_up_count = 0
+            self.playback_warmup_calls = 0
 
         def warm_up_playback(self) -> None:
-            self.warm_up_count += 1
+            self.playback_warmup_calls += 1
 
     window = startup_pet_window
-    tts_provider = WarmableTTSProvider()
+    tts_provider = ServiceReadyTTSProvider()
     services = DeferredStartupServices(
         tts_provider=tts_provider,
         tool_registry=window.tool_registry,
@@ -3007,7 +3007,7 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(
     assert window.subtitle_controller.speech_text == window.character_profile.initial_message
     assert not window.tts_error_label.isHidden()
     assert "TTS 配置无效" in window.tts_error_label.text()
-    assert tts_provider.warm_up_count == 1
+    assert tts_provider.playback_warmup_calls == 0
 
 
 
@@ -3650,8 +3650,8 @@ def test_pet_window_backchannel_audio_waits_for_tts_service_ready() -> None:
 
     window = WindowStub()
     # 服务冷启动中:应用设置不触发任何 prepare,也不丢弃缓存(配置仍然需要语音)。
-    # stub 未提供 _warm_up_tts_playback/_start_tts_ready_warmup:
-    # 调用不抛错即证明 _apply_backchannel_settings 不再重复预热(由调用方负责)。
+    # stub 未提供 _start_tts_ready_warmup：调用不抛错即证明
+    # _apply_backchannel_settings 不再重复预热（由调用方负责）。
     window._apply_backchannel_settings(window.backchannel_settings)
     assert window.tts_provider.prepared == []
     assert window.discarded == 0
@@ -8918,9 +8918,6 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         def _apply_character(self, profile):  # type: ignore[no-untyped-def]
             self.character_profile = profile
 
-        def _warm_up_tts_playback(self, provider):  # type: ignore[no-untyped-def]
-            self.warmed_tts_provider = provider
-
         def _apply_fonts(self) -> None:
             pass
 
@@ -8965,7 +8962,6 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.reply_segment_pause_ms = 100
     window.retired_tts_providers = []
     window.tts_provider = object()
-    window.warmed_tts_provider = None
     window.voice_playback_controller = VoicePlaybackControllerStub()
     window.subtitle_controller = _DummySubtitleController()
     return window
