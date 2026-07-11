@@ -133,24 +133,6 @@ class ToolRegistry:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
 
-    def register_from_provider(self, provider: object) -> int:
-        """从 ToolProvider 批量注册工具。
-
-        返回成功注册的数量。
-        """
-        contribute = getattr(provider, "contribute_tools", None)
-        if contribute is None:
-            log_event(
-                "ToolRegistry",
-                "Provider 不支持 contribute_tools",
-                {"provider": type(provider).__name__},
-            )
-            return 0
-        tools = contribute()
-        for tool in tools:
-            self.register(tool)
-        return len(tools)
-
     # ---- 查询 ----
 
     @property
