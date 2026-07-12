@@ -93,6 +93,12 @@ fn load_request(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn show_studio(window: Window) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn host_call(method: String, params: Value, state: State<'_, AppState>) -> Result<Value, String> {
     state.rpc.call(&method, params)
 }
@@ -119,6 +125,7 @@ pub fn run() {
         .manage(AppState { request, rpc })
         .invoke_handler(tauri::generate_handler![
             load_request,
+            show_studio,
             host_call,
             close_studio
         ])

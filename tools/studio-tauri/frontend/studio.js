@@ -1885,4 +1885,14 @@ fields.cancelButton.addEventListener("click", closeStudio);
 
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 enhanceSelect(fields.studioCharacterSelect);
-load().catch((error) => setError(String(error)));
+
+async function startStudio() {
+  try {
+    await load();
+  } catch (error) {
+    setError(String(error));
+  }
+  await invoke("show_studio");
+}
+
+startStudio().catch((error) => setError(String(error)));
