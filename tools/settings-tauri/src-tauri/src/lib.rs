@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager, State, Window, WindowEvent};
+use tauri::{Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
 
 /// Lines on stdout that start with this marker carry a live layout preview for
 /// the host (Python) to apply immediately. Anything else on stdout is ignored.
@@ -13,10 +13,11 @@ const PREVIEW_MARKER: &str = "@@SAKURA_LAYOUT_PREVIEW@@";
 const RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RESULT@@";
 const RPC_MARKER: &str = "@@SAKURA_SETTINGS_RPC@@";
 const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
+const CONTROL_MARKER: &str = "@@SAKURA_SETTINGS_CONTROL@@";
 const CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
 const PROTOCOL_VERSION: u8 = 2;
 const DEFAULT_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const CHARACTER_ARCHIVE_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const LONG_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -35,6 +36,38 @@ struct RpcResponse {
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WindowControlCommand {
+    Focus,
+}
+
+#[derive(Clone, Default)]
+struct WindowControl {
+    window: Arc<Mutex<Option<WebviewWindow>>>,
+}
+
+impl WindowControl {
+    fn register(&self, window: WebviewWindow) {
+        if let Ok(mut current) = self.window.lock() {
+            *current = Some(window);
+        }
+    }
+
+    fn execute(&self, command: WindowControlCommand) {
+        let window = self.window.lock().ok().and_then(|current| current.clone());
+        let Some(window) = window else {
+            return;
+        };
+        match command {
+            WindowControlCommand::Focus => {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+    }
 }
 
 impl HostRpc {
@@ -69,19 +102,32 @@ impl HostRpc {
             return Err(error);
         }
 
-        match rx.recv_timeout(host_rpc_timeout(method)) {
-            Ok(response) if response.ok => Ok(response.result.unwrap_or(Value::Null)),
-            Ok(response) => Err(response
+        let response = match host_rpc_timeout(method) {
+            Some(timeout) => match rx.recv_timeout(timeout) {
+                Ok(response) => response,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC timed out".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC channel disconnected".to_string());
+                }
+            },
+            None => match rx.recv() {
+                Ok(response) => response,
+                Err(_) => {
+                    self.remove_pending(&id);
+                    return Err("host RPC channel disconnected".to_string());
+                }
+            },
+        };
+        if response.ok {
+            Ok(response.result.unwrap_or(Value::Null))
+        } else {
+            Err(response
                 .error
-                .unwrap_or_else(|| "host RPC returned an error".to_string())),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.remove_pending(&id);
-                Err("host RPC timed out".to_string())
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.remove_pending(&id);
-                Err("host RPC channel disconnected".to_string())
-            }
+                .unwrap_or_else(|| "host RPC returned an error".to_string()))
         }
     }
 
@@ -132,12 +178,19 @@ fn settings_result_payload(
     Ok(Value::Object(payload))
 }
 
-fn host_rpc_timeout(method: &str) -> Duration {
+fn host_rpc_timeout(method: &str) -> Option<Duration> {
     match method {
+        "studio.launch" => None,
         "character.import_archive"
         | "character.import_voice_archive"
-        | "character.export_archive" => CHARACTER_ARCHIVE_RPC_TIMEOUT,
-        _ => DEFAULT_HOST_RPC_TIMEOUT,
+        | "character.export_archive" => Some(LONG_HOST_RPC_TIMEOUT),
+        _ => Some(DEFAULT_HOST_RPC_TIMEOUT),
+    }
+}
+
+fn clear_pending_rpcs(pending: &Arc<Mutex<HashMap<String, mpsc::Sender<RpcResponse>>>>) {
+    if let Ok(mut pending) = pending.lock() {
+        pending.clear();
     }
 }
 
@@ -199,7 +252,7 @@ fn close_settings_window(window: Window) -> Result<(), String> {
 }
 
 pub fn run() {
-    let (request, rpc) = match read_request_and_spawn_rpc_reader() {
+    let (request, rpc, window_control) = match read_request_and_spawn_rpc_reader() {
         Ok(state) => state,
         Err(error) => {
             eprintln!("{error}");
@@ -207,9 +260,16 @@ pub fn run() {
         }
     };
 
+    let setup_window_control = window_control.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { request, rpc })
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                setup_window_control.register(window);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_request,
             save_settings,
@@ -232,7 +292,7 @@ pub fn run() {
         .expect("failed to run Sakura settings window");
 }
 
-fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
+fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc, WindowControl), String> {
     let mut reader = BufReader::new(std::io::stdin());
     let mut data = String::new();
     let bytes = reader
@@ -247,6 +307,8 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
     }
     let rpc = HostRpc::new();
     let pending = rpc.pending.clone();
+    let window_control = WindowControl::default();
+    let reader_window_control = window_control.clone();
     std::thread::spawn(move || {
         let mut line = String::new();
         loop {
@@ -254,7 +316,12 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Some(response) = parse_rpc_response_line(line.trim_end()) {
+                    let trimmed = line.trim_end();
+                    if let Some(command) = parse_window_control_line(trimmed) {
+                        reader_window_control.execute(command);
+                        continue;
+                    }
+                    if let Some(response) = parse_rpc_response_line(trimmed) {
                         if let Ok(mut pending) = pending.lock() {
                             if let Some(sender) = pending.remove(&response.id) {
                                 let _ = sender.send(response);
@@ -265,8 +332,18 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
                 Err(_) => break,
             }
         }
+        clear_pending_rpcs(&pending);
     });
-    Ok((value, rpc))
+    Ok((value, rpc, window_control))
+}
+
+fn parse_window_control_line(line: &str) -> Option<WindowControlCommand> {
+    let payload = line.strip_prefix(CONTROL_MARKER)?;
+    let value: Value = serde_json::from_str(payload).ok()?;
+    match value.get("action")?.as_str()? {
+        "focus" => Some(WindowControlCommand::Focus),
+        _ => None,
+    }
 }
 
 fn parse_rpc_response_line(line: &str) -> Option<RpcResponse> {
@@ -332,22 +409,55 @@ mod tests {
     }
 
     #[test]
-    fn uses_long_timeout_for_character_archive_rpc() {
+    fn parses_focus_window_control_message() {
+        let line = r#"@@SAKURA_SETTINGS_CONTROL@@{"action":"focus"}"#;
+
+        assert_eq!(
+            parse_window_control_line(line),
+            Some(WindowControlCommand::Focus)
+        );
+        assert!(parse_window_control_line("plain log").is_none());
+        assert!(
+            parse_window_control_line(r#"@@SAKURA_SETTINGS_CONTROL@@{"action":"unknown"}"#)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn uses_expected_timeout_for_host_rpc() {
         assert_eq!(
             host_rpc_timeout("character.import_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
         assert_eq!(
             host_rpc_timeout("character.import_voice_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
         assert_eq!(
             host_rpc_timeout("character.export_archive"),
-            Duration::from_secs(30 * 60)
+            Some(Duration::from_secs(30 * 60))
         );
+        assert_eq!(host_rpc_timeout("studio.launch"), None);
         assert_eq!(
             host_rpc_timeout("api.test_connection"),
-            Duration::from_secs(30)
+            Some(Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn clearing_pending_rpcs_disconnects_waiters() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        pending
+            .lock()
+            .expect("pending map should lock")
+            .insert("rpc-1".to_string(), tx);
+
+        clear_pending_rpcs(&pending);
+
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 }

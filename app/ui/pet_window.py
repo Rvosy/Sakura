@@ -5218,7 +5218,8 @@ class PetWindow(QWidget):
         if active_process is not None:
             # 设置页已在独立进程中打开（可能被最小化），右键唤起时还原并前置它，
             # 而不是静默返回让用户找不回窗口。
-            active_process.focus_window()
+            if not active_process.focus_window():
+                show_themed_warning(self, "无法打开设置", "设置窗口无法恢复，请关闭后重试。")
             return
         if self._try_show_tauri_settings():
             return
@@ -5319,8 +5320,12 @@ class PetWindow(QWidget):
             self.control_panel_vertical_offset,
             self.input_bar_offset,
         )
+        # 必须在启动外部窗口前先撤销桌宠的实际置顶；否则设置窗口即使短暂置前，
+        # 取消临时 topmost 后仍可能重新落到常驻置顶的桌宠与输入栏下面。
+        self._set_secondary_windows_topmost_suppressed(True)
         if not process.start():
             self._tauri_original_layout = None
+            self._sync_secondary_window_state()
             return False
         self.tauri_settings_process = process
         self._tauri_initial_tts_settings = tts_settings
@@ -5330,15 +5335,14 @@ class PetWindow(QWidget):
         process.cancelled.connect(self._on_tauri_settings_cancelled)
         process.failed.connect(self._on_tauri_settings_failed)
         process.layout_preview.connect(self._on_tauri_settings_layout_preview)
-        # Tauri 设置窗口存活期间临时取消桌宠原生置顶，否则置顶立绘会盖住系统取色器的放大预览。
-        self._set_secondary_windows_topmost_suppressed(True)
+        # 设置进程存活期间持续压低桌宠；关闭、取消或失败后由现有生命周期统一恢复。
+        self._sync_secondary_window_state()
         return True
 
     def _open_tauri_studio_from_settings(self, character_id: str | None = None) -> bool:
         active_process = getattr(self, "tauri_studio_process", None)
         if active_process is not None:
-            active_process.focus_window()
-            return True
+            return bool(active_process.focus_window())
         if resolve_tauri_studio_binary(self.base_dir) is None:
             return False
         initial_character_id = str(character_id or getattr(self.character_profile, "id", "") or "")
@@ -5352,11 +5356,13 @@ class PetWindow(QWidget):
         if not process.start():
             return False
         self.tauri_studio_process = process
+        self._sync_secondary_window_state()
         return True
 
     @Slot()
     def _on_tauri_studio_closed(self) -> None:
         self.tauri_studio_process = None
+        self._sync_secondary_window_state()
         try:
             self.character_registry = CharacterRegistry(self.base_dir)
         except Exception:  # noqa: BLE001 - closing the editor should not crash the pet window.
@@ -5365,6 +5371,7 @@ class PetWindow(QWidget):
     @Slot(str)
     def _on_tauri_studio_failed(self, message: str) -> None:
         self.tauri_studio_process = None
+        self._sync_secondary_window_state()
         show_themed_critical(self, "角色工作室", message)
 
     def _close_tauri_studio_process_for_shutdown(self) -> None:
@@ -5375,6 +5382,7 @@ class PetWindow(QWidget):
         shutdown = getattr(process, "shutdown", None)
         if callable(shutdown):
             shutdown()
+        self._sync_secondary_window_state()
 
     @Slot(object)
     def _on_tauri_settings_layout_preview(self, payload: object) -> None:
@@ -6267,9 +6275,12 @@ class PetWindow(QWidget):
             self._is_secondary_window_visible(window)
             for window in tuple(getattr(self, "_registered_secondary_windows", set()))
         )
-        # Tauri 设置是独立进程、不在副窗口登记表里，但它存活期间同样要压低桌宠置顶，
-        # 否则置顶立绘会盖住系统取色器的放大预览。
-        tauri_active = getattr(self, "tauri_settings_process", None) is not None
+        # Tauri 设置与角色工作室是独立进程、不在副窗口登记表里，但它们存活期间同样要
+        # 压低桌宠置顶，否则置顶立绘会盖住系统取色器的放大预览。
+        tauri_active = (
+            getattr(self, "tauri_settings_process", None) is not None
+            or getattr(self, "tauri_studio_process", None) is not None
+        )
         self._set_secondary_windows_topmost_suppressed(
             has_visible_secondary_window or tauri_active
         )
@@ -6357,10 +6368,10 @@ class PetWindow(QWidget):
         if sys.platform == "win32":
             try:
                 import ctypes
+                from ctypes import wintypes
 
-                hwnd = int(self.winId())
-                hwnd_topmost = -1
-                hwnd_notopmost = -2
+                hwnd_topmost = wintypes.HWND(-1)
+                hwnd_notopmost = wintypes.HWND(-2)
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
@@ -6368,7 +6379,13 @@ class PetWindow(QWidget):
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
                     ctypes.windll.user32.SetWindowPos(
-                        int(window.winId()), insert_after, 0, 0, 0, 0, flags
+                        wintypes.HWND(int(window.winId())),
+                        insert_after,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags,
                     )
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
@@ -7447,10 +7464,8 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
     ns_window_collection_behavior_can_join_all_spaces = 1 << 0
     ns_window_collection_behavior_move_to_active_space = 1 << 1
     ns_window_collection_behavior_full_screen_auxiliary = 1 << 8
-    ns_floating_window_level = 3
-    ns_modal_panel_window_level = 8
 
-    level = ns_modal_panel_window_level if enabled else ns_floating_window_level
+    level = _macos_window_level(enabled)
     send_level(ns_window_ptr, ctypes.c_void_p(selector(b"setLevel:")), level)
 
     sel_set_hides_on_deactivate = selector(b"setHidesOnDeactivate:")
@@ -7480,6 +7495,13 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
         ctypes.c_void_p(selector(b"setCollectionBehavior:")),
         collection_behavior,
     )
+
+
+def _macos_window_level(enabled: bool) -> int:
+    """置顶时使用 modal panel 层，暂停置顶时回到普通窗口层。"""
+    ns_normal_window_level = 0
+    ns_modal_panel_window_level = 8
+    return ns_modal_panel_window_level if enabled else ns_normal_window_level
 
 
 def _update_runtime_api_clients(

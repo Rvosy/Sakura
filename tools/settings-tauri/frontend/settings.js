@@ -5,8 +5,7 @@ const fields = {
   characterImportButton: document.getElementById("characterImportButton"),
   ttsVoiceImportButton: document.getElementById("ttsVoiceImportButton"),
   characterExportButton: document.getElementById("characterExportButton"),
-  characterStudioCurrentButton: document.getElementById("characterStudioCurrentButton"),
-  characterStudioOpenButton: document.getElementById("characterStudioOpenButton"),
+  characterEditorButton: document.getElementById("characterEditorButton"),
   characterArchiveHint: document.getElementById("characterArchiveHint"),
   portraitScale: document.getElementById("portraitScale"),
   controlPanelWidth: document.getElementById("controlPanelWidth"),
@@ -930,8 +929,7 @@ function syncCharacterArchiveState() {
   fields.characterImportButton.disabled = characterArchiveBusy;
   fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
   fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
-  fields.characterStudioCurrentButton.disabled = characterArchiveBusy || !hasCharacter;
-  fields.characterStudioOpenButton.disabled = characterArchiveBusy;
+  fields.characterEditorButton.disabled = characterArchiveBusy;
   fields.saveButton.disabled = characterArchiveBusy;
   fields.applyButton.disabled = characterArchiveBusy;
   fields.cancelButton.disabled = characterArchiveBusy;
@@ -2192,19 +2190,20 @@ function applyCharacterRpcResult(result, { dirty = true, applyTheme = false } = 
   if (Array.isArray(result?.characters)) {
     request.character.characters = result.characters;
   }
-  if (result?.current_character_id) {
+  const hasCurrentCharacterId = typeof result?.current_character_id === "string";
+  if (hasCurrentCharacterId) {
     request.character.current_character_id = result.current_character_id;
   }
   renderCharacters();
   refreshSelect(fields.characterSelect);
-  if (result?.current_character_id) {
+  if (hasCurrentCharacterId) {
     fields.characterSelect.value = result.current_character_id;
     refreshSelect(fields.characterSelect);
   }
   if (result?.disable_tts) {
     fields.ttsEnabled.checked = false;
   }
-  if (applyTheme) {
+  if (applyTheme && selectedCharacter()) {
     applySelectedCharacterTheme();
   }
   syncTtsState();
@@ -2286,10 +2285,13 @@ async function exportCharacterArchive() {
   });
 }
 
-async function launchCharacterStudio(characterId = "") {
+async function launchCharacterStudio() {
   await runCharacterArchiveAction(async () => {
-    const result = await hostCall("studio.launch", { character_id: characterId || "" });
-    if (result?.message) {
+    const character = selectedCharacter();
+    const result = await hostCall("studio.launch", { character_id: character?.id || "" });
+    if (Array.isArray(result?.characters)) {
+      applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
+    } else if (result?.message) {
       notify(result.message, "success");
     }
   });
@@ -4156,11 +4158,7 @@ fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
 fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
-fields.characterStudioCurrentButton.addEventListener("click", () => {
-  const character = selectedCharacter();
-  launchCharacterStudio(character?.id || "");
-});
-fields.characterStudioOpenButton.addEventListener("click", () => launchCharacterStudio(""));
+fields.characterEditorButton.addEventListener("click", launchCharacterStudio);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);

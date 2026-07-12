@@ -115,6 +115,8 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 
 ---
 
-## 角色工作室（Windows）
+## 角色工作室（Windows / macOS）
 
-`0.9.8` 增加了图形化角色工作室。双击 `start_studio.bat`，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件。工作室使用与 Sakura 相同的 `runtime`，无需单独安装 Python。
+Release 完整包会同时携带 Tauri 设置页和角色工作室二进制。在 Sakura 设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
+
+Windows 仍可使用 `start_studio.bat` 启动旧的独立工作室入口。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。
