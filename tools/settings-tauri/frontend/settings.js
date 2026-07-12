@@ -95,6 +95,11 @@ const fields = {
   pluginDetail: document.getElementById("pluginDetail"),
   tokenEstimate: document.getElementById("tokenEstimate"),
   errorText: document.getElementById("errorText"),
+  onboardingHead: document.getElementById("onboardingHead"),
+  onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
+  onboardingProviderStep: document.getElementById("onboardingProviderStep"),
+  onboardingCompleteStep: document.getElementById("onboardingCompleteStep"),
+  onboardingBackButton: document.getElementById("onboardingBackButton"),
   saveButton: document.getElementById("saveButton"),
   applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
@@ -126,6 +131,7 @@ let settingsBaseline = null;
 let bypassCloseGuard = false;
 let memoryRetryTimer = null;
 let characterArchiveBusy = false;
+let onboardingStep = "character";
 const characterExportOptions = [
   {
     kind: "full",
@@ -754,6 +760,65 @@ function showPage(page) {
   }
 }
 
+function isOnboarding() {
+  return Boolean(request?.onboarding);
+}
+
+function onboardingChatProfile() {
+  const profiles = normalizedProviderProfiles();
+  const chat = collectModelSelection().slots.chat || {};
+  return profiles.find((profile) => profile.id === chat.profile_id) || null;
+}
+
+function onboardingApiReady() {
+  const profile = onboardingChatProfile();
+  const chat = collectModelSelection().slots.chat || {};
+  return Boolean(
+    profile
+    && profile.base_url
+    && profile.api_key
+    && chat.model
+    && profile.models.includes(chat.model)
+  );
+}
+
+function updateOnboardingUi() {
+  if (!isOnboarding()) {
+    return;
+  }
+  const characterReady = Boolean(selectedCharacter());
+  const apiReady = onboardingApiReady();
+  const providerActive = onboardingStep === "providers";
+  fields.onboardingCharacterStep.classList.toggle("is-active", !providerActive);
+  fields.onboardingCharacterStep.classList.toggle("is-complete", characterReady);
+  fields.onboardingProviderStep.classList.toggle("is-active", providerActive);
+  fields.onboardingProviderStep.classList.toggle("is-complete", apiReady);
+  fields.onboardingProviderStep.disabled = !characterReady;
+  fields.onboardingCompleteStep.classList.toggle("is-complete", characterReady && apiReady);
+  fields.onboardingBackButton.hidden = !providerActive;
+  fields.saveButton.disabled = characterArchiveBusy || !(characterReady && apiReady);
+}
+
+function showOnboardingStep(page) {
+  if (!isOnboarding() || (page === "providers" && !selectedCharacter())) {
+    return;
+  }
+  onboardingStep = page;
+  showPage(page);
+  updateOnboardingUi();
+}
+
+function initializeOnboarding() {
+  const active = isOnboarding();
+  document.body.classList.toggle("is-onboarding", active);
+  fields.onboardingHead.hidden = !active;
+  if (!active) {
+    return;
+  }
+  fields.saveButton.textContent = "完成并启动 Sakura";
+  showOnboardingStep(selectedCharacter() ? "providers" : "character");
+}
+
 function syncEnabledState() {
   const enabled = fields.enabled.checked;
   setControlDisabled(fields.checkInterval, !enabled);
@@ -979,6 +1044,7 @@ function syncCharacterArchiveState() {
     ? "角色包处理中..."
     : (hasCharacter ? "管理 Sakura .char 与 .voice 文件。" : "先导入一个 Sakura .char 角色包。");
   refreshSelect(fields.characterSelect);
+  updateOnboardingUi();
 }
 
 function setCharacterArchiveBusy(busy) {
@@ -1581,8 +1647,15 @@ function providerField(profile, key, label, type) {
     } else if (key === "api_key") {
       renderProviderStatus();
     }
+    updateOnboardingUi();
   });
   row.append(labelEl, input);
+  if (key === "base_url") {
+    const hint = document.createElement("span");
+    hint.className = "provider-url-hint";
+    hint.textContent = "通常应以 /v1 结尾；特殊兼容地址请按供应商文档填写。";
+    row.append(hint);
+  }
   return row;
 }
 
@@ -1623,6 +1696,7 @@ function renderProviderModels(profile) {
         profile.models = profile.models.filter((item) => item !== model);
         renderProviderPage();
         refreshModelSlots();
+        updateOnboardingUi();
       });
       chip.append(name, remove);
       list.append(chip);
@@ -1678,6 +1752,7 @@ function addModelsToProfile(profile, models) {
   if (added) {
     renderProviderPage();
     refreshModelSlots();
+    updateOnboardingUi();
   }
   return added;
 }
@@ -1764,6 +1839,7 @@ function removeProvider(profile) {
   }
   renderProviderPage();
   refreshModelSlots();
+  updateOnboardingUi();
 }
 
 function addProvider(preset) {
@@ -1782,6 +1858,7 @@ function addProvider(preset) {
   }
   renderProviderPage();
   refreshModelSlots();
+  updateOnboardingUi();
 }
 
 function makeModalButton(text, className, handler) {
@@ -2255,6 +2332,9 @@ function applyCharacterRpcResult(result, { dirty = true, applyTheme = false } = 
   }
   if (result?.message) {
     notify(result.message, "success");
+  }
+  if (isOnboarding() && selectedCharacter()) {
+    showOnboardingStep("providers");
   }
 }
 
@@ -3938,6 +4018,26 @@ function focusProviderValidation(profile, field) {
   markInvalid(providerDetailInput(field), true);
 }
 
+function validateOnboardingBeforeSubmit() {
+  if (!isOnboarding()) {
+    return true;
+  }
+  if (!selectedCharacter()) {
+    showOnboardingStep("character");
+    setError("请先导入并选择一个角色包。");
+    return false;
+  }
+  const profile = onboardingChatProfile();
+  if (profile && !profile.api_key) {
+    focusProviderValidation(profile, "api_key");
+    onboardingStep = "providers";
+    updateOnboardingUi();
+    setError(`供应商「${providerDisplayName(profile)}」缺少 API Key。`);
+    return false;
+  }
+  return true;
+}
+
 function validateApiSettingsBeforeSubmit() {
   const profiles = normalizedProviderProfiles();
   if (!profiles.length) {
@@ -4283,6 +4383,7 @@ async function load() {
   renderMemoryPage();
   renderPluginPage();
   renderResourceCards();
+  initializeOnboarding();
   if (hasRunningResourceTask()) {
     startResourcePolling();
   }
@@ -4317,6 +4418,7 @@ layoutSliders.forEach((fieldKey) => {
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
 fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
+fields.characterSelect.addEventListener("change", updateOnboardingUi);
 fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
@@ -4325,6 +4427,9 @@ fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);
+fields.onboardingCharacterStep.addEventListener("click", () => showOnboardingStep("character"));
+fields.onboardingProviderStep.addEventListener("click", () => showOnboardingStep("providers"));
+fields.onboardingBackButton.addEventListener("click", () => showOnboardingStep("character"));
 fields.providerSearch.addEventListener("input", () => {
   providerState.search = fields.providerSearch.value;
   renderProviderList();
@@ -4366,7 +4471,7 @@ fields.saveButton.addEventListener("click", async () => {
     return;
   }
   setError("");
-  if (!validateApiSettingsBeforeSubmit()) {
+  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
     return;
   }
   const original = fields.saveButton.textContent;
@@ -4405,7 +4510,7 @@ fields.applyButton.addEventListener("click", async () => {
     return;
   }
   setError("");
-  if (!validateApiSettingsBeforeSubmit()) {
+  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
     return;
   }
   let settings;

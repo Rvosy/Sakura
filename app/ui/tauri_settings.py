@@ -531,6 +531,7 @@ def build_tauri_settings_request(
     name_font_size: int = DEFAULT_NAME_FONT_SIZE,
     input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
     button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
+    onboarding: bool = False,
 ) -> dict[str, Any]:
     normalized_screen_awareness = screen_awareness_settings.normalized()
     normalized_mcp = normalize_mcp_runtime_settings(mcp_settings or MCPRuntimeSettings())
@@ -560,6 +561,7 @@ def build_tauri_settings_request(
     return {
         "version": TAURI_SETTINGS_PROTOCOL_VERSION,
         "nonce": nonce or secrets.token_urlsafe(16),
+        "onboarding": bool(onboarding),
         "screen_awareness": _screen_awareness_to_mapping(normalized_screen_awareness),
         "mcp": _mcp_to_mapping(normalized_mcp),
         "runtime_loop": _runtime_loop_to_mapping(normalized_runtime_loop),
@@ -1074,6 +1076,7 @@ class TauriSettingsProcess(QObject):
         name_font_size: int = DEFAULT_NAME_FONT_SIZE,
         input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
         button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
+        onboarding: bool = False,
     ) -> None:
         super().__init__(parent)
         self.base_dir = Path(base_dir)
@@ -1098,6 +1101,7 @@ class TauriSettingsProcess(QObject):
         self.name_font_size = name_font_size
         self.input_font_size = input_font_size
         self.button_font_size = button_font_size
+        self.onboarding = bool(onboarding)
         self.api_settings = api_settings or _default_api_settings()
         self.api_profiles = api_profiles
         self.model_selection = model_selection
@@ -1239,6 +1243,7 @@ class TauriSettingsProcess(QObject):
             name_font_size=self.name_font_size,
             input_font_size=self.input_font_size,
             button_font_size=self.button_font_size,
+            onboarding=self.onboarding,
             api_settings=self.api_settings,
             api_profiles=self.api_profiles,
             model_selection=self.model_selection,
@@ -2674,6 +2679,8 @@ def _normalized_request_api_profiles(
         )
     if normalized:
         return normalized
+    if not any((settings.base_url.strip(), settings.api_key.strip(), settings.model.strip())):
+        return []
     defaults = _default_api_settings()
     model = str(settings.model or defaults.model).strip()
     return [
@@ -2693,6 +2700,8 @@ def _normalized_request_model_selection(
     model_selection: ModelSelectionSettings | None,
 ) -> ModelSelectionSettings:
     selection = model_selection or ModelSelectionSettings()
+    if not profiles:
+        return selection
     if resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, settings) is not None:
         return selection
     profile = profiles[0]

@@ -4917,6 +4917,45 @@ def test_tauri_settings_request_includes_theme_colors() -> None:
     assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
 
 
+def test_tauri_settings_request_preserves_empty_api_for_onboarding() -> None:
+    from app.config.models import ModelSelectionSettings
+    from app.llm.api_client import ApiSettings
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        api_settings=ApiSettings("", "", ""),
+        api_profiles=[],
+        model_selection=ModelSelectionSettings(),
+        onboarding=True,
+        nonce="nonce",
+    )
+
+    assert request["onboarding"] is True
+    assert request["api"]["profiles"] == []
+    assert request["api"]["model_selection"]["slots"]["chat"] == {
+        "profile_id": "",
+        "model": "",
+    }
+
+
+def test_tauri_settings_frontend_has_two_step_onboarding() -> None:
+    root = Path(__file__).resolve().parents[2] / "tools" / "settings-tauri" / "frontend"
+    html = (root / "index.html").read_text(encoding="utf-8")
+    script = (root / "settings.js").read_text(encoding="utf-8")
+    styles = (root / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="onboardingHead"' in html
+    assert 'id="onboardingCharacterStep"' in html
+    assert 'id="onboardingProviderStep"' in html
+    assert 'id="onboardingBackButton"' in html
+    assert 'body.classList.toggle("is-onboarding"' in script
+    assert 'fields.saveButton.textContent = "完成并启动 Sakura"' in script
+    assert 'showOnboardingStep("providers")' in script
+    assert "通常应以 /v1 结尾" in script
+    assert "body.is-onboarding .nav-card" in styles
+
+
 def test_tauri_settings_request_includes_screen_resolution_estimates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.tauri_settings as tauri_settings
 
@@ -6693,6 +6732,53 @@ def test_main_detects_missing_character_packages() -> None:
     assert not sakura_main._character_packages_missing(root)
 
 
+def test_main_requires_initial_setup_until_character_and_chat_provider_exist() -> None:
+    import main as sakura_main
+
+    root = _ui_runtime_root("initial_setup_required")
+    assert sakura_main._initial_setup_required(root)
+
+    character_dir = root / "characters" / "demo"
+    character_dir.mkdir(parents=True)
+    (character_dir / "character.json").write_text("{}", encoding="utf-8")
+    assert sakura_main._initial_setup_required(root)
+
+    api_config = root / "data" / "config" / "api.yaml"
+    api_config.parent.mkdir(parents=True)
+    api_config.write_text(
+        """
+llm:
+  base_url: https://api.example.com/v1
+  api_key: key
+  model: model
+api_profiles:
+  - id: default
+    alias: 默认
+    base_url: https://api.example.com/v1
+    api_key: key
+    models:
+      - name: model
+model_slots:
+  chat:
+    profile_id: default
+    model: model
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert not sakura_main._initial_setup_required(root)
+
+
+def test_main_checks_initial_setup_before_building_app_context() -> None:
+    source = (Path(__file__).resolve().parents[2] / "main.py").read_text(encoding="utf-8")
+    startup = source[source.index("migration_report =") : source.index("character_issues =")]
+
+    assert "initial_setup = _initial_setup_required(BASE_DIR)" in startup
+    assert startup.index("initial_setup = _initial_setup_required(BASE_DIR)") < startup.index(
+        "build_initial_app_context(BASE_DIR)"
+    )
+
+
 def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import main as sakura_main
 
@@ -6758,6 +6844,7 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     root = _ui_runtime_root("first_run_tauri_layout")
     saved_system_values: dict[str, dict[str, object]] = {}
     studio_launchers: list[object] = []
+    process_kwargs: list[dict[str, object]] = []
     app_context = object()
     tts_settings = _minimal_tts_settings()
     result = _build_tauri_settings_result(
@@ -6793,6 +6880,9 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
 
         def load_startup_settings(self):  # type: ignore[no-untyped-def]
             return StartupSettings()
+
+        def load_current_character_id(self, _registry):  # type: ignore[no-untyped-def]
+            return "sakura"
 
         def load_screen_awareness_settings(self):  # type: ignore[no-untyped-def]
             return result.screen_awareness
@@ -6858,6 +6948,7 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
             self.failed = _SignalStub()
             self.shutdown_called = False
             studio_launchers.append(kwargs.get("studio_launcher"))
+            process_kwargs.append(kwargs)
 
         def start(self) -> bool:
             self.completed.emit(result)
@@ -6873,6 +6964,7 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     monkeypatch.setattr(sakura_main, "QEventLoop", EventLoopStub)
     monkeypatch.setattr(sakura_main, "AppSettingsService", SettingsServiceStub)
     monkeypatch.setattr(sakura_main, "CharacterRegistry", CharacterRegistryStub)
+    monkeypatch.setattr(sakura_main, "_character_packages_missing", lambda _base_dir: False)
     monkeypatch.setattr(sakura_main, "TauriSettingsProcess", TauriSettingsProcessStub)
     monkeypatch.setattr(
         sakura_main,
@@ -6889,6 +6981,9 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     assert sakura_main._open_first_run_settings(root) is app_context
     assert len(studio_launchers) == 1
     assert callable(studio_launchers[0])
+    assert process_kwargs[0]["onboarding"] is True
+    assert isinstance(process_kwargs[0]["character_registry"], CharacterRegistryStub)
+    assert process_kwargs[0]["current_character"].id == "sakura"
     assert saved_system_values["ui"] == {
         "portrait_scale_percent": 155,
         "control_panel_width": 730,

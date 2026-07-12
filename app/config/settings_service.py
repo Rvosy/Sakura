@@ -180,9 +180,9 @@ class AppSettingsService:
             60,
         )
         return ApiSettings(
-            base_url=str(data.get("base_url", "https://api.openai.com/v1")).strip().rstrip("/"),
+            base_url=str(data.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
             api_key=str(data.get("api_key", "")).strip(),
-            model=str(data.get("model", "gpt-4.1-mini")).strip(),
+            model=str(data.get("model", DEFAULT_TEXT_MODEL)).strip(),
             timeout_seconds=timeout_seconds,
             temperature=_optional_float(data.get("temperature"), minimum=0.0, maximum=2.0),
             top_p=_optional_float(data.get("top_p"), minimum=0.0, maximum=1.0),

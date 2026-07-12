@@ -44,6 +44,15 @@ class CharacterRegistryStub:
         return self.profiles[character_id]
 
 
+def test_settings_service_keeps_missing_api_config_empty() -> None:
+    root = _runtime_root("empty_api")
+    service = AppSettingsService(root)
+
+    assert service.load_api_settings() == ApiSettings("", "", "")
+    assert service.load_api_profiles() == []
+    assert service.load_model_selection() == ModelSelectionSettings()
+
+
 def test_settings_service_loads_yaml_api_config() -> None:
     root = _runtime_root("yaml_api")
     service = AppSettingsService(root)

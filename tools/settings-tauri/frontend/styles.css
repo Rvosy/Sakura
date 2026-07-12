@@ -270,6 +270,121 @@ html.is-theme-view-transition::view-transition-new(root) {
   border-bottom: 1px solid var(--hairline);
 }
 
+.onboarding-head {
+  display: grid;
+  gap: 18px;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--hairline);
+  background: linear-gradient(120deg, var(--tint-soft), transparent 62%);
+}
+
+.onboarding-head h1,
+.onboarding-head p {
+  margin: 0;
+}
+
+.onboarding-head h1 {
+  color: var(--sakura-text);
+  font-size: 22px;
+}
+
+.onboarding-head p:not(.onboarding-kicker) {
+  margin-top: 4px;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+}
+
+.onboarding-kicker {
+  color: var(--sakura-primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.onboarding-steps {
+  display: grid;
+  grid-template-columns: auto minmax(28px, 1fr) auto minmax(28px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.onboarding-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--sakura-muted-text);
+  padding: 0;
+  white-space: nowrap;
+}
+
+.onboarding-step span:first-child {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 50%;
+  background: var(--surface-raised);
+  font-size: 11px;
+}
+
+.onboarding-step.is-active,
+.onboarding-step.is-complete {
+  color: var(--sakura-primary);
+}
+
+.onboarding-step.is-active span:first-child,
+.onboarding-step.is-complete span:first-child {
+  border-color: var(--sakura-primary);
+  background: var(--sakura-primary);
+  color: white;
+}
+
+.onboarding-step-line {
+  height: 1px;
+  background: var(--hairline);
+}
+
+.onboarding-step.is-static {
+  font-weight: 700;
+}
+
+body.is-onboarding .settings-shell {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 1040px);
+  margin: 0 auto;
+}
+
+body.is-onboarding .nav-card,
+body.is-onboarding .page-head,
+body.is-onboarding #cancelButton,
+body.is-onboarding #applyButton,
+body.is-onboarding #page-character .settings-group:not(:last-child),
+body.is-onboarding #ttsVoiceImportButton,
+body.is-onboarding #characterExportButton {
+  display: none;
+}
+
+body.is-onboarding .onboarding-head {
+  display: grid;
+}
+
+body.is-onboarding #page-character {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.provider-url-hint {
+  grid-column: 2;
+  margin-top: -12px;
+  color: var(--sakura-muted-text);
+  font-size: 11.5px;
+}
+
 .page-title {
   margin: 0;
   font-size: 19px;

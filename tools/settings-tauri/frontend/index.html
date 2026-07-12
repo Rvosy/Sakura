@@ -74,6 +74,26 @@
       </aside>
 
       <section class="detail-card">
+        <header id="onboardingHead" class="onboarding-head" hidden>
+          <div>
+            <p class="onboarding-kicker">首次启动</p>
+            <h1>让 Sakura 准备好陪你</h1>
+            <p>完成两个必要步骤，其他选项可以稍后再调整。</p>
+          </div>
+          <div class="onboarding-steps" role="list" aria-label="初始化进度">
+            <button id="onboardingCharacterStep" class="onboarding-step" type="button" role="listitem">
+              <span>1</span> 添加角色
+            </button>
+            <span class="onboarding-step-line" aria-hidden="true"></span>
+            <button id="onboardingProviderStep" class="onboarding-step" type="button" role="listitem">
+              <span>2</span> 配置供应商
+            </button>
+            <span class="onboarding-step-line" aria-hidden="true"></span>
+            <span id="onboardingCompleteStep" class="onboarding-step is-static" role="listitem">
+              <span>3</span> 完成
+            </span>
+          </div>
+        </header>
         <header class="page-head">
           <h1 id="pageTitle" class="page-title">角色与布局</h1>
           <p id="pageSubtitle" class="page-subtitle">选择陪伴角色与桌宠布局</p>
@@ -677,6 +697,7 @@
             <span class="dirty-flag">● 有未保存的改动</span>
             <p id="errorText" class="error" role="alert"></p>
           </div>
+          <button id="onboardingBackButton" class="secondary-button" type="button" hidden>返回角色</button>
           <button id="cancelButton" class="secondary-button" type="button">取消</button>
           <button id="applyButton" class="secondary-button" type="button">应用</button>
           <button id="saveButton" type="button">保存并关闭</button>

@@ -20,6 +20,8 @@ from app.config.defaults import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     DEFAULT_SUBTITLE_LANGUAGE,
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VISION_MODEL,
 )
 from app.config.migrations import _parse_dotenv, _coerce_type, migrate_env_to_yaml
 from app.config.models import ApiSettings, DebugLogSettings
@@ -98,6 +100,10 @@ class TestApiSettings:
 
     def test_defaults(self) -> None:
         s = ApiSettings()
+        assert DEFAULT_BASE_URL == ""
+        assert DEFAULT_MODEL == ""
+        assert DEFAULT_TEXT_MODEL == ""
+        assert DEFAULT_VISION_MODEL == ""
         assert s.base_url == DEFAULT_BASE_URL
         assert s.model == DEFAULT_MODEL
         assert s.timeout_seconds == 60
