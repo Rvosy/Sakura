@@ -453,7 +453,7 @@ def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
-    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
     import app.ui.tauri_studio as tauri_studio
 
@@ -501,7 +501,7 @@ def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
     process.failed.connect(failures.append)
 
     assert process.start() is False
-    qtwidgets.QApplication.processEvents()
+    app.processEvents()
     assert process._process is None
     assert failures and "启动失败" in failures[0]
 
