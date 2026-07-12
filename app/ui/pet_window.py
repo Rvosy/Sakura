@@ -159,6 +159,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS,
     SCREEN_AWARENESS_TIMER_POLL_INTERVAL_MS,
     ScreenAwarenessSettings,
+    screen_context_resolution_size,
 )
 from app.agent.screen_observation import (
     CapturedScreenImage,
@@ -541,11 +542,22 @@ class ScreenObservationEncodeWorker(QObject):
         try:
             self._cancel_token.throw_if_cancelled()
             max_edge = _screen_observation_max_edge_from_context(self.context)
-            if self.context.get("preserve_original_resolution") is True:
+            max_width: int | None = None
+            max_height: int | None = None
+            resolution = self.context.get("screen_context_resolution")
+            if resolution is not None:
+                max_width, max_height = screen_context_resolution_size(
+                    self.captured.image.width(),
+                    self.captured.image.height(),
+                    resolution,
+                )
+            elif self.context.get("preserve_original_resolution") is True:
                 max_edge = max(1, self.captured.image.width(), self.captured.image.height())
             observation = build_screen_observation_from_image(
                 self.captured,
                 max_edge=max_edge,
+                max_width=max_width,
+                max_height=max_height,
             )
             self._cancel_token.throw_if_cancelled()
         except OperationCancelled:
@@ -3886,8 +3898,12 @@ class PetWindow(QWidget):
         return self._current_screen_awareness_settings().allows_screen_context()
 
     def _screen_awareness_encode_options(self) -> dict[str, Any]:
+        resolution = (
+            self._current_screen_awareness_settings().normalized().screen_context_resolution
+        )
         return {
-            "preserve_original_resolution": True,
+            "screen_context_resolution": resolution,
+            "preserve_original_resolution": resolution == "fullscreen",
             "detail": SCREEN_AWARENESS_IMAGE_DETAIL,
         }
 

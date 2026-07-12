@@ -37,6 +37,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
+    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     ScreenAwarenessSettings,
 )
 from app.voice.tts_settings import (
@@ -673,6 +674,12 @@ class AppSettingsService:
                 screen_awareness.get("screen_context_batch_limit"),
                 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
             ),
+            screen_context_resolution=str(
+                screen_awareness.get(
+                    "screen_context_resolution",
+                    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
+                )
+            ),
         )
 
     def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
@@ -684,6 +691,7 @@ class AppSettingsService:
             "check_interval_minutes": int(normalized.check_interval_minutes),
             "cooldown_minutes": int(normalized.cooldown_minutes),
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
+            "screen_context_resolution": normalized.screen_context_resolution,
         }
         save_yaml_mapping(self.system_config_path, data)
 

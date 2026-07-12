@@ -52,6 +52,7 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
     estimate_screen_context_batch_tokens_for_size,
     estimate_screen_context_image_tokens_for_size,
+    screen_context_resolution_size,
 )
 from app.agent.screen_observation import (
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -217,6 +218,14 @@ def test_screen_awareness_settings_default_to_enabled() -> None:
     assert settings.check_interval_minutes == 2
     assert settings.cooldown_minutes == 10
     assert settings.screen_context_batch_limit == 6
+    assert settings.screen_context_resolution == "fullscreen"
+
+
+def test_screen_awareness_resolution_presets_keep_aspect_ratio_without_upscaling() -> None:
+    assert screen_context_resolution_size(3200, 2000, "1080p") == (1728, 1080)
+    assert screen_context_resolution_size(2000, 3200, "1080p") == (1080, 1728)
+    assert screen_context_resolution_size(1280, 720, "2160p") == (1280, 720)
+    assert screen_context_resolution_size(2560, 1440, "invalid") == (2560, 1440)
 
 
 def test_screen_awareness_token_estimate_uses_high_detail_rules() -> None:
@@ -306,6 +315,7 @@ def test_screen_awareness_settings_save_writes_yaml() -> None:
             check_interval_minutes=3,
             cooldown_minutes=7,
             screen_context_batch_limit=4,
+            screen_context_resolution="1080p",
         )
     )
 
@@ -315,6 +325,7 @@ def test_screen_awareness_settings_save_writes_yaml() -> None:
     assert config["screen_awareness"]["check_interval_minutes"] == 3
     assert config["screen_awareness"]["cooldown_minutes"] == 7
     assert config["screen_awareness"]["screen_context_batch_limit"] == 4
+    assert config["screen_awareness"]["screen_context_resolution"] == "1080p"
 
 
 def test_screen_awareness_settings_save_normalizes_enabled_flag() -> None:

@@ -6,6 +6,18 @@ from math import ceil, floor, sqrt
 SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES = 2
 SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES = 10
 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT = 6
+SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION = "fullscreen"
+SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS = (
+    "fullscreen",
+    "720p",
+    "1080p",
+    "2160p",
+)
+SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTION_BOUNDS = {
+    "720p": (1280, 720),
+    "1080p": (1920, 1080),
+    "2160p": (3840, 2160),
+}
 SCREEN_AWARENESS_IMAGE_DETAIL = "high"
 SCREEN_AWARENESS_TOKEN_PATCH_SIZE = 32
 SCREEN_AWARENESS_HIGH_DETAIL_MAX_EDGE = 2048
@@ -33,6 +45,7 @@ class ScreenAwarenessSettings:
     check_interval_minutes: int = SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES
     cooldown_minutes: int = SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES
     screen_context_batch_limit: int = SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT
+    screen_context_resolution: str = SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION
 
     def normalized(self) -> "ScreenAwarenessSettings":
         enabled = bool(self.enabled)
@@ -55,6 +68,9 @@ class ScreenAwarenessSettings:
                 min_value=SCREEN_AWARENESS_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
                 max_value=SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
             ),
+            screen_context_resolution=normalize_screen_context_resolution(
+                self.screen_context_resolution
+            ),
         )
 
     def allows_screen_context(self) -> bool:
@@ -71,6 +87,36 @@ def _clamp_bounded_int(value: int, *, min_value: int, max_value: int) -> int:
     return max(
         min_value,
         min(max_value, value),
+    )
+
+
+def normalize_screen_context_resolution(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS:
+        return normalized
+    return SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION
+
+
+def screen_context_resolution_size(
+    width: int,
+    height: int,
+    resolution: object,
+) -> tuple[int, int]:
+    """返回所选档位下的等比截图尺寸；固定档位不会放大较小的屏幕。"""
+    image_width = max(1, int(width))
+    image_height = max(1, int(height))
+    normalized = normalize_screen_context_resolution(resolution)
+    bounds = SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTION_BOUNDS.get(normalized)
+    if bounds is None:
+        return image_width, image_height
+
+    max_width, max_height = bounds
+    if image_height > image_width:
+        max_width, max_height = max_height, max_width
+    scale = min(1.0, max_width / image_width, max_height / image_height)
+    return (
+        max(1, int(round(image_width * scale))),
+        max(1, int(round(image_height * scale))),
     )
 
 

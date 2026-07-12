@@ -236,9 +236,21 @@
               <span class="field-unit"><input id="batchLimit" type="number" step="1" /><span class="unit">张</span></span>
             </div>
             <div class="setting-row">
+              <label class="setting-row-text" for="screenResolution">
+                <span class="setting-title">截图分辨率</span>
+                <span class="setting-desc">发送前等比缩小截图；固定档位不会放大小于目标尺寸的屏幕。</span>
+              </label>
+              <select id="screenResolution">
+                <option value="fullscreen">全屏分辨率</option>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p</option>
+                <option value="2160p">2160p</option>
+              </select>
+            </div>
+            <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">预计图像 token</span>
-                <span class="setting-desc">按当前屏幕估算每张截图消耗的 token。</span>
+                <span class="setting-desc">按当前屏幕和所选分辨率估算每张截图消耗的 token。</span>
               </div>
               <p id="tokenEstimate" class="hint"></p>
             </div>

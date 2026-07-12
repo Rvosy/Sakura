@@ -221,6 +221,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
             check_interval_minutes=5,
             cooldown_minutes=7,
             screen_context_batch_limit=3,
+            screen_context_resolution="720p",
         )
     )
 
@@ -241,6 +242,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert "raw_tts_service_enabled" not in system["debug"]
     assert system["startup"]["launch_at_login"] is True
     assert system["screen_awareness"]["check_interval_minutes"] == 5
+    assert system["screen_awareness"]["screen_context_resolution"] == "720p"
 
 
 def test_settings_service_loads_and_saves_startup_settings() -> None:

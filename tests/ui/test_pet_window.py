@@ -4236,6 +4236,7 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                     "check_interval_minutes": 5,
                     "cooldown_minutes": 8,
                     "screen_context_batch_limit": 4,
+                    "screen_context_resolution": "1080p",
                 },
                 "mcp": {
                     "windows_enabled": True,
@@ -4346,6 +4347,7 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
     result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
 
     assert result.mcp == MCPRuntimeSettings(windows_enabled=True)
+    assert result.screen_awareness.screen_context_resolution == "1080p"
     assert result.runtime_loop == RuntimeLoopSettings(
         max_agent_steps_per_turn=12,
         max_tool_calls_per_step=8,
@@ -4522,6 +4524,22 @@ def test_tauri_settings_request_includes_theme_colors() -> None:
     assert request["theme_defaults"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
     assert {"id": "primary_color", "label": "主题色"} in request["theme_fields"]
     assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
+
+
+def test_tauri_settings_request_includes_screen_resolution_estimates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings
+
+    monkeypatch.setattr(tauri_settings, "_screen_estimate_size", lambda _widget: (3200, 2000))
+
+    request = tauri_settings.build_tauri_settings_request(
+        ScreenAwarenessSettings(screen_context_resolution="1080p"),
+        nonce="nonce",
+    )
+
+    assert request["screen_awareness"]["screen_context_resolution"] == "1080p"
+    assert request["screen_resolution_estimates"]["fullscreen"]["width"] == 3200
+    assert request["screen_resolution_estimates"]["1080p"]["width"] == 1728
+    assert request["screen_resolution_estimates"]["1080p"]["height"] == 1080
 
 
 def test_tauri_settings_request_includes_font_sizes_and_layout_limits() -> None:
@@ -6904,7 +6922,7 @@ def test_screen_context_cache_log_uses_summary_without_image_payload(monkeypatch
         assert "data:image" not in str(payload)
 
 
-def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_screen_awareness_capture_defaults_to_fullscreen_resolution(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
 
     contexts: list[dict[str, object]] = []
@@ -6920,8 +6938,59 @@ def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:
 
     window._capture_screen_awareness_context(60)
 
+    assert contexts[0]["screen_context_resolution"] == "fullscreen"
     assert contexts[0]["preserve_original_resolution"] is True
     assert contexts[0]["detail"] == "high"
+
+
+def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    contexts: list[dict[str, object]] = []
+    window = _build_minimal_screen_awareness_window(
+        screen_context_enabled=True,
+        check_interval_minutes=1,
+        cooldown_minutes=2,
+        screen_context_resolution="720p",
+    )
+    monkeypatch.setattr(pet_window_module, "capture_screen_image", lambda _window: object())
+    window._start_screen_observation_encode = lambda _captured, context: (
+        contexts.append(context) or True
+    )
+
+    window._capture_screen_awareness_context(60)
+
+    assert contexts[0]["screen_context_resolution"] == "720p"
+    assert contexts[0]["preserve_original_resolution"] is False
+    assert contexts[0]["detail"] == "high"
+
+
+def test_screen_observation_encode_worker_resizes_to_selected_resolution() -> None:
+    qtgui = pytest.importorskip("PySide6.QtGui")
+    if not hasattr(qtgui, "QImage"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.agent.screen_observation import CapturedScreenImage
+    from app.ui.pet_window import ScreenObservationEncodeWorker
+
+    image = qtgui.QImage(1600, 1000, qtgui.QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFFFF)
+    captured = CapturedScreenImage(
+        image=image,
+        captured_at="2026-07-12T12:00:00+08:00",
+        screen_name="DISPLAY1",
+    )
+    worker = ScreenObservationEncodeWorker(
+        captured,
+        {"screen_context_resolution": "720p"},
+    )
+    observations: list[ScreenObservation] = []
+    worker.finished.connect(lambda _context, observation: observations.append(observation))
+
+    worker.run()
+
+    assert len(observations) == 1
+    assert (observations[0].width, observations[0].height) == (1152, 720)
 
 
 def test_proactive_care_event_includes_recent_conversation() -> None:
@@ -8572,6 +8641,7 @@ def _build_minimal_screen_awareness_window(
     check_interval_minutes: int,
     cooldown_minutes: int,
     screen_context_batch_limit: int = 6,
+    screen_context_resolution: str = "fullscreen",
     events=None,  # type: ignore[no-untyped-def]
     history=None,  # type: ignore[no-untyped-def]
 ):
@@ -8599,6 +8669,7 @@ def _build_minimal_screen_awareness_window(
         check_interval_minutes=check_interval_minutes,
         cooldown_minutes=cooldown_minutes,
         screen_context_batch_limit=screen_context_batch_limit,
+        screen_context_resolution=screen_context_resolution,
     )
     window.worker_thread = None
     window.active_reminder_id = None

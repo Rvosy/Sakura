@@ -40,14 +40,17 @@ from app.agent.runtime_limits import (
     normalize_runtime_loop_settings,
 )
 from app.agent.screen_awareness import (
+    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
     SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT,
     SCREEN_AWARENESS_MIN_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_MIN_COOLDOWN_MINUTES,
     SCREEN_AWARENESS_MIN_SCREEN_CONTEXT_BATCH_LIMIT,
+    SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS,
     ScreenAwarenessSettings,
     estimate_screen_context_image_tokens_for_size,
+    screen_context_resolution_size,
 )
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -530,6 +533,22 @@ def build_tauri_settings_request(
     )
     normalized_bubble = (bubble_settings or BubbleSettings()).normalized()
     width, height = _screen_estimate_size(parent_widget)
+    screen_resolution_estimates = {}
+    for resolution in SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS:
+        estimate_width, estimate_height = screen_context_resolution_size(
+            width,
+            height,
+            resolution,
+        )
+        screen_resolution_estimates[resolution] = {
+            "width": estimate_width,
+            "height": estimate_height,
+            "tokens": estimate_screen_context_image_tokens_for_size(
+                estimate_width,
+                estimate_height,
+                model=model,
+            ),
+        }
     return {
         "version": TAURI_SETTINGS_PROTOCOL_VERSION,
         "nonce": nonce or secrets.token_urlsafe(16),
@@ -678,6 +697,7 @@ def build_tauri_settings_request(
             height,
             model=model,
         ),
+        "screen_resolution_estimates": screen_resolution_estimates,
     }
 
 
@@ -770,6 +790,12 @@ def parse_tauri_settings_payload(
             check_interval_minutes=_required_int(settings, "check_interval_minutes"),
             cooldown_minutes=_required_int(settings, "cooldown_minutes"),
             screen_context_batch_limit=_required_int(settings, "screen_context_batch_limit"),
+            screen_context_resolution=str(
+                settings.get(
+                    "screen_context_resolution",
+                    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
+                )
+            ),
         ).normalized(),
         mcp=normalize_mcp_runtime_settings(
             MCPRuntimeSettings(windows_enabled=_required_bool(mcp, "windows_enabled"))
@@ -1710,6 +1736,7 @@ def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str,
         "check_interval_minutes": int(settings.check_interval_minutes),
         "cooldown_minutes": int(settings.cooldown_minutes),
         "screen_context_batch_limit": int(settings.screen_context_batch_limit),
+        "screen_context_resolution": settings.screen_context_resolution,
     }
 
 
