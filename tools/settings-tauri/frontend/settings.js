@@ -1431,6 +1431,10 @@ function makeProfileId() {
 // 「供应商」页与「模型」页的槽位都从它派生（参照 pluginState/memoryState）。
 const providerState = { profiles: [], selectedId: "", search: "" };
 const inheritedSlotManualSelections = {};
+const PROVIDER_FIELD_PLACEHOLDERS = {
+  base_url: "通常以 /v1 结尾",
+  api_key: "通常以 sk- 开头",
+};
 
 // 内置预设：选中即预填 Base URL 与图标，其余走「自定义」。
 const PROVIDER_PRESETS = [
@@ -1629,6 +1633,7 @@ function providerField(profile, key, label, type) {
   input.className = "wide-input";
   input.dataset.providerField = key;
   input.value = profile[key] || "";
+  input.placeholder = PROVIDER_FIELD_PLACEHOLDERS[key] || "";
   input.addEventListener("input", () => {
     profile[key] = input.value;
     if (input.value.trim()) {
@@ -1650,12 +1655,6 @@ function providerField(profile, key, label, type) {
     updateOnboardingUi();
   });
   row.append(labelEl, input);
-  if (key === "base_url") {
-    const hint = document.createElement("span");
-    hint.className = "provider-url-hint";
-    hint.textContent = "通常应以 /v1 结尾；特殊兼容地址请按供应商文档填写。";
-    row.append(hint);
-  }
   return row;
 }
 

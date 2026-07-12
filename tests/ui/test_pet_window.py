@@ -4952,7 +4952,10 @@ def test_tauri_settings_frontend_has_two_step_onboarding() -> None:
     assert 'body.classList.toggle("is-onboarding"' in script
     assert 'fields.saveButton.textContent = "完成并启动 Sakura"' in script
     assert 'showOnboardingStep("providers")' in script
-    assert "通常应以 /v1 结尾" in script
+    assert 'base_url: "通常以 /v1 结尾"' in script
+    assert 'api_key: "通常以 sk- 开头"' in script
+    assert "provider-url-hint" not in script
+    assert "provider-url-hint" not in styles
     assert "body.is-onboarding .nav-card" in styles
 
 

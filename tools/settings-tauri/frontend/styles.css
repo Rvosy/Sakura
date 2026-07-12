@@ -378,13 +378,6 @@ body.is-onboarding #page-character {
   margin: 0 auto;
 }
 
-.provider-url-hint {
-  grid-column: 2;
-  margin-top: -12px;
-  color: var(--sakura-muted-text);
-  font-size: 11.5px;
-}
-
 .page-title {
   margin: 0;
   font-size: 19px;
