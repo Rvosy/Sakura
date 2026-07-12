@@ -6,6 +6,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from app.config.defaults import (
+    DEFAULT_BUTTON_FONT_SIZE,
+    DEFAULT_INPUT_FONT_SIZE,
+    DEFAULT_NAME_FONT_SIZE,
+    DEFAULT_SPEECH_FONT_SIZE,
+)
+
 if TYPE_CHECKING:
     from app.config.character_loader import CharacterProfile
 
@@ -213,7 +220,14 @@ def build_color_button_stylesheet(color: str) -> str:
     )
 
 
-def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
+def build_pet_window_stylesheet(
+    settings: ThemeSettings,
+    *,
+    speech_font_size: int = DEFAULT_SPEECH_FONT_SIZE,
+    name_font_size: int = DEFAULT_NAME_FONT_SIZE,
+    input_font_size: int = DEFAULT_INPUT_FONT_SIZE,
+    button_font_size: int = DEFAULT_BUTTON_FONT_SIZE,
+) -> str:
     theme = settings.normalized()
     return f"""
 #speechBubble {{
@@ -223,12 +237,12 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
 }}
 #speakerName {{
     color: {theme.primary_color};
-    font-size: 13px;
+    font-size: {name_font_size}px;
     font-weight: 700;
 }}
 #speechText {{
     color: {theme.text_color};
-    font-size: 19px;
+    font-size: {speech_font_size}px;
     line-height: 1.35;
 }}
 #ttsErrorText {{
@@ -273,7 +287,7 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid rgba(255, 255, 255, 218);
     border-radius: 19px;
     color: {mix(theme.text_color, "#000000", 0.08)};
-    font-size: 15px;
+    font-size: {input_font_size}px;
     font-weight: 700;
     padding: 3px 16px;
     selection-background-color: {rgba(theme.primary_color, 92)};
@@ -298,7 +312,7 @@ def build_pet_window_stylesheet(settings: ThemeSettings) -> str:
     border: 1px solid rgba(255, 255, 255, 150);
     border-radius: 19px;
     color: white;
-    font-size: 15px;
+    font-size: {button_font_size}px;
     font-weight: 800;
     padding: 4px 12px;
 }}

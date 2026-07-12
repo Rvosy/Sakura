@@ -1560,6 +1560,9 @@ def test_close_external_tools_shutdowns_active_tauri_settings() -> None:
             PetWindow._close_tauri_settings_process_for_shutdown
         )
         _restore_tauri_layout_preview = PetWindow._restore_tauri_layout_preview
+        _restore_tauri_font_preview = PetWindow._restore_tauri_font_preview
+        _restore_tauri_settings_preview = PetWindow._restore_tauri_settings_preview
+        _release_tauri_preview_force_state = PetWindow._release_tauri_preview_force_state
 
         def _preview_layout(self, *layout):  # type: ignore[no-untyped-def]
             self.restored_layout = layout
@@ -3611,6 +3614,13 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     class ApiClientStub:
         settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
 
+    class InputAnimatorStub:
+        def __init__(self) -> None:
+            self.force_visible = False
+
+        def set_force_visible(self, value: bool) -> None:
+            self.force_visible = value
+
     instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
     monkeypatch.setattr(
         pet_window_module,
@@ -3624,6 +3634,7 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
         ApiClientStub(),
         object(),
     )
+    window.input_bar_animator = InputAnimatorStub()
     window.show_settings()
 
     # 滑块拖动：实时应用但不持久化。
@@ -3634,6 +3645,10 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
             "bubble_height": 200,
             "control_panel_vertical_offset": 30,
             "input_bar_offset": 12,
+            "speech_font_size": 24,
+            "name_font_size": 20,
+            "input_font_size": 20,
+            "button_font_size": 20,
         }
     )
     assert window.portrait_scale_percent == 150
@@ -3641,6 +3656,11 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     assert window.bubble_height == 200
     assert window.control_panel_vertical_offset == 30
     assert window.input_bar_offset == 12
+    assert window.speech_font_size == 24
+    assert window.name_font_size == 20
+    assert window.input_font_size == 20
+    assert window.button_font_size == 20
+    assert window.input_bar_animator.force_visible is True
     assert window.layout_persisted is False
 
     # 取消：回滚到打开设置前的布局，且仍不持久化。
@@ -3650,8 +3670,65 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     assert window.bubble_height == 128
     assert window.control_panel_vertical_offset == 0
     assert window.input_bar_offset == 0
+    assert window.speech_font_size == 19
+    assert window.name_font_size == 13
+    assert window.input_font_size == 15
+    assert window.button_font_size == 15
+    assert window.input_bar_animator.force_visible is False
     assert window.layout_persisted is False
     assert window.tauri_settings_process is None
+
+
+def test_show_settings_tauri_failure_restores_font_preview_and_force_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    class InputAnimatorStub:
+        def __init__(self) -> None:
+            self.force_visible = False
+
+        def set_force_visible(self, value: bool) -> None:
+            self.force_visible = value
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    monkeypatch.setattr(
+        pet_window_module,
+        "show_themed_warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    instances = _install_tauri_settings_process_stub(monkeypatch, pet_window_module)
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window.input_bar_animator = InputAnimatorStub()
+    window.show_settings()
+
+    instances[0].layout_preview.emit({"speech_font_size": 24})
+    assert window.speech_font_size == 24
+    assert window.input_bar_animator.force_visible is True
+
+    instances[0].failed.emit("settings crashed")
+
+    assert window.speech_font_size == 19
+    assert window.input_bar_animator.force_visible is False
+    assert window.tauri_settings_process is None
+    assert instances[0].shutdown_called is True
+    assert warnings == ["settings crashed"]
 
 
 def test_show_settings_suppresses_pet_topmost_before_process_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -4080,9 +4157,78 @@ def test_tauri_settings_apply_default_theme_deletes_character_override() -> None
     assert deleted_overrides == ["sakura"]
 
 
+def test_tauri_settings_apply_updates_font_preview_rollback_baseline() -> None:
+    from app.ui.pet_window import PetWindow
+    from app.ui.tauri_settings import TauriSystemBasicResult
+
+    class SettingsServiceStub:
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._tauri_original_font_sizes = (19, 13, 15, 15)
+    result = replace(
+        _build_tauri_settings_result(),
+        system_basic=TauriSystemBasicResult(
+            speech_font_size=22,
+            name_font_size=18,
+            input_font_size=17,
+            button_font_size=16,
+        ),
+    )
+
+    assert window._apply_tauri_settings_result(result, final=False) is True
+    assert window._tauri_original_font_sizes == (22, 18, 17, 16)
+
+    window._apply_fonts_values(24, 20, 20, 20)
+    window._on_tauri_settings_cancelled()
+
+    assert (
+        window.speech_font_size,
+        window.name_font_size,
+        window.input_font_size,
+        window.button_font_size,
+    ) == (22, 18, 17, 16)
+
+
+def test_load_font_sizes_falls_back_and_clamps_invalid_config() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class WindowStub:
+        _load_speech_font_size = PetWindow._load_speech_font_size
+        _load_name_font_size = PetWindow._load_name_font_size
+        _load_input_font_size = PetWindow._load_input_font_size
+        _load_button_font_size = PetWindow._load_button_font_size
+
+        def _load_system_config_values(self, _section: str) -> dict[str, object]:
+            return {
+                "speech_font_size": "large",
+                "name_font_size": 999,
+                "input_font_size": -1,
+                "button_font_size": "16",
+            }
+
+    window = WindowStub()
+
+    assert window._load_speech_font_size() == 19
+    assert window._load_name_font_size() == 20
+    assert window._load_input_font_size() == 12
+    assert window._load_button_font_size() == 16
+
+
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
-                "version": 2,
+                "version": 3,
                 "nonce": "nonce",
                 "screen_awareness": {
                     "enabled": True,
@@ -4218,6 +4364,10 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
         auto_hide_enabled=True,
         auto_hide_delay_seconds=1,
     )
+    assert result.system_basic.speech_font_size == 19
+    assert result.system_basic.name_font_size == 13
+    assert result.system_basic.input_font_size == 15
+    assert result.system_basic.button_font_size == 15
     assert result.theme.primary_color == DEFAULT_THEME_SETTINGS.primary_color
     assert result.theme.ai_enabled is True
     assert result.theme.visual_effect_mode == "gaussian_blur"
@@ -4248,6 +4398,29 @@ def test_tauri_settings_result_parser_accepts_hidden_empty_tts_config_path() -> 
     assert result.tts.provider == "gpt-sovits"
     assert result.tts.work_dir == "tts/g50"
     assert result.tts.tts_config_path == ""
+
+
+def test_tauri_settings_result_parser_normalizes_font_sizes() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    ui = payload["system_basic"]["ui"]  # type: ignore[index]
+    ui.update(  # type: ignore[union-attr]
+        {
+            "speech_font_size": "invalid",
+            "name_font_size": 999,
+            "input_font_size": -1,
+            "button_font_size": None,
+        }
+    )
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.system_basic.speech_font_size == 19
+    assert result.system_basic.name_font_size == 20
+    assert result.system_basic.input_font_size == 12
+    assert result.system_basic.button_font_size == 15
 
 
 def test_tauri_settings_result_parser_reads_plugin_enabled_overrides() -> None:
@@ -4295,7 +4468,7 @@ def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
 
     payload = {
-        "version": 2,
+        "version": 3,
         "nonce": "nonce",
         "screen_awareness": {
             "enabled": True,
@@ -4321,7 +4494,7 @@ def test_tauri_settings_result_parser_rejects_stale_protocol() -> None:
     from app.ui.theme import theme_to_mapping
 
     payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
-    payload["version"] = 1
+    payload["version"] = 2
 
     with pytest.raises(ValueError, match="协议不匹配"):
         parse_tauri_settings_payload(payload, expected_nonce="nonce")
@@ -4349,6 +4522,34 @@ def test_tauri_settings_request_includes_theme_colors() -> None:
     assert request["theme_defaults"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
     assert {"id": "primary_color", "label": "主题色"} in request["theme_fields"]
     assert {"id": "solid", "label": "纯色块"} in request["visual_effect_modes"]
+
+
+def test_tauri_settings_request_includes_font_sizes_and_layout_limits() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        speech_font_size=22,
+        name_font_size=18,
+        input_font_size=17,
+        button_font_size=16,
+        nonce="nonce",
+    )
+
+    assert request["version"] == 3
+    assert request["system_basic"]["ui"] == {
+        "subtitle_typing_interval_ms": 35,
+        "reply_segment_pause_ms": 100,
+        "speech_font_size": 22,
+        "name_font_size": 18,
+        "input_font_size": 17,
+        "button_font_size": 16,
+    }
+    assert request["limits"]["speech_font_size"] == [10, 24]
+    assert request["limits"]["name_font_size"] == [10, 20]
+    assert request["limits"]["input_font_size"] == [12, 20]
+    assert request["limits"]["button_font_size"] == [12, 20]
+    assert request["limits"]["input_bar_offset"] == [0, 200]
 
 
 def test_tauri_settings_request_includes_tts_provider_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -5047,11 +5248,11 @@ def test_tauri_settings_process_schedules_bounded_focus_retries_after_start(
     )
     fake = FakeQProcess()
     process._process = fake
-    process._request_payload = b'{"version": 2}'
+    process._request_payload = b'{"version": 3}'
 
     process._handle_started()
 
-    assert fake.writes == [b'{"version": 2}\n']
+    assert fake.writes == [b'{"version": 3}\n']
     assert [delay for delay, _callback in scheduled] == list(
         tauri_settings.SETTINGS_FOCUS_RETRY_DELAYS_MS
     )
@@ -8614,12 +8815,17 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
         _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview
         _restore_tauri_layout_preview = pet_window_cls._restore_tauri_layout_preview
+        _restore_tauri_font_preview = pet_window_cls._restore_tauri_font_preview
+        _restore_tauri_settings_preview = pet_window_cls._restore_tauri_settings_preview
+        _release_tauri_preview_force_state = pet_window_cls._release_tauri_preview_force_state
+        _apply_fonts_values = pet_window_cls._apply_fonts_values
         _abort_tauri_settings_apply = pet_window_cls._abort_tauri_settings_apply
         _close_unused_tauri_tts_provider = pet_window_cls._close_unused_tauri_tts_provider
         _close_tauri_settings_process_for_shutdown = (
             pet_window_cls._close_tauri_settings_process_for_shutdown
         )
         _preview_layout = pet_window_cls._preview_layout
+        _preview_fonts = pet_window_cls._preview_fonts
         _prepare_secondary_window = pet_window_cls._prepare_secondary_window
         _present_registered_secondary_window = pet_window_cls._present_registered_secondary_window
         _release_secondary_window = pet_window_cls._release_secondary_window
@@ -8682,6 +8888,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         def _warm_up_tts_playback(self, provider):  # type: ignore[no-untyped-def]
             self.warmed_tts_provider = provider
 
+        def _apply_fonts(self) -> None:
+            pass
+
+        def setStyleSheet(self, stylesheet: str) -> None:
+            pass
+
         def _save_system_config_values(self, section, values):  # type: ignore[no-untyped-def]
             self.settings_service.save_system_values(section, values)
 
@@ -8710,6 +8922,12 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.bubble_height = 128
     window.control_panel_vertical_offset = 0
     window.input_bar_offset = 0
+    window.speech_font_size = 19
+    window.name_font_size = 13
+    window.input_font_size = 15
+    window.button_font_size = 15
+    window._tauri_original_layout = None
+    window._tauri_original_font_sizes = None
     window.subtitle_typing_interval_ms = 35
     window.reply_segment_pause_ms = 100
     window.retired_tts_providers = []

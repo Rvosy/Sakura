@@ -876,6 +876,23 @@ textarea:disabled {
   justify-self: start;
 }
 
+.slider-value-editor {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--sakura-primary, #8a7bc0);
+  border-radius: 5px;
+  background: var(--sakura-input-bg);
+  color: var(--sakura-text);
+  font-size: 12.5px;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+.slider-value-editor::-webkit-inner-spin-button,
+.slider-value-editor::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .archive-controls {
   display: flex;
   align-items: center;

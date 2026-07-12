@@ -65,6 +65,10 @@ const fields = {
   backchannelResourceCard: document.getElementById("backchannelResourceCard"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
   memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
+  speechFontSize: document.getElementById("speechFontSize"),
+  nameFontSize: document.getElementById("nameFontSize"),
+  inputFontSize: document.getElementById("inputFontSize"),
+  buttonFontSize: document.getElementById("buttonFontSize"),
   memoryStatusStrip: document.getElementById("memoryStatusStrip"),
   memorySearch: document.getElementById("memorySearch"),
   memoryLayerFilter: document.getElementById("memoryLayerFilter"),
@@ -3812,6 +3816,41 @@ function requestLayoutPreview() {
   });
 }
 
+let fontPreviewPending = false;
+function requestFontPreview() {
+  if (!request || fontPreviewPending) {
+    return;
+  }
+  fontPreviewPending = true;
+  requestAnimationFrame(async () => {
+    fontPreviewPending = false;
+    try {
+      await invoke("preview_layout", {
+        layout: {
+          speech_font_size: clampInt(
+            fields.speechFontSize.value,
+            request.limits.speech_font_size,
+          ),
+          name_font_size: clampInt(
+            fields.nameFontSize.value,
+            request.limits.name_font_size,
+          ),
+          input_font_size: clampInt(
+            fields.inputFontSize.value,
+            request.limits.input_font_size,
+          ),
+          button_font_size: clampInt(
+            fields.buttonFontSize.value,
+            request.limits.button_font_size,
+          ),
+        },
+      });
+    } catch (error) {
+      // 实时预览失败不应打断编辑
+    }
+  });
+}
+
 function collectScreenAwarenessSettings() {
   const limits = request.limits;
   const enabled = fields.enabled.checked;
@@ -3947,6 +3986,22 @@ function collectSystemBasicSettings() {
         fields.replySegmentPause.value,
         limits.reply_segment_pause_ms,
       ),
+      speech_font_size: clampInt(
+        fields.speechFontSize.value,
+        limits.speech_font_size,
+      ),
+      name_font_size: clampInt(
+        fields.nameFontSize.value,
+        limits.name_font_size,
+      ),
+      input_font_size: clampInt(
+        fields.inputFontSize.value,
+        limits.input_font_size,
+      ),
+      button_font_size: clampInt(
+        fields.buttonFontSize.value,
+        limits.button_font_size,
+      ),
     },
     bubble: {
       auto_hide_enabled: fields.bubbleAutoHide.checked,
@@ -4017,6 +4072,49 @@ function collectSettings() {
   };
 }
 
+function upgradeSliderControls() {
+  // 点击 .slider-value 可进入编辑模式，回车/失焦后切回显示并同步滑块。
+  document.querySelectorAll(".slider-control").forEach((control) => {
+    const output = control.querySelector(".slider-value");
+    const slider = control.querySelector("input[type='range']");
+    if (!output || !slider || output.dataset.upgraded) return;
+    output.dataset.upgraded = "true";
+
+    output.addEventListener("click", () => {
+      const min = Number(slider.min || 0);
+      const max = Number(slider.max || 100);
+      const editor = document.createElement("input");
+      editor.type = "number";
+      editor.className = "slider-value-editor";
+      editor.min = String(min);
+      editor.max = String(max);
+      editor.step = slider.step || "1";
+      editor.value = slider.value;
+      editor.style.width = `${Math.max(40, output.offsetWidth)}px`;
+      output.replaceWith(editor);
+      editor.focus();
+      editor.select();
+
+      function commit() {
+        const clamped = clampInt(editor.value, [Number(editor.min), Number(editor.max)]);
+        const changed = String(clamped) !== slider.value;
+        slider.value = String(clamped);
+        if (changed) {
+          slider.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        output.textContent = slider.value;
+        editor.replaceWith(output);
+      }
+
+      editor.addEventListener("blur", commit);
+      editor.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        if (e.key === "Escape") { e.preventDefault(); output.textContent = slider.value; editor.replaceWith(output); }
+      });
+    });
+  });
+}
+
 async function load() {
   request = await invoke("load_request");
   resourceState.snapshot = request.resources || {};
@@ -4058,6 +4156,10 @@ async function load() {
   setNumericBounds(fields.ttsTimeout, request.limits.tts_timeout_seconds);
   setNumericBounds(fields.backchannelDelay, request.limits.backchannel_delay_ms);
   setNumericBounds(fields.memoryTriggerTurns, request.limits.memory_trigger_turns);
+  setNumericBounds(fields.speechFontSize, request.limits.speech_font_size);
+  setNumericBounds(fields.nameFontSize, request.limits.name_font_size);
+  setNumericBounds(fields.inputFontSize, request.limits.input_font_size);
+  setNumericBounds(fields.buttonFontSize, request.limits.button_font_size);
 
   const layout = request.character.layout;
   fields.portraitScale.value = layout.portrait_scale_percent;
@@ -4104,6 +4206,14 @@ async function load() {
   fields.stageCollisionMask.checked = request.system_basic.debug_log.stage_collision_mask;
   fields.subtitleTypingInterval.value = request.system_basic.ui.subtitle_typing_interval_ms;
   fields.replySegmentPause.value = request.system_basic.ui.reply_segment_pause_ms;
+  fields.speechFontSize.value = request.system_basic.ui.speech_font_size;
+  fields.nameFontSize.value = request.system_basic.ui.name_font_size;
+  fields.inputFontSize.value = request.system_basic.ui.input_font_size;
+  fields.buttonFontSize.value = request.system_basic.ui.button_font_size;
+  updateSliderOutput("speechFontSize");
+  updateSliderOutput("nameFontSize");
+  updateSliderOutput("inputFontSize");
+  updateSliderOutput("buttonFontSize");
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
   fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
@@ -4136,6 +4246,9 @@ async function load() {
     startResourcePolling();
   }
 
+  // 给所有滑块追加数字输入框，滑块粗调 + 数字精确输入。
+  upgradeSliderControls();
+
   // 配置全部填充完毕后拍基线，作为「未保存改动」的比对基准。
   settingsBaseline = settingsSnapshot();
   refreshDirty();
@@ -4148,6 +4261,14 @@ layoutSliders.forEach((fieldKey) => {
   const preview = () => {
     updateSliderOutput(fieldKey);
     requestLayoutPreview();
+  };
+  fields[fieldKey].addEventListener("input", preview);
+  fields[fieldKey].addEventListener("change", preview);
+});
+["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"].forEach((fieldKey) => {
+  const preview = () => {
+    updateSliderOutput(fieldKey);
+    requestFontPreview();
   };
   fields[fieldKey].addEventListener("input", preview);
   fields[fieldKey].addEventListener("change", preview);
