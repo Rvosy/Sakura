@@ -121,6 +121,11 @@ class TTSPlaybackEndpoint(QObject):
         self._release_sink_player()
         self._release_player_source()
 
+    def cancel_playback(self) -> None:
+        self._clear_pending_audio()
+        if self._current_audio is not None:
+            self._finish_current_audio("cancelled")
+
     def discard_prepared(self, handle: TTSPreparedAudio) -> None:
         """从播放队列移除指定预生成句柄并清理其临时音频。"""
         pending_audio: list[
@@ -265,7 +270,7 @@ class TTSPlaybackEndpoint(QObject):
 
     @Slot(object)
     def _run_callback(self, callback: TTSCallback | None) -> None:
-        if callback is None or _provider_is_closed(self):
+        if callback is None:
             return
         try:
             callback()
@@ -669,8 +674,10 @@ class TTSPlaybackEndpoint(QObject):
     def _clear_pending_audio(self) -> None:
         pending_audio = self._pending_audio
         self._pending_audio = []
-        for audio_path, _on_started, _on_finished, _prepared_audio, _text in pending_audio:
+        for audio_path, on_started, on_finished, _prepared_audio, _text in pending_audio:
             self._schedule_audio_cleanup(audio_path)
+            self._started.emit(on_started)
+            self._finished.emit(on_finished)
 
     def speak_prepared(
         self,

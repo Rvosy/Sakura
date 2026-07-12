@@ -1956,10 +1956,20 @@ class PetWindow(QWidget):
     ) -> Path | None:
         if not audio:
             return None
-        path = Path(audio)
-        if not path.is_absolute() and manifest is not None and manifest.source_path is not None:
-            path = manifest.source_path.parent / path
-        return path if path.exists() else None
+        raw_path = Path(audio)
+        if raw_path.is_absolute() or str(audio).startswith(("\\\\", "//")):
+            return None
+        if manifest is None or manifest.source_path is None:
+            return None
+        try:
+            profile = getattr(self, "character_profile", None)
+            package_dir = getattr(profile, "package_dir", manifest.source_path.parent)
+            package_root = Path(package_dir).resolve(strict=True)
+            path = (manifest.source_path.parent / raw_path).resolve(strict=True)
+            path.relative_to(package_root)
+        except (OSError, ValueError):
+            return None
+        return path if path.is_file() else None
 
     def _copy_backchannel_audio_for_playback(self, source: Path) -> Path | None:
         suffix = source.suffix or ".wav"
@@ -3068,6 +3078,8 @@ class PetWindow(QWidget):
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is None:
             return
+        if subtitle_controller.is_reply_sequence_active():
+            subtitle_controller.cancel_reply_flow()
         start_waiting_indicator = getattr(subtitle_controller, "start_waiting_indicator", None)
         if callable(start_waiting_indicator):
             start_waiting_indicator()
@@ -3197,8 +3209,15 @@ class PetWindow(QWidget):
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
-        if not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions):
+        screen_action = next(
+            (action for action in result.actions if action.type == SCREEN_OBSERVATION_REQUEST_ACTION),
+            None,
+        )
+        if screen_action is None:
             return False
+        continuation_messages = screen_action.payload.get("continuation_messages", [])
+        if not isinstance(continuation_messages, list):
+            continuation_messages = []
         if (
             not self.screen_observation_enabled
             or not self.model_vision_enabled
@@ -3246,6 +3265,7 @@ class PetWindow(QWidget):
                 "kind": "chat_followup",
                 "user_message_index": user_message_index,
                 "text": text,
+                "continuation_messages": continuation_messages,
             },
         ):
             self.screen_observation_followup_in_progress = False
@@ -3260,6 +3280,9 @@ class PetWindow(QWidget):
     ) -> None:
         user_message_index = int(context.get("user_message_index", -1))
         text = str(context.get("text", ""))
+        continuation_messages = context.get("continuation_messages", [])
+        if not isinstance(continuation_messages, list):
+            continuation_messages = []
         if user_message_index < 0 or user_message_index >= len(self.messages):
             self.screen_observation_followup_in_progress = False
             self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的用户消息。"))
@@ -3284,8 +3307,9 @@ class PetWindow(QWidget):
         ]
         # 截图消息包含 base64，必须作为本次 follow-up 的最后一条消息保留。
         # 中间进度回复已经展示给用户，不再放入这次入模上下文，避免字符裁剪丢掉截图。
+        continuation_base = continuation_messages or self.messages[:user_message_index]
         self.pending_screen_observation_messages = trim_messages_for_model(
-            [*self.messages[:user_message_index], observed_message]
+            [*continuation_base, observed_message]
         )
         self.screen_observation_followup_in_progress = False
         log_event(
@@ -4161,13 +4185,14 @@ class PetWindow(QWidget):
             return
         if not self._memory_curation_can_start():
             return
-        entries = self.memory_curation_state.unprocessed_entries(self.history_store.load())
+        history_entries = self.history_store.load()
+        entries = self.memory_curation_state.unprocessed_entries(history_entries)
         if not entries:
             return
         self._start_memory_curation(
             entries,
             mode="auto",
-            target_history_count=len(self.history_store.load()),
+            target_history_count=len(history_entries),
             consumed_turns=self.memory_curation_state.pending_turns(),
         )
 

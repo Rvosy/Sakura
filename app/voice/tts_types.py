@@ -37,7 +37,7 @@ class TTSPreparedAudio:
     on_finished: TTSCallback | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class _TTSRequest:
     text: str
     tone: str | None
@@ -46,6 +46,7 @@ class _TTSRequest:
     prepared_audio: TTSPreparedAudio | None = None
     # 发起请求时的交互 ID；请求线程入口恢复，使 TTS 日志可与该次交互串联
     interaction_id: str = ""
+    cancelled: bool = False
 
 
 class TTSServiceState(str, Enum):

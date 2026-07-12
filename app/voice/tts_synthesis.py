@@ -403,6 +403,7 @@ class TTSSynthesisQueue:
         self._lock = threading.Lock()
         self._pending_requests: list[_TTSRequest] = []
         self._request_running = False
+        self._active_request: _TTSRequest | None = None
         self._tone_indices: dict[str, int] = {}
         self._thread_resource = (
             resource_manager.track_python_thread(label="tts_synthesis")
@@ -452,6 +453,7 @@ class TTSSynthesisQueue:
                 return
             request = self._pending_requests.pop(0)
             self._request_running = True
+            self._active_request = request
 
         thread = threading.Thread(
             target=self._request_audio,
@@ -470,9 +472,11 @@ class TTSSynthesisQueue:
         try:
             if self._is_closed():
                 log_event("TTS", "Provider 已关闭，跳过音频请求", {"text": tts_request.text})
+                self._sink.skip_audio_request(tts_request, "Provider 已关闭")
                 return
             if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
                 log_event("TTS", "请求已取消，跳过音频生成", {"text": tts_request.text})
+                self._sink.skip_audio_request(tts_request, "请求已取消")
                 return
 
             # 纯标点/emoji/符号段没有可发音内容，喂给服务端会归一化成空音素并触发
@@ -512,6 +516,11 @@ class TTSSynthesisQueue:
                 if not request_resolved:
                     fail(f"TTS 合成异常：{exc}")
                 return
+            if tts_request.cancelled:
+                if audio_path is not None:
+                    self._sink.schedule_cleanup(audio_path)
+                self._sink.skip_audio_request(tts_request, "请求已取消")
+                return
             if audio_path is None:
                 return
             if tts_request.prepared_audio is None:
@@ -526,6 +535,7 @@ class TTSSynthesisQueue:
         finally:
             with self._lock:
                 self._request_running = False
+                self._active_request = None
             self._start_next_request()
 
     def _select_reference(self, tone: str | None) -> _ToneReference:
@@ -571,13 +581,28 @@ class TTSSynthesisQueue:
     def clear_pending(self) -> None:
         """清空待合成队列（关闭时调用）。"""
         with self._lock:
-            self._pending_requests.clear()
+            pending = self._pending_requests
+            self._pending_requests = []
+        for request in pending:
+            request.cancelled = True
+            self._sink.skip_audio_request(request, "Provider 已关闭")
+
+    def cancel_all(self) -> None:
+        with self._lock:
+            pending = self._pending_requests
+            self._pending_requests = []
+            active = self._active_request
+            if active is not None:
+                active.cancelled = True
+        for request in pending:
+            request.cancelled = True
+            self._sink.skip_audio_request(request, "请求已取消")
 
 
 def _request_cancel_checker(request: _TTSRequest):  # type: ignore[no-untyped-def]
     def check() -> None:
         handle = request.prepared_audio
-        if handle is not None and handle.cancelled:
+        if request.cancelled or (handle is not None and handle.cancelled):
             raise OperationCancelled()
 
     return check

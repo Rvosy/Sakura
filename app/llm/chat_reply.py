@@ -144,7 +144,13 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
     for segment in reply.segments:
         if segment.tone and segment.tone not in allowed:
             new_segments.append(
-                ChatSegment(segment.text, DEFAULT_TONE, segment.translation, segment.portrait)
+                ChatSegment(
+                    segment.text,
+                    DEFAULT_TONE,
+                    segment.translation,
+                    segment.portrait,
+                    suppress_tts=segment.suppress_tts,
+                )
             )
             changed = True
         else:

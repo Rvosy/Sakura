@@ -117,6 +117,9 @@ class TTSProvider(Protocol):
     def discard_prepared(self, handle: TTSPreparedAudio) -> None:
         """丢弃不再需要的预生成音频。"""
 
+    def cancel_playback(self) -> None:
+        """中断当前及排队语音，并完成相应生命周期回调。"""
+
     def ensure_ready(self) -> tuple[bool, str]:
         """同步检测并预热 TTS 服务，不生成或播放音频。"""
 
@@ -179,6 +182,9 @@ class NullTTSProvider:
     def discard_prepared(self, handle: TTSPreparedAudio) -> None:
         log_event("TTS", "丢弃静音预生成句柄", {"text": handle.text, "tone": handle.tone})
         handle.cancelled = True
+
+    def cancel_playback(self) -> None:
+        return
 
     def ensure_ready(self) -> tuple[bool, str]:
         log_event("TTS", "静音 Provider 跳过服务检测")
@@ -339,6 +345,10 @@ class GPTSoVITSTTSProvider(QObject):
         # 队列侧丢弃待合成请求，播放侧清理已入播放队列的临时音频。
         self._synthesis_queue.discard_pending(handle)
         self._playback.discard_prepared(handle)
+
+    def cancel_playback(self) -> None:
+        self._synthesis_queue.cancel_all()
+        self._playback.cancel_playback()
 
     def ensure_ready(self) -> tuple[bool, str]:
         """同步检测并预热本地 TTS 服务，委托给服务监督。"""

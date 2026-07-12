@@ -158,6 +158,9 @@ class SubtitleController(QObject):
         transition: bool = False,
     ) -> None:
         self.stop_waiting_indicator()
+        cancel_playback = getattr(self.voice_playback, "cancel_playback", None)
+        if callable(cancel_playback):
+            cancel_playback()
         self.reply_sequence_id += 1
         self.pending_reply_segments = []
         self.queued_reply_segment_batches = []

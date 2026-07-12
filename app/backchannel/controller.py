@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import multiprocessing
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -78,6 +79,17 @@ class BackchannelController(QObject):
         self._classify_timeout_timer = QTimer(self)
         self._classify_timeout_timer.setSingleShot(True)
         self._classify_timeout_timer.timeout.connect(self._on_classify_timeout)
+        self._process_poll_timer = QTimer(self)
+        self._process_poll_timer.setInterval(25)
+        self._process_poll_timer.timeout.connect(self._poll_classifier_process)
+        self._process_startup_timer = QTimer(self)
+        self._process_startup_timer.setSingleShot(True)
+        self._process_startup_timer.timeout.connect(self._on_classifier_process_startup_timeout)
+        self._classifier_process = None
+        self._process_commands = None
+        self._process_results = None
+        self._process_ready = False
+        self._process_pending: tuple[int, str] | None = None
         self._shutdown = False
         self._thread_group = resource_manager.track_thread_group(
             cancel=self._begin_shutdown,
@@ -100,6 +112,7 @@ class BackchannelController(QObject):
 
     def set_classifier(self, classifier: BackchannelClassifier) -> None:
         self.cancel()
+        self._stop_classifier_process()
         self._classifier = classifier
 
     def schedule(self, text: str) -> None:
@@ -121,10 +134,14 @@ class BackchannelController(QObject):
 
         in-flight 的后台分类 token 失效,迟到结果在 _on_classify_done 被丢弃。
         """
+        had_inflight = self._inflight_token is not None
         self._armed = False
         self._timer.stop()
         self._classify_timeout_timer.stop()
         self._inflight_token = None
+        self._process_pending = None
+        if self._classifier_process is not None and (had_inflight or not self._process_ready):
+            self._stop_classifier_process()
 
     def shutdown(self, timeout: float | None = None) -> bool:
         """停止接收新任务并等待已启动的分类线程结束。
@@ -133,6 +150,7 @@ class BackchannelController(QObject):
         但不再向已关闭的控制器投递结果。
         """
         timeout_ms = None if timeout is None else max(0, int(timeout * 1000))
+        self._stop_classifier_process()
         return self._thread_group.stop(timeout_ms)
 
     def _begin_shutdown(self) -> None:
@@ -162,6 +180,9 @@ class BackchannelController(QObject):
         token = self._classify_token
         self._inflight_token = token
         self._inflight_text = text
+        if getattr(self._classifier, "process_base_dir", None) is not None:
+            self._dispatch_process(token, text)
+            return
         timeout_ms = self._settings.timeout_ms
         if timeout_ms > 0:
             self._classify_timeout_timer.start(timeout_ms)
@@ -187,6 +208,115 @@ class BackchannelController(QObject):
             # 关闭与派发窄竞态：线程组进入终态后不保留 pending token。
             self.cancel()
 
+    def _dispatch_process(self, token: int, text: str) -> None:
+        if self._classifier_process is None:
+            try:
+                self._start_classifier_process()
+            except Exception as exc:  # noqa: BLE001
+                log_event("Backchannel", "分类子进程启动失败", {"error": str(exc)})
+                self._stop_classifier_process()
+        if self._classifier_process is None:
+            self._finish_classification(text, None)
+            return
+        self._process_pending = (token, text)
+        if self._process_ready:
+            self._send_process_request()
+
+    def _start_classifier_process(self) -> None:
+        from app.backchannel.process_worker import run_hybrid_classifier_worker
+
+        context = multiprocessing.get_context("spawn")
+        result_parent, result_child = context.Pipe(duplex=False)
+        command_child, command_parent = context.Pipe(duplex=False)
+        process = context.Process(
+            target=run_hybrid_classifier_worker,
+            args=(str(getattr(self._classifier, "process_base_dir")), command_child, result_child),
+            name="sakura-backchannel-classifier",
+            daemon=True,
+        )
+        process.start()
+        command_child.close()
+        result_child.close()
+        self._classifier_process = process
+        self._process_commands = command_parent
+        self._process_results = result_parent
+        self._process_ready = False
+        self._process_poll_timer.start()
+        self._process_startup_timer.start(30_000)
+
+    def _send_process_request(self) -> None:
+        if self._process_pending is None or self._process_commands is None:
+            return
+        token, text = self._process_pending
+        self._process_pending = None
+        try:
+            self._process_commands.send((token, text))
+        except (BrokenPipeError, EOFError, OSError):
+            self._stop_classifier_process()
+            self._on_classify_done(token, None)
+            return
+        timeout_ms = self._settings.timeout_ms
+        if timeout_ms > 0:
+            self._classify_timeout_timer.start(timeout_ms)
+
+    def _poll_classifier_process(self) -> None:
+        connection = self._process_results
+        if connection is None:
+            return
+        try:
+            while connection.poll():
+                kind, token, payload = connection.recv()
+                if kind == "ready":
+                    self._process_startup_timer.stop()
+                    self._process_ready = True
+                    self._send_process_request()
+                elif kind == "result":
+                    self._on_classify_done(int(token), payload)
+                elif kind in {"error", "startup_error"}:
+                    log_event("Backchannel", "分类子进程失败", {"error": str(payload)})
+                    if token is not None:
+                        self._on_classify_done(int(token), None)
+                    else:
+                        self._stop_classifier_process()
+        except (EOFError, OSError):
+            token = self._inflight_token
+            self._stop_classifier_process()
+            if token is not None:
+                self._on_classify_done(token, None)
+
+    def _stop_classifier_process(self) -> None:
+        self._process_poll_timer.stop()
+        self._process_startup_timer.stop()
+        for connection in (self._process_commands, self._process_results):
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+        process = self._classifier_process
+        if process is not None:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=1.0)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1.0)
+            process.close()
+        self._classifier_process = None
+        self._process_commands = None
+        self._process_results = None
+        self._process_ready = False
+        self._process_pending = None
+
+    def _on_classifier_process_startup_timeout(self) -> None:
+        token = self._inflight_token
+        text = self._inflight_text
+        self._inflight_token = None
+        self._stop_classifier_process()
+        log_event("Backchannel", "分类子进程启动超时,本轮按无标签处理")
+        if token is not None:
+            self._finish_classification(text, None)
+
     def _on_classify_done(self, token: int, label: object) -> None:
         if token != self._inflight_token:
             return  # 已被 cancel/超时/新一轮取代
@@ -199,6 +329,8 @@ class BackchannelController(QObject):
             return
         # 丢弃 in-flight 真实结果(token 置空),本轮按无标签落兜底。
         self._inflight_token = None
+        if self._classifier_process is not None:
+            self._stop_classifier_process()
         log_event("Backchannel", "后台分类超时,本轮按无标签落兜底")
         self._finish_classification(self._inflight_text, None)
 

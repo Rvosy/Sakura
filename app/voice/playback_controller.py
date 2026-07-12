@@ -39,6 +39,12 @@ class VoicePlaybackController:
         self.discard_prepared()
         self.tts_provider = tts_provider
 
+    def cancel_playback(self) -> None:
+        self.discard_prepared()
+        cancel = getattr(self.tts_provider, "cancel_playback", None)
+        if callable(cancel):
+            cancel()
+
     def speak_segment(
         self,
         segment: ChatSegment,

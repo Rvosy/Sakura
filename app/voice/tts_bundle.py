@@ -836,19 +836,11 @@ def _is_bundle_installed(entry: TTSBundleEntry, base_dir: Path) -> bool:
 
 def _replace_installed_bundle_from_extract(tmp_dir: Path, installed_dir: Path) -> Path:
     root = _resolve_extracted_root(tmp_dir)
-    if installed_dir.exists():
-        shutil.rmtree(installed_dir, ignore_errors=True)
-    installed_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    if root == tmp_dir.resolve():
-        installed_dir.mkdir(parents=True, exist_ok=True)
-        for child in list(tmp_dir.iterdir()):
-            shutil.move(str(child), str(installed_dir / child.name))
+    if not _is_installed_bundle_ready(root) and not (root / "api_v2.py").is_file():
+        raise RuntimeError(f"TTS 整合包解压后未找到可用运行时：{root}")
+    _replace_installed_bundle_dir(root, installed_dir)
+    if tmp_dir.exists() and tmp_dir != installed_dir:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return installed_dir.resolve()
-
-    shutil.move(str(root), str(installed_dir))
-    shutil.rmtree(tmp_dir, ignore_errors=True)
     return installed_dir.resolve()
 
 
