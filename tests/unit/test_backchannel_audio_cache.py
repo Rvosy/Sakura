@@ -91,11 +91,16 @@ def test_store_lookup_roundtrip_survives_source_deletion(tmp_path: Path) -> None
     assert cache.store("中性", "うん。", source) == stored
 
 
-def test_store_failure_degrades_to_none(tmp_path: Path) -> None:
+def test_store_failure_degrades_to_none(tmp_path: Path, monkeypatch) -> None:
     blocker = tmp_path / "occupied"
     blocker.write_text("file", encoding="utf-8")
     # 根路径被同名文件占据 → mkdir 失败 → 返回 None 不抛(缓存是优化不是依赖)
     cache = BackchannelAudioCache(blocker, "fp")
     source = tmp_path / "synth.wav"
     source.write_bytes(b"wav")
+
+    def fail_cleanup(*_args, **_kwargs) -> None:
+        raise NotADirectoryError
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
     assert cache.store("中性", "うん。", source) is None

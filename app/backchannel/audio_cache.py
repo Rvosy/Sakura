@@ -129,4 +129,7 @@ class BackchannelAudioCache:
             )
             return None
         finally:
-            temp_target.unlink(missing_ok=True)
+            try:
+                temp_target.unlink(missing_ok=True)
+            except OSError:
+                pass
