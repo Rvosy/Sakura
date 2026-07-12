@@ -103,6 +103,26 @@ llm:
     assert load_yaml_mapping(service.api_config_path)["model_slots"]["chat"]["model"] == "legacy-chat"
 
 
+def test_api_model_slots_keep_historical_model_for_legacy_llm_without_model() -> None:
+    root = _runtime_root("model_slots_legacy_llm_without_model")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+llm:
+  base_url: https://legacy.example/v1
+  api_key: legacy-key
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    profiles = service.load_api_profiles()
+    selection = service.load_model_selection()
+
+    assert profiles[0].models == ("gpt-4.1-mini",)
+    assert selection.chat == ModelSlotSelection("default", "gpt-4.1-mini")
+
+
 def test_api_model_slots_migrate_pr110_selection() -> None:
     root = _runtime_root("model_slots_pr110")
     service = AppSettingsService(root)
@@ -133,6 +153,32 @@ vision_model: vision-model
     assert selection.chat.model == "text-model"
     assert selection.vision_chat is not None
     assert selection.vision_chat.model == "vision-model"
+
+
+def test_api_model_slots_keep_historical_models_for_pr110_without_model_names() -> None:
+    root = _runtime_root("model_slots_pr110_without_models")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        """
+api_profiles:
+  - id: p1
+    alias: 旧供应商
+    base_url: https://api.example/v1
+    api_key: key
+text_enabled: true
+text_profile_id: p1
+vision_profile_id: p1
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    profiles = service.load_api_profiles()
+    selection = service.load_model_selection()
+
+    assert profiles[0].models == ("gpt-4.1-mini", "gpt-4o")
+    assert selection.chat == ModelSlotSelection("p1", "gpt-4.1-mini")
+    assert selection.vision_chat == ModelSlotSelection("p1", "gpt-4o")
 
 
 def test_model_slot_resolver_uses_configured_fallbacks() -> None:

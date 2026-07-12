@@ -6777,6 +6777,7 @@ def test_main_checks_initial_setup_before_building_app_context() -> None:
     assert startup.index("initial_setup = _initial_setup_required(BASE_DIR)") < startup.index(
         "build_initial_app_context(BASE_DIR)"
     )
+    assert "RuntimeError" in startup
 
 
 def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -6899,6 +6900,18 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
         def load_theme_settings(self):  # type: ignore[no-untyped-def]
             return DEFAULT_THEME_SETTINGS
 
+        def load_system_values(self, section: str) -> dict[str, int]:
+            assert section == "ui"
+            return {
+                "portrait_scale_percent": 125,
+                "control_panel_width": 620,
+                "bubble_height": 180,
+                "control_panel_vertical_offset": 20,
+                "input_bar_offset": 12,
+                "subtitle_typing_interval_ms": 48,
+                "reply_segment_pause_ms": 260,
+            }
+
         def save_api_settings(self, _settings) -> None:  # type: ignore[no-untyped-def]
             pass
 
@@ -6984,6 +6997,13 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     assert process_kwargs[0]["onboarding"] is True
     assert isinstance(process_kwargs[0]["character_registry"], CharacterRegistryStub)
     assert process_kwargs[0]["current_character"].id == "sakura"
+    assert process_kwargs[0]["portrait_scale_percent"] == 125
+    assert process_kwargs[0]["control_panel_width"] == 620
+    assert process_kwargs[0]["bubble_height"] == 180
+    assert process_kwargs[0]["control_panel_vertical_offset"] == 20
+    assert process_kwargs[0]["input_bar_offset"] == 12
+    assert process_kwargs[0]["subtitle_typing_interval_ms"] == 48
+    assert process_kwargs[0]["reply_segment_pause_ms"] == 260
     assert saved_system_values["ui"] == {
         "portrait_scale_percent": 155,
         "control_panel_width": 730,

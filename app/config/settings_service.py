@@ -54,6 +54,8 @@ from app.voice.tts_settings import (
 API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
+_LEGACY_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
+_LEGACY_DEFAULT_VISION_MODEL = "gpt-4o"
 
 
 @dataclass(frozen=True)
@@ -242,7 +244,7 @@ class AppSettingsService:
                 alias=DEFAULT_PROFILE_ALIAS,
                 base_url=str(llm.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
                 api_key=str(llm.get("api_key", "")).strip(),
-                models=tuple(_dedupe([old_model or DEFAULT_TEXT_MODEL])),
+                models=tuple(_dedupe([old_model or _LEGACY_DEFAULT_TEXT_MODEL])),
             )
             # 写入新格式
             self.save_api_profiles([profile])
@@ -251,7 +253,7 @@ class AppSettingsService:
                 ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=DEFAULT_PROFILE_ID,
-                        model=old_model or DEFAULT_TEXT_MODEL,
+                        model=old_model or _LEGACY_DEFAULT_TEXT_MODEL,
                     ),
                 )
             )
@@ -318,18 +320,18 @@ class AppSettingsService:
                 settings = ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=str(data.get("text_profile_id", "")).strip(),
-                        model=str(data.get("text_model", DEFAULT_TEXT_MODEL)).strip(),
+                        model=str(data.get("text_model", _LEGACY_DEFAULT_TEXT_MODEL)).strip(),
                     ),
                     vision_chat=ModelSlotSelection(
                         profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
                     ),
                 )
             else:
                 settings = ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
                     ),
                 )
             self.save_model_selection(settings)
@@ -340,7 +342,7 @@ class AppSettingsService:
         return ModelSelectionSettings(
             chat=ModelSlotSelection(
                 profile_id=DEFAULT_PROFILE_ID if llm.get("base_url") else "",
-                model=old_model or DEFAULT_TEXT_MODEL,
+                model=old_model or (_LEGACY_DEFAULT_TEXT_MODEL if llm.get("base_url") else ""),
             ),
         )
 
@@ -821,6 +823,13 @@ def _legacy_model_names(data: dict[str, Any]) -> list[str]:
         names.append(str(data.get(key, "")).strip())
     llm = _mapping(data.get("llm"))
     names.append(str(llm.get("model", "")).strip())
+    if any(key in data for key in ("text_enabled", "text_profile_id", "vision_profile_id")):
+        if _bool_value(data.get("text_enabled"), True) and not str(data.get("text_model", "")).strip():
+            names.append(_LEGACY_DEFAULT_TEXT_MODEL)
+        if not str(data.get("vision_model", "")).strip():
+            names.append(_LEGACY_DEFAULT_VISION_MODEL)
+    elif llm.get("base_url") and not str(llm.get("model", "")).strip():
+        names.append(_LEGACY_DEFAULT_TEXT_MODEL)
     return _dedupe(names)
 
 
