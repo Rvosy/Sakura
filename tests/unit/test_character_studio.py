@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -111,6 +112,22 @@ def test_character_studio_open_uses_draft_without_touching_source(tmp_path: Path
 
     assert (source / "card.md").read_text(encoding="utf-8") == "old card"
     assert (draft_dir / "card.md").read_text(encoding="utf-8") == "draft only"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 会规范化目录名末尾的点号")
+def test_character_studio_preserves_trailing_dot_id_for_workspace_autosave(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "trailing_dot_workspace")
+    character_id = "N.A.V.I."
+    _write_character(root, character_id, "N.A.V.I.")
+    service = CharacterStudioService(root)
+
+    opened = service.open_character(character_id)
+
+    assert opened["workspace_id"] == character_id
+    saved = service.save_workspace_draft(opened["workspace_id"], opened["doc"])
+    assert saved["workspace_id"] == character_id
 
 
 def test_character_studio_open_reads_reference_audio_rows(tmp_path: Path) -> None:

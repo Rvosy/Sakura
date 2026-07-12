@@ -49,6 +49,32 @@ def test_resolve_tauri_studio_binary_uses_env_and_platform(monkeypatch, tmp_path
     assert tauri_studio.resolve_tauri_studio_binary(tmp_path, environ={}) == unix_bin
 
 
+def test_tauri_binary_resolvers_reject_non_executable_posix_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.tauri_settings as tauri_settings
+    import app.ui.tauri_studio as tauri_studio
+
+    settings = tmp_path / "custom-settings"
+    studio = tmp_path / "custom-studio"
+    settings.write_text("settings", encoding="utf-8")
+    studio.write_text("studio", encoding="utf-8")
+    monkeypatch.setattr(tauri_settings.sys, "platform", "darwin")
+    monkeypatch.setattr(tauri_studio.sys, "platform", "darwin")
+    monkeypatch.setattr(tauri_settings.os, "access", lambda _path, _mode: False)
+    monkeypatch.setattr(tauri_studio.os, "access", lambda _path, _mode: False)
+
+    assert tauri_settings.resolve_tauri_settings_binary(
+        tmp_path,
+        environ={tauri_settings.TAURI_SETTINGS_BIN_ENV: str(settings)},
+    ) is None
+    assert tauri_studio.resolve_tauri_studio_binary(
+        tmp_path,
+        environ={tauri_studio.TAURI_STUDIO_BIN_ENV: str(studio)},
+    ) is None
+
+
 def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path) -> None:
     from app.config.character_studio import CharacterStudioService
     from app.ui.tauri_studio import build_tauri_studio_request
@@ -69,6 +95,33 @@ def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path
         for field, label, _default in THEME_COLOR_FIELDS
     ]
     assert CharacterStudioService(tmp_path).list_characters(current_character_id="sakura")[0]["is_current"] is True
+
+
+def test_portrait_default_radio_uses_themeable_custom_style() -> None:
+    stylesheet = (
+        Path(__file__).parents[2] / "tools" / "studio-tauri" / "frontend" / "styles.css"
+    ).read_text(encoding="utf-8")
+
+    assert "--portrait-radio-size:" in stylesheet
+    assert "--portrait-radio-fill:" in stylesheet
+    assert "appearance: none;" in stylesheet
+    assert "padding: 0;" in stylesheet
+    assert ".portrait-default-control input:checked::before" in stylesheet
+
+
+def test_release_workflows_build_and_package_both_tauri_apps() -> None:
+    root = Path(__file__).parents[2]
+    for relative_path in (".github/workflows/package.yml", ".github/workflows/release.yml"):
+        workflow = (root / relative_path).read_text(encoding="utf-8")
+
+        assert "tools/settings-tauri/src-tauri" in workflow
+        assert "tools/studio-tauri/src-tauri" in workflow
+        assert "cargo build --release --locked" in workflow
+        assert "target/release/sakura-settings.exe" in workflow
+        assert "target/release/sakura-studio.exe" in workflow
+        assert "target/release/sakura-settings" in workflow
+        assert "target/release/sakura-studio" in workflow
+        assert 'chmod +x "target/release/$binary"' in workflow
 
 
 def test_character_selector_distinguishes_workspace_and_published_roles() -> None:
@@ -431,6 +484,51 @@ def test_tauri_studio_process_focus_uses_forced_foreground_restore(
 
     assert process.focus_window() is True
     assert calls == [(4321, True)]
+
+
+def test_tauri_process_focus_sends_cross_platform_control_message(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+    import app.ui.tauri_studio as tauri_studio
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+
+    class FakeQProcess:
+        def __init__(self, result: int) -> None:
+            self.result = result
+            self.writes: list[bytes] = []
+
+        def write(self, payload: bytes) -> int:
+            self.writes.append(bytes(payload))
+            return self.result
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "darwin")
+    monkeypatch.setattr(tauri_studio.sys, "platform", "darwin")
+
+    studio_process = tauri_studio.TauriStudioProcess(tmp_path)
+    studio_qprocess = FakeQProcess(1)
+    studio_process._process = studio_qprocess
+    assert studio_process.focus_window() is True
+    assert studio_qprocess.writes == [
+        b'@@SAKURA_STUDIO_CONTROL@@{"action": "focus"}\n'
+    ]
+
+    settings_process = tauri_settings.TauriSettingsProcess(
+        base_dir=tmp_path,
+        settings=ScreenAwarenessSettings(),
+    )
+    settings_qprocess = FakeQProcess(-1)
+    settings_process._process = settings_qprocess
+    assert settings_process.focus_window() is False
+    assert settings_qprocess.writes == [
+        b'@@SAKURA_SETTINGS_CONTROL@@{"action": "focus"}\n'
+    ]
 
 
 def test_tauri_studio_process_focus_tolerates_deleted_qprocess(

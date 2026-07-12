@@ -31,6 +31,14 @@
   --motion-stagger: 42ms;
   --studio-dirty-dot-size: 7px;
 
+  --portrait-radio-size: 18px;
+  --portrait-radio-dot-size: 8px;
+  --portrait-radio-border-width: 2px;
+  --portrait-radio-border: color-mix(in srgb, var(--sakura-secondary-text) 72%, transparent);
+  --portrait-radio-background: var(--sakura-input-bg);
+  --portrait-radio-fill: var(--sakura-primary);
+  --portrait-radio-focus-ring: var(--ring);
+
   color: var(--sakura-text);
   font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
   font-size: 14px;
@@ -682,9 +690,60 @@ button:disabled {
 }
 
 .portrait-default-control input {
-  width: 16px;
-  min-width: 16px;
-  accent-color: var(--sakura-primary);
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--portrait-radio-size);
+  height: var(--portrait-radio-size);
+  min-width: var(--portrait-radio-size);
+  margin: 0;
+  padding: 0;
+  border: var(--portrait-radio-border-width) solid var(--portrait-radio-border);
+  border-radius: 50%;
+  background: var(--portrait-radio-background);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-base) var(--ease),
+    box-shadow var(--motion-base) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+
+.portrait-default-control input::before {
+  content: "";
+  width: var(--portrait-radio-dot-size);
+  height: var(--portrait-radio-dot-size);
+  border-radius: 50%;
+  background: var(--portrait-radio-fill);
+  transform: scale(0);
+  transition: transform var(--motion-base) var(--ease);
+}
+
+.portrait-default-control:hover input {
+  border-color: var(--portrait-radio-fill);
+}
+
+.portrait-default-control input:checked {
+  border-color: var(--portrait-radio-fill);
+}
+
+.portrait-default-control input:checked::before {
+  transform: scale(1);
+}
+
+.portrait-default-control input:focus {
+  border-color: var(--portrait-radio-fill);
+  box-shadow: none;
+}
+
+.portrait-default-control input:focus-visible {
+  box-shadow: 0 0 0 3px var(--portrait-radio-focus-ring);
+}
+
+.portrait-default-control:has(input:checked) {
+  color: var(--sakura-primary);
 }
 
 .portrait-resource-actions,

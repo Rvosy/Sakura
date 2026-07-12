@@ -5218,7 +5218,8 @@ class PetWindow(QWidget):
         if active_process is not None:
             # 设置页已在独立进程中打开（可能被最小化），右键唤起时还原并前置它，
             # 而不是静默返回让用户找不回窗口。
-            active_process.focus_window()
+            if not active_process.focus_window():
+                show_themed_warning(self, "无法打开设置", "设置窗口无法恢复，请关闭后重试。")
             return
         if self._try_show_tauri_settings():
             return
@@ -5341,8 +5342,7 @@ class PetWindow(QWidget):
     def _open_tauri_studio_from_settings(self, character_id: str | None = None) -> bool:
         active_process = getattr(self, "tauri_studio_process", None)
         if active_process is not None:
-            active_process.focus_window()
-            return True
+            return bool(active_process.focus_window())
         if resolve_tauri_studio_binary(self.base_dir) is None:
             return False
         initial_character_id = str(character_id or getattr(self.character_profile, "id", "") or "")

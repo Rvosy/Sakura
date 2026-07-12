@@ -18,7 +18,12 @@ TAURI_STUDIO_BIN_ENV = "SAKURA_TAURI_STUDIO_BIN"
 TAURI_STUDIO_PROTOCOL_VERSION = 1
 TAURI_STUDIO_RPC_MARKER = "@@SAKURA_STUDIO_RPC@@"
 TAURI_STUDIO_RPC_RESULT_MARKER = "@@SAKURA_STUDIO_RPC_RESULT@@"
+TAURI_STUDIO_CONTROL_MARKER = "@@SAKURA_STUDIO_CONTROL@@"
 STUDIO_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
+
+
+def _is_launchable_tauri_binary(path: Path) -> bool:
+    return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
 
 
 def resolve_tauri_studio_binary(base_dir: Path, environ: Mapping[str, str] | None = None) -> Path | None:
@@ -26,7 +31,7 @@ def resolve_tauri_studio_binary(base_dir: Path, environ: Mapping[str, str] | Non
     configured = env.get(TAURI_STUDIO_BIN_ENV)
     if configured:
         path = Path(configured)
-        return path if path.is_file() else None
+        return path if _is_launchable_tauri_binary(path) else None
 
     root = Path(base_dir)
     binary_name = "sakura-studio.exe" if sys.platform == "win32" else "sakura-studio"
@@ -35,7 +40,7 @@ def resolve_tauri_studio_binary(base_dir: Path, environ: Mapping[str, str] | Non
         root / "tools" / "studio-tauri" / "src-tauri" / "target" / "debug" / binary_name,
     )
     for candidate in candidates:
-        if candidate.is_file():
+        if _is_launchable_tauri_binary(candidate):
             return candidate
     return None
 
@@ -199,15 +204,24 @@ class TauriStudioProcess(QObject):
         process = self._process
         if process is None:
             return False
+        control_sent = self._send_window_control("focus")
+        if sys.platform != "win32":
+            return control_sent
         try:
             pid = int(process.processId())
         except (RuntimeError, TypeError, ValueError):
             return False
-        return (
-            pid > 0
-            and sys.platform == "win32"
-            and _restore_windows_for_pid(pid, force_foreground=True)
-        )
+        return pid > 0 and _restore_windows_for_pid(pid, force_foreground=True)
+
+    def _send_window_control(self, action: str) -> bool:
+        process = self._process
+        if process is None or self._done:
+            return False
+        line = TAURI_STUDIO_CONTROL_MARKER + json.dumps({"action": action}) + "\n"
+        try:
+            return process.write(line.encode("utf-8")) >= 0
+        except (AttributeError, OSError, RuntimeError, TypeError):
+            return False
 
     def _handle_started(self) -> None:
         self._send_request()
@@ -254,8 +268,9 @@ class TauriStudioProcess(QObject):
         if process is None or self._done:
             return
         try:
-            process.write(self._request_payload + b"\n")
-        except RuntimeError as exc:
+            if process.write(self._request_payload + b"\n") < 0:
+                raise OSError("write returned a negative byte count")
+        except (OSError, RuntimeError) as exc:
             self._done = True
             self.failed.emit(f"Tauri 角色工作室请求发送失败：{exc}")
 

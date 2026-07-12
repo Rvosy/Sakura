@@ -16,7 +16,7 @@ if exist "%PRJ_ROOT%\runtime\python.exe" (
     echo [OK] 找到 runtime\python.exe
 ) else (
     echo [错误] 未找到 runtime\python.exe
-    echo         请前往 GitHub Releases 下载包含 runtime 的完整包:
+    echo         请前往 GitHub Releases 下载 runtime 运行时文件加入目录:
     echo         https://github.com/Rvosy/sakura/releases
     pause
     exit /b 1

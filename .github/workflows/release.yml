@@ -201,40 +201,57 @@ jobs:
         shell: bash
         run: rm -f install.command start.command python-embed.zip
 
-      - name: Build Tauri settings window (Windows)
+      - name: Build Tauri applications (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
-        working-directory: tools/settings-tauri/src-tauri
         run: |
-          cargo build --release
-          $exe = Join-Path (Get-Location) 'target/release/sakura-settings.exe'
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "Missing Tauri settings exe after build: $exe"
+          $apps = @(
+            @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
+            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
+          )
+          foreach ($app in $apps) {
+            Push-Location $app.Directory
+            try {
+              cargo build --release --locked
+              $exe = Join-Path (Get-Location) "target/release/$($app.Binary)"
+              if (-not (Test-Path -LiteralPath $exe)) {
+                throw "Missing Tauri binary after build: $exe"
+              }
+              $keep = Join-Path $env:RUNNER_TEMP $app.Binary
+              Copy-Item -LiteralPath $exe -Destination $keep -Force
+              Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
+              $releaseDir = Join-Path (Get-Location) 'target/release'
+              New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+              Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir $app.Binary) -Force
+            } finally {
+              Pop-Location
+            }
           }
-          $keep = Join-Path $env:RUNNER_TEMP 'sakura-settings.exe'
-          Copy-Item -LiteralPath $exe -Destination $keep -Force
-          Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
-          $releaseDir = Join-Path (Get-Location) 'target/release'
-          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-          Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir 'sakura-settings.exe') -Force
 
-      - name: Build Tauri settings window (macOS)
+      - name: Build Tauri applications (macOS)
         if: matrix.platform == 'macos-arm64'
         shell: bash
-        working-directory: tools/settings-tauri/src-tauri
         run: |
-          cargo build --release
-          exe="$PWD/target/release/sakura-settings"
-          if [ ! -f "$exe" ]; then
-            echo "Missing Tauri settings binary after build: $exe" >&2
-            exit 1
-          fi
-          keep="$RUNNER_TEMP/sakura-settings"
-          cp "$exe" "$keep"
-          rm -rf target
-          mkdir -p target/release
-          cp "$keep" target/release/sakura-settings
-          chmod +x target/release/sakura-settings
+          build_tauri() {
+            local directory="$1"
+            local binary="$2"
+            pushd "$directory" >/dev/null
+            cargo build --release --locked
+            local exe="$PWD/target/release/$binary"
+            if [ ! -f "$exe" ]; then
+              echo "Missing Tauri binary after build: $exe" >&2
+              exit 1
+            fi
+            local keep="$RUNNER_TEMP/$binary"
+            cp "$exe" "$keep"
+            rm -rf target
+            mkdir -p target/release
+            cp "$keep" "target/release/$binary"
+            chmod +x "target/release/$binary"
+            popd >/dev/null
+          }
+          build_tauri tools/settings-tauri/src-tauri sakura-settings
+          build_tauri tools/studio-tauri/src-tauri sakura-studio
 
       - name: Create bundle archive (Windows)
         if: matrix.platform == 'windows-x64'
@@ -263,8 +280,12 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in bundle stage: $settingsExe"
+          }
+          if (-not (Test-Path -LiteralPath $studioExe)) {
+            throw "Missing Tauri studio exe in bundle stage: $studioExe"
           }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
 
@@ -294,8 +315,12 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in update stage: $settingsExe"
+          }
+          if (-not (Test-Path -LiteralPath $studioExe)) {
+            throw "Missing Tauri studio exe in update stage: $studioExe"
           }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
 
@@ -329,6 +354,7 @@ jobs:
         shell: bash
         run: |
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "${{ matrix.artifact }}" \
             app plugins runtime third_party tools \
             LICENSE main.py requirements.txt VERSION \
@@ -340,6 +366,7 @@ jobs:
         shell: bash
         run: |
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "${{ matrix.update_artifact }}" \
             app plugins third_party tools \
             LICENSE main.py requirements.txt VERSION \

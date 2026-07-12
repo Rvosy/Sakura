@@ -665,10 +665,17 @@ class CharacterStudioService:
         return self._require_workspace_package(Path(value))
 
     def _workspace_id_for_package(self, package_dir: Path) -> str:
-        relative = Path(package_dir).resolve().relative_to(self.workspace_characters_dir.resolve())
+        resolved = Path(package_dir).resolve()
+        relative = resolved.relative_to(self.workspace_characters_dir.resolve())
         if len(relative.parts) < 2 or relative.parts[1] != "package":
             raise ValueError(f"无效的角色工坊草稿目录：{package_dir}")
-        return _validate_character_id(relative.parts[0])
+        directory_id = _validate_character_id(relative.parts[0])
+        state = self._read_state(directory_id)
+        if state is not None and state.get("id"):
+            state_id = _validate_character_id(str(state["id"]))
+            if self._state_path(state_id).resolve() == (resolved.parent / "draft.json").resolve():
+                return state_id
+        return directory_id
 
     def _read_state(self, character_id: str) -> dict[str, Any] | None:
         path = self._state_path(character_id)

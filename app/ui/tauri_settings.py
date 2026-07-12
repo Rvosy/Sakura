@@ -173,6 +173,7 @@ TAURI_LAYOUT_PREVIEW_MARKER = "@@SAKURA_LAYOUT_PREVIEW@@"
 TAURI_SETTINGS_RESULT_MARKER = "@@SAKURA_SETTINGS_RESULT@@"
 TAURI_SETTINGS_RPC_MARKER = "@@SAKURA_SETTINGS_RPC@@"
 TAURI_SETTINGS_RPC_RESULT_MARKER = "@@SAKURA_SETTINGS_RPC_RESULT@@"
+TAURI_SETTINGS_CONTROL_MARKER = "@@SAKURA_SETTINGS_CONTROL@@"
 
 PLUGIN_PERMISSION_LABELS: dict[str, dict[str, str]] = {
     PERMISSION_TOOL: {"group": "工具", "label": "Agent 工具"},
@@ -410,6 +411,10 @@ class TauriRpcWorker(QObject):
             self.finished.emit()
 
 
+def _is_launchable_tauri_binary(path: Path) -> bool:
+    return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
+
+
 def resolve_tauri_settings_binary(
     base_dir: Path,
     environ: Mapping[str, str] | None = None,
@@ -418,7 +423,7 @@ def resolve_tauri_settings_binary(
     configured = env.get(TAURI_SETTINGS_BIN_ENV)
     if configured:
         path = Path(configured)
-        return path if path.is_file() else None
+        return path if _is_launchable_tauri_binary(path) else None
 
     root = Path(base_dir)
     binary_name = "sakura-settings.exe" if sys.platform == "win32" else "sakura-settings"
@@ -427,7 +432,7 @@ def resolve_tauri_settings_binary(
         root / "tools" / "settings-tauri" / "src-tauri" / "target" / "debug" / binary_name,
     )
     for candidate in candidates:
-        if candidate.is_file():
+        if _is_launchable_tauri_binary(candidate):
             return candidate
     return None
 
@@ -1041,15 +1046,26 @@ class TauriSettingsProcess(QObject):
         process = self._process
         if process is None:
             return False
+        control_sent = self._send_window_control("focus")
+        if sys.platform != "win32":
+            return control_sent
         try:
             pid = int(process.processId())
         except (RuntimeError, TypeError, ValueError):
             return False
         if pid <= 0:
             return False
-        if sys.platform == "win32":
-            return _restore_windows_for_pid(pid, force_foreground=True)
-        return False
+        return _restore_windows_for_pid(pid, force_foreground=True)
+
+    def _send_window_control(self, action: str) -> bool:
+        process = self._process
+        if process is None or self._done:
+            return False
+        line = TAURI_SETTINGS_CONTROL_MARKER + json.dumps({"action": action}) + "\n"
+        try:
+            return process.write(line.encode("utf-8")) >= 0
+        except (AttributeError, OSError, RuntimeError, TypeError):
+            return False
 
     def _handle_started(self) -> None:
         """发送初始化数据，并在 Windows 上有限重试把设置窗口送到前台。"""

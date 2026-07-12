@@ -5,10 +5,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager, State, Window, WindowEvent};
+use tauri::{Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
 
 const RPC_MARKER: &str = "@@SAKURA_STUDIO_RPC@@";
 const RPC_RESULT_MARKER: &str = "@@SAKURA_STUDIO_RPC_RESULT@@";
+const CONTROL_MARKER: &str = "@@SAKURA_STUDIO_CONTROL@@";
 const CLOSE_REQUESTED_EVENT: &str = "sakura://studio-close-requested";
 const DEFAULT_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const FILE_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -30,6 +31,38 @@ struct RpcResponse {
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WindowControlCommand {
+    Focus,
+}
+
+#[derive(Clone, Default)]
+struct WindowControl {
+    window: Arc<Mutex<Option<WebviewWindow>>>,
+}
+
+impl WindowControl {
+    fn register(&self, window: WebviewWindow) {
+        if let Ok(mut current) = self.window.lock() {
+            *current = Some(window);
+        }
+    }
+
+    fn execute(&self, command: WindowControlCommand) {
+        let window = self.window.lock().ok().and_then(|current| current.clone());
+        let Some(window) = window else {
+            return;
+        };
+        match command {
+            WindowControlCommand::Focus => {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+    }
 }
 
 impl HostRpc {
@@ -112,7 +145,7 @@ fn close_studio(window: Window) -> Result<(), String> {
 }
 
 pub fn run() {
-    let (request, rpc) = match read_request_and_spawn_rpc_reader() {
+    let (request, rpc, window_control) = match read_request_and_spawn_rpc_reader() {
         Ok(state) => state,
         Err(error) => {
             eprintln!("{error}");
@@ -120,9 +153,16 @@ pub fn run() {
         }
     };
 
+    let setup_window_control = window_control.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { request, rpc })
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                setup_window_control.register(window);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_request,
             show_studio,
@@ -143,7 +183,7 @@ pub fn run() {
         .expect("failed to run Sakura character studio");
 }
 
-fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
+fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc, WindowControl), String> {
     let mut reader = BufReader::new(std::io::stdin());
     let mut data = String::new();
     let bytes = reader
@@ -158,6 +198,8 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
     }
     let rpc = HostRpc::new();
     let pending = rpc.pending.clone();
+    let window_control = WindowControl::default();
+    let reader_window_control = window_control.clone();
     std::thread::spawn(move || {
         let mut line = String::new();
         loop {
@@ -165,7 +207,12 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Some(response) = parse_rpc_response_line(line.trim_end()) {
+                    let trimmed = line.trim_end();
+                    if let Some(command) = parse_window_control_line(trimmed) {
+                        reader_window_control.execute(command);
+                        continue;
+                    }
+                    if let Some(response) = parse_rpc_response_line(trimmed) {
                         if let Ok(mut pending) = pending.lock() {
                             if let Some(sender) = pending.remove(&response.id) {
                                 let _ = sender.send(response);
@@ -177,7 +224,16 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc), String> {
             }
         }
     });
-    Ok((value, rpc))
+    Ok((value, rpc, window_control))
+}
+
+fn parse_window_control_line(line: &str) -> Option<WindowControlCommand> {
+    let payload = line.strip_prefix(CONTROL_MARKER)?;
+    let value: Value = serde_json::from_str(payload).ok()?;
+    match value.get("action")?.as_str()? {
+        "focus" => Some(WindowControlCommand::Focus),
+        _ => None,
+    }
 }
 
 fn parse_rpc_response_line(line: &str) -> Option<RpcResponse> {
@@ -254,6 +310,20 @@ mod tests {
         assert_eq!(response.id, "rpc-2");
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn parses_focus_window_control_message() {
+        let line = r#"@@SAKURA_STUDIO_CONTROL@@{"action":"focus"}"#;
+
+        assert_eq!(
+            parse_window_control_line(line),
+            Some(WindowControlCommand::Focus)
+        );
+        assert!(parse_window_control_line("plain log").is_none());
+        assert!(
+            parse_window_control_line(r#"@@SAKURA_STUDIO_CONTROL@@{"action":"unknown"}"#).is_none()
+        );
     }
 
     #[test]
