@@ -5187,6 +5187,7 @@ def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) 
     macos_binary = release_dir / "sakura-settings"
     windows_binary.write_text("windows", encoding="utf-8")
     macos_binary.write_text("macos", encoding="utf-8")
+    macos_binary.chmod(macos_binary.stat().st_mode | 0o100)
 
     monkeypatch.setattr(tauri_settings_module.sys, "platform", "win32")
     assert tauri_settings_module.resolve_tauri_settings_binary(root, environ={}) == windows_binary

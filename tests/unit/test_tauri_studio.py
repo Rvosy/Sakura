@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+def _mark_executable(path: Path) -> None:
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
 def _write_minimal_character(root: Path, character_id: str = "sakura") -> None:
@@ -31,6 +36,7 @@ def test_resolve_tauri_studio_binary_uses_env_and_platform(monkeypatch, tmp_path
 
     custom = tmp_path / "custom-studio.exe"
     custom.write_text("bin", encoding="utf-8")
+    _mark_executable(custom)
     assert tauri_studio.resolve_tauri_studio_binary(
         tmp_path,
         environ={tauri_studio.TAURI_STUDIO_BIN_ENV: str(custom)},
@@ -42,6 +48,7 @@ def test_resolve_tauri_studio_binary_uses_env_and_platform(monkeypatch, tmp_path
     unix_bin = release / "sakura-studio"
     win_bin.write_text("win", encoding="utf-8")
     unix_bin.write_text("unix", encoding="utf-8")
+    _mark_executable(unix_bin)
 
     monkeypatch.setattr(tauri_studio.sys, "platform", "win32")
     assert tauri_studio.resolve_tauri_studio_binary(tmp_path, environ={}) == win_bin
@@ -661,9 +668,23 @@ def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
 
     import app.ui.tauri_studio as tauri_studio
 
-    binary = tmp_path / "tools" / "studio-tauri" / "src-tauri" / "target" / "debug" / "sakura-studio.exe"
+    binary_name = (
+        "sakura-studio.exe"
+        if tauri_studio.sys.platform == "win32"
+        else "sakura-studio"
+    )
+    binary = (
+        tmp_path
+        / "tools"
+        / "studio-tauri"
+        / "src-tauri"
+        / "target"
+        / "debug"
+        / binary_name
+    )
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"not executable")
+    _mark_executable(binary)
     failed_to_start = tauri_studio.QProcess.ProcessError.FailedToStart
 
     class SignalStub:
