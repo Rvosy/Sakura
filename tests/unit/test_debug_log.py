@@ -264,7 +264,7 @@ def test_log_body_enabled_works_at_info_level(monkeypatch) -> None:  # type: ign
     assert sanitize_console_log_data({"content": "完整正文"})["content"] == "完整正文"
 
 
-def test_console_body_only_formats_model_response_segments(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+def test_console_body_only_prints_raw_model_response(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
         "app.core.runtime_log._load_debug_values",
         lambda: {"enabled": True, "body_enabled": True, "file_enabled": False, "profile": "info"},
@@ -281,31 +281,24 @@ def test_console_body_only_formats_model_response_segments(monkeypatch, capsys) 
             },
         },
     )
+    raw_response = """{
+    "operations": [
+        {
+            "op": "update",
+            "id": "499bec3a-630f-4fe2-b722-28618d746237",
+            "layer": "procedural",
+            "category": "workflow",
+            "importance": 0.7,
+            "confidence": 0.9,
+            "reason": "更新项目进度",
+            "content": "当前正在进行日志输出功能的测试与调试。"
+        }
+    ]
+}"""
     log_event(
         "API",
         "模型原始文本返回",
-        {
-            "content": json.dumps(
-                {
-                    "segments": [
-                        {
-                            "ja": "ログ出力のテストですね。",
-                            "zh": "是在测试日志输出吧。",
-                            "tone": "中性",
-                            "portrait": "站立待机",
-                        },
-                        {
-                            "ja": "必要な情報があれば提示してください。",
-                            "zh": "如果有需要的信息，请告诉我。",
-                            "tone": "坚定",
-                            "portrait": "思考",
-                        },
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            "reply_chars": 200,
-        },
+        {"content": raw_response, "reply_chars": len(raw_response)},
     )
     log_event("TTS", "静音 Provider 跳过播放", {"text": "不应重复输出的 TTS 正文"})
 
@@ -313,13 +306,8 @@ def test_console_body_only_formats_model_response_segments(monkeypatch, capsys) 
     assert "不应输出的完整请求" not in output
     assert "不应重复输出的 TTS 正文" not in output
     assert "[text]" not in output
-    assert "[模型回复 1]" in output
-    assert "日文：ログ出力のテストですね。" in output
-    assert "中文：是在测试日志输出吧。" in output
-    assert "语气：中性" in output
-    assert "立绘：站立待机" in output
-    assert "[模型回复 2]" in output
-    assert '"segments"' not in output
+    assert f"[模型回复]\n{raw_response}" in output
+    assert "[模型回复 1]" not in output
 
 
 def test_console_body_falls_back_to_raw_model_response(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]

@@ -754,24 +754,7 @@ def _format_console_body(record: LogEvent) -> str:
 
 
 def _format_model_response(content: Any) -> str:
-    if not isinstance(content, str):
-        return f"[模型回复]\n{json.dumps(content, ensure_ascii=False, indent=2, default=str)}"
-    try:
-        parsed = json.loads(content)
-    except (TypeError, ValueError):
-        return f"[模型回复]\n{content}"
-    segments = parsed.get("segments") if isinstance(parsed, dict) else None
-    if not isinstance(segments, list):
-        return f"[模型回复]\n{json.dumps(parsed, ensure_ascii=False, indent=2, default=str)}"
-    blocks: list[str] = []
-    fields = (("ja", "日文"), ("zh", "中文"), ("tone", "语气"), ("portrait", "立绘"))
-    for index, segment in enumerate(segments, start=1):
-        if not isinstance(segment, dict):
-            continue
-        lines = [f"{label}：{segment[key]}" for key, label in fields if segment.get(key)]
-        if lines:
-            blocks.append(f"[模型回复 {index}]\n" + "\n".join(lines))
-    return "\n\n".join(blocks) if blocks else f"[模型回复]\n{content}"
+    return f"[模型回复]\n{content}"
 
 
 def format_log_attributes(data: Any) -> str:
