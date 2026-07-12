@@ -1,5 +1,7 @@
 const invoke = window.__TAURI__.core.invoke;
 
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const fields = {
   pageTitle: document.getElementById("pageTitle"),
   pageSubtitle: document.getElementById("pageSubtitle"),
@@ -44,6 +46,12 @@ const fields = {
   publishButton: document.getElementById("publishButton"),
   saveButton: document.getElementById("saveButton"),
   pageHead: document.querySelector(".page-head"),
+  createCharacterOverlay: document.getElementById("createCharacterOverlay"),
+  createCharacterForm: document.getElementById("createCharacterForm"),
+  createCharacterId: document.getElementById("createCharacterId"),
+  createCharacterDisplayName: document.getElementById("createCharacterDisplayName"),
+  createCharacterError: document.getElementById("createCharacterError"),
+  createCharacterCancelButton: document.getElementById("createCharacterCancelButton"),
 };
 
 const pageMeta = {
@@ -83,6 +91,9 @@ let previewAudio = null;
 let draftAutosaveTimer = null;
 let draftAutosavePromise = null;
 let renderingEditor = false;
+let createCharacterResolve = null;
+let createCharacterPreviousFocus = null;
+let createDisplayNameEdited = false;
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -1263,13 +1274,72 @@ async function selectCharacter(characterId) {
   fields.studioCharacterSelect.__customSelect?.focus();
 }
 
-async function createCharacter() {
-  await flushDraftAutosave();
-  const id = window.prompt("角色 ID：", "");
-  if (!id) {
+function closeCreateCharacterDialog(result = null) {
+  if (fields.createCharacterOverlay.hidden) {
     return;
   }
-  const characterId = id.trim();
+  fields.createCharacterOverlay.hidden = true;
+  document.body.classList.remove("has-modal-open");
+  document.removeEventListener("keydown", handleCreateCharacterDialogKeydown, true);
+  const resolve = createCharacterResolve;
+  createCharacterResolve = null;
+  const previousFocus = createCharacterPreviousFocus;
+  createCharacterPreviousFocus = null;
+  previousFocus?.focus?.();
+  resolve?.(result);
+}
+
+function handleCreateCharacterDialogKeydown(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCreateCharacterDialog();
+    return;
+  }
+  if (event.key !== "Tab") {
+    return;
+  }
+  const focusable = Array.from(
+    fields.createCharacterOverlay.querySelectorAll("input, button:not(:disabled)"),
+  );
+  if (!focusable.length) {
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function openCreateCharacterDialog() {
+  if (createCharacterResolve) {
+    return Promise.resolve(null);
+  }
+  fields.createCharacterForm.reset();
+  fields.createCharacterError.textContent = "";
+  fields.createCharacterId.classList.remove("is-invalid");
+  createDisplayNameEdited = false;
+  createCharacterPreviousFocus = document.activeElement;
+  fields.createCharacterOverlay.hidden = false;
+  document.body.classList.add("has-modal-open");
+  document.addEventListener("keydown", handleCreateCharacterDialogKeydown, true);
+  window.requestAnimationFrame(() => fields.createCharacterId.focus());
+  return new Promise((resolve) => {
+    createCharacterResolve = resolve;
+  });
+}
+
+async function createCharacter() {
+  await flushDraftAutosave();
+  const draft = await openCreateCharacterDialog();
+  if (!draft) {
+    return;
+  }
+  const { characterId, displayName } = draft;
   const existing = (request.characters || []).find((character) => character.id === characterId);
   if (existing) {
     if (!existing.is_installed) {
@@ -1279,13 +1349,9 @@ async function createCharacter() {
     }
     return;
   }
-  const displayName = window.prompt("显示名称：", characterId);
-  if (displayName === null) {
-    return;
-  }
   await runBusy(async () => {
     const payload = await hostCall("studio.create_character", {
-      doc: { id: characterId, display_name: displayName.trim() || characterId },
+      doc: { id: characterId, display_name: displayName },
     });
     setCurrentDoc(payload, {
       id: payload.doc.id,
@@ -1837,6 +1903,42 @@ async function load() {
 fields.navItems.forEach((item) => item.addEventListener("click", () => switchPage(item.dataset.page)));
 fields.studioCharacterSelect.addEventListener("change", (event) => selectCharacter(event.target.value));
 fields.newCharacterButton.addEventListener("click", createCharacter);
+fields.createCharacterOverlay.addEventListener("pointerdown", (event) => {
+  if (event.target === fields.createCharacterOverlay) {
+    closeCreateCharacterDialog();
+  }
+});
+fields.createCharacterCancelButton.addEventListener("click", () => closeCreateCharacterDialog());
+fields.createCharacterId.addEventListener("input", () => {
+  fields.createCharacterError.textContent = "";
+  fields.createCharacterId.classList.remove("is-invalid");
+  if (!createDisplayNameEdited) {
+    fields.createCharacterDisplayName.value = fields.createCharacterId.value.trim();
+  }
+});
+fields.createCharacterDisplayName.addEventListener("input", () => {
+  createDisplayNameEdited = true;
+});
+fields.createCharacterForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const characterId = fields.createCharacterId.value.trim();
+  const displayName = fields.createCharacterDisplayName.value.trim() || characterId;
+  let message = "";
+  if (!characterId) {
+    message = "请输入角色 ID。";
+  } else if (!/^[A-Za-z0-9_.-]+$/.test(characterId)) {
+    message = "角色 ID 只能包含字母、数字、下划线、点和连字符。";
+  } else if ((request?.characters || []).some((character) => character.id === characterId)) {
+    message = `角色 ID 已存在：${characterId}。请从上方角色列表中打开。`;
+  }
+  if (message) {
+    fields.createCharacterError.textContent = message;
+    fields.createCharacterId.classList.add("is-invalid");
+    fields.createCharacterId.focus();
+    return;
+  }
+  closeCreateCharacterDialog({ characterId, displayName });
+});
 fields.discardDraftButton.addEventListener("click", discardCurrentDraft);
 fields.addExpressionButton.addEventListener("click", () => importPortrait());
 fields.importPortraitFolderButton.addEventListener("click", importPortraitFolder);

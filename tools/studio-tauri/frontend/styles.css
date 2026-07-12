@@ -1186,6 +1186,104 @@ input.is-invalid {
   pointer-events: none;
 }
 
+/* ---------- 新建角色弹窗 ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--sakura-text) 24%, transparent);
+  backdrop-filter: blur(4px);
+  animation: overlay-in var(--motion-base) var(--ease) both;
+}
+
+.modal-dialog {
+  width: min(440px, 100%);
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(145deg, var(--tint-soft), transparent 42%),
+    var(--surface-raised);
+  box-shadow: 0 28px 70px -30px color-mix(in srgb, var(--sakura-text) 60%, transparent);
+  padding: 22px;
+  animation: modal-in var(--motion-medium) var(--ease) both;
+}
+
+.modal-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.modal-heading-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--sakura-primary);
+  color: var(--sakura-input-bg);
+  font-size: 22px;
+  line-height: 1;
+  box-shadow: var(--shadow-pop);
+}
+
+.modal-heading h2 {
+  margin: 0;
+  color: var(--sakura-text);
+  font-size: 18px;
+}
+
+.modal-heading p {
+  margin: 3px 0 0;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+}
+
+.create-character-dialog form,
+.modal-field {
+  display: grid;
+  gap: 7px;
+}
+
+.create-character-dialog form {
+  gap: 15px;
+}
+
+.modal-field > span {
+  color: var(--sakura-secondary-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.modal-field small {
+  color: var(--sakura-muted-text);
+  font-size: 11.5px;
+}
+
+.modal-error {
+  min-height: 20px;
+  margin: -3px 0 0;
+  color: #c63f55;
+  font-size: 12.5px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+body.has-modal-open .settings-shell {
+  pointer-events: none;
+}
+
 .toast {
   max-width: min(360px, calc(100vw - 36px));
   padding: 10px 12px;
@@ -1246,6 +1344,19 @@ input.is-invalid {
   from {
     opacity: 0;
     transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
   }
 }
 

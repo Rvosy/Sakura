@@ -211,6 +211,52 @@
       </section>
     </main>
 
+    <div id="createCharacterOverlay" class="modal-overlay" hidden>
+      <section
+        class="modal-dialog create-character-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="createCharacterTitle"
+        aria-describedby="createCharacterDescription"
+      >
+        <div class="modal-heading">
+          <span class="modal-heading-mark" aria-hidden="true">+</span>
+          <div>
+            <h2 id="createCharacterTitle">新建角色</h2>
+            <p id="createCharacterDescription">创建一个独立工作区，保存确认后再发布到角色列表。</p>
+          </div>
+        </div>
+        <form id="createCharacterForm" novalidate>
+          <label class="modal-field" for="createCharacterId">
+            <span>角色 ID</span>
+            <input
+              id="createCharacterId"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="例如 sakura_friend"
+              aria-describedby="createCharacterIdHint"
+            />
+            <small id="createCharacterIdHint">仅支持字母、数字、下划线、点和连字符。</small>
+          </label>
+          <label class="modal-field" for="createCharacterDisplayName">
+            <span>显示名称</span>
+            <input
+              id="createCharacterDisplayName"
+              type="text"
+              autocomplete="off"
+              placeholder="角色在 Sakura 中显示的名字"
+            />
+          </label>
+          <p id="createCharacterError" class="modal-error" role="alert"></p>
+          <div class="modal-actions">
+            <button id="createCharacterCancelButton" type="button" class="secondary-button">取消</button>
+            <button type="submit" class="primary-button">创建工作区</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <script type="module" src="./studio.js"></script>
   </body>

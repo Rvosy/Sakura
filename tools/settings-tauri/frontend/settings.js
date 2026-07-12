@@ -1,5 +1,7 @@
 const invoke = window.__TAURI__.core.invoke;
 
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const fields = {
   characterSelect: document.getElementById("characterSelect"),
   characterImportButton: document.getElementById("characterImportButton"),

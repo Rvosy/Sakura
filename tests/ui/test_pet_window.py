@@ -5518,6 +5518,7 @@ def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
     assert "characterStudioOpenButton" not in source
     assert 'typeof result?.current_character_id === "string"' in source
     assert "if (applyTheme && selectedCharacter()) {" in source
+    assert 'document.addEventListener("contextmenu", (event) => event.preventDefault());' in source
     studio_launch_source = source.split("async function launchCharacterStudio()", 1)[1].split(
         "function resourcesSnapshot()", 1
     )[0]
@@ -5539,6 +5540,9 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "保存" in index
     assert 'id="studioCharacterSelect"' in index
     assert 'id="newCharacterButton"' in index
+    assert 'id="createCharacterOverlay"' in index
+    assert 'id="createCharacterForm"' in index
+    assert 'role="dialog"' in index
     assert 'class="studio-character-bar"' in index
     assert index.index('class="studio-character-bar"') < index.index('class="page-head"')
     nav_labels = ["基础信息", "人设卡", "立绘", "语音模型", "参考语音", "配色"]
@@ -5579,7 +5583,9 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "function renderReferenceAudios(" in source
     assert "function previewReferenceAudio(" in source
     assert "{ dirty: true }" in source
-    assert "displayName === null" in source
+    assert "openCreateCharacterDialog" in source
+    assert 'window.prompt("角色 ID' not in source
+    assert 'document.addEventListener("contextmenu", (event) => event.preventDefault());' in source
     assert "hostCall(\"studio.list_characters\"" not in source
     assert "hostCall(\"studio.open_character\"" in source
     assert "hostCall(\"studio.create_character\"" in source
@@ -5626,6 +5632,8 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "grid-template-columns: 176px minmax(0, 1fr)" in styles
     assert ".custom-select__trigger" in styles
     assert ".studio-character-bar" in styles
+    assert ".modal-overlay" in styles
+    assert ".create-character-dialog" in styles
     assert ".reference-audio-row" in styles
     assert "#saveButton,\n#publishButton,\n.primary-button" in styles
     assert ".custom-select__group" in styles
