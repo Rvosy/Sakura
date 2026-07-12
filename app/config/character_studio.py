@@ -447,6 +447,7 @@ class CharacterStudioService:
         saved_profile = registry.get(profile.id)
         workspace_id = self._workspace_id_for_package(draft_dir)
         state = self._read_state(workspace_id)
+        was_installed = state is not None and str(state.get("origin")) == "installed"
         saved_doc = CharacterStudioDoc.from_package_dir(target_dir)
         if state is not None:
             self._write_state(
@@ -464,7 +465,11 @@ class CharacterStudioService:
             "package_dir": str(draft_dir),
             "workspace_id": workspace_id,
             "is_dirty": False,
-            "message": f"已保存角色「{saved_profile.display_name}」。",
+            "message": (
+                f"已保存角色「{saved_profile.display_name}」。"
+                if was_installed
+                else f"已发布角色「{saved_profile.display_name}」。"
+            ),
         }
 
     def import_portrait(self, package_dir: Path | str, source_path: Path, *, label: str) -> dict[str, str]:

@@ -4810,13 +4810,17 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert 'id="importPortraitFolderButton"' in index
     assert 'id="importReferenceAudioFolderButton"' in index
     assert 'id="discardDraftButton"' in index
+    assert 'id="saveDraftButton"' in index
+    assert 'id="publishButton"' in index
     assert 'id="defaultPortrait"' not in index
     assert 'data-page="library"' not in index
     assert 'id="page-library"' not in index
     assert 'id="characterSearch"' not in index
     assert 'id="refreshCharactersButton"' not in index
-    assert "发布" not in index
-    assert "发布" not in source
+    assert "发布角色" in index
+    assert "工作区" in source
+    assert "已发布角色" in source
+    assert "（草稿）" not in source
     assert "editingCharacterId" in source
     assert "confirmDiscardChanges" in source
     assert "function editorSnapshot()" in source
@@ -4854,6 +4858,9 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "updateThemeFromHuePointer" in source
     assert "enhanceSelect(fields.studioCharacterSelect)" in source
     assert "refreshSelect(fields.studioCharacterSelect)" in source
+    assert "function saveWorkspaceDraft()" in source
+    assert "function publishCharacter()" in source
+    assert "character.is_installed" in source
     assert 'done.className = "primary-button"' in source
     assert 'event.key === "ArrowDown"' in source
     assert 'event.key === "Tab"' in source
@@ -4871,7 +4878,9 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert ".custom-select__trigger" in styles
     assert ".studio-character-bar" in styles
     assert ".reference-audio-row" in styles
-    assert "#saveButton,\n.primary-button" in styles
+    assert "#saveButton,\n#publishButton,\n.primary-button" in styles
+    assert ".custom-select__group" in styles
+    assert ".custom-select__dirty-dot" in styles
     assert "overflow-x: hidden" in styles
     assert "@media (max-width: 940px)" in styles
     assert ".studio-shell {\n    grid-template-columns: 1fr;" not in styles

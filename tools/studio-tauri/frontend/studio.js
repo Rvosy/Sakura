@@ -40,6 +40,8 @@ const fields = {
   errorText: document.getElementById("errorText"),
   exportButton: document.getElementById("exportButton"),
   cancelButton: document.getElementById("cancelButton"),
+  saveDraftButton: document.getElementById("saveDraftButton"),
+  publishButton: document.getElementById("publishButton"),
   saveButton: document.getElementById("saveButton"),
   pageHead: document.querySelector(".page-head"),
 };
@@ -110,6 +112,44 @@ async function hostCall(method, params = {}) {
   return invoke("host_call", { method, params });
 }
 
+function renderSelectOptionContent(container, option, { includeSource = false } = {}) {
+  container.textContent = "";
+  const main = document.createElement("span");
+  main.className = "custom-select__option-main";
+  if (option.dataset.dirty === "true") {
+    const dot = document.createElement("span");
+    dot.className = "custom-select__dirty-dot";
+    dot.setAttribute("aria-hidden", "true");
+    main.append(dot);
+    const status = document.createElement("span");
+    status.className = "visually-hidden";
+    status.textContent = "有未发布修改";
+    main.append(status);
+  }
+  const text = document.createElement("span");
+  text.className = "custom-select__option-text";
+  text.textContent = option.textContent;
+  main.append(text);
+  container.append(main);
+  if (includeSource && option.dataset.sourceLabel) {
+    const source = document.createElement("span");
+    source.className = "custom-select__source";
+    source.textContent = option.dataset.sourceLabel;
+    container.append(source);
+  }
+}
+
+function selectOptionAccessibleLabel(option) {
+  const parts = [option.textContent];
+  if (option.dataset.sourceLabel) {
+    parts.push(option.dataset.sourceLabel);
+  }
+  if (option.dataset.dirty === "true") {
+    parts.push("有未发布修改");
+  }
+  return parts.filter(Boolean).join("，");
+}
+
 function enhanceSelect(select) {
   if (!select || select.__customSelect) {
     return;
@@ -149,18 +189,35 @@ function enhanceSelect(select) {
 
   function syncTrigger() {
     const option = select.options[select.selectedIndex];
-    label.textContent = option ? option.textContent : "";
+    if (option) {
+      renderSelectOptionContent(label, option, { includeSource: true });
+      trigger.setAttribute("aria-label", selectOptionAccessibleLabel(option));
+    } else {
+      label.textContent = "";
+      trigger.removeAttribute("aria-label");
+    }
     trigger.disabled = select.disabled;
   }
 
   function buildMenu() {
     menu.textContent = "";
+    let currentGroup = "";
     Array.from(select.options).forEach((option) => {
+      const group = option.dataset.group || "";
+      if (group && group !== currentGroup) {
+        const groupLabel = document.createElement("div");
+        groupLabel.className = "custom-select__group";
+        groupLabel.setAttribute("role", "presentation");
+        groupLabel.textContent = option.dataset.groupLabel || group;
+        menu.append(groupLabel);
+        currentGroup = group;
+      }
       const item = document.createElement("div");
       item.className = "custom-select__option";
       item.setAttribute("role", "option");
       item.tabIndex = -1;
-      item.textContent = option.textContent;
+      item.setAttribute("aria-label", selectOptionAccessibleLabel(option));
+      renderSelectOptionContent(item, option);
       if (option.value === select.value) {
         item.classList.add("is-selected");
         item.setAttribute("aria-selected", "true");
@@ -341,9 +398,29 @@ function confirmDiscardChanges() {
   return !isDirty() || window.confirm("当前修改尚未保存，继续操作将丢失这些修改。是否继续？");
 }
 
+function currentCharacterEntry() {
+  return (request?.characters || []).find((item) => item.id === editingCharacterId) || null;
+}
+
+function isPublishedCharacter(character = currentCharacterEntry()) {
+  return Boolean(character?.is_installed);
+}
+
 function characterOptionLabel(character) {
-  const label = character.display_name || character.id;
-  return character.has_draft || character.source === "draft" ? `${label}（草稿）` : label;
+  return character.display_name || character.id;
+}
+
+function characterOptionGroup(character) {
+  return character.is_installed
+    ? { id: "published", label: "已发布角色", sourceLabel: "已发布" }
+    : { id: "workspace", label: "工作区", sourceLabel: "工作区" };
+}
+
+function characterHasPendingChanges(character) {
+  return Boolean(
+    character?.is_dirty
+    || (character?.id === editingCharacterId && isDirty())
+  );
 }
 
 function characterOptions() {
@@ -356,13 +433,35 @@ function characterOptions() {
 
 function renderCharacterOptions() {
   fields.studioCharacterSelect.textContent = "";
-  characterOptions().forEach((character) => {
+  const characters = characterOptions();
+  const ordered = [
+    ...characters.filter((character) => !character.is_installed),
+    ...characters.filter((character) => character.is_installed),
+  ];
+  ordered.forEach((character) => {
+    const group = characterOptionGroup(character);
     const option = document.createElement("option");
     option.value = character.id;
     option.textContent = characterOptionLabel(character);
+    option.dataset.group = group.id;
+    option.dataset.groupLabel = group.label;
+    option.dataset.sourceLabel = group.sourceLabel;
+    option.dataset.dirty = String(characterHasPendingChanges(character));
     fields.studioCharacterSelect.append(option);
   });
   fields.studioCharacterSelect.value = editingCharacterId;
+  refreshSelect(fields.studioCharacterSelect);
+}
+
+function refreshCurrentCharacterOption() {
+  const option = Array.from(fields.studioCharacterSelect.options).find(
+    (item) => item.value === editingCharacterId,
+  );
+  if (!option) {
+    return;
+  }
+  const entry = currentCharacterEntry();
+  option.dataset.dirty = String(characterHasPendingChanges(entry));
   refreshSelect(fields.studioCharacterSelect);
 }
 
@@ -432,7 +531,7 @@ function markBaseline() {
 function refreshDirty() {
   const dirty = isDirty();
   document.body.classList.toggle("is-dirty", Boolean(dirty));
-  fields.saveButton.classList.toggle("has-changes", Boolean(dirty));
+  refreshCurrentCharacterOption();
 }
 
 function handleEditorChanged() {
@@ -440,6 +539,7 @@ function handleEditorChanged() {
     return;
   }
   refreshDirty();
+  refreshControls();
   scheduleDraftAutosave();
 }
 
@@ -481,6 +581,7 @@ async function flushDraftAutosave() {
         id: currentDoc.id,
         display_name: currentDoc.display_name,
         source: "draft",
+        is_installed: false,
         has_draft: true,
         draft_kind: "new",
         is_dirty: true,
@@ -1171,7 +1272,7 @@ async function createCharacter() {
   const characterId = id.trim();
   const existing = (request.characters || []).find((character) => character.id === characterId);
   if (existing) {
-    if (existing.has_draft || existing.source === "draft") {
+    if (!existing.is_installed) {
       await selectCharacter(characterId);
     } else {
       setError(`角色 ID 已存在：${characterId}。请从下拉菜单直接打开该角色。`);
@@ -1190,6 +1291,8 @@ async function createCharacter() {
       id: payload.doc.id,
       display_name: payload.doc.display_name,
       source: "draft",
+      is_installed: false,
+      is_dirty: true,
     }, { dirty: true });
   });
 }
@@ -1198,11 +1301,16 @@ async function discardCurrentDraft() {
   if (!currentWorkspaceId || !currentDoc) {
     return;
   }
-  const entry = (request.characters || []).find((item) => item.id === editingCharacterId);
-  if (!entry?.has_draft && entry?.source !== "draft" && !isDirty()) {
+  const entry = currentCharacterEntry();
+  const published = isPublishedCharacter(entry);
+  if (published && !entry?.has_draft && !entry?.is_dirty && !isDirty()) {
     return;
   }
-  if (!window.confirm(`确定删除角色「${currentDoc.display_name || currentDoc.id}」的工作草稿吗？`)) {
+  const action = published ? "放弃修改" : "删除工作区角色";
+  const detail = published
+    ? "主程序中的已发布版本不会受到影响。"
+    : "该角色尚未发布，删除后无法恢复。";
+  if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？\n${detail}`)) {
     return;
   }
   await runBusy(async () => {
@@ -1540,9 +1648,33 @@ function validateVoiceInputs() {
   return true;
 }
 
-async function saveCharacter() {
+async function saveWorkspaceDraft() {
   if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
+    return;
+  }
+  if (isPublishedCharacter()) {
+    setError("已发布角色请使用“保存”。");
+    return;
+  }
+  await runBusy(async () => {
+    await flushDraftAutosave();
+    notify(`角色「${currentDoc.display_name || currentDoc.id}」的草稿已保存。`, "success");
+  });
+}
+
+async function commitCharacter({ publish = false } = {}) {
+  if (!currentDoc || !currentWorkspaceId) {
+    setError("请先打开或新建角色。");
+    return;
+  }
+  const published = isPublishedCharacter();
+  if (publish && published) {
+    setError("该角色已经发布。");
+    return;
+  }
+  if (!publish && !published) {
+    setError("工作区角色请使用“发布角色”。");
     return;
   }
   if (!validateThemeInputs() || !validateExpressionInputs() || !validateVoiceInputs()) {
@@ -1564,8 +1696,16 @@ async function saveCharacter() {
     renderCharacterOptions();
     renderEditor();
     markBaseline();
-    notify(payload.message || "已保存。", "success");
+    notify(payload.message || (publish ? "角色已发布。" : "角色已保存。"), "success");
   });
+}
+
+async function savePublishedCharacter() {
+  await commitCharacter({ publish: false });
+}
+
+async function publishCharacter() {
+  await commitCharacter({ publish: true });
 }
 
 async function exportCharacter() {
@@ -1616,10 +1756,20 @@ async function runBusy(action) {
 function refreshControls() {
   const hasDoc = Boolean(currentDoc);
   const voiceEnabled = hasDoc && fields.voiceEnabled.checked;
-  const currentEntry = (request?.characters || []).find((item) => item.id === editingCharacterId);
-  fields.saveButton.disabled = busy || !hasDoc;
+  const currentEntry = currentCharacterEntry();
+  const published = isPublishedCharacter(currentEntry);
+  const workspace = hasDoc && !published;
+  fields.saveButton.hidden = !hasDoc || !published;
+  fields.saveDraftButton.hidden = !workspace;
+  fields.publishButton.hidden = !workspace;
+  fields.saveButton.disabled = busy || !hasDoc || !published;
+  fields.saveDraftButton.disabled = busy || !workspace;
+  fields.publishButton.disabled = busy || !workspace;
   fields.exportButton.disabled = busy || !hasDoc;
-  fields.discardDraftButton.disabled = busy || !hasDoc || !(isDirty() || currentEntry?.has_draft || currentEntry?.source === "draft");
+  fields.discardDraftButton.textContent = published ? "放弃修改" : "删除草稿";
+  fields.discardDraftButton.disabled = busy || !hasDoc || (
+    published && !(isDirty() || currentEntry?.has_draft || currentEntry?.is_dirty)
+  );
   fields.newCharacterButton.disabled = busy;
   fields.studioCharacterSelect.disabled = busy || fields.studioCharacterSelect.options.length === 0;
   refreshSelect(fields.studioCharacterSelect);
@@ -1719,7 +1869,9 @@ fields.voiceEnabled.addEventListener("change", () => {
 });
 fields.addReferenceAudioButton.addEventListener("click", () => importReferenceAudio());
 fields.importReferenceAudioFolderButton.addEventListener("click", importReferenceAudioFolder);
-fields.saveButton.addEventListener("click", saveCharacter);
+fields.saveDraftButton.addEventListener("click", saveWorkspaceDraft);
+fields.publishButton.addEventListener("click", publishCharacter);
+fields.saveButton.addEventListener("click", savePublishedCharacter);
 fields.exportButton.addEventListener("click", exportCharacter);
 fields.cancelButton.addEventListener("click", closeStudio);
 [

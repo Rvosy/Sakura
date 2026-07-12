@@ -71,6 +71,25 @@ def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path
     assert CharacterStudioService(tmp_path).list_characters(current_character_id="sakura")[0]["is_current"] is True
 
 
+def test_character_selector_distinguishes_workspace_and_published_roles() -> None:
+    frontend = Path(__file__).parents[2] / "tools" / "studio-tauri" / "frontend"
+    index = (frontend / "index.html").read_text(encoding="utf-8")
+    source = (frontend / "studio.js").read_text(encoding="utf-8")
+    stylesheet = (frontend / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="saveDraftButton"' in index
+    assert 'id="publishButton"' in index
+    assert "工作区" in source
+    assert "已发布角色" in source
+    assert "（草稿）" not in source
+    assert "character.is_installed" in source
+    assert "function saveWorkspaceDraft()" in source
+    assert "function publishCharacter()" in source
+    assert "--studio-dirty-dot-size:" in stylesheet
+    assert ".custom-select__dirty-dot" in stylesheet
+    assert "background: var(--sakura-primary);" in stylesheet
+
+
 def test_dispatch_tauri_studio_rpc_picks_screen_color(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     import app.ui.tauri_studio as tauri_studio
 

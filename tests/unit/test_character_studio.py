@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config.character_loader import CharacterRegistry
+from app.config.character_loader import CharacterConfigError, CharacterRegistry
 
 
 def _runtime_root(tmp_path: Path, name: str) -> Path:
@@ -67,6 +67,29 @@ def test_character_studio_lists_characters_and_marks_current(tmp_path: Path) -> 
     assert items[0]["display_name"] == "Rin"
     assert items[0]["has_voice"] is True
     assert items[0]["source"] == "installed"
+
+
+def test_character_studio_keeps_modified_installed_role_published_and_new_role_in_workspace(
+    tmp_path: Path,
+) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "list_sources")
+    _write_character(root, "sakura", "Sakura")
+    service = CharacterStudioService(root)
+    opened = service.open_character("sakura")
+    opened["doc"]["display_name"] = "Sakura Edited"
+    service.save_workspace_draft(opened["workspace_id"], opened["doc"])
+    service.create_character({"id": "new_role", "display_name": "New Role"})
+
+    items = {item["id"]: item for item in service.list_characters()}
+
+    assert items["sakura"]["is_installed"] is True
+    assert items["sakura"]["is_dirty"] is True
+    assert items["sakura"]["source"] == "draft"
+    assert items["new_role"]["is_installed"] is False
+    assert items["new_role"]["is_dirty"] is True
+    assert items["new_role"]["draft_kind"] == "new"
 
 
 def test_character_studio_open_uses_draft_without_touching_source(tmp_path: Path) -> None:
@@ -272,6 +295,7 @@ def test_character_studio_create_import_portrait_and_save_new_character(tmp_path
 
     assert saved["saved_character_id"] == "new_role"
     assert saved["current_character_id"] == "sakura"
+    assert saved["message"] == "已发布角色「新角色」。"
     profile = CharacterRegistry(root).get("new_role")
     assert profile.display_name == "新角色"
     assert profile.reply_tones == ["沉稳", "轻快"]
@@ -309,6 +333,7 @@ def test_character_studio_save_existing_preserves_voice_and_exports_char(tmp_pat
 
     profile = CharacterRegistry(root).get("sakura")
     assert saved["current_character_id"] == "sakura"
+    assert saved["message"] == "已保存角色「Sakura Edited」。"
     assert profile.display_name == "Sakura Edited"
     assert profile.voice is not None
     assert (profile.package_dir / "card.md").read_text(encoding="utf-8") == "new card"
@@ -399,6 +424,47 @@ def test_character_studio_workspace_autosave_accepts_incomplete_voice_rows(tmp_p
     assert saved["is_dirty"] is True
     with pytest.raises(ValueError, match="参考语音第 1 条"):
         service.save_character(doc, created["workspace_id"])
+
+
+def test_character_studio_lenient_draft_save_does_not_publish_invalid_role(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "lenient_draft_publish")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "unfinished", "display_name": "Unfinished"})
+    doc = created["doc"]
+    doc["card_text"] = "仍在编辑"
+
+    saved = service.save_workspace_draft(created["workspace_id"], doc)
+
+    assert saved["is_dirty"] is True
+    assert saved["doc"]["card_text"] == "仍在编辑"
+    assert not (root / "characters" / "unfinished").exists()
+    with pytest.raises(CharacterConfigError, match="default"):
+        service.save_character(doc, created["workspace_id"])
+    assert not (root / "characters" / "unfinished").exists()
+
+
+def test_character_studio_invalid_published_save_preserves_original_role(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "invalid_published_save")
+    package_dir = _write_character(root, "sakura", "Sakura")
+    manifest_path = package_dir / "character.json"
+    original_manifest = manifest_path.read_bytes()
+    service = CharacterStudioService(root)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["default_portrait"] = "portraits/missing.png"
+    service.save_workspace_draft(opened["workspace_id"], doc)
+
+    with pytest.raises(CharacterConfigError, match="默认立绘不存在"):
+        service.save_character(doc, opened["workspace_id"])
+
+    assert manifest_path.read_bytes() == original_manifest
+    listed = {item["id"]: item for item in service.list_characters()}
+    assert listed["sakura"]["is_installed"] is True
+    assert listed["sakura"]["is_dirty"] is True
 
 
 def test_character_studio_imports_portrait_folder_with_description_labels(tmp_path: Path) -> None:
