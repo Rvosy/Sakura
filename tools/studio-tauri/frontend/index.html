@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 角色工作室</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="settings-shell studio-shell">
+      <aside class="nav-card" aria-label="角色工作室导航">
+        <div class="nav-brand">
+          <span class="nav-brand-mark">S</span>
+          <span class="nav-brand-text">角色工作室</span>
+        </div>
+        <nav class="nav-list">
+          <div class="nav-group" role="group" aria-labelledby="navgrp-studio">
+            <p class="nav-group-label" id="navgrp-studio">工作区</p>
+            <button class="nav-item is-active" type="button" data-page="basic" aria-current="page">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg></span>
+              <span class="nav-item-label">基础信息</span>
+            </button>
+            <button class="nav-item" type="button" data-page="card">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h6"/></svg></span>
+              <span class="nav-item-label">人设卡</span>
+            </button>
+            <button class="nav-item" type="button" data-page="portrait">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
+              <span class="nav-item-label">立绘</span>
+            </button>
+            <button class="nav-item" type="button" data-page="voice-model">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
+              <span class="nav-item-label">语音模型</span>
+            </button>
+            <button class="nav-item" type="button" data-page="reference-audio">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></span>
+              <span class="nav-item-label">参考语音</span>
+            </button>
+            <button class="nav-item" type="button" data-page="theme">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.12-.29-.29-.44-.66-.44-1.13 0-.92.75-1.67 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></svg></span>
+              <span class="nav-item-label">配色</span>
+            </button>
+          </div>
+        </nav>
+      </aside>
+
+      <section class="detail-card">
+        <div class="studio-character-bar">
+          <div class="studio-character-controls">
+            <label for="studioCharacterSelect">当前编辑角色</label>
+            <select id="studioCharacterSelect"></select>
+            <button id="discardDraftButton" type="button" class="secondary-button danger-button">删除草稿</button>
+            <button id="newCharacterButton" type="button" class="secondary-button">新建角色</button>
+          </div>
+        </div>
+        <header class="page-head">
+          <h1 id="pageTitle" class="page-title">基础信息</h1>
+          <p id="pageSubtitle" class="page-subtitle">名称与开场白</p>
+        </header>
+
+        <div class="page-scroll">
+          <section id="page-basic" class="settings-page is-active">
+            <fieldset class="settings-group">
+              <legend>基础信息</legend>
+              <div class="setting-row">
+                <label class="setting-row-text" for="characterId">
+                  <span class="setting-title">角色 ID</span>
+                  <span class="setting-desc">保存后的本地目录名。</span>
+                </label>
+                <input id="characterId" type="text" autocomplete="off" />
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="displayName">
+                  <span class="setting-title">显示名称</span>
+                  <span class="setting-desc">设置页和桌宠界面显示的名字。</span>
+                </label>
+                <input id="displayName" type="text" autocomplete="off" />
+              </div>
+              <div class="setting-row setting-row-block">
+                <label class="setting-row-text" for="initialMessage">
+                  <span class="setting-title">开场白</span>
+                  <span class="setting-desc">角色首次进入对话时使用。</span>
+                </label>
+                <textarea id="initialMessage" rows="4"></textarea>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-card" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>人设卡</legend>
+              <div class="setting-row setting-row-block">
+                <label class="setting-row-text" for="cardText">
+                  <span class="setting-title">系统人设</span>
+                  <span class="setting-desc">保存为角色包内的 card.md。</span>
+                </label>
+                <textarea id="cardText" class="code-textarea" rows="16"></textarea>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-portrait" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>立绘</legend>
+              <div class="setting-row setting-row-block">
+                <div class="resource-section-head">
+                  <div class="setting-row-text">
+                    <span class="setting-title">立绘资源</span>
+                    <span class="setting-desc">选择默认立绘并填写描述标签；路径由工作区自动管理。</span>
+                  </div>
+                  <div class="resource-section-actions">
+                    <button id="addExpressionButton" type="button" class="secondary-button">选择立绘</button>
+                    <button id="importPortraitFolderButton" type="button" class="secondary-button">导入文件夹</button>
+                  </div>
+                </div>
+                <div id="expressionList" class="expression-list"></div>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-voice-model" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>语音模型</legend>
+              <div class="setting-row">
+                <div class="setting-row-text">
+                  <span class="setting-title">启用语音</span>
+                  <span class="setting-desc">使用角色包内的 GPT-SoVITS 配置。</span>
+                </div>
+                <label class="switch-control" for="voiceEnabled">
+                  <input id="voiceEnabled" type="checkbox" />
+                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  <span id="voiceEnabledLabel">未启用</span>
+                </label>
+              </div>
+              <div id="voiceModelFields" class="voice-model-fields">
+                <div class="setting-row">
+                  <label class="setting-row-text" for="gptModelPath">
+                    <span class="setting-title">GPT 模型</span>
+                    <span class="setting-desc">角色包内的 .ckpt 模型，可留空使用运行时默认模型。</span>
+                  </label>
+                  <div class="path-control has-two-actions">
+                    <input id="gptModelPath" type="text" readonly />
+                    <button id="importGptModelButton" type="button" class="secondary-button compact-button">选择</button>
+                    <button id="clearGptModelButton" type="button" class="secondary-button compact-button">清除</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="sovitsModelPath">
+                    <span class="setting-title">SoVITS 模型</span>
+                    <span class="setting-desc">角色包内的 .pth 模型，可留空使用运行时默认模型。</span>
+                  </label>
+                  <div class="path-control has-two-actions">
+                    <input id="sovitsModelPath" type="text" readonly />
+                    <button id="importSovitsModelButton" type="button" class="secondary-button compact-button">选择</button>
+                    <button id="clearSovitsModelButton" type="button" class="secondary-button compact-button">清除</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="defaultRefLang">
+                    <span class="setting-title">默认参考语言</span>
+                    <span class="setting-desc">未单独指定时使用的参考语音语言，例如 ja、zh。</span>
+                  </label>
+                  <input id="defaultRefLang" type="text" autocomplete="off" />
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="textLang">
+                    <span class="setting-title">合成目标语言</span>
+                    <span class="setting-desc">角色默认合成语言，例如 ja、zh。</span>
+                  </label>
+                  <input id="textLang" type="text" autocomplete="off" />
+                </div>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-reference-audio" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>参考语音</legend>
+              <div class="reference-audio-intro">
+                <div class="setting-row-text">
+                  <span class="setting-title">语音与描述词</span>
+                  <span class="setting-desc">每条描述词会写入 ref.txt，并自动成为可用的回复语气。</span>
+                </div>
+                <div class="resource-section-actions">
+                  <button id="addReferenceAudioButton" type="button" class="secondary-button">添加参考语音</button>
+                  <button id="importReferenceAudioFolderButton" type="button" class="secondary-button">导入文件夹</button>
+                </div>
+              </div>
+              <div id="referenceAudioList" class="reference-audio-list"></div>
+            </fieldset>
+          </section>
+
+          <section id="page-theme" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>角色配色</legend>
+              <div id="themeFields" class="theme-colors"></div>
+            </fieldset>
+          </section>
+        </div>
+
+        <footer class="settings-footer">
+          <p id="errorText" class="error-text" role="alert"></p>
+          <div class="footer-actions">
+            <button id="exportButton" type="button" class="secondary-button">导出 .char</button>
+            <button id="cancelButton" type="button" class="secondary-button">关闭</button>
+            <button id="saveDraftButton" type="button" class="secondary-button" hidden>保存草稿</button>
+            <button id="publishButton" type="button" hidden>发布角色</button>
+            <button id="saveButton" type="button">保存</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <script type="module" src="./studio.js"></script>
+  </body>
+</html>

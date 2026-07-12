@@ -14,7 +14,7 @@ from app.agent.actions import PendingToolAction
 from app.agent.screen_policy import ScreenPolicy
 from app.agent.tool_policy import BROWSER_SNAPSHOT_TOOL_NAME, ToolPolicy
 from app.agent.tools import ToolExecutionResult, ToolRegistry
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage, NativeToolCall
 
 
@@ -91,7 +91,7 @@ def _should_auto_snapshot_after_browser_navigation(
 def _execute_auto_browser_snapshot(tools: ToolRegistry, step_index: int) -> ToolExecutionResult:
     arguments: dict[str, Any] = {}
     reason = "浏览器导航成功后自动读取页面内容，减少模型往返。"
-    debug_log(
+    log_event(
         "AgentRuntime",
         "自动补充浏览器页面文本",
         {
@@ -112,13 +112,13 @@ def _execute_auto_browser_snapshot(tools: ToolRegistry, step_index: int) -> Tool
             },
             error="自动页面文本读取需要用户确认，已跳过。",
         )
-        debug_log("AgentRuntime", "自动浏览器页面文本读取需要确认，已跳过", result.to_dict())
+        log_event("AgentRuntime", "自动浏览器页面文本读取需要确认，已跳过", result.to_dict())
         return result
 
     # 延迟 import：脱敏函数属于 runtime 的模型消息构建层，模块级互引会成环
     from app.agent.runtime import _redact_tool_result_for_model
 
-    debug_log("AgentRuntime", "自动浏览器页面文本读取完成", _redact_tool_result_for_model(prepared))
+    log_event("AgentRuntime", "自动浏览器页面文本读取完成", _redact_tool_result_for_model(prepared))
     return prepared
 
 

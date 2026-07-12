@@ -75,6 +75,16 @@ _LEVEL_ROW_BG_ALPHA = {
 
 # 详情摘要优先展示的字段；其余标量字段按出现顺序补足
 _DETAIL_PRIORITY_KEYS = (
+    "stage",
+    "screen",
+    "batch",
+    "dropped_count",
+    "image_chars",
+    "pending_turns",
+    "trigger_turns",
+    "remaining_turns",
+    "screen_name",
+    "resolution",
     "model",
     "provider",
     "voice",
@@ -82,12 +92,24 @@ _DETAIL_PRIORITY_KEYS = (
     "status",
     "status_code",
     "elapsed_ms",
+    "delta_ms",
+    "sequence_id",
+    "segment_count",
+    "segments",
+    "batch_count",
+    "batch_limit",
+    "audio_ready",
+    "percent",
+    "current",
+    "total",
+    "speed_it_s",
     "duration_ms",
+    "bytes",
     "chars",
     "count",
     "error",
 )
-_MAX_DETAIL_SUMMARY_ITEMS = 3
+_MAX_DETAIL_SUMMARY_ITEMS = 5
 _MAX_DETAIL_SUMMARY_VALUE_CHARS = 36
 
 

@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 
 @runtime_checkable
@@ -154,7 +154,7 @@ class MacOSVisualEffectBackdrop:
             self._effect_view = effect_view
 
         except Exception as exc:
-            debug_log("UI", "macOS NSVisualEffectView 创建失败，降级为半透明", {"error": str(exc)})
+            log_event("UI", "macOS NSVisualEffectView 创建失败，降级为半透明", {"error": str(exc)})
             self._fallback.apply(window, tint)
 
     def _sync_effect_view_frame(self, window: QWidget) -> None:
@@ -164,7 +164,7 @@ class MacOSVisualEffectBackdrop:
             root_view = self._root_view_for_window(window)
             self._effect_view.setFrame_(self._frame_for_root_view(root_view))
         except Exception as exc:  # noqa: BLE001
-            debug_log("UI", "macOS NSVisualEffectView 尺寸同步失败", {"error": str(exc)})
+            log_event("UI", "macOS NSVisualEffectView 尺寸同步失败", {"error": str(exc)})
 
     def _root_view_for_window(self, window: QWidget) -> object:
         from ctypes import c_void_p
@@ -232,7 +232,7 @@ class WindowsAcrylicBackdrop:
             if self._rounded:
                 self._set_round_corners(hwnd)
         except Exception as exc:
-            debug_log("UI", "Windows 亚克力背景应用失败，降级为半透明", {"error": str(exc)})
+            log_event("UI", "Windows 亚克力背景应用失败，降级为半透明", {"error": str(exc)})
 
     def remove(self, window: QWidget) -> None:
         try:
@@ -241,7 +241,7 @@ class WindowsAcrylicBackdrop:
             if self._rounded:
                 self._set_corner_preference(hwnd, self._DWMWCP_DONOTROUND)
         except Exception as exc:
-            debug_log("UI", "Windows 亚克力背景移除失败", {"error": str(exc)})
+            log_event("UI", "Windows 亚克力背景移除失败", {"error": str(exc)})
 
     def supports_native_blur(self) -> bool:
         return True

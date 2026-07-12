@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.chat_pipeline import ChatPipeline
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.interaction import set_interaction_id
 from app.storage.visual_observation import (
     VisualObservationJob,
@@ -77,7 +77,7 @@ class ChatWorker(QObject):
                 )
             self._cancel_token.throw_if_cancelled()
         except OperationCancelled:
-            debug_log(
+            log_event(
                 "ChatWorker",
                 "处理已取消",
                 {"elapsed_ms": int((time.perf_counter() - started_at) * 1000)},
@@ -88,7 +88,7 @@ class ChatWorker(QObject):
             if self._cancel_token.is_cancelled():
                 self.cancelled.emit()
                 return
-            debug_log(
+            log_event(
                 "ChatWorker",
                 "处理失败",
                 {
@@ -98,7 +98,7 @@ class ChatWorker(QObject):
             )
             self.failed.emit(str(exc))
             return
-        debug_log(
+        log_event(
             "ChatWorker",
             "处理完成",
             {
@@ -111,7 +111,7 @@ class ChatWorker(QObject):
 
     def _emit_progress(self, progress: AgentProgress) -> None:
         self._cancel_token.throw_if_cancelled()
-        debug_log(
+        log_event(
             "ChatWorker",
             "转发中间回复",
             {
@@ -167,7 +167,7 @@ class EventWorker(QObject):
             )
             self._cancel_token.throw_if_cancelled()
         except OperationCancelled:
-            debug_log(
+            log_event(
                 "EventWorker",
                 "处理已取消",
                 {"elapsed_ms": int((time.perf_counter() - started_at) * 1000)},
@@ -178,7 +178,7 @@ class EventWorker(QObject):
             if self._cancel_token.is_cancelled():
                 self.cancelled.emit()
                 return
-            debug_log(
+            log_event(
                 "EventWorker",
                 "处理失败",
                 {
@@ -188,7 +188,7 @@ class EventWorker(QObject):
             )
             self.failed.emit(str(exc))
             return
-        debug_log(
+        log_event(
             "EventWorker",
             "处理完成",
             {
@@ -200,7 +200,7 @@ class EventWorker(QObject):
 
     def _emit_progress(self, progress: AgentProgress) -> None:
         self._cancel_token.throw_if_cancelled()
-        debug_log(
+        log_event(
             "EventWorker",
             "转发中间回复",
             {

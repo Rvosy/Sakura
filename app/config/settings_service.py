@@ -57,11 +57,12 @@ SYSTEM_CONFIG_FILE = "system_config.yaml"
 
 @dataclass(frozen=True)
 class DebugLogSettings:
-    """调试日志配置。"""
+    """运行日志配置。"""
 
     enabled: bool = False
     body_enabled: bool = False
-    file_enabled: bool = False
+    file_enabled: bool = True
+    profile: str = "info"
     # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
     stage_debug_overlay: bool = False
     # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。
@@ -544,22 +545,28 @@ class AppSettingsService:
         return DebugLogSettings(
             enabled=_bool_value(debug.get("enabled"), False),
             body_enabled=_bool_value(debug.get("body_enabled"), False),
-            file_enabled=_bool_value(debug.get("file_enabled"), False),
+            file_enabled=_bool_value(debug.get("file_enabled"), True),
+            profile=_log_level_value(debug.get("profile"), "info"),
             stage_debug_overlay=_bool_value(debug.get("stage_debug_overlay"), False),
             stage_collision_mask=_bool_value(debug.get("stage_collision_mask"), True),
         )
 
     def save_debug_log_settings(self, settings: DebugLogSettings) -> None:
-        self.save_system_values(
-            "debug",
+        data = load_yaml_mapping(self.system_config_path)
+        debug = _mapping(data.get("debug"))
+        debug.pop("raw_tts_service_enabled", None)
+        debug.update(
             {
                 "enabled": bool(settings.enabled),
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
+                "profile": _log_level_value(settings.profile, "info"),
                 "stage_debug_overlay": bool(settings.stage_debug_overlay),
                 "stage_collision_mask": bool(settings.stage_collision_mask),
-            },
+            }
         )
+        data["debug"] = debug
+        save_yaml_mapping(self.system_config_path, data)
 
     def load_startup_settings(self) -> StartupSettings:
         startup = self._system_section("startup")
@@ -903,3 +910,16 @@ def _bool_value(value: Any, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _log_level_value(value: Any, default: str) -> str:
+    """验证并规范化日志级别值；兼容旧 profile 键名到新级别。
+
+    新有效值: error / warn / info / debug / trace
+    旧值映射:  support → error, normal → info, verbose → debug, warning → warn
+    """
+    raw = str(value or default).strip().lower()
+    if raw in {"error", "warn", "info", "debug", "trace"}:
+        return raw
+    _LEGACY_MAP = {"support": "error", "normal": "info", "verbose": "debug", "warning": "warn"}
+    return _LEGACY_MAP.get(raw, default)

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.paths import StoragePaths
 
 APP_VERSION_KEY = "app_version"
@@ -44,16 +44,16 @@ def record_app_version(base_dir: Path) -> tuple[str, str]:
     if previous == current:
         return previous, current
     if previous:
-        debug_log(
+        log_event(
             "Startup",
             "app.upgraded",
             {"from_version": previous, "to_version": current},
         )
     else:
-        debug_log("Startup", "app.version_recorded", {"version": current})
+        log_event("Startup", "app.version_recorded", {"version": current})
     data[APP_VERSION_KEY] = current
     try:
         save_yaml_mapping(config_path, data)
     except OSError as exc:
-        debug_log("Startup", "app_version 标记写入失败", {"error": str(exc)})
+        log_event("Startup", "app_version 标记写入失败", {"error": str(exc)})
     return previous, current

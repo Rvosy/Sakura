@@ -17,7 +17,7 @@ import functools
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.plugins.events import (
     EVENT_APP_CLOSING,
     EVENT_APP_STARTED,
@@ -92,7 +92,7 @@ class RendererManager:
     def select_and_init(self) -> CharacterRenderer:
         """根据角色配置与插件贡献选择后端并初始化；失败回退 default。"""
         self._active = self._create_active()
-        debug_log(
+        log_event(
             "RendererManager",
             "已选择渲染后端",
             {
@@ -113,7 +113,7 @@ class RendererManager:
 
         contribution = self._find_renderer_contribution(requested)
         if contribution is None:
-            debug_log(
+            log_event(
                 "RendererManager",
                 "未找到匹配的插件渲染器，使用默认渲染器",
                 {
@@ -151,7 +151,7 @@ class RendererManager:
                     f"插件渲染器必须继承 CharacterRenderer：{contribution.renderer_type}"
                 )
             if not renderer.is_available():
-                debug_log(
+                log_event(
                     "RendererManager",
                     "插件渲染器自报不可用",
                     {"renderer": contribution.renderer_type, "plugin_id": contribution.plugin_id},
@@ -160,7 +160,7 @@ class RendererManager:
             renderer.initialize({"character_id": getattr(self._character_profile, "id", "")})
             return renderer
         except Exception as exc:  # noqa: BLE001 — 初始化失败必须降级而非崩溃
-            debug_log(
+            log_event(
                 "RendererManager",
                 "插件渲染器创建异常",
                 {
@@ -188,7 +188,7 @@ class RendererManager:
     def _create_fallback(self, fallback: str) -> CharacterRenderer:
         # 当前回退目标只支持 default；保留参数以便未来扩展回退链。
         if fallback and fallback != "default":
-            debug_log(
+            log_event(
                 "RendererManager",
                 "暂不支持的回退后端，改用 default",
                 {"fallback": fallback},
@@ -209,7 +209,7 @@ class RendererManager:
             try:
                 self._event_bus.on(name, handler, plugin_id=RENDERER_PLUGIN_ID)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "RendererManager",
                     "事件订阅失败",
                     {"event": name, "error": str(exc)},
@@ -221,7 +221,7 @@ class RendererManager:
         try:
             self._active.handle_event(event_name, payload)
         except Exception as exc:  # noqa: BLE001 — 渲染器异常不得影响宿主主流程
-            debug_log(
+            log_event(
                 "RendererManager",
                 "渲染器处理事件失败",
                 {"event": event_name, "error": str(exc)},
@@ -267,7 +267,7 @@ class RendererManager:
             try:
                 self._event_bus.remove_plugin(RENDERER_PLUGIN_ID)
             except Exception as exc:  # noqa: BLE001
-                debug_log("RendererManager", "事件退订失败", {"error": str(exc)})
+                log_event("RendererManager", "事件退订失败", {"error": str(exc)})
             self._subscribed = False
 
     def set_position(self, x: int, y: int) -> None:
@@ -305,7 +305,7 @@ class RendererManager:
         try:
             func()
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "RendererManager",
                 "渲染器调用失败",
                 {"op": label, "renderer": self._active.renderer_name, "error": str(exc)},

@@ -147,6 +147,29 @@ def test_mobile_page_writes_theme_variables() -> None:
     assert "button { border: 0; border-radius: 8px; background: var(--primary-color);" in html
 
 
+def test_plugin_mobile_theme_returns_default_when_backend_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.plugins.services as services_module
+    from app.plugins.services import PluginMobileService
+
+    logs: list[tuple[str, str, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        services_module,
+        "log_event",
+        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+    )
+    service = PluginMobileService()
+    service.set_backends(theme_sink=lambda: (_ for _ in ()).throw(RuntimeError("theme down")))
+
+    assert service.theme() == services_module._default_theme_mapping()
+    assert logs == [
+        (
+            "PluginMobileService",
+            "读取移动端主题失败，使用默认主题",
+            {"error": "theme down"},
+        )
+    ]
+
+
 def test_mobile_page_uses_current_character_name_for_labels() -> None:
     html = mobile_server._mobile_html("secret")
 

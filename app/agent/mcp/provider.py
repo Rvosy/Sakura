@@ -10,7 +10,7 @@ from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.mcp.settings import MCPRuntimeSettings, apply_mcp_runtime_settings
 from app.agent.tools import Tool, ToolRegistry
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import ResourceRegistry, ServiceResource
 from app.storage.paths import StoragePaths
 
@@ -58,17 +58,17 @@ class MCPToolProvider:
     def register_tools(self, registry: ToolRegistry) -> int:
         self._closed = False
         if not self.config.enabled:
-            debug_log("MCP", "MCP 配置未启用")
+            log_event("MCP", "MCP 配置未启用")
             return 0
 
         registered = 0
         for server in self.config.servers:
             if not server.enabled:
-                debug_log("MCP", "跳过未启用服务器", {"server": server.name})
+                log_event("MCP", "跳过未启用服务器", {"server": server.name})
                 continue
             bridge = self._create_bridge(server)
             try:
-                debug_log(
+                log_event(
                     "MCP",
                     "连接服务器并读取工具",
                     {
@@ -85,8 +85,8 @@ class MCPToolProvider:
                     if server.allows_tool(tool_spec.name)
                 ]
             except Exception as exc:
-                debug_log("MCP", "连接或读取工具失败，已跳过", {"server": server.name, "error": str(exc)})
-                debug_log("MCP", "连接或读取工具失败", {"server": server.name, "error": str(exc)})
+                log_event("MCP", "连接或读取工具失败，已跳过", {"server": server.name, "error": str(exc)})
+                log_event("MCP", "连接或读取工具失败", {"server": server.name, "error": str(exc)})
                 _close_quietly(bridge)
                 continue
 
@@ -94,8 +94,8 @@ class MCPToolProvider:
             for tool_spec in tool_specs:
                 internal_name = _build_internal_tool_name(server, tool_spec.name)
                 if registry.get(internal_name) is not None:
-                    debug_log("MCP", "工具名冲突，已跳过", {"name": internal_name})
-                    debug_log("MCP", "工具名冲突，已跳过", {"tool_name": internal_name})
+                    log_event("MCP", "工具名冲突，已跳过", {"name": internal_name})
+                    log_event("MCP", "工具名冲突，已跳过", {"tool_name": internal_name})
                     continue
                 registry.register(
                     Tool(
@@ -112,7 +112,7 @@ class MCPToolProvider:
                 registered += 1
                 server_registered += 1
 
-            debug_log(
+            log_event(
                 "MCP",
                 "服务器工具注册完成",
                 {
@@ -132,7 +132,7 @@ class MCPToolProvider:
     def close(self) -> None:
         if self._closed and not self._bridges:
             return
-        debug_log("MCP", "关闭 MCP Provider", {"bridges": len(self._bridges)})
+        log_event("MCP", "关闭 MCP Provider", {"bridges": len(self._bridges)})
         self._closed = True
         for bridge in self._bridges:
             _close_quietly(bridge)
@@ -173,7 +173,7 @@ def register_mcp_tools_from_config(
         config = load_mcp_config(StoragePaths(base_dir).mcp_config())
         mcp_settings = runtime_settings or MCPRuntimeSettings()
     except Exception as exc:
-        debug_log("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
+        log_event("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
         return None
     config = apply_mcp_runtime_settings(config, mcp_settings)
     config = _resolve_runtime_tokens(config, base_dir)
@@ -181,9 +181,9 @@ def register_mcp_tools_from_config(
     registered = provider.register_tools(registry)
     if registered == 0:
         provider.close()
-        debug_log("MCP", "没有注册任何 MCP 工具")
+        log_event("MCP", "没有注册任何 MCP 工具")
         return None
-    debug_log("MCP", "MCP 工具注册完成", {"registered": registered})
+    log_event("MCP", "MCP 工具注册完成", {"registered": registered})
     return provider
 
 
@@ -257,5 +257,5 @@ def _close_quietly(bridge: MCPBridgeLike) -> None:
     try:
         bridge.close()
     except Exception as exc:
-        debug_log("MCP", "关闭连接失败", {"error": str(exc)})
-        debug_log("MCP", "关闭连接失败", {"error": str(exc)})
+        log_event("MCP", "关闭连接失败", {"error": str(exc)})
+        log_event("MCP", "关闭连接失败", {"error": str(exc)})

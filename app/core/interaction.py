@@ -4,7 +4,7 @@
 interaction_id，通过 ContextVar 在当前线程的调用链内传播；跨线程边界
 （ChatWorker、TTS 请求线程）由发起方捕获、线程入口恢复。
 
-debug_log 会自动附加当前 ID，使同一次交互的模型请求、工具调用、
+log_event 会自动附加当前 ID，使同一次交互的模型请求、工具调用、
 TTS 生成、历史保存日志可以按 interaction_id 串联定位。
 """
 

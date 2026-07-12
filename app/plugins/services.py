@@ -3,8 +3,8 @@
 为了让高级插件能做有限交互，但又不直接拿到 Sakura 内部对象（主窗口、TTS
 manager、LLM client 等），这里提供一组安全的门面服务。
 
-本轮只实现最小安全方法：默认写 debug log（空实现），并预留 ``set_backends``
-注入接口（seam），宿主后续可在装配处注入真实后端。插件永远只拿到本门面，
+本轮只实现最小安全方法：默认写运行日志（空实现），并预留 ``set_backends``
+注入接口，宿主后续可在装配处注入真实后端。插件永远只拿到本门面，
 不接触内部实例。
 
 线程说明：事件可能在 worker 线程派发，handler 调用这些服务时也在该线程。
@@ -17,7 +17,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import (
     DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
     ResourceRegistry,
@@ -44,13 +44,13 @@ class PluginUIService:
             if self._bubble_sink is not None:
                 self._bubble_sink(text, source)
                 return
-            debug_log(
+            log_event(
                 "PluginUIService",
                 "show_bubble（未接后端，空实现）",
                 {"source": source, "text": text},
             )
         except Exception as exc:  # noqa: BLE001 — 服务调用不得影响插件或宿主
-            debug_log("PluginUIService", "show_bubble 失败", {"error": str(exc)})
+            log_event("PluginUIService", "show_bubble 失败", {"error": str(exc)})
 
 
 class PluginTTSService:
@@ -70,13 +70,13 @@ class PluginTTSService:
             if self._tts_sink is not None:
                 self._tts_sink(text, interrupt)
                 return
-            debug_log(
+            log_event(
                 "PluginTTSService",
                 "speak（未接后端，空实现）",
                 {"interrupt": interrupt, "text": text},
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginTTSService", "speak 失败", {"error": str(exc)})
+            log_event("PluginTTSService", "speak 失败", {"error": str(exc)})
 
 
 class PluginAgentService:
@@ -103,13 +103,13 @@ class PluginAgentService:
             if self._passive_reply_sink is not None:
                 self._passive_reply_sink(reason, context)
                 return
-            debug_log(
+            log_event(
                 "PluginAgentService",
                 "request_passive_reply（未接后端，仅记录）",
                 {"reason": reason, "context": context or {}},
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginAgentService", "request_passive_reply 失败", {"error": str(exc)})
+            log_event("PluginAgentService", "request_passive_reply 失败", {"error": str(exc)})
 
 
 class PluginInputService:
@@ -137,13 +137,13 @@ class PluginInputService:
             if self._input_text_sink is not None:
                 self._input_text_sink(text)
                 return
-            debug_log(
+            log_event(
                 "PluginInputService",
                 "set_input_text（未接后端，空实现）",
                 {"text": text},
             )
         except Exception as exc:  # noqa: BLE001 — 服务调用不得影响插件或宿主
-            debug_log("PluginInputService", "set_input_text 失败", {"error": str(exc)})
+            log_event("PluginInputService", "set_input_text 失败", {"error": str(exc)})
 
 
 class PluginMobileService:
@@ -193,7 +193,7 @@ class PluginMobileService:
         try:
             return _theme_mapping(self._theme_sink())
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginMobileService", "读取移动端主题失败，使用默认主题", {"error": str(exc)})
+            log_event("PluginMobileService", "读取移动端主题失败，使用默认主题", {"error": str(exc)})
             return _default_theme_mapping()
 
 
@@ -286,7 +286,7 @@ class PluginResourceService:
             try:
                 stop(timeout_ms)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "PluginResourceService",
                     "插件资源关闭失败",
                     {"plugin_id": plugin_id, "error": str(exc)},

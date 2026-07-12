@@ -75,6 +75,237 @@ class _DummyPortraitLabel:
         self.visible = True
 
 
+def test_apply_character_syncs_memory_curator_prompt(monkeypatch) -> None:
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    events: list[tuple[str, object]] = []
+
+    class ProfileStub:
+        id = "new-character"
+        display_name = "New Character"
+        initial_message = "你好"
+        reply_tones = ["calm"]
+        portrait_choices = ["default"]
+
+    class PreviousProfileStub:
+        id = "old-character"
+
+    class MemoryCuratorStub:
+        def set_system_prompt(self, system_prompt: str) -> None:
+            events.append(("curator_prompt", system_prompt))
+
+    class MemoryStoreStub:
+        def set_scope(self, scope: str) -> None:
+            events.append(("memory_scope", scope))
+
+    class AgentRuntimeStub:
+        def update_character(  # type: ignore[no-untyped-def]
+            self,
+            system_prompt,
+            reply_tones,
+            portrait_choices,
+            *,
+            character_id=None,
+            character_name=None,
+        ):
+            events.append(
+                (
+                    "runtime_character",
+                    (system_prompt, reply_tones, portrait_choices, character_id, character_name),
+                )
+            )
+
+        def set_history_store(self, history_store):  # type: ignore[no-untyped-def]
+            events.append(("history_store", history_store))
+
+    class TextSink:
+        def setText(self, text: str) -> None:
+            events.append(("label", text))
+
+        def setPlaceholderText(self, text: str) -> None:
+            events.append(("placeholder", text))
+
+    class PortraitControllerStub:
+        def set_profile(self, profile):  # type: ignore[no-untyped-def]
+            events.append(("portrait", profile.id))
+
+    class SubtitleControllerStub:
+        def cancel_reply_flow(self, initial_message: str) -> None:
+            events.append(("subtitle", initial_message))
+
+    class MinimalWindow:
+        _apply_character = PetWindow._apply_character
+
+        def setWindowTitle(self, title: str) -> None:
+            events.append(("title", title))
+
+        def _normal_input_placeholder_text(self, profile):  # type: ignore[no-untyped-def]
+            return f"Message {profile.display_name}"
+
+        def _portrait_anchor_global(self):  # type: ignore[no-untyped-def]
+            return "anchor"
+
+        def updatesEnabled(self) -> bool:
+            return True
+
+        def setUpdatesEnabled(self, enabled: bool) -> None:
+            events.append(("updates", enabled))
+
+        def _apply_pet_layout(self, *, anchor_global):  # type: ignore[no-untyped-def]
+            events.append(("layout", anchor_global))
+
+        def _load_backchannel_manifest_for(self, profile):  # type: ignore[no-untyped-def]
+            events.append(("backchannel", profile.id))
+
+        def _create_history_store(self, profile):  # type: ignore[no-untyped-def]
+            return f"history:{profile.id}"
+
+        def _create_runtime_event_log(self, profile):  # type: ignore[no-untyped-def]
+            return f"events:{profile.id}"
+
+        def _create_visual_observation_store(self, profile):  # type: ignore[no-untyped-def]
+            return f"visual:{profile.id}"
+
+        def _load_reply_history_from_store(self) -> None:
+            events.append(("reply_history", None))
+
+        def _collapse_auto_fit_bubble_height(self) -> None:
+            events.append(("collapse", None))
+
+        def _emit_plugin_event(self, event_type, payload, *, source):  # type: ignore[no-untyped-def]
+            events.append(("plugin", (event_type, payload, source)))
+
+    monkeypatch.setattr(
+        pet_window_module,
+        "load_character_system_prompt",
+        lambda _profile: "新角色人格卡",
+    )
+
+    window = MinimalWindow()
+    window.character_profile = PreviousProfileStub()
+    window.memory_curator = MemoryCuratorStub()
+    window.memory_store = MemoryStoreStub()
+    window.agent_runtime = AgentRuntimeStub()
+    window.name_label = TextSink()
+    window.input_edit = TextSink()
+    window.portrait_controller = PortraitControllerStub()
+    window.history_window = None
+    window.subtitle_controller = SubtitleControllerStub()
+    window.messages = ["旧消息"]
+
+    window._apply_character(ProfileStub())
+
+    assert window.system_prompt == "新角色人格卡"
+    assert ("curator_prompt", "新角色人格卡") in events
+    assert ("memory_scope", "new-character") in events
+    assert (
+        "runtime_character",
+        ("新角色人格卡", ["calm"], ["default"], "new-character", "New Character"),
+    ) in events
+
+
+def test_start_memory_curation_snapshots_prompt_and_scope() -> None:
+    from app.storage.chat_history import ChatHistoryEntry
+    from app.ui.pet_window import PetWindow
+
+    captured: dict[str, object] = {}
+
+    class ProfileStub:
+        id = "old-character"
+
+    class ScopedStoreStub:
+        def __init__(self, scope_id: str) -> None:
+            self.scope_id = scope_id
+
+    class MemoryStoreStub:
+        def __init__(self) -> None:
+            self.scope_id = "old-character"
+            self.scoped_calls: list[str] = []
+
+        def scoped(self, scope_id: str) -> ScopedStoreStub:
+            self.scoped_calls.append(scope_id)
+            return ScopedStoreStub(scope_id)
+
+        def set_scope(self, scope_id: str) -> None:
+            self.scope_id = scope_id
+
+    class CuratorStub:
+        def __init__(self, *, system_prompt: str, memory_store) -> None:  # type: ignore[no-untyped-def]
+            self.system_prompt = system_prompt
+            self.memory_store = memory_store
+
+        def snapshot(self, *, memory_store, system_prompt):  # type: ignore[no-untyped-def]
+            return CuratorStub(system_prompt=system_prompt, memory_store=memory_store)
+
+        def set_system_prompt(self, system_prompt: str) -> None:
+            self.system_prompt = system_prompt
+
+    class WorkerStub:
+        finished = object()
+        failed = object()
+        cancelled = object()
+
+        def __init__(self, curator, entries):  # type: ignore[no-untyped-def]
+            self.curator = curator
+            self.entries = entries
+            captured["worker"] = self
+
+    class ResourceManagerStub:
+        def spawn_qt_worker(self, worker, **kwargs):  # type: ignore[no-untyped-def]
+            captured["spawned_worker"] = worker
+            captured["spawn_kwargs"] = kwargs
+
+    class MinimalWindow:
+        _start_memory_curation = PetWindow._start_memory_curation
+
+        def _handle_memory_curation_finished(self, _result):  # type: ignore[no-untyped-def]
+            pass
+
+        def _handle_memory_curation_failed(self, _message):  # type: ignore[no-untyped-def]
+            pass
+
+        def _handle_memory_curation_cancelled(self):  # type: ignore[no-untyped-def]
+            pass
+
+        def _cleanup_memory_curation_worker(self):  # type: ignore[no-untyped-def]
+            pass
+
+    memory_store = MemoryStoreStub()
+    window = MinimalWindow()
+    window.memory_curation_thread = None
+    window.memory_curator = CuratorStub(
+        system_prompt="旧角色人格卡",
+        memory_store=memory_store,
+    )
+    window.memory_store = memory_store
+    window.character_profile = ProfileStub()
+    window.system_prompt = "旧角色人格卡"
+    window.resource_manager = ResourceManagerStub()
+
+    import app.ui.pet_window as pet_window_module
+
+    original_worker = pet_window_module.MemoryCurationWorker
+    pet_window_module.MemoryCurationWorker = WorkerStub
+    try:
+        window._start_memory_curation(
+            [ChatHistoryEntry("2026-06-01T10:00:00+08:00", "user", "旧角色对话")],
+            mode="auto",
+            target_history_count=1,
+            consumed_turns=1,
+        )
+    finally:
+        pet_window_module.MemoryCurationWorker = original_worker
+
+    memory_store.set_scope("new-character")
+    window.memory_curator.set_system_prompt("新角色人格卡")
+
+    worker = captured["worker"]
+    assert memory_store.scoped_calls == ["old-character"]
+    assert worker.curator.system_prompt == "旧角色人格卡"  # type: ignore[attr-defined]
+    assert worker.curator.memory_store.scope_id == "old-character"  # type: ignore[attr-defined]
+
+
 def test_renderer_replaces_default_portrait_suppresses_png_labels() -> None:
     from app.ui.pet_window import PetWindow
 
@@ -603,6 +834,339 @@ def test_memory_status_does_not_use_tray_balloon(monkeypatch) -> None:  # type: 
     assert "诊断信息（截图时请保留）" in warnings[0][1]
     assert "failed message" in warnings[0][1]
     assert single_shots == [(pet_window_module.MEMORY_STATUS_DISPLAY_MS, window._restore_memory_status_speech)]
+
+
+def test_auto_memory_turn_log_includes_trigger_progress(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.agent.memory_curator import MemoryCurationSettings, MemoryCurationState
+    from app.ui.pet_window import PetWindow
+
+    logs: list[tuple[str, str, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+    )
+    window = type("WindowStub", (), {})()
+    window.memory_curation_settings = MemoryCurationSettings(enabled=True, trigger_turns=3)
+    window.memory_curation_state = MemoryCurationState(tmp_path / "memory_curation_state.json")
+
+    PetWindow._record_completed_memory_turn(window)
+
+    assert logs == [
+        (
+            "Memory",
+            "自动记忆轮次已累计",
+            {"pending_turns": 1, "trigger_turns": 3, "remaining_turns": 2},
+        )
+    ]
+
+
+class _MemoryRetrySubtitleController:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def show_text_immediately(self, message: str) -> None:
+        self.messages.append(message)
+
+
+class _MemoryRetryHistoryStore:
+    def __init__(self, entries) -> None:  # type: ignore[no-untyped-def]
+        self.entries = list(entries)
+
+    def load(self):  # type: ignore[no-untyped-def]
+        return list(self.entries)
+
+
+def _build_memory_retry_window(tmp_path, *, trigger_turns: int = 3, entries=None):  # type: ignore[no-untyped-def]
+    from app.agent.memory_curator import MemoryCurationSettings, MemoryCurationState
+    from app.storage.chat_history import ChatHistoryEntry
+    from app.ui.pet_window import PetWindow
+
+    class MinimalMemoryWindow:
+        _record_completed_memory_turn = PetWindow._record_completed_memory_turn
+        _maybe_start_auto_memory_curation = PetWindow._maybe_start_auto_memory_curation
+        _memory_curation_can_start = PetWindow._memory_curation_can_start
+        _handle_memory_curation_finished = PetWindow._handle_memory_curation_finished
+        _handle_memory_curation_failed = PetWindow._handle_memory_curation_failed
+        _cleanup_memory_curation_worker = PetWindow._cleanup_memory_curation_worker
+        _show_auto_memory_curation_stopped_message = (
+            PetWindow._show_auto_memory_curation_stopped_message
+        )
+
+        def _start_memory_curation(
+            self,
+            entries,  # type: ignore[no-untyped-def]
+            *,
+            mode: str,
+            target_history_count: int,
+            consumed_turns: int,
+        ) -> None:
+            self.started.append(  # type: ignore[attr-defined]
+                {
+                    "entries": list(entries),
+                    "mode": mode,
+                    "target_history_count": target_history_count,
+                    "consumed_turns": consumed_turns,
+                }
+            )
+
+    if entries is None:
+        entries = [
+            ChatHistoryEntry("2026-06-28T21:09:14+08:00", "user", "第一轮"),
+            ChatHistoryEntry("2026-06-28T21:09:20+08:00", "assistant", "第二轮"),
+        ]
+    window = MinimalMemoryWindow()
+    window.memory_curation_settings = MemoryCurationSettings(
+        enabled=True,
+        trigger_turns=trigger_turns,
+    )
+    window.memory_curation_state = MemoryCurationState(tmp_path / "memory_curation_state.json")
+    window.history_store = _MemoryRetryHistoryStore(entries)
+    window.worker_thread = None
+    window.memory_curation_thread = None
+    window.pending_tool_action = None
+    window.pending_screen_observation_messages = None
+    window.pending_screen_observation_event = None
+    window.screen_observation_followup_in_progress = False
+    window.startup_initializing = False
+    window.memory_curation_mode = ""
+    window.memory_curation_target_history_count = 0
+    window.memory_curation_consumed_turns = 0
+    window._auto_memory_curation_failure_attempts = 0
+    window._suppress_auto_memory_curation_restart = False
+    window.subtitle_controller = _MemoryRetrySubtitleController()
+    window.started = []
+    return window
+
+
+def test_auto_memory_curation_failure_retries_first_two_attempts(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    timers = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: timers.append((delay, callback)),
+    )
+    window = _build_memory_retry_window(tmp_path)
+
+    for _ in range(2):
+        window.memory_curation_mode = "auto"
+        window.memory_curation_consumed_turns = 9
+        window._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
+        window._cleanup_memory_curation_worker()
+
+    assert len(timers) == 2
+    assert [callback.__name__ for _delay, callback in timers] == [
+        "_maybe_start_auto_memory_curation",
+        "_maybe_start_auto_memory_curation",
+    ]
+    assert window._auto_memory_curation_failure_attempts == 2
+    assert window.subtitle_controller.messages == []
+
+
+def test_auto_memory_curation_third_failure_stops_restart_and_consumes_pending(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    logs: list[tuple[str, str, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+    )
+    timers = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: timers.append((delay, callback)),
+    )
+    window = _build_memory_retry_window(tmp_path)
+    window.memory_curation_state.mark_processed(12)
+    for _ in range(9):
+        window.memory_curation_state.increment_pending_turns()
+    window._auto_memory_curation_failure_attempts = 2
+    window.memory_curation_mode = "auto"
+    window.memory_curation_consumed_turns = 9
+
+    window._handle_memory_curation_failed("insufficient_user_quota")
+    window._cleanup_memory_curation_worker()
+
+    snapshot = window.memory_curation_state.snapshot()
+    assert timers == []
+    assert snapshot["processed_history_count"] == 12
+    assert snapshot["pending_turns"] == 0
+    assert window._auto_memory_curation_failure_attempts == 0
+    assert window.subtitle_controller.messages == [
+        "自动记忆整理连续失败，已停止本轮，稍后会在下次整理时再试"
+    ]
+    assert any(message == "自动记忆整理连续失败" for _channel, message, _payload in logs)
+
+
+def test_auto_memory_curation_success_resets_failure_count(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.memory_curator import MemoryCurationResult
+
+    window = _build_memory_retry_window(tmp_path)
+    for _ in range(3):
+        window.memory_curation_state.increment_pending_turns()
+    window._auto_memory_curation_failure_attempts = 2
+    window._suppress_auto_memory_curation_restart = True
+    window.memory_curation_mode = "auto"
+    window.memory_curation_target_history_count = 8
+    window.memory_curation_consumed_turns = 3
+
+    window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
+
+    snapshot = window.memory_curation_state.snapshot()
+    assert window._auto_memory_curation_failure_attempts == 0
+    assert window._suppress_auto_memory_curation_restart is False
+    assert snapshot["processed_history_count"] == 8
+    assert snapshot["pending_turns"] == 0
+
+
+def test_auto_memory_curation_finish_after_character_switch_skips_progress(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.memory_curator import MemoryCurationResult
+
+    window = _build_memory_retry_window(tmp_path)
+    window.memory_curation_state.mark_processed(12)
+    for _ in range(3):
+        window.memory_curation_state.increment_pending_turns()
+    window._auto_memory_curation_failure_attempts = 2
+    window._suppress_auto_memory_curation_restart = True
+    window.memory_curation_mode = "auto"
+    window.memory_curation_target_history_count = 8
+    window.memory_curation_consumed_turns = 3
+    window.memory_curation_character_id = "character-a"
+    window.character_profile = type("Profile", (), {"id": "character-b"})()
+
+    window._handle_memory_curation_finished(MemoryCurationResult(processed_entries=3))
+
+    snapshot = window.memory_curation_state.snapshot()
+    assert window._auto_memory_curation_failure_attempts == 0
+    assert window._suppress_auto_memory_curation_restart is False
+    assert snapshot["processed_history_count"] == 12
+    assert snapshot["pending_turns"] == 3
+
+
+def test_auto_memory_curation_third_failure_after_character_switch_keeps_pending(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    timers = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: timers.append((delay, callback)),
+    )
+    window = _build_memory_retry_window(tmp_path)
+    window.memory_curation_state.mark_processed(12)
+    for _ in range(9):
+        window.memory_curation_state.increment_pending_turns()
+    window._auto_memory_curation_failure_attempts = 2
+    window.memory_curation_mode = "auto"
+    window.memory_curation_consumed_turns = 9
+    window.memory_curation_character_id = "character-a"
+    window.character_profile = type("Profile", (), {"id": "character-b"})()
+
+    window._handle_memory_curation_failed("insufficient_user_quota")
+    window._cleanup_memory_curation_worker()
+
+    snapshot = window.memory_curation_state.snapshot()
+    assert snapshot["processed_history_count"] == 12
+    assert snapshot["pending_turns"] == 9
+    assert window._auto_memory_curation_failure_attempts == 0
+    assert window.memory_curation_character_id == ""
+    assert window.subtitle_controller.messages == []
+    assert len(timers) == 1
+
+
+def test_auto_memory_curation_can_start_after_next_trigger_turns(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    timers = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda delay, callback: timers.append((delay, callback)),
+    )
+    window = _build_memory_retry_window(tmp_path, trigger_turns=2)
+    for _ in range(2):
+        window.memory_curation_state.increment_pending_turns()
+    window._auto_memory_curation_failure_attempts = 2
+    window.memory_curation_mode = "auto"
+    window.memory_curation_consumed_turns = 2
+    window._handle_memory_curation_failed("API 返回格式无法解析")
+    window._cleanup_memory_curation_worker()
+    assert window.memory_curation_state.pending_turns() == 0
+    assert timers == []
+
+    window._record_completed_memory_turn()
+    window._record_completed_memory_turn()
+
+    assert len(timers) == 1
+    timers[0][1]()
+    assert len(window.started) == 1
+    assert window.started[0]["mode"] == "auto"
+    assert window.started[0]["consumed_turns"] == 2
+
+
+def test_auto_memory_choices_empty_failures_stop_after_three_requests(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
+
+    callbacks = []
+    monkeypatch.setattr(
+        pet_window_module.QTimer,
+        "singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+    window = _build_memory_retry_window(tmp_path, trigger_turns=3)
+    for _ in range(3):
+        window.memory_curation_state.increment_pending_turns()
+    window.request_count = 0
+
+    def fail_start(
+        self,
+        entries,  # type: ignore[no-untyped-def]
+        *,
+        mode: str,
+        target_history_count: int,
+        consumed_turns: int,
+    ) -> None:
+        _ = entries
+        self.request_count += 1
+        self.memory_curation_mode = mode
+        self.memory_curation_target_history_count = target_history_count
+        self.memory_curation_consumed_turns = consumed_turns
+        self._handle_memory_curation_failed('API 返回格式无法解析：{"choices":[]}')
+        self._cleanup_memory_curation_worker()
+
+    window._start_memory_curation = fail_start.__get__(window, type(window))
+    callbacks.append(window._maybe_start_auto_memory_curation)
+
+    iterations = 0
+    while callbacks and iterations < 10:
+        iterations += 1
+        callback = callbacks.pop(0)
+        callback()
+
+    assert window.request_count == MAX_AUTO_RETRY_ATTEMPTS
+    assert callbacks == []
+    assert window.memory_curation_state.pending_turns() == 0
+    assert window.subtitle_controller.messages == [
+        "自动记忆整理连续失败，已停止本轮，稍后会在下次整理时再试"
+    ]
 
 
 def test_memory_failure_dialog_is_deferred_until_startup_window_is_visible(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -2940,7 +3504,13 @@ class _SignalStub:
             slot(*args)
 
 
-def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, start_result: bool = True):  # type: ignore[no-untyped-def]
+def _install_tauri_settings_process_stub(  # type: ignore[no-untyped-def]
+    monkeypatch,
+    pet_window_module,
+    *,
+    start_result: bool = True,
+    on_start=None,
+):
     instances = []
 
     class TauriSettingsProcessStub:
@@ -2957,6 +3527,8 @@ def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, star
             instances.append(self)
 
         def start(self) -> bool:
+            if on_start is not None:
+                on_start()
             return start_result
 
         def shutdown(self) -> None:
@@ -3080,6 +3652,86 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     assert window.input_bar_offset == 0
     assert window.layout_persisted is False
     assert window.tauri_settings_process is None
+
+
+def test_show_settings_suppresses_pet_topmost_before_process_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    topmost_at_start: list[bool] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    instances = _install_tauri_settings_process_stub(
+        monkeypatch,
+        pet_window_module,
+        on_start=lambda: topmost_at_start.append(
+            bool(window._secondary_windows_suppress_topmost)
+        ),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._secondary_windows_suppress_topmost = False
+
+    window.show_settings()
+
+    assert topmost_at_start == [True]
+    assert window._secondary_windows_suppress_topmost is True
+
+    instances[0].cancelled.emit()
+
+    assert window._secondary_windows_suppress_topmost is False
+
+
+def test_show_settings_start_failure_restores_pet_topmost(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    topmost_at_start: list[bool] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    _install_tauri_settings_process_stub(
+        monkeypatch,
+        pet_window_module,
+        start_result=False,
+        on_start=lambda: topmost_at_start.append(
+            bool(window._secondary_windows_suppress_topmost)
+        ),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._secondary_windows_suppress_topmost = False
+
+    assert window._try_show_tauri_settings() is False
+    assert topmost_at_start == [True]
+    assert window._secondary_windows_suppress_topmost is False
 
 
 def test_show_settings_tauri_trial_save_failure_restores_preview_and_closes_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -4086,6 +4738,244 @@ def test_tauri_character_rpc_validates_paths() -> None:
         )
 
 
+def test_tauri_settings_dispatches_studio_launch_callback() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    calls: list[str] = []
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda character_id: calls.append(character_id or "") or True,
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": "sakura"})
+
+    assert calls == ["sakura"]
+    assert result["message"] == "角色工作室已打开。"
+
+
+def test_tauri_settings_dispatches_studio_launch_refreshes_characters() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    root = _ui_runtime_root("tauri_studio_refresh")
+    character_dir = root / "characters" / "demo"
+    character_dir.mkdir(parents=True)
+    (character_dir / "card.md").write_text("card", encoding="utf-8")
+    (character_dir / "portrait.png").write_bytes(b"png")
+    (character_dir / "character.json").write_text(
+        json.dumps(
+            {
+                "id": "demo",
+                "display_name": "Demo",
+                "card": "card.md",
+                "portrait": {"default": "portrait.png"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = TauriSettingsProcess(
+        base_dir=root,
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: {
+            "refresh_characters": True,
+            "current_character_id": "",
+        },
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": ""})
+
+    assert result["current_character_id"] == "demo"
+    assert result["characters"][0]["id"] == "demo"
+    assert result["message"] == "角色列表已刷新。"
+
+
+def test_tauri_settings_dispatches_studio_launch_refreshes_empty_characters() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    root = _ui_runtime_root("tauri_studio_refresh_empty")
+    process = TauriSettingsProcess(
+        base_dir=root,
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: {
+            "refresh_characters": True,
+            "current_character_id": "",
+        },
+    )
+
+    result = process._dispatch_rpc("studio.launch", {"character_id": ""})
+
+    assert result["current_character_id"] == ""
+    assert result["characters"] == []
+    assert result["message"] == "角色列表已刷新。"
+
+
+def test_tauri_settings_dispatches_studio_launch_failure() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+        studio_launcher=lambda _character_id: False,
+    )
+
+    with pytest.raises(ValueError, match="角色工作室"):
+        process._dispatch_rpc("studio.launch", {"character_id": "sakura"})
+
+
+def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
+    index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert 'id="characterEditorButton"' in index
+    assert 'class="character-select-controls"' in index
+    assert "characterStudioCurrentButton" not in index
+    assert "characterStudioOpenButton" not in index
+    assert "角色工作室</legend>" not in index
+    assert 'hostCall("studio.launch", { character_id: character?.id || "" })' in source
+    assert "fields.characterEditorButton.disabled = characterArchiveBusy;" in source
+    assert "characterStudioCurrentButton" not in source
+    assert "characterStudioOpenButton" not in source
+    assert 'typeof result?.current_character_id === "string"' in source
+    assert "if (applyTheme && selectedCharacter()) {" in source
+    studio_launch_source = source.split("async function launchCharacterStudio()", 1)[1].split(
+        "function resourcesSnapshot()", 1
+    )[0]
+    assert "applyCharacterRpcResult(result, { dirty: true, applyTheme: true });" in studio_launch_source
+    assert "} else if (result?.message) {" in studio_launch_source
+
+
+def test_tauri_studio_frontend_matches_settings_language() -> None:
+    index = Path("tools/studio-tauri/frontend/index.html").read_text(encoding="utf-8")
+    source = Path("tools/studio-tauri/frontend/studio.js").read_text(encoding="utf-8")
+    styles = Path("tools/studio-tauri/frontend/styles.css").read_text(encoding="utf-8")
+    tauri_config = Path("tools/studio-tauri/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+
+    assert "nav-card" in index
+    assert "detail-card" in index
+    assert "page-head" in index
+    assert "settings-group" in index
+    assert "角色工作室" in index
+    assert "保存" in index
+    assert 'id="studioCharacterSelect"' in index
+    assert 'id="newCharacterButton"' in index
+    assert 'class="studio-character-bar"' in index
+    assert index.index('class="studio-character-bar"') < index.index('class="page-head"')
+    nav_labels = ["基础信息", "人设卡", "立绘", "语音模型", "参考语音", "配色"]
+    nav_positions = [index.index(f'<span class="nav-item-label">{label}</span>') for label in nav_labels]
+    assert nav_positions == sorted(nav_positions)
+    assert 'data-page="voice-model"' in index
+    assert 'data-page="reference-audio"' in index
+    assert 'id="page-voice-model"' in index
+    assert 'id="page-reference-audio"' in index
+    assert 'id="replyToneInput"' not in index
+    assert 'id="voiceEnabled"' in index
+    assert 'id="gptModelPath"' in index
+    assert 'id="sovitsModelPath"' in index
+    assert 'id="defaultRefLang"' in index
+    assert 'id="textLang"' in index
+    assert 'id="referenceAudioList"' in index
+    assert 'id="addReferenceAudioButton"' in index
+    assert 'id="importPortraitFolderButton"' in index
+    assert 'id="importReferenceAudioFolderButton"' in index
+    assert 'id="discardDraftButton"' in index
+    assert 'id="saveDraftButton"' in index
+    assert 'id="publishButton"' in index
+    assert 'id="defaultPortrait"' not in index
+    assert 'data-page="library"' not in index
+    assert 'id="page-library"' not in index
+    assert 'id="characterSearch"' not in index
+    assert 'id="refreshCharactersButton"' not in index
+    assert "发布角色" in index
+    assert "工作区" in source
+    assert "已发布角色" in source
+    assert "（草稿）" not in source
+    assert "editingCharacterId" in source
+    assert "confirmDiscardChanges" in source
+    assert "function editorSnapshot()" in source
+    assert "function validateThemeInputs()" in source
+    assert "function validateExpressionInputs()" in source
+    assert "function validateVoiceInputs()" in source
+    assert "function renderReferenceAudios(" in source
+    assert "function previewReferenceAudio(" in source
+    assert "{ dirty: true }" in source
+    assert "displayName === null" in source
+    assert "hostCall(\"studio.list_characters\"" not in source
+    assert "hostCall(\"studio.open_character\"" in source
+    assert "hostCall(\"studio.create_character\"" in source
+    assert "hostCall(\"studio.save_character\"" in source
+    assert "hostCall(\"studio.import_portrait\"" in source
+    assert "hostCall(\"studio.import_voice_model\"" in source
+    assert "hostCall(\"studio.import_reference_audio\"" in source
+    assert "hostCall(\"studio.import_portrait_folder\"" in source
+    assert "hostCall(\"studio.import_reference_audio_folder\"" in source
+    assert "hostCall(\"studio.save_workspace_draft\"" in source
+    assert "hostCall(\"studio.discard_draft\"" in source
+    assert "directory: true" in source
+    assert "scheduleDraftAutosave" in source
+    assert 'pathInput.readOnly = true' in source
+    assert "hostCall(\"studio.load_reference_audio_preview\"" in source
+    assert "hostCall(\"studio.export_archive\"" in source
+    assert "include_voice: Boolean(collectDoc().voice)" in source
+    assert 'class="theme-colors"' in index
+    assert "themeLabels" not in source
+    assert "request.theme_fields.forEach(({ id, label })" in source
+    assert 'className = "theme-color-popover"' in source
+    assert 'hostCall("studio.pick_screen_color")' in source
+    assert "updateThemeFromRgbInputs" in source
+    assert "updateThemeFromSvPointer" in source
+    assert "updateThemeFromHuePointer" in source
+    assert "enhanceSelect(fields.studioCharacterSelect)" in source
+    assert "refreshSelect(fields.studioCharacterSelect)" in source
+    assert "function saveWorkspaceDraft()" in source
+    assert "function publishCharacter()" in source
+    assert "character.is_installed" in source
+    assert 'done.className = "primary-button"' in source
+    assert 'event.key === "ArrowDown"' in source
+    assert 'event.key === "Tab"' in source
+    assert 'trigger.setAttribute("aria-labelledby"' in source
+    assert 'menu.addEventListener("focusout"' in source
+    assert "fields.studioCharacterSelect.__customSelect?.focus();" in source
+    assert index.count("<svg") >= 6
+    assert "--sakura-primary" in styles
+    assert "--motion-medium" in styles
+    assert ".settings-page.is-active" in styles
+    assert ".theme-color-swatch" in styles
+    assert ".theme-color-popover" in styles
+    assert ".theme-sv-pad" in styles
+    assert "grid-template-columns: 176px minmax(0, 1fr)" in styles
+    assert ".custom-select__trigger" in styles
+    assert ".studio-character-bar" in styles
+    assert ".reference-audio-row" in styles
+    assert "#saveButton,\n#publishButton,\n.primary-button" in styles
+    assert ".custom-select__group" in styles
+    assert ".custom-select__dirty-dot" in styles
+    assert "overflow-x: hidden" in styles
+    assert "@media (max-width: 940px)" in styles
+    assert ".studio-shell {\n    grid-template-columns: 1fr;" not in styles
+    assert "media-src 'self' data: blob:" in tauri_config
+    assert ".nav-card {\n    display: none;" not in styles
+
+
 def test_resolve_tauri_settings_binary_uses_platform_specific_name(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.tauri_settings as tauri_settings_module
 
@@ -4123,6 +5013,154 @@ def test_resolve_tauri_settings_binary_env_override_still_wins(monkeypatch) -> N
         )
         == configured
     )
+
+
+def test_tauri_settings_process_schedules_bounded_focus_retries_after_start(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    scheduled: list[tuple[int, object]] = []
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "win32")
+    monkeypatch.setattr(
+        tauri_settings.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    fake = FakeQProcess()
+    process._process = fake
+    process._request_payload = b'{"version": 2}'
+
+    process._handle_started()
+
+    assert fake.writes == [b'{"version": 2}\n']
+    assert [delay for delay, _callback in scheduled] == list(
+        tauri_settings.SETTINGS_FOCUS_RETRY_DELAYS_MS
+    )
+
+
+def test_tauri_settings_process_does_not_schedule_focus_retries_off_windows(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    scheduled: list[int] = []
+
+    class FakeQProcess:
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "linux")
+    monkeypatch.setattr(
+        tauri_settings.QTimer,
+        "singleShot",
+        lambda delay, _callback: scheduled.append(delay),
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    process._process = FakeQProcess()
+    process._request_payload = b"{}"
+
+    process._handle_started()
+
+    assert scheduled == []
+
+
+def test_tauri_settings_process_focus_uses_forced_foreground_restore(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    calls: list[tuple[int, bool]] = []
+
+    class FakeQProcess:
+        def processId(self) -> int:  # noqa: N802
+            return 4321
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "win32")
+    monkeypatch.setattr(
+        tauri_settings,
+        "_restore_windows_for_pid",
+        lambda pid, *, force_foreground=False: calls.append((pid, force_foreground)) or True,
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    process._process = FakeQProcess()
+
+    assert process.focus_window() is True
+    assert calls == [(4321, True)]
+
+
+def test_tauri_settings_process_stops_focus_retries_and_ignores_stale_process(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    active = object()
+    focus_results = iter((False, True))
+    focus_calls: list[bool] = []
+
+    def focus_window() -> bool:
+        focus_calls.append(True)
+        return next(focus_results)
+
+    monkeypatch.setattr(process, "focus_window", focus_window)
+    process._process = active
+
+    process._try_startup_focus(active)
+    process._try_startup_focus(active)
+    process._try_startup_focus(active)
+
+    assert focus_calls == [True, True]
+    assert process._startup_focus_complete is True
+
+    process._startup_focus_complete = False
+    process._process = object()
+    process._try_startup_focus(active)
+    process._done = True
+    process._process = active
+    process._try_startup_focus(active)
+
+    assert focus_calls == [True, True]
 
 
 def test_tauri_settings_process_parses_preview_and_result_lines() -> None:
@@ -4873,6 +5911,32 @@ def test_registered_secondary_window_suppresses_topmost_until_hidden() -> None:
     assert raise_events == ["raise"]
 
 
+def test_pet_window_syncs_topmost_while_tauri_studio_is_active() -> None:
+    from app.ui.pet_window import PetWindow
+
+    native_sync_events: list[bool] = []
+
+    class Host:
+        _sync_secondary_window_state = PetWindow._sync_secondary_window_state
+        _is_secondary_window_visible = PetWindow._is_secondary_window_visible
+        _set_secondary_windows_topmost_suppressed = (
+            PetWindow._set_secondary_windows_topmost_suppressed
+        )
+
+        def __init__(self) -> None:
+            self._registered_secondary_windows = set()
+            self._secondary_windows_suppress_topmost = False
+            self.tauri_settings_process = None
+            self.tauri_studio_process = object()
+
+        def _sync_native_topmost_state(self) -> None:
+            native_sync_events.append(self._secondary_windows_suppress_topmost)
+
+    Host()._sync_secondary_window_state()
+
+    assert native_sync_events == [True]
+
+
 def test_pet_window_syncs_topmost_for_all_registered_secondary_windows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
@@ -4965,12 +6029,71 @@ def test_main_detects_missing_character_packages() -> None:
     assert not sakura_main._character_packages_missing(root)
 
 
+def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import main as sakura_main
+
+    root = _ui_runtime_root("first_run_studio")
+    calls: list[tuple[str, object]] = []
+    studio_processes: list[object] = []
+
+    class EventLoopStub:
+        def exec(self) -> None:
+            calls.append(("loop_exec", None))
+            studio_processes[0].closed.emit()  # type: ignore[attr-defined]
+
+        def quit(self) -> None:
+            calls.append(("loop_quit", None))
+
+    class TauriStudioProcessStub:
+        def __init__(
+            self,
+            base_dir: Path,
+            *,
+            initial_character_id: str = "",
+            parent=None,
+        ) -> None:  # type: ignore[no-untyped-def]
+            calls.append(("init", (base_dir, initial_character_id, parent)))
+            self.closed = _SignalStub()
+            self.failed = _SignalStub()
+            studio_processes.append(self)
+
+        def start(self) -> bool:
+            calls.append(("start", None))
+            return True
+
+        def shutdown(self) -> None:
+            calls.append(("shutdown", None))
+
+    monkeypatch.setattr(sakura_main, "QEventLoop", EventLoopStub)
+    monkeypatch.setattr(sakura_main, "TauriStudioProcess", TauriStudioProcessStub)
+    monkeypatch.setattr(
+        sakura_main,
+        "resolve_tauri_studio_binary",
+        lambda _base_dir: Path("sakura-studio"),
+    )
+
+    result = sakura_main._open_first_run_studio(root, "sakura")
+
+    assert result == {
+        "refresh_characters": True,
+        "current_character_id": "sakura",
+    }
+    assert calls == [
+        ("init", (root, "sakura", None)),
+        ("start", None),
+        ("loop_exec", None),
+        ("loop_quit", None),
+        ("shutdown", None),
+    ]
+
+
 def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import main as sakura_main
     from app.config.models import ModelSelectionSettings
 
     root = _ui_runtime_root("first_run_tauri_layout")
     saved_system_values: dict[str, dict[str, object]] = {}
+    studio_launchers: list[object] = []
     app_context = object()
     tts_settings = _minimal_tts_settings()
     result = _build_tauri_settings_result(
@@ -5064,12 +6187,13 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
             return type("CharacterProfileStub", (), {"id": "sakura"})()
 
     class TauriSettingsProcessStub:
-        def __init__(self, *_args, **_kwargs) -> None:
+        def __init__(self, *_args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             self.completed = _SignalStub()
             self.apply_requested = _SignalStub()
             self.cancelled = _SignalStub()
             self.failed = _SignalStub()
             self.shutdown_called = False
+            studio_launchers.append(kwargs.get("studio_launcher"))
 
         def start(self) -> bool:
             self.completed.emit(result)
@@ -5099,6 +6223,8 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
     monkeypatch.setattr(sakura_main, "build_initial_app_context", lambda _base_dir: app_context)
 
     assert sakura_main._open_first_run_settings(root) is app_context
+    assert len(studio_launchers) == 1
+    assert callable(studio_launchers[0])
     assert saved_system_values["ui"] == {
         "portrait_scale_percent": 155,
         "control_panel_width": 730,
@@ -5513,6 +6639,67 @@ def test_screen_awareness_batches_screenshots_until_cooldown(monkeypatch) -> Non
     assert events[0].payload["screen_context_count"] == 3
     assert history
     assert window.screen_awareness_contexts == []
+
+
+def test_screen_context_cache_log_uses_summary_without_image_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+
+    logs: list[tuple[str, str, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "log_event",
+        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+    )
+    data_url = "data:image/jpeg;base64,abc123"
+    observation = ScreenObservation(
+        data_url=data_url,
+        width=800,
+        height=600,
+        captured_at="2026-05-30T12:01:00+08:00",
+        screen_name="DISPLAY1",
+    )
+    cases = [
+        (
+            _build_minimal_screen_awareness_window(
+                screen_context_enabled=True,
+                check_interval_minutes=1,
+                cooldown_minutes=2,
+                screen_context_batch_limit=2,
+            ),
+            "_finish_screen_awareness_context",
+        ),
+        (
+            _build_minimal_proactive_window(
+                screen_context_enabled=True,
+                check_interval_minutes=1,
+                cooldown_minutes=2,
+                screen_context_batch_limit=2,
+            ),
+            "_finish_proactive_screen_context",
+        ),
+    ]
+
+    for window, finish_name in cases:
+        getattr(window, finish_name)({"captured_at_monotonic": 1.0}, observation)
+
+    payloads = [
+        payload
+        for channel, message, payload in logs
+        if channel == "ScreenAwareness" and message == "主动屏幕上下文已缓存"
+    ]
+    assert len(payloads) == 2
+    for payload in payloads:
+        assert payload is not None
+        assert payload["screen"] == "DISPLAY1 800x600"
+        assert payload["screen_name"] == "DISPLAY1"
+        assert payload["resolution"] == "800x600"
+        assert payload["batch"] == "1/2"
+        assert payload["batch_count"] == 1
+        assert payload["batch_limit"] == 2
+        assert payload["dropped_count"] == 0
+        assert payload["image_chars"] == len(data_url)
+        assert "image" not in payload
+        assert "data:image" not in str(payload)
 
 
 def test_screen_awareness_capture_uses_selected_resolution(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -6849,6 +8036,52 @@ def test_pet_window_context_menu_resyncs_topmost_after_menu_closes() -> None:
     assert window.events == ["exec", "sync"]
 
 
+def test_pet_window_uses_pointer_sized_hwnd_when_disabling_windows_topmost(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import ctypes
+    from types import SimpleNamespace
+
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    calls: list[tuple[int, int]] = []
+
+    class FakeUser32:
+        def SetWindowPos(self, hwnd, insert_after, *_args) -> int:  # noqa: N802, ANN001
+            calls.append((int(hwnd.value), int(insert_after.value)))
+            return 1
+
+    monkeypatch.setattr(pet_window_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=FakeUser32()),
+        raising=False,
+    )
+
+    class MinimalWindow:
+        _sync_native_topmost_state = PetWindow._sync_native_topmost_state
+        _topmost_sync_windows = PetWindow._topmost_sync_windows
+        _effective_topmost = PetWindow._effective_topmost
+
+        always_on_top_enabled = True
+        _secondary_windows_suppress_topmost = True
+
+        def isVisible(self) -> bool:
+            return True
+
+        def winId(self) -> int:
+            return 123
+
+        def _stack_renderer_overlay_below(self) -> None:
+            pass
+
+    MinimalWindow()._sync_native_topmost_state()
+
+    assert calls == [(123, ctypes.c_void_p(-2).value)]
+
+
 def test_pet_window_syncs_macos_native_topmost_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
@@ -6876,6 +8109,13 @@ def test_pet_window_syncs_macos_native_topmost_state(monkeypatch) -> None:  # ty
     MinimalWindow()._sync_native_topmost_state()
 
     assert calls == [(123, True)]
+
+
+def test_macos_topmost_suppression_uses_normal_window_level() -> None:
+    from app.ui.pet_window import _macos_window_level
+
+    assert _macos_window_level(True) == 8
+    assert _macos_window_level(False) == 0
 
 
 def test_pet_window_skips_macos_native_topmost_sync_when_hidden(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -7766,6 +9006,93 @@ def test_subtitle_waiting_indicator_continues_until_tts_starts() -> None:
     assert not controller.waiting_indicator_timer.isActive()
     assert controller.speech_text == "第一段回复"
     controller.cancel_reply_flow()
+
+
+def test_subtitle_ignores_late_finished_callback_from_previous_segment(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.subtitle_controller as subtitle_module
+    from app.ui.subtitle_controller import SubtitleController
+    from app.voice import VoicePlaybackController
+    from app.voice.tts import TTSPreparedAudio
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def clear(self) -> None:
+            self.text = ""
+
+        def setText(self, text: str) -> None:
+            self.text = text
+
+    class DuplicateFinishTTS:
+        def __init__(self) -> None:
+            self.first_on_finished = None
+            self.second_on_finished = None
+
+        def speak(self, _text, _tone, on_finished=None, on_started=None):  # type: ignore[no-untyped-def]
+            self.first_on_finished = on_finished
+            if on_started is not None:
+                on_started()
+
+        def prepare(self, text, tone):  # type: ignore[no-untyped-def]
+            return TTSPreparedAudio(text=text, tone=tone)
+
+        def speak_prepared(self, _handle, on_started=None, on_finished=None):  # type: ignore[no-untyped-def]
+            if on_started is not None:
+                on_started()
+            self.second_on_finished = on_finished
+
+        def discard_prepared(self, _handle):  # type: ignore[no-untyped-def]
+            pass
+
+    _qt_app_or_skip()
+    timers = []
+    monkeypatch.setattr(
+        subtitle_module.QTimer,
+        "singleShot",
+        staticmethod(lambda delay, callback: timers.append((delay, callback))),
+    )
+    ended = []
+    tts = DuplicateFinishTTS()
+    controller = SubtitleController(
+        DummyLabel(),  # type: ignore[arg-type]
+        VoicePlaybackController(tts, lambda *_args, **_kwargs: None),
+        "zh",
+        lambda *_args, **_kwargs: None,
+        lambda _segment: None,
+        lambda: ended.append("reply_completed"),
+        lambda: True,
+    )
+    first = ChatSegment("一つ目。", "中性", "第一段。")
+    second = ChatSegment("二つ目。", "中性", "第二段。")
+
+    controller.show_segments([first, second])
+    controller.speech_index = len(controller.speech_text)
+    controller._mark_segment_speech_done(
+        controller.current_segment_sequence_id,  # type: ignore[arg-type]
+        controller.current_segment_token,
+    )
+
+    assert tts.first_on_finished is not None
+    tts.first_on_finished()
+    assert timers[0][0] == controller.segment_pause_ms
+    timers[0][1]()
+    assert controller.current_segment == second
+    assert not controller.current_segment_tts_done
+
+    tts.first_on_finished()
+    assert controller.current_segment == second
+    assert not controller.current_segment_tts_done
+
+    controller.speech_index = len(controller.speech_text)
+    controller._mark_segment_speech_done(
+        controller.current_segment_sequence_id,  # type: ignore[arg-type]
+        controller.current_segment_token,
+    )
+    assert tts.second_on_finished is not None
+    tts.second_on_finished()
+
+    assert ended == ["reply_completed"]
 
 
 def test_send_message_injects_runtime_event_context_before_user_message() -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -130,13 +130,13 @@ def ensure_default_configs(base_dir: Path) -> list[str]:
             atomic_write_text(target, content, encoding="utf-8", backup=False)
             created.append(target.name)
         except OSError as exc:
-            debug_log(
+            log_event(
                 "Config",
                 "默认配置生成失败",
                 {"path": str(target), "error": str(exc)},
             )
     if created:
-        debug_log("Config", "默认配置已生成", {"created": created})
+        log_event("Config", "默认配置已生成", {"created": created})
     return created
 
 
@@ -144,14 +144,14 @@ def _backfill_mcp_config(path: Path) -> None:
     try:
         import yaml
     except ImportError as exc:
-        debug_log("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
         return
 
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         defaults = yaml.safe_load(_DEFAULT_MCP_YAML)
     except (OSError, yaml.YAMLError) as exc:
-        debug_log("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
         return
     if not isinstance(data, dict) or not isinstance(defaults, dict):
         return
@@ -173,4 +173,4 @@ def _backfill_mcp_config(path: Path) -> None:
             backup=True,
         )
     except OSError as exc:
-        debug_log("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})

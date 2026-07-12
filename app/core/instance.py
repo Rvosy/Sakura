@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QLockFile
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.paths import StoragePaths
 
 # tryLock 等待时长：拿不到锁说明确有活动实例，无需久等
@@ -35,11 +35,11 @@ class SingleInstanceGuard:
         """尝试获取锁；失败返回 False（通常表示已有实例在运行）。"""
         acquired = self._lock.tryLock(_LOCK_TRY_TIMEOUT_MS)
         if acquired:
-            debug_log("Instance", "单实例锁已获取", {"path": str(self._lock_path)})
+            log_event("Instance", "单实例锁已获取", {"path": str(self._lock_path)})
             return True
         error = self._lock.error()
         holder = self._holder_info()
-        debug_log(
+        log_event(
             "Instance",
             "单实例锁获取失败",
             {"path": str(self._lock_path), "error": str(error), "holder": holder},
@@ -49,7 +49,7 @@ class SingleInstanceGuard:
     def release(self) -> None:
         if self._lock.isLocked():
             self._lock.unlock()
-            debug_log("Instance", "单实例锁已释放", {"path": str(self._lock_path)})
+            log_event("Instance", "单实例锁已释放", {"path": str(self._lock_path)})
 
     def _holder_info(self) -> dict:
         """读取当前持锁方信息，用于日志与用户提示。

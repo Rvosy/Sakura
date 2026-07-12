@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 NO_VOICE_FINGERPRINT = "novoice"
 
@@ -83,7 +83,7 @@ class BackchannelAudioCache:
             shutil.copyfile(source, target)
             return target
         except OSError as exc:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话音频写入磁盘缓存失败",
                 {"target": str(target), "error": str(exc)},

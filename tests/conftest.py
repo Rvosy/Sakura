@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
+import shutil
+import uuid
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -49,6 +51,18 @@ _THREAD_ATTR_NAMES = (
     "_memory_list_thread",
     "_character_export_thread",
 )
+_TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / "temp" / "pytest_tmp_path"
+
+
+@pytest.fixture
+def tmp_path() -> Iterable[Path]:
+    """Repo-local tmp_path replacement for Windows sandboxes with broken %TEMP% ACLs."""
+    path = _TEST_TMP_ROOT / uuid.uuid4().hex
+    path.mkdir(parents=True, exist_ok=False)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class _LocalQtBot:

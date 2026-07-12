@@ -305,6 +305,48 @@ def test_sink_player_start_returns_false_on_invalid_wav() -> None:
     assert ok is False
 
 
+def test_sink_player_start_failure_does_not_emit_finished(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """QAudioSink 启动失败应交给上层 fallback，不应提前完成当前音频。"""
+    import app.voice.audio_sink_player as audio_sink_module
+
+    class SignalStub:
+        def connect(self, _callback):  # type: ignore[no-untyped-def]
+            pass
+
+    class DeviceStub:
+        def isFormatSupported(self, _audio_format):  # type: ignore[no-untyped-def]
+            return True
+
+        def description(self) -> str:
+            return "blocked-device"
+
+    class MediaDevicesStub:
+        @staticmethod
+        def defaultAudioOutput() -> DeviceStub:
+            return DeviceStub()
+
+    class FailingAudioSink:
+        def __init__(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            self.stateChanged = SignalStub()
+
+        def start(self):  # type: ignore[no-untyped-def]
+            return None
+
+    root = _runtime_root("sink_start_failed")
+    path = root / "test.wav"
+    _write_test_wav(path)
+    monkeypatch.setattr(audio_sink_module, "QMediaDevices", MediaDevicesStub)
+    monkeypatch.setattr(audio_sink_module, "QAudioSink", FailingAudioSink)
+    player = AudioSinkPlayer()
+    finish_reasons: list[str] = []
+    player.finished.connect(lambda reason, _path: finish_reasons.append(reason))
+
+    ok = player.start(path)
+
+    assert ok is False
+    assert finish_reasons == []
+
+
 @pytest.mark.skipif(os.environ.get("CI") == "true", reason="QAudioSink requires audio device on headless CI")
 def test_sink_player_start_returns_true_for_valid_wav() -> None:
     """合法 wav 应让 start() 返回 True。"""

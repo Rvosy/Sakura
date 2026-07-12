@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
+from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.llm.api_client import (
     ApiConfigError,
     ApiRequestError,
@@ -297,6 +298,47 @@ def test_response_format_falls_back_when_provider_rejects(monkeypatch) -> None: 
     assert "response_format" not in calls[1]
 
 
+def test_compatibility_fallback_attempts_are_bounded_by_shared_policy(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[dict[str, Any]] = []
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        )
+    )
+
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if "response_format" in payload:
+            raise ApiRequestError("unsupported response_format json_object")
+        if "temperature" in payload:
+            raise ApiRequestError("temperature only supports the default value")
+        raise ApiRequestError("still broken")
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    try:
+        client.complete_raw(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            temperature=0.8,
+            response_format={"type": "json_object"},
+        )
+    except ApiRequestError:
+        pass
+    else:
+        raise AssertionError("最终请求仍失败时应抛出 ApiRequestError")
+
+    assert len(calls) == MAX_AUTO_RETRY_ATTEMPTS
+    assert "response_format" in calls[0]
+    assert "temperature" in calls[0]
+    assert "response_format" not in calls[1]
+    assert "temperature" in calls[1]
+    assert "response_format" not in calls[2]
+    assert "temperature" not in calls[2]
+
+
 def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(
@@ -353,6 +395,61 @@ def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> N
     assert turn.tool_calls[0].name == "echo_tool"
     assert turn.tool_calls[0].arguments == {"value": "ok"}
     assert turn.message["tool_calls"][0]["id"] == "call_1"
+
+
+def test_complete_with_tools_normalizes_tool_call_message_when_provider_omits_id(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        )
+    )
+
+    def fake_post(_payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "echo_tool",
+                                    "arguments": '{"value":"ok"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+
+    turn = client.complete_with_tools(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo_tool",
+                    "description": "Echo",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert turn.tool_calls[0].id == "tool_call_0"
+    assert turn.message["tool_calls"][0] == {
+        "id": "tool_call_0",
+        "type": "function",
+        "function": {"name": "echo_tool", "arguments": '{"value":"ok"}'},
+    }
 
 
 def test_complete_with_tools_can_request_structured_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -647,6 +744,75 @@ def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-u
     # 只接受默认温度的模型在检测阶段不应被显式 temperature 拒绝。
     assert client.test_connection() == "OK"
     assert "temperature" not in captured["payload"]
+
+
+def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="http://127.0.0.1:11434/v1", api_key="key", model="local-model")
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+    def fake_urlopen_direct_for_loopback(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "app.llm.api_client.urlopen_direct_for_loopback",
+        fake_urlopen_direct_for_loopback,
+    )
+
+    assert client.test_connection() == "OK"
+    assert captured == {
+        "url": "http://127.0.0.1:11434/v1/chat/completions",
+        "timeout": 60,
+    }
+
+
+def test_http_auto_retry_uses_shared_attempt_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import urllib.error
+    import urllib.request
+
+    import app.llm.api_client as api_client_module
+
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="model")
+    )
+    calls: list[str] = []
+
+    def fake_urlopen_direct_for_loopback(request, timeout):  # type: ignore[no-untyped-def]
+        _ = timeout
+        calls.append(request.full_url)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(
+        api_client_module,
+        "urlopen_direct_for_loopback",
+        fake_urlopen_direct_for_loopback,
+    )
+    monkeypatch.setattr(api_client_module, "cancellable_sleep", lambda *_args, **_kwargs: None)
+
+    request = urllib.request.Request("https://api.example.com/v1/chat/completions")
+    try:
+        client._send_with_retries(request)
+    except ApiRequestError as exc:
+        assert "API 请求失败" in str(exc)
+    else:
+        raise AssertionError("URL 错误应包装为 ApiRequestError")
+
+    assert len(calls) == MAX_AUTO_RETRY_ATTEMPTS
 
 
 def test_list_models_allows_empty_model_but_requires_key() -> None:

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,7 +39,13 @@ from app.agent.runtime_limits import (
     RuntimeLoopSettings,
 )
 from app.agent.tools import Tool, ToolRegistry
-from app.llm.api_client import ApiRequestError, ChatMessage, NativeToolCall, OpenAICompatibleClient
+from app.llm.api_client import (
+    ApiRequestError,
+    ChatCompletionTurn,
+    ChatMessage,
+    NativeToolCall,
+    OpenAICompatibleClient,
+)
 from app.llm.chat_reply import ChatReply, ChatSegment
 from app.storage.chat_history import ChatHistoryEntry
 
@@ -491,6 +498,168 @@ class TestAgentRuntimeBasics:
         assert result.reply.segments[0].text != bad_content
         assert "segments" not in result.reply.segments[0].text
         assert result.reply.segments[0].suppress_tts is True
+
+    def test_final_native_tool_summary_retry_rebuilds_text_messages(self) -> None:
+        class ToolSummaryClient:
+            def __init__(self) -> None:
+                self.settings = SimpleNamespace(model="text-model")
+                self.complete_calls: list[list[ChatMessage]] = []
+                self.chat_messages: list[ChatMessage] = []
+
+            def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
+                return 0.8, {}
+
+            def complete_with_tools(self, _system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
+                self.complete_calls.append(messages)
+                if len(self.complete_calls) == 1:
+                    return ChatCompletionTurn(
+                        content="調べるね。",
+                        tool_calls=[
+                            NativeToolCall(
+                                id="call_1",
+                                name="inspect_tool",
+                                arguments={},
+                            )
+                        ],
+                        message={
+                            "role": "assistant",
+                            "content": "調べるね。",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "inspect_tool", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                    )
+                raise ApiRequestError(
+                    "API HTTP 400: function_response.name: [REQUIRED_FIELD_MISSING]"
+                )
+
+            def chat(self, _system_prompt, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                self.chat_messages = messages
+                return ChatReply(
+                    segments=[
+                        ChatSegment(
+                            ja="結果をまとめたよ。",
+                            zh="我整理好工具结果了。",
+                            tone="中性",
+                        )
+                    ]
+                )
+
+        client = ToolSummaryClient()
+        registry = ToolRegistry(
+            [
+                _dummy_tool(
+                    "inspect_tool",
+                    handler=lambda _args: {"answer": "工具结果文本"},
+                )
+            ]
+        )
+        runtime = AgentRuntime(
+            client,  # type: ignore[arg-type]
+            _dummy_system_prompt(),
+            tools=registry,
+            runtime_loop_settings=RuntimeLoopSettings(max_agent_steps_per_turn=1),
+        )
+
+        result = runtime.handle_user_message([ChatMessage(role="user", content="执行工具")])
+
+        assert result.reply.segments[0].translation == "我整理好工具结果了。"
+        assert client.chat_messages
+        assert all(message.get("role") != "tool" for message in client.chat_messages)
+        summary_content = client.chat_messages[-1]["content"]
+        assert isinstance(summary_content, str)
+        assert "工具执行结果如下" in summary_content
+        assert "工具结果文本" in summary_content
+
+    def test_native_tool_result_block_cache_uses_actual_vision_client(self) -> None:
+        class TextClient:
+            def __init__(self) -> None:
+                self.settings = SimpleNamespace(model="text-model")
+
+            def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
+                return 0.8, {}
+
+        class VisionClient:
+            def __init__(self) -> None:
+                self.settings = SimpleNamespace(model="vision-model")
+                self.complete_call_count = 0
+
+            def complete_with_tools(self, _system_prompt, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+                self.complete_call_count += 1
+                if self.complete_call_count == 1:
+                    return ChatCompletionTurn(
+                        content="見るね。",
+                        tool_calls=[
+                            NativeToolCall(
+                                id="call_1",
+                                name="inspect_tool",
+                                arguments={},
+                            )
+                        ],
+                        message={
+                            "role": "assistant",
+                            "content": "見るね。",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "inspect_tool", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                    )
+                raise ApiRequestError(
+                    "API HTTP 400: function_response.name: [REQUIRED_FIELD_MISSING]"
+                )
+
+            def chat(self, _system_prompt, _messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                return ChatReply(
+                    segments=[
+                        ChatSegment(
+                            ja="画像つき結果をまとめたよ。",
+                            zh="我整理好带图工具结果了。",
+                            tone="中性",
+                        )
+                    ]
+                )
+
+        text_client = TextClient()
+        vision_client = VisionClient()
+        registry = ToolRegistry(
+            [
+                _dummy_tool(
+                    "inspect_tool",
+                    handler=lambda _args: {"answer": "vision tool result"},
+                )
+            ]
+        )
+        runtime = AgentRuntime(
+            text_client,  # type: ignore[arg-type]
+            _dummy_system_prompt(),
+            vision_api_client=vision_client,  # type: ignore[arg-type]
+            tools=registry,
+        )
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "看图执行工具"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            )
+        ]
+
+        result = runtime.handle_user_message(messages)
+
+        assert result.reply.segments[0].translation == "我整理好带图工具结果了。"
+        assert runtime._native_tool_results_blocked_models == {"vision-model"}
 
     def test_update_character_preserves_tools(self) -> None:
         tool = _dummy_tool("my_tool")

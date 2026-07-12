@@ -17,8 +17,7 @@ from pathlib import Path
 
 from app.config.character_archive import export_character_archive, import_character_archive
 from app.config.character_loader import CharacterProfile, _load_profile
-
-from tools.studio.character_doc import CARD_FILENAME, CharacterDoc
+from app.config.character_studio import CARD_FILENAME, CharacterStudioDoc as CharacterDoc
 
 
 class WorkspaceError(RuntimeError):

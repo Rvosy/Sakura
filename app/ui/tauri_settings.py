@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from app.agent.memory_curator import MemoryCurationSettings
@@ -56,7 +56,7 @@ from app.config.character_archive import (
     import_character_archive,
     import_character_voice_archive,
 )
-from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.character_loader import CharacterConfigError, CharacterProfile, CharacterRegistry
 from app.config.defaults import (
     DEFAULT_BASE_URL,
     DEFAULT_PROFILE_ALIAS,
@@ -180,12 +180,14 @@ from app.voice.tts_settings import (
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
 TAURI_SETTINGS_PROTOCOL_VERSION = 2
+SETTINGS_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
 TAURI_LAYOUT_PREVIEW_MARKER = "@@SAKURA_LAYOUT_PREVIEW@@"
 TAURI_SETTINGS_RESULT_MARKER = "@@SAKURA_SETTINGS_RESULT@@"
 TAURI_SETTINGS_RPC_MARKER = "@@SAKURA_SETTINGS_RPC@@"
 TAURI_SETTINGS_RPC_RESULT_MARKER = "@@SAKURA_SETTINGS_RPC_RESULT@@"
+TAURI_SETTINGS_CONTROL_MARKER = "@@SAKURA_SETTINGS_CONTROL@@"
 
 PLUGIN_PERMISSION_LABELS: dict[str, dict[str, str]] = {
     PERMISSION_TOOL: {"group": "工具", "label": "Agent 工具"},
@@ -427,6 +429,10 @@ class TauriRpcWorker(QObject):
             self.finished.emit()
 
 
+def _is_launchable_tauri_binary(path: Path) -> bool:
+    return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
+
+
 def resolve_tauri_settings_binary(
     base_dir: Path,
     environ: Mapping[str, str] | None = None,
@@ -435,7 +441,7 @@ def resolve_tauri_settings_binary(
     configured = env.get(TAURI_SETTINGS_BIN_ENV)
     if configured:
         path = Path(configured)
-        return path if path.is_file() else None
+        return path if _is_launchable_tauri_binary(path) else None
 
     root = Path(base_dir)
     binary_name = "sakura-settings.exe" if sys.platform == "win32" else "sakura-settings"
@@ -444,7 +450,7 @@ def resolve_tauri_settings_binary(
         root / "tools" / "settings-tauri" / "src-tauri" / "target" / "debug" / binary_name,
     )
     for candidate in candidates:
-        if candidate.is_file():
+        if _is_launchable_tauri_binary(candidate):
             return candidate
     return None
 
@@ -1017,6 +1023,7 @@ class TauriSettingsProcess(QObject):
         memory_curation_settings: MemoryCurationSettings | None = None,
         memory_store: Any | None = None,
         plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
+        studio_launcher: Callable[[str | None], bool | Mapping[str, object]] | None = None,
         model: str | None = None,
         parent_widget: QWidget | None = None,
         parent: QObject | None = None,
@@ -1059,6 +1066,7 @@ class TauriSettingsProcess(QObject):
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
         self.memory_store = memory_store
         self.plugin_settings_contributions = list(plugin_settings_contributions or [])
+        self.studio_launcher = studio_launcher
         self.resource_tasks = settings_resource_task_manager(
             self.base_dir,
             memory_store=self.memory_store,
@@ -1069,6 +1077,7 @@ class TauriSettingsProcess(QObject):
         self._nonce = ""
         self._done = False
         self._cleaned = False
+        self._startup_focus_complete = False
         self._request_payload = b""
         self._stdout_buffer = ""
         # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
@@ -1089,7 +1098,7 @@ class TauriSettingsProcess(QObject):
         process.setArguments([])
         process.setWorkingDirectory(str(self.base_dir))
         process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
-        process.started.connect(self._send_request)
+        process.started.connect(self._handle_started)
         process.finished.connect(self._handle_finished)
         process.errorOccurred.connect(self._handle_error)
         process.readyReadStandardOutput.connect(self._handle_stdout)
@@ -1097,6 +1106,7 @@ class TauriSettingsProcess(QObject):
         self._process = process
         self._nonce = str(request["nonce"])
         self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        self._startup_focus_complete = False
         process.start()
         return True
 
@@ -1105,15 +1115,46 @@ class TauriSettingsProcess(QObject):
         process = self._process
         if process is None:
             return False
+        control_sent = self._send_window_control("focus")
+        if sys.platform != "win32":
+            return control_sent
         try:
             pid = int(process.processId())
-        except (TypeError, ValueError):
+        except (RuntimeError, TypeError, ValueError):
             return False
         if pid <= 0:
             return False
-        if sys.platform == "win32":
-            return _restore_windows_for_pid(pid)
-        return False
+        return _restore_windows_for_pid(pid, force_foreground=True)
+
+    def _send_window_control(self, action: str) -> bool:
+        process = self._process
+        if process is None or self._done:
+            return False
+        line = TAURI_SETTINGS_CONTROL_MARKER + json.dumps({"action": action}) + "\n"
+        try:
+            return process.write(line.encode("utf-8")) >= 0
+        except (AttributeError, OSError, RuntimeError, TypeError):
+            return False
+
+    def _handle_started(self) -> None:
+        """发送初始化数据，并在 Windows 上有限重试把设置窗口送到前台。"""
+        self._send_request()
+        process = self._process
+        if process is None or self._done or sys.platform != "win32":
+            return
+        self._startup_focus_complete = False
+        for delay_ms in SETTINGS_FOCUS_RETRY_DELAYS_MS:
+            QTimer.singleShot(
+                delay_ms,
+                lambda active_process=process: self._try_startup_focus(active_process),
+            )
+
+    def _try_startup_focus(self, process: object) -> None:
+        """只操作当前仍存活的设置进程，成功一次后停止后续重试。"""
+        if self._done or self._process is not process or self._startup_focus_complete:
+            return
+        if self.focus_window():
+            self._startup_focus_complete = True
 
     def shutdown(self, timeout_ms: int = 1000) -> None:
         self._done = True
@@ -1441,6 +1482,46 @@ class TauriSettingsProcess(QObject):
             if color is None:
                 return {"cancelled": True}
             return {"color": color}
+        if method == "studio.launch":
+            if self.studio_launcher is None:
+                raise ValueError("角色工作室启动器不可用。")
+            character_id = str(params.get("character_id") or "").strip() or None
+            launch_result = self.studio_launcher(character_id)
+            if not launch_result:
+                raise ValueError("角色工作室未启动，请先构建 Tauri 角色工作室。")
+            if isinstance(launch_result, Mapping) and bool(
+                launch_result.get("refresh_characters")
+            ):
+                preferred_id = str(
+                    launch_result.get("current_character_id") or character_id or ""
+                ).strip()
+                try:
+                    registry = CharacterRegistry(self.base_dir)
+                except CharacterConfigError:
+                    self.character_registry = None
+                    self.current_character = None
+                    return {
+                        "current_character_id": "",
+                        "characters": [],
+                        "message": "角色列表已刷新。",
+                    }
+
+                try:
+                    current = registry.get(preferred_id) if preferred_id else None
+                except CharacterConfigError:
+                    current = None
+                if current is None:
+                    profiles = registry.all()
+                    current = profiles[0] if profiles else None
+                current_id = str(getattr(current, "id", "") or "")
+                self.character_registry = registry
+                self.current_character = current
+                return _character_rpc_result(
+                    registry,
+                    current_id,
+                    message="角色列表已刷新。",
+                )
+            return {"message": "角色工作室已打开。"}
         if method == "plugin.settings_action":
             return dispatch_tauri_plugin_settings_action(
                 self.plugin_settings_contributions,
@@ -1533,8 +1614,8 @@ class TauriSettingsProcess(QObject):
         self.deleteLater()
 
 
-def _restore_windows_for_pid(pid: int) -> bool:
-    """枚举属于该进程的可见顶层窗口，若被最小化则还原，并尝试前置。"""
+def _restore_windows_for_pid(pid: int, *, force_foreground: bool = False) -> bool:
+    """枚举目标进程的可见顶层窗口，按需还原并强制提到前台。"""
     try:
         import ctypes
         from ctypes import wintypes
@@ -1543,6 +1624,12 @@ def _restore_windows_for_pid(pid: int) -> bool:
 
     user32 = ctypes.windll.user32
     sw_restore = 9
+    hwnd_topmost = wintypes.HWND(-1)
+    hwnd_notopmost = wintypes.HWND(-2)
+    swp_nosize = 0x0001
+    swp_nomove = 0x0002
+    swp_showwindow = 0x0040
+    swp_front_flags = swp_nosize | swp_nomove | swp_showwindow
     found: list[int] = []
 
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -1565,11 +1652,47 @@ def _restore_windows_for_pid(pid: int) -> bool:
         return False
     if not found:
         return False
+    activated = False
     for hwnd in found:
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, sw_restore)
-        user32.SetForegroundWindow(hwnd)
-    return True
+        if not force_foreground:
+            user32.SetForegroundWindow(hwnd)
+            activated = True
+            continue
+
+        topmost_applied = False
+        topmost_removed = False
+        brought_to_top = False
+        foreground_set = False
+        try:
+            topmost_applied = bool(
+                user32.SetWindowPos(hwnd, hwnd_topmost, 0, 0, 0, 0, swp_front_flags)
+            )
+        except Exception:  # noqa: BLE001 - Win32 调用失败时交给后续重试。
+            topmost_applied = False
+        try:
+            topmost_removed = bool(
+                user32.SetWindowPos(hwnd, hwnd_notopmost, 0, 0, 0, 0, swp_front_flags)
+            )
+            if topmost_applied and not topmost_removed:
+                # 再补一次取消置顶，避免短暂抬升失败后残留为全局置顶窗口。
+                topmost_removed = bool(
+                    user32.SetWindowPos(hwnd, hwnd_notopmost, 0, 0, 0, 0, swp_front_flags)
+                )
+        except Exception:  # noqa: BLE001 - 返回 False，让启动重试继续补偿。
+            topmost_removed = False
+        try:
+            brought_to_top = bool(user32.BringWindowToTop(hwnd))
+            foreground_set = bool(user32.SetForegroundWindow(hwnd))
+        except Exception:  # noqa: BLE001 - 找到窗口但未成功前置时继续重试。
+            pass
+        activated = activated or (
+            topmost_applied
+            and topmost_removed
+            and (brought_to_top or foreground_set)
+        )
+    return activated
 
 
 def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str, object]:

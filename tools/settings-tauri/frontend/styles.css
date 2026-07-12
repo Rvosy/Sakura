@@ -907,6 +907,27 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.character-select-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: clamp(340px, 42vw, 520px);
+  min-width: 0;
+  justify-self: end;
+}
+
+.character-select-controls > select,
+.character-select-controls > .custom-select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.character-select-controls > button {
+  white-space: nowrap;
+}
+
 input[type="range"].layout-slider {
   --slider-progress: 0%;
   flex: 1;
@@ -2091,6 +2112,7 @@ button:focus-visible,
 .setting-row > .field-unit,
 .setting-row > .slider-control,
 .setting-row > .archive-controls,
+.setting-row > .character-select-controls,
 .setting-row > .inline-input,
 .setting-row > .setting-toggle,
 .setting-row > input,
@@ -2393,6 +2415,10 @@ input.is-invalid:hover,
 
   .setting-row > .custom-select {
     width: clamp(220px, 28vw, 320px);
+  }
+
+  .setting-row > .character-select-controls {
+    width: clamp(300px, 36vw, 420px);
   }
 
   .setting-row > .slider-control {

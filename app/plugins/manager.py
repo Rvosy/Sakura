@@ -14,7 +14,7 @@ from typing import Any
 
 from app.agent.tools.registry import Tool
 from app.agent.tools import ToolRegistry
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import DEFAULT_THREAD_SHUTDOWN_WAIT_MS, ResourceRegistry
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
@@ -127,7 +127,7 @@ class PluginManager:
                     for renderer in result.capabilities.renderers
                 )
             if result.error and spec.required:
-                debug_log(
+                log_event(
                     "PluginManager",
                     "必需插件加载失败，中止",
                     {"entry": spec.entry, "plugin_id": spec.plugin_id, "error": result.error},
@@ -197,7 +197,7 @@ class PluginManager:
             result.loaded = True
             self._plugins.append(plugin)
             self._active_plugins.append((plugin, manifest))
-            debug_log(
+            log_event(
                 "PluginManager",
                 "插件已加载",
                 {
@@ -219,7 +219,7 @@ class PluginManager:
             if result.manifest is not None:
                 self._services.resources.stop_plugin(result.manifest.plugin_id)
                 self._event_bus.remove_plugin(result.manifest.plugin_id)
-            debug_log(
+            log_event(
                 "PluginManager",
                 "插件加载失败",
                 {"entry": spec.entry, "plugin_id": spec.plugin_id, "error": str(exc)},
@@ -236,7 +236,7 @@ class PluginManager:
         """向拥有对应权限的插件派发生命周期事件。"""
         hook = _EVENT_HOOKS.get(event_type)
         if hook is None:
-            debug_log("PluginManager", "忽略未知插件事件", {"event_type": event_type})
+            log_event("PluginManager", "忽略未知插件事件", {"event_type": event_type})
             return
         hook_name, permission = hook
         event = PluginEvent(event_type=event_type, payload=payload or {}, source=source)
@@ -249,7 +249,7 @@ class PluginManager:
             try:
                 callback(event)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "PluginManager",
                     "插件事件 hook 失败",
                     {
@@ -643,7 +643,7 @@ def _shutdown_quietly(plugin: PluginBase) -> None:
     try:
         plugin.shutdown()
     except Exception as exc:
-        debug_log(
+        log_event(
             "PluginManager",
             "插件关闭失败",
             {"plugin": getattr(plugin, "plugin_id", "unknown"), "error": str(exc)},

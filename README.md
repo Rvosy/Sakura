@@ -53,7 +53,7 @@ Sakura 最大的特点：**她会主动来找你**。
 
 **角色与外观**
 - 角色包驱动 — `.char` 一键导入，角色卡、立绘、GPT-SoVITS 语音权重一体打包；UI 主题色跟随角色
-- 角色工作室 — Windows 可运行 `start_studio.bat`，用图形界面新建、编辑并导出 `.char` 角色包
+- 角色工作室 — Windows / macOS Release 包内置 Tauri 工坊，可从设置页新建、编辑并导出 `.char` 角色包
 - 外观效果 — 支持纯色 / 高斯模糊 / 亚克力 / macOS 原生毛玻璃（NSVisualEffectView），气泡与输入栏位置、大小可调
 
 **主动感知**

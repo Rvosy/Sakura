@@ -44,7 +44,7 @@ from app.llm.api_client import (
 )
 from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
-from app.core.debug_log import debug_body_enabled, debug_log, summarize_messages
+from app.core.runtime_log import log_body_enabled, log_event, summarize_messages
 from app.agent.runtime_limits import (
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
     MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
@@ -136,6 +136,7 @@ class AgentRuntime:
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+        self._native_tool_results_blocked_models: set[str] = set()
 
     @property
     def vision_api_client(self) -> OpenAICompatibleClient | None:
@@ -211,7 +212,7 @@ class AgentRuntime:
                 current_input=request.current_input,
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log("SessionState", "最近会话状态读取失败，已跳过", {"error": str(exc)})
+            log_event("SessionState", "最近会话状态读取失败，已跳过", {"error": str(exc)})
             return ()
         return (fragment,) if fragment is not None else ()
 
@@ -226,7 +227,7 @@ class AgentRuntime:
                 inspection = self._last_prompt_inspection
         if inspection is None:
             return None
-        return inspection.to_dict(include_content=debug_body_enabled())
+        return inspection.to_dict(include_content=log_body_enabled())
 
     def _record_prompt_inspection(self, inspection: PromptInspection) -> None:
         lock = getattr(self, "_prompt_inspection_lock", None)
@@ -235,10 +236,10 @@ class AgentRuntime:
         else:
             with lock:
                 self._last_prompt_inspection = inspection
-        debug_log(
+        log_event(
             "PromptInspector",
             "Prompt 构建完成",
-            inspection.to_dict(include_content=debug_body_enabled()),
+            inspection.to_dict(include_content=log_body_enabled()),
         )
 
     def _build_single_context_snapshot(
@@ -315,7 +316,7 @@ class AgentRuntime:
         if not retry_reason:
             retry_reason = "missing_translation"
 
-        debug_log(
+        log_event(
             "AgentRuntime",
             "最终回复结构异常，准备请求模型修复",
             {"reason": retry_reason, "raw_content": raw_content},
@@ -347,19 +348,19 @@ class AgentRuntime:
                 cancel_checker=cancel_checker,
             )
         except ApiRequestError as exc:
-            debug_log("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
+            log_event("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
             return parsed.reply
 
         check_cancelled(cancel_checker)
         repaired = parse_chat_reply_result(repaired_turn.content)
         if repaired.needs_retry:
-            debug_log(
+            log_event(
                 "AgentRuntime",
                 "最终回复修复后仍不合格，使用安全兜底",
                 {"reason": repaired.reason, "raw_content": repaired_turn.content},
             )
             return parsed.reply
-        debug_log("AgentRuntime", "最终回复结构修复成功", {"repaired": repaired.repaired})
+        log_event("AgentRuntime", "最终回复结构修复成功", {"repaired": repaired.repaired})
         return repaired.reply
 
     def _parse_reply_and_visual_observation(
@@ -421,6 +422,22 @@ class AgentRuntime:
             cancel_checker=cancel_checker,
         )
 
+    def _complete_final_reply_with_chat(
+        self,
+        system_prompt: str,
+        working_messages: list[ChatMessage],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> tuple[ChatReply, dict[str, Any] | None]:
+        reply = self._client_for_messages(working_messages).chat(
+            system_prompt,
+            working_messages,
+            self.reply_tones,
+            self.reply_portraits,
+            cancel_checker=cancel_checker,
+        )
+        return reply, None
+
     def handle_user_message(
         self,
         messages: list[ChatMessage],
@@ -435,7 +452,7 @@ class AgentRuntime:
             and not messages_contain_image(messages)
             and tool_routing._should_offer_screen_observation(messages)
         )
-        debug_log(
+        log_event(
             "AgentRuntime",
             "开始处理用户消息",
             {
@@ -481,6 +498,7 @@ class AgentRuntime:
         memory_status = "unknown"
         memory_needs_refresh = True
         loop_settings = self.runtime_loop_settings
+        use_text_tool_summary = False
         for step_index in range(loop_settings.max_agent_steps_per_turn):
             check_cancelled(cancel_checker)
             include_visual_observation = messages_contain_image(working_messages)
@@ -506,6 +524,7 @@ class AgentRuntime:
                 browser_page_mode=browser_page_guard_active,
                 visible_browser_mode=visible_browser_guard_active,
             )
+            request_client = self._client_for_messages(working_messages)
             try:
                 planning_started_at = time.perf_counter()
                 tool_names = [
@@ -556,7 +575,7 @@ class AgentRuntime:
                 )
                 self._record_prompt_inspection(prompt_build.inspection)
                 dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
-                turn = self._client_for_messages(working_messages).complete_with_tools(
+                turn = request_client.complete_with_tools(
                     prompt_build.system_prompt,
                     working_messages,
                     tools=tool_defs,
@@ -576,28 +595,31 @@ class AgentRuntime:
                     )
             except ApiRequestError as exc:
                 if messages_contain_image(working_messages) and is_vision_unsupported_error(exc):
-                    debug_log("AgentRuntime", "视觉输入不受支持，返回兜底回复", {"error": str(exc)})
+                    log_event("AgentRuntime", "视觉输入不受支持，返回兜底回复", {"error": str(exc)})
                     return AgentResult(
                         reply=vision_unsupported_reply or _build_vision_unsupported_reply(),
                         actions=emitted_actions,
                     )
+                if execution_results and _is_function_response_name_missing_error(exc):
+                    model = _api_client_model(request_client)
+                    if model:
+                        self._native_tool_results_blocked_models.add(model)
+                    log_event(
+                        "AgentRuntime",
+                        "原生工具结果回填不被端点接受，改用文本工具结果总结",
+                        {"error": str(exc), "tool_result_count": len(execution_results)},
+                    )
+                    working_messages = _build_text_tool_summary_messages(
+                        messages,
+                        execution_results,
+                        include_images=self.model_vision_enabled,
+                    )
+                    use_text_tool_summary = True
+                    break
                 raise
             check_cancelled(cancel_checker)
-            debug_log(
-                "AgentRuntime",
-                "原生工具模型返回",
-                {
-                    "step_index": step_index,
-                    "content": turn.content,
-                    "tool_calls": [
-                        {"id": call.id, "name": call.name, "arguments": call.arguments}
-                        for call in turn.tool_calls
-                    ],
-                    "planning_elapsed_ms": int((time.perf_counter() - planning_started_at) * 1000),
-                },
-            )
             if not turn.tool_calls:
-                debug_log(
+                log_event(
                     "AgentRuntime",
                     "多步循环完成，返回模型回复",
                     {
@@ -649,10 +671,10 @@ class AgentRuntime:
                 total_tool_calls += 1
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
                 call_data = _native_tool_call_to_policy_call(call, execution_arguments)
-                debug_log("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
+                log_event("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
                 if tool_routing._should_block_windows_tool_for_browser_page(call_data, browser_page_guard_active):
                     blocked_result = tool_routing._build_browser_page_windows_tool_block_result(call_data)
-                    debug_log("AgentRuntime", "浏览器页面模式拦截 Windows 工具", blocked_result.to_dict())
+                    log_event("AgentRuntime", "浏览器页面模式拦截 Windows 工具", blocked_result.to_dict())
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
                     tool_messages.extend(
@@ -671,7 +693,7 @@ class AgentRuntime:
                     continue
                 if tool_routing._should_block_background_web_tool_for_visible_browser(call_data, visible_browser_guard_active):
                     blocked_result = tool_routing._build_visible_browser_web_tool_block_result(call_data)
-                    debug_log("AgentRuntime", "可见浏览器模式拦截后台网页工具", blocked_result.to_dict())
+                    log_event("AgentRuntime", "可见浏览器模式拦截后台网页工具", blocked_result.to_dict())
                     step_results.append(blocked_result)
                     execution_results.append(blocked_result)
                     tool_messages.extend(
@@ -710,7 +732,7 @@ class AgentRuntime:
                         start_after_call_id=call.id,
                     )
                     tool_messages.extend(skipped_after_pending)
-                    debug_log(
+                    log_event(
                         "AgentRuntime",
                         "工具调用等待用户确认",
                         {
@@ -727,7 +749,7 @@ class AgentRuntime:
                             type=SCREEN_OBSERVATION_REQUEST_ACTION,
                             payload={"reason": _tool_call_reason(call)},
                         )
-                        debug_log(
+                        log_event(
                             "AgentRuntime",
                             "请求屏幕观察 follow-up",
                             {
@@ -747,7 +769,7 @@ class AgentRuntime:
                         error=SCREEN_OBSERVATION_DISABLED_ERROR,
                     )
 
-                debug_log("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
+                log_event("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
                 step_results.append(prepared)
                 execution_results.append(prepared)
                 tool_messages.extend(
@@ -768,7 +790,7 @@ class AgentRuntime:
 
             skipped_calls = len(turn.tool_calls) - allowed_calls
             if skipped_calls > 0:
-                debug_log(
+                log_event(
                     "AgentRuntime",
                     "工具调用数量超过上限",
                     {
@@ -846,7 +868,7 @@ class AgentRuntime:
                 )
 
             if pending_actions:
-                debug_log(
+                log_event(
                     "AgentRuntime",
                     "返回待确认动作",
                     {
@@ -878,8 +900,19 @@ class AgentRuntime:
             if not step_results:
                 break
 
-            working_messages.append(turn.message)
-            working_messages.extend(tool_messages)
+            next_working_messages = [*working_messages, turn.message, *tool_messages]
+            next_request_client = self._client_for_messages(next_working_messages)
+            model = _api_client_model(next_request_client)
+            if model and model in self._native_tool_results_blocked_models:
+                working_messages = _build_text_tool_summary_messages(
+                    messages,
+                    execution_results,
+                    include_images=self.model_vision_enabled,
+                )
+                use_text_tool_summary = True
+                break
+
+            working_messages = next_working_messages
             # 本步若写过记忆，下一步重新执行相关记忆召回。
             if any(
                 getattr(result, "tool_name", "") in {"memory_remember", "memory_forget"}
@@ -887,7 +920,7 @@ class AgentRuntime:
             ):
                 memory_needs_refresh = True
             if should_fast_forward_final_reply:
-                debug_log(
+                log_event(
                     "AgentRuntime",
                     "自动浏览器快照后直接进入最终总结",
                     {
@@ -903,19 +936,54 @@ class AgentRuntime:
         try:
             check_cancelled(cancel_checker)
             final_started_at = time.perf_counter()
-            final_reply, final_visual_observation = self._complete_final_reply(
-                self._build_final_reply_prompt(),
-                working_messages,
-                cancel_checker=cancel_checker,
-            )
+            final_prompt = self._build_final_reply_prompt()
+            if use_text_tool_summary:
+                final_reply, final_visual_observation = self._complete_final_reply_with_chat(
+                    final_prompt,
+                    working_messages,
+                    cancel_checker=cancel_checker,
+                )
+            else:
+                final_reply, final_visual_observation = self._complete_final_reply(
+                    final_prompt,
+                    working_messages,
+                    cancel_checker=cancel_checker,
+                )
             check_cancelled(cancel_checker)
         except OperationCancelled:
             raise
         except Exception as exc:
-            debug_log("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
-            final_reply = _build_fallback_tool_reply(execution_results)
-            final_visual_observation = None
-        debug_log(
+            if _is_function_response_name_missing_error(exc):
+                log_event(
+                    "AgentRuntime",
+                    "工具结果原生总结不被端点接受，改用文本总结",
+                    {"error": str(exc), "tool_result_count": len(execution_results)},
+                )
+                try:
+                    final_reply, final_visual_observation = self._complete_final_reply_with_chat(
+                        self._build_final_reply_prompt(),
+                        _build_text_tool_summary_messages(
+                            messages,
+                            execution_results,
+                            include_images=self.model_vision_enabled,
+                        ),
+                        cancel_checker=cancel_checker,
+                    )
+                except OperationCancelled:
+                    raise
+                except Exception as retry_exc:
+                    log_event(
+                        "AgentRuntime",
+                        "工具结果文本总结失败，使用本地兜底回复",
+                        {"error": str(retry_exc)},
+                    )
+                    final_reply = _build_fallback_tool_reply(execution_results)
+                    final_visual_observation = None
+            else:
+                log_event("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
+                final_reply = _build_fallback_tool_reply(execution_results)
+                final_visual_observation = None
+        log_event(
             "AgentRuntime",
             "最终回复生成完成",
             {
@@ -939,7 +1007,7 @@ class AgentRuntime:
     ) -> AgentResult:
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
-        debug_log("AgentRuntime", "执行已确认动作", action.to_dict())
+        log_event("AgentRuntime", "执行已确认动作", action.to_dict())
         result = self.tools.execute(action.tool_name, action.arguments)
         check_cancelled(cancel_checker)
         results = [result]
@@ -984,7 +1052,7 @@ class AgentRuntime:
                 and not messages_contain_image(working_messages)
                 and tool_routing._should_offer_screen_observation(working_messages)
             )
-            debug_log(
+            log_event(
                 "AgentRuntime",
                 "已确认动作接回 Agent 循环",
                 {
@@ -1024,19 +1092,23 @@ class AgentRuntime:
         except OperationCancelled:
             raise
         except Exception as exc:
-            debug_log(
-                "AgentRuntime",
-                "确认动作总结失败，使用本地兜底回复",
-                {"error": str(exc)},
-            )
+            log_event("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
             reply = _build_fallback_tool_reply(results)
+        log_event(
+            "AgentRuntime",
+            "已确认动作处理完成",
+            {
+                "results": [_redact_tool_result_for_model(item) for item in results],
+                "segments": len(reply.segments),
+            },
+        )
         return AgentResult(
             reply=reply,
             actions=emitted_actions,
         )
 
     def handle_cancelled_action(self, action: PendingToolAction) -> AgentResult:
-        debug_log("AgentRuntime", "用户取消待确认动作", action.to_dict())
+        log_event("AgentRuntime", "用户取消待确认动作", action.to_dict())
         return AgentResult(
             reply=parse_chat_reply(
                 json.dumps(
@@ -1071,7 +1143,7 @@ class AgentRuntime:
         if event.type not in {"reminder_due", "screen_awareness_check", "proactive_check"}:
             return AgentResult(reply=parse_chat_reply("未対応のイベントだよ。"))
 
-        debug_log("AgentRuntime", "处理主动事件", {"event": {"type": event.type, "payload": event.payload}})
+        log_event("AgentRuntime", "处理主动事件", {"event": {"type": event.type, "payload": event.payload}})
         event_messages = _build_event_messages(event)
         event_action = AgentAction(
             type="event",
@@ -1123,7 +1195,7 @@ class AgentRuntime:
             check_cancelled(cancel_checker)
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
-                debug_log("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
+                log_event("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
                 return AgentResult(reply=_build_proactive_vision_unsupported_reply())
             raise
         return AgentResult(
@@ -1373,7 +1445,7 @@ def _emit_progress_from_content(
     except OperationCancelled:
         raise
     except Exception as exc:
-        debug_log("AgentRuntime", "中间回复回调失败，已忽略", {"error": str(exc), "stage": stage})
+        log_event("AgentRuntime", "中间回复回调失败，已忽略", {"error": str(exc), "stage": stage})
 
 
 def _should_emit_progress(metadata: dict[str, Any]) -> bool:
@@ -1396,6 +1468,12 @@ def _reply_has_display_translation(reply: ChatReply) -> bool:
         segment.text.strip() and segment.translation.strip()
         for segment in reply.segments
     )
+
+
+def _api_client_model(api_client: Any) -> str:
+    settings = getattr(api_client, "settings", None)
+    model = getattr(settings, "model", "")
+    return str(model).strip()
 
 
 def _native_tool_call_to_policy_call(
@@ -1484,6 +1562,11 @@ def _build_tool_role_message(call: NativeToolCall, result: ToolExecutionResult) 
         "name": call.name,
         "content": json.dumps(_redact_tool_result_for_model(result), ensure_ascii=False, default=str),
     }
+
+
+def _is_function_response_name_missing_error(error: BaseException | str) -> bool:
+    text = str(error).lower()
+    return "function_response.name" in text and "required_field_missing" in text
 
 
 def _build_tool_messages_for_result(
@@ -1704,6 +1787,18 @@ def _build_tool_results_message(
         for image_url in images
     )
     return {"role": "user", "content": content}
+
+
+def _build_text_tool_summary_messages(
+    messages: list[ChatMessage],
+    results: list[ToolExecutionResult],
+    *,
+    include_images: bool = False,
+) -> list[ChatMessage]:
+    return [
+        *messages,
+        _build_tool_results_message(results, include_images=include_images),
+    ]
 
 
 def _build_confirmed_action_result_message(

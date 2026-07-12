@@ -27,7 +27,7 @@ from app.config.migration_runner import MigrationReport, MigrationRunner
 from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.instance import SingleInstanceGuard
 from app.core.selfcheck import run_startup_self_check
 from app.storage.paths import StoragePaths
@@ -47,6 +47,7 @@ from app.ui.tauri_settings import (
     resolve_tauri_settings_binary,
     tts_settings_from_tauri_result,
 )
+from app.ui.tauri_studio import TauriStudioProcess, resolve_tauri_studio_binary
 from app.ui.portrait_controller import PORTRAIT_SCALE_DEFAULT_PERCENT
 from app.ui.subtitle_controller import normalize_subtitle_display_speed
 from app.voice.tts_settings import TTSConfigError
@@ -87,7 +88,7 @@ def _enable_crash_diagnostics(base_dir: Path) -> None:
         _CRASH_LOG_HANDLE = handle
         faulthandler.enable(file=handle, all_threads=True)
     except Exception as exc:  # noqa: BLE001
-        debug_log("Startup", "启用 faulthandler 失败", {"error": str(exc)})
+        log_event("Startup", "启用 faulthandler 失败", {"error": str(exc)})
 
     previous_hook = sys.excepthook
 
@@ -96,7 +97,7 @@ def _enable_crash_diagnostics(base_dir: Path) -> None:
             previous_hook(exc_type, exc_value, exc_tb)
             return
         text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        debug_log("Crash", "未捕获异常", {"error": text})
+        log_event("Crash", "未捕获异常", {"error": text})
         handle = _CRASH_LOG_HANDLE
         if handle is not None:
             try:
@@ -150,8 +151,8 @@ def _configure_windows_high_dpi() -> None:
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
     except Exception as exc:  # noqa: BLE001
-        debug_log("Startup", "配置 Qt HighDPI 舍入策略失败", {"error": str(exc)})
-    debug_log("Startup", "Windows HighDPI 配置完成", {"awareness": awareness})
+        log_event("Startup", "配置 Qt HighDPI 舍入策略失败", {"error": str(exc)})
+    log_event("Startup", "Windows HighDPI 配置完成", {"awareness": awareness})
 
 
 def _set_windows_process_dpi_awareness() -> str:
@@ -187,7 +188,7 @@ def _set_windows_process_dpi_awareness() -> str:
     except Exception as exc:  # noqa: BLE001
         errors.append(f"SetProcessDPIAware: {exc}")
 
-    debug_log("Startup", "Windows DPI 感知配置未生效", {"errors": errors})
+    log_event("Startup", "Windows DPI 感知配置未生效", {"errors": errors})
     return "unchanged"
 
 
@@ -251,21 +252,21 @@ class DeferredStartupWorker(QObject):
                 try:
                     close()
                 except Exception as exc:  # noqa: BLE001
-                    debug_log("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
+                    log_event("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
         mcp_tool_provider = getattr(services, "mcp_tool_provider", None)
         close_mcp = getattr(mcp_tool_provider, "close", None)
         if callable(close_mcp):
             try:
                 close_mcp()
             except Exception as exc:  # noqa: BLE001
-                debug_log("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
+                log_event("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
         plugin_manager = getattr(services, "plugin_manager", None)
         shutdown_all = getattr(plugin_manager, "shutdown_all", None)
         if callable(shutdown_all):
             try:
                 shutdown_all()
             except Exception as exc:  # noqa: BLE001
-                debug_log("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
+                log_event("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
 
 
 class TTSBundleMigrationWorker(QObject):
@@ -468,7 +469,7 @@ def main() -> int:
 
 
 def _write_startup_error(category: str, message: str) -> None:
-    debug_log(category, "启动失败", {"error": message})
+    log_event(category, "启动失败", {"error": message})
     sys.stderr.write(f"[{category}] {message}\n")
 
 
@@ -490,7 +491,52 @@ def _ensure_launch_at_login_state(
         settings = settings_service.load_startup_settings()
         ensure_launch_at_login_state(base_dir, settings.launch_at_login)
     except (LaunchAtLoginError, OSError) as exc:
-        debug_log("Startup", "同步登录自启动状态失败", {"error": str(exc)})
+        log_event("Startup", "同步登录自启动状态失败", {"error": str(exc)})
+
+
+def _open_first_run_studio(
+    base_dir: Path,
+    character_id: str | None = None,
+) -> dict[str, object] | bool:
+    if resolve_tauri_studio_binary(base_dir) is None:
+        return False
+
+    loop = QEventLoop()
+    state: dict[str, object] = {"finished": False, "closed": False}
+    process = TauriStudioProcess(
+        base_dir,
+        initial_character_id=str(character_id or ""),
+    )
+
+    def _on_closed() -> None:
+        state["finished"] = True
+        state["closed"] = True
+        loop.quit()
+
+    def _on_failed(message: object) -> None:
+        state["finished"] = True
+        state["error"] = str(message) or "角色工作室启动失败。"
+        loop.quit()
+
+    process.closed.connect(_on_closed)
+    process.failed.connect(_on_failed)
+    started = process.start()
+    try:
+        if started and not bool(state["finished"]):
+            loop.exec()
+    finally:
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
+    if "error" in state:
+        raise RuntimeError(str(state["error"]))
+    if not bool(state["closed"]):
+        return False
+    return {
+        "refresh_characters": True,
+        "current_character_id": str(character_id or ""),
+    }
 
 
 def _open_first_run_settings(base_dir: Path) -> AppContext | None:
@@ -529,6 +575,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         tts_settings=tts_settings,
         startup_settings=startup_settings,
         launch_at_login_supported=is_launch_at_login_supported(),
+        studio_launcher=lambda character_id: _open_first_run_studio(base_dir, character_id),
         model=getattr(api_settings, "model", None),
     )
 
@@ -665,7 +712,7 @@ def _pending_startup_tts_migrations(base_dir: Path) -> list[TTSBundleMigration]:
     provider_migrations = find_pending_bundle_migrations(base_dir, settings.provider)
     all_migrations = find_pending_bundle_migrations(base_dir)
     migrations = _dedupe_tts_migrations([*provider_migrations, *all_migrations])
-    debug_log(
+    log_event(
         "TTS",
         "启动检测 TTS 整合包迁移",
         {

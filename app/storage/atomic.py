@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 # 备份文件后缀；与 .gitignore 中的 *.bak 约定一致，不会进入版本库
 BACKUP_SUFFIX = ".bak"
@@ -40,7 +40,7 @@ def atomic_write_text(
         try:
             backup_path.write_bytes(path.read_bytes())
         except OSError as exc:
-            debug_log(
+            log_event(
                 "Storage",
                 "写入前备份失败，继续保存",
                 {"path": str(path), "backup": str(backup_path), "error": str(exc)},
@@ -85,7 +85,7 @@ def rename_with_retry(source: Path, target: Path) -> None:
             if winerror not in _RETRYABLE_WINERRORS or attempt == _RENAME_RETRY_ATTEMPTS - 1:
                 raise
             delay = _RENAME_RETRY_INITIAL_DELAY_SECONDS * (2**attempt)
-            debug_log(
+            log_event(
                 "Storage",
                 "改名被瞬时锁定，准备重试",
                 {
@@ -112,7 +112,7 @@ def replace_with_retry(source: Path, target: Path) -> None:
             if winerror not in _RETRYABLE_WINERRORS or attempt == _RENAME_RETRY_ATTEMPTS - 1:
                 raise
             delay = _RENAME_RETRY_INITIAL_DELAY_SECONDS * (2**attempt)
-            debug_log(
+            log_event(
                 "Storage",
                 "替换文件被瞬时锁定，准备重试",
                 {
