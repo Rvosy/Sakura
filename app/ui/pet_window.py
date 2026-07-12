@@ -653,6 +653,7 @@ class PetWindow(QWidget):
         self.tauri_settings_process: TauriSettingsProcess | None = None
         self.tauri_studio_process: TauriStudioProcess | None = None
         self._tauri_original_layout: tuple[int, int, int, int, int] | None = None
+        self._tauri_original_font_sizes: tuple[int, int, int, int] | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
         self.worker: ChatWorker | EventWorker | None = None
@@ -5349,11 +5350,18 @@ class PetWindow(QWidget):
             self.control_panel_vertical_offset,
             self.input_bar_offset,
         )
+        self._tauri_original_font_sizes = (
+            self.speech_font_size,
+            self.name_font_size,
+            self.input_font_size,
+            self.button_font_size,
+        )
         # 必须在启动外部窗口前先撤销桌宠的实际置顶；否则设置窗口即使短暂置前，
         # 取消临时 topmost 后仍可能重新落到常驻置顶的桌宠与输入栏下面。
         self._set_secondary_windows_topmost_suppressed(True)
         if not process.start():
             self._tauri_original_layout = None
+            self._tauri_original_font_sizes = None
             self._sync_secondary_window_state()
             return False
         self.tauri_settings_process = process
@@ -5746,10 +5754,11 @@ class PetWindow(QWidget):
             self.tray_icon.setContextMenu(self._build_menu())
         if final:
             self._tauri_initial_tts_settings = None
-            # 已应用并持久化最终布局，丢弃回滚基准。
+            # 已应用并持久化最终设置，丢弃回滚基准。
             self._tauri_original_layout = None
+            self._tauri_original_font_sizes = None
         else:
-            # 「应用」后窗口仍打开：把回滚基准更新为当前已应用状态，
+            # 「应用」后窗口仍打开：把布局和字号回滚基准更新为当前已应用状态，
             # 以便后续滑块实时预览的「取消」回滚到这里而不是最初打开时。
             self._tauri_initial_tts_settings = tts_settings
             self._tauri_original_layout = (
@@ -5758,6 +5767,12 @@ class PetWindow(QWidget):
                 result.character.bubble_height,
                 result.character.control_panel_vertical_offset,
                 result.character.input_bar_offset,
+            )
+            self._tauri_original_font_sizes = (
+                system_basic.speech_font_size,
+                system_basic.name_font_size,
+                system_basic.input_font_size,
+                system_basic.button_font_size,
             )
         messages: list[str] = []
         if mcp_restart_required:
@@ -5785,7 +5800,7 @@ class PetWindow(QWidget):
         # 「应用」失败时窗口仍开着，不要还原布局预览/恢复置顶，保留用户编辑现场。
         if final:
             self._tauri_initial_tts_settings = None
-            self._restore_tauri_layout_preview()
+            self._restore_tauri_settings_preview()
             self._sync_secondary_window_state()
 
     def _close_unused_tauri_tts_provider(self, provider: object) -> None:
@@ -5806,7 +5821,7 @@ class PetWindow(QWidget):
         if callable(shutdown):
             shutdown()
         self._tauri_initial_tts_settings = None
-        self._restore_tauri_layout_preview()
+        self._restore_tauri_settings_preview()
         self._sync_secondary_window_state()
 
     def _restore_tauri_layout_preview(self) -> None:
@@ -5816,6 +5831,19 @@ class PetWindow(QWidget):
         if original_layout is not None:
             self._preview_layout(*original_layout)
 
+    def _restore_tauri_font_preview(self) -> None:
+        """撤销 Tauri 实时预览对字号的改动，回到最近一次已保存状态。"""
+        original_font_sizes = getattr(self, "_tauri_original_font_sizes", None)
+        self._tauri_original_font_sizes = None
+        if original_font_sizes is not None:
+            self._apply_fonts_values(*original_font_sizes)
+
+    def _restore_tauri_settings_preview(self) -> None:
+        """统一撤销 Tauri 布局/字号预览并释放临时强制显示状态。"""
+        self._release_tauri_preview_force_state()
+        self._restore_tauri_layout_preview()
+        self._restore_tauri_font_preview()
+
     def _release_tauri_preview_force_state(self) -> None:
         """释放 Tauri 设置预览期间的 force_visible（恢复常规显隐逻辑）。"""
         input_animator = getattr(self, "input_bar_animator", None)
@@ -5824,10 +5852,9 @@ class PetWindow(QWidget):
 
     @Slot()
     def _on_tauri_settings_cancelled(self) -> None:
-        self._release_tauri_preview_force_state()
         self.tauri_settings_process = None
         self._tauri_initial_tts_settings = None
-        self._restore_tauri_layout_preview()
+        self._restore_tauri_settings_preview()
         self._sync_secondary_window_state()
 
     @Slot(str)
@@ -5838,7 +5865,7 @@ class PetWindow(QWidget):
         if callable(shutdown):
             shutdown()
         self._tauri_initial_tts_settings = None
-        self._restore_tauri_layout_preview()
+        self._restore_tauri_settings_preview()
         self._sync_secondary_window_state()
         show_themed_warning(
             self,
@@ -6237,42 +6264,38 @@ class PetWindow(QWidget):
 
     def _load_speech_font_size(self) -> int:
         system_values = self._load_system_config_values("ui")
-        return max(
-            SPEECH_FONT_SIZE_MIN,
-            min(
-                SPEECH_FONT_SIZE_MAX,
-                int(system_values.get("speech_font_size", DEFAULT_SPEECH_FONT_SIZE)),
-            ),
+        return _normalize_font_size(
+            system_values.get("speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+            default=DEFAULT_SPEECH_FONT_SIZE,
+            minimum=SPEECH_FONT_SIZE_MIN,
+            maximum=SPEECH_FONT_SIZE_MAX,
         )
 
     def _load_name_font_size(self) -> int:
         system_values = self._load_system_config_values("ui")
-        return max(
-            NAME_FONT_SIZE_MIN,
-            min(
-                NAME_FONT_SIZE_MAX,
-                int(system_values.get("name_font_size", DEFAULT_NAME_FONT_SIZE)),
-            ),
+        return _normalize_font_size(
+            system_values.get("name_font_size", DEFAULT_NAME_FONT_SIZE),
+            default=DEFAULT_NAME_FONT_SIZE,
+            minimum=NAME_FONT_SIZE_MIN,
+            maximum=NAME_FONT_SIZE_MAX,
         )
 
     def _load_input_font_size(self) -> int:
         system_values = self._load_system_config_values("ui")
-        return max(
-            INPUT_FONT_SIZE_MIN,
-            min(
-                INPUT_FONT_SIZE_MAX,
-                int(system_values.get("input_font_size", DEFAULT_INPUT_FONT_SIZE)),
-            ),
+        return _normalize_font_size(
+            system_values.get("input_font_size", DEFAULT_INPUT_FONT_SIZE),
+            default=DEFAULT_INPUT_FONT_SIZE,
+            minimum=INPUT_FONT_SIZE_MIN,
+            maximum=INPUT_FONT_SIZE_MAX,
         )
 
     def _load_button_font_size(self) -> int:
         system_values = self._load_system_config_values("ui")
-        return max(
-            BUTTON_FONT_SIZE_MIN,
-            min(
-                BUTTON_FONT_SIZE_MAX,
-                int(system_values.get("button_font_size", DEFAULT_BUTTON_FONT_SIZE)),
-            ),
+        return _normalize_font_size(
+            system_values.get("button_font_size", DEFAULT_BUTTON_FONT_SIZE),
+            default=DEFAULT_BUTTON_FONT_SIZE,
+            minimum=BUTTON_FONT_SIZE_MIN,
+            maximum=BUTTON_FONT_SIZE_MAX,
         )
 
     def _load_subtitle_display_speed(self) -> tuple[int, int]:
@@ -7339,6 +7362,23 @@ def _compact_tts_error(message: str, limit: int = 160) -> str:
     if len(compacted) <= limit:
         return compacted
     return compacted[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _normalize_font_size(
+    value: object,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """把用户配置字号安全归一化，非法值回退默认值。"""
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:

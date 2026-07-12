@@ -179,7 +179,7 @@ from app.voice.tts_settings import (
 )
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
-TAURI_SETTINGS_PROTOCOL_VERSION = 2
+TAURI_SETTINGS_PROTOCOL_VERSION = 3
 SETTINGS_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
@@ -789,19 +789,27 @@ def parse_tauri_settings_payload(
             ).normalized(),
             speech_font_size=_clamp_int_value(
                 ui.get("speech_font_size"),
-                SPEECH_FONT_SIZE_MIN, SPEECH_FONT_SIZE_MAX,
+                SPEECH_FONT_SIZE_MIN,
+                SPEECH_FONT_SIZE_MAX,
+                default=DEFAULT_SPEECH_FONT_SIZE,
             ),
             name_font_size=_clamp_int_value(
                 ui.get("name_font_size"),
-                NAME_FONT_SIZE_MIN, NAME_FONT_SIZE_MAX,
+                NAME_FONT_SIZE_MIN,
+                NAME_FONT_SIZE_MAX,
+                default=DEFAULT_NAME_FONT_SIZE,
             ),
             input_font_size=_clamp_int_value(
                 ui.get("input_font_size"),
-                INPUT_FONT_SIZE_MIN, INPUT_FONT_SIZE_MAX,
+                INPUT_FONT_SIZE_MIN,
+                INPUT_FONT_SIZE_MAX,
+                default=DEFAULT_INPUT_FONT_SIZE,
             ),
             button_font_size=_clamp_int_value(
                 ui.get("button_font_size"),
-                BUTTON_FONT_SIZE_MIN, BUTTON_FONT_SIZE_MAX,
+                BUTTON_FONT_SIZE_MIN,
+                BUTTON_FONT_SIZE_MAX,
+                default=DEFAULT_BUTTON_FONT_SIZE,
             ),
         ),
         theme=_theme_from_mapping_required(theme),
@@ -2784,11 +2792,17 @@ def _required_str(mapping: dict[str, Any], key: str) -> str:
     return value
 
 
-def _clamp_int_value(value: object, minimum: int, maximum: int) -> int:
+def _clamp_int_value(
+    value: object,
+    minimum: int,
+    maximum: int,
+    *,
+    default: int | None = None,
+) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        parsed = minimum
+        parsed = minimum if default is None else default
     return max(minimum, min(maximum, parsed))
 
 

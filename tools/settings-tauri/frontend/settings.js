@@ -3818,7 +3818,7 @@ function requestLayoutPreview() {
 
 let fontPreviewPending = false;
 function requestFontPreview() {
-  if (!request) {
+  if (!request || fontPreviewPending) {
     return;
   }
   fontPreviewPending = true;
