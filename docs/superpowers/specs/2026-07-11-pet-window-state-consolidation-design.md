@@ -4,6 +4,8 @@
 - 状态：已批准
 - 范围：`PetWindow` 及其直接依赖的内部兼容层
 
+> **2026-07-12 Tauri 集成说明：** 新版 `dev` 已使用 Tauri 设置页取代 Qt `SettingsDialog`。本设计中的设置同步约束继续有效，但实现落点为 `app/ui/tauri_settings.py`、`tools/settings-tauri/` 与 `PetWindow` 的 Tauri 应用流程；不得恢复已删除的旧 Qt 设置文件。
+
 ## 1. 背景
 
 Sakura 在持续开发中多次引入新状态源、新命名和新控制器，但旧实现没有同步退出生产代码。当前主要迹象包括：

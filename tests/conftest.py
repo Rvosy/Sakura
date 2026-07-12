@@ -72,6 +72,29 @@ class _LocalQtBot:
     def addWidget(self, widget: Any) -> None:  # noqa: N802 - pytest-qt compatibility
         self._widgets.append(widget)
 
+    def waitUntil(  # noqa: N802 - pytest-qt compatibility
+        self,
+        callback: Any,
+        *,
+        timeout: int = 5000,
+    ) -> None:
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        timer = QElapsedTimer()
+        timer.start()
+        while not callback():
+            QApplication.processEvents()
+            if timer.elapsed() >= timeout:
+                raise AssertionError(f"waitUntil timed out after {timeout} ms")
+            QTest.qWait(10)
+
+    def wait(self, delay: int) -> None:
+        from PySide6.QtTest import QTest
+
+        QTest.qWait(delay)
+
     def close_widgets(self) -> None:
         for widget in reversed(self._widgets):
             try:

@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12、PySide6、pytest、pytest-qt、YAML 配置迁移、Git 小步提交。
 
+> **2026-07-12 Tauri 集成说明：** 本计划最初基于 Qt `SettingsDialog` 编写。新版 `dev` 已删除 `app/ui/settings_dialog.py` 与 `app/ui/settings/pages/sections.py`，设置入口改为 `app/ui/tauri_settings.py` 和 `tools/settings-tauri/`。下文涉及旧 Qt 设置文件的步骤仅保留为历史实施记录；最终实现应在 Tauri 请求、结果解析和应用流程中保持 `screen_awareness` 为唯一正式命名，不得恢复旧文件。
+
 ---
 
 ## 文件职责与修改边界
@@ -17,7 +19,7 @@
 - `app/config/defaults.py`：删除无调用的 `DEFAULT_PROACTIVE_*` 常量别名。
 - `app/core/app_context.py`：只暴露 `screen_awareness_settings`。
 - `main.py`：首启设置流程只使用新设置名。
-- `app/ui/settings_dialog.py`、`app/ui/settings/pages/sections.py`：设置参数、结果、控件和回调统一为 `screen_awareness_*`。
+- `app/ui/tauri_settings.py`、`tools/settings-tauri/`：设置请求、结果和前端字段统一使用 `screen_awareness_*`；旧 Qt 设置文件保持删除。
 - `app/ui/history_window.py`：直接使用新历史标记常量。
 - `app/agent/proactive_care.py`：删除内部兼容模块。
 - `app/agent/runtime.py`：不再接受 `proactive_check` 事件，只接受 `screen_awareness_check` 与提醒事件。

@@ -6171,7 +6171,12 @@ class PetWindow(QWidget):
         QTimer.singleShot(0, self._sync_native_topmost_state)
 
     def _sync_native_topmost_state(self) -> None:
-        if not self.isVisible():
+        try:
+            visible = self.isVisible()
+        except RuntimeError:
+            # singleShot 回调可能晚于 QObject 销毁；此时无需再同步原生窗口状态。
+            return
+        if not visible:
             return
         effective_topmost_fn = getattr(self, "_effective_topmost", None)
         effective_topmost = (

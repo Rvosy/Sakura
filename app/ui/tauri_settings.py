@@ -6,7 +6,7 @@ import secrets
 import sys
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -394,8 +394,6 @@ def tts_settings_from_tauri_result(
             onnx_model_dir=onnx_model_dir,
             validate_enabled=False,
         )
-    if previous.playback_backend:
-        settings = replace(settings, playback_backend=previous.playback_backend)
     return settings
 
 

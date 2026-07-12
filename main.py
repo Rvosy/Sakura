@@ -376,8 +376,9 @@ def _format_data_migration_failure(report: MigrationReport) -> str:
         if result.status == "failed"
     )
     return format_failure_message(
-        "部分旧数据迁移失败，Sakura 将以兼容模式继续运行，原数据没有被修改。",
-        "请保留原数据，查看 data/logs/sakura-runtime.log；下次启动会再次尝试迁移。",
+        "部分旧数据迁移失败，原数据没有被覆盖。",
+        "受影响功能本次可能使用默认值或暂不可用；请保留原数据并查看 "
+        "data/logs/sakura-runtime.log，下次启动会继续重试迁移。",
         errors,
     )
 
