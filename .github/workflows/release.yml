@@ -75,12 +75,19 @@ jobs:
           exit $EXIT_CODE
 
   release:
-    needs: [tag, test]
+    needs: [tag, test, bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Download verified bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ needs.tag.outputs.TAG }}-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -89,6 +96,7 @@ jobs:
           name: ${{ needs.tag.outputs.TAG }}
           generate_release_notes: true
           prerelease: ${{ needs.tag.outputs.PRERELEASE == 'true' }}
+          files: release-assets/*
 
   bundle:
     needs: [tag, test]
@@ -379,11 +387,12 @@ jobs:
             update-delete.json \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload verified bundle artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.tag.outputs.TAG }}
-          files: |
+          name: release-${{ needs.tag.outputs.TAG }}-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
             ${{ matrix.artifact }}
             ${{ matrix.update_artifact }}
             ${{ matrix.runtime_artifact }}
@@ -404,7 +413,7 @@ jobs:
             --clobber
 
   attach-assets:
-    needs: [tag, release, bundle]
+    needs: [tag, release]
     runs-on: ubuntu-latest
     permissions:
       contents: write

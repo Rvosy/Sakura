@@ -19,10 +19,16 @@ jobs:
       - name: Generate package tag
         id: gen
         shell: bash
+        env:
+          VERSION_SUFFIX: ${{ github.event.inputs.version_suffix }}
         run: |
           VER=$(head -1 VERSION | tr -d '\r' | sed 's/^v//')
           TAG="v${VER}"
-          SUFFIX="${{ github.event.inputs.version_suffix }}"
+          SUFFIX="$VERSION_SUFFIX"
+          if [[ ! "$SUFFIX" =~ ^[A-Za-z0-9._-]{0,32}$ ]]; then
+            echo "version_suffix contains unsupported characters" >&2
+            exit 1
+          fi
           if [ -n "$SUFFIX" ]; then
             TAG="${TAG}-${SUFFIX}"
           fi
