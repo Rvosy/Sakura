@@ -7,7 +7,11 @@ from PySide6.QtCore import QEventLoop, QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from app.ui.screen_capture import capture_virtual_desktop_pixmap, logical_to_device_rect
+from app.ui.screen_capture import (
+    VirtualDesktopCapture,
+    capture_virtual_desktop,
+    logical_to_device_rect,
+)
 
 COLOR_PICKER_SAMPLE_SIZE = 17
 COLOR_PICKER_PREVIEW_SIZE = 148
@@ -15,11 +19,15 @@ COLOR_PICKER_REFRESH_INTERVAL_MS = 33
 
 
 def sample_desktop_hex_color(
-    desktop_pixmap: QPixmap,
+    desktop_pixmap: QPixmap | VirtualDesktopCapture,
     virtual_geometry: QRect,
     global_pos: QPoint,
 ) -> str | None:
     """Return #rrggbb for a logical global desktop point."""
+
+    if isinstance(desktop_pixmap, VirtualDesktopCapture):
+        color = desktop_pixmap.color_at(global_pos)
+        return color.name() if color is not None else None
 
     local = QPoint(global_pos) - virtual_geometry.topLeft()
     if not QRect(QPoint(0, 0), virtual_geometry.size()).contains(local):
@@ -77,10 +85,26 @@ class ScreenColorPickerOverlay(QWidget):
     picked = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, desktop_pixmap: QPixmap, virtual_geometry: QRect) -> None:
+    def __init__(
+        self,
+        desktop_pixmap: QPixmap | VirtualDesktopCapture,
+        virtual_geometry: QRect | None = None,
+    ) -> None:
         super().__init__(None)
-        self.desktop_pixmap = desktop_pixmap
-        self.virtual_geometry = QRect(virtual_geometry)
+        if isinstance(desktop_pixmap, VirtualDesktopCapture):
+            self.desktop_capture = desktop_pixmap
+            self.desktop_pixmap = (
+                desktop_pixmap.screens[0].pixmap if len(desktop_pixmap.screens) == 1 else QPixmap()
+            )
+            self.virtual_geometry = QRect(desktop_pixmap.geometry)
+        else:
+            if virtual_geometry is None:
+                raise TypeError("单张桌面截图必须提供 virtual_geometry。")
+            self.desktop_pixmap = desktop_pixmap
+            self.virtual_geometry = QRect(virtual_geometry)
+            self.desktop_capture = VirtualDesktopCapture.from_pixmap(
+                desktop_pixmap, self.virtual_geometry
+            )
         self._sample_cache: tuple[QPixmap, QRect, str | None] | None = None
         self._sample_refresh_timer = QTimer(self)
         self._sample_refresh_timer.setSingleShot(True)
@@ -155,7 +179,7 @@ class ScreenColorPickerOverlay(QWidget):
 
     def _fallback_current_color(self) -> str | None:
         return sample_desktop_hex_color(
-            self.desktop_pixmap,
+            self.desktop_capture,
             self.virtual_geometry,
             self.virtual_geometry.topLeft() + self.cursor_pos,
         )
@@ -187,7 +211,7 @@ class ScreenColorPickerOverlay(QWidget):
 
     def _fallback_sample_source(self, source: QRect) -> tuple[QPixmap, QRect, str | None]:
         global_rect = QRect(source).translated(self.virtual_geometry.topLeft())
-        pixmap = self.desktop_pixmap.copy(logical_to_device_rect(self.desktop_pixmap, source))
+        pixmap = self.desktop_capture.crop(global_rect)
         return pixmap, global_rect, self._fallback_current_color()
 
     def _queue_sample_refresh(self) -> None:
@@ -266,8 +290,8 @@ def pick_screen_color() -> str | None:
     if app is None:
         raise RuntimeError("无法启动取色器：Qt 应用尚未初始化。")
 
-    desktop_pixmap, virtual_geometry = capture_virtual_desktop_pixmap()
-    overlay = ScreenColorPickerOverlay(desktop_pixmap, virtual_geometry)
+    desktop_capture = capture_virtual_desktop()
+    overlay = ScreenColorPickerOverlay(desktop_capture)
     loop = QEventLoop()
     result: dict[str, str] = {}
 

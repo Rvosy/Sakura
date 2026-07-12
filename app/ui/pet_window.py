@@ -160,6 +160,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS,
     SCREEN_AWARENESS_TIMER_POLL_INTERVAL_MS,
     ScreenAwarenessSettings,
+    screen_context_resolution_size,
 )
 from app.agent.screen_observation import (
     CapturedScreenImage,
@@ -243,9 +244,10 @@ from app.ui import (
     PortraitController,
     SubtitleController,
     ToolConfirmationPanel,
+    VirtualDesktopCapture,
     build_pet_tray_menu,
+    capture_virtual_desktop,
     capture_virtual_desktop_pixmap,
-    crop_logical_region,
 )
 from app.ui.styles import pet_window_stylesheet
 from app.ui.theme import (
@@ -536,11 +538,22 @@ class ScreenObservationEncodeWorker(QObject):
         try:
             self._cancel_token.throw_if_cancelled()
             max_edge = _screen_observation_max_edge_from_context(self.context)
-            if self.context.get("preserve_original_resolution") is True:
+            max_width: int | None = None
+            max_height: int | None = None
+            resolution = self.context.get("screen_context_resolution")
+            if resolution is not None:
+                max_width, max_height = screen_context_resolution_size(
+                    self.captured.image.width(),
+                    self.captured.image.height(),
+                    resolution,
+                )
+            elif self.context.get("preserve_original_resolution") is True:
                 max_edge = max(1, self.captured.image.width(), self.captured.image.height())
             observation = build_screen_observation_from_image(
                 self.captured,
                 max_edge=max_edge,
+                max_width=max_width,
+                max_height=max_height,
             )
             self._cancel_token.throw_if_cancelled()
         except OperationCancelled:
@@ -2564,15 +2577,11 @@ class PetWindow(QWidget):
     def _build_blurred_background(self, global_rect: QRect) -> QPixmap | None:
         """截取虚拟桌面，裁出 global_rect（逻辑全局坐标）对应区域并做高斯模糊。
 
-        capture_virtual_desktop_pixmap 返回的是「物理像素缓冲 + devicePixelRatio」的虚拟桌面图：
-        其 rect()/copy() 都按物理像素取址（width()=物理宽，非逻辑宽）。因此必须把逻辑全局坐标
-        乘以 devicePixelRatio 换算成物理像素再裁剪，否则裁出的区域会随坐标增大而向左上偏移，
-        在屏幕边缘表现为模糊背景与真实桌面错位。
+        截图保留每块屏幕自己的 devicePixelRatio；裁剪时按 global_rect 与各屏幕的交集分别换算，
+        因而输入栏跨越不同缩放比例的屏幕时也能保持坐标和内容对齐。
         """
-        desktop_pixmap, virtual_geometry = self._capture_virtual_desktop_pixmap()
-        if desktop_pixmap.isNull():
-            return None
-        cropped = crop_logical_region(desktop_pixmap, virtual_geometry, global_rect)
+        desktop_capture = self._capture_virtual_desktop()
+        cropped = desktop_capture.crop(global_rect)
         if cropped.isNull():
             return None
         # 模糊背景裁剪：用降采样再放大实现毛玻璃效果。
@@ -2807,7 +2816,7 @@ class PetWindow(QWidget):
 
     def _show_manual_screenshot_overlay(self) -> None:
         try:
-            desktop_pixmap, virtual_geometry = self._capture_virtual_desktop_pixmap()
+            desktop_capture = self._capture_virtual_desktop()
         except RuntimeError as exc:
             show_themed_warning(
                 self,
@@ -2821,7 +2830,7 @@ class PetWindow(QWidget):
             log_event("PetWindow", "手动框选截图启动失败", {"error": str(exc)})
             return
 
-        overlay = ManualScreenshotOverlay(desktop_pixmap, virtual_geometry)
+        overlay = ManualScreenshotOverlay(desktop_capture)
         overlay.selected.connect(self._handle_manual_screenshot_selected)
         overlay.cancelled.connect(self._handle_manual_screenshot_cancelled)
         overlay.destroyed.connect(self._clear_manual_screenshot_overlay_ref)
@@ -2834,6 +2843,9 @@ class PetWindow(QWidget):
 
     def _capture_virtual_desktop_pixmap(self) -> tuple[QPixmap, QRect]:
         return capture_virtual_desktop_pixmap()
+
+    def _capture_virtual_desktop(self) -> VirtualDesktopCapture:
+        return capture_virtual_desktop()
 
     @Slot(object)
     def _handle_manual_screenshot_selected(self, pixmap: QPixmap) -> None:
@@ -3804,8 +3816,12 @@ class PetWindow(QWidget):
         return self._current_screen_awareness_settings().allows_screen_context()
 
     def _screen_awareness_encode_options(self) -> dict[str, Any]:
+        resolution = (
+            self._current_screen_awareness_settings().normalized().screen_context_resolution
+        )
         return {
-            "preserve_original_resolution": True,
+            "screen_context_resolution": resolution,
+            "preserve_original_resolution": resolution == "fullscreen",
             "detail": SCREEN_AWARENESS_IMAGE_DETAIL,
         }
 

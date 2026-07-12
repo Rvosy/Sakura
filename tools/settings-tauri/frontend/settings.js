@@ -16,6 +16,7 @@ const fields = {
   checkInterval: document.getElementById("checkInterval"),
   cooldown: document.getElementById("cooldown"),
   batchLimit: document.getElementById("batchLimit"),
+  screenResolution: document.getElementById("screenResolution"),
   windowsMcp: document.getElementById("windowsMcp"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
@@ -737,6 +738,22 @@ function syncEnabledState() {
   setControlDisabled(fields.checkInterval, !enabled);
   setControlDisabled(fields.cooldown, !enabled);
   setControlDisabled(fields.batchLimit, !enabled);
+  setControlDisabled(fields.screenResolution, !enabled);
+}
+
+function updateScreenResolutionEstimate() {
+  if (!request) {
+    return;
+  }
+  const resolution = fields.screenResolution.value || "fullscreen";
+  const estimate = request.screen_resolution_estimates?.[resolution];
+  if (estimate) {
+    fields.tokenEstimate.textContent =
+      `预计发送 ${estimate.width}×${estimate.height}：约 ${estimate.tokens.toLocaleString("zh-CN")} token/张。`;
+    return;
+  }
+  fields.tokenEstimate.textContent =
+    `按当前屏幕估算：约 ${request.estimated_tokens_per_image.toLocaleString("zh-CN")} token/张。`;
 }
 
 function syncRuntimeLoopState() {
@@ -3860,6 +3877,7 @@ function collectScreenAwarenessSettings() {
     check_interval_minutes: clampInt(fields.checkInterval.value, limits.check_interval_minutes),
     cooldown_minutes: clampInt(fields.cooldown.value, limits.cooldown_minutes),
     screen_context_batch_limit: clampInt(fields.batchLimit.value, limits.screen_context_batch_limit),
+    screen_context_resolution: fields.screenResolution.value || "fullscreen",
   };
 }
 
@@ -4131,6 +4149,7 @@ async function load() {
   enhanceSelect(fields.visualEffectMode);
   enhanceSelect(fields.ttsProvider);
   enhanceSelect(fields.backchannelMode);
+  enhanceSelect(fields.screenResolution);
   enhanceSelect(fields.memoryLayerFilter);
   enhanceSelect(fields.memorySort);
   enhanceSelect(fields.memoryLayer);
@@ -4174,6 +4193,7 @@ async function load() {
   fields.checkInterval.value = settings.check_interval_minutes;
   fields.cooldown.value = settings.cooldown_minutes;
   fields.batchLimit.value = settings.screen_context_batch_limit;
+  fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
   syncDesktopMcpControl(request.mcp);
   fields.windowsMcp.checked = request.mcp.windows_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
@@ -4226,8 +4246,7 @@ async function load() {
 
   setThemeValues(request.theme);
   themeChanged = false;
-  fields.tokenEstimate.textContent =
-    `按当前屏幕估算：约 ${request.estimated_tokens_per_image.toLocaleString("zh-CN")} token/张。`;
+  updateScreenResolutionEstimate();
   syncEnabledState();
   syncRuntimeLoopState();
   syncDebugLogState();
@@ -4239,6 +4258,7 @@ async function load() {
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.ttsProvider);
   refreshSelect(fields.backchannelMode);
+  refreshSelect(fields.screenResolution);
   renderMemoryPage();
   renderPluginPage();
   renderResourceCards();
@@ -4281,6 +4301,7 @@ fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchiv
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
 fields.characterEditorButton.addEventListener("click", launchCharacterStudio);
 fields.enabled.addEventListener("change", syncEnabledState);
+fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);
 fields.providerSearch.addEventListener("input", () => {

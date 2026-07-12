@@ -13,6 +13,7 @@ from app.ui.screen_color_picker import (  # noqa: E402
     sample_pixmap_hex_color,
     sample_desktop_hex_color,
 )
+from app.ui.screen_capture import ScreenCapture, VirtualDesktopCapture  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
@@ -51,6 +52,21 @@ def test_screen_color_picker_samples_negative_virtual_geometry() -> None:
         )
         == "#3366cc"
     )
+
+
+def test_screen_color_picker_samples_secondary_screen_with_its_own_dpr() -> None:
+    _qt_app_or_skip()
+    primary = _desktop(100, 80, 1.5, QRect(0, 0, 1, 1), "#000000")
+    secondary = _desktop(100, 80, 1.0, QRect(40, 30, 2, 2), "#55aaee")
+    capture = VirtualDesktopCapture(
+        (
+            ScreenCapture(QRect(0, 0, 100, 80), primary),
+            ScreenCapture(QRect(100, 0, 100, 80), secondary),
+        ),
+        QRect(0, 0, 200, 80),
+    )
+
+    assert sample_desktop_hex_color(capture, capture.geometry, QPoint(140, 30)) == "#55aaee"
 
 
 def test_screen_color_picker_cancel_does_not_pick() -> None:

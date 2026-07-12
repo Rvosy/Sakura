@@ -4,7 +4,11 @@ from PySide6.QtCore import QPoint, QRect, Signal, Qt
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from app.ui.screen_capture import logical_to_device_rect
+from app.ui.screen_capture import (
+    VirtualDesktopCapture,
+    draw_virtual_desktop_capture,
+    logical_to_device_rect,
+)
 
 
 MANUAL_SCREENSHOT_MIN_SIZE = 8
@@ -16,10 +20,26 @@ class ManualScreenshotOverlay(QWidget):
     selected = Signal(object)
     cancelled = Signal()
 
-    def __init__(self, desktop_pixmap: QPixmap, virtual_geometry: QRect) -> None:
+    def __init__(
+        self,
+        desktop_pixmap: QPixmap | VirtualDesktopCapture,
+        virtual_geometry: QRect | None = None,
+    ) -> None:
         super().__init__(None)
-        self.desktop_pixmap = desktop_pixmap
-        self.virtual_geometry = QRect(virtual_geometry)
+        if isinstance(desktop_pixmap, VirtualDesktopCapture):
+            self.desktop_capture = desktop_pixmap
+            self.desktop_pixmap = (
+                desktop_pixmap.screens[0].pixmap if len(desktop_pixmap.screens) == 1 else QPixmap()
+            )
+            self.virtual_geometry = QRect(desktop_pixmap.geometry)
+        else:
+            if virtual_geometry is None:
+                raise TypeError("单张桌面截图必须提供 virtual_geometry。")
+            self.desktop_pixmap = desktop_pixmap
+            self.virtual_geometry = QRect(virtual_geometry)
+            self.desktop_capture = VirtualDesktopCapture.from_pixmap(
+                desktop_pixmap, self.virtual_geometry
+            )
         self.selection_start: QPoint | None = None
         self.selection_end: QPoint | None = None
         self.setWindowFlags(
@@ -35,14 +55,13 @@ class ManualScreenshotOverlay(QWidget):
     def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         del event
         painter = QPainter(self)
-        painter.drawPixmap(self.rect(), self.desktop_pixmap)
+        draw_virtual_desktop_capture(painter, self.desktop_capture)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 95))
 
         selection = self._selection_rect()
         if not selection.isNull():
-            # 覆盖层按逻辑坐标布局，但 desktop_pixmap 是物理像素缓冲，
-            # drawPixmap 的源矩形按物理像素取址，故须把逻辑选区换算成物理像素。
-            painter.drawPixmap(selection, self.desktop_pixmap, self._device_rect(selection))
+            selected = self._crop_selection(selection)
+            painter.drawPixmap(selection, selected)
             painter.fillRect(selection, QColor(255, 255, 255, 28))
             painter.setPen(QColor(74, 170, 214, 245))
             painter.drawRect(selection.adjusted(0, 0, -1, -1))
@@ -75,9 +94,12 @@ class ManualScreenshotOverlay(QWidget):
         ):
             self._cancel()
             return
-        # copy() 按物理像素取址，须用换算后的物理选区，否则截到的是缩半且左上偏移的错误区域。
-        self.selected.emit(self.desktop_pixmap.copy(self._device_rect(selection)))
+        self.selected.emit(self._crop_selection(selection))
         self.close()
+
+    def _crop_selection(self, rect: QRect) -> QPixmap:
+        global_rect = QRect(rect).translated(self.virtual_geometry.topLeft())
+        return self.desktop_capture.crop(global_rect)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
@@ -91,7 +113,12 @@ class ManualScreenshotOverlay(QWidget):
         高 DPI 下 desktop_pixmap 按物理像素分配并设了 devicePixelRatio，
         copy()/drawPixmap 源矩形都以物理像素为单位，须乘以该比例。
         """
-        return logical_to_device_rect(self.desktop_pixmap, rect)
+        if len(self.desktop_capture.screens) != 1:
+            raise ValueError("混合 DPI 桌面没有单一的设备像素矩形。")
+        screen = self.desktop_capture.screens[0]
+        global_rect = QRect(rect).translated(self.virtual_geometry.topLeft())
+        screen_local = global_rect.translated(-screen.geometry.topLeft())
+        return logical_to_device_rect(screen.pixmap, screen_local)
 
     def _selection_rect(self) -> QRect:
         if self.selection_start is None or self.selection_end is None:
