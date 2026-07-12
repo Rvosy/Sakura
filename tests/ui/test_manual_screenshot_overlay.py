@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, QRect  # noqa: E402
 from PySide6.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 
 from app.ui.manual_screenshot_overlay import ManualScreenshotOverlay  # noqa: E402
+from app.ui.screen_capture import ScreenCapture, VirtualDesktopCapture  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
@@ -76,5 +77,30 @@ def test_manual_selection_crops_correct_region_under_high_dpi() -> None:
     assert cropped.height() == round(selection.height() * dpr)
     # 内容应为纯右半（蓝），不混入左半红色。
     assert _dominant_color_name(cropped) == "blue"
+
+    overlay.deleteLater()
+
+
+def test_manual_selection_on_lower_dpi_secondary_screen_is_not_shrunk() -> None:
+    _qt_app_or_skip()
+    primary = _half_split_pixmap(100, 80, 1.5)
+    secondary = QPixmap(100, 80)
+    secondary.setDevicePixelRatio(1.0)
+    secondary.fill(QColor("green"))
+    capture = VirtualDesktopCapture(
+        (
+            ScreenCapture(QRect(0, 0, 100, 80), primary),
+            ScreenCapture(QRect(100, 0, 100, 80), secondary),
+        ),
+        QRect(0, 0, 200, 80),
+    )
+    overlay = ManualScreenshotOverlay(capture)
+
+    cropped = overlay._crop_selection(QRect(120, 10, 50, 40))
+
+    assert cropped.devicePixelRatio() == pytest.approx(1.0)
+    assert cropped.width() == 50
+    assert cropped.height() == 40
+    assert cropped.toImage().pixelColor(25, 20).name() == "#008000"
 
     overlay.deleteLater()

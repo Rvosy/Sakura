@@ -7,7 +7,13 @@ pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtCore import QRect  # noqa: E402
 from PySide6.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 
-from app.ui.screen_capture import crop_logical_region, logical_to_device_rect  # noqa: E402
+from app.ui.screen_capture import (  # noqa: E402
+    ScreenCapture,
+    VirtualDesktopCapture,
+    crop_logical_region,
+    draw_virtual_desktop_capture,
+    logical_to_device_rect,
+)
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
@@ -40,6 +46,13 @@ def _has_white(pixmap: QPixmap) -> bool:
             if image.pixel(x, y) == white:
                 return True
     return False
+
+
+def _solid_screen(logical_w: int, logical_h: int, dpr: float, color: str) -> QPixmap:
+    pixmap = QPixmap(round(logical_w * dpr), round(logical_h * dpr))
+    pixmap.setDevicePixelRatio(dpr)
+    pixmap.fill(QColor(color))
+    return pixmap
 
 
 def test_logical_to_device_rect_scales_by_dpr() -> None:
@@ -90,6 +103,66 @@ def test_crop_logical_region_clamps_out_of_bounds() -> None:
     virtual_geometry = QRect(0, 0, 1600, 1000)
     # 完全在缓冲之外 → 空 QPixmap。
     assert crop_logical_region(desktop, virtual_geometry, QRect(5000, 5000, 100, 100)).isNull()
+
+
+def test_mixed_dpi_capture_crops_each_screen_in_its_own_coordinate_space() -> None:
+    """副屏不能被主屏 DPR 缩小，跨屏选区也必须保持逻辑位置。"""
+
+    _qt_app_or_skip()
+    capture = VirtualDesktopCapture(
+        (
+            ScreenCapture(QRect(0, 0, 100, 80), _solid_screen(100, 80, 1.5, "red")),
+            ScreenCapture(QRect(100, 0, 100, 80), _solid_screen(100, 80, 1.0, "blue")),
+        ),
+        QRect(0, 0, 200, 80),
+    )
+
+    cropped = capture.crop(QRect(75, 10, 75, 40))
+
+    assert cropped.devicePixelRatio() == pytest.approx(1.5)
+    assert cropped.width() == round(75 * 1.5)
+    assert cropped.height() == round(40 * 1.5)
+    image = cropped.toImage()
+    assert image.pixelColor(round(10 * 1.5), round(20 * 1.5)).name() == "#ff0000"
+    assert image.pixelColor(round(50 * 1.5), round(20 * 1.5)).name() == "#0000ff"
+
+
+def test_mixed_dpi_capture_keeps_secondary_screen_native_resolution() -> None:
+    _qt_app_or_skip()
+    capture = VirtualDesktopCapture(
+        (
+            ScreenCapture(QRect(0, 0, 100, 80), _solid_screen(100, 80, 1.5, "red")),
+            ScreenCapture(QRect(100, 0, 100, 80), _solid_screen(100, 80, 1.0, "blue")),
+        ),
+        QRect(0, 0, 200, 80),
+    )
+
+    secondary = capture.crop(QRect(120, 10, 50, 40))
+
+    assert secondary.devicePixelRatio() == pytest.approx(1.0)
+    assert secondary.size() == QRect(0, 0, 50, 40).size()
+    assert secondary.toImage().pixelColor(25, 20).name() == "#0000ff"
+
+
+def test_mixed_dpi_capture_draws_each_screen_at_its_logical_geometry() -> None:
+    _qt_app_or_skip()
+    capture = VirtualDesktopCapture(
+        (
+            ScreenCapture(QRect(0, 0, 100, 80), _solid_screen(100, 80, 1.5, "red")),
+            ScreenCapture(QRect(100, 0, 100, 80), _solid_screen(100, 80, 1.0, "blue")),
+        ),
+        QRect(0, 0, 200, 80),
+    )
+    canvas = QPixmap(200, 80)
+    canvas.fill(QColor("black"))
+
+    painter = QPainter(canvas)
+    draw_virtual_desktop_capture(painter, capture)
+    painter.end()
+
+    image = canvas.toImage()
+    assert image.pixelColor(50, 40).name() == "#ff0000"
+    assert image.pixelColor(150, 40).name() == "#0000ff"
 
 
 @pytest.mark.parametrize(
