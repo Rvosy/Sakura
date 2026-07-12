@@ -460,6 +460,19 @@ def main() -> int:
         _write_startup_error("Character", f"配置无效：{exc}")
         return 1
 
+    character_issues = getattr(context.character_registry, "load_errors", ())
+    if character_issues:
+        details = "\n".join(
+            f"- {issue.manifest_path}: {issue.error}" for issue in character_issues[:5]
+        )
+        if len(character_issues) > 5:
+            details += f"\n- 另有 {len(character_issues) - 5} 个角色包已跳过"
+        QMessageBox.warning(
+            None,
+            "部分角色包未加载",
+            "Sakura 已跳过损坏或不安全的角色包，其他角色仍可正常使用。\n\n" + details,
+        )
+
     _ensure_launch_at_login_state(BASE_DIR, context.settings_service)
     pet_window = PetWindow(context)
     app.aboutToQuit.connect(pet_window.close_external_tools)

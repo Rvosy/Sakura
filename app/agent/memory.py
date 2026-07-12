@@ -23,6 +23,7 @@ from app.core.resource_manager import (
     ThreadGroupResource,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry
+from app.storage.archive_security import validate_zip_resource_limits
 from app.storage.chat_history import ChatHistoryEntry
 from app.storage.paths import StoragePaths
 
@@ -825,7 +826,7 @@ class MemoryStore:
                 return self._failed_response(str(exc))
             if mem is None:
                 return self._loading_response()
-            previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+            previous = _require_owned_memory(mem, memory_id, self.scope_id)
             metadata = _memory_metadata(
                 arguments,
                 scope_id=self.scope_id,
@@ -844,7 +845,7 @@ class MemoryStore:
             return self._failed_response(str(exc))
         if mem is None:
             return self._loading_response()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id)
         metadata = _memory_metadata(
             arguments,
             scope_id=self.scope_id,
@@ -868,7 +869,7 @@ class MemoryStore:
             previous = self.delete_core_profile()
             return {"memory": previous or {"id": memory_id, "content": ""}, "curation_cache_reset": {"messages": 0, "history": 0}}
         mem = self._get_memory()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id, allow_missing=True)
         already_missing = _delete_memory_idempotently(mem, memory_id)
         cache_reset = self._reset_scope_curation_cache(mem, memory_ids=[memory_id])
         memory = previous or {"id": memory_id, "content": ""}
@@ -888,7 +889,7 @@ class MemoryStore:
             return self._failed_response(str(exc))
         if mem is None:
             return self._loading_response()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id, allow_missing=True)
         already_missing = _delete_memory_idempotently(mem, memory_id)
         cache_reset = self._reset_scope_curation_cache(mem, memory_ids=[memory_id])
         forgotten = previous or {"id": memory_id, "content": ""}
@@ -1321,6 +1322,14 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
     backup_model_dir = destination_root / f".{DEFAULT_EMBEDDING_MODEL_CACHE_NAME}.backup"
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
+            try:
+                validate_zip_resource_limits(
+                    zf,
+                    destination=destination_root,
+                    label="记忆模型包",
+                )
+            except ValueError as exc:
+                raise MemoryModelImportError(str(exc)) from exc
             model_prefix = _validate_embedding_model_zip_members(zf)
             temp_root.mkdir(parents=True, exist_ok=False)
             _extract_embedding_model_zip(zf, model_prefix, staging_model_dir)
@@ -1932,6 +1941,59 @@ def _normalize_memory_record(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SC
     )
     memory = {**dict(raw), **record.to_dict()}
     return memory
+
+
+def _require_owned_memory(
+    mem: Any,
+    memory_id: str,
+    scope_id: str,
+    *,
+    allow_missing: bool = False,
+) -> dict[str, Any] | None:
+    raw = mem.get(memory_id)
+    if not isinstance(raw, dict):
+        if allow_missing:
+            return None
+        raise ValueError(f"未找到长期记忆：{memory_id}")
+    metadata = _metadata_mapping(raw)
+    explicit_scope = str(
+        raw.get("scope") or metadata.get("scope") or raw.get("user_id") or ""
+    ).strip()
+    normalized_scope = _normalize_scope_id(explicit_scope) if explicit_scope else ""
+    if not normalized_scope:
+        get_all = getattr(mem, "get_all", None)
+        if not callable(get_all):
+            # 兼容只实现 get/delete 的旧测试或第三方后端；正式 mem0 后端支持
+            # 按 user_id 查询，必须走下面的所有权验证。
+            normalized_scope = _normalize_scope_id(scope_id)
+        else:
+            try:
+                scoped_raw = get_all(filters={"user_id": scope_id}, top_k=10000)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"无法验证长期记忆作用域：{memory_id}") from exc
+            scoped_ids = {
+                str(item.get("id") or item.get("memory_id") or "").strip()
+                for item in _raw_memory_candidates(scoped_raw)
+                if isinstance(item, dict)
+            }
+            if memory_id not in scoped_ids:
+                raise ValueError(f"长期记忆不属于当前角色，已拒绝修改：{memory_id}")
+            normalized_scope = _normalize_scope_id(scope_id)
+    if normalized_scope != _normalize_scope_id(scope_id):
+        raise ValueError(f"长期记忆不属于当前角色，已拒绝修改：{memory_id}")
+    normalized = _normalize_memory_record(raw, default_scope=scope_id)
+    if normalized is None:
+        raise ValueError(f"长期记忆记录无效：{memory_id}")
+    return normalized
+
+
+def _raw_memory_candidates(raw: Any) -> list[Any]:
+    if isinstance(raw, dict):
+        for key in ("results", "memories", "data"):
+            if isinstance(raw.get(key), list):
+                return list(raw[key])
+        return [raw]
+    return list(raw) if isinstance(raw, list) else []
 
 
 def _first_memory_result(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SCOPE) -> dict[str, Any] | None:

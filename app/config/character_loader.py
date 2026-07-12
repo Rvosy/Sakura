@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from app.core.runtime_log import log_event
 from app.llm.prompt_templates import with_desktop_pet_context
+from app.storage.paths import sanitize_file_stem
 
 if TYPE_CHECKING:
     from app.ui.theme import ThemeSettings
@@ -22,6 +25,12 @@ CharacterThemeSource = Literal["package", "compat_default"]
 
 class CharacterConfigError(RuntimeError):
     """角色包配置缺失或格式错误。"""
+
+
+@dataclass(frozen=True)
+class CharacterLoadIssue:
+    manifest_path: Path
+    error: str
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,7 @@ class CharacterRegistry:
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir
         self.characters_dir = base_dir / "characters"
+        self.load_errors: tuple[CharacterLoadIssue, ...] = ()
         self.profiles = self._load_profiles()
 
     def all(self) -> list[CharacterProfile]:
@@ -95,14 +105,34 @@ class CharacterRegistry:
             raise CharacterConfigError(f"角色包目录不存在：{self.characters_dir}")
 
         profiles: dict[str, CharacterProfile] = {}
+        storage_keys: dict[str, str] = {}
+        issues: list[CharacterLoadIssue] = []
         for manifest_path in sorted(self.characters_dir.glob("*/character.json")):
-            profile = _load_profile(manifest_path)
-            if profile.id in profiles:
-                raise CharacterConfigError(f"角色 id 重复：{profile.id}")
+            try:
+                profile = _load_profile(manifest_path)
+                if profile.id in profiles:
+                    raise CharacterConfigError(f"角色 id 重复：{profile.id}")
+                storage_key = sanitize_file_stem(profile.id).casefold()
+                if storage_key in storage_keys:
+                    raise CharacterConfigError(
+                        f"角色 id 的存储键与 {storage_keys[storage_key]} 冲突：{profile.id}"
+                    )
+            except CharacterConfigError as exc:
+                issue = CharacterLoadIssue(manifest_path=manifest_path, error=str(exc))
+                issues.append(issue)
+                log_event(
+                    "Character",
+                    "跳过损坏或不安全的角色包",
+                    {"manifest": str(manifest_path), "error": str(exc)},
+                )
+                continue
             profiles[profile.id] = profile
+            storage_keys[storage_key] = profile.id
 
+        self.load_errors = tuple(issues)
         if not profiles:
-            raise CharacterConfigError(f"未在 {self.characters_dir} 下找到角色包。")
+            detail = f"；首个错误：{issues[0].error}" if issues else ""
+            raise CharacterConfigError(f"未在 {self.characters_dir} 下找到可用角色包{detail}。")
         return profiles
 
 
@@ -134,7 +164,7 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
     if not isinstance(raw_data, dict):
         raise CharacterConfigError(f"角色清单必须是 JSON 对象：{manifest_path}")
 
-    character_id = _required_text(raw_data, "id", manifest_path)
+    character_id = _validate_character_id(_required_text(raw_data, "id", manifest_path), manifest_path)
     display_name = _required_text(raw_data, "display_name", manifest_path)
     initial_message = _optional_text(raw_data, "initial_message", "……起動した。用事があるなら、呼んで。")
     card_path = _resolve_required_file(package_dir, _required_text(raw_data, "card", manifest_path), "角色卡")
@@ -324,8 +354,8 @@ def _optional_text(data: dict[str, Any], key: str, default: str) -> str:
 
 
 def _resolve_required_file(package_dir: Path, path_text: str, label: str) -> Path:
-    path = _resolve_package_path(package_dir, path_text)
-    if not path.exists():
+    path = _resolve_package_path(package_dir, path_text, require_exists=True)
+    if not path.is_file():
         raise CharacterConfigError(f"{label}不存在：{path}")
     return path
 
@@ -333,17 +363,35 @@ def _resolve_required_file(package_dir: Path, path_text: str, label: str) -> Pat
 def _resolve_optional_file(package_dir: Path, path_text: str) -> Path | None:
     if not path_text.strip():
         return None
-    path = _resolve_package_path(package_dir, path_text)
-    if not path.exists():
+    path = _resolve_package_path(package_dir, path_text, require_exists=True)
+    if not path.is_file():
         raise CharacterConfigError(f"角色资源不存在：{path}")
     return path
 
 
-def _resolve_package_path(package_dir: Path, path_text: str) -> Path:
-    path = Path(path_text.strip().strip('"').strip("'"))
-    if path.is_absolute():
-        return path
-    return package_dir / path
+def _resolve_package_path(package_dir: Path, path_text: str, *, require_exists: bool = False) -> Path:
+    raw = path_text.strip().strip('"').strip("'")
+    path = Path(raw)
+    if not raw or path.is_absolute() or raw.startswith(("\\\\", "//")):
+        raise CharacterConfigError(f"角色资源必须使用包内相对路径：{path_text!r}")
+    package_root = package_dir.resolve(strict=True)
+    try:
+        resolved = (package_dir / path).resolve(strict=False)
+        resolved.relative_to(package_root)
+    except (OSError, ValueError) as exc:
+        raise CharacterConfigError(f"角色资源路径逃逸角色包：{path_text!r}") from exc
+    return resolved
+
+
+_INVALID_CHARACTER_ID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _validate_character_id(character_id: str, manifest_path: Path) -> str:
+    if character_id in {".", ".."} or _INVALID_CHARACTER_ID.search(character_id):
+        raise CharacterConfigError(f"角色 id 包含不安全字符：{character_id!r}（{manifest_path}）")
+    if sanitize_file_stem(character_id) != character_id:
+        raise CharacterConfigError(f"角色 id 不是跨平台安全标识符：{character_id!r}（{manifest_path}）")
+    return character_id
 
 
 def _append_desktop_context(content: str) -> str:

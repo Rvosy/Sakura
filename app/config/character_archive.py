@@ -18,6 +18,7 @@ from app.config.character_loader import (
     character_theme_to_mapping,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
+from app.storage.archive_security import ArchiveLimits, validate_zip_resource_limits
 
 
 ARCHIVE_FORMAT = "sakura.character.archive"
@@ -72,7 +73,7 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
 
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            _validate_zip_members(zf)
+            _validate_zip_members(zf, characters_dir)
             manifest = _read_manifest(zf)
             character_data = _validated_character_data(manifest)
 
@@ -154,7 +155,7 @@ def import_character_voice_archive(
 
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            _validate_voice_zip_members(zf)
+            _validate_voice_zip_members(zf, characters_dir)
             manifest = _read_manifest(zf)
             voice_data = _validated_voice_data(manifest)
             normalized_voice = _normalized_voice_archive(voice_data)
@@ -394,8 +395,8 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
         temp_output.unlink(missing_ok=True)
 
 
-def _validate_zip_members(zf: zipfile.ZipFile) -> None:
-    _validate_zip_resource_limits(zf, "角色包")
+def _validate_zip_members(zf: zipfile.ZipFile, destination: Path | None = None) -> None:
+    _validate_zip_resource_limits(zf, "角色包", destination=destination)
     found_manifest = False
     for info in zf.infolist():
         member = str(info.filename or "").replace("\\", "/").rstrip("/")
@@ -413,8 +414,8 @@ def _validate_zip_members(zf: zipfile.ZipFile) -> None:
         raise CharacterArchiveError("角色包缺少 manifest.json。")
 
 
-def _validate_voice_zip_members(zf: zipfile.ZipFile) -> None:
-    _validate_zip_resource_limits(zf, "语音包")
+def _validate_voice_zip_members(zf: zipfile.ZipFile, destination: Path | None = None) -> None:
+    _validate_zip_resource_limits(zf, "语音包", destination=destination)
     found_manifest = False
     for info in zf.infolist():
         member = str(info.filename or "").replace("\\", "/").rstrip("/")
@@ -432,29 +433,26 @@ def _validate_voice_zip_members(zf: zipfile.ZipFile) -> None:
         raise CharacterArchiveError("语音包缺少 manifest.json。")
 
 
-def _validate_zip_resource_limits(zf: zipfile.ZipFile, archive_label: str) -> None:
-    members = zf.infolist()
-    if len(members) > MAX_ARCHIVE_MEMBERS:
-        raise CharacterArchiveError(
-            f"{archive_label}文件数量过多：{len(members)} > {MAX_ARCHIVE_MEMBERS}。"
+def _validate_zip_resource_limits(
+    zf: zipfile.ZipFile,
+    archive_label: str,
+    *,
+    destination: Path | None = None,
+) -> None:
+    try:
+        validate_zip_resource_limits(
+            zf,
+            destination=destination or Path.cwd(),
+            label=archive_label,
+            limits=ArchiveLimits(
+                max_members=MAX_ARCHIVE_MEMBERS,
+                max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+                max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES,
+                max_compression_ratio=MAX_ARCHIVE_COMPRESSION_RATIO,
+            ),
         )
-    total_size = 0
-    for info in members:
-        if info.is_dir():
-            continue
-        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
-            raise CharacterArchiveError(
-                f"{archive_label}单个文件过大：{info.filename}。"
-            )
-        total_size += info.file_size
-        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
-            raise CharacterArchiveError(f"{archive_label}展开后总大小超过限制。")
-        if info.file_size > 1024 * 1024:
-            compressed = max(1, info.compress_size)
-            if info.file_size / compressed > MAX_ARCHIVE_COMPRESSION_RATIO:
-                raise CharacterArchiveError(
-                    f"{archive_label}压缩比异常：{info.filename}。"
-                )
+    except ValueError as exc:
+        raise CharacterArchiveError(str(exc)) from exc
 
 
 def _read_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
