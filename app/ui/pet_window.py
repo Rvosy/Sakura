@@ -6368,10 +6368,10 @@ class PetWindow(QWidget):
         if sys.platform == "win32":
             try:
                 import ctypes
+                from ctypes import wintypes
 
-                hwnd = int(self.winId())
-                hwnd_topmost = -1
-                hwnd_notopmost = -2
+                hwnd_topmost = wintypes.HWND(-1)
+                hwnd_notopmost = wintypes.HWND(-2)
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
@@ -6379,7 +6379,13 @@ class PetWindow(QWidget):
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
                     ctypes.windll.user32.SetWindowPos(
-                        int(window.winId()), insert_after, 0, 0, 0, 0, flags
+                        wintypes.HWND(int(window.winId())),
+                        insert_after,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags,
                     )
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
@@ -7458,10 +7464,8 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
     ns_window_collection_behavior_can_join_all_spaces = 1 << 0
     ns_window_collection_behavior_move_to_active_space = 1 << 1
     ns_window_collection_behavior_full_screen_auxiliary = 1 << 8
-    ns_floating_window_level = 3
-    ns_modal_panel_window_level = 8
 
-    level = ns_modal_panel_window_level if enabled else ns_floating_window_level
+    level = _macos_window_level(enabled)
     send_level(ns_window_ptr, ctypes.c_void_p(selector(b"setLevel:")), level)
 
     sel_set_hides_on_deactivate = selector(b"setHidesOnDeactivate:")
@@ -7491,6 +7495,13 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
         ctypes.c_void_p(selector(b"setCollectionBehavior:")),
         collection_behavior,
     )
+
+
+def _macos_window_level(enabled: bool) -> int:
+    """置顶时使用 modal panel 层，暂停置顶时回到普通窗口层。"""
+    ns_normal_window_level = 0
+    ns_modal_panel_window_level = 8
+    return ns_modal_panel_window_level if enabled else ns_normal_window_level
 
 
 def _update_runtime_api_clients(

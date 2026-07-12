@@ -8036,6 +8036,52 @@ def test_pet_window_context_menu_resyncs_topmost_after_menu_closes() -> None:
     assert window.events == ["exec", "sync"]
 
 
+def test_pet_window_uses_pointer_sized_hwnd_when_disabling_windows_topmost(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import ctypes
+    from types import SimpleNamespace
+
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    calls: list[tuple[int, int]] = []
+
+    class FakeUser32:
+        def SetWindowPos(self, hwnd, insert_after, *_args) -> int:  # noqa: N802, ANN001
+            calls.append((int(hwnd.value), int(insert_after.value)))
+            return 1
+
+    monkeypatch.setattr(pet_window_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=FakeUser32()),
+        raising=False,
+    )
+
+    class MinimalWindow:
+        _sync_native_topmost_state = PetWindow._sync_native_topmost_state
+        _topmost_sync_windows = PetWindow._topmost_sync_windows
+        _effective_topmost = PetWindow._effective_topmost
+
+        always_on_top_enabled = True
+        _secondary_windows_suppress_topmost = True
+
+        def isVisible(self) -> bool:
+            return True
+
+        def winId(self) -> int:
+            return 123
+
+        def _stack_renderer_overlay_below(self) -> None:
+            pass
+
+    MinimalWindow()._sync_native_topmost_state()
+
+    assert calls == [(123, ctypes.c_void_p(-2).value)]
+
+
 def test_pet_window_syncs_macos_native_topmost_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
     from app.ui.pet_window import PetWindow
@@ -8063,6 +8109,13 @@ def test_pet_window_syncs_macos_native_topmost_state(monkeypatch) -> None:  # ty
     MinimalWindow()._sync_native_topmost_state()
 
     assert calls == [(123, True)]
+
+
+def test_macos_topmost_suppression_uses_normal_window_level() -> None:
+    from app.ui.pet_window import _macos_window_level
+
+    assert _macos_window_level(True) == 8
+    assert _macos_window_level(False) == 0
 
 
 def test_pet_window_skips_macos_native_topmost_sync_when_hidden(monkeypatch) -> None:  # type: ignore[no-untyped-def]
