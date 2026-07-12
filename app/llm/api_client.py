@@ -63,6 +63,7 @@ class NativeToolCall:
     name: str
     arguments: dict[str, Any]
     arguments_json: str = "{}"
+    arguments_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -882,15 +883,25 @@ def _parse_native_tool_calls(raw_tool_calls: Any) -> list[NativeToolCall]:
         name = function.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
-        arguments_json = function.get("arguments")
-        if not isinstance(arguments_json, str):
-            arguments_json = "{}"
-        try:
-            arguments = json.loads(arguments_json or "{}")
-        except json.JSONDecodeError:
+        raw_arguments = function.get("arguments")
+        arguments_error = ""
+        if not isinstance(raw_arguments, str):
+            arguments_json = json.dumps(raw_arguments, ensure_ascii=False)
             arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
+            arguments_error = "工具参数必须是 JSON object 字符串。"
+        else:
+            arguments_json = raw_arguments
+            try:
+                decoded_arguments = json.loads(arguments_json or "{}")
+            except json.JSONDecodeError as exc:
+                arguments = {}
+                arguments_error = f"工具参数不是有效 JSON：{exc.msg}。"
+            else:
+                if isinstance(decoded_arguments, dict):
+                    arguments = decoded_arguments
+                else:
+                    arguments = {}
+                    arguments_error = "工具参数必须解码为 JSON object。"
         call_id = raw_call.get("id")
         if not isinstance(call_id, str) or not call_id.strip():
             call_id = f"tool_call_{index}"
@@ -900,6 +911,7 @@ def _parse_native_tool_calls(raw_tool_calls: Any) -> list[NativeToolCall]:
                 name=name.strip(),
                 arguments=arguments,
                 arguments_json=arguments_json,
+                arguments_error=arguments_error,
             )
         )
     return parsed
@@ -957,10 +969,18 @@ def _parse_pseudo_tool_call(item: Any, index: int) -> NativeToolCall | None:
     if isinstance(arguments, str):
         try:
             decoded = json.loads(arguments or "{}")
-        except json.JSONDecodeError:
-            decoded = {}
+        except json.JSONDecodeError as exc:
+            return NativeToolCall(
+                id=str(item.get("id") or f"pseudo_tool_call_{index}"),
+                name=name.strip(),
+                arguments={},
+                arguments_json=arguments,
+                arguments_error=f"工具参数不是有效 JSON：{exc.msg}。",
+            )
         arguments = decoded
+    arguments_error = ""
     if not isinstance(arguments, dict):
+        arguments_error = "工具参数必须是 JSON object。"
         arguments = {}
     arguments_json = json.dumps(arguments, ensure_ascii=False)
     call_id = item.get("id")
@@ -971,6 +991,7 @@ def _parse_pseudo_tool_call(item: Any, index: int) -> NativeToolCall | None:
         name=name.strip(),
         arguments=dict(arguments),
         arguments_json=arguments_json,
+        arguments_error=arguments_error,
     )
 
 

@@ -742,6 +742,26 @@ class AgentRuntime:
                         )
                     )
                     continue
+                if call.arguments_error:
+                    invalid_result = ToolExecutionResult(
+                        tool_name=call.name,
+                        success=False,
+                        content="",
+                        error=call.arguments_error,
+                    )
+                    step_results.append(invalid_result)
+                    execution_results.append(invalid_result)
+                    tool_messages.extend(
+                        _build_tool_messages_for_result(
+                            call,
+                            invalid_result,
+                            include_images=self.model_vision_enabled,
+                        )
+                    )
+                    emitted_actions.append(
+                        AgentAction(type="tool_call", payload=_redact_tool_result_for_model(invalid_result))
+                    )
+                    continue
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
                 prepared = self.tools.prepare_or_execute(
                     call.name,
@@ -778,9 +798,29 @@ class AgentRuntime:
 
                 if _is_screen_observation_request(prepared):
                     if allow_screen_observation:
+                        observation_result = ToolExecutionResult(
+                            tool_name=OBSERVE_SCREEN_TOOL_NAME,
+                            success=True,
+                            content="屏幕截图已获取，图像将在下一条用户消息中提供。",
+                        )
+                        observation_messages = _build_tool_messages_for_result(
+                            call,
+                            observation_result,
+                            include_images=False,
+                        )
+                        continuation_messages = _build_pending_continuation_messages(
+                            working_messages,
+                            turn.message,
+                            [*tool_messages, *observation_messages],
+                            turn.tool_calls,
+                            pending_call_id=call.id,
+                        )
                         screen_action = AgentAction(
                             type=SCREEN_OBSERVATION_REQUEST_ACTION,
-                            payload={"reason": _tool_call_reason(call)},
+                            payload={
+                                "reason": _tool_call_reason(call),
+                                "continuation_messages": continuation_messages,
+                            },
                         )
                         log_event(
                             "AgentRuntime",

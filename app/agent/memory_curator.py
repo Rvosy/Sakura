@@ -236,7 +236,7 @@ class MemoryCurator:
         *,
         cancel_checker: CancelChecker | None = None,
     ) -> list[dict[str, Any]]:
-        """让模型以第一人称对照已有记忆，产出整理操作；解析失败时视为无操作。"""
+        """让模型以第一人称对照已有记忆，产出整理操作；解析失败必须重试。"""
 
         system_prompt = self._build_self_curation_system_prompt()
         user_prompt = _build_curation_user_prompt(
@@ -542,12 +542,12 @@ def _build_curation_user_prompt(existing_block: str, dialog_entries: list[dict[s
 
 
 def _parse_curation_operations(raw: str) -> list[dict[str, Any]]:
-    """解析模型返回的整理操作；非法 JSON 视为无操作，不抛错以免中断整理。"""
+    """解析模型返回的整理操作；非法输出不得推进历史游标。"""
 
     data = _load_json_object(raw)
     candidates = data.get("operations") or data.get("operation") or []
     if not isinstance(candidates, list):
-        return []
+        raise ValueError("记忆整理输出的 operations 必须是数组。")
     operations: list[dict[str, Any]] = []
     for item in candidates:
         if isinstance(item, dict):
@@ -628,12 +628,14 @@ def _load_json_object(raw: str) -> dict[str, Any]:
         start = text.find("{")
         end = text.rfind("}")
         if start < 0 or end <= start:
-            return {}
+            raise ValueError("记忆整理输出不是有效 JSON。")
         try:
             data = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return {}
-    return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError as exc:
+            raise ValueError("记忆整理输出不是有效 JSON。") from exc
+    if not isinstance(data, dict):
+        raise ValueError("记忆整理输出必须是 JSON object。")
+    return data
 
 
 def _normalize_state(raw_data: Any) -> dict[str, Any]:
