@@ -1502,8 +1502,8 @@ class TauriSettingsProcess(QObject):
         self.deleteLater()
 
 
-def _restore_windows_for_pid(pid: int) -> bool:
-    """枚举属于该进程的可见顶层窗口，若被最小化则还原，并尝试前置。"""
+def _restore_windows_for_pid(pid: int, *, force_foreground: bool = False) -> bool:
+    """枚举目标进程的可见顶层窗口，按需还原并强制提到前台。"""
     try:
         import ctypes
         from ctypes import wintypes
@@ -1512,6 +1512,12 @@ def _restore_windows_for_pid(pid: int) -> bool:
 
     user32 = ctypes.windll.user32
     sw_restore = 9
+    hwnd_topmost = wintypes.HWND(-1)
+    hwnd_notopmost = wintypes.HWND(-2)
+    swp_nosize = 0x0001
+    swp_nomove = 0x0002
+    swp_showwindow = 0x0040
+    swp_front_flags = swp_nosize | swp_nomove | swp_showwindow
     found: list[int] = []
 
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -1534,11 +1540,47 @@ def _restore_windows_for_pid(pid: int) -> bool:
         return False
     if not found:
         return False
+    activated = False
     for hwnd in found:
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, sw_restore)
-        user32.SetForegroundWindow(hwnd)
-    return True
+        if not force_foreground:
+            user32.SetForegroundWindow(hwnd)
+            activated = True
+            continue
+
+        topmost_applied = False
+        topmost_removed = False
+        brought_to_top = False
+        foreground_set = False
+        try:
+            topmost_applied = bool(
+                user32.SetWindowPos(hwnd, hwnd_topmost, 0, 0, 0, 0, swp_front_flags)
+            )
+        except Exception:  # noqa: BLE001 - Win32 调用失败时交给后续重试。
+            topmost_applied = False
+        try:
+            topmost_removed = bool(
+                user32.SetWindowPos(hwnd, hwnd_notopmost, 0, 0, 0, 0, swp_front_flags)
+            )
+            if topmost_applied and not topmost_removed:
+                # 再补一次取消置顶，避免短暂抬升失败后残留为全局置顶窗口。
+                topmost_removed = bool(
+                    user32.SetWindowPos(hwnd, hwnd_notopmost, 0, 0, 0, 0, swp_front_flags)
+                )
+        except Exception:  # noqa: BLE001 - 返回 False，让启动重试继续补偿。
+            topmost_removed = False
+        try:
+            brought_to_top = bool(user32.BringWindowToTop(hwnd))
+            foreground_set = bool(user32.SetForegroundWindow(hwnd))
+        except Exception:  # noqa: BLE001 - 找到窗口但未成功前置时继续重试。
+            pass
+        activated = activated or (
+            topmost_applied
+            and topmost_removed
+            and (brought_to_top or foreground_set)
+        )
+    return activated
 
 
 def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str, object]:

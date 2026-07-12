@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from app.config.character_studio import CharacterStudioService
 from app.ui.screen_color_picker import pick_screen_color
@@ -18,6 +18,7 @@ TAURI_STUDIO_BIN_ENV = "SAKURA_TAURI_STUDIO_BIN"
 TAURI_STUDIO_PROTOCOL_VERSION = 1
 TAURI_STUDIO_RPC_MARKER = "@@SAKURA_STUDIO_RPC@@"
 TAURI_STUDIO_RPC_RESULT_MARKER = "@@SAKURA_STUDIO_RPC_RESULT@@"
+STUDIO_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 
 def resolve_tauri_studio_binary(base_dir: Path, environ: Mapping[str, str] | None = None) -> Path | None:
@@ -121,6 +122,7 @@ class TauriStudioProcess(QObject):
         self._request_payload = b""
         self._stdout_buffer = ""
         self._done = False
+        self._startup_focus_complete = False
 
     def start(self) -> bool:
         binary = resolve_tauri_studio_binary(self.base_dir)
@@ -135,12 +137,13 @@ class TauriStudioProcess(QObject):
         process.setArguments([])
         process.setWorkingDirectory(str(self.base_dir))
         process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
-        process.started.connect(self._send_request)
+        process.started.connect(self._handle_started)
         process.finished.connect(self._handle_finished)
         process.errorOccurred.connect(self._handle_error)
         process.readyReadStandardOutput.connect(self._handle_stdout)
         self._process = process
         self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        self._startup_focus_complete = False
         process.start()
         return not self._done and self._process is process
 
@@ -152,9 +155,35 @@ class TauriStudioProcess(QObject):
             return False
         try:
             pid = int(process.processId())
-        except (TypeError, ValueError):
+        except (RuntimeError, TypeError, ValueError):
             return False
-        return pid > 0 and sys.platform == "win32" and _restore_windows_for_pid(pid)
+        return (
+            pid > 0
+            and sys.platform == "win32"
+            and _restore_windows_for_pid(pid, force_foreground=True)
+        )
+
+    def _handle_started(self) -> None:
+        self._send_request()
+        process = self._process
+        if process is None or self._done or sys.platform != "win32":
+            return
+        self._startup_focus_complete = False
+        for delay_ms in STUDIO_FOCUS_RETRY_DELAYS_MS:
+            QTimer.singleShot(
+                delay_ms,
+                lambda active_process=process: self._try_startup_focus(active_process),
+            )
+
+    def _try_startup_focus(self, process: object) -> None:
+        if (
+            self._done
+            or self._process is not process
+            or self._startup_focus_complete
+        ):
+            return
+        if self.focus_window():
+            self._startup_focus_complete = True
 
     def shutdown(self, timeout_ms: int = 1000) -> None:
         self._done = True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,6 +162,290 @@ def test_tauri_studio_process_writes_rpc_response_line(tmp_path: Path) -> None:
     assert payload["result"]["characters"] == []
 
 
+def test_tauri_studio_process_schedules_bounded_focus_retries_after_start(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_studio as tauri_studio
+
+    scheduled: list[tuple[int, object]] = []
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    monkeypatch.setattr(
+        tauri_studio.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    monkeypatch.setattr(tauri_studio.sys, "platform", "win32")
+    process = tauri_studio.TauriStudioProcess(tmp_path)
+    fake = FakeQProcess()
+    process._process = fake
+    process._request_payload = b'{"version": 1}'
+
+    process._handle_started()
+
+    assert fake.writes == [b'{"version": 1}\n']
+    assert [delay for delay, _callback in scheduled] == list(
+        tauri_studio.STUDIO_FOCUS_RETRY_DELAYS_MS
+    )
+
+
+def test_tauri_studio_process_does_not_schedule_focus_retries_off_windows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_studio as tauri_studio
+
+    scheduled: list[int] = []
+
+    class FakeQProcess:
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+    monkeypatch.setattr(tauri_studio.sys, "platform", "linux")
+    monkeypatch.setattr(
+        tauri_studio.QTimer,
+        "singleShot",
+        lambda delay, _callback: scheduled.append(delay),
+    )
+    process = tauri_studio.TauriStudioProcess(tmp_path)
+    process._process = FakeQProcess()
+    process._request_payload = b"{}"
+
+    process._handle_started()
+
+    assert scheduled == []
+
+
+def test_tauri_studio_process_stops_startup_focus_retries_after_success(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_studio import TauriStudioProcess
+
+    process = TauriStudioProcess(tmp_path)
+    fake = object()
+    process._process = fake
+    focus_results = iter((False, True))
+    focus_calls: list[bool] = []
+
+    def focus_window() -> bool:
+        focus_calls.append(True)
+        return next(focus_results)
+
+    monkeypatch.setattr(process, "focus_window", focus_window)
+
+    process._try_startup_focus(fake)
+    process._try_startup_focus(fake)
+    process._try_startup_focus(fake)
+
+    assert focus_calls == [True, True]
+    assert process._startup_focus_complete is True
+
+
+def test_tauri_studio_process_ignores_stale_startup_focus_callbacks(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_studio import TauriStudioProcess
+
+    process = TauriStudioProcess(tmp_path)
+    original = object()
+    focus_calls: list[bool] = []
+    monkeypatch.setattr(
+        process,
+        "focus_window",
+        lambda: focus_calls.append(True) or True,
+    )
+
+    process._process = original
+    process._done = True
+    process._try_startup_focus(original)
+
+    process._done = False
+    process._process = object()
+    process._try_startup_focus(original)
+
+    assert focus_calls == []
+
+
+def test_tauri_studio_process_focus_uses_forced_foreground_restore(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+    import app.ui.tauri_studio as tauri_studio
+
+    calls: list[tuple[int, bool]] = []
+
+    class FakeQProcess:
+        def processId(self) -> int:  # noqa: N802
+            return 4321
+
+    monkeypatch.setattr(tauri_studio.sys, "platform", "win32")
+    monkeypatch.setattr(
+        tauri_settings,
+        "_restore_windows_for_pid",
+        lambda pid, *, force_foreground=False: calls.append((pid, force_foreground)) or True,
+    )
+    process = tauri_studio.TauriStudioProcess(tmp_path)
+    process._process = FakeQProcess()
+
+    assert process.focus_window() is True
+    assert calls == [(4321, True)]
+
+
+def test_tauri_studio_process_focus_tolerates_deleted_qprocess(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_studio as tauri_studio
+
+    class DeletedQProcess:
+        def processId(self) -> int:  # noqa: N802
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    monkeypatch.setattr(tauri_studio.sys, "platform", "win32")
+    process = tauri_studio.TauriStudioProcess(tmp_path)
+    process._process = DeletedQProcess()
+
+    assert process.focus_window() is False
+
+
+def test_restore_windows_for_pid_uses_temporary_topmost_pulse(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import ctypes
+
+    from app.ui.tauri_settings import _restore_windows_for_pid
+
+    calls: list[tuple[str, int]] = []
+
+    class FakeUser32:
+        def EnumWindows(self, callback, _lparam) -> int:  # noqa: N802, ANN001
+            callback(100, 0)
+            return 1
+
+        def IsWindowVisible(self, _hwnd: int) -> int:  # noqa: N802
+            return 1
+
+        def GetWindow(self, _hwnd: int, _command: int) -> int:  # noqa: N802
+            return 0
+
+        def GetWindowThreadProcessId(self, _hwnd: int, pid_pointer) -> int:  # noqa: N802, ANN001
+            pid_pointer._obj.value = 4321
+            return 1
+
+        def IsIconic(self, _hwnd: int) -> int:  # noqa: N802
+            return 0
+
+        def SetWindowPos(self, _hwnd: int, insert_after, *_args) -> int:  # noqa: N802, ANN001
+            calls.append(("position", int(insert_after.value)))
+            return 1
+
+        def BringWindowToTop(self, _hwnd: int) -> int:  # noqa: N802
+            calls.append(("bring", 0))
+            return 1
+
+        def SetForegroundWindow(self, _hwnd: int) -> int:  # noqa: N802
+            calls.append(("foreground", 0))
+            return 1
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=FakeUser32()), raising=False)
+    monkeypatch.setattr(
+        ctypes,
+        "WINFUNCTYPE",
+        lambda *_args: lambda callback: callback,
+        raising=False,
+    )
+
+    assert _restore_windows_for_pid(4321, force_foreground=True) is True
+    assert calls == [
+        ("position", ctypes.c_void_p(-1).value),
+        ("position", ctypes.c_void_p(-2).value),
+        ("bring", 0),
+        ("foreground", 0),
+    ]
+
+
+def test_restore_windows_for_pid_reports_failed_topmost_cleanup(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import ctypes
+
+    from app.ui.tauri_settings import _restore_windows_for_pid
+
+    class FakeUser32:
+        def EnumWindows(self, callback, _lparam) -> int:  # noqa: N802, ANN001
+            callback(100, 0)
+            return 1
+
+        def IsWindowVisible(self, _hwnd: int) -> int:  # noqa: N802
+            return 1
+
+        def GetWindow(self, _hwnd: int, _command: int) -> int:  # noqa: N802
+            return 0
+
+        def GetWindowThreadProcessId(self, _hwnd: int, pid_pointer) -> int:  # noqa: N802, ANN001
+            pid_pointer._obj.value = 4321
+            return 1
+
+        def IsIconic(self, _hwnd: int) -> int:  # noqa: N802
+            return 0
+
+        def SetWindowPos(self, _hwnd: int, insert_after, *_args) -> int:  # noqa: N802, ANN001
+            return insert_after.value != ctypes.c_void_p(-2).value
+
+        def BringWindowToTop(self, _hwnd: int) -> int:  # noqa: N802
+            return 1
+
+        def SetForegroundWindow(self, _hwnd: int) -> int:  # noqa: N802
+            return 1
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=FakeUser32()), raising=False)
+    monkeypatch.setattr(
+        ctypes,
+        "WINFUNCTYPE",
+        lambda *_args: lambda callback: callback,
+        raising=False,
+    )
+
+    assert _restore_windows_for_pid(4321, force_foreground=True) is False
+
+
 def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
     monkeypatch,
     tmp_path: Path,
@@ -216,6 +501,7 @@ def test_tauri_studio_process_start_returns_false_on_synchronous_failure(
     process.failed.connect(failures.append)
 
     assert process.start() is False
+    qtwidgets.QApplication.processEvents()
     assert process._process is None
     assert failures and "启动失败" in failures[0]
 
