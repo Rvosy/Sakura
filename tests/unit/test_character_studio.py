@@ -345,3 +345,163 @@ def test_character_studio_rejects_unsafe_ids_and_paths(tmp_path: Path) -> None:
         service.import_portrait(draft_dir, root / "bad.txt", label="default")
 
     assert outside.exists()
+
+
+def test_character_studio_persists_new_draft_under_data_and_resumes_it(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "persistent_draft")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "draft_role", "display_name": "Draft"})
+
+    assert Path(created["package_dir"]) == (
+        root / "data" / "character_studio" / "drafts" / "draft_role" / "package"
+    )
+    assert created["workspace_id"] == "draft_role"
+
+    doc = created["doc"]
+    doc["card_text"] = "unfinished card"
+    service.save_workspace_draft("draft_role", doc)
+
+    restarted = CharacterStudioService(root)
+    resumed = restarted.create_character({"id": "draft_role", "display_name": "Ignored"})
+    listed = restarted.list_characters()
+
+    assert resumed["resumed"] is True
+    assert resumed["doc"]["card_text"] == "unfinished card"
+    assert listed[0]["id"] == "draft_role"
+    assert listed[0]["has_draft"] is True
+    assert listed[0]["draft_kind"] == "new"
+    assert listed[0]["is_dirty"] is True
+
+
+def test_character_studio_workspace_autosave_accepts_incomplete_voice_rows(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "lenient_autosave")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+    doc = created["doc"]
+    doc["voice"] = {
+        "tone_refs": "voice/refs/ref.txt",
+        "gpt_model": "",
+        "sovits_model": "",
+        "ref_lang": "ja",
+        "text_lang": "zh",
+    }
+    doc["reference_audios"] = [
+        {"audio_path": "", "ref_lang": "JA", "ref_text": "", "tone": ""}
+    ]
+
+    saved = service.save_workspace_draft(created["workspace_id"], doc)
+
+    assert saved["doc"]["reference_audios"][0]["audio_path"] == ""
+    assert saved["is_dirty"] is True
+    with pytest.raises(ValueError, match="参考语音第 1 条"):
+        service.save_character(doc, created["workspace_id"])
+
+
+def test_character_studio_imports_portrait_folder_with_description_labels(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "portrait_folder")
+    source = root / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (source / "A010.png").write_bytes(b"a")
+    (source / "happy.jpg").write_bytes(b"b")
+    (nested / "ignored.png").write_bytes(b"ignored")
+    (source / "立绘说明.txt").write_text("A010 中性直视\n", encoding="utf-8")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "portrait_role", "display_name": "Portrait"})
+
+    result = service.import_portrait_folder(created["workspace_id"], source)
+
+    assert [(item["suggested_label"], Path(item["relative_path"]).name) for item in result["items"]] == [
+        ("中性直视", "A010.png"),
+        ("happy", "happy.jpg"),
+    ]
+    assert not any("ignored" in item["relative_path"] for item in result["items"])
+
+
+def test_character_studio_imports_reference_audio_folder_without_parsing_ref_txt(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "audio_folder")
+    source = root / "source"
+    source.mkdir()
+    (source / "calm.wav").write_bytes(b"calm")
+    (source / "happy.ogg").write_bytes(b"happy")
+    (source / "ref.txt").write_text("anything|JA|text|tone\n", encoding="utf-8")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+
+    result = service.import_reference_audio_folder(
+        created["workspace_id"],
+        source,
+        ref_lang="ZH",
+    )
+
+    assert result["items"] == [
+        {
+            "audio_path": "voice/refs/tone_refs/calm.wav",
+            "ref_lang": "ZH",
+            "ref_text": "",
+            "tone": "",
+        },
+        {
+            "audio_path": "voice/refs/tone_refs/happy.ogg",
+            "ref_lang": "ZH",
+            "ref_text": "",
+            "tone": "",
+        },
+    ]
+
+
+def test_character_studio_autosave_prunes_only_unreferenced_imported_assets(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "asset_prune")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "asset_role", "display_name": "Asset"})
+    package_dir = Path(created["package_dir"])
+    original = package_dir / "portraits" / "original.png"
+    original.write_bytes(b"original")
+    source = root / "selected.png"
+    source.write_bytes(b"selected")
+    imported = service.import_portrait(created["workspace_id"], source, label="selected")
+    imported_path = package_dir / imported["relative_path"]
+    assert imported_path.exists()
+
+    service.save_workspace_draft(created["workspace_id"], created["doc"])
+
+    assert not imported_path.exists()
+    assert original.exists()
+
+
+def test_character_studio_save_preserves_unknown_manifest_fields(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "preserve_manifest")
+    source = _write_character(root)
+    manifest_path = source / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["renderer"] = {"type": "mmd", "model": "models/demo.pmx"}
+    manifest["backchannel"] = "backchannels/manifest.json"
+    manifest["portrait"]["future_option"] = {"enabled": True}
+    manifest["theme"]["future_theme_option"] = "keep"
+    manifest["reply"]["future_reply_option"] = "keep"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    service = CharacterStudioService(root)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["display_name"] = "Edited"
+
+    service.save_character(doc, opened["workspace_id"])
+    saved_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert saved_manifest["renderer"] == {"type": "mmd", "model": "models/demo.pmx"}
+    assert saved_manifest["backchannel"] == "backchannels/manifest.json"
+    assert saved_manifest["portrait"]["future_option"] == {"enabled": True}
+    assert saved_manifest["theme"]["future_theme_option"] == "keep"
+    assert saved_manifest["reply"]["future_reply_option"] == "keep"

@@ -4807,6 +4807,10 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert 'id="textLang"' in index
     assert 'id="referenceAudioList"' in index
     assert 'id="addReferenceAudioButton"' in index
+    assert 'id="importPortraitFolderButton"' in index
+    assert 'id="importReferenceAudioFolderButton"' in index
+    assert 'id="discardDraftButton"' in index
+    assert 'id="defaultPortrait"' not in index
     assert 'data-page="library"' not in index
     assert 'id="page-library"' not in index
     assert 'id="characterSearch"' not in index
@@ -4830,6 +4834,13 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "hostCall(\"studio.import_portrait\"" in source
     assert "hostCall(\"studio.import_voice_model\"" in source
     assert "hostCall(\"studio.import_reference_audio\"" in source
+    assert "hostCall(\"studio.import_portrait_folder\"" in source
+    assert "hostCall(\"studio.import_reference_audio_folder\"" in source
+    assert "hostCall(\"studio.save_workspace_draft\"" in source
+    assert "hostCall(\"studio.discard_draft\"" in source
+    assert "directory: true" in source
+    assert "scheduleDraftAutosave" in source
+    assert 'pathInput.readOnly = true' in source
     assert "hostCall(\"studio.load_reference_audio_preview\"" in source
     assert "hostCall(\"studio.export_archive\"" in source
     assert "include_voice: Boolean(collectDoc().voice)" in source

@@ -49,6 +49,7 @@
           <div class="studio-character-controls">
             <label for="studioCharacterSelect">当前编辑角色</label>
             <select id="studioCharacterSelect"></select>
+            <button id="discardDraftButton" type="button" class="secondary-button danger-button">删除草稿</button>
             <button id="newCharacterButton" type="button" class="secondary-button">新建角色</button>
           </div>
         </div>
@@ -101,23 +102,18 @@
           <section id="page-portrait" class="settings-page">
             <fieldset class="settings-group">
               <legend>立绘</legend>
-              <div class="setting-row">
-                <label class="setting-row-text" for="defaultPortrait">
-                  <span class="setting-title">默认立绘</span>
-                  <span class="setting-desc">角色包内相对路径。</span>
-                </label>
-                <div class="path-control">
-                  <input id="defaultPortrait" type="text" autocomplete="off" />
-                  <button id="importDefaultPortraitButton" type="button" class="secondary-button">导入</button>
-                </div>
-              </div>
               <div class="setting-row setting-row-block">
-                <div class="setting-row-text">
-                  <span class="setting-title">表情立绘</span>
-                  <span class="setting-desc">标签与图片路径的映射。</span>
+                <div class="resource-section-head">
+                  <div class="setting-row-text">
+                    <span class="setting-title">立绘资源</span>
+                    <span class="setting-desc">选择默认立绘并填写描述标签；路径由工作区自动管理。</span>
+                  </div>
+                  <div class="resource-section-actions">
+                    <button id="addExpressionButton" type="button" class="secondary-button">选择立绘</button>
+                    <button id="importPortraitFolderButton" type="button" class="secondary-button">导入文件夹</button>
+                  </div>
                 </div>
                 <div id="expressionList" class="expression-list"></div>
-                <button id="addExpressionButton" type="button" class="secondary-button">添加表情</button>
               </div>
             </fieldset>
           </section>
@@ -185,7 +181,10 @@
                   <span class="setting-title">语音与描述词</span>
                   <span class="setting-desc">每条描述词会写入 ref.txt，并自动成为可用的回复语气。</span>
                 </div>
-                <button id="addReferenceAudioButton" type="button" class="secondary-button">添加参考语音</button>
+                <div class="resource-section-actions">
+                  <button id="addReferenceAudioButton" type="button" class="secondary-button">添加参考语音</button>
+                  <button id="importReferenceAudioFolderButton" type="button" class="secondary-button">导入文件夹</button>
+                </div>
               </div>
               <div id="referenceAudioList" class="reference-audio-list"></div>
             </fieldset>

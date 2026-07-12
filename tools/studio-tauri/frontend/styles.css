@@ -241,7 +241,7 @@ body {
 
 .studio-character-controls {
   display: grid;
-  grid-template-columns: max-content minmax(120px, 1fr) max-content;
+  grid-template-columns: max-content minmax(120px, 1fr) max-content max-content;
   gap: 8px;
   align-items: center;
   width: min(100%, 760px);
@@ -574,15 +574,79 @@ button:disabled {
 
 .expression-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
 .expression-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr) 34px;
+  grid-template-columns: 72px minmax(120px, 0.34fr) minmax(180px, 1fr) auto;
   gap: 8px;
   align-items: center;
+  padding: 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, var(--tint-faint), transparent 48%),
+    var(--surface-raised);
+  transition: border-color var(--motion-base) var(--ease), transform var(--motion-base) var(--ease);
+}
+
+.expression-row:focus-within {
+  border-color: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-border));
+  transform: translateY(-1px);
+}
+
+.expression-row [data-expression-path] {
+  color: var(--sakura-secondary-text);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 42%, var(--surface-raised));
+}
+
+.portrait-default-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.portrait-default-control input {
+  width: 16px;
+  min-width: 16px;
+  accent-color: var(--sakura-primary);
+}
+
+.portrait-resource-actions,
+.resource-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resource-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resource-empty {
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  min-height: 120px;
+  padding: 20px;
+  border: 1px dashed color-mix(in srgb, var(--sakura-border) 78%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--sakura-muted-text);
+  text-align: center;
+  background: var(--tint-faint);
+}
+
+.resource-empty strong {
+  color: var(--sakura-secondary-text);
 }
 
 .icon-button {
@@ -1107,12 +1171,18 @@ input.is-invalid {
   }
 
   .studio-character-controls {
-    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
   }
 
   .reference-audio-head,
-  .reference-audio-fields {
+  .reference-audio-fields,
+  .expression-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-section-head {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .reference-audio-actions {
@@ -1144,6 +1214,10 @@ input.is-invalid {
 
   .studio-character-controls label {
     grid-column: 1 / -1;
+  }
+
+  #discardDraftButton {
+    grid-column: 1;
   }
 
   .path-control.has-two-actions,

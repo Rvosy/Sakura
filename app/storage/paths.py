@@ -174,6 +174,19 @@ class StoragePaths:
     def tts_bundle_onnx_for(self, character_id: str) -> Path:
         return self.tts_bundles_dir / "onnx" / sanitize_file_stem(character_id)
 
+    # ---- 角色工坊 ----
+    @property
+    def character_studio_dir(self) -> Path:
+        return self._data / "character_studio"
+
+    @property
+    def character_studio_drafts_dir(self) -> Path:
+        return self.character_studio_dir / "drafts"
+
+    @property
+    def character_studio_backups_dir(self) -> Path:
+        return self.character_studio_dir / "backups"
+
     # ---- 插件数据 ----
     @property
     def plugins_data_dir(self) -> Path:

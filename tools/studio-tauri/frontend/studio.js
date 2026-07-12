@@ -14,14 +14,14 @@ const fields = {
   },
   studioCharacterSelect: document.getElementById("studioCharacterSelect"),
   newCharacterButton: document.getElementById("newCharacterButton"),
+  discardDraftButton: document.getElementById("discardDraftButton"),
   characterId: document.getElementById("characterId"),
   displayName: document.getElementById("displayName"),
   initialMessage: document.getElementById("initialMessage"),
   cardText: document.getElementById("cardText"),
-  defaultPortrait: document.getElementById("defaultPortrait"),
-  importDefaultPortraitButton: document.getElementById("importDefaultPortraitButton"),
   expressionList: document.getElementById("expressionList"),
   addExpressionButton: document.getElementById("addExpressionButton"),
+  importPortraitFolderButton: document.getElementById("importPortraitFolderButton"),
   voiceEnabled: document.getElementById("voiceEnabled"),
   voiceEnabledLabel: document.getElementById("voiceEnabledLabel"),
   voiceModelFields: document.getElementById("voiceModelFields"),
@@ -35,6 +35,7 @@ const fields = {
   textLang: document.getElementById("textLang"),
   referenceAudioList: document.getElementById("referenceAudioList"),
   addReferenceAudioButton: document.getElementById("addReferenceAudioButton"),
+  importReferenceAudioFolderButton: document.getElementById("importReferenceAudioFolderButton"),
   themeFields: document.getElementById("themeFields"),
   errorText: document.getElementById("errorText"),
   exportButton: document.getElementById("exportButton"),
@@ -68,6 +69,7 @@ const themeVars = {
 
 let request = null;
 let currentPackageDir = "";
+let currentWorkspaceId = "";
 let currentDoc = null;
 let baseline = "";
 let busy = false;
@@ -76,6 +78,9 @@ let temporaryCharacter = null;
 let activeThemeField = "";
 let themeEditor = {};
 let previewAudio = null;
+let draftAutosaveTimer = null;
+let draftAutosavePromise = null;
+let renderingEditor = false;
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -338,7 +343,7 @@ function confirmDiscardChanges() {
 
 function characterOptionLabel(character) {
   const label = character.display_name || character.id;
-  return character.source === "draft" ? `${label}（新建）` : label;
+  return character.has_draft || character.source === "draft" ? `${label}（草稿）` : label;
 }
 
 function characterOptions() {
@@ -367,9 +372,13 @@ function collectDoc() {
     theme[input.dataset.themeField] = input.value.trim();
   });
   const expressions = {};
+  let defaultPortrait = "";
   fields.expressionList.querySelectorAll(".expression-row").forEach((row) => {
     const label = row.querySelector("[data-expression-label]").value.trim();
     const path = row.querySelector("[data-expression-path]").value.trim();
+    if (row.querySelector("[data-portrait-default]").checked) {
+      defaultPortrait = path;
+    }
     if (label && path) {
       expressions[label] = path;
     }
@@ -393,7 +402,7 @@ function collectDoc() {
     initial_message: fields.initialMessage.value,
     card_text: fields.cardText.value,
     reply_tones: replyTones,
-    default_portrait: fields.defaultPortrait.value.trim(),
+    default_portrait: defaultPortrait,
     expressions,
     voice: voiceEnabled ? {
       tone_refs: "voice/refs/ref.txt",
@@ -426,9 +435,68 @@ function refreshDirty() {
   fields.saveButton.classList.toggle("has-changes", Boolean(dirty));
 }
 
+function handleEditorChanged() {
+  if (renderingEditor) {
+    return;
+  }
+  refreshDirty();
+  scheduleDraftAutosave();
+}
+
+function scheduleDraftAutosave() {
+  if (!currentWorkspaceId || !currentDoc) {
+    return;
+  }
+  window.clearTimeout(draftAutosaveTimer);
+  draftAutosaveTimer = window.setTimeout(() => {
+    flushDraftAutosave().catch((error) => setError(`草稿自动保存失败：${error}`));
+  }, 650);
+}
+
+async function flushDraftAutosave() {
+  window.clearTimeout(draftAutosaveTimer);
+  draftAutosaveTimer = null;
+  if (!currentWorkspaceId || !currentDoc || !isDirty()) {
+    return null;
+  }
+  if (draftAutosavePromise) {
+    await draftAutosavePromise;
+  }
+  const doc = collectDoc();
+  draftAutosavePromise = hostCall("studio.save_workspace_draft", {
+    workspace_id: currentWorkspaceId,
+    doc,
+  });
+  try {
+    const result = await draftAutosavePromise;
+    currentDoc = result.doc || doc;
+    const existing = (request.characters || []).find((item) => item.id === currentDoc.id);
+    if (existing) {
+      existing.display_name = currentDoc.display_name;
+      existing.has_draft = true;
+      existing.is_dirty = true;
+      existing.source = "draft";
+    } else {
+      request.characters = [{
+        id: currentDoc.id,
+        display_name: currentDoc.display_name,
+        source: "draft",
+        has_draft: true,
+        draft_kind: "new",
+        is_dirty: true,
+      }, ...(request.characters || [])];
+    }
+    renderCharacterOptions();
+    return result;
+  } finally {
+    draftAutosavePromise = null;
+  }
+}
+
 function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   stopReferenceAudioPreview();
   currentPackageDir = payload.package_dir || "";
+  currentWorkspaceId = payload.workspace_id || payload.doc?.id || "";
   currentDoc = payload.doc || null;
   if (Array.isArray(payload.characters)) {
     request.characters = payload.characters;
@@ -438,7 +506,7 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   renderCharacterOptions();
   renderEditor();
   switchPage("basic");
-  if (options.dirty === true) {
+  if (options.dirty === true || payload.is_dirty === true) {
     baseline = "";
     refreshDirty();
   } else {
@@ -447,19 +515,19 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
 }
 
 function renderEditor() {
+  renderingEditor = true;
   const doc = currentDoc || {};
   fields.characterId.value = doc.id || "";
   fields.characterId.disabled = Boolean(doc.id);
   fields.displayName.value = doc.display_name || "";
   fields.initialMessage.value = doc.initial_message || "";
   fields.cardText.value = doc.card_text || "";
-  fields.defaultPortrait.value = doc.default_portrait || "";
   fields.voiceEnabled.checked = Boolean(doc.voice);
   fields.gptModelPath.value = doc.voice?.gpt_model || "";
   fields.sovitsModelPath.value = doc.voice?.sovits_model || "";
   fields.defaultRefLang.value = doc.voice?.ref_lang || "ja";
   fields.textLang.value = doc.voice?.text_lang || "ja";
-  renderExpressions(doc.expressions || {});
+  renderExpressions(doc.expressions || {}, doc.default_portrait || "");
   renderReferenceAudios(doc.reference_audios || []);
   const theme = {
     ...(request.theme_defaults || request.theme || {}),
@@ -469,16 +537,37 @@ function renderEditor() {
   renderTheme(theme);
   syncVoiceEnabledState();
   refreshControls();
+  renderingEditor = false;
 }
 
-function renderExpressions(expressions) {
+function renderExpressions(expressions, defaultPortrait = "") {
   fields.expressionList.textContent = "";
-  Object.entries(expressions).forEach(([label, path]) => addExpressionRow(label, path));
+  let defaultFound = false;
+  Object.entries(expressions).forEach(([label, path]) => {
+    const isDefault = path === defaultPortrait && !defaultFound;
+    defaultFound ||= isDefault;
+    addExpressionRow(label, path, isDefault);
+  });
+  if (defaultPortrait && !defaultFound) {
+    addExpressionRow("默认", defaultPortrait, true);
+  }
+  syncExpressionEmptyState();
 }
 
-function addExpressionRow(label = "", path = "") {
+function addExpressionRow(label = "", path = "", isDefault = false) {
+  fields.expressionList.querySelector(".resource-empty")?.remove();
   const row = document.createElement("div");
   row.className = "expression-row";
+  const defaultLabel = document.createElement("label");
+  defaultLabel.className = "portrait-default-control";
+  const defaultInput = document.createElement("input");
+  defaultInput.type = "radio";
+  defaultInput.name = "defaultPortraitResource";
+  defaultInput.dataset.portraitDefault = "1";
+  defaultInput.checked = Boolean(isDefault);
+  const defaultText = document.createElement("span");
+  defaultText.textContent = "默认";
+  defaultLabel.append(defaultInput, defaultText);
   const labelInput = document.createElement("input");
   labelInput.type = "text";
   labelInput.value = label;
@@ -486,20 +575,49 @@ function addExpressionRow(label = "", path = "") {
   labelInput.dataset.expressionLabel = "1";
   const pathInput = document.createElement("input");
   pathInput.type = "text";
+  pathInput.readOnly = true;
   pathInput.value = path;
   pathInput.placeholder = "portraits/example.png";
   pathInput.dataset.expressionPath = "1";
+  const replace = document.createElement("button");
+  replace.type = "button";
+  replace.className = "secondary-button compact-button";
+  replace.textContent = path ? "替换" : "选择";
+  replace.addEventListener("click", () => importPortrait(row));
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "secondary-button icon-button";
   remove.textContent = "×";
   remove.addEventListener("click", () => {
+    const wasDefault = defaultInput.checked;
     row.remove();
-    refreshDirty();
+    if (wasDefault) {
+      fields.expressionList.querySelector("[data-portrait-default]")?.click();
+    }
+    syncExpressionEmptyState();
+    handleEditorChanged();
   });
-  row.append(labelInput, pathInput, remove);
-  row.addEventListener("input", refreshDirty);
+  const actions = document.createElement("div");
+  actions.className = "portrait-resource-actions";
+  actions.append(replace, remove);
+  row.append(defaultLabel, labelInput, pathInput, actions);
+  row.addEventListener("input", handleEditorChanged);
+  row.addEventListener("change", handleEditorChanged);
   fields.expressionList.append(row);
+}
+
+function syncExpressionEmptyState() {
+  if (fields.expressionList.querySelector(".expression-row")) {
+    fields.expressionList.querySelector(".resource-empty")?.remove();
+    return;
+  }
+  if (fields.expressionList.querySelector(".resource-empty")) {
+    return;
+  }
+  const empty = document.createElement("div");
+  empty.className = "resource-empty";
+  empty.innerHTML = "<strong>还没有立绘</strong><span>选择图片或导入一个立绘文件夹。</span>";
+  fields.expressionList.append(empty);
 }
 
 function collectReferenceAudios() {
@@ -569,7 +687,7 @@ function addReferenceAudioRow(reference = {}) {
   remove.addEventListener("click", () => {
     row.remove();
     syncReferenceAudioEmptyState();
-    refreshDirty();
+    handleEditorChanged();
     refreshControls();
   });
   actions.append(preview, replace, remove);
@@ -582,7 +700,7 @@ function addReferenceAudioRow(reference = {}) {
   const toneField = buildReferenceField("描述词", "例如 温柔、开心", reference.tone || "", "referenceTone");
   details.append(langField, textField, toneField);
   row.append(head, details);
-  row.addEventListener("input", refreshDirty);
+  row.addEventListener("input", handleEditorChanged);
   fields.referenceAudioList.append(row);
 }
 
@@ -751,7 +869,7 @@ function renderTheme(theme) {
       if (id === activeThemeField) {
         syncThemeEditor();
       }
-      refreshDirty();
+      handleEditorChanged();
     });
     controls.append(swatchButton, textInput);
     row.append(rowLabel, controls);
@@ -956,7 +1074,7 @@ function updateActiveThemeColor(color) {
   document.documentElement.style.setProperty(themeVars[activeThemeField], normalized);
   syncThemeRole(activeThemeField);
   syncThemeEditor();
-  refreshDirty();
+  handleEditorChanged();
 }
 
 function updateThemeFromRgbInputs() {
@@ -1030,11 +1148,7 @@ async function selectCharacter(characterId) {
     refreshSelect(fields.studioCharacterSelect);
     return;
   }
-  if (!confirmDiscardChanges()) {
-    fields.studioCharacterSelect.value = previousId;
-    refreshSelect(fields.studioCharacterSelect);
-    return;
-  }
+  await flushDraftAutosave();
   await runBusy(async () => {
     try {
       const payload = await hostCall("studio.open_character", { character_id: characterId });
@@ -1049,16 +1163,19 @@ async function selectCharacter(characterId) {
 }
 
 async function createCharacter() {
-  if (!confirmDiscardChanges()) {
-    return;
-  }
+  await flushDraftAutosave();
   const id = window.prompt("角色 ID：", "");
   if (!id) {
     return;
   }
   const characterId = id.trim();
-  if ((request.characters || []).some((character) => character.id === characterId)) {
-    setError(`角色 ID 已存在：${characterId}。请从下拉菜单直接打开该角色。`);
+  const existing = (request.characters || []).find((character) => character.id === characterId);
+  if (existing) {
+    if (existing.has_draft || existing.source === "draft") {
+      await selectCharacter(characterId);
+    } else {
+      setError(`角色 ID 已存在：${characterId}。请从下拉菜单直接打开该角色。`);
+    }
     return;
   }
   const displayName = window.prompt("显示名称：", characterId);
@@ -1077,13 +1194,45 @@ async function createCharacter() {
   });
 }
 
-async function importDefaultPortrait() {
-  if (!currentDoc || !currentPackageDir) {
+async function discardCurrentDraft() {
+  if (!currentWorkspaceId || !currentDoc) {
+    return;
+  }
+  const entry = (request.characters || []).find((item) => item.id === editingCharacterId);
+  if (!entry?.has_draft && entry?.source !== "draft" && !isDirty()) {
+    return;
+  }
+  if (!window.confirm(`确定删除角色「${currentDoc.display_name || currentDoc.id}」的工作草稿吗？`)) {
+    return;
+  }
+  await runBusy(async () => {
+    const result = await hostCall("studio.discard_draft", {
+      workspace_id: currentWorkspaceId,
+      current_character_id: request.initial_character_id || "",
+    });
+    request.characters = result.characters || [];
+    if (result.doc) {
+      setCurrentDoc(result);
+      return;
+    }
+    currentPackageDir = "";
+    currentWorkspaceId = "";
+    currentDoc = null;
+    editingCharacterId = "";
+    temporaryCharacter = null;
+    renderCharacterOptions();
+    renderEditor();
+    markBaseline();
+  });
+}
+
+async function importPortrait(targetRow = null) {
+  if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
     return;
   }
   const selected = await window.__TAURI__?.dialog?.open({
-    title: "导入默认立绘",
+    title: targetRow ? "替换立绘" : "选择立绘",
     multiple: false,
     filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
   });
@@ -1093,17 +1242,58 @@ async function importDefaultPortrait() {
   }
   await runBusy(async () => {
     const result = await hostCall("studio.import_portrait", {
-      package_dir: currentPackageDir,
+      workspace_id: currentWorkspaceId,
       path,
-      label: "default",
+      label: targetRow?.querySelector("[data-expression-label]")?.value.trim() || "portrait",
     });
-    fields.defaultPortrait.value = result.relative_path;
-    refreshDirty();
+    if (targetRow) {
+      targetRow.querySelector("[data-expression-path]").value = result.relative_path;
+      targetRow.querySelector(".compact-button").textContent = "替换";
+    } else {
+      const hasDefault = Boolean(fields.expressionList.querySelector("[data-portrait-default]:checked"));
+      addExpressionRow(result.suggested_label || "立绘", result.relative_path, !hasDefault);
+    }
+    handleEditorChanged();
+    await flushDraftAutosave();
+  });
+}
+
+async function importPortraitFolder() {
+  if (!currentDoc || !currentWorkspaceId) {
+    setError("请先打开或新建角色。");
+    return;
+  }
+  const selected = await window.__TAURI__?.dialog?.open({
+    title: "选择含立绘的文件夹",
+    directory: true,
+    multiple: false,
+  });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) {
+    return;
+  }
+  await runBusy(async () => {
+    const result = await hostCall("studio.import_portrait_folder", {
+      workspace_id: currentWorkspaceId,
+      path,
+    });
+    let hasDefault = Boolean(fields.expressionList.querySelector("[data-portrait-default]:checked"));
+    (result.items || []).forEach((item) => {
+      addExpressionRow(item.suggested_label || "立绘", item.relative_path, !hasDefault);
+      hasDefault = true;
+    });
+    if (!result.items?.length) {
+      notify("所选文件夹中没有支持的立绘图片。", "info");
+      return;
+    }
+    handleEditorChanged();
+    await flushDraftAutosave();
+    notify(`已导入 ${result.items.length} 张立绘。`, "success");
   });
 }
 
 async function importVoiceModel(modelType) {
-  if (!currentDoc || !currentPackageDir) {
+  if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
     return;
   }
@@ -1120,49 +1310,86 @@ async function importVoiceModel(modelType) {
   }
   await runBusy(async () => {
     const result = await hostCall("studio.import_voice_model", {
-      package_dir: currentPackageDir,
+      workspace_id: currentWorkspaceId,
       path,
       model_type: modelType,
     });
     fields.voiceEnabled.checked = true;
     (isGpt ? fields.gptModelPath : fields.sovitsModelPath).value = result.relative_path;
     syncVoiceEnabledState();
-    refreshDirty();
+    handleEditorChanged();
+    await flushDraftAutosave();
   });
 }
 
 async function importReferenceAudio(targetRow = null) {
-  if (!currentDoc || !currentPackageDir) {
+  if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
     return;
   }
   const selected = await window.__TAURI__?.dialog?.open({
     title: targetRow ? "替换参考语音" : "添加参考语音",
-    multiple: false,
+    multiple: !targetRow,
     filters: [{ name: "音频", extensions: ["wav", "mp3", "ogg", "flac"] }],
+  });
+  const paths = Array.isArray(selected) ? selected : (selected ? [selected] : []);
+  if (!paths.length) {
+    return;
+  }
+  await runBusy(async () => {
+    fields.voiceEnabled.checked = true;
+    syncVoiceEnabledState();
+    for (const path of paths) {
+      const result = await hostCall("studio.import_reference_audio", {
+        workspace_id: currentWorkspaceId,
+        path,
+      });
+      if (targetRow) {
+        targetRow.querySelector("[data-reference-audio-path]").value = result.relative_path;
+      } else {
+        addReferenceAudioRow({
+          audio_path: result.relative_path,
+          ref_lang: fields.defaultRefLang.value.trim() || "JA",
+          ref_text: "",
+          tone: "",
+        });
+      }
+    }
+    handleEditorChanged();
+    await flushDraftAutosave();
+  });
+}
+
+async function importReferenceAudioFolder() {
+  if (!currentDoc || !currentWorkspaceId) {
+    setError("请先打开或新建角色。");
+    return;
+  }
+  const selected = await window.__TAURI__?.dialog?.open({
+    title: "选择参考语音文件夹",
+    directory: true,
+    multiple: false,
   });
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (!path) {
     return;
   }
   await runBusy(async () => {
-    const result = await hostCall("studio.import_reference_audio", {
-      package_dir: currentPackageDir,
+    const result = await hostCall("studio.import_reference_audio_folder", {
+      workspace_id: currentWorkspaceId,
       path,
+      ref_lang: fields.defaultRefLang.value.trim() || "JA",
     });
     fields.voiceEnabled.checked = true;
     syncVoiceEnabledState();
-    if (targetRow) {
-      targetRow.querySelector("[data-reference-audio-path]").value = result.relative_path;
-    } else {
-      addReferenceAudioRow({
-        audio_path: result.relative_path,
-        ref_lang: fields.defaultRefLang.value.trim() || "JA",
-        ref_text: "",
-        tone: "",
-      });
+    (result.items || []).forEach((item) => addReferenceAudioRow(item));
+    if (!result.items?.length) {
+      notify("所选文件夹中没有支持的音频文件。", "info");
+      return;
     }
-    refreshDirty();
+    handleEditorChanged();
+    await flushDraftAutosave();
+    notify(`已导入 ${result.items.length} 条参考语音。`, "success");
   });
 }
 
@@ -1174,7 +1401,7 @@ async function previewReferenceAudio(row) {
   }
   await runBusy(async () => {
     const result = await hostCall("studio.load_reference_audio_preview", {
-      package_dir: currentPackageDir,
+      workspace_id: currentWorkspaceId,
       relative_path: relativePath,
     });
     stopReferenceAudioPreview();
@@ -1198,6 +1425,18 @@ function validateThemeInputs() {
 
 function validateExpressionInputs() {
   const rows = Array.from(fields.expressionList.querySelectorAll(".expression-row"));
+  if (!rows.length) {
+    switchPage("portrait");
+    fields.addExpressionButton.focus();
+    setError("请至少选择一张立绘。");
+    return false;
+  }
+  if (!fields.expressionList.querySelector("[data-portrait-default]:checked")) {
+    switchPage("portrait");
+    rows[0].querySelector("[data-portrait-default]").focus();
+    setError("请选择默认立绘。");
+    return false;
+  }
   const labels = new Set();
   rows.forEach((row) => {
     row.querySelectorAll("input").forEach((input) => input.classList.remove("is-invalid"));
@@ -1302,7 +1541,7 @@ function validateVoiceInputs() {
 }
 
 async function saveCharacter() {
-  if (!currentDoc || !currentPackageDir) {
+  if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
     return;
   }
@@ -1310,8 +1549,9 @@ async function saveCharacter() {
     return;
   }
   await runBusy(async () => {
+    await flushDraftAutosave();
     const payload = await hostCall("studio.save_character", {
-      package_dir: currentPackageDir,
+      workspace_id: currentWorkspaceId,
       current_character_id: request.initial_character_id || "",
       doc: collectDoc(),
     });
@@ -1329,7 +1569,7 @@ async function saveCharacter() {
 }
 
 async function exportCharacter() {
-  if (!currentDoc || !currentPackageDir) {
+  if (!currentDoc || !currentWorkspaceId) {
     setError("请先打开或新建角色。");
     return;
   }
@@ -1346,9 +1586,9 @@ async function exportCharacter() {
     return;
   }
   await runBusy(async () => {
-    await hostCall("studio.save_draft", { package_dir: currentPackageDir, doc: collectDoc() });
+    await flushDraftAutosave();
     const result = await hostCall("studio.export_archive", {
-      package_dir: currentPackageDir,
+      workspace_id: currentWorkspaceId,
       path,
       include_voice: Boolean(collectDoc().voice),
     });
@@ -1376,9 +1616,10 @@ async function runBusy(action) {
 function refreshControls() {
   const hasDoc = Boolean(currentDoc);
   const voiceEnabled = hasDoc && fields.voiceEnabled.checked;
+  const currentEntry = (request?.characters || []).find((item) => item.id === editingCharacterId);
   fields.saveButton.disabled = busy || !hasDoc;
   fields.exportButton.disabled = busy || !hasDoc;
-  fields.importDefaultPortraitButton.disabled = busy || !hasDoc;
+  fields.discardDraftButton.disabled = busy || !hasDoc || !(isDirty() || currentEntry?.has_draft || currentEntry?.source === "draft");
   fields.newCharacterButton.disabled = busy;
   fields.studioCharacterSelect.disabled = busy || fields.studioCharacterSelect.options.length === 0;
   refreshSelect(fields.studioCharacterSelect);
@@ -1390,8 +1631,8 @@ function refreshControls() {
     fields.displayName,
     fields.initialMessage,
     fields.cardText,
-    fields.defaultPortrait,
     fields.addExpressionButton,
+    fields.importPortraitFolderButton,
   ].forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
@@ -1406,6 +1647,7 @@ function refreshControls() {
     element.disabled = busy || !voiceEnabled;
   });
   fields.addReferenceAudioButton.disabled = busy || !voiceEnabled;
+  fields.importReferenceAudioFolderButton.disabled = busy || !voiceEnabled;
   fields.referenceAudioList.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !voiceEnabled;
   });
@@ -1418,6 +1660,10 @@ function refreshControls() {
 
 async function closeStudio() {
   stopReferenceAudioPreview();
+  await flushDraftAutosave();
+  if (currentWorkspaceId) {
+    await hostCall("studio.release_workspace", { workspace_id: currentWorkspaceId });
+  }
   await invoke("close_studio");
 }
 
@@ -1441,17 +1687,19 @@ async function load() {
 fields.navItems.forEach((item) => item.addEventListener("click", () => switchPage(item.dataset.page)));
 fields.studioCharacterSelect.addEventListener("change", (event) => selectCharacter(event.target.value));
 fields.newCharacterButton.addEventListener("click", createCharacter);
-fields.importDefaultPortraitButton.addEventListener("click", importDefaultPortrait);
+fields.discardDraftButton.addEventListener("click", discardCurrentDraft);
+fields.addExpressionButton.addEventListener("click", () => importPortrait());
+fields.importPortraitFolderButton.addEventListener("click", importPortraitFolder);
 fields.importGptModelButton.addEventListener("click", () => importVoiceModel("gpt"));
 fields.importSovitsModelButton.addEventListener("click", () => importVoiceModel("sovits"));
 fields.clearGptModelButton.addEventListener("click", () => {
   fields.gptModelPath.value = "";
-  refreshDirty();
+  handleEditorChanged();
   refreshControls();
 });
 fields.clearSovitsModelButton.addEventListener("click", () => {
   fields.sovitsModelPath.value = "";
-  refreshDirty();
+  handleEditorChanged();
   refreshControls();
 });
 fields.voiceEnabled.addEventListener("change", () => {
@@ -1466,14 +1714,11 @@ fields.voiceEnabled.addEventListener("change", () => {
     }
   }
   syncVoiceEnabledState();
-  refreshDirty();
+  handleEditorChanged();
   refreshControls();
 });
 fields.addReferenceAudioButton.addEventListener("click", () => importReferenceAudio());
-fields.addExpressionButton.addEventListener("click", () => {
-  addExpressionRow();
-  refreshDirty();
-});
+fields.importReferenceAudioFolderButton.addEventListener("click", importReferenceAudioFolder);
 fields.saveButton.addEventListener("click", saveCharacter);
 fields.exportButton.addEventListener("click", exportCharacter);
 fields.cancelButton.addEventListener("click", closeStudio);
@@ -1482,10 +1727,9 @@ fields.cancelButton.addEventListener("click", closeStudio);
   fields.displayName,
   fields.initialMessage,
   fields.cardText,
-  fields.defaultPortrait,
   fields.defaultRefLang,
   fields.textLang,
-].forEach((element) => element.addEventListener("input", refreshDirty));
+].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
 enhanceSelect(fields.studioCharacterSelect);

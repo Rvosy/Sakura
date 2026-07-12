@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import filecmp
 import json
 import re
 import shutil
@@ -19,6 +20,8 @@ from app.config.character_loader import (
     _load_profile,
     character_theme_to_mapping,
 )
+from app.storage.atomic import atomic_write_text
+from app.storage.paths import StoragePaths
 from app.ui.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
 
 CARD_FILENAME = "card.md"
@@ -26,6 +29,8 @@ DEFAULT_TONE_REFS = "voice/refs/ref.txt"
 VOICE_MODELS_DIR = "voice/models"
 REFERENCE_AUDIO_DIR = "voice/refs/tone_refs"
 REFERENCE_AUDIO_PREVIEW_LIMIT = 20 * 1024 * 1024
+DRAFT_SCHEMA_VERSION = 1
+PORTRAIT_DESCRIPTION_FILENAME = "立绘说明.txt"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _VOICE_MODEL_SUFFIXES = {"gpt": ".ckpt", "sovits": ".pth"}
@@ -248,38 +253,88 @@ class CharacterStudioService:
     def __init__(self, base_dir: Path, workspace_root: Path | None = None) -> None:
         self.base_dir = Path(base_dir)
         self.characters_dir = self.base_dir / "characters"
-        self.workspace_root = (
-            Path(workspace_root)
+        storage = StoragePaths(self.base_dir)
+        self.workspace_root = Path(workspace_root) if workspace_root is not None else storage.character_studio_dir
+        self.workspace_characters_dir = self.workspace_root / "drafts"
+        self.backup_root = (
+            self.workspace_root / "backups"
             if workspace_root is not None
-            else self.base_dir / "runtime" / "character-studio" / "workspace"
+            else storage.character_studio_backups_dir
         )
-        self.workspace_characters_dir = self.workspace_root / "characters"
-        self.backup_root = self.base_dir / "runtime" / "character-studio" / "backups"
         self.workspace_characters_dir.mkdir(parents=True, exist_ok=True)
         self.backup_root.mkdir(parents=True, exist_ok=True)
+        self._recover_legacy_new_drafts()
 
     def list_characters(self, *, current_character_id: str = "") -> list[dict[str, Any]]:
         try:
             profiles = CharacterRegistry(self.base_dir).all()
         except CharacterConfigError:
             profiles = []
-        items = [
-            self._summary_from_profile(profile, current_character_id)
+        installed = {profile.id: profile for profile in profiles}
+        items_by_id = {
+            profile.id: self._summary_from_profile(profile, current_character_id)
             for profile in profiles
-        ]
+        }
+        for state in self._draft_states():
+            character_id = str(state.get("id") or "")
+            if not character_id:
+                continue
+            dirty = bool(state.get("dirty"))
+            origin = str(state.get("origin") or "new")
+            if origin == "installed" and not dirty:
+                continue
+            doc = CharacterStudioDoc.from_payload(state.get("doc") if isinstance(state.get("doc"), dict) else {})
+            profile = installed.get(character_id)
+            base = (
+                self._summary_from_profile(profile, current_character_id)
+                if profile is not None
+                else {
+                    "id": character_id,
+                    "display_name": doc.display_name or character_id,
+                    "package_dir": str(self._draft_package_dir(character_id)),
+                    "is_current": character_id == current_character_id,
+                    "has_voice": doc.voice is not None,
+                    "source": "draft",
+                    "theme": theme_to_mapping(doc.theme.normalized()),
+                    "default_portrait": doc.default_portrait,
+                }
+            )
+            base.update(
+                {
+                    "display_name": doc.display_name or base["display_name"],
+                    "source": "draft",
+                    "is_installed": profile is not None,
+                    "has_draft": True,
+                    "draft_kind": "edit" if origin == "installed" else "new",
+                    "is_dirty": dirty,
+                }
+            )
+            items_by_id[character_id] = base
+        items = list(items_by_id.values())
         items.sort(key=lambda item: (not item["is_current"], item["display_name"].casefold(), item["id"]))
         return items
 
     def open_character(self, character_id: str) -> dict[str, Any]:
         safe_id = _validate_character_id(character_id)
+        state = self._read_state(safe_id)
+        if state is not None and bool(state.get("dirty")):
+            doc = CharacterStudioDoc.from_payload(state["doc"])
+            return self._opened_payload(
+                self._draft_package_dir(safe_id),
+                doc,
+                source="draft",
+                resumed=True,
+            )
         profile = CharacterRegistry(self.base_dir).get(safe_id)
         package_dir = self._draft_package_dir(safe_id)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
+        draft_root = self._draft_root(safe_id)
+        if draft_root.exists():
+            shutil.rmtree(draft_root)
         shutil.copytree(profile.package_dir, package_dir)
         _validate_package_local_paths(package_dir)
         doc = CharacterStudioDoc.from_package_dir(package_dir)
-        return self._opened_payload(package_dir, doc, source="installed")
+        self._write_state(safe_id, doc, origin="installed", dirty=False, imported_assets=[])
+        return self._opened_payload(package_dir, doc, source="installed", resumed=False)
 
     def create_character(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -287,18 +342,51 @@ class CharacterStudioService:
         safe_id = _validate_character_id(str(payload.get("id") or ""))
         if (self.characters_dir / safe_id).exists():
             raise ValueError(f"角色 ID 已存在：{safe_id}。请直接打开该角色进行编辑。")
+        state = self._read_state(safe_id)
+        if state is not None:
+            doc = CharacterStudioDoc.from_payload(state["doc"])
+            return self._opened_payload(
+                self._draft_package_dir(safe_id),
+                doc,
+                source="draft",
+                resumed=True,
+            )
         display_name = str(payload.get("display_name") or safe_id).strip() or safe_id
         package_dir = self._draft_package_dir(safe_id)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
+        draft_root = self._draft_root(safe_id)
+        if draft_root.exists():
+            shutil.rmtree(draft_root)
         (package_dir / "portraits").mkdir(parents=True)
         (package_dir / CARD_FILENAME).write_text("", encoding="utf-8")
         doc = CharacterStudioDoc(id=safe_id, display_name=display_name)
-        self.save_draft(doc.to_payload(), package_dir)
-        return self._opened_payload(package_dir, doc, source="draft")
+        (package_dir / "character.json").write_text(doc.manifest_json(), encoding="utf-8")
+        self._write_state(safe_id, doc, origin="new", dirty=True, imported_assets=[])
+        return self._opened_payload(package_dir, doc, source="draft", resumed=False)
 
-    def save_draft(self, doc_payload: dict[str, Any], package_dir: Path) -> dict[str, Any]:
-        package_dir = self._require_workspace_package(package_dir)
+    def save_workspace_draft(self, workspace_id: str, doc_payload: dict[str, Any]) -> dict[str, Any]:
+        safe_id = _validate_character_id(workspace_id)
+        state = self._require_state(safe_id)
+        doc = CharacterStudioDoc.from_payload(doc_payload)
+        if doc.id != safe_id:
+            raise ValueError("草稿角色 ID 与工作区不一致。")
+        imported_assets = [str(item) for item in state.get("imported_assets", []) if str(item)]
+        imported_assets = self._prune_imported_assets(safe_id, doc, imported_assets)
+        self._write_state(
+            safe_id,
+            doc,
+            origin=str(state.get("origin") or "new"),
+            dirty=True,
+            imported_assets=imported_assets,
+        )
+        return {
+            "workspace_id": safe_id,
+            "doc": doc.to_payload(),
+            "is_dirty": True,
+            "saved_at": int(time.time()),
+        }
+
+    def save_draft(self, doc_payload: dict[str, Any], package_dir: Path | str) -> dict[str, Any]:
+        package_dir = self._workspace_package(package_dir)
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
         package_dir.mkdir(parents=True, exist_ok=True)
@@ -308,13 +396,27 @@ class CharacterStudioService:
             doc.reply_tones = _reference_tones(doc.reference_audios)
             _write_reference_audios(package_dir, doc.reference_audios)
         (package_dir / CARD_FILENAME).write_text(doc.card_text, encoding="utf-8")
-        (package_dir / "character.json").write_text(doc.manifest_json(), encoding="utf-8")
-        return self._opened_payload(package_dir, doc, source="draft")
+        manifest = _merge_character_manifest(package_dir, doc)
+        atomic_write_text(
+            package_dir / "character.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+        )
+        workspace_id = self._workspace_id_for_package(package_dir)
+        state = self._read_state(workspace_id)
+        if state is not None:
+            self._write_state(
+                workspace_id,
+                doc,
+                origin=str(state.get("origin") or "new"),
+                dirty=True,
+                imported_assets=[str(item) for item in state.get("imported_assets", [])],
+            )
+        return self._opened_payload(package_dir, doc, source="draft", resumed=True)
 
     def save_character(
         self,
         doc_payload: dict[str, Any],
-        package_dir: Path,
+        package_dir: Path | str,
         *,
         current_character_id: str = "",
     ) -> dict[str, Any]:
@@ -343,42 +445,73 @@ class CharacterStudioService:
 
         registry = CharacterRegistry(self.base_dir)
         saved_profile = registry.get(profile.id)
+        workspace_id = self._workspace_id_for_package(draft_dir)
+        state = self._read_state(workspace_id)
+        saved_doc = CharacterStudioDoc.from_package_dir(target_dir)
+        if state is not None:
+            self._write_state(
+                workspace_id,
+                saved_doc,
+                origin="installed",
+                dirty=False,
+                imported_assets=[str(item) for item in state.get("imported_assets", [])],
+            )
         return {
             "saved_character_id": profile.id,
             "current_character_id": str(current_character_id or ""),
             "characters": self.list_characters(current_character_id=str(current_character_id or "")),
-            "doc": CharacterStudioDoc.from_package_dir(target_dir).to_payload(),
+            "doc": saved_doc.to_payload(),
             "package_dir": str(draft_dir),
+            "workspace_id": workspace_id,
+            "is_dirty": False,
             "message": f"已保存角色「{saved_profile.display_name}」。",
         }
 
-    def import_portrait(self, package_dir: Path, source_path: Path, *, label: str) -> dict[str, str]:
-        package_dir = self._require_workspace_package(package_dir)
+    def import_portrait(self, package_dir: Path | str, source_path: Path, *, label: str) -> dict[str, str]:
+        package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
         if source.suffix.lower() not in _PORTRAIT_SUFFIXES:
             raise ValueError("立绘文件扩展名必须是 .png / .jpg / .jpeg / .webp / .gif。")
         if not source.is_file():
             raise ValueError(f"立绘文件不存在：{source}")
-        portraits_dir = package_dir / "portraits"
-        portraits_dir.mkdir(parents=True, exist_ok=True)
-        safe_label = _safe_filename(label or source.stem)
-        target = portraits_dir / f"{safe_label}{source.suffix.lower()}"
-        if target.exists():
-            target = portraits_dir / f"{safe_label}-{uuid.uuid4().hex[:8]}{source.suffix.lower()}"
-        shutil.copy2(source, target)
-        return {
-            "relative_path": target.relative_to(package_dir).as_posix(),
-            "path": str(target),
-        }
+        result = _copy_workspace_asset(
+            package_dir,
+            source,
+            "portraits",
+            preferred_stem=_safe_filename(label or source.stem),
+        )
+        self._register_imported_asset(package_dir, result["relative_path"])
+        result["suggested_label"] = source.stem
+        return result
+
+    def import_portrait_folder(self, package_dir: Path | str, source_dir: Path) -> dict[str, Any]:
+        package_dir = self._workspace_package(package_dir)
+        source = Path(source_dir)
+        if not source.is_dir():
+            raise ValueError(f"立绘文件夹不存在：{source}")
+        labels = _read_portrait_description(source)
+        items: list[dict[str, str]] = []
+        for image in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+            if not image.is_file() or image.suffix.lower() not in _PORTRAIT_SUFFIXES:
+                continue
+            copied = _copy_workspace_asset(package_dir, image, "portraits")
+            self._register_imported_asset(package_dir, copied["relative_path"])
+            items.append(
+                {
+                    "relative_path": copied["relative_path"],
+                    "suggested_label": _portrait_label(image, labels),
+                }
+            )
+        return {"items": items, "ignored_ref_file": False}
 
     def import_voice_model(
         self,
-        package_dir: Path,
+        package_dir: Path | str,
         source_path: Path,
         *,
         model_type: str,
     ) -> dict[str, str]:
-        package_dir = self._require_workspace_package(package_dir)
+        package_dir = self._workspace_package(package_dir)
         normalized_type = str(model_type or "").strip().lower()
         expected_suffix = _VOICE_MODEL_SUFFIXES.get(normalized_type)
         if expected_suffix is None:
@@ -386,21 +519,53 @@ class CharacterStudioService:
         source = Path(source_path)
         if source.suffix.lower() != expected_suffix:
             raise ValueError(f"{normalized_type} 模型文件扩展名必须是 {expected_suffix}。")
-        return _copy_workspace_asset(package_dir, source, VOICE_MODELS_DIR)
+        result = _copy_workspace_asset(package_dir, source, VOICE_MODELS_DIR)
+        self._register_imported_asset(package_dir, result["relative_path"])
+        return result
 
-    def import_reference_audio(self, package_dir: Path, source_path: Path) -> dict[str, str]:
-        package_dir = self._require_workspace_package(package_dir)
+    def import_reference_audio(self, package_dir: Path | str, source_path: Path) -> dict[str, str]:
+        package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
         if source.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
             raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
-        return _copy_workspace_asset(package_dir, source, REFERENCE_AUDIO_DIR)
+        result = _copy_workspace_asset(package_dir, source, REFERENCE_AUDIO_DIR)
+        self._register_imported_asset(package_dir, result["relative_path"])
+        return result
+
+    def import_reference_audio_folder(
+        self,
+        package_dir: Path | str,
+        source_dir: Path,
+        *,
+        ref_lang: str = "ja",
+    ) -> dict[str, Any]:
+        package_dir = self._workspace_package(package_dir)
+        source = Path(source_dir)
+        if not source.is_dir():
+            raise ValueError(f"参考语音文件夹不存在：{source}")
+        language = str(ref_lang or "ja").strip() or "ja"
+        items: list[dict[str, str]] = []
+        for audio in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+            if not audio.is_file() or audio.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
+                continue
+            copied = _copy_workspace_asset(package_dir, audio, REFERENCE_AUDIO_DIR)
+            self._register_imported_asset(package_dir, copied["relative_path"])
+            items.append(
+                {
+                    "audio_path": copied["relative_path"],
+                    "ref_lang": language,
+                    "ref_text": "",
+                    "tone": "",
+                }
+            )
+        return {"items": items, "ignored_ref_file": (source / "ref.txt").is_file()}
 
     def load_reference_audio_preview(
         self,
-        package_dir: Path,
+        package_dir: Path | str,
         relative_path: str,
     ) -> dict[str, str]:
-        package_dir = self._require_workspace_package(package_dir)
+        package_dir = self._workspace_package(package_dir)
         audio_path = _resolve_workspace_file(package_dir, relative_path, "参考语音")
         mime_type = _REFERENCE_AUDIO_MIME_TYPES.get(audio_path.suffix.lower())
         if mime_type is None:
@@ -410,13 +575,18 @@ class CharacterStudioService:
         encoded = base64.b64encode(audio_path.read_bytes()).decode("ascii")
         return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
-    def validate_draft(self, package_dir: Path) -> CharacterProfile:
-        package_dir = self._require_workspace_package(package_dir)
+    def validate_draft(self, package_dir: Path | str) -> CharacterProfile:
+        package_dir = self._workspace_package(package_dir)
         _validate_package_local_paths(package_dir)
         return _load_profile(package_dir / "character.json")
 
-    def export_archive(self, package_dir: Path, output_path: Path, *, include_voice: bool) -> dict[str, str]:
-        profile = self.validate_draft(package_dir)
+    def export_archive(self, package_dir: Path | str, output_path: Path, *, include_voice: bool) -> dict[str, str]:
+        resolved_package = self._workspace_package(package_dir)
+        workspace_id = self._workspace_id_for_package(resolved_package)
+        state = self._read_state(workspace_id)
+        if state is not None:
+            self.save_draft(state["doc"], resolved_package)
+        profile = self.validate_draft(resolved_package)
         output = Path(output_path)
         output = output if output.suffix.lower() == ".char" else output.with_suffix(".char")
         parent = output.parent
@@ -429,12 +599,30 @@ class CharacterStudioService:
         }
 
     def _draft_package_dir(self, character_id: str) -> Path:
+        return self._draft_root(character_id) / "package"
+
+    def _draft_root(self, character_id: str) -> Path:
         return self.workspace_characters_dir / _validate_character_id(character_id)
 
-    def _opened_payload(self, package_dir: Path, doc: CharacterStudioDoc, *, source: str) -> dict[str, Any]:
+    def _state_path(self, character_id: str) -> Path:
+        return self._draft_root(character_id) / "draft.json"
+
+    def _opened_payload(
+        self,
+        package_dir: Path,
+        doc: CharacterStudioDoc,
+        *,
+        source: str,
+        resumed: bool,
+    ) -> dict[str, Any]:
+        workspace_id = self._workspace_id_for_package(package_dir)
+        state = self._read_state(workspace_id)
         return {
             "package_dir": str(package_dir),
+            "workspace_id": workspace_id,
             "source": source,
+            "resumed": resumed,
+            "is_dirty": bool(state.get("dirty")) if state is not None else source == "draft",
             "doc": doc.to_payload(),
             "characters": self.list_characters(current_character_id=doc.id),
         }
@@ -450,6 +638,10 @@ class CharacterStudioService:
             "source": "installed",
             "theme": theme_to_mapping(theme),
             "default_portrait": str(profile.default_portrait_path),
+            "is_installed": True,
+            "has_draft": False,
+            "draft_kind": None,
+            "is_dirty": False,
         }
 
     def _require_workspace_package(self, package_dir: Path) -> Path:
@@ -461,6 +653,146 @@ class CharacterStudioService:
         except ValueError as exc:
             raise ValueError(f"草稿目录必须位于角色工作室工作区：{path}") from exc
         return path
+
+    def _workspace_package(self, value: Path | str) -> Path:
+        if isinstance(value, str) and _CHARACTER_ID_RE.fullmatch(value) and self._state_path(value).exists():
+            return self._draft_package_dir(value)
+        return self._require_workspace_package(Path(value))
+
+    def _workspace_id_for_package(self, package_dir: Path) -> str:
+        relative = Path(package_dir).resolve().relative_to(self.workspace_characters_dir.resolve())
+        if len(relative.parts) < 2 or relative.parts[1] != "package":
+            raise ValueError(f"无效的角色工坊草稿目录：{package_dir}")
+        return _validate_character_id(relative.parts[0])
+
+    def _read_state(self, character_id: str) -> dict[str, Any] | None:
+        path = self._state_path(character_id)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"角色草稿无法读取：{path}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("doc"), dict):
+            raise ValueError(f"角色草稿格式无效：{path}")
+        return data
+
+    def _require_state(self, character_id: str) -> dict[str, Any]:
+        state = self._read_state(character_id)
+        if state is None:
+            raise ValueError(f"未找到角色草稿：{character_id}")
+        return state
+
+    def _write_state(
+        self,
+        character_id: str,
+        doc: CharacterStudioDoc,
+        *,
+        origin: str,
+        dirty: bool,
+        imported_assets: list[str],
+    ) -> None:
+        payload = {
+            "version": DRAFT_SCHEMA_VERSION,
+            "id": character_id,
+            "origin": "installed" if origin == "installed" else "new",
+            "dirty": bool(dirty),
+            "updated_at": int(time.time()),
+            "imported_assets": list(dict.fromkeys(imported_assets)),
+            "doc": doc.to_payload(),
+        }
+        atomic_write_text(
+            self._state_path(character_id),
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+
+    def _draft_states(self) -> list[dict[str, Any]]:
+        states: list[dict[str, Any]] = []
+        for path in sorted(self.workspace_characters_dir.glob("*/draft.json")):
+            try:
+                state = self._read_state(path.parent.name)
+            except ValueError:
+                continue
+            if state is not None:
+                states.append(state)
+        return states
+
+    def _register_imported_asset(self, package_dir: Path, relative_path: str) -> None:
+        workspace_id = self._workspace_id_for_package(package_dir)
+        state = self._read_state(workspace_id)
+        if state is None:
+            return
+        assets = [str(item) for item in state.get("imported_assets", []) if str(item)]
+        assets.append(relative_path)
+        doc = CharacterStudioDoc.from_payload(state["doc"])
+        self._write_state(
+            workspace_id,
+            doc,
+            origin=str(state.get("origin") or "new"),
+            dirty=True,
+            imported_assets=assets,
+        )
+
+    def _prune_imported_assets(
+        self,
+        workspace_id: str,
+        doc: CharacterStudioDoc,
+        imported_assets: list[str],
+    ) -> list[str]:
+        package_dir = self._draft_package_dir(workspace_id)
+        referenced = _document_asset_paths(doc)
+        retained: list[str] = []
+        for relative_path in imported_assets:
+            if relative_path in referenced:
+                retained.append(relative_path)
+                continue
+            try:
+                path = _resolve_workspace_path(package_dir, relative_path, "草稿资源")
+            except ValueError:
+                continue
+            if path.is_file():
+                path.unlink(missing_ok=True)
+        return retained
+
+    def discard_draft(self, workspace_id: str, *, current_character_id: str = "") -> dict[str, Any]:
+        safe_id = _validate_character_id(workspace_id)
+        state = self._require_state(safe_id)
+        installed = (self.characters_dir / safe_id / "character.json").is_file()
+        shutil.rmtree(self._draft_root(safe_id), ignore_errors=True)
+        if installed:
+            opened = self.open_character(safe_id)
+            opened["characters"] = self.list_characters(current_character_id=current_character_id)
+            return opened
+        return {
+            "discarded_character_id": safe_id,
+            "characters": self.list_characters(current_character_id=current_character_id),
+            "was_installed": str(state.get("origin")) == "installed",
+        }
+
+    def release_workspace(self, workspace_id: str) -> dict[str, bool]:
+        safe_id = _validate_character_id(workspace_id)
+        state = self._read_state(safe_id)
+        released = bool(state is not None and not bool(state.get("dirty")))
+        if released:
+            shutil.rmtree(self._draft_root(safe_id), ignore_errors=True)
+        return {"released": released}
+
+    def _recover_legacy_new_drafts(self) -> None:
+        legacy = self.base_dir / "runtime" / "character-studio" / "workspace" / "characters"
+        if not legacy.is_dir():
+            return
+        for package_dir in legacy.iterdir():
+            if not package_dir.is_dir() or not _CHARACTER_ID_RE.fullmatch(package_dir.name):
+                continue
+            character_id = package_dir.name
+            if (self.characters_dir / character_id).exists() or self._state_path(character_id).exists():
+                continue
+            try:
+                doc = CharacterStudioDoc.from_package_dir(package_dir)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            shutil.copytree(package_dir, self._draft_package_dir(character_id))
+            self._write_state(character_id, doc, origin="new", dirty=True, imported_assets=[])
 
     def _backup_target(self, target_dir: Path) -> Path | None:
         if not target_dir.exists():
@@ -484,21 +816,130 @@ def _safe_filename(value: str) -> str:
     return text or "portrait"
 
 
-def _copy_workspace_asset(package_dir: Path, source_path: Path, subdir: str) -> dict[str, str]:
+def _copy_workspace_asset(
+    package_dir: Path,
+    source_path: Path,
+    subdir: str,
+    *,
+    preferred_stem: str | None = None,
+) -> dict[str, str]:
     source = Path(source_path)
     if not source.is_file():
         raise ValueError(f"文件不存在：{source}")
     target_dir = Path(package_dir) / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
-    safe_stem = _safe_filename(source.stem)
+    safe_stem = _safe_filename(preferred_stem or source.stem)
     target = target_dir / f"{safe_stem}{source.suffix.lower()}"
     if target.exists():
-        target = target_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{source.suffix.lower()}"
-    shutil.copy2(source, target)
+        if filecmp.cmp(source, target, shallow=False):
+            return {
+                "relative_path": target.relative_to(package_dir).as_posix(),
+                "path": str(target),
+            }
+        index = 2
+        while True:
+            candidate = target_dir / f"{safe_stem}-{index}{source.suffix.lower()}"
+            if not candidate.exists():
+                target = candidate
+                break
+            if filecmp.cmp(source, candidate, shallow=False):
+                target = candidate
+                return {
+                    "relative_path": target.relative_to(package_dir).as_posix(),
+                    "path": str(target),
+                }
+            index += 1
+    partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    try:
+        shutil.copy2(source, partial)
+        partial.replace(target)
+    finally:
+        partial.unlink(missing_ok=True)
     return {
         "relative_path": target.relative_to(package_dir).as_posix(),
         "path": str(target),
     }
+
+
+def _read_portrait_description(source_dir: Path) -> list[tuple[str, str]]:
+    path = Path(source_dir) / PORTRAIT_DESCRIPTION_FILENAME
+    if not path.is_file():
+        return []
+    result: list[tuple[str, str]] = []
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            result.append((parts[0].strip(), parts[1].strip()))
+    return result
+
+
+def _portrait_label(image: Path, labels: list[tuple[str, str]]) -> str:
+    name = image.name.casefold()
+    stem = image.stem.casefold()
+    for token, label in labels:
+        if token.casefold() == name:
+            return label
+    for token, label in labels:
+        if Path(token).stem.casefold() == stem:
+            return label
+    prefix_matches = [label for token, label in labels if stem.startswith(Path(token).stem.casefold())]
+    return prefix_matches[0] if len(prefix_matches) == 1 else image.stem
+
+
+def _document_asset_paths(doc: CharacterStudioDoc) -> set[str]:
+    paths = {doc.default_portrait.strip()}
+    paths.update(str(path).strip() for path in doc.expressions.values())
+    if doc.voice is not None:
+        paths.update(
+            path.strip()
+            for path in (doc.voice.gpt_model or "", doc.voice.sovits_model or "")
+        )
+    paths.update(item.audio_path.strip() for item in doc.reference_audios)
+    return {path for path in paths if path}
+
+
+def _merge_character_manifest(package_dir: Path, doc: CharacterStudioDoc) -> dict[str, Any]:
+    path = Path(package_dir) / "character.json"
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    manifest = dict(existing) if isinstance(existing, dict) else {}
+    generated = doc.to_manifest()
+    for key in ("id", "display_name", "card"):
+        manifest[key] = generated[key]
+    theme = dict(manifest.get("theme")) if isinstance(manifest.get("theme"), dict) else {}
+    theme.update(generated["theme"])
+    manifest["theme"] = theme
+    if "initial_message" in generated:
+        manifest["initial_message"] = generated["initial_message"]
+    else:
+        manifest.pop("initial_message", None)
+
+    portrait = dict(manifest.get("portrait")) if isinstance(manifest.get("portrait"), dict) else {}
+    portrait.update(generated["portrait"])
+    manifest["portrait"] = portrait
+
+    if "reply" in generated:
+        reply = dict(manifest.get("reply")) if isinstance(manifest.get("reply"), dict) else {}
+        reply.update(generated["reply"])
+        manifest["reply"] = reply
+    else:
+        manifest.pop("reply", None)
+
+    if "voice" in generated:
+        voice = dict(manifest.get("voice")) if isinstance(manifest.get("voice"), dict) else {}
+        voice.update(generated["voice"])
+        for optional in ("gpt_model", "sovits_model"):
+            if optional not in generated["voice"]:
+                voice.pop(optional, None)
+        manifest["voice"] = voice
+    else:
+        manifest.pop("voice", None)
+    return manifest
 
 
 def _read_reference_audios(package_dir: Path, relative_path: str) -> list[ReferenceAudioDraft]:
@@ -559,6 +1000,13 @@ def _validate_reference_audios(package_dir: Path, references: list[ReferenceAudi
 
 
 def _resolve_workspace_file(package_dir: Path, relative_path: str, label: str) -> Path:
+    resolved = _resolve_workspace_path(package_dir, relative_path, label)
+    if not resolved.is_file():
+        raise ValueError(f"{label}文件不存在：{relative_path}")
+    return resolved
+
+
+def _resolve_workspace_path(package_dir: Path, relative_path: str, label: str) -> Path:
     path = Path(str(relative_path or "").strip())
     if path.is_absolute():
         raise ValueError(f"{label}不能使用绝对路径：{relative_path}")
@@ -568,8 +1016,6 @@ def _resolve_workspace_file(package_dir: Path, relative_path: str, label: str) -
         resolved.relative_to(resolved_package)
     except ValueError as exc:
         raise ValueError(f"{label}不能指向角色包外：{relative_path}") from exc
-    if not resolved.is_file():
-        raise ValueError(f"{label}文件不存在：{relative_path}")
     return resolved
 
 

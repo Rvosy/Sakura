@@ -161,6 +161,52 @@ def test_dispatch_tauri_studio_rpc_routes_voice_asset_methods(tmp_path: Path) ->
     assert preview["data_url"].startswith("data:audio/wav;base64,")
 
 
+def test_dispatch_tauri_studio_rpc_routes_workspace_and_folder_methods(tmp_path: Path) -> None:
+    from app.ui.tauri_studio import dispatch_tauri_studio_rpc
+
+    portraits = tmp_path / "portraits"
+    audios = tmp_path / "audios"
+    portraits.mkdir()
+    audios.mkdir()
+    (portraits / "neutral.png").write_bytes(b"png")
+    (audios / "neutral.wav").write_bytes(b"wav")
+    created = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.create_character",
+        {"doc": {"id": "demo", "display_name": "Demo"}},
+    )
+    workspace_id = created["workspace_id"]
+
+    portrait_result = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.import_portrait_folder",
+        {"workspace_id": workspace_id, "path": str(portraits)},
+    )
+    audio_result = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.import_reference_audio_folder",
+        {"workspace_id": workspace_id, "path": str(audios), "ref_lang": "JA"},
+    )
+    doc = created["doc"]
+    doc["default_portrait"] = portrait_result["items"][0]["relative_path"]
+    autosaved = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.save_workspace_draft",
+        {"workspace_id": workspace_id, "doc": doc},
+    )
+
+    assert portrait_result["items"][0]["suggested_label"] == "neutral"
+    assert audio_result["items"][0]["ref_lang"] == "JA"
+    assert autosaved["is_dirty"] is True
+
+    discarded = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.discard_draft",
+        {"workspace_id": workspace_id},
+    )
+    assert discarded["discarded_character_id"] == "demo"
+
+
 def test_tauri_studio_process_writes_rpc_response_line(tmp_path: Path) -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):

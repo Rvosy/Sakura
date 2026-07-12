@@ -86,44 +86,74 @@ def dispatch_tauri_studio_rpc(base_dir: Path, method: str, params: dict[str, Any
         if not isinstance(doc, dict):
             raise ValueError("studio.save_draft 需要 doc 对象。")
         return service.save_draft(doc, _required_path(params, "package_dir"))
+    if method == "studio.save_workspace_draft":
+        doc = params.get("doc")
+        if not isinstance(doc, dict):
+            raise ValueError("studio.save_workspace_draft 需要 doc 对象。")
+        return service.save_workspace_draft(_required_str(params, "workspace_id"), doc)
     if method == "studio.save_character":
         doc = params.get("doc")
         if not isinstance(doc, dict):
             raise ValueError("studio.save_character 需要 doc 对象。")
         return service.save_character(
             doc,
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             current_character_id=str(params.get("current_character_id") or ""),
         )
     if method == "studio.import_portrait":
         return service.import_portrait(
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             _required_path(params, "path"),
             label=str(params.get("label") or "default"),
         )
+    if method == "studio.import_portrait_folder":
+        return service.import_portrait_folder(
+            _workspace_reference(params),
+            _required_path(params, "path"),
+        )
     if method == "studio.import_voice_model":
         return service.import_voice_model(
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             _required_path(params, "path"),
             model_type=_required_str(params, "model_type"),
         )
     if method == "studio.import_reference_audio":
         return service.import_reference_audio(
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             _required_path(params, "path"),
+        )
+    if method == "studio.import_reference_audio_folder":
+        return service.import_reference_audio_folder(
+            _workspace_reference(params),
+            _required_path(params, "path"),
+            ref_lang=str(params.get("ref_lang") or "ja"),
         )
     if method == "studio.load_reference_audio_preview":
         return service.load_reference_audio_preview(
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             _required_str(params, "relative_path"),
         )
+    if method == "studio.discard_draft":
+        return service.discard_draft(
+            _required_str(params, "workspace_id"),
+            current_character_id=str(params.get("current_character_id") or ""),
+        )
+    if method == "studio.release_workspace":
+        return service.release_workspace(_required_str(params, "workspace_id"))
     if method == "studio.export_archive":
         return service.export_archive(
-            _required_path(params, "package_dir"),
+            _workspace_reference(params),
             _required_path(params, "path"),
             include_voice=bool(params.get("include_voice")),
         )
     raise ValueError(f"未知 Tauri Studio RPC 方法：{method}")
+
+
+def _workspace_reference(params: dict[str, Any]) -> str | Path:
+    workspace_id = str(params.get("workspace_id") or "").strip()
+    if workspace_id:
+        return workspace_id
+    return _required_path(params, "package_dir")
 
 
 class TauriStudioProcess(QObject):
