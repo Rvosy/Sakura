@@ -3504,7 +3504,13 @@ class _SignalStub:
             slot(*args)
 
 
-def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, start_result: bool = True):  # type: ignore[no-untyped-def]
+def _install_tauri_settings_process_stub(  # type: ignore[no-untyped-def]
+    monkeypatch,
+    pet_window_module,
+    *,
+    start_result: bool = True,
+    on_start=None,
+):
     instances = []
 
     class TauriSettingsProcessStub:
@@ -3521,6 +3527,8 @@ def _install_tauri_settings_process_stub(monkeypatch, pet_window_module, *, star
             instances.append(self)
 
         def start(self) -> bool:
+            if on_start is not None:
+                on_start()
             return start_result
 
         def shutdown(self) -> None:
@@ -3644,6 +3652,86 @@ def test_show_settings_tauri_trial_layout_preview_applies_then_restores(monkeypa
     assert window.input_bar_offset == 0
     assert window.layout_persisted is False
     assert window.tauri_settings_process is None
+
+
+def test_show_settings_suppresses_pet_topmost_before_process_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    topmost_at_start: list[bool] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    instances = _install_tauri_settings_process_stub(
+        monkeypatch,
+        pet_window_module,
+        on_start=lambda: topmost_at_start.append(
+            bool(window._secondary_windows_suppress_topmost)
+        ),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._secondary_windows_suppress_topmost = False
+
+    window.show_settings()
+
+    assert topmost_at_start == [True]
+    assert window._secondary_windows_suppress_topmost is True
+
+    instances[0].cancelled.emit()
+
+    assert window._secondary_windows_suppress_topmost is False
+
+
+def test_show_settings_start_failure_restores_pet_topmost(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.ui.pet_window as pet_window_module
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def load_tts_settings(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return _minimal_tts_settings()
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    topmost_at_start: list[bool] = []
+    monkeypatch.setattr(
+        pet_window_module,
+        "resolve_tauri_settings_binary",
+        lambda _base_dir: Path("sakura-settings.exe"),
+    )
+    _install_tauri_settings_process_stub(
+        monkeypatch,
+        pet_window_module,
+        start_result=False,
+        on_start=lambda: topmost_at_start.append(
+            bool(window._secondary_windows_suppress_topmost)
+        ),
+    )
+    window = _minimal_settings_window(
+        PetWindow,
+        SettingsServiceStub(),
+        ApiClientStub(),
+        object(),
+    )
+    window._secondary_windows_suppress_topmost = False
+
+    assert window._try_show_tauri_settings() is False
+    assert topmost_at_start == [True]
+    assert window._secondary_windows_suppress_topmost is False
 
 
 def test_show_settings_tauri_trial_save_failure_restores_preview_and_closes_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -4925,6 +5013,154 @@ def test_resolve_tauri_settings_binary_env_override_still_wins(monkeypatch) -> N
         )
         == configured
     )
+
+
+def test_tauri_settings_process_schedules_bounded_focus_retries_after_start(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    scheduled: list[tuple[int, object]] = []
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return len(data)
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "win32")
+    monkeypatch.setattr(
+        tauri_settings.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    fake = FakeQProcess()
+    process._process = fake
+    process._request_payload = b'{"version": 2}'
+
+    process._handle_started()
+
+    assert fake.writes == [b'{"version": 2}\n']
+    assert [delay for delay, _callback in scheduled] == list(
+        tauri_settings.SETTINGS_FOCUS_RETRY_DELAYS_MS
+    )
+
+
+def test_tauri_settings_process_does_not_schedule_focus_retries_off_windows(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    scheduled: list[int] = []
+
+    class FakeQProcess:
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "linux")
+    monkeypatch.setattr(
+        tauri_settings.QTimer,
+        "singleShot",
+        lambda delay, _callback: scheduled.append(delay),
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    process._process = FakeQProcess()
+    process._request_payload = b"{}"
+
+    process._handle_started()
+
+    assert scheduled == []
+
+
+def test_tauri_settings_process_focus_uses_forced_foreground_restore(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.tauri_settings as tauri_settings
+
+    calls: list[tuple[int, bool]] = []
+
+    class FakeQProcess:
+        def processId(self) -> int:  # noqa: N802
+            return 4321
+
+    monkeypatch.setattr(tauri_settings.sys, "platform", "win32")
+    monkeypatch.setattr(
+        tauri_settings,
+        "_restore_windows_for_pid",
+        lambda pid, *, force_foreground=False: calls.append((pid, force_foreground)) or True,
+    )
+    process = tauri_settings.TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    process._process = FakeQProcess()
+
+    assert process.focus_window() is True
+    assert calls == [(4321, True)]
+
+
+def test_tauri_settings_process_stops_focus_retries_and_ignores_stale_process(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    process = TauriSettingsProcess(
+        base_dir=Path("."),
+        settings=ScreenAwarenessSettings(),
+    )
+    active = object()
+    focus_results = iter((False, True))
+    focus_calls: list[bool] = []
+
+    def focus_window() -> bool:
+        focus_calls.append(True)
+        return next(focus_results)
+
+    monkeypatch.setattr(process, "focus_window", focus_window)
+    process._process = active
+
+    process._try_startup_focus(active)
+    process._try_startup_focus(active)
+    process._try_startup_focus(active)
+
+    assert focus_calls == [True, True]
+    assert process._startup_focus_complete is True
+
+    process._startup_focus_complete = False
+    process._process = object()
+    process._try_startup_focus(active)
+    process._done = True
+    process._process = active
+    process._try_startup_focus(active)
+
+    assert focus_calls == [True, True]
 
 
 def test_tauri_settings_process_parses_preview_and_result_lines() -> None:

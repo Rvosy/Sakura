@@ -5319,8 +5319,12 @@ class PetWindow(QWidget):
             self.control_panel_vertical_offset,
             self.input_bar_offset,
         )
+        # 必须在启动外部窗口前先撤销桌宠的实际置顶；否则设置窗口即使短暂置前，
+        # 取消临时 topmost 后仍可能重新落到常驻置顶的桌宠与输入栏下面。
+        self._set_secondary_windows_topmost_suppressed(True)
         if not process.start():
             self._tauri_original_layout = None
+            self._sync_secondary_window_state()
             return False
         self.tauri_settings_process = process
         self._tauri_initial_tts_settings = tts_settings
@@ -5330,8 +5334,8 @@ class PetWindow(QWidget):
         process.cancelled.connect(self._on_tauri_settings_cancelled)
         process.failed.connect(self._on_tauri_settings_failed)
         process.layout_preview.connect(self._on_tauri_settings_layout_preview)
-        # Tauri 设置窗口存活期间临时取消桌宠原生置顶，否则置顶立绘会盖住系统取色器的放大预览。
-        self._set_secondary_windows_topmost_suppressed(True)
+        # 设置进程存活期间持续压低桌宠；关闭、取消或失败后由现有生命周期统一恢复。
+        self._sync_secondary_window_state()
         return True
 
     def _open_tauri_studio_from_settings(self, character_id: str | None = None) -> bool:

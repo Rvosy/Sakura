@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from app.agent.memory_curator import MemoryCurationSettings
@@ -166,6 +166,7 @@ from app.voice.tts_settings import (
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
 TAURI_SETTINGS_PROTOCOL_VERSION = 2
+SETTINGS_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
 TAURI_LAYOUT_PREVIEW_MARKER = "@@SAKURA_LAYOUT_PREVIEW@@"
@@ -1002,6 +1003,7 @@ class TauriSettingsProcess(QObject):
         self._nonce = ""
         self._done = False
         self._cleaned = False
+        self._startup_focus_complete = False
         self._request_payload = b""
         self._stdout_buffer = ""
         # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
@@ -1022,7 +1024,7 @@ class TauriSettingsProcess(QObject):
         process.setArguments([])
         process.setWorkingDirectory(str(self.base_dir))
         process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
-        process.started.connect(self._send_request)
+        process.started.connect(self._handle_started)
         process.finished.connect(self._handle_finished)
         process.errorOccurred.connect(self._handle_error)
         process.readyReadStandardOutput.connect(self._handle_stdout)
@@ -1030,6 +1032,7 @@ class TauriSettingsProcess(QObject):
         self._process = process
         self._nonce = str(request["nonce"])
         self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        self._startup_focus_complete = False
         process.start()
         return True
 
@@ -1040,13 +1043,33 @@ class TauriSettingsProcess(QObject):
             return False
         try:
             pid = int(process.processId())
-        except (TypeError, ValueError):
+        except (RuntimeError, TypeError, ValueError):
             return False
         if pid <= 0:
             return False
         if sys.platform == "win32":
-            return _restore_windows_for_pid(pid)
+            return _restore_windows_for_pid(pid, force_foreground=True)
         return False
+
+    def _handle_started(self) -> None:
+        """发送初始化数据，并在 Windows 上有限重试把设置窗口送到前台。"""
+        self._send_request()
+        process = self._process
+        if process is None or self._done or sys.platform != "win32":
+            return
+        self._startup_focus_complete = False
+        for delay_ms in SETTINGS_FOCUS_RETRY_DELAYS_MS:
+            QTimer.singleShot(
+                delay_ms,
+                lambda active_process=process: self._try_startup_focus(active_process),
+            )
+
+    def _try_startup_focus(self, process: object) -> None:
+        """只操作当前仍存活的设置进程，成功一次后停止后续重试。"""
+        if self._done or self._process is not process or self._startup_focus_complete:
+            return
+        if self.focus_window():
+            self._startup_focus_complete = True
 
     def shutdown(self, timeout_ms: int = 1000) -> None:
         self._done = True
