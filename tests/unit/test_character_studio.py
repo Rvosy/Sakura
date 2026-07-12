@@ -18,10 +18,14 @@ def _runtime_root(tmp_path: Path, name: str) -> Path:
 def _write_character(root: Path, character_id: str = "sakura", display_name: str = "Sakura") -> Path:
     package_dir = root / "characters" / character_id
     (package_dir / "portraits").mkdir(parents=True)
-    (package_dir / "voice" / "refs").mkdir(parents=True)
+    (package_dir / "voice" / "refs" / "tone_refs").mkdir(parents=True)
     (package_dir / "card.md").write_text("old card", encoding="utf-8")
     (package_dir / "portraits" / "default.png").write_bytes(b"png")
-    (package_dir / "voice" / "refs" / "ref.txt").write_text("", encoding="utf-8")
+    (package_dir / "voice" / "refs" / "tone_refs" / "neutral.wav").write_bytes(b"wav")
+    (package_dir / "voice" / "refs" / "ref.txt").write_text(
+        "voice/refs/tone_refs/neutral.wav|JA|こんにちは|温柔\n",
+        encoding="utf-8",
+    )
     (package_dir / "character.json").write_text(
         json.dumps(
             {
@@ -84,6 +88,165 @@ def test_character_studio_open_uses_draft_without_touching_source(tmp_path: Path
 
     assert (source / "card.md").read_text(encoding="utf-8") == "old card"
     assert (draft_dir / "card.md").read_text(encoding="utf-8") == "draft only"
+
+
+def test_character_studio_open_reads_reference_audio_rows(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "reference_open")
+    _write_character(root)
+
+    opened = CharacterStudioService(root).open_character("sakura")
+
+    assert opened["doc"]["reference_audios"] == [
+        {
+            "audio_path": "voice/refs/tone_refs/neutral.wav",
+            "ref_lang": "JA",
+            "ref_text": "こんにちは",
+            "tone": "温柔",
+        }
+    ]
+
+
+def test_character_studio_save_draft_writes_references_and_derives_reply_tones(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "reference_save")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+    draft_dir = Path(created["package_dir"])
+    ref_dir = draft_dir / "voice" / "refs" / "tone_refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "calm.wav").write_bytes(b"calm")
+    (ref_dir / "calm-alt.wav").write_bytes(b"calm-alt")
+    (ref_dir / "happy.wav").write_bytes(b"happy")
+    doc = created["doc"]
+    doc["voice"] = {
+        "tone_refs": "voice/refs/custom.txt",
+        "gpt_model": "",
+        "sovits_model": "",
+        "ref_lang": "ja",
+        "text_lang": "zh",
+    }
+    doc["reply_tones"] = ["旧标签"]
+    doc["reference_audios"] = [
+        {
+            "audio_path": "voice/refs/tone_refs/calm.wav",
+            "ref_lang": "JA",
+            "ref_text": "落ち着いて",
+            "tone": "沉稳",
+        },
+        {
+            "audio_path": "voice/refs/tone_refs/calm-alt.wav",
+            "ref_lang": "JA",
+            "ref_text": "ゆっくり",
+            "tone": "沉稳",
+        },
+        {
+            "audio_path": "voice/refs/tone_refs/happy.wav",
+            "ref_lang": "ZH",
+            "ref_text": "太好了",
+            "tone": "开心",
+        },
+    ]
+
+    saved = service.save_draft(doc, draft_dir)
+
+    assert saved["doc"]["reply_tones"] == ["沉稳", "开心"]
+    assert saved["doc"]["voice"]["tone_refs"] == "voice/refs/ref.txt"
+    assert (draft_dir / "voice" / "refs" / "ref.txt").read_text(encoding="utf-8") == (
+        "voice/refs/tone_refs/calm.wav|JA|落ち着いて|沉稳\n"
+        "voice/refs/tone_refs/calm-alt.wav|JA|ゆっくり|沉稳\n"
+        "voice/refs/tone_refs/happy.wav|ZH|太好了|开心\n"
+    )
+    manifest = json.loads((draft_dir / "character.json").read_text(encoding="utf-8"))
+    assert manifest["reply"]["tones"] == ["沉稳", "开心"]
+
+
+def test_character_studio_rejects_incomplete_reference_when_voice_enabled(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "reference_validation")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+    doc = created["doc"]
+    doc["voice"] = {
+        "tone_refs": "voice/refs/ref.txt",
+        "gpt_model": "",
+        "sovits_model": "",
+        "ref_lang": "ja",
+        "text_lang": "ja",
+    }
+    doc["reference_audios"] = [
+        {"audio_path": "", "ref_lang": "JA", "ref_text": "こんにちは", "tone": "温柔"}
+    ]
+
+    with pytest.raises(ValueError, match="参考语音第 1 条"):
+        service.save_draft(doc, Path(created["package_dir"]))
+
+
+def test_character_studio_disabling_voice_does_not_reload_stale_reference_file(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "voice_disable")
+    _write_character(root)
+    service = CharacterStudioService(root)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["voice"] = None
+    doc["reference_audios"] = []
+    doc["reply_tones"] = []
+
+    saved = service.save_character(doc, Path(opened["package_dir"]))
+
+    assert saved["doc"]["voice"] is None
+    assert saved["doc"]["reference_audios"] == []
+    assert saved["doc"]["reply_tones"] == []
+    manifest = json.loads(
+        (root / "characters" / "sakura" / "character.json").read_text(encoding="utf-8")
+    )
+    assert "voice" not in manifest
+    assert "reply" not in manifest
+
+
+def test_character_studio_imports_voice_assets_into_workspace(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "voice_import")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+    draft_dir = Path(created["package_dir"])
+    gpt_source = root / "voice.ckpt"
+    audio_source = root / "sample.wav"
+    gpt_source.write_bytes(b"gpt")
+    audio_source.write_bytes(b"audio")
+
+    model = service.import_voice_model(draft_dir, gpt_source, model_type="gpt")
+    audio = service.import_reference_audio(draft_dir, audio_source)
+
+    assert model["relative_path"].startswith("voice/models/")
+    assert audio["relative_path"].startswith("voice/refs/tone_refs/")
+    assert (draft_dir / model["relative_path"]).read_bytes() == b"gpt"
+    assert (draft_dir / audio["relative_path"]).read_bytes() == b"audio"
+
+
+def test_character_studio_builds_reference_audio_preview_data_url(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "voice_preview")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "voice_role", "display_name": "Voice"})
+    draft_dir = Path(created["package_dir"])
+    audio_dir = draft_dir / "voice" / "refs" / "tone_refs"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "sample.wav").write_bytes(b"audio")
+
+    result = service.load_reference_audio_preview(
+        draft_dir,
+        "voice/refs/tone_refs/sample.wav",
+    )
+
+    assert result["data_url"] == "data:audio/wav;base64,YXVkaW8="
 
 
 def test_character_studio_create_import_portrait_and_save_new_character(tmp_path: Path) -> None:

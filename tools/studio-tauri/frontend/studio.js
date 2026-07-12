@@ -8,6 +8,8 @@ const fields = {
     basic: document.getElementById("page-basic"),
     card: document.getElementById("page-card"),
     portrait: document.getElementById("page-portrait"),
+    "voice-model": document.getElementById("page-voice-model"),
+    "reference-audio": document.getElementById("page-reference-audio"),
     theme: document.getElementById("page-theme"),
   },
   studioCharacterSelect: document.getElementById("studioCharacterSelect"),
@@ -15,14 +17,24 @@ const fields = {
   characterId: document.getElementById("characterId"),
   displayName: document.getElementById("displayName"),
   initialMessage: document.getElementById("initialMessage"),
-  voiceStatusRow: document.getElementById("voiceStatusRow"),
-  voiceStatus: document.getElementById("voiceStatus"),
   cardText: document.getElementById("cardText"),
-  replyToneInput: document.getElementById("replyToneInput"),
   defaultPortrait: document.getElementById("defaultPortrait"),
   importDefaultPortraitButton: document.getElementById("importDefaultPortraitButton"),
   expressionList: document.getElementById("expressionList"),
   addExpressionButton: document.getElementById("addExpressionButton"),
+  voiceEnabled: document.getElementById("voiceEnabled"),
+  voiceEnabledLabel: document.getElementById("voiceEnabledLabel"),
+  voiceModelFields: document.getElementById("voiceModelFields"),
+  gptModelPath: document.getElementById("gptModelPath"),
+  importGptModelButton: document.getElementById("importGptModelButton"),
+  clearGptModelButton: document.getElementById("clearGptModelButton"),
+  sovitsModelPath: document.getElementById("sovitsModelPath"),
+  importSovitsModelButton: document.getElementById("importSovitsModelButton"),
+  clearSovitsModelButton: document.getElementById("clearSovitsModelButton"),
+  defaultRefLang: document.getElementById("defaultRefLang"),
+  textLang: document.getElementById("textLang"),
+  referenceAudioList: document.getElementById("referenceAudioList"),
+  addReferenceAudioButton: document.getElementById("addReferenceAudioButton"),
   themeFields: document.getElementById("themeFields"),
   errorText: document.getElementById("errorText"),
   exportButton: document.getElementById("exportButton"),
@@ -32,9 +44,11 @@ const fields = {
 };
 
 const pageMeta = {
-  basic: { title: "基础信息", subtitle: "名称、开场白与语音状态" },
-  card: { title: "人设卡", subtitle: "系统人设与回复语气" },
+  basic: { title: "基础信息", subtitle: "名称与开场白" },
+  card: { title: "人设卡", subtitle: "系统人设" },
   portrait: { title: "立绘", subtitle: "默认立绘与表情映射" },
+  "voice-model": { title: "语音模型", subtitle: "GPT-SoVITS 模型与默认语言" },
+  "reference-audio": { title: "参考语音", subtitle: "音频、参考文本与回复语气描述词" },
   theme: { title: "配色", subtitle: "角色包自带主题色" },
 };
 
@@ -61,6 +75,7 @@ let editingCharacterId = "";
 let temporaryCharacter = null;
 let activeThemeField = "";
 let themeEditor = {};
+let previewAudio = null;
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -359,15 +374,35 @@ function collectDoc() {
       expressions[label] = path;
     }
   });
+  const referenceAudios = collectReferenceAudios();
+  const voiceEnabled = fields.voiceEnabled.checked;
+  const replyTones = [];
+  const seenTones = new Set();
+  if (voiceEnabled) {
+    referenceAudios.forEach(({ tone }) => {
+      if (tone && !seenTones.has(tone)) {
+        replyTones.push(tone);
+        seenTones.add(tone);
+      }
+    });
+  }
   return {
     ...(currentDoc || {}),
     id: fields.characterId.value.trim(),
     display_name: fields.displayName.value.trim(),
     initial_message: fields.initialMessage.value,
     card_text: fields.cardText.value,
-    reply_tones: fields.replyToneInput.value.split(/[,，]/).map((tone) => tone.trim()).filter(Boolean),
+    reply_tones: replyTones,
     default_portrait: fields.defaultPortrait.value.trim(),
     expressions,
+    voice: voiceEnabled ? {
+      tone_refs: "voice/refs/ref.txt",
+      gpt_model: fields.gptModelPath.value.trim(),
+      sovits_model: fields.sovitsModelPath.value.trim(),
+      ref_lang: fields.defaultRefLang.value.trim() || "ja",
+      text_lang: fields.textLang.value.trim() || "ja",
+    } : null,
+    reference_audios: voiceEnabled ? referenceAudios : [],
     theme,
   };
 }
@@ -392,6 +427,7 @@ function refreshDirty() {
 }
 
 function setCurrentDoc(payload, draftCharacter = null, options = {}) {
+  stopReferenceAudioPreview();
   currentPackageDir = payload.package_dir || "";
   currentDoc = payload.doc || null;
   if (Array.isArray(payload.characters)) {
@@ -417,17 +453,21 @@ function renderEditor() {
   fields.displayName.value = doc.display_name || "";
   fields.initialMessage.value = doc.initial_message || "";
   fields.cardText.value = doc.card_text || "";
-  fields.replyToneInput.value = Array.isArray(doc.reply_tones) ? doc.reply_tones.join("，") : "";
   fields.defaultPortrait.value = doc.default_portrait || "";
-  fields.voiceStatusRow.hidden = false;
-  fields.voiceStatus.textContent = doc.voice ? "已保留现有语音配置" : "未配置语音";
+  fields.voiceEnabled.checked = Boolean(doc.voice);
+  fields.gptModelPath.value = doc.voice?.gpt_model || "";
+  fields.sovitsModelPath.value = doc.voice?.sovits_model || "";
+  fields.defaultRefLang.value = doc.voice?.ref_lang || "ja";
+  fields.textLang.value = doc.voice?.text_lang || "ja";
   renderExpressions(doc.expressions || {});
+  renderReferenceAudios(doc.reference_audios || []);
   const theme = {
     ...(request.theme_defaults || request.theme || {}),
     ...(doc.theme || {}),
   };
   applyTheme(theme);
   renderTheme(theme);
+  syncVoiceEnabledState();
   refreshControls();
 }
 
@@ -460,6 +500,120 @@ function addExpressionRow(label = "", path = "") {
   row.append(labelInput, pathInput, remove);
   row.addEventListener("input", refreshDirty);
   fields.expressionList.append(row);
+}
+
+function collectReferenceAudios() {
+  return Array.from(fields.referenceAudioList.querySelectorAll(".reference-audio-row"), (row) => ({
+    audio_path: row.querySelector("[data-reference-audio-path]").value.trim(),
+    ref_lang: row.querySelector("[data-reference-lang]").value.trim(),
+    ref_text: row.querySelector("[data-reference-text]").value.trim(),
+    tone: row.querySelector("[data-reference-tone]").value.trim(),
+  }));
+}
+
+function renderReferenceAudios(references) {
+  fields.referenceAudioList.textContent = "";
+  (Array.isArray(references) ? references : []).forEach((reference) => {
+    addReferenceAudioRow(reference);
+  });
+  syncReferenceAudioEmptyState();
+}
+
+function syncReferenceAudioEmptyState() {
+  const existing = fields.referenceAudioList.querySelector(".reference-audio-empty");
+  const hasRows = Boolean(fields.referenceAudioList.querySelector(".reference-audio-row"));
+  if (hasRows) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    return;
+  }
+  const empty = document.createElement("div");
+  empty.className = "reference-audio-empty";
+  empty.innerHTML = "<strong>还没有参考语音</strong><span>添加音频后填写参考文本和描述词。</span>";
+  fields.referenceAudioList.append(empty);
+}
+
+function addReferenceAudioRow(reference = {}) {
+  fields.referenceAudioList.querySelector(".reference-audio-empty")?.remove();
+  const row = document.createElement("article");
+  row.className = "reference-audio-row";
+
+  const head = document.createElement("div");
+  head.className = "reference-audio-head";
+  const pathInput = document.createElement("input");
+  pathInput.type = "text";
+  pathInput.readOnly = true;
+  pathInput.value = reference.audio_path || "";
+  pathInput.placeholder = "voice/refs/tone_refs/example.wav";
+  pathInput.dataset.referenceAudioPath = "1";
+  pathInput.setAttribute("aria-label", "参考语音文件");
+
+  const actions = document.createElement("div");
+  actions.className = "reference-audio-actions";
+  const preview = document.createElement("button");
+  preview.type = "button";
+  preview.className = "secondary-button compact-button";
+  preview.textContent = "试听";
+  preview.addEventListener("click", () => previewReferenceAudio(row));
+  const replace = document.createElement("button");
+  replace.type = "button";
+  replace.className = "secondary-button compact-button";
+  replace.textContent = "替换";
+  replace.addEventListener("click", () => importReferenceAudio(row));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "secondary-button compact-button danger-button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => {
+    row.remove();
+    syncReferenceAudioEmptyState();
+    refreshDirty();
+    refreshControls();
+  });
+  actions.append(preview, replace, remove);
+  head.append(pathInput, actions);
+
+  const details = document.createElement("div");
+  details.className = "reference-audio-fields";
+  const langField = buildReferenceField("语言", "例如 JA", reference.ref_lang || fields.defaultRefLang.value || "JA", "referenceLang");
+  const textField = buildReferenceField("参考文本", "音频中实际说出的内容", reference.ref_text || "", "referenceText");
+  const toneField = buildReferenceField("描述词", "例如 温柔、开心", reference.tone || "", "referenceTone");
+  details.append(langField, textField, toneField);
+  row.append(head, details);
+  row.addEventListener("input", refreshDirty);
+  fields.referenceAudioList.append(row);
+}
+
+function buildReferenceField(labelText, placeholder, value, dataKey) {
+  const label = document.createElement("label");
+  label.className = "reference-audio-field";
+  const title = document.createElement("span");
+  title.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.value = value;
+  input.dataset[dataKey] = "1";
+  label.append(title, input);
+  return label;
+}
+
+function stopReferenceAudioPreview() {
+  if (!previewAudio) {
+    return;
+  }
+  previewAudio.pause();
+  previewAudio.currentTime = 0;
+  previewAudio = null;
+}
+
+function syncVoiceEnabledState() {
+  const enabled = fields.voiceEnabled.checked;
+  fields.voiceEnabledLabel.textContent = enabled ? "已启用" : "未启用";
+  fields.voiceModelFields.classList.toggle("is-disabled", !enabled);
+  document.getElementById("page-reference-audio")?.classList.toggle("is-voice-disabled", !enabled);
 }
 
 function normalizeColorText(value, fallback) {
@@ -948,6 +1102,87 @@ async function importDefaultPortrait() {
   });
 }
 
+async function importVoiceModel(modelType) {
+  if (!currentDoc || !currentPackageDir) {
+    setError("请先打开或新建角色。");
+    return;
+  }
+  const isGpt = modelType === "gpt";
+  const extension = isGpt ? "ckpt" : "pth";
+  const selected = await window.__TAURI__?.dialog?.open({
+    title: isGpt ? "选择 GPT 模型" : "选择 SoVITS 模型",
+    multiple: false,
+    filters: [{ name: isGpt ? "GPT 模型" : "SoVITS 模型", extensions: [extension] }],
+  });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) {
+    return;
+  }
+  await runBusy(async () => {
+    const result = await hostCall("studio.import_voice_model", {
+      package_dir: currentPackageDir,
+      path,
+      model_type: modelType,
+    });
+    fields.voiceEnabled.checked = true;
+    (isGpt ? fields.gptModelPath : fields.sovitsModelPath).value = result.relative_path;
+    syncVoiceEnabledState();
+    refreshDirty();
+  });
+}
+
+async function importReferenceAudio(targetRow = null) {
+  if (!currentDoc || !currentPackageDir) {
+    setError("请先打开或新建角色。");
+    return;
+  }
+  const selected = await window.__TAURI__?.dialog?.open({
+    title: targetRow ? "替换参考语音" : "添加参考语音",
+    multiple: false,
+    filters: [{ name: "音频", extensions: ["wav", "mp3", "ogg", "flac"] }],
+  });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) {
+    return;
+  }
+  await runBusy(async () => {
+    const result = await hostCall("studio.import_reference_audio", {
+      package_dir: currentPackageDir,
+      path,
+    });
+    fields.voiceEnabled.checked = true;
+    syncVoiceEnabledState();
+    if (targetRow) {
+      targetRow.querySelector("[data-reference-audio-path]").value = result.relative_path;
+    } else {
+      addReferenceAudioRow({
+        audio_path: result.relative_path,
+        ref_lang: fields.defaultRefLang.value.trim() || "JA",
+        ref_text: "",
+        tone: "",
+      });
+    }
+    refreshDirty();
+  });
+}
+
+async function previewReferenceAudio(row) {
+  const relativePath = row.querySelector("[data-reference-audio-path]").value.trim();
+  if (!relativePath) {
+    setError("当前参考语音没有可试听的音频文件。");
+    return;
+  }
+  await runBusy(async () => {
+    const result = await hostCall("studio.load_reference_audio_preview", {
+      package_dir: currentPackageDir,
+      relative_path: relativePath,
+    });
+    stopReferenceAudioPreview();
+    previewAudio = new Audio(result.data_url);
+    await previewAudio.play();
+  });
+}
+
 function validateThemeInputs() {
   const invalidInput = Array.from(fields.themeFields.querySelectorAll("[data-theme-field]"))
     .find((input) => !normalizeColorText(input.value, ""));
@@ -1000,12 +1235,78 @@ function validateExpressionInputs() {
   return true;
 }
 
+function validateVoiceInputs() {
+  [
+    fields.gptModelPath,
+    fields.sovitsModelPath,
+    ...fields.referenceAudioList.querySelectorAll("input"),
+  ].forEach((input) => input.classList.remove("is-invalid"));
+  if (!fields.voiceEnabled.checked) {
+    return true;
+  }
+  const modelChecks = [
+    [fields.gptModelPath, ".ckpt", "GPT 模型"],
+    [fields.sovitsModelPath, ".pth", "SoVITS 模型"],
+  ];
+  for (const [input, extension, label] of modelChecks) {
+    const value = input.value.trim().toLowerCase();
+    if (value && !value.endsWith(extension)) {
+      input.classList.add("is-invalid");
+      switchPage("voice-model");
+      input.focus();
+      setError(`${label}必须是 ${extension} 文件。`);
+      return false;
+    }
+  }
+  const rows = Array.from(fields.referenceAudioList.querySelectorAll(".reference-audio-row"));
+  if (!rows.length) {
+    switchPage("reference-audio");
+    fields.addReferenceAudioButton.focus();
+    setError("启用语音后至少需要一条完整参考语音。");
+    return false;
+  }
+  const audioPattern = /\.(wav|mp3|ogg|flac)$/i;
+  for (const [index, row] of rows.entries()) {
+    const inputs = [
+      row.querySelector("[data-reference-audio-path]"),
+      row.querySelector("[data-reference-lang]"),
+      row.querySelector("[data-reference-text]"),
+      row.querySelector("[data-reference-tone]"),
+    ];
+    const values = inputs.map((input) => input.value.trim());
+    const emptyIndex = values.findIndex((value) => !value);
+    if (emptyIndex >= 0) {
+      inputs[emptyIndex].classList.add("is-invalid");
+      switchPage("reference-audio");
+      inputs[emptyIndex].focus();
+      setError(`参考语音第 ${index + 1} 条必须填写音频、语言、参考文本和描述词。`);
+      return false;
+    }
+    if (!audioPattern.test(values[0])) {
+      inputs[0].classList.add("is-invalid");
+      switchPage("reference-audio");
+      inputs[0].focus();
+      setError(`参考语音第 ${index + 1} 条文件格式不受支持。`);
+      return false;
+    }
+    const pipeIndex = values.findIndex((value) => value.includes("|"));
+    if (pipeIndex >= 0) {
+      inputs[pipeIndex].classList.add("is-invalid");
+      switchPage("reference-audio");
+      inputs[pipeIndex].focus();
+      setError(`参考语音第 ${index + 1} 条不能包含竖线字符。`);
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveCharacter() {
   if (!currentDoc || !currentPackageDir) {
     setError("请先打开或新建角色。");
     return;
   }
-  if (!validateThemeInputs() || !validateExpressionInputs()) {
+  if (!validateThemeInputs() || !validateExpressionInputs() || !validateVoiceInputs()) {
     return;
   }
   await runBusy(async () => {
@@ -1032,7 +1333,7 @@ async function exportCharacter() {
     setError("请先打开或新建角色。");
     return;
   }
-  if (!validateThemeInputs() || !validateExpressionInputs()) {
+  if (!validateThemeInputs() || !validateExpressionInputs() || !validateVoiceInputs()) {
     return;
   }
   const defaultPath = `${fields.characterId.value.trim() || "character"}.char`;
@@ -1049,7 +1350,7 @@ async function exportCharacter() {
     const result = await hostCall("studio.export_archive", {
       package_dir: currentPackageDir,
       path,
-      include_voice: false,
+      include_voice: Boolean(collectDoc().voice),
     });
     notify(result.message || "角色包已导出。", "success");
   });
@@ -1074,6 +1375,7 @@ async function runBusy(action) {
 
 function refreshControls() {
   const hasDoc = Boolean(currentDoc);
+  const voiceEnabled = hasDoc && fields.voiceEnabled.checked;
   fields.saveButton.disabled = busy || !hasDoc;
   fields.exportButton.disabled = busy || !hasDoc;
   fields.importDefaultPortraitButton.disabled = busy || !hasDoc;
@@ -1088,7 +1390,6 @@ function refreshControls() {
     fields.displayName,
     fields.initialMessage,
     fields.cardText,
-    fields.replyToneInput,
     fields.defaultPortrait,
     fields.addExpressionButton,
   ].forEach((element) => {
@@ -1100,12 +1401,23 @@ function refreshControls() {
   fields.expressionList.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
+  fields.voiceEnabled.disabled = busy || !hasDoc;
+  fields.voiceModelFields.querySelectorAll("input, button").forEach((element) => {
+    element.disabled = busy || !voiceEnabled;
+  });
+  fields.addReferenceAudioButton.disabled = busy || !voiceEnabled;
+  fields.referenceAudioList.querySelectorAll("input, button").forEach((element) => {
+    element.disabled = busy || !voiceEnabled;
+  });
+  fields.clearGptModelButton.disabled = busy || !voiceEnabled || !fields.gptModelPath.value;
+  fields.clearSovitsModelButton.disabled = busy || !voiceEnabled || !fields.sovitsModelPath.value;
   fields.themeFields.querySelectorAll("input, button").forEach((element) => {
     element.disabled = busy || !hasDoc;
   });
 }
 
 async function closeStudio() {
+  stopReferenceAudioPreview();
   await invoke("close_studio");
 }
 
@@ -1130,6 +1442,34 @@ fields.navItems.forEach((item) => item.addEventListener("click", () => switchPag
 fields.studioCharacterSelect.addEventListener("change", (event) => selectCharacter(event.target.value));
 fields.newCharacterButton.addEventListener("click", createCharacter);
 fields.importDefaultPortraitButton.addEventListener("click", importDefaultPortrait);
+fields.importGptModelButton.addEventListener("click", () => importVoiceModel("gpt"));
+fields.importSovitsModelButton.addEventListener("click", () => importVoiceModel("sovits"));
+fields.clearGptModelButton.addEventListener("click", () => {
+  fields.gptModelPath.value = "";
+  refreshDirty();
+  refreshControls();
+});
+fields.clearSovitsModelButton.addEventListener("click", () => {
+  fields.sovitsModelPath.value = "";
+  refreshDirty();
+  refreshControls();
+});
+fields.voiceEnabled.addEventListener("change", () => {
+  if (!fields.voiceEnabled.checked) {
+    const hasVoiceAssets = Boolean(
+      fields.gptModelPath.value
+      || fields.sovitsModelPath.value
+      || fields.referenceAudioList.querySelector(".reference-audio-row")
+    );
+    if (hasVoiceAssets && !window.confirm("关闭语音后，保存时会移除语音配置和参考语音映射。是否继续？")) {
+      fields.voiceEnabled.checked = true;
+    }
+  }
+  syncVoiceEnabledState();
+  refreshDirty();
+  refreshControls();
+});
+fields.addReferenceAudioButton.addEventListener("click", () => importReferenceAudio());
 fields.addExpressionButton.addEventListener("click", () => {
   addExpressionRow();
   refreshDirty();
@@ -1142,8 +1482,9 @@ fields.cancelButton.addEventListener("click", closeStudio);
   fields.displayName,
   fields.initialMessage,
   fields.cardText,
-  fields.replyToneInput,
   fields.defaultPortrait,
+  fields.defaultRefLang,
+  fields.textLang,
 ].forEach((element) => element.addEventListener("input", refreshDirty));
 
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);

@@ -196,6 +196,9 @@ fn host_rpc_timeout(method: &str) -> Duration {
         "studio.open_character"
         | "studio.save_character"
         | "studio.import_portrait"
+        | "studio.import_voice_model"
+        | "studio.import_reference_audio"
+        | "studio.load_reference_audio_preview"
         | "studio.export_archive"
         | "studio.pick_screen_color" => FILE_RPC_TIMEOUT,
         _ => DEFAULT_HOST_RPC_TIMEOUT,
@@ -256,6 +259,18 @@ mod tests {
         );
         assert_eq!(
             host_rpc_timeout("studio.import_portrait"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("studio.import_voice_model"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("studio.import_reference_audio"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            host_rpc_timeout("studio.load_reference_audio_preview"),
             Duration::from_secs(30 * 60)
         );
         assert_eq!(

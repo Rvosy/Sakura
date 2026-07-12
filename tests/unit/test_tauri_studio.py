@@ -120,6 +120,47 @@ def test_dispatch_tauri_studio_rpc_routes_core_methods(tmp_path: Path) -> None:
     assert (tmp_path / "characters" / "demo" / "character.json").exists()
 
 
+def test_dispatch_tauri_studio_rpc_routes_voice_asset_methods(tmp_path: Path) -> None:
+    from app.ui.tauri_studio import dispatch_tauri_studio_rpc
+
+    model_source = tmp_path / "model.ckpt"
+    audio_source = tmp_path / "neutral.wav"
+    model_source.write_bytes(b"model")
+    audio_source.write_bytes(b"audio")
+    created = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.create_character",
+        {"doc": {"id": "demo", "display_name": "Demo"}},
+    )
+
+    model = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.import_voice_model",
+        {
+            "package_dir": created["package_dir"],
+            "path": str(model_source),
+            "model_type": "gpt",
+        },
+    )
+    audio = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.import_reference_audio",
+        {"package_dir": created["package_dir"], "path": str(audio_source)},
+    )
+    preview = dispatch_tauri_studio_rpc(
+        tmp_path,
+        "studio.load_reference_audio_preview",
+        {
+            "package_dir": created["package_dir"],
+            "relative_path": audio["relative_path"],
+        },
+    )
+
+    assert model["relative_path"].endswith("model.ckpt")
+    assert audio["relative_path"].endswith("neutral.wav")
+    assert preview["data_url"].startswith("data:audio/wav;base64,")
+
+
 def test_tauri_studio_process_writes_rpc_response_line(tmp_path: Path) -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):

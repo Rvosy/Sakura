@@ -101,6 +101,22 @@ def dispatch_tauri_studio_rpc(base_dir: Path, method: str, params: dict[str, Any
             _required_path(params, "path"),
             label=str(params.get("label") or "default"),
         )
+    if method == "studio.import_voice_model":
+        return service.import_voice_model(
+            _required_path(params, "package_dir"),
+            _required_path(params, "path"),
+            model_type=_required_str(params, "model_type"),
+        )
+    if method == "studio.import_reference_audio":
+        return service.import_reference_audio(
+            _required_path(params, "package_dir"),
+            _required_path(params, "path"),
+        )
+    if method == "studio.load_reference_audio_preview":
+        return service.load_reference_audio_preview(
+            _required_path(params, "package_dir"),
+            _required_str(params, "relative_path"),
+        )
     if method == "studio.export_archive":
         return service.export_archive(
             _required_path(params, "package_dir"),

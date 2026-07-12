@@ -28,6 +28,14 @@
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
               <span class="nav-item-label">立绘</span>
             </button>
+            <button class="nav-item" type="button" data-page="voice-model">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
+              <span class="nav-item-label">语音模型</span>
+            </button>
+            <button class="nav-item" type="button" data-page="reference-audio">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></span>
+              <span class="nav-item-label">参考语音</span>
+            </button>
             <button class="nav-item" type="button" data-page="theme">
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.12-.29-.29-.44-.66-.44-1.13 0-.92.75-1.67 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></svg></span>
               <span class="nav-item-label">配色</span>
@@ -37,14 +45,16 @@
       </aside>
 
       <section class="detail-card">
-        <header class="page-head">
-          <h1 id="pageTitle" class="page-title">基础信息</h1>
-          <p id="pageSubtitle" class="page-subtitle">名称、开场白与语音状态</p>
+        <div class="studio-character-bar">
           <div class="studio-character-controls">
             <label for="studioCharacterSelect">当前编辑角色</label>
             <select id="studioCharacterSelect"></select>
             <button id="newCharacterButton" type="button" class="secondary-button">新建角色</button>
           </div>
+        </div>
+        <header class="page-head">
+          <h1 id="pageTitle" class="page-title">基础信息</h1>
+          <p id="pageSubtitle" class="page-subtitle">名称与开场白</p>
         </header>
 
         <div class="page-scroll">
@@ -72,12 +82,6 @@
                 </label>
                 <textarea id="initialMessage" rows="4"></textarea>
               </div>
-              <div id="voiceStatusRow" class="setting-row" hidden>
-                <div class="setting-row-text">
-                  <span class="setting-title">语音</span>
-                  <span id="voiceStatus" class="setting-desc"></span>
-                </div>
-              </div>
             </fieldset>
           </section>
 
@@ -90,13 +94,6 @@
                   <span class="setting-desc">保存为角色包内的 card.md。</span>
                 </label>
                 <textarea id="cardText" class="code-textarea" rows="16"></textarea>
-              </div>
-              <div class="setting-row setting-row-block">
-                <label class="setting-row-text" for="replyToneInput">
-                  <span class="setting-title">回复语气</span>
-                  <span class="setting-desc">用逗号分隔多个语气标签。</span>
-                </label>
-                <input id="replyToneInput" type="text" autocomplete="off" />
               </div>
             </fieldset>
           </section>
@@ -122,6 +119,75 @@
                 <div id="expressionList" class="expression-list"></div>
                 <button id="addExpressionButton" type="button" class="secondary-button">添加表情</button>
               </div>
+            </fieldset>
+          </section>
+
+          <section id="page-voice-model" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>语音模型</legend>
+              <div class="setting-row">
+                <div class="setting-row-text">
+                  <span class="setting-title">启用语音</span>
+                  <span class="setting-desc">使用角色包内的 GPT-SoVITS 配置。</span>
+                </div>
+                <label class="switch-control" for="voiceEnabled">
+                  <input id="voiceEnabled" type="checkbox" />
+                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  <span id="voiceEnabledLabel">未启用</span>
+                </label>
+              </div>
+              <div id="voiceModelFields" class="voice-model-fields">
+                <div class="setting-row">
+                  <label class="setting-row-text" for="gptModelPath">
+                    <span class="setting-title">GPT 模型</span>
+                    <span class="setting-desc">角色包内的 .ckpt 模型，可留空使用运行时默认模型。</span>
+                  </label>
+                  <div class="path-control has-two-actions">
+                    <input id="gptModelPath" type="text" readonly />
+                    <button id="importGptModelButton" type="button" class="secondary-button compact-button">选择</button>
+                    <button id="clearGptModelButton" type="button" class="secondary-button compact-button">清除</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="sovitsModelPath">
+                    <span class="setting-title">SoVITS 模型</span>
+                    <span class="setting-desc">角色包内的 .pth 模型，可留空使用运行时默认模型。</span>
+                  </label>
+                  <div class="path-control has-two-actions">
+                    <input id="sovitsModelPath" type="text" readonly />
+                    <button id="importSovitsModelButton" type="button" class="secondary-button compact-button">选择</button>
+                    <button id="clearSovitsModelButton" type="button" class="secondary-button compact-button">清除</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="defaultRefLang">
+                    <span class="setting-title">默认参考语言</span>
+                    <span class="setting-desc">未单独指定时使用的参考语音语言，例如 ja、zh。</span>
+                  </label>
+                  <input id="defaultRefLang" type="text" autocomplete="off" />
+                </div>
+                <div class="setting-row">
+                  <label class="setting-row-text" for="textLang">
+                    <span class="setting-title">合成目标语言</span>
+                    <span class="setting-desc">角色默认合成语言，例如 ja、zh。</span>
+                  </label>
+                  <input id="textLang" type="text" autocomplete="off" />
+                </div>
+              </div>
+            </fieldset>
+          </section>
+
+          <section id="page-reference-audio" class="settings-page">
+            <fieldset class="settings-group">
+              <legend>参考语音</legend>
+              <div class="reference-audio-intro">
+                <div class="setting-row-text">
+                  <span class="setting-title">语音与描述词</span>
+                  <span class="setting-desc">每条描述词会写入 ref.txt，并自动成为可用的回复语气。</span>
+                </div>
+                <button id="addReferenceAudioButton" type="button" class="secondary-button">添加参考语音</button>
+              </div>
+              <div id="referenceAudioList" class="reference-audio-list"></div>
             </fieldset>
           </section>
 

@@ -4780,6 +4780,7 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     index = Path("tools/studio-tauri/frontend/index.html").read_text(encoding="utf-8")
     source = Path("tools/studio-tauri/frontend/studio.js").read_text(encoding="utf-8")
     styles = Path("tools/studio-tauri/frontend/styles.css").read_text(encoding="utf-8")
+    tauri_config = Path("tools/studio-tauri/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
 
     assert "nav-card" in index
     assert "detail-card" in index
@@ -4789,6 +4790,23 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "保存" in index
     assert 'id="studioCharacterSelect"' in index
     assert 'id="newCharacterButton"' in index
+    assert 'class="studio-character-bar"' in index
+    assert index.index('class="studio-character-bar"') < index.index('class="page-head"')
+    nav_labels = ["基础信息", "人设卡", "立绘", "语音模型", "参考语音", "配色"]
+    nav_positions = [index.index(f'<span class="nav-item-label">{label}</span>') for label in nav_labels]
+    assert nav_positions == sorted(nav_positions)
+    assert 'data-page="voice-model"' in index
+    assert 'data-page="reference-audio"' in index
+    assert 'id="page-voice-model"' in index
+    assert 'id="page-reference-audio"' in index
+    assert 'id="replyToneInput"' not in index
+    assert 'id="voiceEnabled"' in index
+    assert 'id="gptModelPath"' in index
+    assert 'id="sovitsModelPath"' in index
+    assert 'id="defaultRefLang"' in index
+    assert 'id="textLang"' in index
+    assert 'id="referenceAudioList"' in index
+    assert 'id="addReferenceAudioButton"' in index
     assert 'data-page="library"' not in index
     assert 'id="page-library"' not in index
     assert 'id="characterSearch"' not in index
@@ -4800,7 +4818,9 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "function editorSnapshot()" in source
     assert "function validateThemeInputs()" in source
     assert "function validateExpressionInputs()" in source
-    assert source.count("!validateThemeInputs() || !validateExpressionInputs()") == 2
+    assert "function validateVoiceInputs()" in source
+    assert "function renderReferenceAudios(" in source
+    assert "function previewReferenceAudio(" in source
     assert "{ dirty: true }" in source
     assert "displayName === null" in source
     assert "hostCall(\"studio.list_characters\"" not in source
@@ -4808,7 +4828,11 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert "hostCall(\"studio.create_character\"" in source
     assert "hostCall(\"studio.save_character\"" in source
     assert "hostCall(\"studio.import_portrait\"" in source
+    assert "hostCall(\"studio.import_voice_model\"" in source
+    assert "hostCall(\"studio.import_reference_audio\"" in source
+    assert "hostCall(\"studio.load_reference_audio_preview\"" in source
     assert "hostCall(\"studio.export_archive\"" in source
+    assert "include_voice: Boolean(collectDoc().voice)" in source
     assert 'class="theme-colors"' in index
     assert "themeLabels" not in source
     assert "request.theme_fields.forEach(({ id, label })" in source
@@ -4825,7 +4849,7 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert 'trigger.setAttribute("aria-labelledby"' in source
     assert 'menu.addEventListener("focusout"' in source
     assert "fields.studioCharacterSelect.__customSelect?.focus();" in source
-    assert index.count("<svg") >= 4
+    assert index.count("<svg") >= 6
     assert "--sakura-primary" in styles
     assert "--motion-medium" in styles
     assert ".settings-page.is-active" in styles
@@ -4834,10 +4858,13 @@ def test_tauri_studio_frontend_matches_settings_language() -> None:
     assert ".theme-sv-pad" in styles
     assert "grid-template-columns: 176px minmax(0, 1fr)" in styles
     assert ".custom-select__trigger" in styles
+    assert ".studio-character-bar" in styles
+    assert ".reference-audio-row" in styles
     assert "#saveButton,\n.primary-button" in styles
     assert "overflow-x: hidden" in styles
     assert "@media (max-width: 940px)" in styles
     assert ".studio-shell {\n    grid-template-columns: 1fr;" not in styles
+    assert "media-src 'self' data: blob:" in tauri_config
     assert ".nav-card {\n    display: none;" not in styles
 
 

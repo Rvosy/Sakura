@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shutil
@@ -22,8 +23,18 @@ from app.ui.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mappi
 
 CARD_FILENAME = "card.md"
 DEFAULT_TONE_REFS = "voice/refs/ref.txt"
+VOICE_MODELS_DIR = "voice/models"
+REFERENCE_AUDIO_DIR = "voice/refs/tone_refs"
+REFERENCE_AUDIO_PREVIEW_LIMIT = 20 * 1024 * 1024
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_VOICE_MODEL_SUFFIXES = {"gpt": ".ckpt", "sovits": ".pth"}
+_REFERENCE_AUDIO_MIME_TYPES = {
+    ".flac": "audio/flac",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+}
 
 
 @dataclass
@@ -35,6 +46,34 @@ class VoiceDraft:
     sovits_model: str | None = None
     ref_lang: str = "ja"
     text_lang: str = "ja"
+
+
+@dataclass
+class ReferenceAudioDraft:
+    """角色参考语音条目，对应 ref.txt 的四列格式。"""
+
+    audio_path: str = ""
+    ref_lang: str = ""
+    ref_text: str = ""
+    tone: str = ""
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "audio_path": self.audio_path,
+            "ref_lang": self.ref_lang,
+            "ref_text": self.ref_text,
+            "tone": self.tone,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "ReferenceAudioDraft":
+        data = payload if isinstance(payload, dict) else {}
+        return cls(
+            audio_path=str(data.get("audio_path") or "").strip(),
+            ref_lang=str(data.get("ref_lang") or "").strip(),
+            ref_text=str(data.get("ref_text") or "").strip(),
+            tone=str(data.get("tone") or "").strip(),
+        )
 
 
 @dataclass
@@ -50,6 +89,7 @@ class CharacterStudioDoc:
     reply_tones: list[str] = field(default_factory=list)
     theme: ThemeSettings = DEFAULT_THEME_SETTINGS
     voice: VoiceDraft | None = None
+    reference_audios: list[ReferenceAudioDraft] = field(default_factory=list)
 
     def to_manifest(self) -> dict[str, Any]:
         manifest: dict[str, Any] = {
@@ -99,6 +139,7 @@ class CharacterStudioDoc:
             "default_portrait": self.default_portrait,
             "expressions": dict(self.expressions),
             "reply_tones": list(self.reply_tones),
+            "reference_audios": [item.to_payload() for item in self.reference_audios],
             "theme": theme_to_mapping(self.theme.normalized()),
             "voice": None
             if self.voice is None
@@ -129,6 +170,8 @@ class CharacterStudioDoc:
         expressions = raw_expressions if isinstance(raw_expressions, dict) else {}
         raw_reply_tones = payload.get("reply_tones")
         reply_tones = raw_reply_tones if isinstance(raw_reply_tones, list) else []
+        raw_reference_audios = payload.get("reference_audios")
+        reference_audios = raw_reference_audios if isinstance(raw_reference_audios, list) else []
         return cls(
             id=str(payload.get("id") or "").strip(),
             display_name=str(payload.get("display_name") or "").strip(),
@@ -143,6 +186,7 @@ class CharacterStudioDoc:
             reply_tones=[str(tone).strip() for tone in reply_tones if str(tone).strip()],
             theme=theme_from_mapping(payload.get("theme")).normalized(),
             voice=voice,
+            reference_audios=[ReferenceAudioDraft.from_payload(item) for item in reference_audios],
         )
 
     @classmethod
@@ -171,6 +215,14 @@ class CharacterStudioDoc:
                 ref_lang=str(voice_raw.get("ref_lang") or "ja"),
                 text_lang=str(voice_raw.get("text_lang") or "ja"),
             )
+        reference_audios = (
+            _read_reference_audios(Path(package_dir), voice.tone_refs)
+            if voice is not None
+            else []
+        )
+        reply_tones = _reference_tones(reference_audios) if reference_audios else [
+            str(tone) for tone in tones_raw if isinstance(tone, str) and tone.strip()
+        ]
 
         return cls(
             id=str(raw.get("id") or ""),
@@ -183,9 +235,10 @@ class CharacterStudioDoc:
                 for label, path in expressions_raw.items()
                 if isinstance(label, str) and isinstance(path, str)
             },
-            reply_tones=[str(tone) for tone in tones_raw if isinstance(tone, str) and tone.strip()],
+            reply_tones=reply_tones,
             theme=theme_from_mapping(raw.get("theme")).normalized(),
             voice=voice,
+            reference_audios=reference_audios,
         )
 
 
@@ -249,6 +302,11 @@ class CharacterStudioService:
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
         package_dir.mkdir(parents=True, exist_ok=True)
+        if doc.voice is not None and "reference_audios" in doc_payload:
+            _validate_reference_audios(package_dir, doc.reference_audios)
+            doc.voice.tone_refs = DEFAULT_TONE_REFS
+            doc.reply_tones = _reference_tones(doc.reference_audios)
+            _write_reference_audios(package_dir, doc.reference_audios)
         (package_dir / CARD_FILENAME).write_text(doc.card_text, encoding="utf-8")
         (package_dir / "character.json").write_text(doc.manifest_json(), encoding="utf-8")
         return self._opened_payload(package_dir, doc, source="draft")
@@ -312,6 +370,45 @@ class CharacterStudioService:
             "relative_path": target.relative_to(package_dir).as_posix(),
             "path": str(target),
         }
+
+    def import_voice_model(
+        self,
+        package_dir: Path,
+        source_path: Path,
+        *,
+        model_type: str,
+    ) -> dict[str, str]:
+        package_dir = self._require_workspace_package(package_dir)
+        normalized_type = str(model_type or "").strip().lower()
+        expected_suffix = _VOICE_MODEL_SUFFIXES.get(normalized_type)
+        if expected_suffix is None:
+            raise ValueError("语音模型类型必须是 gpt 或 sovits。")
+        source = Path(source_path)
+        if source.suffix.lower() != expected_suffix:
+            raise ValueError(f"{normalized_type} 模型文件扩展名必须是 {expected_suffix}。")
+        return _copy_workspace_asset(package_dir, source, VOICE_MODELS_DIR)
+
+    def import_reference_audio(self, package_dir: Path, source_path: Path) -> dict[str, str]:
+        package_dir = self._require_workspace_package(package_dir)
+        source = Path(source_path)
+        if source.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
+            raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
+        return _copy_workspace_asset(package_dir, source, REFERENCE_AUDIO_DIR)
+
+    def load_reference_audio_preview(
+        self,
+        package_dir: Path,
+        relative_path: str,
+    ) -> dict[str, str]:
+        package_dir = self._require_workspace_package(package_dir)
+        audio_path = _resolve_workspace_file(package_dir, relative_path, "参考语音")
+        mime_type = _REFERENCE_AUDIO_MIME_TYPES.get(audio_path.suffix.lower())
+        if mime_type is None:
+            raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
+        if audio_path.stat().st_size > REFERENCE_AUDIO_PREVIEW_LIMIT:
+            raise ValueError("参考语音试听文件不能超过 20 MiB。")
+        encoded = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+        return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
     def validate_draft(self, package_dir: Path) -> CharacterProfile:
         package_dir = self._require_workspace_package(package_dir)
@@ -385,6 +482,95 @@ def _validate_character_id(value: str) -> str:
 def _safe_filename(value: str) -> str:
     text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
     return text or "portrait"
+
+
+def _copy_workspace_asset(package_dir: Path, source_path: Path, subdir: str) -> dict[str, str]:
+    source = Path(source_path)
+    if not source.is_file():
+        raise ValueError(f"文件不存在：{source}")
+    target_dir = Path(package_dir) / subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = _safe_filename(source.stem)
+    target = target_dir / f"{safe_stem}{source.suffix.lower()}"
+    if target.exists():
+        target = target_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{source.suffix.lower()}"
+    shutil.copy2(source, target)
+    return {
+        "relative_path": target.relative_to(package_dir).as_posix(),
+        "path": str(target),
+    }
+
+
+def _read_reference_audios(package_dir: Path, relative_path: str) -> list[ReferenceAudioDraft]:
+    path = Path(package_dir) / str(relative_path or DEFAULT_TONE_REFS)
+    if not path.is_file():
+        return []
+    result: list[ReferenceAudioDraft] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|", 3)
+        parts.extend([""] * (4 - len(parts)))
+        result.append(
+            ReferenceAudioDraft(
+                audio_path=parts[0].strip(),
+                ref_lang=parts[1].strip(),
+                ref_text=parts[2].strip(),
+                tone=parts[3].strip(),
+            )
+        )
+    return result
+
+
+def _write_reference_audios(package_dir: Path, references: list[ReferenceAudioDraft]) -> None:
+    path = Path(package_dir) / DEFAULT_TONE_REFS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "|".join((item.audio_path, item.ref_lang, item.ref_text, item.tone))
+        for item in references
+    ]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _reference_tones(references: list[ReferenceAudioDraft]) -> list[str]:
+    tones: list[str] = []
+    seen: set[str] = set()
+    for item in references:
+        tone = item.tone.strip()
+        if tone and tone not in seen:
+            tones.append(tone)
+            seen.add(tone)
+    return tones
+
+
+def _validate_reference_audios(package_dir: Path, references: list[ReferenceAudioDraft]) -> None:
+    if not references:
+        raise ValueError("启用语音后至少需要一条完整参考语音。")
+    for index, item in enumerate(references, start=1):
+        fields = (item.audio_path, item.ref_lang, item.ref_text, item.tone)
+        if not all(value.strip() for value in fields):
+            raise ValueError(f"参考语音第 {index} 条必须填写音频、语言、参考文本和描述词。")
+        if any("|" in value for value in fields):
+            raise ValueError(f"参考语音第 {index} 条不能包含竖线字符。")
+        audio_path = _resolve_workspace_file(package_dir, item.audio_path, f"参考语音第 {index} 条")
+        if audio_path.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
+            raise ValueError(f"参考语音第 {index} 条文件格式不受支持。")
+
+
+def _resolve_workspace_file(package_dir: Path, relative_path: str, label: str) -> Path:
+    path = Path(str(relative_path or "").strip())
+    if path.is_absolute():
+        raise ValueError(f"{label}不能使用绝对路径：{relative_path}")
+    resolved_package = Path(package_dir).resolve()
+    resolved = (resolved_package / path).resolve()
+    try:
+        resolved.relative_to(resolved_package)
+    except ValueError as exc:
+        raise ValueError(f"{label}不能指向角色包外：{relative_path}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"{label}文件不存在：{relative_path}")
+    return resolved
 
 
 def _validate_package_local_paths(package_dir: Path) -> None:
