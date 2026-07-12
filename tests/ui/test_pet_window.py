@@ -6504,6 +6504,50 @@ def test_registered_secondary_window_suppresses_topmost_until_hidden() -> None:
     assert raise_events == ["raise"]
 
 
+def test_manual_screenshot_overlay_suppresses_topmost_until_destroyed(
+    pet_window,
+    monkeypatch,
+    qtbot,
+) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QPixmap
+
+    native_sync_events: list[bool] = []
+    desktop = QPixmap(80, 60)
+    desktop.fill()
+
+    pet_window.always_on_top_enabled = True
+    pet_window._secondary_windows_suppress_topmost = False
+    monkeypatch.setattr(
+        pet_window,
+        "_capture_virtual_desktop_pixmap",
+        lambda: (desktop, QRect(0, 0, 80, 60)),
+    )
+    monkeypatch.setattr(
+        pet_window,
+        "_sync_native_topmost_state",
+        lambda: native_sync_events.append(pet_window._secondary_windows_suppress_topmost),
+    )
+    monkeypatch.setattr(pet_window, "raise_", lambda: None)
+
+    pet_window._show_manual_screenshot_overlay()
+
+    overlay = pet_window.manual_screenshot_overlay
+    assert overlay is not None
+    assert overlay in pet_window._registered_secondary_windows
+    assert pet_window._secondary_windows_suppress_topmost is True
+    assert native_sync_events == [True]
+
+    overlay.close()
+    qtbot.waitUntil(lambda: pet_window.manual_screenshot_overlay is None)
+
+    assert overlay not in pet_window._registered_secondary_windows
+    assert pet_window._secondary_windows_suppress_topmost is False
+    assert native_sync_events[0] is True
+    assert native_sync_events[-1] is False
+    assert not any(native_sync_events[1:])
+
+
 def test_pet_window_syncs_topmost_while_tauri_studio_is_active() -> None:
     from app.ui.pet_window import PetWindow
 

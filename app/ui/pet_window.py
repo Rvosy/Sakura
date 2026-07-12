@@ -2826,9 +2826,11 @@ class PetWindow(QWidget):
         overlay.cancelled.connect(self._handle_manual_screenshot_cancelled)
         overlay.destroyed.connect(self._clear_manual_screenshot_overlay_ref)
         self.manual_screenshot_overlay = overlay
-        overlay.show()
-        overlay.raise_()
-        overlay.activateWindow()
+        # 截图覆盖层与设置/历史等副窗口共用置顶抑制生命周期。Windows 原生置顶
+        # 生效时，仅给覆盖层设置 WindowStaysOnTopHint 仍可能被桌宠及独立渲染层盖住；
+        # 显示前先临时压低桌宠，覆盖层销毁后再按用户配置恢复。
+        self._register_secondary_window(overlay)
+        self._present_registered_secondary_window(overlay)
 
     def _capture_virtual_desktop_pixmap(self) -> tuple[QPixmap, QRect]:
         return capture_virtual_desktop_pixmap()
@@ -2882,7 +2884,10 @@ class PetWindow(QWidget):
 
     @Slot()
     def _clear_manual_screenshot_overlay_ref(self) -> None:
+        overlay = self.manual_screenshot_overlay
         self.manual_screenshot_overlay = None
+        if overlay is not None:
+            self._release_secondary_window(overlay)
 
     def _clear_manual_screen_observation(self) -> None:
         if self.pending_manual_screen_observation is None:
