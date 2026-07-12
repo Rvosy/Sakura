@@ -254,5 +254,6 @@ class TestToolPermissionPolicy:
 
     def test_browser_free_access_tool_recognized(self) -> None:
         policy = ToolPermissionPolicy()
-        assert policy.is_browser_free_access_tool("playwright_navigate")
+        assert policy.is_browser_free_access_tool("playwright_get_text")
+        assert not policy.is_browser_free_access_tool("playwright_navigate")
         assert not policy.is_browser_free_access_tool("unknown_tool")

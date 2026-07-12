@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.mcp.config import MCPServerConfig
-from app.core.resource_manager import AsyncLoopResource, ResourceRegistry
+from app.core.resource_manager import AsyncLoopResource, AsyncSubmitTimeout, ResourceRegistry
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class MCPBridge:
         self._close_requested: asyncio.Event | None = None
         self._connect_error: BaseException | None = None
         self._session: Any | None = None
+        self._needs_reconnect = False
 
     def connect(self) -> None:
         if self._loop_resource.is_running() and self._session is not None:
@@ -50,17 +51,20 @@ class MCPBridge:
         if self._closed:
             raise RuntimeError("MCP Bridge 已关闭。")
         self._ensure_stdio_command_exists()
-        self._loop_resource.start(name=f"sakura-mcp-{self.config.name}", daemon=True)
+        if not self._loop_resource.is_running():
+            self._loop_resource.start(name=f"sakura-mcp-{self.config.name}", daemon=True)
         try:
             self._run_async(
                 self._connect(),
                 timeout=self.config.effective_call_timeout(self.default_call_timeout),
             )
+            self._needs_reconnect = False
         except Exception:
             self.close()
             raise
 
     def list_tools(self) -> list[MCPToolSpec]:
+        self.connect()
         result = self._run_async(
             self._list_tools(),
             timeout=self.config.effective_call_timeout(self.default_call_timeout),
@@ -68,6 +72,7 @@ class MCPBridge:
         return result
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.connect()
         timeout = self.config.effective_call_timeout(self.default_call_timeout)
         return self._run_async(self._call_tool(name, arguments), timeout=timeout)
 
@@ -86,7 +91,27 @@ class MCPBridge:
     def _run_async(self, coro: Any, timeout: float) -> Any:
         if not self._loop_resource.is_running():
             raise RuntimeError("MCP Bridge 尚未连接。")
-        return self._loop_resource.submit(coro, timeout=timeout)
+        try:
+            return self._loop_resource.submit(coro, timeout=timeout)
+        except AsyncSubmitTimeout:
+            # 即使 concurrent Future 已进入 cancelled，协程仍可能吞掉 CancelledError；
+            # MCP 工具具有副作用，超时后一律污染并重建会话，不复用旧 session。
+            self._invalidate_timed_out_connection()
+            raise
+
+    def _invalidate_timed_out_connection(self) -> None:
+        self._session = None
+        self._connection_task = None
+        self._close_requested = None
+        self._needs_reconnect = True
+        polluted_loop = self._loop_resource
+        polluted_loop.stop(1_000)
+        # 旧协程可能吞掉 CancelledError，使旧 loop 的 finally 无法收敛。
+        # 无论旧线程是否成功退出，都切换到全新的受管 loop，避免后续调用复用污染会话。
+        self._loop_resource = self._resource_registry.track_async_loop(
+            label=f"mcp:{self.config.name}",
+            shutdown_order=900,
+        )
 
     def _ensure_stdio_command_exists(self) -> None:
         """启动前检查 stdio 命令，避免把 WinError 2 直接暴露给用户。"""

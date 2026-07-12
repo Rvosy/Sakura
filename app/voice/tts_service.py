@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from app.core.http_client import urlopen_direct_for_loopback
+from app.core.cancellation import CancelChecker
+from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.core.runtime_log import log_event, log_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.storage.paths import StoragePaths
@@ -979,6 +980,10 @@ class TTSServiceSupervisor:
         return True
 
     def _start_local_service(self, fail_callback: Callable[[str], None]) -> bool:
+        with self._service_lifecycle_lock:
+            return TTSServiceSupervisor._start_local_service_locked(self, fail_callback)
+
+    def _start_local_service_locked(self, fail_callback: Callable[[str], None]) -> bool:
         if _provider_is_closed(self):
             return False
         work_dir = self.settings.work_dir
@@ -1308,6 +1313,20 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
         return True
 
     def _start_local_service(self, fail_callback: Callable[[str], None], host: str, port: int) -> bool:
+        with self._service_lifecycle_lock:
+            return GenieServiceSupervisor._start_local_service_locked(
+                self,
+                fail_callback,
+                host,
+                port,
+            )
+
+    def _start_local_service_locked(
+        self,
+        fail_callback: Callable[[str], None],
+        host: str,
+        port: int,
+    ) -> bool:
         if _provider_is_closed(self):
             return False
         work_dir = self.settings.work_dir
@@ -1509,7 +1528,14 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             return False
         return True
 
-    def _post_json_and_read_bytes(self, endpoint: str, payload: dict[str, object], *, timeout: int) -> bytes:
+    def _post_json_and_read_bytes(
+        self,
+        endpoint: str,
+        payload: dict[str, object],
+        *,
+        timeout: int,
+        cancel_checker: CancelChecker | None = None,
+    ) -> bytes:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             url=_build_genie_endpoint_url(self.settings.api_url, endpoint),
@@ -1517,8 +1543,13 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urlopen_direct_for_loopback(request, timeout=timeout) as response:
-            return response.read()
+        body_bytes, _status = read_url_cancellable(
+            urlopen_direct_for_loopback,
+            request,
+            timeout=timeout,
+            cancel_checker=cancel_checker,
+        )
+        return body_bytes
 
     def _genie_character_name(self) -> str:
         return self.settings.character_name.strip() or "sakura"

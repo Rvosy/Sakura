@@ -5,6 +5,7 @@ import inspect
 import os
 import sys
 import threading
+import time
 import types
 import urllib.error
 import urllib.request
@@ -452,6 +453,44 @@ def test_stop_local_service_serialized_by_lifecycle_lock(monkeypatch) -> None:  
     assert fake.terminated is True
     assert supervisor._server_process is None
 
+
+@pytest.mark.parametrize(
+    ("supervisor_cls", "args"),
+    [
+        (TTSServiceSupervisor, (lambda _message: None,)),
+        (GenieServiceSupervisor, (lambda _message: None, "127.0.0.1", 9881)),
+    ],
+)
+def test_local_service_start_is_fully_serialized(monkeypatch, supervisor_cls, args) -> None:  # type: ignore[no-untyped-def]
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
+    active = 0
+    max_active = 0
+    calls = 0
+    gate = threading.Event()
+
+    def fake_locked(*_args):  # type: ignore[no-untyped-def]
+        nonlocal active, max_active, calls
+        active += 1
+        max_active = max(max_active, active)
+        calls += 1
+        gate.wait(0.05)
+        active -= 1
+        return True
+
+    monkeypatch.setattr(supervisor_cls, "_start_local_service_locked", fake_locked)
+    threads = [
+        threading.Thread(target=lambda: supervisor_cls._start_local_service(provider, *args))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    time.sleep(0.02)
+    gate.set()
+    for thread in threads:
+        thread.join(1)
+
+    assert calls == 2
+    assert max_active == 1
 
 def test_tts_service_probe_reports_unavailable_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())

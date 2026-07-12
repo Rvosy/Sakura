@@ -18,6 +18,7 @@ from typing import Any, Callable, TextIO
 MANIFEST_URL = "https://github.com/Rvosy/sakura-assets/releases/download/assets-latest/sakura-update.json"
 USER_AGENT = "SakuraUpdater/1.0"
 CHUNK_SIZE = 1024 * 1024
+DELETE_MANIFEST_NAME = "update-delete.json"
 SKIP_ROOTS = {
     ".agents",
     ".git",
@@ -164,6 +165,7 @@ def validate_update_archive(archive: Path, manifest: UpdateManifest) -> None:
     try:
         with zipfile.ZipFile(archive) as zf:
             version = _read_zip_version(zf)
+            _read_delete_paths(zf)
             bad_member = zf.testzip()
     except zipfile.BadZipFile as exc:
         raise UpdateError("升级包不是有效 zip 文件。") from exc
@@ -180,6 +182,17 @@ def apply_update_archive(archive: Path, base_dir: Path) -> list[Path]:
     backup_dir = _make_temp_dir(temp_root, "backup-")
     try:
         with zipfile.ZipFile(archive) as zf:
+            delete_paths = _read_delete_paths(zf, base_dir=base_dir)
+            archive_targets: set[Path] = set()
+            for info in zf.infolist():
+                parts = _zip_parts(info.filename)
+                if not parts or should_skip_update_path(parts) or info.is_dir():
+                    continue
+                archive_targets.add((base_dir / Path(*parts)).resolve())
+            conflicts = archive_targets.intersection(delete_paths)
+            if conflicts:
+                conflict = sorted(str(path.relative_to(base_dir)) for path in conflicts)[0]
+                raise UpdateError(f"升级包同时覆盖和删除同一路径：{conflict}")
             for info in zf.infolist():
                 parts = _zip_parts(info.filename)
                 if not parts or should_skip_update_path(parts):
@@ -195,6 +208,14 @@ def apply_update_archive(archive: Path, base_dir: Path) -> list[Path]:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
+            for target in delete_paths:
+                if not target.exists():
+                    continue
+                if target.is_dir():
+                    raise UpdateError(f"删除清单只能删除文件：{target}")
+                _backup_file(target, backup_dir / target.relative_to(base_dir))
+                written.append(target)
+                target.unlink()
     except Exception:
         _rollback_files(base_dir, backup_dir, written)
         raise
@@ -210,6 +231,8 @@ def should_skip_update_path(parts: tuple[str, ...]) -> bool:
     if "__pycache__" in lower:
         return True
     if lower in SKIP_FILES:
+        return True
+    if lower == (DELETE_MANIFEST_NAME.lower(),):
         return True
     name = lower[-1]
     return name.endswith((".pyc", ".pyo", ".log", ".zip"))
@@ -370,6 +393,42 @@ def _read_zip_version(zf: zipfile.ZipFile) -> str:
         if parts == ("VERSION",):
             return zf.read(info).decode("utf-8").splitlines()[0].strip()
     raise UpdateError("升级包缺少 VERSION。")
+
+
+def _read_delete_paths(
+    zf: zipfile.ZipFile,
+    *,
+    base_dir: Path | None = None,
+) -> list[Path]:
+    try:
+        raw = json.loads(zf.read(DELETE_MANIFEST_NAME).decode("utf-8"))
+    except KeyError:
+        return []
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpdateError("升级删除清单不是有效 JSON。") from exc
+    if not isinstance(raw, dict) or raw.get("format") != 1:
+        raise UpdateError("升级删除清单格式不受支持。")
+    entries = raw.get("delete_paths")
+    if not isinstance(entries, list):
+        raise UpdateError("升级删除清单缺少 delete_paths。")
+    root = base_dir.resolve() if base_dir is not None else Path("/")
+    result: list[Path] = []
+    seen: set[tuple[str, ...]] = set()
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise UpdateError("升级删除清单路径必须是字符串。")
+        parts = _zip_parts(entry)
+        if not parts or should_skip_update_path(parts):
+            raise UpdateError(f"升级删除清单包含受保护路径：{entry}")
+        lower = tuple(part.lower() for part in parts)
+        if lower in seen:
+            continue
+        seen.add(lower)
+        target = (root / Path(*parts)).resolve()
+        if base_dir is not None and not _is_relative_to(target, root):
+            raise UpdateError(f"升级删除清单包含非法路径：{entry}")
+        result.append(target)
+    return result
 
 
 def _zip_parts(name: str) -> tuple[str, ...]:

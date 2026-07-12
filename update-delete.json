@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "delete_paths": [
+    "app/ui/settings_dialog.py",
+    "app/ui/settings/pages/sections.py",
+    "app/core/debug_log.py",
+    "app/agent/proactive_care.py",
+    "app/agent/tools/builtin/provider.py"
+  ]
+}

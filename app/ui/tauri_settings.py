@@ -4,6 +4,8 @@ import json
 import os
 import secrets
 import sys
+import threading
+import time
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -180,6 +182,8 @@ from app.voice.tts_settings import (
     TTS_PROVIDER_NONE,
     GPTSoVITSTTSSettings,
 )
+
+_LINGERING_RPC_WORKERS: list[tuple[QThread, QObject]] = []
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
 TAURI_SETTINGS_PROTOCOL_VERSION = 3
@@ -417,15 +421,21 @@ class TauriRpcWorker(QObject):
         self._dispatch = dispatch
         self.method = method
         self.params = dict(params)
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
 
     def run(self) -> None:
         try:
             result = self._dispatch(self.method, self.params)
         except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
             traceback.print_exc()
-            self.failed.emit(str(exc))
+            if not self._cancelled.is_set():
+                self.failed.emit(str(exc))
         else:
-            self.succeeded.emit(result)
+            if not self._cancelled.is_set():
+                self.succeeded.emit(result)
         finally:
             self.finished.emit()
 
@@ -1383,7 +1393,7 @@ class TauriSettingsProcess(QObject):
         on_failure: Callable[[str], None] | None = None,
     ) -> None:
         """统一的 RPC worker 线程生命周期：移线程、登记、连成功/失败/收尾、启动。"""
-        thread = QThread(self)
+        thread = QThread()
         worker.moveToThread(thread)
         rpcs[request_id] = (thread, worker)
         thread.started.connect(worker.run)
@@ -1625,25 +1635,93 @@ class TauriSettingsProcess(QObject):
             return
         self._cleaned = True
         self._request_payload = b""
-        # 收尾在途 RPC 线程，避免线程仍在运行时随 self 被销毁。
-        for pending in (
-            self._api_probes,
-            self._memory_rpcs,
-            self._character_rpcs,
-            self._theme_ai_rpcs,
-            self._tts_test_rpcs,
-        ):
-            for thread, _worker in list(pending.values()):
-                try:
-                    thread.quit()
-                    thread.wait(3000)
-                except RuntimeError:
-                    pass
-            pending.clear()
+        _shutdown_rpc_maps(
+            (
+                self._api_probes,
+                self._memory_rpcs,
+                self._character_rpcs,
+                self._theme_ai_rpcs,
+                self._tts_test_rpcs,
+            ),
+            total_wait_ms=3000,
+        )
         process = self._process
         if process is not None:
             process.deleteLater()
         self.deleteLater()
+
+
+def _shutdown_rpc_maps(
+    pending_maps: tuple[dict[str, tuple[QThread, QObject]], ...],
+    *,
+    total_wait_ms: int,
+) -> None:
+    pairs: list[tuple[QThread, QObject]] = []
+    seen: set[int] = set()
+    for pending in pending_maps:
+        for thread, worker in list(pending.values()):
+            if id(thread) not in seen:
+                pairs.append((thread, worker))
+                seen.add(id(thread))
+        pending.clear()
+
+    for thread, worker in pairs:
+        _disconnect_worker_result_signals(worker)
+        cancel = getattr(worker, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except RuntimeError:
+                pass
+        try:
+            thread.requestInterruption()
+            thread.quit()
+        except RuntimeError:
+            continue
+
+    deadline = time.monotonic() + max(0, total_wait_ms) / 1000
+    for thread, worker in pairs:
+        try:
+            if thread.isRunning():
+                remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                if remaining_ms:
+                    thread.wait(remaining_ms)
+            if thread.isRunning():
+                _retain_lingering_rpc_worker(thread, worker)
+        except RuntimeError:
+            pass
+
+
+def _disconnect_worker_result_signals(worker: QObject) -> None:
+    for name in ("succeeded", "failed"):
+        signal = getattr(worker, name, None)
+        disconnect = getattr(signal, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except RuntimeError:
+                pass
+
+
+def _retain_lingering_rpc_worker(thread: QThread, worker: QObject) -> None:
+    pair = (thread, worker)
+    if any(existing_thread is thread for existing_thread, _worker in _LINGERING_RPC_WORKERS):
+        return
+    try:
+        thread.setParent(None)
+    except RuntimeError:
+        pass
+    _LINGERING_RPC_WORKERS.append(pair)
+
+    def release() -> None:
+        _LINGERING_RPC_WORKERS[:] = [
+            item for item in _LINGERING_RPC_WORKERS if item[0] is not thread
+        ]
+
+    try:
+        thread.finished.connect(release)
+    except RuntimeError:
+        release()
 
 
 def _restore_windows_for_pid(pid: int, *, force_foreground: bool = False) -> bool:

@@ -165,6 +165,18 @@ class TestV0ToV1:
         MigrationRunner(base).run()
         assert load_yaml_mapping(api_path)["llm"]["model"] == "user-changed"
 
+    def test_invalid_env_is_not_archived_and_does_not_advance_version(self) -> None:
+        base = _make_base("invalid_env")
+        env_path = base / ".env"
+        env_path.write_text('API_KEY="broken\n', encoding="utf-8")
+
+        report = MigrationRunner(base).run()
+
+        assert report.failed
+        assert env_path.is_file()
+        assert not (base / ".env.migrated").exists()
+        assert MigrationRunner(base).current_version() == 0
+
     def test_legacy_chat_history_split(self) -> None:
         base = _make_base("legacy_history")
         from app.config.character_loader import DEFAULT_CHARACTER_ID

@@ -22,6 +22,7 @@ from PySide6.QtCore import (  # noqa: E402
 import app.core.resource_manager as resource_manager_module  # noqa: E402
 from app.core.resource_manager import (  # noqa: E402
     AsyncLoopResource,
+    AsyncSubmitTimeout,
     ProcessResource,
     QtWorkerResource,
     ResourceManager,
@@ -294,6 +295,25 @@ def test_async_loop_resource_submit_stop_and_restart() -> None:
     res.start(name="mcp-test-loop")
     assert res.submit(asyncio.sleep(0, result="ok"), timeout=1) == "ok"
 
+    assert res.stop(timeout_ms=1000) is True
+
+
+def test_async_loop_resource_timeout_cancels_late_side_effect() -> None:
+    registry = ResourceRegistry()
+    res = registry.track_async_loop(label="timeout-test")
+    res.start(name="timeout-test-loop")
+    side_effects: list[str] = []
+
+    async def late_write() -> None:
+        await asyncio.sleep(0.2)
+        side_effects.append("written")
+
+    with pytest.raises(AsyncSubmitTimeout) as exc_info:
+        res.submit(late_write(), timeout=0.01)
+
+    assert exc_info.value.cancel_settled is True
+    time.sleep(0.25)
+    assert side_effects == []
     assert res.stop(timeout_ms=1000) is True
     assert res.is_running() is False
     assert res not in registry._resources

@@ -477,6 +477,46 @@ def test_settings_service_saves_and_loads_genie_tts_settings() -> None:
     assert loaded.timeout_seconds == 33
 
 
+def test_settings_service_preserves_inactive_tts_provider_configuration() -> None:
+    root = _runtime_root("yaml_tts_provider_switch")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True, exist_ok=True)
+    service.api_config_path.write_text(
+        """
+tts:
+  provider: gpt-sovits
+  enabled: true
+  unknown_key: keep
+  gpt_sovits:
+    api_url: http://127.0.0.1:9880/tts
+    work_dir: tts/gpt
+  genie_tts:
+    api_url: http://127.0.0.1:9881/
+    work_dir: tts/old-genie
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = GPTSoVITSTTSSettings(
+        enabled=True,
+        provider="genie-tts",
+        api_url="http://127.0.0.1:9882/",
+        ref_audio_path=root / "ref.wav",
+        ref_text_path=root / "ref.txt",
+        ref_text="hello",
+        work_dir=root / "tts" / "new-genie",
+        character_name="Sakura",
+        onnx_model_dir=root / "onnx",
+        timeout_seconds=30,
+    )
+
+    service.save_tts_settings(settings)
+    saved = load_yaml_mapping(service.api_config_path)["tts"]
+
+    assert saved["gpt_sovits"]["work_dir"] == "tts/gpt"
+    assert saved["genie_tts"]["work_dir"] == "tts/new-genie"
+    assert saved["unknown_key"] == "keep"
+
+
 def test_settings_service_saves_and_loads_custom_gpt_sovits_settings() -> None:
     root = _runtime_root("yaml_custom_gpt_sovits")
     service = AppSettingsService(root)

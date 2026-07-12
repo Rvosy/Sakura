@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -33,6 +33,14 @@ DEFAULT_PROCESS_TERMINATE_TIMEOUT_S = 5
 
 # (signal, slot)：把 worker 的某个信号连接到一个槽。
 SignalBinding = tuple[Any, Callable[..., Any]]
+
+
+class AsyncSubmitTimeout(TimeoutError):
+    """异步提交超时；cancel_settled 表示协程已确认取消完成。"""
+
+    def __init__(self, message: str, *, cancel_settled: bool) -> None:
+        super().__init__(message)
+        self.cancel_settled = cancel_settled
 
 
 class ResourceState(str, Enum):
@@ -699,7 +707,23 @@ class AsyncLoopResource:
         if loop is None or self.state in (ResourceState.STOPPING, ResourceState.STOPPED):
             raise RuntimeError("asyncio 事件循环尚未运行。")
         future: Future[Any] = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError as exc:
+            future.cancel()
+            cancel_settled = False
+            try:
+                future.result(timeout=min(0.5, max(0.05, timeout)))
+            except CancelledError:
+                cancel_settled = True
+            except TimeoutError:
+                cancel_settled = False
+            except BaseException:
+                cancel_settled = True
+            raise AsyncSubmitTimeout(
+                f"异步操作超时：{self.label or self._thread_name}",
+                cancel_settled=cancel_settled,
+            ) from exc
 
     def is_running(self) -> bool:
         thread = self.thread

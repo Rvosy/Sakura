@@ -106,6 +106,33 @@ def set_launch_at_login_enabled(
     raise LaunchAtLoginError(f"Unsupported platform: {target.platform}")
 
 
+def is_launch_at_login_enabled(
+    base_dir: Path,
+    *,
+    platform: str | None = None,
+    home_dir: Path | None = None,
+    windows_registry: Any | None = None,
+) -> bool:
+    target = resolve_launch_at_login_target(base_dir, platform=platform)
+    if not target.supported:
+        raise LaunchAtLoginError(target.reason or "Launch at login is not supported.")
+    if target.platform == "macos":
+        return _macos_launch_agent_path(home_dir=home_dir).is_file()
+    if target.platform == "linux":
+        return _linux_autostart_path(home_dir=home_dir).is_file()
+    if target.platform == "windows":
+        winreg = windows_registry or _import_winreg()
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        access = getattr(winreg, "KEY_QUERY_VALUE", 0)
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, access) as key:
+                winreg.QueryValueEx(key, WINDOWS_RUN_VALUE_NAME)
+        except FileNotFoundError:
+            return False
+        return True
+    return False
+
+
 def ensure_launch_at_login_state(
     base_dir: Path,
     enabled: bool,

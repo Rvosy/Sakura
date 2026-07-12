@@ -126,7 +126,15 @@ class ChatPipeline:
         if record is None:
             log_event(log_scope, "视觉观察摘要为空，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
-        self.visual_observation_store.append(record)
+        try:
+            self.visual_observation_store.append(record)
+        except Exception as exc:  # noqa: BLE001 - 视觉记忆失败不能击穿聊天成功结果
+            log_event(
+                log_scope,
+                "视觉观察记录保存失败，已保留聊天结果",
+                {"visual_id": record.id, "error": str(exc)},
+            )
+            return
         log_event(
             log_scope,
             "视觉观察记录已保存",

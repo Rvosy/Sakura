@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Protocol
 
 from app.core.http_client import urlopen_direct_for_loopback
+from app.core.http_client import read_url_cancellable
+from app.core.cancellation import OperationCancelled
 from app.core.runtime_log import log_event
 from app.core.interaction import set_interaction_id
 from app.llm.chat_reply import DEFAULT_TONE
@@ -148,7 +150,9 @@ class GPTSoVITSSynthesisEngine:
         supervisor = queue._supervisor
         settings = queue.settings
         restart_attempted = False
+        cancel_checker = _request_cancel_checker(request)
         while True:
+            cancel_checker()
             if not supervisor._ensure_service_available(fail):
                 return None
 
@@ -201,23 +205,24 @@ class GPTSoVITSSynthesisEngine:
 
             try:
                 started_at = time.perf_counter()
-                with urlopen_direct_for_loopback(
+                audio_data, response_status = read_url_cancellable(
+                    urlopen_direct_for_loopback,
                     http_request,
                     timeout=settings.timeout_seconds,
-                ) as response:
-                    audio_data = response.read()
-                    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                    log_event(
-                        "TTS",
-                        "GPT-SoVITS 请求成功",
-                        {
-                            "status": getattr(response, "status", None),
-                            "bytes": len(audio_data),
-                            "audio_bytes": len(audio_data),
-                            "duration_ms": elapsed_ms,
-                            "attempt": 2 if restart_attempted else 1,
-                        },
-                    )
+                    cancel_checker=cancel_checker,
+                )
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                log_event(
+                    "TTS",
+                    "GPT-SoVITS 请求成功",
+                    {
+                        "status": response_status,
+                        "bytes": len(audio_data),
+                        "audio_bytes": len(audio_data),
+                        "duration_ms": elapsed_ms,
+                        "attempt": 2 if restart_attempted else 1,
+                    },
+                )
                 break
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
@@ -316,6 +321,7 @@ class GenieSynthesisEngine:
                 "tts",
                 payload,
                 timeout=max(settings.timeout_seconds, 120),
+                cancel_checker=_request_cancel_checker(request),
             )
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         except urllib.error.HTTPError as exc:
@@ -424,7 +430,18 @@ class TTSSynthesisQueue:
             )
             return
         with self._lock:
-            self._pending_requests.append(request)
+            if request.prepared_audio is None:
+                insert_at = next(
+                    (
+                        index
+                        for index, pending in enumerate(self._pending_requests)
+                        if pending.prepared_audio is not None
+                    ),
+                    len(self._pending_requests),
+                )
+                self._pending_requests.insert(insert_at, request)
+            else:
+                self._pending_requests.append(request)
         self._start_next_request()
 
     def _start_next_request(self) -> None:
@@ -479,6 +496,9 @@ class TTSSynthesisQueue:
 
             try:
                 audio_path = self._engine.synthesize(self, tts_request, fail=fail, skip=skip)
+            except OperationCancelled:
+                skip("请求已取消")
+                return
             except Exception as exc:  # noqa: BLE001
                 log_event(
                     "TTS",
@@ -552,3 +572,12 @@ class TTSSynthesisQueue:
         """清空待合成队列（关闭时调用）。"""
         with self._lock:
             self._pending_requests.clear()
+
+
+def _request_cancel_checker(request: _TTSRequest):  # type: ignore[no-untyped-def]
+    def check() -> None:
+        handle = request.prepared_audio
+        if handle is not None and handle.cancelled:
+            raise OperationCancelled()
+
+    return check

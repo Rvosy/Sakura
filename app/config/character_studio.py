@@ -387,8 +387,11 @@ class CharacterStudioService:
 
     def save_draft(self, doc_payload: dict[str, Any], package_dir: Path | str) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
+        workspace_id = self._workspace_id_for_package(package_dir)
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
+        if doc.id != workspace_id:
+            raise ValueError("草稿角色 ID 与工作区不一致。")
         package_dir.mkdir(parents=True, exist_ok=True)
         if doc.voice is not None and "reference_audios" in doc_payload:
             _validate_reference_audios(package_dir, doc.reference_audios)
@@ -401,7 +404,6 @@ class CharacterStudioService:
             package_dir / "character.json",
             json.dumps(manifest, ensure_ascii=False, indent=2),
         )
-        workspace_id = self._workspace_id_for_package(package_dir)
         state = self._read_state(workspace_id)
         if state is not None:
             self._write_state(
@@ -423,7 +425,10 @@ class CharacterStudioService:
         saved = self.save_draft(doc_payload, package_dir)
         draft_dir = Path(saved["package_dir"])
         profile = self.validate_draft(draft_dir)
-        target_dir = self.characters_dir / profile.id
+        workspace_id = self._workspace_id_for_package(draft_dir)
+        if profile.id != workspace_id:
+            raise ValueError("待发布角色 ID 与工作区不一致。")
+        target_dir = _direct_child_path(self.characters_dir, profile.id, "角色发布目录")
         staging_dir = self.characters_dir / f".{profile.id}.studio-{uuid.uuid4().hex}"
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
@@ -445,7 +450,6 @@ class CharacterStudioService:
 
         registry = CharacterRegistry(self.base_dir)
         saved_profile = registry.get(profile.id)
-        workspace_id = self._workspace_id_for_package(draft_dir)
         state = self._read_state(workspace_id)
         was_installed = state is not None and str(state.get("origin")) == "installed"
         saved_doc = CharacterStudioDoc.from_package_dir(target_dir)
@@ -807,6 +811,7 @@ class CharacterStudioService:
             self._write_state(character_id, doc, origin="new", dirty=True, imported_assets=[])
 
     def _backup_target(self, target_dir: Path) -> Path | None:
+        target_dir = _existing_direct_child_path(self.characters_dir, target_dir, "角色备份目录")
         if not target_dir.exists():
             return None
         backup_dir = self.backup_root / f"{target_dir.name}-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -818,9 +823,26 @@ class CharacterStudioService:
 
 def _validate_character_id(value: str) -> str:
     character_id = str(value or "").strip()
-    if not character_id or not _CHARACTER_ID_RE.fullmatch(character_id):
+    if character_id in {".", ".."} or not character_id or not _CHARACTER_ID_RE.fullmatch(character_id):
         raise ValueError("角色 id 只能包含字母、数字、下划线、点和横线。")
     return character_id
+
+
+def _direct_child_path(root: Path, child_name: str, label: str) -> Path:
+    safe_name = _validate_character_id(child_name)
+    resolved_root = root.resolve()
+    target = (resolved_root / safe_name).resolve(strict=False)
+    if target == resolved_root or target.parent != resolved_root:
+        raise ValueError(f"{label}必须位于 characters/ 的直接子目录。")
+    return target
+
+
+def _existing_direct_child_path(root: Path, target: Path, label: str) -> Path:
+    resolved_root = root.resolve()
+    resolved_target = Path(target).resolve(strict=False)
+    if resolved_target == resolved_root or resolved_target.parent != resolved_root:
+        raise ValueError(f"{label}必须位于 characters/ 的直接子目录。")
+    return resolved_target
 
 
 def _safe_filename(value: str) -> str:

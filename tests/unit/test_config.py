@@ -149,6 +149,26 @@ class TestDotenvParsing:
         finally:
             path.unlink()
 
+    def test_parse_quotes_and_export_prefix(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as f:
+            f.write('export API_KEY="sk-test"\nMODEL=\'demo model\'\n')
+            path = Path(f.name)
+        try:
+            result = _parse_dotenv(path)
+            assert result == {"API_KEY": "sk-test", "MODEL": "demo model"}
+        finally:
+            path.unlink()
+
+    def test_parse_rejects_unclosed_quote(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as f:
+            f.write('API_KEY="broken\n')
+            path = Path(f.name)
+        try:
+            with pytest.raises(ValueError, match="引号未闭合"):
+                _parse_dotenv(path)
+        finally:
+            path.unlink()
+
     def test_parse_missing_file(self) -> None:
         result = _parse_dotenv(Path("/nonexistent/.env"))
         assert result == {}

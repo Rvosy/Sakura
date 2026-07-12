@@ -379,6 +379,10 @@ def test_character_studio_rejects_unsafe_ids_and_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="角色 id"):
         service.open_character("../bad")
 
+    for unsafe_id in (".", ".."):
+        with pytest.raises(ValueError, match="角色 id"):
+            service.create_character({"id": unsafe_id, "display_name": "Bad"})
+
     outside = root.parent / "outside.png"
     outside.write_bytes(b"png")
     created = service.create_character({"id": "safe", "display_name": "Safe"})
@@ -387,6 +391,22 @@ def test_character_studio_rejects_unsafe_ids_and_paths(tmp_path: Path) -> None:
         service.import_portrait(draft_dir, root / "bad.txt", label="default")
 
     assert outside.exists()
+
+
+def test_character_studio_rejects_workspace_document_id_mismatch(tmp_path: Path) -> None:
+    from app.config.character_studio import CharacterStudioService
+
+    root = _runtime_root(tmp_path, "workspace_id_mismatch")
+    service = CharacterStudioService(root)
+    created = service.create_character({"id": "safe", "display_name": "Safe"})
+    draft_dir = Path(created["package_dir"])
+    payload = dict(created["doc"])
+    payload["id"] = "other"
+
+    with pytest.raises(ValueError, match="工作区不一致"):
+        service.save_character(payload, draft_dir)
+
+    assert not (root / "characters" / "other").exists()
 
 
 def test_character_studio_persists_new_draft_under_data_and_resumes_it(tmp_path: Path) -> None:

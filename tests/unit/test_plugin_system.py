@@ -279,6 +279,17 @@ class TestPluginDiscovery:
         assert len(enabled) == 1
         assert enabled[0].plugin_id == "a"
 
+    def test_broken_manifest_does_not_hide_healthy_plugins(self) -> None:
+        base = _runtime_root("broken_manifest_isolated")
+        _write_plugin_manifest(base, "healthy", priority=100)
+        broken = base / "plugins" / "broken"
+        broken.mkdir(parents=True)
+        (broken / "plugin.yaml").write_text("id: [broken", encoding="utf-8")
+
+        specs = PluginDiscovery(base).discover()
+
+        assert [spec.plugin_id for spec in specs] == ["healthy"]
+
 
 class TestPluginManager:
     """插件管理器"""
@@ -291,6 +302,22 @@ class TestPluginManager:
         assert results == []
         assert mgr.loaded_count == 0
         assert mgr.failed_count == 0
+
+    def test_load_all_twice_shutdowns_and_replaces_registered_tools(self) -> None:
+        base = _runtime_root("reload_plugins")
+        _write_demo_plugin(base)
+        registry = ToolRegistry()
+        manager = PluginManager(base)
+
+        first = manager.load_all(registry)
+        first_tool = registry.get("demo_echo")
+        second = manager.load_all(registry)
+        second_tool = registry.get("demo_echo")
+
+        assert first[0].loaded and second[0].loaded
+        assert first_tool is not None and second_tool is not None
+        assert second_tool is not first_tool
+        assert [tool.name for tool in registry.all()].count("demo_echo") == 1
 
     def test_collect_tools_empty(self) -> None:
         base = _runtime_root("empty_tools")

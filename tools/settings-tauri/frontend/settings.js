@@ -242,8 +242,29 @@ function refreshDirty() {
 }
 
 let dirtyTimer = null;
+let submissionBusy = false;
+const submissionDisabledStates = new Map();
+
+function setSubmissionBusy(busy) {
+  submissionBusy = Boolean(busy);
+  document.body.classList.toggle("is-submitting", submissionBusy);
+  document.querySelectorAll("input, select, textarea, button").forEach((control) => {
+    if (submissionBusy) {
+      if (!submissionDisabledStates.has(control)) {
+        submissionDisabledStates.set(control, control.disabled);
+      }
+      control.disabled = true;
+      return;
+    }
+    if (submissionDisabledStates.has(control)) {
+      control.disabled = submissionDisabledStates.get(control);
+      submissionDisabledStates.delete(control);
+    }
+  });
+}
+
 function scheduleDirty() {
-  if (settingsBaseline === null) {
+  if (settingsBaseline === null || submissionBusy) {
     return;
   }
   window.clearTimeout(dirtyTimer);
@@ -4358,23 +4379,23 @@ fields.saveButton.addEventListener("click", async () => {
   }
   // 保存成功后 Rust/Python 会关窗，提前放行关窗拦截。
   bypassCloseGuard = true;
-  fields.saveButton.disabled = true;
+  setSubmissionBusy(true);
   fields.saveButton.textContent = "保存中…";
   try {
     await invoke("save_settings", { settings });
-    settingsBaseline = settingsSnapshot();
+    settingsBaseline = JSON.stringify(settings);
     refreshDirty();
     notify("已保存。", "success");
   } catch (error) {
     bypassCloseGuard = false;
-    fields.saveButton.disabled = false;
+    setSubmissionBusy(false);
     fields.saveButton.textContent = original;
     setError(String(error));
     return;
   }
   window.setTimeout(() => {
     bypassCloseGuard = false;
-    fields.saveButton.disabled = false;
+    setSubmissionBusy(false);
     fields.saveButton.textContent = original;
   }, 800);
 });
@@ -4387,17 +4408,24 @@ fields.applyButton.addEventListener("click", async () => {
   if (!validateApiSettingsBeforeSubmit()) {
     return;
   }
-  fields.applyButton.disabled = true;
+  let settings;
   try {
-    await invoke("apply_settings", { settings: collectSettings() });
+    settings = collectSettings();
+  } catch (error) {
+    setError(String(error));
+    return;
+  }
+  setSubmissionBusy(true);
+  try {
+    await invoke("apply_settings", { settings });
     // 应用同样会持久化（仅不关窗），故重置基线，清掉「未保存」状态。
-    settingsBaseline = settingsSnapshot();
+    settingsBaseline = JSON.stringify(settings);
     refreshDirty();
     notify("已应用。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
-    fields.applyButton.disabled = false;
+    setSubmissionBusy(false);
   }
 });
 

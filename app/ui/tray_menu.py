@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
 
 def build_pet_tray_menu(
@@ -21,6 +21,7 @@ def build_pet_tray_menu(
     on_show_history: Callable[[], None],
     on_show_runtime_log: Callable[[], None],
     on_show_settings: Callable[[], None],
+    on_quit: Callable[[], None],
     window_visible: bool = True,
     interactions_enabled: bool = True,
 ) -> QMenu:
@@ -83,7 +84,7 @@ def build_pet_tray_menu(
     menu.addSeparator()
 
     quit_action = QAction("退出", parent)
-    quit_action.triggered.connect(QApplication.quit)
+    quit_action.triggered.connect(on_quit)
     menu.addAction(quit_action)
 
     return menu

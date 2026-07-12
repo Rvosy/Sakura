@@ -133,6 +133,14 @@ class ToolRegistry:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
+        """移除工具；expected 可防止误删后来覆盖的同名工具。"""
+        current = self._tools.get(name)
+        if current is None or (expected is not None and current is not expected):
+            return False
+        del self._tools[name]
+        return True
+
     # ---- 查询 ----
 
     @property

@@ -21,6 +21,8 @@ from app.agent.actions import AgentAction, AgentEvent, AgentResult, PendingToolA
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
+    _redact_tool_result_for_model,
+    _trim_pending_context_messages,
 )
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.agent.tool_routing import (
@@ -39,6 +41,7 @@ from app.agent.runtime_limits import (
     RuntimeLoopSettings,
 )
 from app.agent.tools import Tool, ToolRegistry
+from app.agent.tools import ToolExecutionResult
 from app.llm.api_client import (
     ApiRequestError,
     ChatCompletionTurn,
@@ -91,6 +94,56 @@ class _FakeHistoryStore:
     def load(self) -> list[ChatHistoryEntry]:
         return self.entries
 
+
+def test_pending_context_trimming_keeps_complete_tool_transactions() -> None:
+    messages: list[ChatMessage] = [
+        {"role": "user", "content": f"old-{index}"}
+        for index in range(MAX_PENDING_CONTEXT_MESSAGES)
+    ]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "demo", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+    )
+
+    trimmed = _trim_pending_context_messages(messages, MAX_PENDING_CONTEXT_MESSAGES)
+
+    assert trimmed[-2]["role"] == "assistant"
+    assert trimmed[-1]["tool_call_id"] == "call_1"
+    assistant_ids = {
+        call["id"]
+        for message in trimmed
+        for call in message.get("tool_calls", [])
+    }
+    assert all(
+        message.get("tool_call_id") in assistant_ids
+        for message in trimmed
+        if message.get("role") == "tool"
+    )
+
+
+def test_large_sequence_tool_result_is_truncated() -> None:
+    result = ToolExecutionResult(
+        tool_name="large",
+        success=True,
+        content=["x" * 1000 for _ in range(MAX_TOOL_RESULT_CHARS)],
+    )
+
+    redacted = _redact_tool_result_for_model(result)
+
+    assert isinstance(redacted["content"], dict)
+    assert redacted["content"]["truncated"] is True
 
 class TestRuntimeLimits:
     """运行时限制常量验证"""

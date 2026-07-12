@@ -187,6 +187,9 @@ def _migrate_dotenv(context: MigrationContext) -> None:
         context.paths.api_config(),
         context.paths.system_config(),
     )
+    errors = [str(error) for error in result.get("errors", []) if str(error)]
+    if errors:
+        raise ValueError("；".join(errors))
     # 已知未映射键（如 GPT_SOVITS_REF_AUDIO_PATH，参考音频现由角色包接管）：
     # 显式记录跳过，不静默丢弃
     migrated = set(result.get("migrated", []))
@@ -199,7 +202,7 @@ def _migrate_dotenv(context: MigrationContext) -> None:
     log_event(
         "Migration",
         "migration.v0_to_v1.env.applied",
-        {"migrated": sorted(migrated), "skipped": skipped_keys, "errors": result.get("errors", [])},
+        {"migrated": sorted(migrated), "skipped": skipped_keys, "errors": []},
     )
 
 

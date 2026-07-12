@@ -532,6 +532,7 @@ class AgentRuntime:
                     for item in tool_defs
                     if isinstance(item, dict) and isinstance(item.get("function"), dict)
                 ]
+                offered_names = {name for name in tool_names if name}
                 request = build_context_request(
                     working_messages,
                     source=context_source,
@@ -669,8 +670,7 @@ class AgentRuntime:
             for call in turn.tool_calls[:allowed_calls]:
                 check_cancelled(cancel_checker)
                 total_tool_calls += 1
-                execution_arguments = _tool_arguments_for_execution(call, self.tools)
-                call_data = _native_tool_call_to_policy_call(call, execution_arguments)
+                call_data = _native_tool_call_to_policy_call(call, call.arguments)
                 log_event("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
                 if tool_routing._should_block_windows_tool_for_browser_page(call_data, browser_page_guard_active):
                     blocked_result = tool_routing._build_browser_page_windows_tool_block_result(call_data)
@@ -710,6 +710,39 @@ class AgentRuntime:
                         )
                     )
                     continue
+                if call.name not in offered_names:
+                    blocked_result = ToolExecutionResult(
+                        tool_name=call.name,
+                        success=False,
+                        content="",
+                        error=(
+                            SCREEN_OBSERVATION_DISABLED_ERROR
+                            if call.name == OBSERVE_SCREEN_TOOL_NAME
+                            else "该工具未在本步骤提供，已阻止执行。"
+                        ),
+                    )
+                    log_event(
+                        "AgentRuntime",
+                        "阻止执行未提供给模型的工具",
+                        {"step_index": step_index, "tool_name": call.name},
+                    )
+                    step_results.append(blocked_result)
+                    execution_results.append(blocked_result)
+                    tool_messages.extend(
+                        _build_tool_messages_for_result(
+                            call,
+                            blocked_result,
+                            include_images=self.model_vision_enabled,
+                        )
+                    )
+                    emitted_actions.append(
+                        AgentAction(
+                            type="tool_call",
+                            payload=_redact_tool_result_for_model(blocked_result),
+                        )
+                    )
+                    continue
+                execution_arguments = _tool_arguments_for_execution(call, self.tools)
                 prepared = self.tools.prepare_or_execute(
                     call.name,
                     execution_arguments,
@@ -1711,7 +1744,50 @@ def _build_pending_continuation_messages(
             start_after_call_id=pending_call_id,
         ),
     ]
-    return messages[-MAX_PENDING_CONTEXT_MESSAGES:]
+    return _trim_pending_context_messages(messages, MAX_PENDING_CONTEXT_MESSAGES)
+
+
+def _trim_pending_context_messages(
+    messages: list[ChatMessage],
+    max_messages: int,
+) -> list[ChatMessage]:
+    """按完整 tool-call 事务裁剪，绝不留下孤立 tool 消息。"""
+    groups: list[list[ChatMessage]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        role = message.get("role")
+        tool_calls = message.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            call_ids = {
+                str(call.get("id"))
+                for call in tool_calls
+                if isinstance(call, dict) and call.get("id")
+            }
+            group = [message]
+            index += 1
+            while index < len(messages):
+                candidate = messages[index]
+                if candidate.get("role") != "tool":
+                    break
+                if str(candidate.get("tool_call_id") or "") not in call_ids:
+                    break
+                group.append(candidate)
+                index += 1
+            groups.append(group)
+            continue
+        if role != "tool":
+            groups.append([message])
+        index += 1
+
+    selected: list[list[ChatMessage]] = []
+    selected_count = 0
+    for group in reversed(groups):
+        if selected and selected_count + len(group) > max_messages:
+            break
+        selected.insert(0, group)
+        selected_count += len(group)
+    return [message for group in selected for message in group]
 
 
 def _compact_messages_for_pending_context(messages: list[ChatMessage]) -> list[ChatMessage]:
@@ -1855,13 +1931,20 @@ def _redact_tool_result_for_model(result: ToolExecutionResult) -> dict[str, Any]
     if isinstance(content, str):
         data["content"] = _truncate_text_for_model(content, MAX_TOOL_RESULT_CHARS)
         return data
-    if not isinstance(content, dict):
+    if content is None:
         return data
 
     redacted, image_count = _redact_tool_images_from_content(content)
     if image_count:
-        redacted["screenshot_attached"] = True
-        redacted["screenshot_image_count"] = image_count
+        if isinstance(redacted, dict):
+            redacted["screenshot_attached"] = True
+            redacted["screenshot_image_count"] = image_count
+        else:
+            redacted = {
+                "value": redacted,
+                "screenshot_attached": True,
+                "screenshot_image_count": image_count,
+            }
     data["content"] = _truncate_value_for_model(redacted, MAX_TOOL_RESULT_CHARS)
     return data
 
@@ -1898,13 +1981,11 @@ def _truncate_text_for_model(text: str, max_chars: int) -> str | dict[str, Any]:
 def _extract_tool_result_images(results: list[ToolExecutionResult]) -> list[str]:
     images: list[str] = []
     for result in results:
-        if not isinstance(result.content, dict):
-            continue
         images.extend(_extract_image_data_urls_from_value(result.content))
     return images[:1]
 
 
-def _redact_tool_images_from_content(content: dict[str, Any]) -> tuple[dict[str, Any], int]:
+def _redact_tool_images_from_content(content: Any) -> tuple[Any, int]:
     image_count = 0
 
     def redact(value: Any) -> Any:
@@ -1933,12 +2014,11 @@ def _redact_tool_images_from_content(content: dict[str, Any]) -> tuple[dict[str,
                     continue
                 redacted_dict[str(key)] = redact(item)
             return redacted_dict
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [redact(item) for item in value]
         return value
 
-    redacted = redact(content)
-    return redacted if isinstance(redacted, dict) else {}, image_count
+    return redact(content), image_count
 
 
 def _extract_image_data_urls_from_value(value: Any) -> list[str]:
@@ -1962,7 +2042,7 @@ def _extract_image_data_urls_from_value(value: Any) -> list[str]:
 
         for item in value.values():
             images.extend(_extract_image_data_urls_from_value(item))
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for item in value:
             images.extend(_extract_image_data_urls_from_value(item))
     return _deduplicate_preserving_order(images)

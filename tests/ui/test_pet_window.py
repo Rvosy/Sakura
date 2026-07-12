@@ -5288,6 +5288,15 @@ def test_tauri_settings_frontend_disables_dependent_controls() -> None:
     assert "overflow-x: hidden;" in styles
 
 
+def test_tauri_settings_frontend_locks_submission_and_uses_submitted_baseline() -> None:
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert "function setSubmissionBusy(busy)" in source
+    assert "document.querySelectorAll(\"input, select, textarea, button\")" in source
+    assert 'await invoke("apply_settings", { settings });' in source
+    assert "settingsBaseline = JSON.stringify(settings);" in source
+
+
 def test_tauri_settings_theme_ai_uses_vision_slot() -> None:
     from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
     from app.ui.tauri_settings import _theme_ai_api_settings

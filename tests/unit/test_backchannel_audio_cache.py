@@ -39,6 +39,32 @@ def test_fingerprint_changes_with_ref_content(tmp_path: Path) -> None:
     assert fp1 == voice_fingerprint(_voice(tmp_path, b"refs-v1"))
 
 
+def test_fingerprint_changes_when_same_named_model_content_changes(tmp_path: Path) -> None:
+    voice = _voice(tmp_path)
+    assert voice.gpt_model_path is not None
+    voice.gpt_model_path.write_bytes(b"model-v1")
+    first = voice_fingerprint(voice)
+    voice.gpt_model_path.write_bytes(b"model-v2")
+
+    assert voice_fingerprint(voice) != first
+
+
+def test_fingerprint_changes_when_reference_audio_changes(tmp_path: Path) -> None:
+    package = tmp_path / "character"
+    refs = package / "voice" / "refs"
+    audio_dir = refs / "tone_refs"
+    audio_dir.mkdir(parents=True)
+    ref = refs / "ref.txt"
+    ref.write_text("voice/refs/tone_refs/demo.wav|JA|hello|中性\n", encoding="utf-8")
+    audio = audio_dir / "demo.wav"
+    audio.write_bytes(b"audio-v1")
+    voice = _VoiceStub(None, None, ref)
+    first = voice_fingerprint(voice)
+    audio.write_bytes(b"audio-v2")
+
+    assert voice_fingerprint(voice) != first
+
+
 def test_path_is_deterministic_and_fingerprint_scoped(tmp_path: Path) -> None:
     cache_a = BackchannelAudioCache(tmp_path, "aaaa1111")
     cache_b = BackchannelAudioCache(tmp_path, "bbbb2222")

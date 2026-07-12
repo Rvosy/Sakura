@@ -455,16 +455,18 @@ class AppSettingsService:
 
     def save_tts_settings(self, settings: GPTSoVITSTTSSettings) -> None:
         data = load_yaml_mapping(self.api_config_path)
+        existing_tts = data.get("tts")
+        tts_data: dict[str, object] = (
+            dict(existing_tts) if isinstance(existing_tts, dict) else {}
+        )
         saved_provider = settings.provider if settings.enabled else TTS_PROVIDER_NONE
         section_provider = (
             settings.provider
             if settings.provider in {TTS_PROVIDER_GENIE, TTS_PROVIDER_GPT_SOVITS}
             else TTS_PROVIDER_GPT_SOVITS
         )
-        tts_data: dict[str, object] = {
-            "provider": saved_provider,
-            "enabled": bool(settings.enabled),
-        }
+        tts_data["provider"] = saved_provider
+        tts_data["enabled"] = bool(settings.enabled)
         if section_provider == TTS_PROVIDER_GENIE:
             tts_data["genie_tts"] = {
                 "api_url": settings.api_url.strip() or DEFAULT_GENIE_TTS_API_URL,

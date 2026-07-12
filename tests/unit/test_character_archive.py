@@ -350,6 +350,35 @@ def test_character_voice_archive_rejects_unsafe_zip_and_missing_target() -> None
     assert not (root / "evil.txt").exists()
 
 
+def test_character_archive_rejects_resource_limit_violations(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.config.character_archive as archive_module
+
+    root = _runtime_root("resource_limits")
+    archive_path = root / "too-many.char"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+        zf.writestr("character/a.txt", "a")
+        zf.writestr("character/b.txt", "b")
+    monkeypatch.setattr(archive_module, "MAX_ARCHIVE_MEMBERS", 2)
+
+    with pytest.raises(CharacterArchiveError, match="文件数量过多"):
+        import_character_archive(archive_path, root)
+
+
+def test_character_archive_rejects_extreme_compression_ratio(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import app.config.character_archive as archive_module
+
+    root = _runtime_root("compression_ratio")
+    archive_path = root / "bomb.char"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", "{}")
+        zf.writestr("character/bomb.bin", b"0" * (2 * 1024 * 1024))
+    monkeypatch.setattr(archive_module, "MAX_ARCHIVE_COMPRESSION_RATIO", 2)
+
+    with pytest.raises(CharacterArchiveError, match="压缩比异常"):
+        import_character_archive(archive_path, root)
+
+
 def test_character_archive_rejects_non_sakura_format() -> None:
     root = _runtime_root("non_sakura")
     archive_path = root / "legacy.char"

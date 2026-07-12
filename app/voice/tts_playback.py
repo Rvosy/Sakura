@@ -118,6 +118,7 @@ class TTSPlaybackEndpoint(QObject):
         self._clear_pending_audio()
         if self._current_audio is not None:
             self._finish_current_audio("provider_closed")
+        self._release_sink_player()
         self._release_player_source()
 
     def discard_prepared(self, handle: TTSPreparedAudio) -> None:
@@ -400,15 +401,7 @@ class TTSPlaybackEndpoint(QObject):
         if audio_path is None:
             return
 
-        # 销毁旧 sink player
-        if self._sink_player is not None:
-            try:
-                self._sink_player.finished.disconnect()
-                self._sink_player.started.disconnect()
-                self._sink_player.error.disconnect()
-            except Exception:
-                pass
-            self._sink_player = None
+        self._release_sink_player()
 
         self._sink_player = _create_audio_sink_player(self)
         self._sink_player.started.connect(self._on_sink_started)
@@ -426,7 +419,7 @@ class TTSPlaybackEndpoint(QObject):
                     "audio_path": str(audio_path),
                 },
             )
-            self._sink_player = None
+            self._release_sink_player()
             self._play_next_with_media_player()
             return
 
@@ -435,6 +428,30 @@ class TTSPlaybackEndpoint(QObject):
             audio_path,
             playback_finish_token,
         )
+
+    def _release_sink_player(self) -> None:
+        player = self._sink_player
+        self._sink_player = None
+        if player is None:
+            return
+        for signal_name in ("finished", "started", "error"):
+            signal = getattr(player, signal_name, None)
+            disconnect = getattr(signal, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    disconnect()
+                except Exception:
+                    pass
+        try:
+            player.stop()
+        except Exception:
+            pass
+        delete_later = getattr(player, "deleteLater", None)
+        if callable(delete_later):
+            try:
+                delete_later()
+            except RuntimeError:
+                pass
 
     @Slot()
     def _on_sink_started(self) -> None:

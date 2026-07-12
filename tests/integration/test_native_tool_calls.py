@@ -262,6 +262,33 @@ def test_agent_runtime_uses_native_tool_role_messages() -> None:
     assert '"echo": "ok"' in second_messages[-1]["content"]
 
 
+def test_agent_runtime_blocks_tool_not_offered_in_current_step() -> None:
+    executed: list[str] = []
+    registry = ToolRegistry(
+        [
+            Tool(
+                name="hidden_browser_tool",
+                description="hidden",
+                handler=lambda _args: executed.append("called") or {"ok": True},
+                group="browser",
+            )
+        ]
+    )
+    client = NativeFakeClient(
+        [
+            _tool_turn("call_hidden", "hidden_browser_tool", {}),
+            _final_turn("已阻止。"),
+        ]
+    )
+    runtime = AgentRuntime(client, "system", tools=registry)
+
+    result = runtime.handle_user_message([{"role": "user", "content": "普通聊天"}])
+
+    assert executed == []
+    assert result.actions[0].payload["success"] is False
+    assert "未在本步骤提供" in result.actions[0].payload["error"]
+
+
 def test_agent_runtime_falls_back_to_text_summary_when_native_tool_result_rejected() -> None:
     registry = ToolRegistry(
         [

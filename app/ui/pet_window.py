@@ -149,6 +149,7 @@ from app.ui.state import PetUiState, PetUiStateStore
 from app.ui.error_messages import format_failure_message
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
+    is_launch_at_login_enabled,
     is_launch_at_login_supported,
     set_launch_at_login_enabled,
 )
@@ -719,6 +720,7 @@ class PetWindow(QWidget):
         self.pet_hidden_at: float | None = None
         self._runtime_app_closed_logged = False
         self._shutdown_in_progress = False
+        self._quit_approved = False
         # 后台线程生命周期、lingering 线程与退役 wrapper 统一由资源管理器治理。
         self.resource_manager = ResourceManager(self, registry=context.resource_registry)
         self._register_runtime_service_resources()
@@ -1335,6 +1337,16 @@ class PetWindow(QWidget):
             suppress()
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if getattr(self, "_quit_approved", False):
+            event.accept()
+            super().closeEvent(event)
+            return
+        event.ignore()
+        if self.request_quit():
+            event.accept()
+
+    @Slot()
+    def request_quit(self) -> bool:
         migration_thread = getattr(self, "tts_migration_thread", None)
         try:
             migration_running = bool(
@@ -1348,8 +1360,7 @@ class PetWindow(QWidget):
                 "TTS 数据迁移中",
                 "请等待 TTS 数据迁移完成后再退出 Sakura。",
             )
-            event.ignore()
-            return
+            return False
         if has_active_tts_bundle_download():
             reply = QMessageBox.question(
                 self,
@@ -1359,18 +1370,22 @@ class PetWindow(QWidget):
                 QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+                return False
             if not cancel_active_tts_bundle_downloads_for_shutdown():
                 QMessageBox.information(
                     self,
                     "TTS 下载中",
                     "下载线程仍在停止，请稍后再退出 Sakura。",
                 )
-                event.ignore()
-                return
+                return False
+        self._quit_approved = True
         self.close_external_tools()
-        super().closeEvent(event)
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
+        else:
+            self.close()
+        return True
 
     @Slot()
     def close_external_tools(self) -> None:
@@ -2687,6 +2702,7 @@ class PetWindow(QWidget):
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
             on_show_settings=self.show_settings,
+            on_quit=getattr(self, "request_quit", QApplication.quit),
         )
 
     def _refresh_tray_menu(self) -> None:
@@ -5250,6 +5266,13 @@ class PetWindow(QWidget):
             else current_startup_settings
         )
         startup_settings_changed = result_startup_settings != current_startup_settings
+        startup_external_before = current_startup_settings.launch_at_login
+        if startup_settings_changed:
+            try:
+                startup_external_before = is_launch_at_login_enabled(self.base_dir)
+            except (OSError, RuntimeError):
+                startup_external_before = current_startup_settings.launch_at_login
+        startup_external_attempted = False
         api_changed = result.api.settings != self.api_client.settings
         plugin_enabled_changed = False
         plugin_settings_changed = False
@@ -5332,13 +5355,14 @@ class PetWindow(QWidget):
                 persist=True,
                 raise_on_persist_error=True,
             )
-            if startup_settings_changed:
-                self.settings_service.save_startup_settings(result_startup_settings)
-                self._apply_launch_at_login_settings(result_startup_settings)
             plugin_settings_changed = apply_tauri_plugin_settings(
                 getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
                 result.plugins.settings_by_id,
             )
+            if startup_settings_changed:
+                self.settings_service.save_startup_settings(result_startup_settings)
+                startup_external_attempted = True
+                self._apply_launch_at_login_settings(result_startup_settings)
         except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
             try:
                 _restore_config_files(config_snapshot)
@@ -5348,6 +5372,15 @@ class PetWindow(QWidget):
                     "Tauri 设置保存失败后回滚配置失败",
                     {"error": str(rollback_exc)},
                 )
+            if startup_external_attempted:
+                try:
+                    set_launch_at_login_enabled(self.base_dir, startup_external_before)
+                except (OSError, RuntimeError) as rollback_exc:
+                    debug_log(
+                        "Settings",
+                        "Tauri 设置保存失败后回滚登录自启动失败",
+                        {"error": str(rollback_exc)},
+                    )
             show_themed_critical(
                 self,
                 "保存失败",

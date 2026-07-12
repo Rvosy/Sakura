@@ -86,6 +86,8 @@ class PluginManager:
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
     _event_bus: PluginEventBus = field(default_factory=PluginEventBus)
     _services: PluginServices = field(default_factory=PluginServices)
+    _registered_tool_registry: ToolRegistry | None = None
+    _registered_tools: dict[str, Tool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.resource_registry = self.resource_registry or ResourceRegistry()
@@ -111,6 +113,7 @@ class PluginManager:
 
     def load_all(self, tool_registry: ToolRegistry | None = None) -> list[PluginLoadResult]:
         """加载所有启用插件；传入 ToolRegistry 时同步注册工具贡献。"""
+        self.shutdown_all()
         specs = PluginDiscovery(self.base_dir).discover_enabled()
         results: list[PluginLoadResult] = []
         known_tool_names = _tool_names_from_registry(tool_registry)
@@ -188,7 +191,10 @@ class PluginManager:
             )
             if tool_registry is not None:
                 for contribution in capabilities.tools:
-                    tool_registry.register(_contribution_to_app_tool(contribution))
+                    app_tool = _contribution_to_app_tool(contribution)
+                    tool_registry.register(app_tool)
+                    self._registered_tool_registry = tool_registry
+                    self._registered_tools[contribution.name] = app_tool
                     known_tool_names.add(contribution.name)
             else:
                 known_tool_names.update(contribution.name for contribution in capabilities.tools)
@@ -342,6 +348,13 @@ class PluginManager:
             )
             _shutdown_quietly(plugin)
             self._event_bus.remove_plugin(manifest.plugin_id)
+        registry = self._registered_tool_registry
+        if registry is not None:
+            for name, tool in list(self._registered_tools.items()):
+                registry.unregister(name, expected=tool)
+        self._registered_tool_registry = None
+        self._registered_tools.clear()
+        self._plugins = []
 
     @property
     def loaded_count(self) -> int:

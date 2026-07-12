@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -129,6 +130,23 @@ def test_release_workflows_build_and_package_both_tauri_apps() -> None:
         assert "target/release/sakura-settings" in workflow
         assert "target/release/sakura-studio" in workflow
         assert 'chmod +x "target/release/$binary"' in workflow
+
+
+def test_macos_packages_include_gpt_sovits_installer_script() -> None:
+    root = Path(__file__).parents[2]
+    for relative_path in (".github/workflows/package.yml", ".github/workflows/release.yml"):
+        workflow = (root / relative_path).read_text(encoding="utf-8")
+        assert "scripts/install_gpt_sovits_macos.sh" in workflow
+        assert "chmod +x" in workflow
+
+
+def test_ci_only_accepts_exit_134_after_valid_junit_results() -> None:
+    root = Path(__file__).parents[2]
+    for relative_path in (".github/workflows/test.yml", ".github/workflows/release.yml"):
+        workflow = (root / relative_path).read_text(encoding="utf-8")
+        assert "--junitxml=pytest-results.xml" in workflow
+        assert 'ET.parse("pytest-results.xml")' in workflow
+        assert "tests > 0 and failures == 0 and errors == 0" in workflow
 
 
 def test_character_selector_distinguishes_workspace_and_published_roles() -> None:
@@ -319,6 +337,11 @@ def test_tauri_studio_process_writes_rpc_response_line(tmp_path: Path) -> None:
     process._process = fake
 
     process._handle_stdout()
+
+    deadline = time.monotonic() + 2
+    while not fake.writes and time.monotonic() < deadline:
+        qtwidgets.QApplication.processEvents()
+        time.sleep(0.01)
 
     line = b"".join(fake.writes).decode("utf-8").strip()
     assert line.startswith(TAURI_STUDIO_RPC_RESULT_MARKER)

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import urllib.request
+import threading
+import time
+
+import pytest
 
 from app.core import http_client
+from app.core.cancellation import CancellationToken, OperationCancelled
 
 
 def test_is_loopback_url_detects_local_hosts() -> None:
@@ -53,3 +58,38 @@ def test_urlopen_direct_for_loopback_keeps_standard_opener_for_remote(monkeypatc
 
     assert http_client.urlopen_direct_for_loopback(request, timeout=11) == "remote-response"
     assert captured == {"url": request, "timeout": 11}
+
+
+def test_read_url_cancellable_returns_without_waiting_for_blocked_read() -> None:
+    token = CancellationToken()
+    entered = threading.Event()
+    released = threading.Event()
+
+    class BlockingResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self, _size=-1):  # type: ignore[no-untyped-def]
+            entered.set()
+            released.wait(5)
+            return b""
+
+        def close(self) -> None:
+            released.set()
+
+    threading.Thread(target=lambda: (entered.wait(1), token.cancel()), daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(OperationCancelled):
+        http_client.read_url_cancellable(
+            lambda *_args, **_kwargs: BlockingResponse(),
+            "https://example.test",
+            timeout=60,
+            cancel_checker=token.throw_if_cancelled,
+        )
+
+    assert time.monotonic() - started < 1

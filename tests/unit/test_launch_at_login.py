@@ -11,6 +11,7 @@ from app.platforms.launch_at_login import (
     LINUX_AUTOSTART_FILENAME,
     WINDOWS_RUN_VALUE_NAME,
     LaunchAtLoginError,
+    is_launch_at_login_enabled,
     resolve_launch_at_login_target,
     set_launch_at_login_enabled,
 )
@@ -83,6 +84,28 @@ def test_windows_run_key_uses_packaged_runtime_python(tmp_path: Path) -> None:
     assert WINDOWS_RUN_VALUE_NAME not in registry.values
 
 
+def test_launch_at_login_state_is_read_cross_platform(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    home = tmp_path / "home"
+
+    assert not is_launch_at_login_enabled(root, platform="darwin", home_dir=home)
+    set_launch_at_login_enabled(root, True, platform="darwin", home_dir=home)
+    assert is_launch_at_login_enabled(root, platform="darwin", home_dir=home)
+
+    registry = FakeWinreg()
+    assert not is_launch_at_login_enabled(
+        root,
+        platform="win32",
+        windows_registry=registry,
+    )
+    set_launch_at_login_enabled(root, True, platform="win32", windows_registry=registry)
+    assert is_launch_at_login_enabled(
+        root,
+        platform="win32",
+        windows_registry=registry,
+    )
+
+
 def test_windows_run_key_prefers_start_bat_when_available(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path / "release build")
     start_bat = root / "start.bat"
@@ -120,6 +143,7 @@ class FakeRegistryKey:
 class FakeWinreg:
     HKEY_CURRENT_USER = object()
     KEY_SET_VALUE = 0x0002
+    KEY_QUERY_VALUE = 0x0001
     REG_SZ = 1
 
     def __init__(self) -> None:
@@ -141,6 +165,12 @@ class FakeWinreg:
     def DeleteValue(self, _key: FakeRegistryKey, name: str) -> None:
         try:
             del self.values[name]
+        except KeyError as exc:
+            raise FileNotFoundError(name) from exc
+
+    def QueryValueEx(self, _key: FakeRegistryKey, name: str) -> tuple[str, int]:
+        try:
+            return self.values[name], self.REG_SZ
         except KeyError as exc:
             raise FileNotFoundError(name) from exc
 

@@ -8,10 +8,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Signal
 
 from app.config.character_studio import CharacterStudioService
 from app.ui.screen_color_picker import pick_screen_color
+from app.ui.tauri_settings import TauriRpcWorker, _shutdown_rpc_maps
 from app.ui.theme import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 
 TAURI_STUDIO_BIN_ENV = "SAKURA_TAURI_STUDIO_BIN"
@@ -174,6 +175,7 @@ class TauriStudioProcess(QObject):
         self._stdout_buffer = ""
         self._done = False
         self._startup_focus_complete = False
+        self._rpcs: dict[str, tuple[QThread, QObject]] = {}
 
     def start(self) -> bool:
         binary = resolve_tauri_studio_binary(self.base_dir)
@@ -262,6 +264,7 @@ class TauriStudioProcess(QObject):
             except RuntimeError:
                 pass
         self._process = None
+        _shutdown_rpc_maps((self._rpcs,), total_wait_ms=timeout_ms)
 
     def _send_request(self) -> None:
         process = self._process
@@ -307,14 +310,55 @@ class TauriStudioProcess(QObject):
                 raise ValueError("RPC 请求缺少 method。")
             if not isinstance(params, dict):
                 raise ValueError("RPC params 必须是对象。")
-            result = dispatch_tauri_studio_rpc(self.base_dir, method, params)
         except Exception as exc:  # noqa: BLE001 - UI RPC boundary reports readable errors.
             request_id = ""
             if isinstance(request, dict):
                 request_id = str(request.get("id") or "")
             self._send_rpc_response(request_id, ok=False, error=str(exc))
             return
-        self._send_rpc_response(request_id, ok=True, result=result)
+        if method == "studio.pick_screen_color":
+            try:
+                result = dispatch_tauri_studio_rpc(self.base_dir, method, params)
+            except Exception as exc:  # noqa: BLE001
+                self._send_rpc_response(request_id, ok=False, error=str(exc))
+                return
+            self._send_rpc_response(request_id, ok=True, result=result)
+            return
+        worker = TauriRpcWorker(
+            lambda rpc_method, rpc_params: dispatch_tauri_studio_rpc(
+                self.base_dir,
+                rpc_method,
+                rpc_params,
+            ),
+            method,
+            params,
+        )
+        self._start_rpc_worker(request_id, worker)
+
+    def _start_rpc_worker(self, request_id: str, worker: TauriRpcWorker) -> None:
+        thread = QThread()
+        worker.moveToThread(thread)
+        self._rpcs[request_id] = (thread, worker)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(
+            lambda result, rid=request_id: self._send_rpc_response(
+                rid,
+                ok=True,
+                result=result if isinstance(result, dict) else {"value": result},
+            )
+        )
+        worker.failed.connect(
+            lambda message, rid=request_id: self._send_rpc_response(
+                rid,
+                ok=False,
+                error=str(message),
+            )
+        )
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda rid=request_id: self._rpcs.pop(rid, None))
+        thread.start()
 
     def _send_rpc_response(
         self,
@@ -343,6 +387,7 @@ class TauriStudioProcess(QObject):
             return
         self._done = True
         self._process = None
+        _shutdown_rpc_maps((self._rpcs,), total_wait_ms=0)
         if exit_status != QProcess.ExitStatus.NormalExit or exit_code != 0:
             self.failed.emit(
                 "Tauri 角色工作室异常退出"
@@ -356,6 +401,7 @@ class TauriStudioProcess(QObject):
             return
         self._done = True
         self._process = None
+        _shutdown_rpc_maps((self._rpcs,), total_wait_ms=0)
         self.failed.emit(f"Tauri 角色工作室启动失败：{error.name}")
 
 

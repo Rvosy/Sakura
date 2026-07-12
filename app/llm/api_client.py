@@ -11,7 +11,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
-from app.core.http_client import urlopen_direct_for_loopback
+from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.core.runtime_log import log_event, summarize_messages
@@ -300,8 +300,6 @@ class OpenAICompatibleClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise ApiRequestError(f"API 返回格式无法解析：{json.dumps(data, ensure_ascii=False)}") from exc
 
-        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-        content = (str(reasoning) + "\n" + str(content)).strip()
         result = str(content).strip()
         log_event(
             "API",
@@ -540,23 +538,25 @@ class OpenAICompatibleClient:
             check_cancelled(cancel_checker)
             started_at = time.perf_counter()
             try:
-                with urlopen_direct_for_loopback(
+                response_bytes, response_status = read_url_cancellable(
+                    urlopen_direct_for_loopback,
                     request,
                     timeout=self.settings.timeout_seconds,
-                ) as response:
-                    response_body = response.read().decode("utf-8")
-                    log_event(
-                        "API",
-                        "HTTP 请求成功",
-                        {
-                            "attempt": attempt,
-                            "endpoint_host": urlparse(request.full_url).netloc,
-                            "status": getattr(response, "status", None),
-                            "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                            "response_body": response_body,
-                        },
-                    )
-                    return response_body
+                    cancel_checker=cancel_checker,
+                )
+                response_body = response_bytes.decode("utf-8")
+                log_event(
+                    "API",
+                    "HTTP 请求成功",
+                    {
+                        "attempt": attempt,
+                        "endpoint_host": urlparse(request.full_url).netloc,
+                        "status": response_status,
+                        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                        "response_body": response_body,
+                    },
+                )
+                return response_body
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
                 log_event(

@@ -132,6 +132,29 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
     assert "unsupported_internal_flag" not in captured
 
 
+def test_complete_raw_ignores_reasoning_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="model")
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_post_chat_completions_with_compatibility_fallbacks",
+        lambda *_args, **_kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "reasoning_content": '{"secret":"hidden"}',
+                        "content": '{"segments":[]}',
+                    }
+                }
+            ]
+        },
+    )
+
+    assert client.complete_raw("system", [{"role": "user", "content": "hi"}]) == '{"segments":[]}'
+
+
 def test_complete_raw_retries_without_temperature_when_provider_rejects(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[dict[str, Any]] = []
     client = OpenAICompatibleClient(

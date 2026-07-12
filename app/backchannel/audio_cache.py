@@ -28,17 +28,47 @@ def voice_fingerprint(voice: _VoiceProfile | None) -> str:
     if voice is None:
         return NO_VOICE_FINGERPRINT
     digest = hashlib.sha256()
-    digest.update((voice.gpt_model_path.name if voice.gpt_model_path else "").encode("utf-8"))
-    digest.update(b"|")
-    digest.update(
-        (voice.sovits_model_path.name if voice.sovits_model_path else "").encode("utf-8")
-    )
-    digest.update(b"|")
+    _update_path_fingerprint(digest, voice.gpt_model_path)
+    _update_path_fingerprint(digest, voice.sovits_model_path)
+    _update_path_fingerprint(digest, voice.tone_ref_path, full=True)
     try:
-        digest.update(voice.tone_ref_path.read_bytes())
-    except OSError:
+        package_root = voice.tone_ref_path.parents[2]
+        for line in voice.tone_ref_path.read_text(encoding="utf-8").splitlines():
+            path_text = line.split("|", 1)[0].strip()
+            if not path_text:
+                continue
+            candidate = Path(path_text)
+            if not candidate.is_absolute():
+                candidate = package_root / candidate
+            _update_path_fingerprint(digest, candidate)
+    except (OSError, IndexError):
         pass
     return digest.hexdigest()[:8]
+
+
+def _update_path_fingerprint(
+    digest: "hashlib._Hash",
+    path: Path | None,
+    *,
+    full: bool = False,
+) -> None:
+    if path is None:
+        digest.update(b"<missing>")
+        return
+    candidate = Path(path)
+    digest.update(str(candidate).encode("utf-8", errors="surrogatepass"))
+    try:
+        stat_result = candidate.stat()
+        digest.update(f"|{stat_result.st_size}|".encode("ascii"))
+        with candidate.open("rb") as handle:
+            if full or stat_result.st_size <= 128 * 1024:
+                digest.update(handle.read())
+            else:
+                digest.update(handle.read(64 * 1024))
+                handle.seek(max(0, stat_result.st_size - 64 * 1024))
+                digest.update(handle.read(64 * 1024))
+    except OSError:
+        digest.update(b"<unreadable>")
 
 
 class BackchannelAudioCache:

@@ -158,6 +158,81 @@ def test_apply_update_archive_skips_user_paths() -> None:
     assert (tmp_path / "plugins/playwright_browser/config.json").read_text(encoding="utf-8") == "keep"
 
 
+def test_apply_update_archive_deletes_legacy_files_and_keeps_user_data() -> None:
+    tmp_path = _runtime_root("delete_legacy")
+    archive = tmp_path / "update.zip"
+    _write_zip(
+        archive,
+        {
+            "VERSION": "1.1.0\n",
+            "app/new.py": "new",
+            update.DELETE_MANIFEST_NAME: json.dumps(
+                {
+                    "format": 1,
+                    "delete_paths": ["app/old.py", "app/ui/removed.py"],
+                }
+            ),
+        },
+    )
+    (tmp_path / "app/ui").mkdir(parents=True)
+    (tmp_path / "app/old.py").write_text("old", encoding="utf-8")
+    (tmp_path / "app/ui/removed.py").write_text("old", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/user.txt").write_text("keep", encoding="utf-8")
+
+    changed = update.apply_update_archive(archive, tmp_path)
+
+    assert tmp_path / "app/new.py" in changed
+    assert not (tmp_path / "app/old.py").exists()
+    assert not (tmp_path / "app/ui/removed.py").exists()
+    assert (tmp_path / "data/user.txt").read_text(encoding="utf-8") == "keep"
+    assert not (tmp_path / update.DELETE_MANIFEST_NAME).exists()
+
+
+def test_apply_update_archive_rolls_back_writes_and_deletions() -> None:
+    tmp_path = _runtime_root("delete_rollback")
+    archive = tmp_path / "update.zip"
+    _write_zip(
+        archive,
+        {
+            "VERSION": "1.1.0\n",
+            "app/current.py": "new",
+            update.DELETE_MANIFEST_NAME: json.dumps(
+                {
+                    "format": 1,
+                    "delete_paths": ["app/old.py", "app/not-a-file"],
+                }
+            ),
+        },
+    )
+    (tmp_path / "app/not-a-file").mkdir(parents=True)
+    (tmp_path / "app/current.py").write_text("old-current", encoding="utf-8")
+    (tmp_path / "app/old.py").write_text("old", encoding="utf-8")
+
+    with pytest.raises(update.UpdateError, match="只能删除文件"):
+        update.apply_update_archive(archive, tmp_path)
+
+    assert (tmp_path / "app/current.py").read_text(encoding="utf-8") == "old-current"
+    assert (tmp_path / "app/old.py").read_text(encoding="utf-8") == "old"
+
+
+def test_update_delete_manifest_rejects_protected_paths() -> None:
+    tmp_path = _runtime_root("delete_protected")
+    archive = tmp_path / "update.zip"
+    _write_zip(
+        archive,
+        {
+            "VERSION": "1.1.0\n",
+            update.DELETE_MANIFEST_NAME: json.dumps(
+                {"format": 1, "delete_paths": ["data/config/api.yaml"]}
+            ),
+        },
+    )
+
+    with pytest.raises(update.UpdateError, match="受保护路径"):
+        update.apply_update_archive(archive, tmp_path)
+
+
 def test_run_update_installs_dependencies_only_when_requirements_changed() -> None:
     tmp_path = _runtime_root("requirements_changed")
     (tmp_path / "VERSION").write_text("1.0.0\n", encoding="utf-8")

@@ -99,11 +99,26 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip("").strip("'")
+        value = value.strip()
+        if value[:1] in {'"', "'"}:
+            quote = value[0]
+            if len(value) < 2 or value[-1] != quote:
+                raise ValueError(f".env 引号未闭合：{key}")
+            value = value[1:-1]
+            if quote == '"':
+                value = (
+                    value.replace(r"\n", "\n")
+                    .replace(r"\r", "\r")
+                    .replace(r"\t", "\t")
+                    .replace(r'\"', '"')
+                    .replace(r"\\", "\\")
+                )
         if key:
             result[key] = value
     return result

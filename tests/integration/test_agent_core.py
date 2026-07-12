@@ -1135,7 +1135,7 @@ def test_tool_registry_free_access_keeps_high_risk_confirmation() -> None:
     assert result.tool_name == "run_external_action"
 
 
-def test_tool_registry_free_access_allows_playwright_actions() -> None:
+def test_tool_registry_free_access_keeps_sensitive_playwright_confirmation() -> None:
     registry = ToolRegistry(
         [
             Tool(
@@ -1162,8 +1162,8 @@ def test_tool_registry_free_access_allows_playwright_actions() -> None:
     )
     evaluate_result = registry.prepare_or_execute("playwright_evaluate", {})
 
-    assert not isinstance(navigate_result, PendingToolAction)
-    assert navigate_result.success
+    assert isinstance(navigate_result, PendingToolAction)
+    assert navigate_result.tool_name == "playwright_navigate"
     assert isinstance(evaluate_result, PendingToolAction)
     assert evaluate_result.tool_name == "playwright_evaluate"
 

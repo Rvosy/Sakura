@@ -104,7 +104,7 @@ jobs:
         if: matrix.platform == 'macos-arm64'
         shell: bash
         run: |
-          chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command
+          chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command scripts/install_gpt_sovits_macos.sh
           cat > install.command <<'EOF'
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -221,7 +221,7 @@ jobs:
           zip -rq "$BUNDLE_ARCHIVE" \
             app plugins runtime third_party tools \
             LICENSE main.py requirements.txt VERSION \
-            scripts/install.sh scripts/start.sh install.command start.command \
+            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
       - name: Upload package artifacts
