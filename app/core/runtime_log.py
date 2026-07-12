@@ -61,7 +61,6 @@ _BODY_KEY_MARKERS = (
     "body",
     "content",
     "messages",
-    "payload",
     "prompt",
     "reply",
     "response",
@@ -666,7 +665,11 @@ def format_console_event(record: LogEvent) -> str:
     summary = _format_console_summary(record.attributes)
     line = f"[{timestamp}] [{record.channel.upper()}] {record.message}"
     header = f"{line} │ {summary}" if summary else line
-    body = _format_console_body(record) if log_body_enabled() else ""
+    body = (
+        _format_console_body(record)
+        if log_body_enabled() and record.event == "api.response.received"
+        else ""
+    )
     return f"{header}\n{body}" if body else header
 
 
@@ -744,35 +747,31 @@ def _format_console_body(record: LogEvent) -> str:
     safe = sanitize_console_log_data(record.attributes, include_body=True)
     if not isinstance(safe, dict):
         return ""
-    payload = safe.get("payload")
-    if isinstance(payload, dict):
-        blocks: list[str] = []
-        messages = payload.get("messages")
-        if isinstance(messages, list):
-            for index, message in enumerate(messages, start=1):
-                if not isinstance(message, dict):
-                    continue
-                role = str(message.get("role") or "unknown")
-                blocks.append(
-                    f"[request {index} · {role}]\n{_format_console_body_value(message.get('content'))}"
-                )
-        parameters = {key: value for key, value in payload.items() if key != "messages"}
-        if parameters:
-            blocks.append(f"[request parameters]\n{_format_console_body_value(parameters)}")
-        return "\n".join(blocks)
-    for key in ("content", "reply", "response", "body", "text", "prompt"):
-        value = safe.get(key)
-        if value in (None, ""):
+    content = safe.get("content")
+    if content in (None, ""):
+        return ""
+    return _format_model_response(content)
+
+
+def _format_model_response(content: Any) -> str:
+    if not isinstance(content, str):
+        return f"[模型回复]\n{json.dumps(content, ensure_ascii=False, indent=2, default=str)}"
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return f"[模型回复]\n{content}"
+    segments = parsed.get("segments") if isinstance(parsed, dict) else None
+    if not isinstance(segments, list):
+        return f"[模型回复]\n{json.dumps(parsed, ensure_ascii=False, indent=2, default=str)}"
+    blocks: list[str] = []
+    fields = (("ja", "日文"), ("zh", "中文"), ("tone", "语气"), ("portrait", "立绘"))
+    for index, segment in enumerate(segments, start=1):
+        if not isinstance(segment, dict):
             continue
-        label = "response" if record.event == "api.response.received" else key
-        return f"[{label}]\n{_format_console_body_value(value)}"
-    return ""
-
-
-def _format_console_body_value(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        lines = [f"{label}：{segment[key]}" for key, label in fields if segment.get(key)]
+        if lines:
+            blocks.append(f"[模型回复 {index}]\n" + "\n".join(lines))
+    return "\n\n".join(blocks) if blocks else f"[模型回复]\n{content}"
 
 
 def format_log_attributes(data: Any) -> str:

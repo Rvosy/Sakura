@@ -132,7 +132,7 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
     assert "unsupported_internal_flag" not in captured
 
 
-def test_complete_raw_logs_the_actual_request_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_complete_raw_does_not_log_request_body(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     events: list[tuple[str, dict[str, Any]]] = []
     client = OpenAICompatibleClient(
         ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="model")
@@ -150,10 +150,8 @@ def test_complete_raw_logs_the_actual_request_payload(monkeypatch) -> None:  # t
     client.complete_raw("system prompt", [{"role": "user", "content": "full request"}])
 
     request = next(attributes for message, attributes in events if message == "准备发送聊天补全请求")
-    assert request["payload"]["messages"] == [
-        {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": "full request"},
-    ]
+    assert "payload" not in request
+    assert "messages" not in request
 
 
 def test_complete_raw_ignores_reasoning_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]

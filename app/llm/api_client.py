@@ -261,7 +261,6 @@ class OpenAICompatibleClient:
                 "temperature": temperature,
                 "message_count": len(payload["messages"]),
                 "has_image": messages_contain_image(payload["messages"]),
-                "payload": payload,
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
@@ -359,7 +358,6 @@ class OpenAICompatibleClient:
                 "message_count": len(payload["messages"]),
                 "tool_count": len(tools or []),
                 "has_image": messages_contain_image(payload["messages"]),
-                "payload": payload,
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )

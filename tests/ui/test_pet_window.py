@@ -5327,6 +5327,13 @@ def test_tauri_settings_round_trips_hidden_log_profile() -> None:
     assert "profile: request.system_basic.debug_log.profile" in source
 
 
+def test_tauri_settings_labels_body_log_as_model_reply_only() -> None:
+    index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
+
+    assert "完整模型回复正文" in index
+    assert "完整请求 / 回复正文" not in index
+
+
 def test_tauri_settings_frontend_locks_submission_and_uses_submitted_baseline() -> None:
     source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
 

@@ -264,12 +264,11 @@ def test_log_body_enabled_works_at_info_level(monkeypatch) -> None:  # type: ign
     assert sanitize_console_log_data({"content": "完整正文"})["content"] == "完整正文"
 
 
-def test_console_body_formats_full_multiline_request_and_response(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+def test_console_body_only_formats_model_response_segments(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
         "app.core.runtime_log._load_debug_values",
         lambda: {"enabled": True, "body_enabled": True, "file_enabled": False, "profile": "info"},
     )
-    long_tail = "末尾内容" + "x" * 9000
     log_event(
         "API",
         "准备发送聊天补全请求",
@@ -278,28 +277,60 @@ def test_console_body_formats_full_multiline_request_and_response(monkeypatch, c
             "message_count": 2,
             "payload": {
                 "model": "demo-model",
-                "messages": [
-                    {"role": "system", "content": "第一行\n第二行"},
-                    {"role": "user", "content": long_tail},
-                ],
-                "api_key": "sk-secret",
-                "image": "data:image/png;base64,abc123",
+                "messages": [{"role": "user", "content": "不应输出的完整请求"}],
             },
         },
     )
     log_event(
         "API",
         "模型原始文本返回",
-        {"content": "回复第一行\n回复第二行", "reply_chars": 11},
+        {
+            "content": json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ja": "ログ出力のテストですね。",
+                            "zh": "是在测试日志输出吧。",
+                            "tone": "中性",
+                            "portrait": "站立待机",
+                        },
+                        {
+                            "ja": "必要な情報があれば提示してください。",
+                            "zh": "如果有需要的信息，请告诉我。",
+                            "tone": "坚定",
+                            "portrait": "思考",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            "reply_chars": 200,
+        },
     )
+    log_event("TTS", "静音 Provider 跳过播放", {"text": "不应重复输出的 TTS 正文"})
 
     output = capsys.readouterr().out
-    assert "[request 1 · system]\n第一行\n第二行" in output
-    assert f"[request 2 · user]\n{long_tail}" in output
-    assert "[request parameters]" in output
-    assert '"api_key": "<redacted>"' in output
-    assert '"type": "image_data_url"' in output
-    assert "[response]\n回复第一行\n回复第二行" in output
+    assert "不应输出的完整请求" not in output
+    assert "不应重复输出的 TTS 正文" not in output
+    assert "[text]" not in output
+    assert "[模型回复 1]" in output
+    assert "日文：ログ出力のテストですね。" in output
+    assert "中文：是在测试日志输出吧。" in output
+    assert "语气：中性" in output
+    assert "立绘：站立待机" in output
+    assert "[模型回复 2]" in output
+    assert '"segments"' not in output
+
+
+def test_console_body_falls_back_to_raw_model_response(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "app.core.runtime_log._load_debug_values",
+        lambda: {"enabled": True, "body_enabled": True, "file_enabled": False, "profile": "info"},
+    )
+
+    log_event("API", "模型原始文本返回", {"content": "普通文本回复\n第二行"})
+
+    assert "[模型回复]\n普通文本回复\n第二行" in capsys.readouterr().out
 
 
 def test_format_log_attributes_includes_safe_values(monkeypatch) -> None:  # type: ignore[no-untyped-def]
