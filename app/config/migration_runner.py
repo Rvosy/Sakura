@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -332,7 +333,14 @@ def _merge_jsonl(source: Path, target: Path) -> None:
     """把 source 的行并入 target：能解析出时间戳则整体按时间归并，否则保序拼接。"""
     source_lines = _read_jsonl_lines(source)
     target_lines = _read_jsonl_lines(target)
-    merged = target_lines + source_lines
+    target_counts = Counter(target_lines)
+    seen_source: Counter[str] = Counter()
+    additions: list[str] = []
+    for line in source_lines:
+        seen_source[line] += 1
+        if seen_source[line] > target_counts[line]:
+            additions.append(line)
+    merged = target_lines + additions
     timestamps = [_line_timestamp(line) for line in merged]
     if all(ts is not None for ts in timestamps):
         merged = [line for _, line in sorted(zip(timestamps, merged), key=lambda p: p[0])]

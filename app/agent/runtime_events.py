@@ -228,6 +228,40 @@ def _seconds_since(iso_timestamp: str) -> int | None:
     return int(delta)
 
 
+def _read_last_jsonl_lines(path: Path, limit: int) -> list[bytes]:
+    if limit <= 0:
+        return []
+    collected: list[bytes] = []
+    candidates = [path, *[path.with_name(f"{path.name}.{index}") for index in range(1, 9)]]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            with candidate.open("rb") as handle:
+                handle.seek(0, 2)
+                position = handle.tell()
+                buffer = b""
+                while position > 0 and len(collected) < limit:
+                    size = min(64 * 1024, position)
+                    position -= size
+                    handle.seek(position)
+                    buffer = handle.read(size) + buffer
+                    parts = buffer.split(b"\n")
+                    buffer = parts.pop(0) if position > 0 else b""
+                    for line in reversed(parts):
+                        if line.strip():
+                            collected.append(line)
+                            if len(collected) >= limit:
+                                break
+                if position == 0 and buffer.strip() and len(collected) < limit:
+                    collected.append(buffer)
+        except OSError:
+            continue
+        if len(collected) >= limit:
+            break
+    return collected[:limit]
+
+
 class RuntimeEventLog:
     """运行时事件的 JSONL 落盘存储（append-only）。
 
@@ -241,6 +275,7 @@ class RuntimeEventLog:
     def append(self, event: RuntimeEvent) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_if_needed()
             with self.path.open("a", encoding="utf-8") as file:
                 file.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
         except OSError:
@@ -251,13 +286,12 @@ class RuntimeEventLog:
         """读取末尾若干条事件（有界读取，避免日志增长后整文件解析）。"""
         if limit <= 0 or not self.path.exists():
             return []
-        try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
         events: list[RuntimeEvent] = []
-        for raw in lines[-limit:]:
-            line = raw.strip()
+        for raw in _read_last_jsonl_lines(self.path, limit * 2):
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
             if not line:
                 continue
             try:
@@ -267,7 +301,23 @@ class RuntimeEventLog:
             event = RuntimeEvent.from_dict(data)
             if event is not None:
                 events.append(event)
-        return events
+                if len(events) >= limit:
+                    break
+        return list(reversed(events))
+
+    def _rotate_if_needed(self) -> None:
+        try:
+            if self.path.stat().st_size < 8 * 1024 * 1024:
+                return
+        except OSError:
+            return
+        oldest = self.path.with_name(f"{self.path.name}.8")
+        oldest.unlink(missing_ok=True)
+        for index in range(7, 0, -1):
+            source = self.path.with_name(f"{self.path.name}.{index}")
+            if source.exists():
+                source.replace(self.path.with_name(f"{self.path.name}.{index + 1}"))
+        self.path.replace(self.path.with_name(f"{self.path.name}.1"))
 
     def load_startup_carryover(self) -> dict[str, Any] | None:
         """合成本次启动 app.started 的跨会话上下文 metadata。

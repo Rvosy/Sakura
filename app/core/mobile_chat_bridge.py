@@ -49,7 +49,7 @@ class MobileChatBridge:
     def history(self, character_id: str, limit: int = 50) -> list[dict[str, str]]:
         with self._lock:
             session = self._session(character_id)
-            entries = session.history_store.load()[-max(1, limit) :]
+            entries = session.history_store.load_recent(max(1, limit))
         return [_history_entry_for_mobile(entry) for entry in entries]
 
     def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:

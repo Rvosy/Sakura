@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import uuid
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from app.core.runtime_log import log_event
+from app.storage.atomic import replace_with_retry
 
 NO_VOICE_FINGERPRINT = "novoice"
 
@@ -97,7 +99,10 @@ class BackchannelAudioCache:
 
     def lookup(self, tone: str, ja_text: str) -> Path | None:
         path = self.path_for(tone, ja_text)
-        return path if path.exists() else None
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        path.unlink(missing_ok=True)
+        return None
 
     def store(self, tone: str, ja_text: str, source: Path) -> Path | None:
         """把合成产物复制进缓存。幂等;失败只记日志(缓存是优化不是依赖)。
@@ -107,10 +112,14 @@ class BackchannelAudioCache:
         """
         target = self.path_for(tone, ja_text)
         if target.exists():
-            return target
+            return target if target.is_file() and target.stat().st_size > 0 else None
+        temp_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
         try:
             self._root.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            shutil.copyfile(source, temp_target)
+            if temp_target.stat().st_size <= 0 or temp_target.stat().st_size != Path(source).stat().st_size:
+                raise OSError("缓存音频复制不完整")
+            replace_with_retry(temp_target, target)
             return target
         except OSError as exc:
             log_event(
@@ -119,3 +128,5 @@ class BackchannelAudioCache:
                 {"target": str(target), "error": str(exc)},
             )
             return None
+        finally:
+            temp_target.unlink(missing_ok=True)

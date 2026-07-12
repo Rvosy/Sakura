@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import plistlib
-import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -270,7 +269,7 @@ def _linux_autostart_path(*, home_dir: Path | None = None) -> Path:
 
 
 def _linux_desktop_entry(command: tuple[str, ...]) -> str:
-    exec_line = " ".join(shlex.quote(part) for part in command)
+    exec_line = " ".join(_desktop_exec_quote(part) for part in command)
     return "\n".join(
         (
             "[Desktop Entry]",
@@ -282,6 +281,13 @@ def _linux_desktop_entry(command: tuple[str, ...]) -> str:
             "",
         )
     )
+
+
+def _desktop_exec_quote(value: str) -> str:
+    escaped = str(value).replace("%", "%%")
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
 
 
 def _unlink_if_exists(path: Path) -> None:

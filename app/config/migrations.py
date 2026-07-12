@@ -11,6 +11,17 @@ from typing import Any
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 
 
+_STRING_ENV_KEYS = {
+    "BASE_URL",
+    "API_KEY",
+    "MODEL",
+    "GPT_SOVITS_API_URL",
+    "GPT_SOVITS_REF_LANG",
+    "GPT_SOVITS_TEXT_LANG",
+    "SUBTITLE_LANGUAGE",
+}
+
+
 def migrate_env_to_yaml(env_path: Path, api_yaml_path: Path, system_yaml_path: Path) -> dict[str, Any]:
     """从旧 .env 文件迁移配置到 data/config/*.yaml。
 
@@ -44,7 +55,12 @@ def migrate_env_to_yaml(env_path: Path, api_yaml_path: Path, system_yaml_path: P
 
     for env_key, yaml_path_parts in api_mappings.items():
         if env_key in env_vars:
-            _set_nested(api_data, list(yaml_path_parts), env_vars[env_key])
+            _set_nested(
+                api_data,
+                list(yaml_path_parts),
+                env_vars[env_key],
+                coerce=env_key not in _STRING_ENV_KEYS,
+            )
             api_changed = True
             result["migrated"].append(env_key)
 
@@ -68,7 +84,12 @@ def migrate_env_to_yaml(env_path: Path, api_yaml_path: Path, system_yaml_path: P
 
     for env_key, yaml_path_parts in system_mappings.items():
         if env_key in env_vars:
-            _set_nested(system_data, list(yaml_path_parts), env_vars[env_key])
+            _set_nested(
+                system_data,
+                list(yaml_path_parts),
+                env_vars[env_key],
+                coerce=env_key not in _STRING_ENV_KEYS,
+            )
             system_changed = True
             result["migrated"].append(env_key)
 
@@ -124,7 +145,7 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
     return result
 
 
-def _set_nested(data: dict[str, Any], path: list[str], value: str) -> None:
+def _set_nested(data: dict[str, Any], path: list[str], value: str, *, coerce: bool = True) -> None:
     """将值设置到嵌套字典路径中。"""
     current = data
     for part in path[:-1]:
@@ -133,7 +154,7 @@ def _set_nested(data: dict[str, Any], path: list[str], value: str) -> None:
         current = current[part]
     # 类型转换
     final_key = path[-1]
-    current[final_key] = _coerce_type(value)
+    current[final_key] = _coerce_type(value) if coerce else value
 
 
 def _coerce_type(value: str) -> Any:

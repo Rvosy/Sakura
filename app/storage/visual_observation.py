@@ -84,12 +84,17 @@ class VisualObservationStore:
         atomic_write_text(self.path, text, encoding="utf-8")
 
     def recent(self, limit: int = 3, since_minutes: int | None = None) -> list[VisualObservationRecord]:
+        raw_records = self._load_raw_records()
+        pruned_records = self._prune(raw_records)
+        if pruned_records != raw_records:
+            text = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in pruned_records)
+            atomic_write_text(self.path, text, encoding="utf-8")
         threshold = None
         if since_minutes is not None:
             threshold = datetime.now().astimezone() - timedelta(minutes=since_minutes)
 
         records: list[VisualObservationRecord] = []
-        for item in reversed(self._load_raw_records()):
+        for item in reversed(pruned_records):
             record = _record_from_dict(item)
             if record is None:
                 continue
