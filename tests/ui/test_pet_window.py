@@ -516,6 +516,7 @@ def test_runtime_log_window_is_non_modal() -> None:
     assert window.tabs.tabText(1) == "TTS"
     assert "runtimeLogPage" in window.styleSheet()
     assert "QCheckBox::indicator:checked" in window.styleSheet()
+    assert "selection-dot.svg" in window.styleSheet()
     assert DEFAULT_THEME_SETTINGS.page_background_color in window.styleSheet()
 
     window.close()
@@ -4642,6 +4643,7 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                         "enabled": False,
                         "body_enabled": True,
                         "file_enabled": True,
+                        "profile": "trace",
                         "stage_debug_overlay": True,
                         "stage_collision_mask": False,
                     },
@@ -4748,6 +4750,7 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
         enabled=False,
         body_enabled=False,
         file_enabled=True,
+        profile="trace",
         stage_debug_overlay=True,
         stage_collision_mask=False,
     )
@@ -5286,6 +5289,42 @@ def test_tauri_settings_frontend_disables_dependent_controls() -> None:
     assert "setControlDisabled(profileSelect, inherited, { row: false });" in source
     assert ".model-slot-row.is-inherited .slot-controls .custom-select" in styles
     assert "overflow-x: hidden;" in styles
+
+
+def test_tauri_settings_uses_dot_checkbox_style() -> None:
+    styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
+
+    assert 'input[type="checkbox"] {' in styles
+    assert "appearance: none;" in styles
+    assert 'input[type="checkbox"]::before' in styles
+    assert 'input[type="checkbox"]:checked::before' in styles
+    assert "accent-color:" not in styles
+
+
+def test_qt_checkboxes_use_dot_but_menu_items_keep_checkmark() -> None:
+    from app.ui.theme import build_runtime_log_window_stylesheet
+
+    settings_styles = build_settings_dialog_stylesheet(DEFAULT_THEME_SETTINGS)
+    log_styles = build_runtime_log_window_stylesheet(DEFAULT_THEME_SETTINGS)
+    menu_styles = build_pet_window_stylesheet(DEFAULT_THEME_SETTINGS)
+
+    assert "selection-dot.svg" in settings_styles
+    assert "selection-dot.svg" in log_styles
+    assert "menu-check.svg" in menu_styles
+
+
+def test_tauri_settings_round_trips_hidden_log_profile() -> None:
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        debug_log_settings=DebugLogSettings(profile="trace"),
+        nonce="nonce",
+    )
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert request["system_basic"]["debug_log"]["profile"] == "trace"
+    assert "profile: request.system_basic.debug_log.profile" in source
 
 
 def test_tauri_settings_frontend_locks_submission_and_uses_submitted_baseline() -> None:

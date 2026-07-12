@@ -61,6 +61,7 @@ _BODY_KEY_MARKERS = (
     "body",
     "content",
     "messages",
+    "payload",
     "prompt",
     "reply",
     "response",
@@ -77,7 +78,6 @@ _FILE_BODY_KEY_MARKERS = (
     "translation",
 )
 _MAX_TEXT_CHARS = 600
-_MAX_BODY_CHARS = 8000
 _MAX_BODY_SUMMARY_CHARS = 160
 _MAX_LIST_ITEMS = 8
 _MAX_DICT_ITEMS = 24
@@ -207,7 +207,7 @@ class LogEvent:
 
 def console_log_enabled() -> bool:
     """判断是否开启终端运行日志。"""
-    return _bool_value(_load_debug_values().get("enabled"), False)
+    return _bool_value(_load_debug_values().get("enabled"), True)
 
 
 def file_log_enabled() -> bool:
@@ -216,12 +216,8 @@ def file_log_enabled() -> bool:
 
 
 def log_body_enabled() -> bool:
-    """判断详细日志是否允许输出完整正文。仅终端 trace 级别调试使用。"""
-    return (
-        console_log_enabled()
-        and log_level() == LOG_LEVEL_TRACE
-        and _read_bool(DEBUG_BODY_KEY, default=False)
-    )
+    """判断终端日志是否允许输出完整请求与回复正文。"""
+    return console_log_enabled() and _read_bool(DEBUG_BODY_KEY, default=False)
 
 
 def log_level() -> str:
@@ -669,7 +665,9 @@ def format_console_event(record: LogEvent) -> str:
     timestamp = _format_console_timestamp(record.timestamp)
     summary = _format_console_summary(record.attributes)
     line = f"[{timestamp}] [{record.channel.upper()}] {record.message}"
-    return f"{line} │ {summary}" if summary else line
+    header = f"{line} │ {summary}" if summary else line
+    body = _format_console_body(record) if log_body_enabled() else ""
+    return f"{header}\n{body}" if body else header
 
 
 def _format_console_timestamp(timestamp: str) -> str:
@@ -682,8 +680,7 @@ def _format_console_timestamp(timestamp: str) -> str:
 def _format_console_summary(attributes: Any | None) -> str:
     if attributes is None:
         return ""
-    include_body = log_body_enabled()
-    safe = sanitize_console_log_data(attributes, include_body=include_body)
+    safe = sanitize_console_log_data(attributes, include_body=False)
     if not isinstance(safe, dict):
         return ""
     parts: list[str] = []
@@ -740,19 +737,42 @@ def _format_console_summary(attributes: Any | None) -> str:
             parts.append(f"{key}={value}")
         if len(parts) >= 5:
             break
-    if include_body:
-        body = _first_console_body_value(safe)
-        if body:
-            parts.append(body)
     return " ".join(parts)
 
 
-def _first_console_body_value(data: dict[str, Any]) -> str:
-    for key in ("content", "text", "reply", "response", "body", "prompt"):
-        value = data.get(key)
-        if isinstance(value, str) and value:
-            return f"{key}={value}"
+def _format_console_body(record: LogEvent) -> str:
+    safe = sanitize_console_log_data(record.attributes, include_body=True)
+    if not isinstance(safe, dict):
+        return ""
+    payload = safe.get("payload")
+    if isinstance(payload, dict):
+        blocks: list[str] = []
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for index, message in enumerate(messages, start=1):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "unknown")
+                blocks.append(
+                    f"[request {index} · {role}]\n{_format_console_body_value(message.get('content'))}"
+                )
+        parameters = {key: value for key, value in payload.items() if key != "messages"}
+        if parameters:
+            blocks.append(f"[request parameters]\n{_format_console_body_value(parameters)}")
+        return "\n".join(blocks)
+    for key in ("content", "reply", "response", "body", "text", "prompt"):
+        value = safe.get(key)
+        if value in (None, ""):
+            continue
+        label = "response" if record.event == "api.response.received" else key
+        return f"[{label}]\n{_format_console_body_value(value)}"
     return ""
+
+
+def _format_console_body_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
 def format_log_attributes(data: Any) -> str:
@@ -854,6 +874,7 @@ def _sanitize_value(
     if isinstance(value, list):
         if file_safe and body_context:
             return _summarize_private_value_for_file(value)
+        items_to_sanitize = value if include_body and body_context else value[:_MAX_LIST_ITEMS]
         items = [
             _sanitize_value(
                 item,
@@ -861,9 +882,9 @@ def _sanitize_value(
                 body_context=body_context,
                 file_safe=file_safe,
             )
-            for item in value[:_MAX_LIST_ITEMS]
+            for item in items_to_sanitize
         ]
-        if len(value) > _MAX_LIST_ITEMS:
+        if not (include_body and body_context) and len(value) > _MAX_LIST_ITEMS:
             items.append({"omitted_items": len(value) - _MAX_LIST_ITEMS})
         return items
     if isinstance(value, tuple):
@@ -885,7 +906,7 @@ def _sanitize_value(
         if body_context and not include_body:
             return summarize_text(value)
         if body_context and include_body:
-            return _truncate_text(value, _MAX_BODY_CHARS)
+            return value
         return _truncate_text(value, _MAX_TEXT_CHARS)
     return value
 
@@ -899,7 +920,8 @@ def _sanitize_dict(
 ) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     items = list(value.items())
-    for key, item_value in items[:_MAX_DICT_ITEMS]:
+    items_to_sanitize = items if include_body and body_context else items[:_MAX_DICT_ITEMS]
+    for key, item_value in items_to_sanitize:
         key_text = str(key)
         normalized_key = key_text.lower()
         if _is_sensitive_key(normalized_key):
@@ -915,7 +937,7 @@ def _sanitize_dict(
                 _sanitize_value(
                     item_value,
                     include_body=include_body,
-                    body_context=False,
+                    body_context=True,
                     file_safe=file_safe,
                 )
                 if include_body
@@ -938,7 +960,7 @@ def _sanitize_dict(
             body_context=next_body_context,
             file_safe=file_safe,
         )
-    if len(items) > _MAX_DICT_ITEMS:
+    if not (include_body and body_context) and len(items) > _MAX_DICT_ITEMS:
         sanitized["omitted_keys"] = len(items) - _MAX_DICT_ITEMS
     return sanitized
 

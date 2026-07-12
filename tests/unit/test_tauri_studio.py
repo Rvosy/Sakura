@@ -168,6 +168,19 @@ def test_character_selector_distinguishes_workspace_and_published_roles() -> Non
     assert "background: var(--sakura-primary);" in stylesheet
 
 
+def test_character_switch_restarts_existing_page_animation() -> None:
+    source = (
+        Path(__file__).parents[2] / "tools" / "studio-tauri" / "frontend" / "studio.js"
+    ).read_text(encoding="utf-8")
+    switch_page = source.split("function switchPage(page) {", 1)[1].split(
+        "function isDirty()", 1
+    )[0]
+
+    assert 'element.classList.remove("is-active");' in switch_page
+    assert "void fields.pages[page].offsetWidth;" in switch_page
+    assert 'fields.pages[page].classList.add("is-active");' in switch_page
+
+
 def test_dispatch_tauri_studio_rpc_picks_screen_color(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     import app.ui.tauri_studio as tauri_studio
 

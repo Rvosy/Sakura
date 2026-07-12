@@ -516,6 +516,7 @@ def test_studio_styles_table_corner_and_theme_editor_backgrounds() -> None:
 
     assert "QTableCornerButton::section" in stylesheet
     assert "rgba(17, 34, 51" in stylesheet
+    assert "selection-dot.svg" in stylesheet
     assert panel.findChild(QWidget, "themeEditorGrid") is not None
     assert panel.findChild(QWidget, "themeEditorViewport") is not None
 

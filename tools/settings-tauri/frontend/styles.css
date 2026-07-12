@@ -641,10 +641,64 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .check-control input {
+  flex: none;
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
   width: 18px;
   height: 18px;
-  accent-color: var(--sakura-primary);
+  min-width: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--sakura-primary) 62%, var(--sakura-border));
+  border-radius: 5px;
+  background: var(--surface-raised);
   cursor: pointer;
+  transition:
+    border-color var(--motion-base) var(--ease),
+    background-color var(--motion-base) var(--ease),
+    box-shadow var(--motion-base) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  transform: scale(0);
+  transition: transform var(--motion-base) var(--ease);
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--sakura-primary);
+  background: var(--tint-faint);
+  transform: translateY(-1px);
+}
+
+input[type="checkbox"]:checked {
+  border-color: var(--sakura-primary);
+  background: var(--sakura-primary);
+}
+
+input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 input[type="number"],
@@ -1266,7 +1320,6 @@ input[type="range"].layout-slider::-moz-range-thumb {
 .inline-input input[type="checkbox"] {
   width: 18px;
   height: 18px;
-  accent-color: var(--sakura-primary);
   cursor: pointer;
 }
 
@@ -1481,7 +1534,6 @@ input[type="checkbox"]:disabled + span {
 .plugin-card-top input[type="checkbox"] {
   width: 18px;
   height: 18px;
-  accent-color: var(--sakura-primary);
 }
 
 .memory-card strong,
@@ -2175,7 +2227,6 @@ button:focus-visible,
 .setting-toggle input[type="checkbox"] {
   width: 18px;
   height: 18px;
-  accent-color: var(--sakura-primary);
   cursor: pointer;
 }
 

@@ -133,7 +133,7 @@ class ModelSelectionSettings:
 class DebugLogSettings:
     """运行日志配置。"""
 
-    enabled: bool = False
+    enabled: bool = True
     body_enabled: bool = False
     file_enabled: bool = True
     profile: str = "info"

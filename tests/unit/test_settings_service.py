@@ -576,6 +576,12 @@ def test_settings_service_loads_debug_log_settings() -> None:
     )
 
 
+def test_settings_service_enables_console_log_when_setting_is_missing() -> None:
+    service = AppSettingsService(_runtime_root("yaml_debug_default_enabled"))
+
+    assert service.load_debug_log_settings().enabled is True
+
+
 def test_settings_service_save_debug_log_settings_removes_legacy_raw_tts_key() -> None:
     root = _runtime_root("yaml_debug_remove_raw")
     service = AppSettingsService(root)

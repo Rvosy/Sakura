@@ -1852,6 +1852,7 @@ def _system_basic_to_mapping(
             "enabled": bool(debug_log.enabled),
             "body_enabled": bool(debug_log.body_enabled),
             "file_enabled": bool(debug_log.file_enabled),
+            "profile": debug_log.profile,
             "stage_debug_overlay": bool(debug_log.stage_debug_overlay),
             "stage_collision_mask": bool(debug_log.stage_collision_mask),
         },
@@ -2407,10 +2408,14 @@ def _required_plugin_rpc_str(mapping: dict[str, Any], key: str) -> str:
 
 def _debug_log_from_mapping(mapping: dict[str, Any]) -> DebugLogSettings:
     enabled = _required_bool(mapping, "enabled")
+    profile = mapping.get("profile")
+    if profile not in {"error", "warn", "info", "debug", "trace"}:
+        raise ValueError("Tauri 设置结果字段无效：system_basic.debug_log.profile")
     return DebugLogSettings(
         enabled=enabled,
         body_enabled=enabled and _required_bool(mapping, "body_enabled"),
         file_enabled=_required_bool(mapping, "file_enabled"),
+        profile=str(profile),
         stage_debug_overlay=_required_bool(mapping, "stage_debug_overlay"),
         stage_collision_mask=_required_bool(mapping, "stage_collision_mask"),
     )

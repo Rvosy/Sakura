@@ -14,7 +14,7 @@ from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancel
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
-from app.core.runtime_log import log_event, summarize_messages
+from app.core.runtime_log import log_event
 from app.llm.prompt_templates import build_segmented_reply_instruction
 
 
@@ -261,7 +261,7 @@ class OpenAICompatibleClient:
                 "temperature": temperature,
                 "message_count": len(payload["messages"]),
                 "has_image": messages_contain_image(payload["messages"]),
-                "messages": summarize_messages(payload["messages"]),
+                "payload": payload,
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )
@@ -359,7 +359,7 @@ class OpenAICompatibleClient:
                 "message_count": len(payload["messages"]),
                 "tool_count": len(tools or []),
                 "has_image": messages_contain_image(payload["messages"]),
-                "messages": summarize_messages(payload["messages"]),
+                "payload": payload,
                 "chat_params": _filter_supported_chat_params(chat_params),
             },
         )

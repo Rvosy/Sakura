@@ -20,7 +20,10 @@ def clear_logs_after_test():  # type: ignore[no-untyped-def]
 
 
 def test_gui_log_records_key_events_even_when_console_and_file_disabled(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {})
+    monkeypatch.setattr(
+        "app.core.runtime_log._load_debug_values",
+        lambda: {"enabled": False, "file_enabled": False},
+    )
 
     log_event("TTS", "发送 GPT-SoVITS 请求", {"api_key": "sk-secret", "text": "不应完整显示的语音文本"})
 

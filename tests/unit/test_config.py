@@ -115,7 +115,7 @@ class TestDebugLogSettings:
 
     def test_defaults(self) -> None:
         s = DebugLogSettings()
-        assert s.enabled is False
+        assert s.enabled is True
         assert s.body_enabled is False
         assert s.file_enabled is True
         assert s.profile == "info"

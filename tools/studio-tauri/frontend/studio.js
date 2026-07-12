@@ -379,9 +379,11 @@ function switchPage(page) {
     item.classList.toggle("is-active", active);
     item.toggleAttribute("aria-current", active);
   });
-  Object.entries(fields.pages).forEach(([key, element]) => {
-    element.classList.toggle("is-active", key === page);
+  Object.values(fields.pages).forEach((element) => {
+    element.classList.remove("is-active");
   });
+  void fields.pages[page].offsetWidth;
+  fields.pages[page].classList.add("is-active");
   const meta = pageMeta[page];
   fields.pageTitle.textContent = meta.title;
   fields.pageSubtitle.textContent = meta.subtitle;

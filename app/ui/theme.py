@@ -91,6 +91,9 @@ _SETTINGS_ARROW_UP_URL = (
     Path(__file__).with_name("assets").joinpath("chevron-up.svg").resolve().as_posix()
 )
 _MENU_CHECK_URL = Path(__file__).with_name("assets").joinpath("menu-check.svg").resolve().as_posix()
+SELECTION_DOT_URL = (
+    Path(__file__).with_name("assets").joinpath("selection-dot.svg").resolve().as_posix()
+)
 
 
 def normalize_hex_color(value: object, default: str) -> str:
@@ -700,6 +703,7 @@ QGroupBox#advancedParamsGroup::indicator {{
     margin-bottom: 2px;
 }}
 QCheckBox::indicator:checked, QGroupBox::indicator:checked {{
+    image: url("{SELECTION_DOT_URL}");
     background: {theme.primary_color};
     border: 1px solid {theme.accent_color};
 }}
@@ -1047,7 +1051,7 @@ QCheckBox::indicator:hover {{
     background: {rgba(theme.panel_background_color, 210)};
 }}
 QCheckBox::indicator:checked {{
-    image: url("{_MENU_CHECK_URL}");
+    image: url("{SELECTION_DOT_URL}");
     background: {theme.primary_color};
     border: 1px solid {theme.accent_color};
 }}

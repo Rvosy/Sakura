@@ -4013,6 +4013,7 @@ function collectSystemBasicSettings() {
       enabled: debugLogEnabled,
       body_enabled: debugLogEnabled && fields.debugBodyEnabled.checked,
       file_enabled: fields.debugFileEnabled.checked,
+      profile: request.system_basic.debug_log.profile,
       stage_debug_overlay: fields.stageDebugOverlay.checked,
       stage_collision_mask: fields.stageCollisionMask.checked,
     },

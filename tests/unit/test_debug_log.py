@@ -10,6 +10,7 @@ import app.core.runtime_log as runtime_log_module
 from app.core.gui_log import GUI_LOG_SCOPE_PROGRAM, clear_gui_logs, get_gui_log_buffer
 from app.core.runtime_log import (
     LogEvent,
+    console_log_enabled,
     format_console_event,
     format_log_attributes,
     log_body_enabled,
@@ -134,6 +135,14 @@ def test_file_log_enabled_by_default(monkeypatch) -> None:  # type: ignore[no-un
     assert log_path.exists()
 
 
+def test_console_log_enabled_by_default_but_respects_explicit_false(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {})
+    assert console_log_enabled()
+
+    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"enabled": False})
+    assert not console_log_enabled()
+
+
 def test_file_log_can_be_disabled_explicitly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     log_path = _runtime_log_path("file_disabled_explicitly")
     monkeypatch.setattr("app.core.runtime_log._FILE_LOG_PATH", log_path)
@@ -246,19 +255,51 @@ def test_interaction_stage_logs_human_label_and_diagnostic_fields(monkeypatch, c
     assert "这段正文不应默认进控制台" not in output
 
 
-def test_log_body_enabled_requires_trace_level(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_log_body_enabled_works_at_info_level(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
         "app.core.runtime_log._load_debug_values",
         lambda: {"enabled": True, "body_enabled": True, "profile": "info"},
     )
-    assert not log_body_enabled()
-
-    monkeypatch.setattr(
-        "app.core.runtime_log._load_debug_values",
-        lambda: {"enabled": True, "body_enabled": True, "profile": "trace"},
-    )
     assert log_body_enabled()
     assert sanitize_console_log_data({"content": "完整正文"})["content"] == "完整正文"
+
+
+def test_console_body_formats_full_multiline_request_and_response(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "app.core.runtime_log._load_debug_values",
+        lambda: {"enabled": True, "body_enabled": True, "file_enabled": False, "profile": "info"},
+    )
+    long_tail = "末尾内容" + "x" * 9000
+    log_event(
+        "API",
+        "准备发送聊天补全请求",
+        {
+            "model": "demo-model",
+            "message_count": 2,
+            "payload": {
+                "model": "demo-model",
+                "messages": [
+                    {"role": "system", "content": "第一行\n第二行"},
+                    {"role": "user", "content": long_tail},
+                ],
+                "api_key": "sk-secret",
+                "image": "data:image/png;base64,abc123",
+            },
+        },
+    )
+    log_event(
+        "API",
+        "模型原始文本返回",
+        {"content": "回复第一行\n回复第二行", "reply_chars": 11},
+    )
+
+    output = capsys.readouterr().out
+    assert "[request 1 · system]\n第一行\n第二行" in output
+    assert f"[request 2 · user]\n{long_tail}" in output
+    assert "[request parameters]" in output
+    assert '"api_key": "<redacted>"' in output
+    assert '"type": "image_data_url"' in output
+    assert "[response]\n回复第一行\n回复第二行" in output
 
 
 def test_format_log_attributes_includes_safe_values(monkeypatch) -> None:  # type: ignore[no-untyped-def]
