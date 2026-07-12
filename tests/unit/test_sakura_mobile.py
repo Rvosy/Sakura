@@ -14,6 +14,7 @@ from app.agent.actions import AgentResult
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterProfile
+from app.core.http_client import urlopen_direct_for_loopback
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
 from app.llm.chat_reply import ChatReply, ChatSegment
 from app.plugins.capabilities import PluginCapabilityRegistry
@@ -212,7 +213,7 @@ def test_mobile_chat_busy_returns_409() -> None:
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(request, timeout=5)
+            urlopen_direct_for_loopback(request, timeout=5)
         payload = json.loads(exc_info.value.read().decode("utf-8"))
         assert exc_info.value.code == 409
         assert payload == {"ok": False, "busy": True, "error": "Sakura 正忙，请稍后再试。"}
