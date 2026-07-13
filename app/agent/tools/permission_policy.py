@@ -56,6 +56,13 @@ class ToolPermissionPolicy:
 
         返回 True 表示需要弹出确认面板。
         """
+        if tool.confirmation_predicate is not None:
+            try:
+                if not tool.confirmation_predicate(arguments or {}):
+                    return False
+            except Exception:
+                return True
+
         # 工具本身不需要确认
         if not tool.requires_confirmation:
             return False
@@ -68,6 +75,8 @@ class ToolPermissionPolicy:
 
     def _can_execute_with_free_access(self, tool: Tool) -> bool:
         """free_access 模式下是否可直接执行。"""
+        if tool.confirmation_bypass_free_access:
+            return False
         # 高风险工具始终需要确认
         if self._is_always_high_risk(tool):
             return False

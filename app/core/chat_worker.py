@@ -5,7 +5,14 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
+from app.agent import (
+    AgentEvent,
+    AgentProgress,
+    AgentResult,
+    AgentRuntime,
+    ApprovalScope,
+    PendingToolAction,
+)
 from app.core.chat_pipeline import ChatPipeline
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.runtime_log import log_event
@@ -27,6 +34,7 @@ class ChatWorker(QObject):
         agent_runtime: AgentRuntime,
         messages: list[dict[str, Any]] | None = None,
         confirmed_action: PendingToolAction | None = None,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         cancelled_action: PendingToolAction | None = None,
         visual_observation_store: VisualObservationStore | None = None,
         visual_observation_jobs: list[VisualObservationJob] | None = None,
@@ -36,6 +44,7 @@ class ChatWorker(QObject):
         self.agent_runtime = agent_runtime
         self.messages = messages or []
         self.confirmed_action = confirmed_action
+        self.approval_scope = approval_scope
         self.cancelled_action = cancelled_action
         self.visual_observation_store = visual_observation_store
         self.visual_observation_jobs = visual_observation_jobs or []
@@ -60,6 +69,7 @@ class ChatWorker(QObject):
             if self.confirmed_action is not None:
                 result: AgentResult = self.pipeline.run_confirmed_action(
                     self.confirmed_action,
+                    approval_scope=self.approval_scope,
                     progress_callback=self._emit_progress,
                     cancel_checker=self._cancel_token.throw_if_cancelled,
                 )

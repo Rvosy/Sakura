@@ -12,6 +12,10 @@ from app.agent.tools.registry import (
     ToolExecutionResult,
     ToolHandler,
     ToolMetadata,
+    ToolGroupMetadata,
+    ToolConfirmationBuilder,
+    ToolConfirmationPredicate,
+    ToolApprovalHandler,
     ToolRegistry,
 )
 from app.agent.tools.permission_policy import ToolPermissionPolicy
@@ -21,6 +25,10 @@ __all__ = [
     "ToolExecutionResult",
     "ToolHandler",
     "ToolMetadata",
+    "ToolGroupMetadata",
+    "ToolConfirmationBuilder",
+    "ToolConfirmationPredicate",
+    "ToolApprovalHandler",
     "ToolPermissionPolicy",
     "ToolRegistry",
 ]

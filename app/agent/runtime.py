@@ -7,7 +7,14 @@ from dataclasses import replace
 from threading import Lock
 from typing import Any, Callable
 
-from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.actions import (
+    AgentAction,
+    AgentEvent,
+    AgentProgress,
+    AgentResult,
+    ApprovalScope,
+    PendingToolAction,
+)
 from app.agent.context_orchestrator import ContextOrchestrator, build_context_request
 from app.agent.memory_recall import MemoryRecallService
 from app.agent.memory import MemoryStore
@@ -493,7 +500,7 @@ class AgentRuntime:
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory"}
+        active_groups = self.tools.default_active_groups()
         turn_memory_fragments = ()
         memory_status = "unknown"
         memory_needs_refresh = True
@@ -515,7 +522,9 @@ class AgentRuntime:
             )
             if browser_page_mode or visible_browser_guard_active:
                 active_groups.add("browser")
-            allowed_capabilities = {SCREEN_OBSERVATION_CAPABILITY} if allow_screen_observation else set()
+            allowed_capabilities = self.tools.enabled_capabilities
+            if allow_screen_observation:
+                allowed_capabilities.add(SCREEN_OBSERVATION_CAPABILITY)
             tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
@@ -558,17 +567,23 @@ class AgentRuntime:
                     session_fragments=self._session_state_fragments(request),
                     memory_fragments=turn_memory_fragments,
                 )
+                group_hints = "\n".join(self.tools.group_prompt_hints(active_groups))
+                loop_extra_instructions = "\n".join(
+                    part
+                    for part in (planning_extra_instructions.strip(), group_hints)
+                    if part
+                )
                 prompt_build = (
                     self._build_screen_awareness_tool_prompt_result(
                         snapshot,
-                        extra_instructions=planning_extra_instructions,
+                        extra_instructions=loop_extra_instructions,
                         include_visual_observation=include_visual_observation,
                     )
                     if screen_awareness_mode
                     else self._build_tool_prompt_result(
                         snapshot,
                         allow_screen_observation=allow_screen_observation,
-                        extra_instructions=planning_extra_instructions,
+                        extra_instructions=loop_extra_instructions,
                         browser_page_mode=browser_page_guard_active,
                         visible_browser_mode=visible_browser_guard_active,
                         include_visual_observation=include_visual_observation,
@@ -1075,13 +1090,18 @@ class AgentRuntime:
     def handle_confirmed_action(
         self,
         action: PendingToolAction,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
-        log_event("AgentRuntime", "执行已确认动作", action.to_dict())
-        result = self.tools.execute(action.tool_name, action.arguments)
+        log_event(
+            "AgentRuntime",
+            "执行已确认动作",
+            {**action.to_dict(), "approval_scope": approval_scope.value},
+        )
+        result = self.tools.execute_confirmed(action, approval_scope)
         check_cancelled(cancel_checker)
         results = [result]
         verification_result = _verify_confirmed_windows_click(self.tools, action.tool_name)

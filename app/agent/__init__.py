@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.actions import (
+    AgentAction,
+    AgentEvent,
+    AgentProgress,
+    AgentResult,
+    ApprovalScope,
+    PendingToolAction,
+    ToolConfirmationDetails,
+)
 from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.memory import MemoryStore
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
@@ -20,6 +28,7 @@ __all__ = [
     "AgentEvent",
     "AgentProgress",
     "AgentResult",
+    "ApprovalScope",
     "AgentRuntime",
     "MAX_AGENT_STEPS_PER_TURN",
     "MAX_TOOL_CALLS_PER_STEP",
@@ -27,6 +36,7 @@ __all__ = [
     "MCPToolProvider",
     "MemoryStore",
     "PendingToolAction",
+    "ToolConfirmationDetails",
     "ProgressCallback",
     "ReminderStore",
     "RuntimeLoopSettings",

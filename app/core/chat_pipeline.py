@@ -3,7 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
+from app.agent import (
+    AgentEvent,
+    AgentProgress,
+    AgentResult,
+    AgentRuntime,
+    ApprovalScope,
+    PendingToolAction,
+)
 from app.core.cancellation import CancelChecker, check_cancelled
 from app.core.runtime_log import log_event, summarize_messages
 from app.storage.visual_observation import (
@@ -60,12 +67,20 @@ class ChatPipeline:
         self,
         action: PendingToolAction,
         *,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         log_event("ChatWorker", "开始处理已确认动作", action.to_dict())
+        if approval_scope is ApprovalScope.ONCE:
+            return self.agent_runtime.handle_confirmed_action(
+                action,
+                progress_callback=progress_callback,
+                cancel_checker=cancel_checker,
+            )
         return self.agent_runtime.handle_confirmed_action(
             action,
+            approval_scope=approval_scope,
             progress_callback=progress_callback,
             cancel_checker=cancel_checker,
         )

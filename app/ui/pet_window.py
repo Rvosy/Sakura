@@ -56,6 +56,7 @@ from app.agent import (
     AgentEvent,
     AgentProgress,
     AgentResult,
+    ApprovalScope,
     PendingToolAction,
 )
 from app.agent.memory_curator import (
@@ -975,8 +976,10 @@ class PetWindow(QWidget):
             self.confirm_pending_action,
             self.cancel_pending_action,
             self.input_bar,
+            on_confirm_process=self.confirm_pending_process_action,
         )
         self.confirm_action_button = self.tool_confirmation_panel.confirm_button
+        self.confirm_process_action_button = self.tool_confirmation_panel.process_button
         self.cancel_action_button = self.tool_confirmation_panel.cancel_button
 
         input_layout = QHBoxLayout()
@@ -3645,15 +3648,27 @@ class PetWindow(QWidget):
 
     @Slot()
     def confirm_pending_action(self) -> None:
+        self._confirm_pending_action(ApprovalScope.ONCE)
+
+    @Slot()
+    def confirm_pending_process_action(self) -> None:
+        self._confirm_pending_action(ApprovalScope.PROCESS)
+
+    def _confirm_pending_action(self, approval_scope: ApprovalScope) -> None:
         if self.pending_tool_action is None or self.worker_thread is not None:
+            return
+        if not self.pending_tool_action.allows_scope(approval_scope):
             return
         self._mark_user_activity()
         self._begin_interaction("confirm_action_clicked")
         action = self.pending_tool_action
-        self._log_interaction_stage("confirm_action", action.to_dict())
+        self._log_interaction_stage(
+            "confirm_action",
+            {**action.to_dict(), "approval_scope": approval_scope.value},
+        )
         self._set_pending_tool_action(None)
         self._clear_queued_reply_segments_for_action_resolution()
-        self._run_action_worker(confirmed_action=action)
+        self._run_action_worker(confirmed_action=action, approval_scope=approval_scope)
 
     @Slot()
     def cancel_pending_action(self) -> None:
@@ -3670,6 +3685,7 @@ class PetWindow(QWidget):
     def _run_action_worker(
         self,
         confirmed_action: PendingToolAction | None = None,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         cancelled_action: PendingToolAction | None = None,
     ) -> None:
         self._set_busy(True)
@@ -3677,12 +3693,14 @@ class PetWindow(QWidget):
             "action_worker_start",
             {
                 "confirmed": confirmed_action.tool_name if confirmed_action is not None else "",
+                "approval_scope": approval_scope.value,
                 "cancelled": cancelled_action.tool_name if cancelled_action is not None else "",
             },
         )
         worker = ChatWorker(
             self.agent_runtime,
             confirmed_action=confirmed_action,
+            approval_scope=approval_scope,
             cancelled_action=cancelled_action,
             interaction_id=self.active_interaction_id,
         )
