@@ -860,3 +860,18 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 | 普通运行日志 | 结构化 Audit System |
 
 第一阶段的 IPC Envelope、DTO 和前端事件模型必须为这些替换保留版本字段，但不得提前实现尚未验证的 Agent Planner API。
+
+---
+
+## 11. 当前分支实施偏差记录
+
+### 2026-07-14：分支与交付方式
+
+- 原计划建议从最新 `dev` 为每个 PR 创建独立分支；本次实施按用户明确要求固定在现有 `feat/tauri-assistant-migration` 分支，不创建或切换其他分支。
+- 原计划建议拆分为 7 个 PR；本次实施改为在当前分支上按 Task 0 至 Task 13 形成多次独立中文 Conventional Commit，完成后不自动 push、不创建 PR，等待用户确认。
+- 当前分支基于 `origin/dev` 提前 1 个提交，该提交只包含平台规范与本迁移计划；Task 0 开始时工作区干净。
+
+### 2026-07-14：Qt 启动性能基线
+
+- 自动测量无法获得真正的 GPU 首帧时间，因此以首个非零 `MainWindowHandle`（1546.5 ms）作为可重复的首个可见窗口代理，并在 parity matrix 中明确限制。
+- 基线主窗口关闭流程返回 `0xC0000409`，未产生 Python traceback。该问题记录为迁移前风险，第一阶段退出标准保持“正常退出且无残留进程”，不降低验收要求。
