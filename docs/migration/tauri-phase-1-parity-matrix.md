@@ -89,7 +89,7 @@
 |---|---|---|---|---|
 | 0 | 1456 passed, 3 skipped | 启动资源基线已采集 | `docs: 建立Tauri迁移基线` | Qt 关闭返回 `0xC0000409` |
 | 1 | Python 5 passed；Rust 4 passed；fmt/build 通过 | 单屏 100% 下透明、IME、音频 API、截图、穿透、隐藏/恢复、单实例已验证；其余见 ADR-0001 | `feat: 建立Tauri桌面主程序` | Task 6 前补物理拖动、托盘、多 DPI/多屏和人耳音频签字 |
-| 2 | 待执行 | 不适用 | 待提交 | 帧协议与 golden fixture |
+| 2 | Python 17 passed；Rust IPC 6 passed | 不适用 | `feat: 实现Brain Host帧协议` | Python/Rust 共用 golden frame；8 MiB、大端、分片、错误与 session 约束已覆盖 |
 | 3 | 待执行 | 不适用 | 待提交 | Brain Host 导入守卫 |
 | 4 | 待执行 | 不适用 | 待提交 | 无 Qt Assistant 服务 |
 | 5 | 待执行 | Brain 崩溃恢复待验收 | 待提交 | Host 监管 |

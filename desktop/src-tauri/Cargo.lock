@@ -3482,6 +3482,7 @@ version = "0.1.0"
 dependencies = [
  "rodio",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",

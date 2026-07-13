@@ -1,5 +1,6 @@
 mod audio;
 mod capture;
+pub mod ipc;
 mod tray;
 mod windows;
 
