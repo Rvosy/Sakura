@@ -51,7 +51,7 @@ def create_sensory_observation_tool(
                 },
                 "media_ref": {
                     "type": "string",
-                    "description": "可选媒体引用。视觉源可传 data:image/... base64、图片 URL 或本地临时图片路径。",
+                    "description": "可选图片引用。仅支持 data:image/... base64 或 HTTP(S) 图片 URL；本地路径不会被读取。",
                 },
                 "metadata": {
                     "type": "object",
@@ -169,16 +169,25 @@ def _source_label(source: Any) -> str:
 
 
 def _request_has_media(request: SensoryRequest) -> bool:
-    if request.media_ref:
+    if _is_model_media_ref(request.media_ref):
         return True
-    for key in ("data_url", "image_url", "media_ref", "path"):
-        if request.metadata.get(key):
+    for key in ("data_url", "image_url", "media_ref"):
+        if _is_model_media_ref(request.metadata.get(key)):
             return True
     for key in ("image_urls", "images", "media_refs"):
         value = request.metadata.get(key)
-        if isinstance(value, list) and value:
-            return True
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    item = item.get("url") or item.get("data_url")
+                if _is_model_media_ref(item):
+                    return True
     return False
+
+
+def _is_model_media_ref(value: Any) -> bool:
+    ref = str(value or "").strip().lower()
+    return ref.startswith(("data:image/", "http://", "https://"))
 
 
 def _unavailable(

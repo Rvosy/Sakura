@@ -81,6 +81,8 @@ class SensoryContextProvider:
 
 def _observation_allowed(observation: SensoryObservation, settings: SensorySettings) -> bool:
     source_settings = settings.sources[observation.source]
+    if not source_settings.enabled:
+        return False
     if not source_settings.context_enabled:
         return False
     if observation.confidence < source_settings.confidence_threshold:

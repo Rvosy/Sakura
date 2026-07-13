@@ -33,6 +33,7 @@ class SensoryRequest:
     event_type: str = ""
     text: str = ""
     media_ref: str = ""
+    trusted_media_ref: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
 
@@ -44,6 +45,7 @@ class SensoryRequest:
             event_type=str(self.event_type or ""),
             text=str(self.text or ""),
             media_ref=str(self.media_ref or ""),
+            trusted_media_ref=bool(self.trusted_media_ref),
             metadata=_mapping(self.metadata),
             created_at=str(self.created_at or now_iso()),
         )

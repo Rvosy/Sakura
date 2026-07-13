@@ -494,6 +494,29 @@ def test_ollama_provider_posts_native_chat_images_payload(monkeypatch) -> None: 
     assert observation.confidence == 0.77
 
 
+def test_sensory_provider_rejects_untrusted_local_media_refs(tmp_path: Path) -> None:
+    from app.sensory.providers import _request_image_base64s, _request_image_urls
+
+    image_path = tmp_path / "private-image"
+    image_path.write_bytes(b"private bytes")
+    untrusted = SensoryRequest(
+        id="req_untrusted",
+        source=SensorySource.VISION,
+        media_ref=str(image_path),
+    )
+    trusted = SensoryRequest(
+        id="req_trusted",
+        source=SensorySource.VISION,
+        media_ref=str(image_path),
+        trusted_media_ref=True,
+    )
+
+    assert _request_image_urls(untrusted) == []
+    assert _request_image_base64s(untrusted) == []
+    assert _request_image_urls(SensoryRequest(id="req_metadata", source=SensorySource.VISION, metadata={"path": str(image_path)})) == []
+    assert _request_image_urls(trusted)[0].startswith("data:image/png;base64,")
+
+
 def test_api_provider_fails_closed_without_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     def should_not_call(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("HTTP should not be called")
@@ -607,8 +630,14 @@ def test_sensory_context_filters_by_source_confidence_relevance_and_budget(tmp_p
         enabled=True,
         context_budget_chars=420,
         sources={
-            SensorySource.VISION: SensorySourceSettings(confidence_threshold=0.5),
-            SensorySource.SPEECH: SensorySourceSettings(confidence_threshold=0.5),
+            SensorySource.VISION: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                confidence_threshold=0.5,
+            ),
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                confidence_threshold=0.5,
+            ),
         },
     ).normalized()
     provider = SensoryContextProvider(settings=settings, store=store)
@@ -623,6 +652,29 @@ def test_sensory_context_filters_by_source_confidence_relevance_and_budget(tmp_p
     assert "vision_low" not in context
     assert "speech_irrelevant" not in context
     assert len(context) <= 420
+
+
+def test_sensory_context_ignores_observations_for_disabled_source(tmp_path: Path) -> None:
+    store = SensoryObservationStore(tmp_path / "sensory.jsonl")
+    store.append(
+        SensoryObservation(
+            id="vision_disabled",
+            source=SensorySource.VISION,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="屏幕上有私密内容。",
+            confidence=0.95,
+        )
+    )
+    settings = SensorySettings(
+        enabled=True,
+        sources={SensorySource.VISION: SensorySourceSettings(mode=SensoryProviderMode.OFF)},
+    ).normalized()
+
+    fragments = SensoryContextProvider(settings=settings, store=store).build_context(
+        {"messages": [ChatMessage(role="user", content="屏幕上有什么？")]}
+    )
+
+    assert fragments == ()
 
 
 def test_agent_runtime_passes_runtime_context_to_context_providers() -> None:

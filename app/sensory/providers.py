@@ -378,8 +378,8 @@ def _load_json_object(content: str) -> dict[str, Any] | None:
 def _request_image_urls(request: SensoryRequest) -> list[str]:
     refs = _request_media_refs(request)
     urls: list[str] = []
-    for ref in refs:
-        url = _media_ref_to_image_url(ref)
+    for ref, allow_local_file in refs:
+        url = _media_ref_to_image_url(ref, allow_local_file=allow_local_file)
         if url:
             urls.append(url)
     return urls[:4]
@@ -387,39 +387,41 @@ def _request_image_urls(request: SensoryRequest) -> list[str]:
 
 def _request_image_base64s(request: SensoryRequest) -> list[str]:
     images: list[str] = []
-    for ref in _request_media_refs(request):
-        image = _media_ref_to_base64(ref)
+    for ref, allow_local_file in _request_media_refs(request):
+        image = _media_ref_to_base64(ref, allow_local_file=allow_local_file)
         if image:
             images.append(image)
     return images[:4]
 
 
-def _request_media_refs(request: SensoryRequest) -> list[str]:
-    refs: list[str] = []
-    _append_text_ref(refs, request.media_ref)
+def _request_media_refs(request: SensoryRequest) -> list[tuple[str, bool]]:
+    refs: list[tuple[str, bool]] = []
+    _append_text_ref(refs, request.media_ref, allow_local_file=request.trusted_media_ref)
     metadata = request.metadata
-    for key in ("data_url", "image_url", "media_ref", "path"):
+    for key in ("data_url", "image_url", "media_ref"):
         _append_text_ref(refs, metadata.get(key))
     for key in ("image_urls", "images", "media_refs"):
         value = metadata.get(key)
         if isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    _append_text_ref(refs, item.get("url") or item.get("data_url") or item.get("path"))
+                    _append_text_ref(refs, item.get("url") or item.get("data_url"))
                 else:
                     _append_text_ref(refs, item)
     return refs
 
 
-def _append_text_ref(refs: list[str], value: Any) -> None:
+def _append_text_ref(refs: list[tuple[str, bool]], value: Any, *, allow_local_file: bool = False) -> None:
     text = str(value or "").strip()
     if text:
-        refs.append(text)
+        refs.append((text, allow_local_file))
 
 
-def _media_ref_to_image_url(ref: str) -> str:
+def _media_ref_to_image_url(ref: str, *, allow_local_file: bool = False) -> str:
     if ref.startswith("data:image/") or ref.startswith("http://") or ref.startswith("https://"):
         return ref
+    if not allow_local_file:
+        return ""
     path = Path(ref).expanduser()
     if path.is_file():
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
@@ -427,10 +429,12 @@ def _media_ref_to_image_url(ref: str) -> str:
     return ""
 
 
-def _media_ref_to_base64(ref: str) -> str:
+def _media_ref_to_base64(ref: str, *, allow_local_file: bool = False) -> str:
     if ref.startswith("data:image/"):
         _prefix, _separator, payload = ref.partition(",")
         return payload.strip()
+    if not allow_local_file:
+        return ""
     path = Path(ref).expanduser()
     if path.is_file():
         return base64.b64encode(path.read_bytes()).decode("ascii")
