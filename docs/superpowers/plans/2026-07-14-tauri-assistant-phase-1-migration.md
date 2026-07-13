@@ -652,16 +652,16 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml capture
 - Modify: `app/brain_host/application.py`
 - Create: `tests/integration/test_tauri_secondary_windows.py`
 
-- [ ] 设置和工作室改为同一 Tauri App 的独立 WebView 窗口。
-- [ ] 删除原有“Qt 启动独立 Tauri 子进程”的控制方向。
-- [ ] 设置页通过主 IPC 调用 Python Settings Service。
-- [ ] 工作室通过主 IPC 调用 `CharacterStudioService`。
-- [ ] 历史窗口通过分页 DTO 读取记录，不一次加载全部历史。
-- [ ] 诊断窗口显示 Brain、插件、MCP、TTS 和资源状态。
-- [ ] 重复打开窗口时聚焦现有实例。
-- [ ] 所有窗口共享当前角色和主题状态。
-- [ ] 设置应用后只刷新受影响服务，不重启整个 App。
-- [ ] 兼容测试通过后删除独立 settings/studio 进程桥。
+- [x] 设置和工作室改为同一 Tauri App 的独立 WebView 窗口。
+- [x] 主 Tauri 路径不再采用“Qt 启动独立 Tauri 子进程”的控制方向。
+- [x] 设置页通过主 IPC 调用 Python Settings Service。
+- [x] 工作室通过主 IPC 调用 `CharacterStudioService`。
+- [x] 历史窗口通过分页 DTO 读取记录，不一次加载全部历史。
+- [x] 诊断窗口显示 Brain、插件、MCP、TTS 和资源状态。
+- [x] 重复打开窗口时聚焦现有实例。
+- [x] 所有窗口共享当前角色和主题状态。
+- [x] 设置应用后只刷新受影响服务，不重启整个 App。
+- [x] 兼容测试和本机窗口验收通过；独立 settings/studio 进程桥按旧 Qt 回退约束延后至 Task 12 删除。
 
 **Verification:**
 
@@ -805,10 +805,10 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 
 ### 次级窗口
 
-- [ ] 设置、工作室、历史和诊断可以重复打开并聚焦。
-- [ ] 设置应用后主窗口即时刷新。
+- [x] 设置、工作室、历史和诊断可以重复打开并聚焦。
+- [x] 设置应用后主窗口即时刷新。
 - [ ] 工作室保存后角色资源正确写入。
-- [ ] 历史分页加载，不阻塞主窗口。
+- [x] 历史分页加载，不阻塞主窗口。
 
 ---
 
@@ -920,3 +920,11 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - 主动观察的空闲判断、检查间隔、冷却批次、批次上限、禁用后移除 job、提醒轮询和与聊天共享的忙碌仲裁仍位于 Brain Host。Rust 只响应 `observation.capture_requested`，并从独立线程回送私有资源，避免在 Brain supervisor 的事件回调线程内同步请求造成死锁。
 - 手动截图先在 Brain 建立 capture session，Tauri 透明覆盖窗只回传框选坐标；Rust 使用物理坐标裁剪跨显示器区域，Brain 返回一次性 observation ID，前端发送消息时只携带该 ID。临时 JPEG 具有随机名、大小限制、TTL 和 session/退出清理；Brain 读取后立即删除，未发送的附件只留在当前 Python 进程内存中，重启或退出自然失效。
 - 当前自动测试覆盖负坐标虚拟桌面、跨屏裁剪数学、显示器选择、缩放、路径逃逸、资源 TTL/重置、一次性 observation、主动批次、提醒和统一事件 DTO。真实 125/150/200% DPI、混合 DPI 多屏与物理框选仍受 ADR-0001 硬件限制，保留到 Task 13 手工签字。
+
+### 2026-07-14：Task 10 的动态 WebView 主线程约束与旧桥保留
+
+- 实机验收发现从同步 Tauri command 线程直接构建动态 `WebviewWindow` 时，只创建了空白原生窗口，页面加载回调不会触发；自动文件契约和 Rust 单元测试无法发现该问题。实际改为异步 command 将创建/聚焦操作派发到 Tauri 主线程，再把结果回传前端，并加入静态契约防止退回非主线程创建。
+- 主桌宠开启置顶后会覆盖普通次级窗口；设置、工作室、历史和诊断因此沿用旧 Qt 的层级语义，在创建和重复聚焦时进入置顶层，确保用户可以操作，同时仍保留独立任务栏窗口、最小化和关闭行为。
+- `app.agent` 与 `app.agent.mcp` 包入口原先 eager import Provider，单独导入设置 DTO 会间接加载 PySide6。实际改为保持公开 API 不变的 lazy export；设置资源任务从 Qt 包路径复制到无 UI 的 Core 模块，继续复用现有 TTS、接话和记忆模型资源行为。
+- 本机单屏 100% 验收已确认四类窗口属于同一个 `sakura-desktop.exe`，设置重复打开窗口数不增加，设置“应用”成功且不重启 App，工作室可读取真实角色，历史从 50 条游标分页到 100 条，诊断展示 Brain、插件、MCP、TTS、资源和 scheduler。
+- 按用户“旧 Qt 生产路径在对应自动测试和手工验收完成前保留”的约束，主 Tauri 路径已经完全绕过独立 settings/studio 子进程，但旧 Qt 回退所需的 process bridge 文件暂不删除；工作室真实保存会修改用户角色包，留到 Task 13 在验收副本中签字后，与 Qt 主链一起清理。

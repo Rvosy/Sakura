@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from app.brain_host.dto import (
 )
 from app.brain_host.errors import BrainHostError
 from app.brain_host.protocol import PROTOCOL_VERSION
+from app.brain_host.secondary_windows import secondary_host_call, secondary_window_request
 
 
 ContextBuilder = Callable[[Path], Any]
@@ -75,6 +76,7 @@ class BrainHostApplication:
         self.tts_service: Any | None = None
         self.backchannel_service: Any | None = None
         self.scheduler: Any | None = None
+        self.settings_resource_tasks: Any | None = None
         self.state = "starting"
         self.startup: dict[str, Any] | None = None
         self.initialization_error: BrainHostError | None = None
@@ -114,10 +116,7 @@ class BrainHostApplication:
                 self.config.base_dir,
                 self._handle_backchannel_choice,
             )
-            self.startup = startup_state_dto(self.context)
-            runtime = self.startup.setdefault("runtime", {})
-            runtime["tts_ready"] = bool(getattr(self.tts_service, "service_ready", False))
-            runtime["tts_enabled"] = type(self.tts_service).__name__ != "NullTTSSynthesisService"
+            self.startup = self._current_startup_state()
             if hasattr(self.context, "agent_runtime"):
                 from app.brain_host.scheduler import PeriodicScheduler
                 from app.core.assistant_service import AssistantApplication
@@ -162,6 +161,11 @@ class BrainHostApplication:
             return self._health()
         if method == "system.shutdown":
             return self._shutdown()
+        if method == "pet.bootstrap":
+            if self.context is None or self.state != "ready":
+                raise BrainHostError("BACKEND_UNAVAILABLE", "Brain Host 尚未就绪。", retryable=True)
+            self.startup = self._current_startup_state()
+            return self.startup
         if method == "chat.send":
             return self._chat_send(payload, request_id=request_id)
         if method == "chat.cancel":
@@ -180,11 +184,180 @@ class BrainHostApplication:
             return self._observation_push(payload)
         if method == "observation.configure":
             return self._observation_configure(payload)
+        if method == "window.request":
+            kind = payload.get("kind")
+            if not isinstance(kind, str) or not kind.strip():
+                raise BrainHostError("INVALID_REQUEST", "window.request 缺少 kind。")
+            try:
+                return secondary_window_request(self, kind.strip(), payload)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise BrainHostError(
+                    "SECONDARY_WINDOW_REQUEST_FAILED",
+                    str(exc),
+                    details={"errorType": type(exc).__name__},
+                ) from exc
+        if method == "window.host_call":
+            host_method = payload.get("method")
+            params = payload.get("params", {})
+            if not isinstance(host_method, str) or not isinstance(params, Mapping):
+                raise BrainHostError("INVALID_REQUEST", "window.host_call 参数无效。")
+            try:
+                return secondary_host_call(self, host_method, params)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise BrainHostError(
+                    "SECONDARY_WINDOW_CALL_FAILED",
+                    str(exc),
+                    details={"errorType": type(exc).__name__},
+                ) from exc
         if method == "tts.synthesize":
             return self._tts_synthesize(payload, request_id=request_id)
         if method == "tts.cancel":
             return self._tts_cancel(payload)
         raise BrainHostError("METHOD_NOT_FOUND", f"Unknown Brain Host method: {method}")
+
+    def refresh_character(self, character_id: str) -> None:
+        context = self.context
+        if context is None:
+            raise ValueError("Brain Host 上下文尚未初始化。")
+        with self._state_lock:
+            if self._assistant_busy_locked():
+                raise ValueError("助手正在处理请求，暂时不能切换角色。")
+        from app.config.character_loader import CharacterRegistry, load_character_system_prompt
+        from app.core.bootstrap import (
+            create_history_store,
+            create_runtime_event_log,
+            create_visual_observation_store,
+        )
+
+        registry = CharacterRegistry(self.config.base_dir)
+        profile = registry.get(character_id)
+        previous_id = str(getattr(getattr(context, "character_profile", None), "id", ""))
+        system_prompt = load_character_system_prompt(profile)
+        memory_store = context.memory_store
+        memory_store.set_scope(profile.id)
+        history_store = create_history_store(self.config.base_dir, profile)
+        runtime_event_log = create_runtime_event_log(self.config.base_dir, profile)
+        visual_observation_store = create_visual_observation_store(self.config.base_dir, profile)
+        runtime = context.agent_runtime
+        runtime.update_character(
+            system_prompt,
+            profile.reply_tones,
+            profile.portrait_choices,
+            character_id=profile.id,
+            character_name=profile.display_name,
+        )
+        runtime.set_history_store(history_store)
+        curator = getattr(context, "memory_curator", None)
+        set_system_prompt = getattr(curator, "set_system_prompt", None)
+        if callable(set_system_prompt):
+            set_system_prompt(system_prompt)
+        new_storage = replace(
+            context.storage,
+            history_store=history_store,
+            visual_observation_store=visual_observation_store,
+            runtime_event_log=runtime_event_log,
+        )
+        self.context = replace(
+            context,
+            character_registry=registry,
+            character_profile=profile,
+            system_prompt=system_prompt,
+            storage=new_storage,
+        )
+        if self.assistant is not None:
+            self.assistant.pipeline.visual_observation_store = visual_observation_store
+        if profile.id != previous_id:
+            with self._state_lock:
+                self._messages.clear()
+                self._manual_observations.clear()
+                self._clear_screen_context_batch_locked()
+        self._cancel_backchannel()
+        if self.backchannel_service is not None:
+            _close_quietly(self.backchannel_service, "close")
+        self.backchannel_service = _build_backchannel_service(
+            self.context,
+            self.config.base_dir,
+            self._handle_backchannel_choice,
+        )
+        self.startup = self._current_startup_state()
+
+    def refresh_runtime_settings(
+        self,
+        *,
+        screen_awareness: Any,
+        mcp: Any,
+        debug: Any,
+        startup: Any,
+        memory_curation: Any,
+    ) -> None:
+        context = self.context
+        if context is None:
+            return
+        self.context = replace(
+            context,
+            features=replace(
+                context.features,
+                screen_awareness_settings=screen_awareness,
+                mcp_settings=mcp,
+                debug_log_settings=debug,
+                startup_settings=startup,
+                memory_curation_settings=memory_curation,
+            ),
+        )
+        self._configure_screen_observation_runtime()
+
+    def refresh_api_settings(self) -> None:
+        context = self.context
+        if context is None:
+            return
+        from app.config.model_slots import resolve_model_slot
+        from app.config.models import (
+            MODEL_SLOT_CHAT,
+            MODEL_SLOT_MEMORY_CURATION,
+            MODEL_SLOT_VISION_CHAT,
+        )
+        from app.llm.api_client import OpenAICompatibleClient
+
+        service = context.settings_service
+        settings = service.load_api_settings()
+        profiles = service.load_api_profiles()
+        selection = service.load_model_selection()
+        chat_slot = resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, settings)
+        if chat_slot is not None:
+            settings = chat_slot.settings
+        context.api_client.update_settings(settings)
+        context.memory_store.set_api_settings(settings)
+        vision_slot = resolve_model_slot(profiles, selection, MODEL_SLOT_VISION_CHAT, settings)
+        context.agent_runtime.vision_api_client = (
+            OpenAICompatibleClient(vision_slot.settings)
+            if vision_slot is not None and vision_slot.source_slot == MODEL_SLOT_VISION_CHAT
+            else None
+        )
+        memory_slot = resolve_model_slot(profiles, selection, MODEL_SLOT_MEMORY_CURATION, settings)
+        curator = context.memory_curator
+        curator.set_api_client(
+            OpenAICompatibleClient(memory_slot.settings)
+            if memory_slot is not None
+            else context.api_client
+        )
+        self.context = replace(context, settings=settings)
+        self.startup = self._current_startup_state()
+
+    def refresh_tts(self) -> None:
+        previous = self.tts_service
+        self.tts_service = _build_tts_service(self.context, self.config.base_dir)
+        if previous is not None:
+            _close_quietly(previous, "close")
+        self.startup = self._current_startup_state()
+
+    def _current_startup_state(self) -> dict[str, Any]:
+        if self.context is None:
+            return {}
+        startup = startup_state_dto(self.context)
+        runtime = startup.setdefault("runtime", {})
+        runtime["tts_ready"] = bool(getattr(self.tts_service, "service_ready", False))
+        runtime["tts_enabled"] = type(self.tts_service).__name__ != "NullTTSSynthesisService"
+        return startup
 
     def _tts_synthesize(
         self,

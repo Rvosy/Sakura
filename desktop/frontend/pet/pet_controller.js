@@ -39,6 +39,11 @@ export class PetController {
     this.subtitleController.showSegments(segments);
   }
 
+  previewLayout(layout) {
+    this.store.setLayout(layout);
+    return this.applyLayout();
+  }
+
   async applyLayout() {
     const state = this.store.getState();
     const settings = state.layout || {};

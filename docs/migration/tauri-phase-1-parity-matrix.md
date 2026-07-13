@@ -97,7 +97,7 @@
 | 7 | 指定与扩展 Python 41 passed；Rust 全套 21 passed；fmt/build/clippy 通过 | Python/Node/fake Brain 已覆盖发送、进度、最终回复、取消、错误和 action ID 确认；真实在线模型与真实工具留 Task 13 | `feat: 接通Tauri聊天与工具确认` | Brain 请求立即返回；后台事件串行转发；现有 ChatHistoryStore 格式不变；公开 DTO 不泄露 continuation context |
 | 8 | 指定与扩展 Python 127 passed；Rust audio 3 passed、全套 23 passed；fmt/build/clippy 通过 | 实机 Tauri 启动后正常退出码 0、无 Brain 残留；自动覆盖无 Qt 合成、受控资源、顺序播放、取消和快速接话；真实设备人耳验收留 Task 13 | `feat: 迁移Tauri语音播放链` | Rust 不向 WebView暴露路径；随机 token、TTL、单次消费；预置/缓存接话音频与即时合成都走同一播放链 |
 | 9 | 指定 Python 24 passed；扩展 Python 47 passed；Rust capture 5 passed、全套 27 passed；fmt/build/clippy 通过 | 单屏 100% 的既有 xcap 能力已自动验证；真实框选、125/150/200% DPI 与混合多屏留 Task 13 | `feat: 迁移Tauri截图与主动事件` | 私有路径不进 WebView；Brain 即读即删；Python 保留空闲/冷却批次、视觉消息与摘要；提醒和主动观察统一事件 |
-| 10 | 待执行 | 次级窗口待验收 | 待提交 | 设置/工作室/历史/诊断 |
+| 10 | 指定 Python 58 passed；扩展 Python 203 passed；Rust 全套 30 passed；四个前端脚本语法、fmt/build 通过 | 同一 `sakura-desktop.exe` 内四窗口可用；设置重复打开只聚焦、应用成功；工作室读取真实角色；历史 50→100 游标分页；诊断状态完整 | `feat: 合并Tauri次级窗口` | 动态 WebView 必须派发到 Tauri 主线程；旧 Qt 独立桥按回退约束留 Task 12，工作室真实写入留 Task 13 验收副本 |
 | 11 | 待执行 | 托盘/双开待验收 | 待提交 | 启动与插件交互 |
 | 12 | 待执行 | 生产入口待验收 | 待提交 | PySide6 导入图必须为空 |
 | 13 | 待执行 | 干净 Windows x64 待验收 | 待提交 | 最终发布验收 |

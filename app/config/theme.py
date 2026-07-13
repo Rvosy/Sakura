@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -112,6 +112,28 @@ def theme_to_mapping(settings: ThemeSettings) -> dict[str, object]:
     data["ai_enabled"] = normalized.ai_enabled
     data["visual_effect_mode"] = normalized.visual_effect_mode
     return data
+
+
+def resolve_effective_theme(
+    profile: Any | None,
+    override: ThemeSettings | None = None,
+    user_ui_settings: ThemeSettings | None = None,
+) -> ThemeSettings:
+    """解析当前角色主题，不依赖 Qt UI 模块。"""
+    from app.config.character_loader import THEME_SOURCE_PACKAGE
+
+    user = (user_ui_settings or DEFAULT_THEME_SETTINGS).normalized()
+    if override is not None:
+        colors = override.normalized()
+    elif profile is not None and getattr(profile, "theme_source", None) == THEME_SOURCE_PACKAGE:
+        colors = (getattr(profile, "theme_settings", None) or DEFAULT_THEME_SETTINGS).normalized()
+    else:
+        colors = DEFAULT_THEME_SETTINGS
+    return replace(
+        colors,
+        visual_effect_mode=user.visual_effect_mode,
+        ai_enabled=user.ai_enabled,
+    )
 
 
 def _bool_value(value: object, default: bool) -> bool:

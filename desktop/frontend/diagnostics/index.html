@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura 诊断</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">Runtime diagnostics</p>
+          <h1>运行诊断</h1>
+        </div>
+        <button id="refresh" type="button">刷新状态</button>
+      </header>
+      <p id="status" class="status" aria-live="polite">正在读取运行状态…</p>
+      <section id="cards" class="cards"></section>
+      <details>
+        <summary>完整诊断数据</summary>
+        <pre id="raw"></pre>
+      </details>
+    </main>
+    <script type="module" src="./diagnostics.js"></script>
+  </body>
+</html>

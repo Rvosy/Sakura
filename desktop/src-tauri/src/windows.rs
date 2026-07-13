@@ -1,5 +1,8 @@
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
 #[derive(Clone, Copy, Serialize)]
 struct ClickThroughState {
@@ -23,6 +26,54 @@ pub struct PetWindowPlacement {
     height: u32,
     scale_factor: f64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SecondaryWindowSpec {
+    label: &'static str,
+    title: &'static str,
+    path: &'static str,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+}
+
+const SETTINGS_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
+    label: "settings",
+    title: "Sakura 设置",
+    path: "/settings/index.html",
+    width: 1120.0,
+    height: 760.0,
+    min_width: 900.0,
+    min_height: 640.0,
+};
+const STUDIO_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
+    label: "studio",
+    title: "Sakura 角色工作室",
+    path: "/studio/index.html",
+    width: 1180.0,
+    height: 800.0,
+    min_width: 960.0,
+    min_height: 680.0,
+};
+const HISTORY_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
+    label: "history",
+    title: "Sakura 对话历史",
+    path: "/history/index.html",
+    width: 820.0,
+    height: 680.0,
+    min_width: 620.0,
+    min_height: 480.0,
+};
+const DIAGNOSTICS_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
+    label: "diagnostics",
+    title: "Sakura 诊断",
+    path: "/diagnostics/index.html",
+    width: 860.0,
+    height: 700.0,
+    min_width: 680.0,
+    min_height: 520.0,
+};
 
 #[tauri::command]
 pub fn start_dragging(window: WebviewWindow) -> Result<(), String> {
@@ -93,6 +144,73 @@ pub fn apply_pet_window_layout(
         height: physical_height,
         scale_factor,
     })
+}
+
+#[tauri::command]
+pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    open_secondary_window(app, SETTINGS_WINDOW).await
+}
+
+#[tauri::command]
+pub async fn open_studio_window(app: AppHandle) -> Result<(), String> {
+    open_secondary_window(app, STUDIO_WINDOW).await
+}
+
+#[tauri::command]
+pub async fn open_history_window(app: AppHandle) -> Result<(), String> {
+    open_secondary_window(app, HISTORY_WINDOW).await
+}
+
+#[tauri::command]
+pub async fn open_diagnostics_window(app: AppHandle) -> Result<(), String> {
+    open_secondary_window(app, DIAGNOSTICS_WINDOW).await
+}
+
+async fn open_secondary_window(app: AppHandle, spec: SecondaryWindowSpec) -> Result<(), String> {
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let main_thread_app = app.clone();
+    app.run_on_main_thread(move || {
+        let result = open_secondary_window_on_main_thread(&main_thread_app, spec);
+        let _ = sender.blocking_send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .recv()
+        .await
+        .ok_or_else(|| "次级窗口创建任务已中断".to_string())?
+}
+
+fn open_secondary_window_on_main_thread(
+    app: &AppHandle,
+    spec: SecondaryWindowSpec,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(spec.label) {
+        return focus_window(&window);
+    }
+    let window = WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App(spec.path.into()))
+        .title(spec.title)
+        .inner_size(spec.width, spec.height)
+        .min_inner_size(spec.min_width, spec.min_height)
+        .resizable(true)
+        .maximizable(true)
+        .minimizable(true)
+        .closable(true)
+        .decorations(true)
+        .transparent(false)
+        .always_on_top(true)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())?;
+    focus_window(&window)
+}
+
+fn focus_window(window: &WebviewWindow) -> Result<(), String> {
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 pub fn show_main_window(app: &AppHandle) {
@@ -221,5 +339,17 @@ mod tests {
             compute_pet_window_position(work_area, -400, 1600, 1200, 24),
             (-1280, 40)
         );
+    }
+
+    #[test]
+    fn secondary_windows_have_stable_labels_and_app_urls() {
+        assert_eq!(SETTINGS_WINDOW.label, "settings");
+        assert_eq!(SETTINGS_WINDOW.path, "/settings/index.html");
+        assert_eq!(STUDIO_WINDOW.label, "studio");
+        assert_eq!(STUDIO_WINDOW.path, "/studio/index.html");
+        assert_eq!(HISTORY_WINDOW.label, "history");
+        assert_eq!(HISTORY_WINDOW.path, "/history/index.html");
+        assert_eq!(DIAGNOSTICS_WINDOW.label, "diagnostics");
+        assert_eq!(DIAGNOSTICS_WINDOW.path, "/diagnostics/index.html");
     }
 }

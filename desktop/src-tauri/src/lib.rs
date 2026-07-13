@@ -6,11 +6,13 @@ pub mod ipc;
 mod tray;
 mod windows;
 
-use tauri::Manager;
+use serde_json::json;
+use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
     let app = tauri::Builder::default()
         .register_uri_scheme_protocol("sakura-asset", app_state::character_asset_protocol)
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             windows::show_main_window(app);
         }))
@@ -33,11 +35,23 @@ pub fn run() {
             app_state::play_tts_audio,
             app_state::stop_tts_audio,
             app_state::set_tts_volume,
+            app_state::load_request,
+            app_state::host_call,
+            app_state::save_settings,
+            app_state::apply_settings,
+            app_state::preview_layout,
+            app_state::cancel_settings,
+            app_state::show_studio,
+            app_state::close_studio,
             windows::start_dragging,
             windows::set_pet_visible,
             windows::set_click_through,
             windows::set_always_on_top,
             windows::apply_pet_window_layout,
+            windows::open_settings_window,
+            windows::open_studio_window,
+            windows::open_history_window,
+            windows::open_diagnostics_window,
             audio::play_audio_prototype,
             capture::list_capture_monitors,
             capture::open_capture_overlay,
@@ -45,6 +59,19 @@ pub fn run() {
             capture::cancel_capture_overlay,
             capture::capture_screen_prototype,
         ])
+        .on_window_event(|window, event| {
+            let close_event = match window.label() {
+                "settings" => Some("sakura://settings-close-requested"),
+                "studio" => Some("sakura://studio-close-requested"),
+                _ => None,
+            };
+            if let (Some(event_name), WindowEvent::CloseRequested { api, .. }) =
+                (close_event, event)
+            {
+                api.prevent_close();
+                let _ = window.emit(event_name, json!({}));
+            }
+        })
         .build(tauri::generate_context!())
         .expect("failed to build Sakura desktop");
     app.run(|app, event| {

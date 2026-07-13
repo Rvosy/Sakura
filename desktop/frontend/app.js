@@ -18,6 +18,10 @@ const elements = {
   audioButton: document.querySelector("#audio-prototype"),
   capturePrototypeButton: document.querySelector("#capture-prototype"),
   clickThroughButton: document.querySelector("#click-through-toggle"),
+  openSettingsButton: document.querySelector("#open-settings"),
+  openStudioButton: document.querySelector("#open-studio"),
+  openHistoryButton: document.querySelector("#open-history"),
+  openDiagnosticsButton: document.querySelector("#open-diagnostics"),
   hideButton: document.querySelector("#hide-pet"),
   currentPortrait: document.querySelector("#portrait-current"),
   transitionPortrait: document.querySelector("#portrait-transition"),
@@ -100,11 +104,17 @@ chatController = new ChatController({
   setStatus: setResult,
 });
 
-async function loadPetBootstrap(brain) {
-  if (!brain?.acceptingRequests || brain.sessionGeneration === loadedSessionGeneration) return;
+async function loadPetBootstrap(brain, { force = false } = {}) {
+  if (!brain?.acceptingRequests || (!force && brain.sessionGeneration === loadedSessionGeneration)) return;
   const bootstrap = await callDesktop("pet_bootstrap");
   loadedSessionGeneration = brain.sessionGeneration;
   petController.applyBootstrap(bootstrap);
+}
+
+async function refreshPetBootstrap() {
+  await audioController.stop().catch(() => {});
+  const brain = await callDesktop("brain_status");
+  await loadPetBootstrap(brain, { force: true });
 }
 
 function renderBrainStatus(brain) {
@@ -201,6 +211,17 @@ elements.hideButton.addEventListener("click", () => {
   });
 });
 
+for (const [button, command] of [
+  [elements.openSettingsButton, "open_settings_window"],
+  [elements.openStudioButton, "open_studio_window"],
+  [elements.openHistoryButton, "open_history_window"],
+  [elements.openDiagnosticsButton, "open_diagnostics_window"],
+]) {
+  button.addEventListener("click", () => {
+    callDesktop(command).catch((error) => setResult(`窗口打开失败：${error}`, "error"));
+  });
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   document.documentElement.dataset.ready = "true";
   if (listen) {
@@ -248,8 +269,17 @@ window.addEventListener("DOMContentLoaded", () => {
     listen("sakura://manual-observation-error", ({ payload }) =>
       captureController.handleError(payload),
     );
-    listen("sakura://character-changed", () => audioController.stop().catch(() => {}));
-    listen("sakura://settings-changed", () => audioController.stop().catch(() => {}));
+    listen("sakura://layout-preview", ({ payload }) => {
+      petController.previewLayout(payload || {}).catch((error) => {
+        setResult(`布局预览失败：${error}`, "error");
+      });
+    });
+    listen("sakura://character-changed", () => {
+      refreshPetBootstrap().catch((error) => setResult(`角色刷新失败：${error}`, "error"));
+    });
+    listen("sakura://settings-changed", () => {
+      refreshPetBootstrap().catch((error) => setResult(`设置刷新失败：${error}`, "error"));
+    });
   }
   callDesktop("brain_status").then(renderBrainStatus).catch((error) => {
     setResult(`无法读取 Brain 状态：${error}`, "error");

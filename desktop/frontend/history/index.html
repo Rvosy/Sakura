@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura 对话历史</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">Conversation history</p>
+          <h1>对话历史</h1>
+        </div>
+        <button id="refresh" type="button">刷新</button>
+      </header>
+      <p id="status" class="status" aria-live="polite">正在读取历史记录…</p>
+      <section id="history-list" class="history-list" aria-label="历史消息"></section>
+      <button id="load-more" class="load-more" type="button" hidden>加载更早记录</button>
+    </main>
+    <script type="module" src="./history.js"></script>
+  </body>
+</html>

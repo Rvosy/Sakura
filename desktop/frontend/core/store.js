@@ -77,6 +77,17 @@ export function createPetStore() {
       publish();
     },
 
+    setLayout(layout) {
+      state = {
+        ...state,
+        layout: {
+          ...state.layout,
+          ...(layout || {}),
+        },
+      };
+      publish();
+    },
+
     setAudioState(patch) {
       state = {
         ...state,

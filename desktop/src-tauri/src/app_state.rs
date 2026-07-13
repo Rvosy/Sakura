@@ -14,6 +14,7 @@ use crate::brain_host::{
     EventCallback, StatusCallback,
 };
 use crate::capture::{self, CaptureManager};
+use crate::windows;
 
 pub const BRAIN_STATUS_EVENT: &str = "sakura://brain-status";
 pub const TTS_PLAYBACK_EVENT: &str = "sakura://tts-playback-state";
@@ -141,15 +142,37 @@ impl DesktopAppState {
         self.brain.status()
     }
 
+    fn local_diagnostics(&self) -> Value {
+        let status = self.brain.status();
+        json!({
+            "version": 1,
+            "brain": {
+                "state": status.phase,
+                "sessionId": status.session_id,
+                "busy": !status.accepting_requests,
+                "restartCount": status.restart_count,
+                "diagnostic": status.diagnostic,
+            },
+            "plugins": {"loaded": 0, "failed": 0, "items": [], "available": false},
+            "mcp": {"ready": false, "toolCount": 0},
+            "tts": {"ready": self.audio.is_some(), "service": "RustAudioManager"},
+            "resources": {
+                "activeCount": status.temporary_resource_count,
+                "labels": ["temporary"]
+            },
+            "scheduler": {"running": false, "jobs": []},
+            "theme": {},
+        })
+    }
+
     fn pet_bootstrap(&self) -> Result<Value, String> {
         let status = self.brain.status();
         if !status.accepting_requests {
             return Err("Brain Host 尚未就绪".into());
         }
         let startup = self
-            .brain
-            .startup_state()
-            .ok_or_else(|| "Brain Host 未返回启动状态".to_string())?;
+            .request_with_timeout("pet.bootstrap", json!({}), Duration::from_secs(5))
+            .map_err(|error| error.to_string())?;
         build_pet_bootstrap(&startup, status.session_generation)
     }
 
@@ -158,7 +181,16 @@ impl DesktopAppState {
         method: &str,
         payload: Value,
     ) -> Result<Value, BrainHostRequestError> {
-        self.brain.request(method, payload, Duration::from_secs(5))
+        self.request_with_timeout(method, payload, Duration::from_secs(5))
+    }
+
+    fn request_with_timeout(
+        &self,
+        method: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value, BrainHostRequestError> {
+        self.brain.request(method, payload, timeout)
     }
 
     pub(crate) fn brain(&self) -> Arc<BrainHostSupervisor> {
@@ -271,6 +303,140 @@ pub fn stop_tts_audio(state: State<'_, DesktopAppState>) -> Result<(), String> {
 #[tauri::command]
 pub fn set_tts_volume(state: State<'_, DesktopAppState>, volume: f32) -> Result<(), String> {
     state.audio()?.set_volume(volume)
+}
+
+#[tauri::command]
+pub fn load_request(
+    window: tauri::WebviewWindow,
+    state: State<'_, DesktopAppState>,
+) -> Result<Value, BrainHostRequestError> {
+    let kind = secondary_window_kind(window.label()).ok_or_else(|| BrainHostRequestError {
+        code: "SECONDARY_WINDOW_UNKNOWN".into(),
+        message: format!("未知次级窗口：{}", window.label()),
+        retryable: false,
+        details: json!({}),
+    })?;
+    let request = state.request_with_timeout(
+        "window.request",
+        json!({"kind": kind}),
+        Duration::from_secs(30),
+    );
+    if kind == "diagnostics" {
+        return Ok(request.unwrap_or_else(|_| state.local_diagnostics()));
+    }
+    request
+}
+
+#[tauri::command]
+pub async fn host_call(
+    app: AppHandle,
+    state: State<'_, DesktopAppState>,
+    method: String,
+    params: Value,
+) -> Result<Value, BrainHostRequestError> {
+    if method == "diagnostics.snapshot" && !state.brain_status().accepting_requests {
+        return Ok(state.local_diagnostics());
+    }
+    let response = state.request_with_timeout(
+        "window.host_call",
+        json!({"method": method, "params": params}),
+        secondary_call_timeout(&method),
+    )?;
+    if response.get("openWindow").and_then(Value::as_str) == Some("studio") {
+        windows::open_studio_window(app.clone())
+            .await
+            .map_err(BrainHostRequestError::transport)?;
+    }
+    if method.starts_with("studio.save_") || method == "studio.create_character" {
+        let _ = app.emit("sakura://character-changed", response.clone());
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn save_settings(
+    window: tauri::WebviewWindow,
+    state: State<'_, DesktopAppState>,
+    settings: Value,
+) -> Result<(), String> {
+    let response = apply_secondary_settings(&window, &state, settings)?;
+    emit_settings_refresh(window.app_handle(), &response);
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn apply_settings(
+    window: tauri::WebviewWindow,
+    state: State<'_, DesktopAppState>,
+    settings: Value,
+) -> Result<Value, String> {
+    let response = apply_secondary_settings(&window, &state, settings)?;
+    emit_settings_refresh(window.app_handle(), &response);
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn preview_layout(app: AppHandle, layout: Value) -> Result<(), String> {
+    app.emit_to("main", "sakura://layout-preview", layout)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_settings(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn show_studio(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn close_studio(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.destroy().map_err(|error| error.to_string())
+}
+
+fn apply_secondary_settings(
+    window: &tauri::WebviewWindow,
+    state: &DesktopAppState,
+    settings: Value,
+) -> Result<Value, String> {
+    state
+        .request_with_timeout(
+            "window.host_call",
+            json!({"method": "settings.apply", "params": {"settings": settings}}),
+            Duration::from_secs(30),
+        )
+        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{}：{error}", window.label()))
+}
+
+fn emit_settings_refresh(app: &AppHandle, response: &Value) {
+    let _ = app.emit("sakura://settings-changed", response.clone());
+}
+
+fn secondary_window_kind(label: &str) -> Option<&'static str> {
+    match label {
+        "settings" => Some("settings"),
+        "studio" => Some("studio"),
+        "history" => Some("history"),
+        "diagnostics" => Some("diagnostics"),
+        _ => None,
+    }
+}
+
+fn secondary_call_timeout(method: &str) -> Duration {
+    if method.starts_with("studio.import_")
+        || method.starts_with("studio.export_")
+        || method.starts_with("character.import_")
+        || method.starts_with("character.export_")
+        || method.starts_with("resources.")
+    {
+        Duration::from_secs(30 * 60)
+    } else {
+        Duration::from_secs(30)
+    }
 }
 
 pub fn character_asset_protocol<R: Runtime>(
@@ -513,5 +679,26 @@ mod tests {
         let mut malicious = startup;
         malicious["character"]["portraits"]["default"] = json!("outside.png");
         assert!(resolve_character_asset(&malicious, "/portrait/default").is_err());
+    }
+
+    #[test]
+    fn secondary_window_labels_route_to_brain_request_kinds() {
+        assert_eq!(secondary_window_kind("settings"), Some("settings"));
+        assert_eq!(secondary_window_kind("studio"), Some("studio"));
+        assert_eq!(secondary_window_kind("history"), Some("history"));
+        assert_eq!(secondary_window_kind("diagnostics"), Some("diagnostics"));
+        assert_eq!(secondary_window_kind("main"), None);
+    }
+
+    #[test]
+    fn secondary_file_calls_receive_long_timeouts() {
+        assert_eq!(
+            secondary_call_timeout("studio.import_portrait"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            secondary_call_timeout("history.page"),
+            Duration::from_secs(30)
+        );
     }
 }
