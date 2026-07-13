@@ -13,7 +13,7 @@ from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.extensions import ExtensionRegistry
 from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.voice.tts import TTSProvider
+from app.voice.tts_provider import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.core.resource_manager import ResourceRegistry

@@ -1133,3 +1133,15 @@ DEFAULT_PET_WINDOW_STYLESHEET = build_pet_window_stylesheet(DEFAULT_THEME_SETTIN
 DEFAULT_SETTINGS_DIALOG_STYLESHEET = build_settings_dialog_stylesheet(DEFAULT_THEME_SETTINGS)
 DEFAULT_HISTORY_WINDOW_STYLESHEET = build_history_window_stylesheet(DEFAULT_THEME_SETTINGS)
 DEFAULT_RUNTIME_LOG_WINDOW_STYLESHEET = build_runtime_log_window_stylesheet(DEFAULT_THEME_SETTINGS)
+
+# ThemeSettings 和配置序列化必须可被无 Qt Brain Host 使用。UI 样式构建函数
+# 继续保留在本模块，但对外统一复用 app.config.theme 的数据模型，避免同名类型漂移。
+from app.config.theme import (  # noqa: E402,F401
+    DEFAULT_THEME_SETTINGS as DEFAULT_THEME_SETTINGS,
+    THEME_COLOR_FIELDS as THEME_COLOR_FIELDS,
+    ThemeSettings as ThemeSettings,
+    normalize_hex_color as normalize_hex_color,
+    theme_colors_to_mapping as theme_colors_to_mapping,
+    theme_from_mapping as theme_from_mapping,
+    theme_to_mapping as theme_to_mapping,
+)

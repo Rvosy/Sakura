@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.agent.tools import Tool, ToolRegistry
-from app.voice.tts import TTSProvider
+from app.voice.tts_provider import TTSProvider
 
 
 class ToolContributor(Protocol):

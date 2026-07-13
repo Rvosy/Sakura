@@ -26,7 +26,7 @@ from app.config.models import (
 )
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
-from app.ui.theme import (
+from app.config.theme import (
     DEFAULT_THEME_SETTINGS,
     ThemeSettings,
     theme_colors_to_mapping,

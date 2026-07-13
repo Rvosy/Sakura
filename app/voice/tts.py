@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Protocol
 
 from PySide6.QtCore import QObject, Signal
 
@@ -22,6 +21,7 @@ from app.voice.tts_types import (
     _set_service_state,
     _TTSRequest,
 )
+from app.voice.tts_provider import NullTTSProvider, TTSProvider
 # 服务监督已抽到 tts_service.py、合成队列已抽到 tts_synthesis.py。
 # 这里 re-export 供既有测试/装配从 app.voice.tts 导入。
 from app.voice.tts_service import (  # noqa: F401
@@ -86,112 +86,6 @@ def purge_tts_cache(base_dir: Path | None = None) -> None:
             entry.unlink()
         except OSError as exc:
             log_event("TTS", "启动清理缓存文件失败，已跳过", {"path": str(entry), "error": str(exc)})
-
-
-class TTSProvider(Protocol):
-    @property
-    def service_ready(self) -> bool:
-        """本地 TTS 服务是否已探测/预热完成。"""
-        ...
-
-    def speak(
-        self,
-        text: str,
-        tone: str | None = None,
-        on_finished: TTSCallback | None = None,
-        on_started: TTSCallback | None = None,
-    ) -> None:
-        """播放或提交一段待朗读文本。"""
-
-    def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
-        """提前生成一段待朗读音频，但不立即播放。"""
-
-    def speak_prepared(
-        self,
-        handle: TTSPreparedAudio,
-        on_started: TTSCallback | None = None,
-        on_finished: TTSCallback | None = None,
-    ) -> None:
-        """播放 prepare 返回的音频；若仍在生成，则等待生成完成后播放。"""
-
-    def discard_prepared(self, handle: TTSPreparedAudio) -> None:
-        """丢弃不再需要的预生成音频。"""
-
-    def cancel_playback(self) -> None:
-        """中断当前及排队语音，并完成相应生命周期回调。"""
-
-    def ensure_ready(self) -> tuple[bool, str]:
-        """同步检测并预热 TTS 服务，不生成或播放音频。"""
-
-    def close(self) -> None:
-        """释放 Provider 自己启动的本地服务。"""
-
-
-class NullTTSProvider:
-    @property
-    def service_ready(self) -> bool:
-        return False
-
-    def speak(
-        self,
-        text: str,
-        tone: str | None = None,
-        on_finished: TTSCallback | None = None,
-        on_started: TTSCallback | None = None,
-    ) -> None:
-        # GPT-SoVITS 接入前保留调用点，避免聊天流程以后再改。
-        log_event(
-            "TTS",
-            "静音 Provider 跳过播放",
-            {
-                "text": text,
-                "tone": tone,
-            },
-        )
-        _ = text
-        _ = tone
-        if on_started is not None:
-            on_started()
-        if on_finished is not None:
-            on_finished()
-
-    def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
-        log_event("TTS", "静音 Provider 跳过预生成", {"text": text, "tone": tone})
-        return TTSPreparedAudio(text=text.strip(), tone=tone)
-
-    def speak_prepared(
-        self,
-        handle: TTSPreparedAudio,
-        on_started: TTSCallback | None = None,
-        on_finished: TTSCallback | None = None,
-    ) -> None:
-        log_event(
-            "TTS",
-            "静音 Provider 跳过预生成播放",
-            {
-                "text": handle.text,
-                "tone": handle.tone,
-            },
-        )
-        _ = handle
-        if on_started is not None:
-            on_started()
-        if on_finished is not None:
-            on_finished()
-
-    def discard_prepared(self, handle: TTSPreparedAudio) -> None:
-        log_event("TTS", "丢弃静音预生成句柄", {"text": handle.text, "tone": handle.tone})
-        handle.cancelled = True
-
-    def cancel_playback(self) -> None:
-        return
-
-    def ensure_ready(self) -> tuple[bool, str]:
-        log_event("TTS", "静音 Provider 跳过服务检测")
-        return True, "TTS 已关闭。"
-
-    def close(self) -> None:
-        log_event("TTS", "静音 Provider 无需关闭")
 
 
 class GPTSoVITSTTSProvider(QObject):

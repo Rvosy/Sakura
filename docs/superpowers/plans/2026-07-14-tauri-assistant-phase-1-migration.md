@@ -875,3 +875,9 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 
 - 自动测量无法获得真正的 GPU 首帧时间，因此以首个非零 `MainWindowHandle`（1546.5 ms）作为可重复的首个可见窗口代理，并在 parity matrix 中明确限制。
 - 基线主窗口关闭流程返回 `0xC0000409`，未产生 Python traceback。该问题记录为迁移前风险，第一阶段退出标准保持“正常退出且无残留进程”，不降低验收要求。
+
+### 2026-07-14：Brain Host 的既有 Qt 导入链
+
+- 实际代码中 `AppSettingsService` 通过 `app.ui.theme`、`AppContext` 通过 `app.voice.tts`，以及资源注册表通过 `app.core.resource_manager` 间接加载 PySide6；直接照计划组装 `AppContext` 无法满足 Task 3 导入守卫。
+- 最小调整为：把主题数据模型和 TTS Provider 契约移到无 Qt 模块；Qt UI 继续从兼容入口复用同一类型；`ResourceManager` 在 `SAKURA_HEADLESS=1` 时不导入 PySide6，Task 4 再继续抽离实际调度和 worker 生命周期。
+- Headless 运行日志的控制台 sink 改写 stderr，保证 stdout 只包含长度前缀协议帧。现有 Qt 主入口仍维持原 stdout 行为。

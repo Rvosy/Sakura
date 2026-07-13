@@ -11,7 +11,7 @@ from app.llm.prompt_templates import with_desktop_pet_context
 from app.storage.paths import sanitize_file_stem
 
 if TYPE_CHECKING:
-    from app.ui.theme import ThemeSettings
+    from app.config.theme import ThemeSettings
 
 
 DEFAULT_CHARACTER_ID = "sakura"
@@ -204,7 +204,7 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
 
 def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThemeSource, bool]:
-    from app.ui.theme import ThemeSettings, theme_colors_to_mapping, theme_from_mapping
+    from app.config.theme import ThemeSettings, theme_colors_to_mapping, theme_from_mapping
 
     if isinstance(data, dict):
         source = _theme_source_from_text(data.get("source"))
@@ -218,7 +218,7 @@ def character_theme_to_mapping(
     *,
     source: CharacterThemeSource = THEME_SOURCE_PACKAGE,
 ) -> dict[str, object]:
-    from app.ui.theme import theme_colors_to_mapping
+    from app.config.theme import theme_colors_to_mapping
 
     settings = settings or _default_theme_settings()
     data = theme_colors_to_mapping(settings)
@@ -310,7 +310,7 @@ def _theme_source_from_text(value: object) -> CharacterThemeSource:
 
 
 def _default_theme_settings() -> ThemeSettings:
-    from app.ui.theme import DEFAULT_THEME_SETTINGS
+    from app.config.theme import DEFAULT_THEME_SETTINGS
 
     return DEFAULT_THEME_SETTINGS
 

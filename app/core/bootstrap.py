@@ -27,12 +27,7 @@ from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.runtime_log import log_event
 from app.core.resource_manager import ResourceRegistry
-from app.voice.factory import create_tts_provider
-from app.voice.tts import (
-    NullTTSProvider,
-    TTSProvider,
-    purge_tts_cache,
-)
+from app.voice.tts_provider import NullTTSProvider, TTSProvider
 from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
@@ -258,6 +253,9 @@ def build_deferred_services(
     cancel_checker: CancelChecker | None = None,
 ) -> DeferredStartupServices:
     """后台创建启动首帧之后才需要的耗时服务。"""
+
+    from app.voice.factory import create_tts_provider
+    from app.voice.tts import purge_tts_cache
 
     errors: list[str] = []
     settings_service = context.settings_service

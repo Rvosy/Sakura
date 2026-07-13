@@ -11,6 +11,7 @@ lingering 线程与 Shiboken wrapper 保留这两个 native 安全机制。
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import threading
 import time
@@ -20,7 +21,23 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from PySide6.QtCore import QObject, QThread, QTimer
+if os.environ.get("SAKURA_HEADLESS") == "1":
+    class QObject:  # type: ignore[no-redef]
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def sender(self) -> object | None:
+            return None
+
+    class QThread:  # type: ignore[no-redef]
+        pass
+
+    class QTimer:  # type: ignore[no-redef]
+        @staticmethod
+        def singleShot(_delay_ms: int, callback: Callable[[], Any]) -> None:  # noqa: N802
+            callback()
+else:
+    from PySide6.QtCore import QObject, QThread, QTimer
 
 from app.core.runtime_log import log_event
 

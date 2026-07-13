@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import hashlib
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -283,7 +285,8 @@ def log_event(
             pass
 
     if console_log_enabled() and _event_visible(record, sink="console"):
-        print(format_console_event(record))
+        stream = sys.stderr if os.environ.get("SAKURA_HEADLESS") == "1" else sys.stdout
+        print(format_console_event(record), file=stream)
     if file_log_enabled() and _event_visible(record, sink="file"):
         _write_file_log(record)
 

@@ -22,7 +22,7 @@ from app.config.character_loader import (
 )
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
-from app.ui.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
+from app.config.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
 
 CARD_FILENAME = "card.md"
 DEFAULT_TONE_REFS = "voice/refs/ref.txt"
