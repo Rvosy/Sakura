@@ -25,6 +25,8 @@ def test_desktop_crate_and_vanilla_frontend_exist() -> None:
         TAURI / "capabilities" / "default.json",
         TAURI / "src" / "main.rs",
         TAURI / "src" / "lib.rs",
+        TAURI / "src" / "app_state.rs",
+        TAURI / "src" / "brain_host.rs",
         TAURI / "src" / "windows.rs",
         TAURI / "src" / "tray.rs",
         TAURI / "src" / "audio.rs",
@@ -91,3 +93,19 @@ def test_csp_disallows_remote_scripts_and_object_embedding() -> None:
     assert "script-src 'self'" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
+
+
+def test_brain_host_supervisor_is_owned_by_tauri_and_exposes_diagnostic_state() -> None:
+    app_state = _read("desktop/src-tauri/src/app_state.rs")
+    brain_host = _read("desktop/src-tauri/src/brain_host.rs")
+    rust_entry = _read("desktop/src-tauri/src/lib.rs")
+    frontend = _read("desktop/frontend/app.js")
+
+    assert "BrainHostSupervisor" in app_state
+    assert "BrainHostLaunchConfig::for_current_app" in app_state
+    assert "BRAIN_RESTART_LIMIT" in brain_host
+    assert "max_restarts" in brain_host
+    assert "ExitRequested" in rust_entry
+    assert "brain_status" in rust_entry
+    assert "sakura://brain-status" in frontend
+    assert 'phase === "diagnostic"' in frontend

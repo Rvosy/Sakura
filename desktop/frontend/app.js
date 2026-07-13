@@ -19,6 +19,34 @@ function setResult(message, kind = "ready") {
   result.dataset.kind = kind;
 }
 
+function renderBrainStatus(brain) {
+  const phase = brain?.phase || "starting";
+  document.documentElement.dataset.brainPhase = phase;
+  if (phase === "ready") {
+    status.textContent = brain.restartCount
+      ? `Brain 已恢复 · 第 ${brain.restartCount} 次重启`
+      : "Brain Host 已就绪";
+    return;
+  }
+  if (phase === "restarting") {
+    status.textContent = `Brain 正在恢复 · 第 ${brain.restartCount} 次重启`;
+    return;
+  }
+  if (phase === "diagnostic") {
+    status.textContent = "Brain Host 暂不可用 · 诊断模式";
+    setResult(
+      brain.diagnostic?.message || "Brain Host 连续启动失败，请查看诊断信息。",
+      "error",
+    );
+    return;
+  }
+  if (phase === "stopping" || phase === "stopped") {
+    status.textContent = "Brain Host 已停止";
+    return;
+  }
+  status.textContent = "正在初始化 Brain Host";
+}
+
 async function callDesktop(command, payload = {}) {
   if (!invoke) {
     throw new Error("Tauri bridge unavailable");
@@ -114,12 +142,16 @@ hideButton.addEventListener("click", async () => {
 
 window.addEventListener("DOMContentLoaded", () => {
   document.documentElement.dataset.ready = "true";
-  status.textContent = "Tauri 桌面核心已就绪";
+  status.textContent = "正在初始化 Brain Host";
   if (listen) {
     listen("sakura://click-through-changed", ({ payload }) => {
       clickThrough = Boolean(payload?.enabled);
       clickThroughButton.setAttribute("aria-pressed", String(clickThrough));
       clickThroughButton.textContent = clickThrough ? "已穿透 · 托盘恢复" : "鼠标穿透";
     });
+    listen("sakura://brain-status", ({ payload }) => renderBrainStatus(payload));
   }
+  callDesktop("brain_status").then(renderBrainStatus).catch((error) => {
+    setResult(`无法读取 Brain 状态：${error}`, "error");
+  });
 });

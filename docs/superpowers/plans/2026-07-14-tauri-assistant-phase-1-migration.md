@@ -509,14 +509,14 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml ipc
 - Create: `tests/fixtures/fake_brain_host.py`
 - Add Rust tests in: `desktop/src-tauri/src/brain_host.rs`
 
-- [ ] Rust 解析当前 Python 路径；开发模式优先使用调用者传入的 `SAKURA_PYTHON_EXE`。
-- [ ] Rust 创建一次性会话凭据并启动 Brain Host。
-- [ ] 完成握手、健康检查、优雅关闭和强制终止。
-- [ ] Python 崩溃时 UI 保持可用。
-- [ ] 自动重启最多 3 次，并使用退避。
-- [ ] 重启后旧 session、请求和资源全部失效。
-- [ ] 超过阈值后显示诊断页，不进入无限重启。
-- [ ] App 退出时先停止新请求，再关闭 Brain、音频和临时资源。
+- [x] Rust 解析当前 Python 路径；开发模式优先使用调用者传入的 `SAKURA_PYTHON_EXE`。
+- [x] Rust 创建一次性会话凭据并启动 Brain Host。
+- [x] 完成握手、健康检查、优雅关闭和强制终止。
+- [x] Python 崩溃时 UI 保持可用。
+- [x] 自动重启最多 3 次，并使用退避。
+- [x] 重启后旧 session、请求和资源全部失效。
+- [x] 超过阈值后显示诊断页，不进入无限重启。
+- [x] App 退出时先停止新请求，再关闭 Brain、音频和临时资源。
 
 **Verification:**
 
@@ -887,3 +887,9 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - 计划文件只列出修改 `memory_curation_worker.py` 和 `backchannel/controller.py`，但直接复用二者会让 Brain Host 导入 Qt。实际最小调整额外新增 `app/agent/memory_curation_task.py` 与 `app/backchannel/decision.py`，把记忆整理执行和快速接话决策抽成无 Qt 服务；旧 Qt 类继续作为兼容适配器委托给这些服务。
 - `PeriodicScheduler` 已替代新 Brain Host 路径中的 QTimer 调度基础，并由 `BrainHostApplication` 统一持有和关闭。提醒、主动观察和记忆整理的具体 job 注册分别依赖后续聊天事件 DTO、Rust 截图和前端呈现，因此按 Task 7/9 接通；旧 `PetWindow` 的 QTimer 在对应 Tauri 功能和手工验收完成前保留，不进入新的生产 Brain Host 路径。
 - `AssistantApplication` 使用单前台标准线程池、协作取消与 Python session action map。确认/拒绝提交只有在线程池接受任务后才消费 action ID，避免窄竞态导致待确认动作丢失。
+
+### 2026-07-14：Brain Host 监管的诊断呈现
+
+- Task 5 的文件清单未列前端文件，但“超过阈值后显示诊断页”需要现有 Tauri 技术门窗口能观察监管状态。实际最小调整为在 `desktop/frontend/app.js` 监听 `sakura://brain-status` 并查询 `brain_status`，在主窗口内显示启动、恢复和诊断状态；完整诊断独立窗口仍按 Task 10 实现。
+- Rust 监管测试使用 `tests/fixtures/fake_brain_host.py` 做确定性故障注入，覆盖握手卡死、正常关闭无响应、单次崩溃恢复和持续崩溃。真实 Python Brain 的角色/配置装配仍由 Task 3 的进程测试覆盖，Task 13 再执行整机故障注入和残留进程验收。
+- 退出顺序当前先将监管状态切为 `stopping`，拒绝新请求，再关闭 Brain 并删除该 session 登记的临时资源。Rust 音频长期状态要到 Task 8 才建立，届时接入同一 AppState 关闭顺序。
