@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -174,6 +175,19 @@ def test_private_capture_resource_is_read_once_and_deleted(tmp_path: Path) -> No
     assert observation.width == 320
     assert observation.height == 180
     assert observation.data_url.startswith("data:image/jpeg;base64,")
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length path contract")
+def test_private_capture_resource_accepts_windows_extended_length_path(tmp_path: Path) -> None:
+    path = tmp_path / "data" / "cache" / "captures" / "extended.jpg"
+    resource = _private_resource(path)
+    resource["path"] = rf"\\?\{path.resolve()}"
+
+    observation = build_screen_observation_from_private_resource(resource, base_dir=tmp_path)
+
+    assert observation.width == 320
+    assert observation.height == 180
     assert not path.exists()
 
 

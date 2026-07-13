@@ -60,7 +60,9 @@ def build_screen_observation_from_private_resource(
     capture_root = (Path(base_dir).resolve() / "data" / "cache" / "captures").resolve()
     try:
         path = Path(raw_path).resolve(strict=True)
-        path.relative_to(capture_root)
+        comparison_path = _path_for_containment_check(path)
+        comparison_root = _path_for_containment_check(capture_root)
+        comparison_path.relative_to(comparison_root)
     except (OSError, ValueError) as exc:
         raise ValueError("截图资源必须位于受控截图目录。") from exc
     if not path.is_file():
@@ -297,6 +299,17 @@ def _marker_with_visual_id(marker: str, visual_id: str | None) -> str:
     if marker.endswith("]"):
         return f"{marker[:-1]}，视觉记录 visual_id={visual_id}]"
     return f"{marker}，视觉记录 visual_id={visual_id}"
+
+
+def _path_for_containment_check(path: Path) -> Path:
+    """移除 Windows 扩展路径前缀，仅用于已解析路径的安全边界比较。"""
+
+    value = str(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        return Path(f"\\\\{value[8:]}")
+    if value.startswith("\\\\?\\"):
+        return Path(value[4:])
+    return path
 
 
 def _positive_resource_int(resource: Mapping[str, Any], key: str) -> int:
