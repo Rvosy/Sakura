@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import secrets
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.brain_host.dto import startup_state_dto
+from app.brain_host.dto import (
+    agent_progress_dto,
+    chat_reply_dto,
+    pending_action_dto,
+    startup_state_dto,
+)
 from app.brain_host.errors import BrainHostError
 from app.brain_host.protocol import PROTOCOL_VERSION
 
 
 ContextBuilder = Callable[[Path], Any]
+EventSink = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,17 @@ class BrainHostApplication:
         self.state = "starting"
         self.startup: dict[str, Any] | None = None
         self.initialization_error: BrainHostError | None = None
+        self._event_sink: EventSink | None = None
+        self._messages: list[dict[str, Any]] = []
+        self._state_lock = threading.RLock()
+        self._watchers: set[threading.Thread] = set()
+
+    def set_event_sink(self, sink: EventSink | None) -> None:
+        with self._state_lock:
+            self._event_sink = sink
+
+    def shutdown(self) -> dict[str, Any]:
+        return self._shutdown()
 
     def initialize(self) -> dict[str, Any] | None:
         if self.state == "ready":
@@ -103,14 +121,308 @@ class BrainHostApplication:
         self.state = "ready"
         return self.startup
 
-    def handle_request(self, method: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def handle_request(
+        self,
+        method: str,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         if method == "system.hello":
             return self._hello(payload)
         if method == "system.health":
             return self._health()
         if method == "system.shutdown":
             return self._shutdown()
+        if method == "chat.send":
+            return self._chat_send(payload, request_id=request_id)
+        if method == "chat.cancel":
+            return self._chat_cancel(payload)
+        if method == "chat.confirm_action":
+            return self._chat_confirm_action(payload, request_id=request_id)
+        if method == "chat.reject_action":
+            return self._chat_reject_action(payload, request_id=request_id)
         raise BrainHostError("METHOD_NOT_FOUND", f"Unknown Brain Host method: {method}")
+
+    def _chat_send(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise BrainHostError("INVALID_REQUEST", "聊天消息不能为空。")
+        assistant = self._require_assistant()
+        user_text = text.strip()
+        with self._state_lock:
+            from app.llm.context_trimming import trim_messages_for_model
+
+            request_messages = trim_messages_for_model(
+                [*self._messages, {"role": "user", "content": user_text}]
+            )
+            handle = self._submit_with_progress(
+                lambda progress_callback: assistant.send_message(
+                    request_messages,
+                    progress_callback=progress_callback,
+                    request_id=request_id,
+                )
+            )
+            self._messages.append({"role": "user", "content": user_text})
+            self._record_history("user", user_text)
+            self._watch_interaction(handle, source="chat")
+        return self._accepted_interaction(handle)
+
+    def _chat_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        interaction_id = _required_id(payload, "interaction_id", "interactionId")
+        assistant = self._require_assistant()
+        if not assistant.cancel(interaction_id):
+            raise BrainHostError(
+                "INTERACTION_NOT_FOUND",
+                "当前会话中没有可取消的聊天请求。",
+            )
+        return {"version": 1, "interactionId": interaction_id, "cancelled": True}
+
+    def _chat_confirm_action(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        action_id = _required_id(payload, "action_id", "actionId")
+        assistant = self._require_assistant()
+        handle = self._submit_with_progress(
+            lambda progress_callback: assistant.confirm_action(
+                action_id,
+                progress_callback=progress_callback,
+                request_id=request_id,
+            )
+        )
+        self._watch_interaction(handle, source="confirm_action")
+        return self._accepted_interaction(handle)
+
+    def _chat_reject_action(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        action_id = _required_id(payload, "action_id", "actionId")
+        assistant = self._require_assistant()
+        handle = self._submit_assistant(
+            lambda: assistant.reject_action(action_id, request_id=request_id)
+        )
+        self._watch_interaction(handle, source="reject_action")
+        return self._accepted_interaction(handle)
+
+    def _require_assistant(self) -> Any:
+        if self.state != "ready" or self.assistant is None:
+            raise BrainHostError(
+                "BACKEND_UNAVAILABLE",
+                "Brain Host 尚未准备好，请稍后重试。",
+                retryable=True,
+                details={"state": self.state},
+            )
+        return self.assistant
+
+    def _submit_assistant(self, submit: Callable[[], Any]) -> Any:
+        from app.core.assistant_service import (
+            AssistantBusyError,
+            AssistantClosedError,
+            PendingActionNotFound,
+        )
+
+        try:
+            return submit()
+        except AssistantBusyError as exc:
+            raise BrainHostError(
+                "ASSISTANT_BUSY",
+                "上一轮对话尚未结束，请先等待或取消。",
+                retryable=True,
+            ) from exc
+        except AssistantClosedError as exc:
+            raise BrainHostError(
+                "BACKEND_UNAVAILABLE",
+                "Brain Host 已停止，请等待桌面端恢复。",
+                retryable=True,
+            ) from exc
+        except PendingActionNotFound as exc:
+            raise BrainHostError(
+                "ACTION_NOT_FOUND",
+                "该操作确认已失效、已处理或不属于当前会话。",
+            ) from exc
+
+    def _submit_with_progress(self, submit: Callable[[Callable[[Any], None]], Any]) -> Any:
+        gate = threading.Lock()
+        handle_ref: list[Any] = []
+        buffered: list[Any] = []
+
+        def progress_callback(progress: Any) -> None:
+            with gate:
+                if not handle_ref:
+                    buffered.append(progress)
+                    return
+                handle = handle_ref[0]
+            self._handle_progress(handle, progress)
+
+        handle = self._submit_assistant(lambda: submit(progress_callback))
+        with gate:
+            handle_ref.append(handle)
+            pending = tuple(buffered)
+            buffered.clear()
+        for progress in pending:
+            self._handle_progress(handle, progress)
+        return handle
+
+    def _accepted_interaction(self, handle: Any) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "interactionId": handle.interaction_id,
+            "requestId": handle.request_id,
+        }
+
+    def _handle_progress(self, handle: Any, progress: Any) -> None:
+        self._record_assistant_reply(progress.reply)
+        self._publish(
+            "chat.progress",
+            agent_progress_dto(
+                progress,
+                interaction_id=handle.interaction_id,
+                request_id=handle.request_id,
+            ),
+        )
+
+    def _watch_interaction(self, handle: Any, *, source: str) -> None:
+        watcher = threading.Thread(
+            target=self._wait_for_interaction,
+            args=(handle, source),
+            name=f"sakura-brain-watch-{handle.interaction_id[-8:]}",
+            daemon=True,
+        )
+        with self._state_lock:
+            self._watchers.add(watcher)
+        watcher.start()
+
+    def _wait_for_interaction(self, handle: Any, source: str) -> None:
+        from app.core.assistant_service import InteractionCancelledError
+
+        try:
+            result = handle.result()
+        except InteractionCancelledError:
+            self._publish(
+                "chat.cancelled",
+                {
+                    "version": 1,
+                    "interactionId": handle.interaction_id,
+                    "requestId": handle.request_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._record_history("error", str(exc))
+            self._publish(
+                "chat.error",
+                {
+                    "version": 1,
+                    "interactionId": handle.interaction_id,
+                    "requestId": handle.request_id,
+                    "error": {
+                        "code": "CHAT_REQUEST_FAILED",
+                        "message": "聊天请求没有成功完成，请检查网络、代理和模型配置后重试。",
+                        "retryable": True,
+                        "details": {"errorType": type(exc).__name__},
+                    },
+                },
+            )
+        else:
+            self._record_completed_result(result)
+            payload = {
+                "version": 1,
+                "interactionId": handle.interaction_id,
+                "requestId": handle.request_id,
+                "source": source,
+                "reply": chat_reply_dto(result.reply),
+                "pendingActions": [
+                    pending_action_dto(action)
+                    for action in self._pending_actions_for(handle.snapshot().pending_action_ids)
+                ],
+            }
+            self._publish("chat.reply", payload)
+            for action in payload["pendingActions"]:
+                self._publish(
+                    "chat.confirmation_requested",
+                    {
+                        "version": 1,
+                        "interactionId": handle.interaction_id,
+                        "requestId": handle.request_id,
+                        "action": action,
+                    },
+                )
+        finally:
+            with self._state_lock:
+                self._watchers.discard(threading.current_thread())
+
+    def _pending_actions_for(self, action_ids: tuple[str, ...]) -> tuple[Any, ...]:
+        assistant = self.assistant
+        if assistant is None:
+            return ()
+        by_id = {str(action["id"]): action for action in assistant.pending_actions}
+        actions = []
+        for action_id in action_ids:
+            item = by_id.get(action_id)
+            if item is not None:
+                from app.agent.actions import PendingToolAction
+
+                actions.append(PendingToolAction.from_dict(item))
+        return tuple(actions)
+
+    def _record_completed_result(self, result: Any) -> None:
+        reply = result.reply
+        with self._state_lock:
+            if reply.text.strip():
+                self._messages.append({"role": "assistant", "content": reply.text})
+        self._record_assistant_reply(reply, _debug=result._debug)
+
+    def _record_assistant_reply(self, reply: Any, _debug: dict[str, Any] | None = None) -> None:
+        clean_segments = [segment for segment in reply.segments if segment.text.strip()]
+        for index, segment in enumerate(clean_segments):
+            self._record_history(
+                "assistant",
+                segment.text,
+                segment.translation,
+                segment.tone,
+                segment.portrait,
+                _debug=_debug if index == 0 else None,
+            )
+
+    def _record_history(
+        self,
+        role: str,
+        content: str,
+        translation: str = "",
+        tone: str = "",
+        portrait: str = "",
+        *,
+        _debug: dict[str, Any] | None = None,
+    ) -> None:
+        history = getattr(self.context, "history_store", None)
+        append = getattr(history, "append", None)
+        if not callable(append):
+            return
+        try:
+            with self._state_lock:
+                append(role, content, translation, tone, portrait, _debug=_debug)
+        except OSError:
+            pass
+
+    def _publish(self, name: str, payload: dict[str, Any]) -> None:
+        with self._state_lock:
+            sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            sink(name, payload)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _hello(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if payload.get("protocol") != self.config.protocol_version:
@@ -148,6 +460,11 @@ class BrainHostApplication:
             self.scheduler.stop(timeout=1)
         if self.assistant is not None:
             self.assistant.close(wait=True)
+        with self._state_lock:
+            watchers = tuple(self._watchers)
+        for watcher in watchers:
+            if watcher is not threading.current_thread():
+                watcher.join(timeout=1)
         if context is not None:
             _close_quietly(getattr(context, "mcp_tool_provider", None), "close")
             _close_quietly(getattr(context, "plugin_manager", None), "shutdown_all")
@@ -172,3 +489,10 @@ def _close_quietly(target: object | None, method: str) -> None:
             callback()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _required_id(payload: Mapping[str, Any], snake_case: str, camel_case: str) -> str:
+    value = payload.get(snake_case, payload.get(camel_case))
+    if not isinstance(value, str) or not value.strip():
+        raise BrainHostError("INVALID_REQUEST", f"{camel_case} is required")
+    return value.strip()

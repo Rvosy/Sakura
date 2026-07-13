@@ -230,6 +230,78 @@ summary:focus-visible {
   backdrop-filter: blur(22px) saturate(1.1);
 }
 
+.tool-confirmation {
+  position: absolute;
+  left: var(--input-x);
+  top: calc(var(--input-y) - 154px);
+  z-index: 18;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.8fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: var(--input-width);
+  min-height: 136px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 82%, transparent);
+  border-radius: 18px;
+  color: var(--sakura-text);
+  background: color-mix(in srgb, var(--sakura-input) 95%, transparent);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--sakura-text) 20%, transparent);
+  backdrop-filter: blur(24px) saturate(1.12);
+}
+
+.tool-confirmation[hidden] {
+  display: none;
+}
+
+.tool-confirmation__copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tool-confirmation__copy strong {
+  color: var(--sakura-secondary-text);
+  font-size: 14px;
+}
+
+.tool-confirmation__arguments {
+  max-height: 104px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 62%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--sakura-panel) 70%, transparent);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  user-select: text;
+}
+
+.tool-confirmation__actions {
+  display: grid;
+  gap: 7px;
+}
+
+.tool-confirmation__actions button {
+  min-width: 58px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 72%, transparent);
+  border-radius: 11px;
+  color: var(--sakura-secondary-text);
+  background: var(--sakura-input);
+  font-size: var(--button-font-size);
+  font-weight: 700;
+}
+
+.tool-confirmation__actions .primary-button {
+  color: white;
+  background: var(--sakura-primary);
+}
+
 .composer input {
   width: 100%;
   height: 38px;

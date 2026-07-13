@@ -21,6 +21,55 @@ from app.config.defaults import (
     SPEECH_FONT_SIZE_MIN,
 )
 from app.config.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_to_mapping
+from app.agent.actions import AgentProgress, PendingToolAction
+from app.llm.chat_reply import ChatReply
+
+
+def chat_reply_dto(reply: ChatReply) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "text": reply.text,
+        "translation": reply.translation,
+        "segments": [
+            {
+                "ja": segment.text,
+                "zh": segment.translation,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+                "suppressTts": bool(segment.suppress_tts),
+            }
+            for segment in reply.segments
+        ],
+    }
+
+
+def agent_progress_dto(
+    progress: AgentProgress,
+    *,
+    interaction_id: str,
+    request_id: str,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "interactionId": interaction_id,
+        "requestId": request_id,
+        "stage": progress.stage,
+        "reply": chat_reply_dto(progress.reply),
+        "metadata": dict(progress.metadata),
+    }
+
+
+def pending_action_dto(action: PendingToolAction) -> dict[str, Any]:
+    """只公开确认 UI 所需字段，继续推理上下文始终留在 Python 内存中。"""
+
+    return {
+        "version": 1,
+        "id": action.id,
+        "toolName": action.tool_name,
+        "arguments": dict(action.arguments),
+        "reason": action.reason,
+        "createdAt": action.created_at,
+    }
 
 
 def startup_state_dto(context: Any) -> dict[str, Any]:

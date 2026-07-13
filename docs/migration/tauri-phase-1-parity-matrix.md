@@ -94,7 +94,7 @@
 | 4 | 计划测试 141 passed；扩展回归 222 passed；PetWindow 272 passed | 不适用 | `refactor: 抽离无Qt助手服务` | 单前台交互、协作取消、session action map、标准线程池与无 Qt scheduler；Headless 导入图无 PySide6/app.ui |
 | 5 | Rust 监管 6 passed；Rust 全套 16 passed；Python 契约 15 passed；fmt/build 通过 | fake host 已覆盖崩溃、三次退避重启、诊断态、优雅/强制关闭；真实进程故障注入留待最终手工验收 | `feat: 实现Brain Host监管` | 每次启动生成新 session/credential；重启清空旧请求和临时资源；Tauri 退出先停止接收请求 |
 | 6 | 指定 Python 6 passed；扩展 Python 49 passed；Rust windows 5 passed；Rust 全套 20 passed；fmt/build 通过 | 单屏 100% 下真实角色立绘、主题、字幕、输入和受控资源 URL 已验证；多 DPI/混合多屏、物理鼠标与托盘仍见 ADR-0001 | `feat: 迁移Tauri桌宠前端` | 单一 Store；JS 布局与 Qt 纯模型逐项等价；资源协议拒绝路径逃逸 |
-| 7 | 待执行 | 聊天与确认待验收 | 待提交 | 聊天契约 |
+| 7 | 指定与扩展 Python 41 passed；Rust 全套 21 passed；fmt/build/clippy 通过 | Python/Node/fake Brain 已覆盖发送、进度、最终回复、取消、错误和 action ID 确认；真实在线模型与真实工具留 Task 13 | `feat: 接通Tauri聊天与工具确认` | Brain 请求立即返回；后台事件串行转发；现有 ChatHistoryStore 格式不变；公开 DTO 不泄露 continuation context |
 | 8 | 待执行 | 真实音频待验收 | 待提交 | 合成/播放/快速接话 |
 | 9 | 待执行 | 多屏截图待验收 | 待提交 | 观察与主动事件 |
 | 10 | 待执行 | 次级窗口待验收 | 待提交 | 设置/工作室/历史/诊断 |

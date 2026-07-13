@@ -2,6 +2,8 @@ import { petStore } from "./core/store.js";
 import { PetController } from "./pet/pet_controller.js";
 import { PortraitController } from "./pet/portrait_controller.js";
 import { SubtitleController } from "./pet/subtitle_controller.js";
+import { ChatController } from "./chat/chat_controller.js";
+import { ConfirmationView } from "./chat/confirmation_view.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -23,6 +25,12 @@ const elements = {
   send: document.querySelector("#send-message"),
   cancel: document.querySelector("#cancel-message"),
   capture: document.querySelector("#capture-screen"),
+  confirmationPanel: document.querySelector("#tool-confirmation"),
+  confirmationName: document.querySelector("#tool-confirmation-name"),
+  confirmationReason: document.querySelector("#tool-confirmation-reason"),
+  confirmationArguments: document.querySelector("#tool-confirmation-arguments"),
+  confirmAction: document.querySelector("#confirm-tool-action"),
+  rejectAction: document.querySelector("#reject-tool-action"),
 };
 
 let dragging = false;
@@ -59,6 +67,26 @@ const petController = new PetController({
   elements,
 });
 
+let chatController;
+const confirmationView = new ConfirmationView({
+  panel: elements.confirmationPanel,
+  name: elements.confirmationName,
+  reason: elements.confirmationReason,
+  argumentsView: elements.confirmationArguments,
+  confirmButton: elements.confirmAction,
+  rejectButton: elements.rejectAction,
+  onConfirm: (actionId) => chatController.confirm(actionId).catch(() => {}),
+  onReject: (actionId) => chatController.reject(actionId).catch(() => {}),
+});
+
+chatController = new ChatController({
+  store: petStore,
+  invoke: callDesktop,
+  subtitleController,
+  confirmationView,
+  setStatus: setResult,
+});
+
 async function loadPetBootstrap(brain) {
   if (!brain?.acceptingRequests || brain.sessionGeneration === loadedSessionGeneration) return;
   const bootstrap = await callDesktop("pet_bootstrap");
@@ -79,12 +107,14 @@ function renderBrainStatus(brain) {
   if (phase === "restarting") {
     loadedSessionGeneration = null;
     petStore.resetSession();
+    chatController.reset();
     elements.status.textContent = `Brain 正在恢复 · 第 ${brain.restartCount} 次重启`;
     return;
   }
   if (phase === "diagnostic") {
     loadedSessionGeneration = null;
     petStore.resetSession();
+    chatController.reset();
     elements.status.textContent = "Brain Host 暂不可用 · 诊断模式";
     setResult(
       brain.diagnostic?.message || "Brain Host 连续启动失败，请查看诊断信息。",
@@ -167,6 +197,13 @@ window.addEventListener("DOMContentLoaded", () => {
       elements.clickThroughButton.textContent = clickThrough ? "已穿透 · 托盘恢复" : "鼠标穿透";
     });
     listen("sakura://brain-status", ({ payload }) => renderBrainStatus(payload));
+    listen("sakura://chat-progress", ({ payload }) => chatController.handleProgress(payload));
+    listen("sakura://chat-reply", ({ payload }) => chatController.handleReply(payload));
+    listen("sakura://chat-cancelled", ({ payload }) => chatController.handleCancelled(payload));
+    listen("sakura://chat-error", ({ payload }) => chatController.handleError(payload));
+    listen("sakura://chat-confirmation-requested", ({ payload }) =>
+      chatController.handleConfirmation(payload),
+    );
   }
   callDesktop("brain_status").then(renderBrainStatus).catch((error) => {
     setResult(`无法读取 Brain 状态：${error}`, "error");
@@ -174,11 +211,13 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 window.addEventListener("sakura:chat-send", ({ detail }) => {
-  setResult(`待接通聊天：${detail.text}`, "ready");
+  chatController.send(detail.text).then(() => {
+    elements.input.value = "";
+  }).catch(() => {});
 });
 
 window.addEventListener("sakura:chat-cancel", () => {
-  setResult("待接通取消请求。", "ready");
+  chatController.cancel().catch(() => {});
 });
 
 window.addEventListener("sakura:capture-request", () => {

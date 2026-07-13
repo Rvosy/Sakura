@@ -162,6 +162,53 @@ fn default_python_candidate(base_dir: &Path) -> PathBuf {
 }
 
 pub type StatusCallback = Arc<dyn Fn(BrainHostStatus) + Send + Sync + 'static>;
+pub type EventCallback = Arc<dyn Fn(BrainHostEvent) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainHostEvent {
+    pub method: String,
+    pub payload: Value,
+    pub session_id: String,
+    pub sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainHostRequestError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    pub details: Value,
+}
+
+impl BrainHostRequestError {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            code: "BACKEND_UNAVAILABLE".into(),
+            message: message.into(),
+            retryable: true,
+            details: json!({}),
+        }
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            code: "BRAIN_TRANSPORT_FAILED".into(),
+            message: message.into(),
+            retryable: true,
+            details: json!({}),
+        }
+    }
+}
+
+impl std::fmt::Display for BrainHostRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for BrainHostRequestError {}
 
 struct RuntimeState {
     status: BrainHostStatus,
@@ -188,6 +235,13 @@ impl RuntimeState {
 
 enum SupervisorCommand {
     Shutdown,
+    Request {
+        tracking_id: String,
+        method: String,
+        payload: Value,
+        timeout: Duration,
+        response: Sender<Result<Value, BrainHostRequestError>>,
+    },
 }
 
 enum LaunchError {
@@ -210,13 +264,29 @@ pub struct BrainHostSupervisor {
 
 impl BrainHostSupervisor {
     pub fn start(config: BrainHostLaunchConfig, callback: Option<StatusCallback>) -> Self {
+        Self::start_with_event_callback(config, callback, None)
+    }
+
+    pub fn start_with_event_callback(
+        config: BrainHostLaunchConfig,
+        callback: Option<StatusCallback>,
+        event_callback: Option<EventCallback>,
+    ) -> Self {
         let shared = Arc::new(Mutex::new(RuntimeState::new()));
         let (commands, receiver) = mpsc::channel();
         let thread_shared = Arc::clone(&shared);
         let thread_callback = callback.clone();
         let handle = thread::Builder::new()
             .name("sakura-brain-supervisor".into())
-            .spawn(move || supervise(config, receiver, thread_shared, thread_callback))
+            .spawn(move || {
+                supervise(
+                    config,
+                    receiver,
+                    thread_shared,
+                    thread_callback,
+                    event_callback,
+                )
+            })
             .expect("Brain Host supervisor thread should start");
         Self {
             shared,
@@ -253,6 +323,51 @@ impl BrainHostSupervisor {
         drop(state);
         notify(&self.callback, status);
         inserted
+    }
+
+    pub fn request(
+        &self,
+        method: impl Into<String>,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value, BrainHostRequestError> {
+        let tracking_id = format!("desktop-{}", Uuid::new_v4().simple());
+        if !self.register_request(tracking_id.clone()) {
+            return Err(BrainHostRequestError::unavailable(
+                "Brain Host 尚未准备好，请稍后重试。",
+            ));
+        }
+        let (response_tx, response_rx) = mpsc::channel();
+        let sent = self
+            .commands
+            .lock()
+            .expect("command lock poisoned")
+            .as_ref()
+            .is_some_and(|sender| {
+                sender
+                    .send(SupervisorCommand::Request {
+                        tracking_id: tracking_id.clone(),
+                        method: method.into(),
+                        payload,
+                        timeout,
+                        response: response_tx,
+                    })
+                    .is_ok()
+            });
+        if !sent {
+            complete_request(&self.shared, &self.callback, &tracking_id);
+            return Err(BrainHostRequestError::unavailable(
+                "Brain Host 监管线程已停止。",
+            ));
+        }
+        response_rx
+            .recv_timeout(timeout + Duration::from_secs(1))
+            .unwrap_or_else(|error| {
+                Err(BrainHostRequestError::transport(match error {
+                    RecvTimeoutError::Timeout => "等待 Brain Host 响应超时。".to_string(),
+                    RecvTimeoutError::Disconnected => "Brain Host 响应通道已关闭。".to_string(),
+                }))
+            })
     }
 
     pub fn register_temporary_resource(&self, path: PathBuf) -> bool {
@@ -298,6 +413,7 @@ struct ManagedProcess {
     session_id: String,
     startup_state: Option<Value>,
     next_sequence: u64,
+    last_inbound_sequence: u64,
 }
 
 impl ManagedProcess {
@@ -374,6 +490,7 @@ impl ManagedProcess {
             session_id,
             startup_state: None,
             next_sequence: 0,
+            last_inbound_sequence: 0,
         };
         let startup = (|| {
             let hello = process.request_during_startup(
@@ -429,6 +546,15 @@ impl ManagedProcess {
                 Ok(SupervisorCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
                     return Err(LaunchError::Shutdown);
                 }
+                Ok(SupervisorCommand::Request {
+                    tracking_id: _,
+                    response,
+                    ..
+                }) => {
+                    let _ = response.send(Err(BrainHostRequestError::unavailable(
+                        "Brain Host 正在启动，请稍后重试。",
+                    )));
+                }
                 Err(TryRecvError::Empty) => {}
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -460,17 +586,76 @@ impl ManagedProcess {
         payload: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        let request_id = self.write_request(method, payload, timeout)?;
-        let response = self
-            .responses
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                RecvTimeoutError::Timeout => format!("Brain Host request timed out: {method}"),
-                RecvTimeoutError::Disconnected => {
-                    format!("Brain Host closed before responding: {method}")
+        self.request_runtime(method, payload, timeout, &None)
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_runtime(
+        &mut self,
+        method: &str,
+        payload: Value,
+        timeout: Duration,
+        event_callback: &Option<EventCallback>,
+    ) -> Result<Value, BrainHostRequestError> {
+        let request_id = self
+            .write_request(method, payload, timeout)
+            .map_err(BrainHostRequestError::transport)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(BrainHostRequestError::transport(format!(
+                    "Brain Host request timed out: {method}"
+                )));
+            }
+            let message = self
+                .responses
+                .recv_timeout(remaining)
+                .map_err(|error| {
+                    BrainHostRequestError::transport(match error {
+                        RecvTimeoutError::Timeout => {
+                            format!("Brain Host request timed out: {method}")
+                        }
+                        RecvTimeoutError::Disconnected => {
+                            format!("Brain Host closed before responding: {method}")
+                        }
+                    })
+                })?
+                .map_err(BrainHostRequestError::transport)?;
+            self.validate_runtime_envelope(&message)?;
+            match message.get("kind").and_then(Value::as_str) {
+                Some("event") => self.forward_event(message, event_callback)?,
+                Some("response") => {
+                    return self.validate_runtime_response(message, &request_id);
                 }
-            })??;
-        self.validate_response(response, &request_id)
+                _ => {
+                    return Err(BrainHostRequestError::transport(
+                        "Brain Host returned an unexpected message kind",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn drain_events(&mut self, event_callback: &Option<EventCallback>) -> Result<(), String> {
+        loop {
+            match self.responses.try_recv() {
+                Ok(Ok(message)) => {
+                    self.validate_runtime_envelope(&message)
+                        .map_err(|error| error.to_string())?;
+                    if message.get("kind").and_then(Value::as_str) != Some("event") {
+                        return Err("Brain Host returned an unexpected response".into());
+                    }
+                    self.forward_event(message, event_callback)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(TryRecvError::Empty) => return Ok(()),
+                Err(TryRecvError::Disconnected) => {
+                    return Err("Brain Host response channel closed".into());
+                }
+            }
+        }
     }
 
     fn write_request(
@@ -495,11 +680,11 @@ impl ManagedProcess {
         Ok(request_id)
     }
 
-    fn validate_response(&self, response: Value, request_id: &str) -> Result<Value, String> {
-        validate_envelope(&response).map_err(|error| error.to_string())?;
+    fn validate_response(&mut self, response: Value, request_id: &str) -> Result<Value, String> {
+        self.validate_runtime_envelope(&response)
+            .map_err(|error| error.to_string())?;
         if response.get("kind").and_then(Value::as_str) != Some("response")
             || response.get("id").and_then(Value::as_str) != Some(request_id)
-            || response.get("session_id").and_then(Value::as_str) != Some(self.session_id.as_str())
         {
             return Err("Brain Host returned a mismatched response".into());
         }
@@ -514,6 +699,85 @@ impl ManagedProcess {
             .get("payload")
             .cloned()
             .unwrap_or_else(|| json!({})))
+    }
+
+    fn validate_runtime_envelope(&mut self, message: &Value) -> Result<(), BrainHostRequestError> {
+        validate_envelope(message)
+            .map_err(|error| BrainHostRequestError::transport(error.to_string()))?;
+        if message.get("session_id").and_then(Value::as_str) != Some(self.session_id.as_str()) {
+            return Err(BrainHostRequestError::transport(
+                "Brain Host returned a message for another session",
+            ));
+        }
+        let sequence = message.get("sequence").and_then(Value::as_u64).unwrap_or(0);
+        let expected = self.last_inbound_sequence + 1;
+        if sequence != expected {
+            return Err(BrainHostRequestError::transport(format!(
+                "Brain Host sequence mismatch: expected {expected}, got {sequence}"
+            )));
+        }
+        self.last_inbound_sequence = sequence;
+        Ok(())
+    }
+
+    fn validate_runtime_response(
+        &self,
+        response: Value,
+        request_id: &str,
+    ) -> Result<Value, BrainHostRequestError> {
+        if response.get("id").and_then(Value::as_str) != Some(request_id) {
+            return Err(BrainHostRequestError::transport(
+                "Brain Host returned a mismatched response",
+            ));
+        }
+        if response.get("ok").and_then(Value::as_bool) == Some(true) {
+            return Ok(response
+                .get("payload")
+                .cloned()
+                .unwrap_or_else(|| json!({})));
+        }
+        let error = response.get("error").cloned().unwrap_or_else(|| json!({}));
+        Ok::<(), BrainHostRequestError>(()).and_then(|()| {
+            Err(BrainHostRequestError {
+                code: error
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("BRAIN_REQUEST_FAILED")
+                    .to_string(),
+                message: error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Brain Host request failed")
+                    .to_string(),
+                retryable: error
+                    .get("retryable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                details: error.get("details").cloned().unwrap_or_else(|| json!({})),
+            })
+        })
+    }
+
+    fn forward_event(
+        &self,
+        message: Value,
+        event_callback: &Option<EventCallback>,
+    ) -> Result<(), BrainHostRequestError> {
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| BrainHostRequestError::transport("Brain event method is missing"))?;
+        let event = BrainHostEvent {
+            method: method.to_string(),
+            payload: message.get("payload").cloned().unwrap_or_else(|| json!({})),
+            session_id: self.session_id.clone(),
+            sequence: message.get("sequence").and_then(Value::as_u64).unwrap_or(0),
+        };
+        if let Some(callback) = event_callback {
+            callback(event);
+        }
+        Ok(())
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, String> {
@@ -567,6 +831,7 @@ fn supervise(
     commands: Receiver<SupervisorCommand>,
     shared: Arc<Mutex<RuntimeState>>,
     callback: Option<StatusCallback>,
+    event_callback: Option<EventCallback>,
 ) {
     let mut restart_count = 0;
     loop {
@@ -591,14 +856,33 @@ fn supervise(
                             mark_stopped(&shared, &callback, forced);
                             return;
                         }
-                        Err(RecvTimeoutError::Timeout) => match process.try_wait() {
-                            Ok(Some(status)) => {
-                                process.finish_after_exit();
-                                break format!("Brain Host exited unexpectedly: {status}");
+                        Ok(SupervisorCommand::Request {
+                            tracking_id,
+                            method,
+                            payload,
+                            timeout,
+                            response,
+                        }) => {
+                            let result =
+                                process.request_runtime(&method, payload, timeout, &event_callback);
+                            complete_request(&shared, &callback, &tracking_id);
+                            let _ = response.send(result);
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            if let Err(error) = process.drain_events(&event_callback) {
+                                break format!("Brain Host event channel failed: {error}");
                             }
-                            Ok(None) => {}
-                            Err(error) => break format!("Brain Host status check failed: {error}"),
-                        },
+                            match process.try_wait() {
+                                Ok(Some(status)) => {
+                                    process.finish_after_exit();
+                                    break format!("Brain Host exited unexpectedly: {status}");
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    break format!("Brain Host status check failed: {error}");
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -623,6 +907,16 @@ fn supervise(
             Ok(SupervisorCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                 mark_stopped(&shared, &callback, false);
                 return;
+            }
+            Ok(SupervisorCommand::Request {
+                tracking_id,
+                response,
+                ..
+            }) => {
+                let _ = response.send(Err(BrainHostRequestError::unavailable(
+                    "Brain Host 正在恢复，请稍后重试。",
+                )));
+                complete_request(&shared, &callback, &tracking_id);
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -747,6 +1041,20 @@ fn invalidate_runtime(shared: &Arc<Mutex<RuntimeState>>) {
     }
 }
 
+fn complete_request(
+    shared: &Arc<Mutex<RuntimeState>>,
+    callback: &Option<StatusCallback>,
+    request_id: &str,
+) {
+    let status = {
+        let mut state = shared.lock().expect("Brain state lock poisoned");
+        state.pending_request_ids.remove(request_id);
+        state.synchronize_counts();
+        state.status.clone()
+    };
+    notify(callback, status);
+}
+
 fn update_status(
     shared: &Arc<Mutex<RuntimeState>>,
     callback: &Option<StatusCallback>,
@@ -776,6 +1084,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -967,5 +1276,51 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(supervisor.status().phase, BrainHostPhase::Stopped);
+    }
+
+    #[test]
+    fn brain_host_routes_runtime_requests_and_forwards_async_events() {
+        let temp = TempDir::new().unwrap();
+        let events = Arc::new(Mutex::new(Vec::<BrainHostEvent>::new()));
+        let captured = Arc::clone(&events);
+        let event_callback: EventCallback = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let supervisor = BrainHostSupervisor::start_with_event_callback(
+            fixture_config(&temp, "chat_events"),
+            None,
+            Some(event_callback),
+        );
+        wait_for_status(&supervisor, Duration::from_secs(5), |status| {
+            status.phase == BrainHostPhase::Ready
+        });
+
+        let accepted = supervisor
+            .request(
+                "chat.send",
+                json!({"text": "hello"}),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+
+        assert_eq!(accepted["interactionId"], "interaction-fake");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if events.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for chat events"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let captured = events.lock().unwrap();
+        assert_eq!(captured[0].method, "chat.progress");
+        assert_eq!(captured[0].payload["stage"], "thinking");
+        assert_eq!(captured[1].method, "chat.reply");
+        drop(captured);
+        assert_eq!(supervisor.status().pending_request_count, 0);
+        supervisor.shutdown();
     }
 }

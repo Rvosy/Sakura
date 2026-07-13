@@ -63,13 +63,18 @@ def _record_launch(path: Path | None, launch_count: int) -> None:
         )
 
 
-def _response(request: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _response(
+    request: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    sequence: int | None = None,
+) -> dict[str, Any]:
     return {
         "protocol": 1,
         "kind": "response",
         "id": request["id"],
         "session_id": os.environ["SAKURA_SESSION_ID"],
-        "sequence": request["sequence"],
+        "sequence": sequence if sequence is not None else request["sequence"],
         "ok": True,
         "payload": payload,
     }
@@ -96,6 +101,7 @@ def main() -> int:
         _arm_triggered_crash(Path(trigger_text))
 
     authenticated = False
+    outbound_sequence = 0
     while True:
         request = _read_frame()
         if request is None:
@@ -113,6 +119,7 @@ def main() -> int:
             )
             if not authenticated:
                 return 4
+            outbound_sequence += 1
             _write_frame(
                 _response(
                     request,
@@ -122,13 +129,21 @@ def main() -> int:
                         "backend_state": "ready",
                         "startup": {"fake": True},
                     },
+                    sequence=outbound_sequence,
                 )
             )
             continue
         if not authenticated:
             return 5
         if method == "system.health":
-            _write_frame(_response(request, {"state": "ready", "ready": True}))
+            outbound_sequence += 1
+            _write_frame(
+                _response(
+                    request,
+                    {"state": "ready", "ready": True},
+                    sequence=outbound_sequence,
+                )
+            )
             if mode == "always_crash":
                 os._exit(17)
             continue
@@ -136,9 +151,59 @@ def main() -> int:
             if mode == "ignore_shutdown":
                 while True:
                     time.sleep(1)
-            _write_frame(_response(request, {"state": "stopped"}))
+            outbound_sequence += 1
+            _write_frame(
+                _response(request, {"state": "stopped"}, sequence=outbound_sequence)
+            )
             return 0
-        _write_frame(_response(request, {}))
+        if mode == "chat_events" and method == "chat.send":
+            outbound_sequence += 1
+            _write_frame(
+                _response(
+                    request,
+                    {
+                        "version": 1,
+                        "interactionId": "interaction-fake",
+                        "requestId": request["id"],
+                    },
+                    sequence=outbound_sequence,
+                )
+            )
+            outbound_sequence += 1
+            _write_frame(
+                {
+                    "protocol": 1,
+                    "kind": "event",
+                    "id": f"event-{outbound_sequence}",
+                    "session_id": os.environ["SAKURA_SESSION_ID"],
+                    "sequence": outbound_sequence,
+                    "method": "chat.progress",
+                    "payload": {
+                        "version": 1,
+                        "interactionId": "interaction-fake",
+                        "stage": "thinking",
+                    },
+                }
+            )
+            outbound_sequence += 1
+            _write_frame(
+                {
+                    "protocol": 1,
+                    "kind": "event",
+                    "id": f"event-{outbound_sequence}",
+                    "session_id": os.environ["SAKURA_SESSION_ID"],
+                    "sequence": outbound_sequence,
+                    "method": "chat.reply",
+                    "payload": {
+                        "version": 1,
+                        "interactionId": "interaction-fake",
+                        "reply": {"version": 1, "segments": []},
+                    },
+                }
+            )
+            continue
+        outbound_sequence += 1
+        _write_frame(_response(request, {}, sequence=outbound_sequence))
 
 
 if __name__ == "__main__":

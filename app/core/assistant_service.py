@@ -156,7 +156,13 @@ class AssistantApplication:
             request_id=request_id,
         )
 
-    def confirm_action(self, action_id: str) -> InteractionHandle:
+    def confirm_action(
+        self,
+        action_id: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        request_id: str | None = None,
+    ) -> InteractionHandle:
         with self._lock:
             self._ensure_available()
             try:
@@ -170,13 +176,18 @@ class AssistantApplication:
                     progress_callback=self._progress_callback(interaction),
                     cancel_checker=interaction.cancel_token.throw_if_cancelled,
                 ),
-                progress_callback=None,
-                request_id=None,
+                progress_callback=progress_callback,
+                request_id=request_id,
             )
             self._consume_submitted_action(action_id, handle)
             return handle
 
-    def reject_action(self, action_id: str) -> InteractionHandle:
+    def reject_action(
+        self,
+        action_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> InteractionHandle:
         with self._lock:
             self._ensure_available()
             try:
@@ -190,7 +201,7 @@ class AssistantApplication:
                     cancel_checker=interaction.cancel_token.throw_if_cancelled,
                 ),
                 progress_callback=None,
-                request_id=None,
+                request_id=request_id,
             )
             self._consume_submitted_action(action_id, handle)
             return handle

@@ -22,6 +22,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_state::brain_status,
             app_state::pet_bootstrap,
+            app_state::chat_send,
+            app_state::chat_cancel,
+            app_state::chat_confirm_action,
+            app_state::chat_reject_action,
             windows::start_dragging,
             windows::set_pet_visible,
             windows::set_click_through,

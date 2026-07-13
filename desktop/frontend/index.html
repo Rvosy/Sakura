@@ -38,6 +38,18 @@
         <p id="subtitle-text" class="subtitle-text">正在连接角色服务……</p>
       </section>
 
+      <section id="tool-confirmation" class="tool-confirmation" aria-label="工具操作确认" hidden>
+        <div class="tool-confirmation__copy">
+          <strong id="tool-confirmation-name"></strong>
+          <span id="tool-confirmation-reason"></span>
+        </div>
+        <pre id="tool-confirmation-arguments" class="tool-confirmation__arguments"></pre>
+        <div class="tool-confirmation__actions">
+          <button id="reject-tool-action" type="button">拒绝</button>
+          <button id="confirm-tool-action" class="primary-button" type="button">确认</button>
+        </div>
+      </section>
+
       <section id="input-card" class="input-card" aria-label="发送消息">
         <button id="capture-screen" class="icon-button" type="button" aria-label="截图">截</button>
         <label class="composer" for="message-input">

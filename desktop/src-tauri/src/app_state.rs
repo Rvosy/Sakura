@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tauri::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TYPE};
@@ -8,7 +9,8 @@ use tauri::http::{Request, Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, UriSchemeContext};
 
 use crate::brain_host::{
-    BrainHostLaunchConfig, BrainHostStatus, BrainHostSupervisor, StatusCallback,
+    BrainHostLaunchConfig, BrainHostRequestError, BrainHostStatus, BrainHostSupervisor,
+    EventCallback, StatusCallback,
 };
 
 pub const BRAIN_STATUS_EVENT: &str = "sakura://brain-status";
@@ -21,11 +23,19 @@ pub struct DesktopAppState {
 
 impl DesktopAppState {
     pub fn start(app: AppHandle) -> Self {
+        let status_app = app.clone();
         let callback: StatusCallback = Arc::new(move |status| {
-            let _ = app.emit(BRAIN_STATUS_EVENT, status);
+            let _ = status_app.emit(BRAIN_STATUS_EVENT, status);
         });
-        let brain =
-            BrainHostSupervisor::start(BrainHostLaunchConfig::for_current_app(), Some(callback));
+        let event_callback: EventCallback = Arc::new(move |event| {
+            let name = format!("sakura://{}", event.method.replace(['.', '_'], "-"));
+            let _ = app.emit(&name, event.payload);
+        });
+        let brain = BrainHostSupervisor::start_with_event_callback(
+            BrainHostLaunchConfig::for_current_app(),
+            Some(callback),
+            Some(event_callback),
+        );
         Self { brain }
     }
 
@@ -48,6 +58,10 @@ impl DesktopAppState {
             .ok_or_else(|| "Brain Host 未返回启动状态".to_string())?;
         build_pet_bootstrap(&startup, status.session_generation)
     }
+
+    fn request(&self, method: &str, payload: Value) -> Result<Value, BrainHostRequestError> {
+        self.brain.request(method, payload, Duration::from_secs(5))
+    }
 }
 
 #[tauri::command]
@@ -58,6 +72,38 @@ pub fn brain_status(state: State<'_, DesktopAppState>) -> BrainHostStatus {
 #[tauri::command]
 pub fn pet_bootstrap(state: State<'_, DesktopAppState>) -> Result<Value, String> {
     state.pet_bootstrap()
+}
+
+#[tauri::command]
+pub fn chat_send(
+    state: State<'_, DesktopAppState>,
+    text: String,
+) -> Result<Value, BrainHostRequestError> {
+    state.request("chat.send", json!({"text": text}))
+}
+
+#[tauri::command]
+pub fn chat_cancel(
+    state: State<'_, DesktopAppState>,
+    interaction_id: String,
+) -> Result<Value, BrainHostRequestError> {
+    state.request("chat.cancel", json!({"interaction_id": interaction_id}))
+}
+
+#[tauri::command]
+pub fn chat_confirm_action(
+    state: State<'_, DesktopAppState>,
+    action_id: String,
+) -> Result<Value, BrainHostRequestError> {
+    state.request("chat.confirm_action", json!({"action_id": action_id}))
+}
+
+#[tauri::command]
+pub fn chat_reject_action(
+    state: State<'_, DesktopAppState>,
+    action_id: String,
+) -> Result<Value, BrainHostRequestError> {
+    state.request("chat.reject_action", json!({"action_id": action_id}))
 }
 
 pub fn character_asset_protocol<R: Runtime>(

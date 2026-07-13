@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+import threading
 from collections.abc import Mapping
 from typing import Any, BinaryIO
 
@@ -22,12 +23,15 @@ class FramedTransport:
         self.reader = reader
         self.writer = writer
         self.closed = False
+        self._write_lock = threading.Lock()
 
     def send(self, message: Mapping[str, Any]) -> None:
-        if self.closed:
-            raise ProtocolError("SESSION_CLOSED", "transport is closed")
-        self.writer.write(encode_frame(message))
-        self.writer.flush()
+        frame = encode_frame(message)
+        with self._write_lock:
+            if self.closed:
+                raise ProtocolError("SESSION_CLOSED", "transport is closed")
+            self.writer.write(frame)
+            self.writer.flush()
 
     def receive(self) -> dict[str, Any] | None:
         if self.closed:
@@ -48,7 +52,8 @@ class FramedTransport:
         return decode_frame(header + payload)
 
     def close(self) -> None:
-        self.closed = True
+        with self._write_lock:
+            self.closed = True
 
     def _read_exact(self, size: int, *, allow_clean_eof: bool) -> bytes | None:
         data = bytearray()

@@ -563,16 +563,16 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml windows
 - Modify: `app/brain_host/application.py`
 - Create: `tests/integration/test_tauri_brain_chat_contract.py`
 
-- [ ] `chat.send` 调用 `AssistantApplication`。
-- [ ] 将 `AgentProgress` 转换为 `chat.progress`。
-- [ ] 将最终 `ChatReply` 转换为稳定 DTO。
-- [ ] 支持请求取消并忽略晚到结果。
-- [ ] Tauri 显示待确认工具名称、原因和只读参数。
-- [ ] 确认/拒绝只发送 action ID。
-- [ ] Python Host 执行前验证 action ID 仍存在且属于当前 session。
-- [ ] 确认完成后继续原有 Agent 对话链。
-- [ ] 网络、模型和格式错误均显示用户可理解的错误状态。
-- [ ] 历史记录继续由现有 `ChatHistoryStore` 写入。
+- [x] `chat.send` 调用 `AssistantApplication`。
+- [x] 将 `AgentProgress` 转换为 `chat.progress`。
+- [x] 将最终 `ChatReply` 转换为稳定 DTO。
+- [x] 支持请求取消并忽略晚到结果。
+- [x] Tauri 显示待确认工具名称、原因和只读参数。
+- [x] 确认/拒绝只发送 action ID。
+- [x] Python Host 执行前验证 action ID 仍存在且属于当前 session。
+- [x] 确认完成后继续原有 Agent 对话链。
+- [x] 网络、模型和格式错误均显示用户可理解的错误状态。
+- [x] 历史记录继续由现有 `ChatHistoryStore` 写入。
 
 **Verification:**
 
@@ -899,3 +899,10 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - ADR-0001 原先把未完成物理验收设为进入 Task 6 的阻塞条件；当前机器仍只有单屏 100% DPI，系统托盘壳层也无法由现有 Windows 自动化接口定位。按用户“继续、不用停”的明确要求，调整为允许继续自动化实现，但 Task 12 生产入口切换前必须重新审计 ADR，Task 13 仍需补齐物理鼠标、托盘、多 DPI/混合多屏和人耳音频签字。
 - Task 6 为把真实角色状态交给前端，实际额外扩展 `app/brain_host/dto.py` 和 Rust `app_state.rs`：Brain Host 提供主题、布局、字幕与角色包内相对资源映射；Rust 只返回固定 token 化 asset URL，并在读取前 canonicalize 后验证文件仍位于当前角色包内。前端没有 `file://`、`convertFileSrc`、任意路径或通用文件命令。
 - JS `computePetLayout` 与现有 Python `compute_pet_layout` 使用同一常量和锚点数学，并通过跨运行时用例逐项比较，旧 Qt 生产路径保持不变。
+
+### 2026-07-14：Task 7 的异步聊天与事件路由
+
+- 实际 Brain Host 原为同步读循环；若直接等待模型结果，长聊天期间无法读取 `chat.cancel`。最小调整为 `chat.send`、确认和拒绝请求立即返回 interaction ID，由后台 watcher 发送 `chat.progress`、`chat.reply`、`chat.cancelled`、`chat.error` 和 `chat.confirmation_requested`。`FramedTransport` 与 Server 出站序列增加写锁，保证后台事件和同步响应不会交错破坏帧或 sequence。
+- Task 7 文件清单未列 Rust 监管器和 `app_state.rs`，但 WebView 不得直接持有 Brain stdin/stdout。实际增加受控监管命令通道，由唯一监管线程串行写请求、校验 session/sequence、分发异步事件，再映射为 `sakura://chat-*` 前端事件。
+- 会话 messages 与 `ChatHistoryStore` 写入放在 Brain Host 应用层：用户消息、进度段和最终回复沿用旧 Qt 记录语义；确认/拒绝继续链不重复写用户消息。历史追加使用同一锁串行化，避免进度与最终回复并发落盘丢记录。
+- 公开确认 DTO 不包含 `tool_call_id` 或 `continuation_messages`。前端只保留并回传 action ID；原始参数与继续推理上下文仍由当前 Python session 的 pending action map 持有。真实在线模型和真实工具的人工验收保留到 Task 13，本 Task 使用 Python、Node 和 fake Brain Host 契约覆盖。
