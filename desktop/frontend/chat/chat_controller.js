@@ -10,11 +10,19 @@ function errorMessage(error) {
 }
 
 export class ChatController {
-  constructor({ store, invoke, subtitleController, confirmationView, setStatus = () => {} }) {
+  constructor({
+    store,
+    invoke,
+    subtitleController,
+    confirmationView,
+    audioController = null,
+    setStatus = () => {},
+  }) {
     this.store = store;
     this.invoke = invoke;
     this.subtitleController = subtitleController;
     this.confirmationView = confirmationView;
+    this.audioController = audioController;
     this.setStatus = setStatus;
     this.submitting = false;
   }
@@ -61,8 +69,10 @@ export class ChatController {
 
   handleProgress(payload) {
     if (!this.#matches(payload)) return;
+    this.audioController?.stop().catch(() => {});
     const segments = payload?.reply?.segments || [];
     if (segments.length) this.subtitleController.showSegments(segments);
+    if (segments.length) this.audioController?.queueSegments(segments);
     this.setStatus(`处理中 · ${payload?.stage || "thinking"}`, "ready");
   }
 
@@ -87,6 +97,7 @@ export class ChatController {
     this.store.setInteractionState({ busy: false });
     this.confirmationView.setBusy(false);
     this.subtitleController.cancel("已取消当前回复。");
+    this.audioController?.stop().catch(() => {});
     this.setStatus("当前回复已取消。", "ready");
   }
 
@@ -96,6 +107,7 @@ export class ChatController {
     this.confirmationView.setBusy(false);
     const message = errorMessage(payload?.error);
     this.subtitleController.cancel("……通信に失敗した。設定を確認して。");
+    this.audioController?.stop().catch(() => {});
     this.setStatus(message, "error");
   }
 
@@ -103,6 +115,7 @@ export class ChatController {
     this.submitting = false;
     this.confirmationView.hide();
     this.subtitleController.cancel("");
+    this.audioController?.stop().catch(() => {});
   }
 
   async #resolveAction(command, actionId, status) {

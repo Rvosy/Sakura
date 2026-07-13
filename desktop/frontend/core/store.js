@@ -8,6 +8,11 @@ const initialState = () => ({
     busy: false,
     interactionId: null,
   },
+  audio: {
+    speaking: false,
+    synthesisId: null,
+    playbackId: null,
+  },
 });
 
 export function createPetStore() {
@@ -40,6 +45,11 @@ export function createPetStore() {
           busy: false,
           interactionId: null,
         },
+        audio: {
+          speaking: false,
+          synthesisId: null,
+          playbackId: null,
+        },
       };
       publish();
     },
@@ -49,6 +59,17 @@ export function createPetStore() {
         ...state,
         interaction: {
           ...state.interaction,
+          ...patch,
+        },
+      };
+      publish();
+    },
+
+    setAudioState(patch) {
+      state = {
+        ...state,
+        audio: {
+          ...state.audio,
           ...patch,
         },
       };

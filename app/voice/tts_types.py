@@ -41,6 +41,7 @@ class TTSPreparedAudio:
 class _TTSRequest:
     text: str
     tone: str | None
+    request_id: str = ""
     on_started: TTSCallback | None = None
     on_finished: TTSCallback | None = None
     prepared_audio: TTSPreparedAudio | None = None

@@ -95,7 +95,7 @@
 | 5 | Rust 监管 6 passed；Rust 全套 16 passed；Python 契约 15 passed；fmt/build 通过 | fake host 已覆盖崩溃、三次退避重启、诊断态、优雅/强制关闭；真实进程故障注入留待最终手工验收 | `feat: 实现Brain Host监管` | 每次启动生成新 session/credential；重启清空旧请求和临时资源；Tauri 退出先停止接收请求 |
 | 6 | 指定 Python 6 passed；扩展 Python 49 passed；Rust windows 5 passed；Rust 全套 20 passed；fmt/build 通过 | 单屏 100% 下真实角色立绘、主题、字幕、输入和受控资源 URL 已验证；多 DPI/混合多屏、物理鼠标与托盘仍见 ADR-0001 | `feat: 迁移Tauri桌宠前端` | 单一 Store；JS 布局与 Qt 纯模型逐项等价；资源协议拒绝路径逃逸 |
 | 7 | 指定与扩展 Python 41 passed；Rust 全套 21 passed；fmt/build/clippy 通过 | Python/Node/fake Brain 已覆盖发送、进度、最终回复、取消、错误和 action ID 确认；真实在线模型与真实工具留 Task 13 | `feat: 接通Tauri聊天与工具确认` | Brain 请求立即返回；后台事件串行转发；现有 ChatHistoryStore 格式不变；公开 DTO 不泄露 continuation context |
-| 8 | 待执行 | 真实音频待验收 | 待提交 | 合成/播放/快速接话 |
+| 8 | 指定与扩展 Python 127 passed；Rust audio 3 passed、全套 23 passed；fmt/build/clippy 通过 | 实机 Tauri 启动后正常退出码 0、无 Brain 残留；自动覆盖无 Qt 合成、受控资源、顺序播放、取消和快速接话；真实设备人耳验收留 Task 13 | `feat: 迁移Tauri语音播放链` | Rust 不向 WebView暴露路径；随机 token、TTL、单次消费；预置/缓存接话音频与即时合成都走同一播放链 |
 | 9 | 待执行 | 多屏截图待验收 | 待提交 | 观察与主动事件 |
 | 10 | 待执行 | 次级窗口待验收 | 待提交 | 设置/工作室/历史/诊断 |
 | 11 | 待执行 | 托盘/双开待验收 | 待提交 | 启动与插件交互 |

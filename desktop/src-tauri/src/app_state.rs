@@ -8,39 +8,100 @@ use tauri::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TY
 use tauri::http::{Request, Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, UriSchemeContext};
 
+use crate::audio::{AudioEventCallback, AudioManager, AudioPlaybackEvent};
 use crate::brain_host::{
     BrainHostLaunchConfig, BrainHostRequestError, BrainHostStatus, BrainHostSupervisor,
     EventCallback, StatusCallback,
 };
 
 pub const BRAIN_STATUS_EVENT: &str = "sakura://brain-status";
+pub const TTS_PLAYBACK_EVENT: &str = "sakura://tts-playback-state";
 const CHARACTER_ASSET_SCHEME: &str = "sakura-asset";
 const MAX_CHARACTER_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
 pub struct DesktopAppState {
     brain: BrainHostSupervisor,
+    audio: Option<AudioManager>,
+    audio_error: Option<String>,
 }
 
 impl DesktopAppState {
     pub fn start(app: AppHandle) -> Self {
+        let launch_config = BrainHostLaunchConfig::for_current_app();
+        let audio_app = app.clone();
+        let audio_callback: AudioEventCallback = Arc::new(move |event: AudioPlaybackEvent| {
+            let _ = audio_app.emit(TTS_PLAYBACK_EVENT, event);
+        });
+        let (audio, audio_error) = match AudioManager::start(
+            launch_config.base_dir.join("data/cache/tts"),
+            audio_callback,
+        ) {
+            Ok(audio) => (Some(audio), None),
+            Err(error) => (None, Some(error)),
+        };
+        let status_audio = audio.clone();
         let status_app = app.clone();
         let callback: StatusCallback = Arc::new(move |status| {
+            if !status.accepting_requests {
+                if let Some(audio) = status_audio.as_ref() {
+                    audio.reset();
+                }
+            }
             let _ = status_app.emit(BRAIN_STATUS_EVENT, status);
         });
+        let event_audio = audio.clone();
         let event_callback: EventCallback = Arc::new(move |event| {
             let name = format!("sakura://{}", event.method.replace(['.', '_'], "-"));
-            let _ = app.emit(&name, event.payload);
+            let mut payload = event.payload;
+            if event.method == "tts.audio_ready" {
+                if let Some(resource) = payload.get("resource").cloned().filter(Value::is_object) {
+                    let registered = event_audio
+                        .as_ref()
+                        .ok_or_else(|| "Rust 音频服务不可用".to_string())
+                        .and_then(|audio| {
+                            audio.register_brain_resource(&event.session_id, &resource)
+                        });
+                    match registered {
+                        Ok(public) => payload["resource"] = public,
+                        Err(error) => {
+                            let _ = app.emit(
+                                "sakura://tts-error",
+                                json!({
+                                    "version": 1,
+                                    "synthesisId": payload.get("synthesisId"),
+                                    "segmentId": payload.get("segmentId"),
+                                    "error": {
+                                        "code": "AUDIO_RESOURCE_REJECTED",
+                                        "message": "生成的语音资源无法播放。",
+                                        "retryable": false,
+                                        "details": {"error": error},
+                                    }
+                                }),
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = app.emit(&name, payload);
         });
         let brain = BrainHostSupervisor::start_with_event_callback(
-            BrainHostLaunchConfig::for_current_app(),
+            launch_config,
             Some(callback),
             Some(event_callback),
         );
-        Self { brain }
+        Self {
+            brain,
+            audio,
+            audio_error,
+        }
     }
 
     pub fn shutdown(&self) {
         self.brain.shutdown();
+        if let Some(audio) = self.audio.as_ref() {
+            audio.shutdown();
+        }
     }
 
     pub fn brain_status(&self) -> BrainHostStatus {
@@ -61,6 +122,14 @@ impl DesktopAppState {
 
     fn request(&self, method: &str, payload: Value) -> Result<Value, BrainHostRequestError> {
         self.brain.request(method, payload, Duration::from_secs(5))
+    }
+
+    fn audio(&self) -> Result<&AudioManager, String> {
+        self.audio.as_ref().ok_or_else(|| {
+            self.audio_error
+                .clone()
+                .unwrap_or_else(|| "Rust 音频服务不可用".to_string())
+        })
     }
 }
 
@@ -104,6 +173,55 @@ pub fn chat_reject_action(
     action_id: String,
 ) -> Result<Value, BrainHostRequestError> {
     state.request("chat.reject_action", json!({"action_id": action_id}))
+}
+
+#[tauri::command]
+pub fn tts_synthesize(
+    state: State<'_, DesktopAppState>,
+    text: String,
+    tone: Option<String>,
+    segment_id: Option<String>,
+    audio_key: Option<String>,
+) -> Result<Value, BrainHostRequestError> {
+    state.request(
+        "tts.synthesize",
+        json!({
+            "text": text,
+            "tone": tone,
+            "segment_id": segment_id.unwrap_or_default(),
+            "audio_key": audio_key.unwrap_or_default(),
+        }),
+    )
+}
+
+#[tauri::command]
+pub fn tts_cancel(
+    state: State<'_, DesktopAppState>,
+    synthesis_id: String,
+) -> Result<Value, BrainHostRequestError> {
+    state.request("tts.cancel", json!({"synthesis_id": synthesis_id}))
+}
+
+#[tauri::command]
+pub fn play_tts_audio(
+    state: State<'_, DesktopAppState>,
+    resource_id: String,
+    playback_id: String,
+    volume: Option<f32>,
+) -> Result<(), String> {
+    state
+        .audio()?
+        .play(&resource_id, &playback_id, volume.unwrap_or(1.0))
+}
+
+#[tauri::command]
+pub fn stop_tts_audio(state: State<'_, DesktopAppState>) -> Result<(), String> {
+    state.audio()?.stop()
+}
+
+#[tauri::command]
+pub fn set_tts_volume(state: State<'_, DesktopAppState>, volume: f32) -> Result<(), String> {
+    state.audio()?.set_volume(volume)
 }
 
 pub fn character_asset_protocol<R: Runtime>(

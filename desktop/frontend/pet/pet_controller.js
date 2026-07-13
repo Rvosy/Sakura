@@ -80,6 +80,7 @@ export class PetController {
 
   render(state) {
     const busy = Boolean(state.interaction.busy);
+    document.documentElement.dataset.speaking = String(Boolean(state.audio?.speaking));
     this.elements.characterName.textContent = state.character?.displayName || "Sakura";
     this.elements.input.disabled = busy;
     this.elements.send.hidden = busy;

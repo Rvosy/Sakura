@@ -593,14 +593,14 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml windows
 - Create: `tests/unit/test_tts_synthesis_service.py`
 - Add Rust audio tests
 
-- [ ] 将 TTS Provider 与 Qt Signal 解耦。
-- [ ] Python 只负责合成和生成临时音频资源。
-- [ ] Rust 负责播放、停止、音量和播放状态事件。
-- [ ] 音频资源使用随机文件名、受控目录和 TTL。
-- [ ] 前端根据播放开始/结束驱动字幕与说话状态。
-- [ ] 快速接话沿用现有选择逻辑，但通过相同音频链播放。
-- [ ] 角色切换、设置变更和应用退出必须取消旧播放。
-- [ ] 删除生产路径对 `QMediaPlayer`、`QAudioSink` 的依赖。
+- [x] 将 TTS Provider 与 Qt Signal 解耦。
+- [x] Python 只负责合成和生成临时音频资源。
+- [x] Rust 负责播放、停止、音量和播放状态事件。
+- [x] 音频资源使用随机文件名、受控目录和 TTL。
+- [x] 前端根据播放开始/结束驱动字幕与说话状态。
+- [x] 快速接话沿用现有选择逻辑，但通过相同音频链播放。
+- [x] 角色切换、设置变更和应用退出必须取消旧播放。
+- [x] 新 Tauri/Brain 路径不依赖 `QMediaPlayer`、`QAudioSink`；旧 Qt 回退路径按迁移约束保留到 Task 12。
 
 **Verification:**
 
@@ -906,3 +906,10 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - Task 7 文件清单未列 Rust 监管器和 `app_state.rs`，但 WebView 不得直接持有 Brain stdin/stdout。实际增加受控监管命令通道，由唯一监管线程串行写请求、校验 session/sequence、分发异步事件，再映射为 `sakura://chat-*` 前端事件。
 - 会话 messages 与 `ChatHistoryStore` 写入放在 Brain Host 应用层：用户消息、进度段和最终回复沿用旧 Qt 记录语义；确认/拒绝继续链不重复写用户消息。历史追加使用同一锁串行化，避免进度与最终回复并发落盘丢记录。
 - 公开确认 DTO 不包含 `tool_call_id` 或 `continuation_messages`。前端只保留并回传 action ID；原始参数与继续推理上下文仍由当前 Python session 的 pending action map 持有。真实在线模型和真实工具的人工验收保留到 Task 13，本 Task 使用 Python、Node 和 fake Brain Host 契约覆盖。
+
+### 2026-07-14：Task 8 的无 Qt 合成与 Rust 音频所有权
+
+- 实际 `build_initial_app_context` 为首帧性能只装配 `NullTTSProvider`，真正 Provider 仍由旧 Qt 主窗口的 deferred startup 创建。直接复用会重新引入 `QObject`、Qt Signal 和 `TTSPlaybackEndpoint`。最小调整为新增 `TTSSynthesisService`：复用现有服务监督、GPT-SoVITS/Genie 引擎和串行合成队列，但以 Future/资源结果替代 Qt 播放 sink；旧 Qt Provider 保持不变供回退构建使用。
+- Python `tts.synthesize` 立即返回 synthesis ID，后台事件只把私有路径交给 Rust。Rust canonicalize 并限制路径在 `data/cache/tts`、核对媒体类型和文件大小，再向 WebView 发不含路径的一次性资源 token；token 有固定 TTL、单次消费、Brain 重启/退出清理。Rust 独立播放线程单一拥有 rodio 输出、停止、音量和播放状态，启用 WAV 解码所需的 rodio `wav` feature。
+- 快速接话新增无 Qt 延迟/分类服务，继续复用 `RuleClassifier`/`HybridBackchannelClassifier`、`TemplateResolver`、角色 manifest 和 `BackchannelAudioCache`。角色包预置音频或磁盘缓存会先复制到受控临时目录，再走同一 Rust 播放链；未命中时走同一 TTS 合成链并回填现有缓存。Hybrid 在第一阶段改为 Brain 内单线程 executor 执行并用 token 忽略迟到结果，Task 13 需比较首次模型冷加载性能。
+- 角色/设置事件、Brain 重启和应用退出都会停止旧播放并清理资源；对应角色切换与设置事件将在 Task 10 接通业务命令。当前自动测试覆盖资源隔离、取消迟到结果、顺序播放、缓存和状态事件；人耳设备验收仍受 ADR-0001 限制，保留到 Task 13。

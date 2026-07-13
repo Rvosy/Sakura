@@ -54,6 +54,12 @@ from app.voice.tts_synthesis import (  # noqa: F401
     _write_raw_pcm_as_wav,
 )
 from app.voice.tts_playback import TTSPlaybackEndpoint
+from app.voice.tts_synthesis_service import (  # noqa: F401
+    NullTTSSynthesisService,
+    TTSAudioResource,
+    TTSSynthesisHandle,
+    TTSSynthesisService,
+)
 
 
 def _resolve_project_root(base_dir: Path | None = None) -> Path:

@@ -4,6 +4,7 @@ import { PortraitController } from "./pet/portrait_controller.js";
 import { SubtitleController } from "./pet/subtitle_controller.js";
 import { ChatController } from "./chat/chat_controller.js";
 import { ConfirmationView } from "./chat/confirmation_view.js";
+import { AudioController } from "./audio/audio_controller.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -68,6 +69,11 @@ const petController = new PetController({
 });
 
 let chatController;
+const audioController = new AudioController({
+  store: petStore,
+  invoke: callDesktop,
+  setStatus: setResult,
+});
 const confirmationView = new ConfirmationView({
   panel: elements.confirmationPanel,
   name: elements.confirmationName,
@@ -84,6 +90,7 @@ chatController = new ChatController({
   invoke: callDesktop,
   subtitleController,
   confirmationView,
+  audioController,
   setStatus: setResult,
 });
 
@@ -204,6 +211,22 @@ window.addEventListener("DOMContentLoaded", () => {
     listen("sakura://chat-confirmation-requested", ({ payload }) =>
       chatController.handleConfirmation(payload),
     );
+    listen("sakura://tts-audio-ready", ({ payload }) => audioController.handleAudioReady(payload));
+    listen("sakura://tts-error", ({ payload }) => audioController.handleSynthesisError(payload));
+    listen("sakura://tts-cancelled", ({ payload }) =>
+      audioController.handleSynthesisCancelled(payload),
+    );
+    listen("sakura://tts-playback-state", ({ payload }) =>
+      audioController.handlePlaybackState(payload),
+    );
+    listen("sakura://assistant-backchannel", ({ payload }) => {
+      const segment = payload?.segment;
+      if (!segment) return;
+      subtitleController.showSegments([segment]);
+      audioController.queueSegments([segment]);
+    });
+    listen("sakura://character-changed", () => audioController.stop().catch(() => {}));
+    listen("sakura://settings-changed", () => audioController.stop().catch(() => {}));
   }
   callDesktop("brain_status").then(renderBrainStatus).catch((error) => {
     setResult(`无法读取 Brain 状态：${error}`, "error");
