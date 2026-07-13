@@ -35,6 +35,21 @@ const fields = {
   apiTopP: document.getElementById("apiTopP"),
   apiMaxTokensEnabled: document.getElementById("apiMaxTokensEnabled"),
   apiMaxTokens: document.getElementById("apiMaxTokens"),
+  sensoryEnabled: document.getElementById("sensoryEnabled"),
+  sensoryContextEnabled: document.getElementById("sensoryContextEnabled"),
+  sensoryContextBudget: document.getElementById("sensoryContextBudget"),
+  sensorySourceTabs: document.getElementById("sensorySourceTabs"),
+  sensoryMode: document.getElementById("sensoryMode"),
+  sensoryBackend: document.getElementById("sensoryBackend"),
+  sensoryEndpoint: document.getElementById("sensoryEndpoint"),
+  sensoryModel: document.getElementById("sensoryModel"),
+  sensoryModelOptions: document.getElementById("sensoryModelOptions"),
+  sensoryApiKey: document.getElementById("sensoryApiKey"),
+  sensoryTimeout: document.getElementById("sensoryTimeout"),
+  sensoryConfidence: document.getElementById("sensoryConfidence"),
+  sensoryProbeButton: document.getElementById("sensoryProbeButton"),
+  sensoryTestButton: document.getElementById("sensoryTestButton"),
+  sensoryStatus: document.getElementById("sensoryStatus"),
   ttsEnabled: document.getElementById("ttsEnabled"),
   ttsProvider: document.getElementById("ttsProvider"),
   ttsApiUrl: document.getElementById("ttsApiUrl"),
@@ -115,6 +130,7 @@ const fields = {
     appearance: document.getElementById("page-appearance"),
     providers: document.getElementById("page-providers"),
     model: document.getElementById("page-model"),
+    sensory: document.getElementById("page-sensory"),
     voice: document.getElementById("page-voice"),
     interaction: document.getElementById("page-interaction"),
     tools: document.getElementById("page-tools"),
@@ -127,6 +143,13 @@ const fields = {
 let request = null;
 let lastTtsProvider = "";
 let themeChanged = false;
+let activeSensorySource = "vision";
+let sensorySourceState = {};
+let sensorySyncing = false;
+let sensoryRpcBusy = false;
+const sensoryStatusBySource = {};
+const sensoryModelsBySource = {};
+const sensoryRpcDisabledStates = new Map();
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
 let settingsBaseline = null;
 // 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
@@ -714,6 +737,7 @@ const pageMeta = {
   appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
   providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
   model: { title: "模型", subtitle: "功能模型分配与高级参数" },
+  sensory: { title: "增强感知", subtitle: "分别配置视觉、语音与环境声音模型" },
   voice: { title: "语音", subtitle: "TTS 提供器与语音参数" },
   interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
@@ -2170,6 +2194,342 @@ function collectModelSelection() {
     };
   });
   return { slots };
+}
+
+function sensoryDefaultEndpoint(backend, mode) {
+  if (mode === "lan") {
+    return {
+      lmstudio: "http://<LAN-IP>:1234/v1",
+      ollama: "http://<LAN-IP>:11434",
+      llama: "http://<LAN-IP>:8080/v1",
+    }[backend] || "http://<LAN-IP>:8000/v1";
+  }
+  if (mode === "api") return "https://api.openai.com/v1";
+  if (backend === "lmstudio") return "http://127.0.0.1:1234/v1";
+  if (backend === "ollama") return "http://127.0.0.1:11434";
+  if (backend === "llama") return "http://127.0.0.1:8080/v1";
+  return "http://127.0.0.1:8000/v1";
+}
+
+function normalizeSensorySourceState(source, value = {}) {
+  const mode = ["off", "local", "lan", "api"].includes(value.mode) ? value.mode : "off";
+  const backend = ["lmstudio", "ollama", "llama", "openai_compatible"].includes(value.backend)
+    ? value.backend
+    : "lmstudio";
+  return {
+    mode,
+    backend,
+    endpoint: String(value.endpoint || sensoryDefaultEndpoint(backend, mode)),
+    model: String(value.model || ""),
+    api_key: String(value.api_key || ""),
+    timeout_seconds: clampInt(value.timeout_seconds ?? 20, [1, 300]),
+    confidence_threshold: clampFloat(value.confidence_threshold ?? 0.5, [0, 1]),
+    context_enabled: value.context_enabled !== false,
+    context_limit: clampInt(value.context_limit ?? 4, [1, 20]),
+    source,
+  };
+}
+
+function sensoryStatusHint(state) {
+  if (state.mode === "off") return "该感官源已关闭。";
+  if (!state.model) return "请填写模型，或先检测模型列表。";
+  return "配置已修改，尚未测试。";
+}
+
+function captureSensorySourceState() {
+  if (sensorySyncing || !sensorySourceState[activeSensorySource]) return;
+  const previous = sensorySourceState[activeSensorySource];
+  sensorySourceState[activeSensorySource] = {
+    mode: fields.sensoryMode.value,
+    backend: fields.sensoryBackend.value,
+    endpoint: fields.sensoryEndpoint.value.trim(),
+    model: fields.sensoryModel.value.trim(),
+    api_key: fields.sensoryApiKey.value.trim(),
+    timeout_seconds: clampInt(fields.sensoryTimeout.value, [1, 300]),
+    confidence_threshold: clampFloat(fields.sensoryConfidence.value, [0, 1]),
+    context_enabled: previous.context_enabled !== false,
+    context_limit: clampInt(previous.context_limit ?? 4, [1, 20]),
+    source: activeSensorySource,
+  };
+}
+
+function renderSensorySourceTabs() {
+  fields.sensorySourceTabs.querySelectorAll("[data-sensory-source]").forEach((button) => {
+    const active = button.dataset.sensorySource === activeSensorySource;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+}
+
+function setSensorySource(source) {
+  if (!sensorySourceState[source]) return;
+  if (source !== activeSensorySource) {
+    captureSensorySourceState();
+  }
+  activeSensorySource = source;
+  const state = sensorySourceState[source];
+  sensorySyncing = true;
+  fields.sensoryMode.value = state.mode;
+  fields.sensoryBackend.value = state.backend;
+  fields.sensoryEndpoint.value = state.endpoint;
+  fields.sensoryModel.value = state.model;
+  fields.sensoryApiKey.value = state.api_key;
+  fields.sensoryTimeout.value = state.timeout_seconds;
+  fields.sensoryConfidence.value = state.confidence_threshold;
+  fields.sensoryModelOptions.textContent = "";
+  (sensoryModelsBySource[source] || []).forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model;
+    fields.sensoryModelOptions.append(option);
+  });
+  sensorySyncing = false;
+  refreshSelect(fields.sensoryMode);
+  refreshSelect(fields.sensoryBackend);
+  renderSensorySourceTabs();
+  syncSensoryControls();
+}
+
+function initializeSensoryState() {
+  sensorySourceState = {};
+  ["vision", "speech", "sound"].forEach((source) => {
+    sensorySourceState[source] = normalizeSensorySourceState(
+      source,
+      request.sensory.sources?.[source] || {},
+    );
+    sensoryStatusBySource[source] = sensoryStatusHint(sensorySourceState[source]);
+  });
+  activeSensorySource = "vision";
+  setSensorySource(activeSensorySource);
+}
+
+function handleSensoryRouteChange() {
+  if (sensorySyncing) return;
+  const previous = sensorySourceState[activeSensorySource];
+  const oldDefault = sensoryDefaultEndpoint(previous.backend, previous.mode);
+  const nextDefault = sensoryDefaultEndpoint(fields.sensoryBackend.value, fields.sensoryMode.value);
+  const currentEndpoint = fields.sensoryEndpoint.value.trim();
+  if (!currentEndpoint || currentEndpoint === oldDefault) {
+    fields.sensoryEndpoint.value = nextDefault;
+  }
+  captureSensorySourceState();
+  sensoryStatusBySource[activeSensorySource] = sensoryStatusHint(
+    sensorySourceState[activeSensorySource],
+  );
+  syncSensoryControls();
+}
+
+function handleSensoryControlInput() {
+  captureSensorySourceState();
+  sensoryStatusBySource[activeSensorySource] = sensoryStatusHint(
+    sensorySourceState[activeSensorySource],
+  );
+  syncSensoryControls();
+}
+
+function syncSensoryControls() {
+  const configured = fields.sensoryMode.value !== "off";
+  setControlDisabled(fields.sensoryContextEnabled, !fields.sensoryEnabled.checked);
+  setControlDisabled(
+    fields.sensoryContextBudget,
+    !fields.sensoryEnabled.checked || !fields.sensoryContextEnabled.checked,
+  );
+  [
+    fields.sensoryBackend,
+    fields.sensoryEndpoint,
+    fields.sensoryModel,
+    fields.sensoryApiKey,
+    fields.sensoryTimeout,
+    fields.sensoryConfidence,
+  ].forEach((control) => setControlDisabled(control, !configured));
+  fields.sensoryProbeButton.disabled = !configured || sensoryRpcBusy;
+  fields.sensoryTestButton.disabled = !configured || sensoryRpcBusy;
+  fields.sensoryStatus.textContent = configured
+    ? sensoryStatusBySource[activeSensorySource] || "未测试"
+    : "该感官源已关闭。";
+}
+
+function isHttpEndpoint(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.host);
+  } catch {
+    return false;
+  }
+}
+
+function isLocalEndpoint(value) {
+  try {
+    return ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"].includes(
+      new URL(value).hostname.toLowerCase(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateSensorySource(source, state, { requireModel = true } = {}) {
+  if (state.mode === "off") return "";
+  const label = { vision: "视觉", speech: "语音", sound: "环境声音" }[source] || source;
+  if (requireModel && !state.model) return `${label}的增强感知模型不能为空。`;
+  if (["api", "lan"].includes(state.mode) && !isHttpEndpoint(state.endpoint)) {
+    return `${label}选择远端或局域网模式时必须填写有效 Endpoint。`;
+  }
+  if (state.mode === "lan" && (state.endpoint.includes("<") || state.endpoint.includes(">"))) {
+    return "局域网 Endpoint 中的占位 IP 必须替换为实际地址。";
+  }
+  if (state.mode === "lan" && isLocalEndpoint(state.endpoint)) {
+    return "局域网 Endpoint 不能使用 localhost 或回环地址。";
+  }
+  if (state.mode === "local" && state.endpoint && !isHttpEndpoint(state.endpoint)) {
+    return `${label}的本机 Endpoint 无效。`;
+  }
+  if (state.mode === "local" && state.backend === "openai_compatible" && !state.endpoint) {
+    return "OpenAI 兼容本机服务必须填写 Endpoint。";
+  }
+  return "";
+}
+
+function validateSensorySettingsBeforeSubmit() {
+  captureSensorySourceState();
+  if (!fields.sensoryEnabled.checked) {
+    markInvalid(fields.sensoryModel, false);
+    markInvalid(fields.sensoryEndpoint, false);
+    return true;
+  }
+  for (const source of ["vision", "speech", "sound"]) {
+    const message = validateSensorySource(source, sensorySourceState[source]);
+    if (!message) continue;
+    showPage("sensory");
+    setSensorySource(source);
+    setError(message);
+    markInvalid(fields.sensoryModel, message.includes("模型"));
+    markInvalid(fields.sensoryEndpoint, message.includes("Endpoint"));
+    return false;
+  }
+  markInvalid(fields.sensoryModel, false);
+  markInvalid(fields.sensoryEndpoint, false);
+  return true;
+}
+
+function sensoryRpcParams() {
+  captureSensorySourceState();
+  return { source: activeSensorySource, ...sensorySourceState[activeSensorySource] };
+}
+
+function setSensoryRpcBusy(busy, action = "") {
+  sensoryRpcBusy = Boolean(busy);
+  [fields.saveButton, fields.applyButton, fields.cancelButton].forEach((button) => {
+    if (sensoryRpcBusy) {
+      if (!sensoryRpcDisabledStates.has(button)) {
+        sensoryRpcDisabledStates.set(button, button.disabled);
+      }
+      button.disabled = true;
+    } else if (sensoryRpcDisabledStates.has(button)) {
+      button.disabled = sensoryRpcDisabledStates.get(button);
+      sensoryRpcDisabledStates.delete(button);
+    }
+  });
+  fields.sensoryProbeButton.textContent = busy && action === "probe" ? "检测中…" : "检测模型";
+  fields.sensoryTestButton.textContent = busy && action === "test" ? "测试中…" : "测试模型";
+  syncSensoryControls();
+}
+
+async function probeSensoryModels() {
+  const source = activeSensorySource;
+  const params = sensoryRpcParams();
+  const validation = validateSensorySource(source, params, { requireModel: false });
+  if (validation) {
+    setError(validation);
+    return;
+  }
+  setError("");
+  setSensoryRpcBusy(true, "probe");
+  sensoryStatusBySource[source] = "正在检测模型列表…";
+  syncSensoryControls();
+  try {
+    const result = await hostCall("sensory.list_models", params);
+    const models = Array.isArray(result.models) ? result.models.map(String).filter(Boolean) : [];
+    sensoryModelsBySource[source] = models;
+    if (activeSensorySource === source) {
+      fields.sensoryModelOptions.textContent = "";
+      models.forEach((model) => {
+        const option = document.createElement("option");
+        option.value = model;
+        fields.sensoryModelOptions.append(option);
+      });
+      if (!fields.sensoryModel.value && models[0]) {
+        fields.sensoryModel.value = models[0];
+        captureSensorySourceState();
+        scheduleDirty();
+      }
+    }
+    sensoryStatusBySource[source] = models.length
+      ? `已发现 ${models.length} 个模型。`
+      : "服务可访问，但未发现模型。";
+    notify(sensoryStatusBySource[source], models.length ? "success" : "info");
+  } catch (error) {
+    sensoryStatusBySource[source] = `检测失败：${String(error)}`;
+    setError(sensoryStatusBySource[source]);
+  } finally {
+    setSensoryRpcBusy(false);
+  }
+}
+
+async function testSensoryModel() {
+  const source = activeSensorySource;
+  const params = sensoryRpcParams();
+  const validation = validateSensorySource(source, params);
+  if (validation) {
+    setError(validation);
+    return;
+  }
+  setError("");
+  setSensoryRpcBusy(true, "test");
+  sensoryStatusBySource[source] = "正在测试模型…";
+  syncSensoryControls();
+  try {
+    const result = await hostCall("sensory.test", params);
+    const observation = result.observation || {};
+    const confidence = Number.isFinite(Number(observation.confidence))
+      ? `（置信度 ${Number(observation.confidence).toFixed(2)}）`
+      : "";
+    const summary = String(observation.summary || "测试成功。").trim().slice(0, 160);
+    sensoryStatusBySource[source] = `${summary}${confidence}`;
+    notify("增强感知模型测试成功。", "success");
+  } catch (error) {
+    sensoryStatusBySource[source] = `测试失败：${String(error)}`;
+    setError(sensoryStatusBySource[source]);
+  } finally {
+    setSensoryRpcBusy(false);
+  }
+}
+
+function collectSensorySettings() {
+  captureSensorySourceState();
+  const sources = {};
+  ["vision", "speech", "sound"].forEach((source) => {
+    const state = sensorySourceState[source];
+    sources[source] = {
+      mode: state.mode,
+      backend: state.backend,
+      endpoint: state.endpoint,
+      model: state.model,
+      api_key: state.api_key,
+      timeout_seconds: state.timeout_seconds,
+      confidence_threshold: state.confidence_threshold,
+      context_enabled: state.context_enabled,
+      context_limit: state.context_limit,
+    };
+  });
+  return {
+    enabled: fields.sensoryEnabled.checked,
+    context_enabled: fields.sensoryContextEnabled.checked,
+    context_budget_chars: clampInt(fields.sensoryContextBudget.value, [200, 6000]),
+    retention_days: request.sensory.retention_days,
+    retention_limit: request.sensory.retention_limit,
+    sources,
+  };
 }
 
 function renderTtsProviders() {
@@ -4206,6 +4566,7 @@ function collectSettings() {
     theme_changed: themeChanged,
     character: collectCharacterSettings(),
     api: collectApiSettings(),
+    sensory: collectSensorySettings(),
     tts: collectTtsSettings(),
     system_extra: collectSystemExtraSettings(),
     memory: collectMemorySettings(),
@@ -4264,6 +4625,10 @@ async function load() {
   initializeProviderState();
   renderProviderPage();
   renderModelSlots(request.api.model_selection);
+  fields.sensoryEnabled.checked = request.sensory.enabled;
+  fields.sensoryContextEnabled.checked = request.sensory.context_enabled;
+  fields.sensoryContextBudget.value = request.sensory.context_budget_chars;
+  initializeSensoryState();
   renderTtsProviders();
   renderMemoryControls();
   initializePluginState();
@@ -4271,6 +4636,8 @@ async function load() {
   enhanceSelect(fields.characterSelect);
   enhanceSelect(fields.visualEffectMode);
   enhanceSelect(fields.ttsProvider);
+  enhanceSelect(fields.sensoryMode);
+  enhanceSelect(fields.sensoryBackend);
   enhanceSelect(fields.backchannelMode);
   enhanceSelect(fields.screenResolution);
   enhanceSelect(fields.memoryLayerFilter);
@@ -4375,6 +4742,7 @@ async function load() {
   syncDebugLogState();
   syncBubbleState();
   syncApiAdvancedState();
+  syncSensoryControls();
   syncTtsState();
   syncBackchannelState();
   syncCharacterArchiveState();
@@ -4438,6 +4806,22 @@ fields.providerSearch.addEventListener("input", () => {
 });
 fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
+fields.sensoryEnabled.addEventListener("change", syncSensoryControls);
+fields.sensoryContextEnabled.addEventListener("change", syncSensoryControls);
+fields.sensorySourceTabs.querySelectorAll("[data-sensory-source]").forEach((button) => {
+  button.addEventListener("click", () => setSensorySource(button.dataset.sensorySource));
+});
+fields.sensoryMode.addEventListener("change", handleSensoryRouteChange);
+fields.sensoryBackend.addEventListener("change", handleSensoryRouteChange);
+[
+  fields.sensoryEndpoint,
+  fields.sensoryModel,
+  fields.sensoryApiKey,
+  fields.sensoryTimeout,
+  fields.sensoryConfidence,
+].forEach((control) => control.addEventListener("input", handleSensoryControlInput));
+fields.sensoryProbeButton.addEventListener("click", probeSensoryModels);
+fields.sensoryTestButton.addEventListener("click", testSensoryModel);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
 fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
 fields.ttsTestButton.addEventListener("click", testTtsSettings);
@@ -4473,7 +4857,11 @@ fields.saveButton.addEventListener("click", async () => {
     return;
   }
   setError("");
-  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
+  if (
+    !validateOnboardingBeforeSubmit()
+    || !validateApiSettingsBeforeSubmit()
+    || !validateSensorySettingsBeforeSubmit()
+  ) {
     return;
   }
   const original = fields.saveButton.textContent;
@@ -4512,7 +4900,11 @@ fields.applyButton.addEventListener("click", async () => {
     return;
   }
   setError("");
-  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
+  if (
+    !validateOnboardingBeforeSubmit()
+    || !validateApiSettingsBeforeSubmit()
+    || !validateSensorySettingsBeforeSubmit()
+  ) {
     return;
   }
   let settings;

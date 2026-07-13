@@ -6,6 +6,7 @@ from typing import Any
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.cancellation import CancelChecker, check_cancelled
 from app.core.runtime_log import log_event, summarize_messages
+from app.sensory.pipeline import SensoryPipeline
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
@@ -23,9 +24,11 @@ class ChatPipeline:
         self,
         agent_runtime: AgentRuntime,
         visual_observation_store: VisualObservationStore | None = None,
+        sensory_pipeline: SensoryPipeline | None = None,
     ) -> None:
         self.agent_runtime = agent_runtime
         self.visual_observation_store = visual_observation_store
+        self.sensory_pipeline = sensory_pipeline or getattr(agent_runtime, "sensory_pipeline", None)
 
     def run_user_message(
         self,
@@ -135,6 +138,15 @@ class ChatPipeline:
                 {"visual_id": record.id, "error": str(exc)},
             )
             return
+        if self.sensory_pipeline is not None:
+            try:
+                self.sensory_pipeline.record_visual_observation(record)
+            except Exception as exc:  # noqa: BLE001 - 感知镜像失败不能击穿聊天成功结果
+                log_event(
+                    log_scope,
+                    "视觉观察镜像到感知中间件失败，已保留聊天结果",
+                    {"visual_id": record.id, "error": str(exc)},
+                )
         log_event(
             log_scope,
             "视觉观察记录已保存",

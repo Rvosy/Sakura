@@ -128,6 +128,11 @@ from app.core.mobile_chat_worker import MobileChatWorker
 from app.core.resource_manager import ResourceManager
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
 from app.plugins.manager import (
     PLUGIN_EVENT_AI_MESSAGE,
     PLUGIN_EVENT_APP_START,
@@ -636,6 +641,10 @@ class PetWindow(QWidget):
         self._active_mobile_chat_request: dict[str, Any] | None = None
         self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
+        self.sensory_observation_store = context.sensory_observation_store
+        self.sensory_settings = context.sensory_settings
+        self.sensory_pipeline = context.sensory_pipeline
+        self.agent_runtime.set_sensory_pipeline(self.sensory_pipeline)
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
@@ -3189,6 +3198,7 @@ class PetWindow(QWidget):
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
+            sensory_pipeline=getattr(self, "sensory_pipeline", None),
             interaction_id=self.active_interaction_id,
         )
         self.resource_manager.spawn_qt_worker(
@@ -3990,6 +4000,7 @@ class PetWindow(QWidget):
         )
         worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
+        worker.sensory_pipeline = getattr(self, "sensory_pipeline", None)
         self.pending_event_visual_observation_jobs = []
         self.resource_manager.spawn_qt_worker(
             worker,
@@ -5170,6 +5181,7 @@ class PetWindow(QWidget):
             api_settings=api_settings,
             api_profiles=api_profiles,
             model_selection=model_selection,
+            sensory_settings=getattr(self, "sensory_settings", SensorySettings()),
             tts_settings=tts_settings,
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             launch_at_login_supported=is_launch_at_login_supported(),
@@ -5392,6 +5404,7 @@ class PetWindow(QWidget):
                 self.settings_service.save_api_settings(result.api.settings)
             self.settings_service.save_api_profiles(result.api.profiles)
             self.settings_service.save_model_selection(result.api.model_selection)
+            self.settings_service.save_sensory_settings(result.sensory)
             self.settings_service.save_tts_settings(tts_settings)
             self.settings_service.save_current_character_id(
                 self.character_registry,
@@ -5593,6 +5606,7 @@ class PetWindow(QWidget):
                     log_event("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
             log_event("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
         self._apply_character(selected_profile)
+        self._apply_sensory_settings(result.sensory, profile=selected_profile)
         apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
         if callable(apply_backchannel_settings):
             apply_backchannel_settings(system_extra.backchannel)
@@ -5636,6 +5650,35 @@ class PetWindow(QWidget):
                 "\n\n".join(messages),
             )
         return True
+
+    def _apply_sensory_settings(
+        self,
+        settings: SensorySettings,
+        *,
+        profile: CharacterProfile | None = None,
+    ) -> None:
+        normalized = settings.normalized()
+        active_profile = profile or getattr(self, "character_profile", None)
+        if active_profile is None:
+            return
+        sensory_path = StoragePaths(self.base_dir).sensory_observations_for(active_profile.id)
+        store = SensoryObservationStore(
+            sensory_path,
+            retention_days=normalized.retention_days,
+            retention_limit=normalized.retention_limit,
+        )
+        pipeline = SensoryPipeline(
+            settings=normalized,
+            store=store,
+            providers=build_provider_registry(normalized.providers),
+        )
+        self.sensory_settings = normalized
+        self.sensory_observation_store = store
+        self.sensory_pipeline = pipeline
+        self.agent_runtime.set_sensory_pipeline(pipeline)
+        self.agent_runtime.set_builtin_context_providers(
+            [SensoryContextProvider(normalized, store).contribution()]
+        )
 
     def _abort_tauri_settings_apply(
         self,

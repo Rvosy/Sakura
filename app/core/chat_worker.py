@@ -14,6 +14,7 @@ from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
 )
+from app.sensory.pipeline import SensoryPipeline
 
 
 class ChatWorker(QObject):
@@ -30,6 +31,7 @@ class ChatWorker(QObject):
         cancelled_action: PendingToolAction | None = None,
         visual_observation_store: VisualObservationStore | None = None,
         visual_observation_jobs: list[VisualObservationJob] | None = None,
+        sensory_pipeline: SensoryPipeline | None = None,
         interaction_id: str = "",
     ) -> None:
         super().__init__()
@@ -39,10 +41,12 @@ class ChatWorker(QObject):
         self.cancelled_action = cancelled_action
         self.visual_observation_store = visual_observation_store
         self.visual_observation_jobs = visual_observation_jobs or []
+        self.sensory_pipeline = sensory_pipeline
         self.interaction_id = interaction_id
         self.pipeline = ChatPipeline(
             agent_runtime,
             visual_observation_store=visual_observation_store,
+            sensory_pipeline=sensory_pipeline,
         )
         self._cancel_token = CancellationToken()
 
@@ -142,6 +146,7 @@ class EventWorker(QObject):
         self.agent_event = event
         self.visual_observation_store: VisualObservationStore | None = None
         self.visual_observation_jobs: list[VisualObservationJob] = []
+        self.sensory_pipeline: SensoryPipeline | None = None
         self.interaction_id = interaction_id
         self._cancel_token = CancellationToken()
 
@@ -158,6 +163,7 @@ class EventWorker(QObject):
             pipeline = ChatPipeline(
                 self.agent_runtime,
                 visual_observation_store=self.visual_observation_store,
+                sensory_pipeline=self.sensory_pipeline,
             )
             result = pipeline.run_event(
                 self.agent_event,

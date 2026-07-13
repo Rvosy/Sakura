@@ -471,6 +471,49 @@ body.is-onboarding #page-character {
   animation-delay: calc(var(--motion-stagger) * 3);
 }
 
+.sensory-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.sensory-source-tabs button {
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--sakura-secondary-text);
+}
+
+.sensory-source-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--sakura-primary) 45%, var(--sakura-border));
+  background: var(--sakura-primary);
+  color: var(--sakura-input-bg);
+}
+
+.sensory-source-tabs button.is-active:hover:not(:disabled) {
+  color: var(--sakura-input-bg);
+  transform: none;
+  box-shadow: none;
+}
+
+.sensory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sensory-actions .hint {
+  min-width: 0;
+  margin: 0 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
 .settings-group {
   display: grid;
   gap: 12px;
