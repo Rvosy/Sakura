@@ -535,15 +535,15 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml brain_host
 - Modify: `desktop/src-tauri/src/windows.rs`
 - Create: `tests/unit/test_tauri_pet_frontend.py`
 
-- [ ] 建立单一前端 Store，不允许各窗口复制不可同步的状态。
-- [ ] 实现立绘加载、表情切换和过渡动画。
-- [ ] 实现字幕显示、分段回复和打字机动画。
-- [ ] 实现输入栏、发送、取消和截图入口。
-- [ ] 实现窗口底边锚定、缩放和气泡布局。
-- [ ] 实现主窗口隐藏、恢复和多显示器边界修正。
-- [ ] Rust 提供最小窗口命令；前端不得自行读写任意路径。
-- [ ] 将角色资源映射为受控 asset URL。
-- [ ] 使用现有角色主题值驱动 CSS variables。
+- [x] 建立单一前端 Store，不允许各窗口复制不可同步的状态。
+- [x] 实现立绘加载、表情切换和过渡动画。
+- [x] 实现字幕显示、分段回复和打字机动画。
+- [x] 实现输入栏、发送、取消和截图入口。
+- [x] 实现窗口底边锚定、缩放和气泡布局。
+- [x] 实现主窗口隐藏、恢复和多显示器边界修正。
+- [x] Rust 提供最小窗口命令；前端不得自行读写任意路径。
+- [x] 将角色资源映射为受控 asset URL。
+- [x] 使用现有角色主题值驱动 CSS variables。
 
 **Verification:**
 
@@ -893,3 +893,9 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - Task 5 的文件清单未列前端文件，但“超过阈值后显示诊断页”需要现有 Tauri 技术门窗口能观察监管状态。实际最小调整为在 `desktop/frontend/app.js` 监听 `sakura://brain-status` 并查询 `brain_status`，在主窗口内显示启动、恢复和诊断状态；完整诊断独立窗口仍按 Task 10 实现。
 - Rust 监管测试使用 `tests/fixtures/fake_brain_host.py` 做确定性故障注入，覆盖握手卡死、正常关闭无响应、单次崩溃恢复和持续崩溃。真实 Python Brain 的角色/配置装配仍由 Task 3 的进程测试覆盖，Task 13 再执行整机故障注入和残留进程验收。
 - 退出顺序当前先将监管状态切为 `stopping`，拒绝新请求，再关闭 Brain 并删除该 session 登记的临时资源。Rust 音频长期状态要到 Task 8 才建立，届时接入同一 AppState 关闭顺序。
+
+### 2026-07-14：Task 6 在受限硬件上的继续实施
+
+- ADR-0001 原先把未完成物理验收设为进入 Task 6 的阻塞条件；当前机器仍只有单屏 100% DPI，系统托盘壳层也无法由现有 Windows 自动化接口定位。按用户“继续、不用停”的明确要求，调整为允许继续自动化实现，但 Task 12 生产入口切换前必须重新审计 ADR，Task 13 仍需补齐物理鼠标、托盘、多 DPI/混合多屏和人耳音频签字。
+- Task 6 为把真实角色状态交给前端，实际额外扩展 `app/brain_host/dto.py` 和 Rust `app_state.rs`：Brain Host 提供主题、布局、字幕与角色包内相对资源映射；Rust 只返回固定 token 化 asset URL，并在读取前 canonicalize 后验证文件仍位于当前角色包内。前端没有 `file://`、`convertFileSrc`、任意路径或通用文件命令。
+- JS `computePetLayout` 与现有 Python `compute_pet_layout` 使用同一常量和锚点数学，并通过跨运行时用例逐项比较，旧 Qt 生产路径保持不变。

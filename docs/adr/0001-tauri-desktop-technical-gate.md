@@ -1,6 +1,6 @@
 # ADR-0001：Tauri 桌面技术门的受限验收
 
-- 状态：已接受（带进入 Task 6 前置条件）
+- 状态：已接受（允许继续实现，生产切换前仍有硬门槛）
 - 日期：2026-07-14
 - 适用阶段：Sakura Tauri Assistant 第一阶段 Task 1
 
@@ -28,6 +28,8 @@ DISPLAY1
 - 隐藏主窗口后再次启动只恢复同一实例，没有创建第二个可见窗口。
 - Rust tray、single-instance、窗口、安全 capability 和截图/音频帮助逻辑具有自动测试。
 - crate 未引入 `tauri-plugin-shell` 或 `tauri-plugin-fs`，capability 未开放 Shell 或任意文件系统权限。
+- Task 5 后的真实 Tauri 进程能够启动受监管 Brain Host；Task 6 技术实现能够通过受控 `sakura-asset` 协议加载当前 `N.A.V.I.` 角色立绘、主题和初始字幕，并按现有纯布局模型得到 `736 × 640` 窗口。正常退出后未发现 `sakura-desktop.exe` 或 `python -m app.brain_host` 残留进程。
+- Windows SendInput 拖动已在真实立绘区域完成且窗口保持可用，但自动化接口不能读取拖动前后窗口原点，仍不能替代用户物理鼠标签字。
 
 ## 未完成的物理验收
 
@@ -40,11 +42,11 @@ DISPLAY1
 ## 决策
 
 1. Task 1 的代码和自动测试可以提交，Task 2–5 的 IPC、Brain Host、无 Qt 服务和 Host 监管基础设施可以继续实施。
-2. 在上述物理验收完成前，不进入 Task 6 的完整桌宠主界面迁移，也不宣称 Task 1 exit gate 已完全通过。
+2. 受当前单屏硬件限制且用户明确要求持续推进，允许继续实现 Task 6–11 的自动化迁移，但不得据此宣称 Task 1 exit gate 已完全通过，也不得提前切换生产入口。
 3. 窗口拖动同时保留两条受控路径：前端 drag region 和固定 Rust `start_dragging` command；不得为解决拖动而开放通用窗口、Shell 或脚本能力。
-4. Task 13 的干净 Windows x64 验收必须覆盖本 ADR 中所有未完成项；若出现 DPI 或多屏缺陷，回到 `desktop/src-tauri/src/windows.rs` 修正几何策略后再切换生产入口。
+4. Task 12 生产入口切换和 Task 13 最终签字前，必须在具备相应硬件的 Windows x64 环境覆盖本 ADR 中所有未完成项；若出现 DPI 或多屏缺陷，回到 `desktop/src-tauri/src/windows.rs` 修正几何策略后再切换生产入口。
 
 ## 后果
 
 - 当前分支可以继续完成与显示硬件无关的架构工作，避免把单机硬件条件变成 IPC/Brain Host 工作的阻塞项。
-- Task 6 形成明确的人工门槛，不能把自动测试或单屏 100% DPI 结果外推为多屏兼容结论。
+- Task 6 可以继续形成可测试实现，但不能把自动测试或单屏 100% DPI 结果外推为多屏兼容结论；Task 12 前必须重新审计本 ADR。

@@ -71,14 +71,15 @@ def test_desktop_does_not_expose_shell_or_arbitrary_filesystem_plugins() -> None
 def test_frontend_has_drag_visibility_click_through_ime_and_prototype_controls() -> None:
     html = _read("desktop/frontend/index.html")
     script = _read("desktop/frontend/app.js")
+    pet_controller = _read("desktop/frontend/pet/pet_controller.js")
 
     assert 'id="pet-stage"' in html
     assert 'id="message-input"' in html
     assert 'id="audio-prototype"' in html
     assert 'id="capture-prototype"' in html
     assert "data-tauri-drag-region" in html
-    assert "compositionstart" in script
-    assert "compositionend" in script
+    assert "compositionstart" in pet_controller
+    assert "compositionend" in pet_controller
     assert "start_dragging" in script
     assert "set_pet_visible" in script
     assert "set_click_through" in script

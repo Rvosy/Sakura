@@ -165,6 +165,7 @@ pub type StatusCallback = Arc<dyn Fn(BrainHostStatus) + Send + Sync + 'static>;
 
 struct RuntimeState {
     status: BrainHostStatus,
+    startup_state: Option<Value>,
     pending_request_ids: BTreeSet<String>,
     temporary_resources: BTreeSet<PathBuf>,
 }
@@ -173,6 +174,7 @@ impl RuntimeState {
     fn new() -> Self {
         Self {
             status: BrainHostStatus::starting(),
+            startup_state: None,
             pending_request_ids: BTreeSet::new(),
             temporary_resources: BTreeSet::new(),
         }
@@ -232,6 +234,14 @@ impl BrainHostSupervisor {
             .clone()
     }
 
+    pub fn startup_state(&self) -> Option<Value> {
+        self.shared
+            .lock()
+            .expect("Brain state lock poisoned")
+            .startup_state
+            .clone()
+    }
+
     pub fn register_request(&self, request_id: impl Into<String>) -> bool {
         let mut state = self.shared.lock().expect("Brain state lock poisoned");
         if !state.status.accepting_requests {
@@ -286,6 +296,7 @@ struct ManagedProcess {
     responses: Receiver<Result<Value, String>>,
     reader_thread: Option<JoinHandle<()>>,
     session_id: String,
+    startup_state: Option<Value>,
     next_sequence: u64,
 }
 
@@ -361,6 +372,7 @@ impl ManagedProcess {
             responses,
             reader_thread: Some(reader_thread),
             session_id,
+            startup_state: None,
             next_sequence: 0,
         };
         let startup = (|| {
@@ -380,6 +392,7 @@ impl ManagedProcess {
                     "Brain Host hello returned another session".to_string(),
                 ));
             }
+            process.startup_state = hello.get("startup").cloned();
             let health = process.request_during_startup(
                 "system.health",
                 json!({}),
@@ -563,7 +576,13 @@ fn supervise(
         let launch = ManagedProcess::launch(&config, session_id.clone(), &credential, &commands);
         let failure = match launch {
             Ok(mut process) => {
-                mark_ready(&shared, &callback, session_id, restart_count);
+                mark_ready(
+                    &shared,
+                    &callback,
+                    session_id,
+                    restart_count,
+                    process.startup_state.clone(),
+                );
                 loop {
                     match commands.recv_timeout(config.poll_interval) {
                         Ok(SupervisorCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
@@ -624,6 +643,7 @@ fn begin_launch(
         };
         state.status.session_generation += 1;
         state.status.session_id = None;
+        state.startup_state = None;
         state.status.restart_count = restart_count;
         state.status.accepting_requests = false;
         state.status.diagnostic = None;
@@ -639,6 +659,7 @@ fn mark_ready(
     callback: &Option<StatusCallback>,
     session_id: String,
     restart_count: u32,
+    startup_state: Option<Value>,
 ) {
     update_status(shared, callback, |state| {
         state.status.phase = BrainHostPhase::Ready;
@@ -646,6 +667,7 @@ fn mark_ready(
         state.status.restart_count = restart_count;
         state.status.accepting_requests = true;
         state.status.diagnostic = None;
+        state.startup_state = startup_state;
     });
 }
 
@@ -681,6 +703,7 @@ fn mark_stopped(
         state.status.phase = BrainHostPhase::Stopped;
         state.status.session_id = None;
         state.status.accepting_requests = false;
+        state.startup_state = None;
         state.status.last_shutdown_forced = forced;
     });
 }
@@ -694,6 +717,7 @@ fn mark_diagnostic(
     update_status(shared, callback, |state| {
         state.status.phase = BrainHostPhase::Diagnostic;
         state.status.session_id = None;
+        state.startup_state = None;
         state.status.restart_count = restart_count;
         state.status.accepting_requests = false;
         state.status.diagnostic = Some(BrainHostDiagnostic {
@@ -712,6 +736,7 @@ fn invalidate_runtime(shared: &Arc<Mutex<RuntimeState>>) {
         let mut state = shared.lock().expect("Brain state lock poisoned");
         state.status.session_id = None;
         state.status.accepting_requests = false;
+        state.startup_state = None;
         state.pending_request_ids.clear();
         let resources = std::mem::take(&mut state.temporary_resources);
         state.synchronize_counts();

@@ -1,12 +1,35 @@
 :root {
   color-scheme: light;
   font-family: "Microsoft YaHei UI", "Yu Gothic UI", sans-serif;
-  --sakura-petal: #ff9fc5;
-  --sakura-deep: #8f315d;
-  --sakura-ink: #392632;
-  --sakura-mist: rgba(255, 248, 252, 0.9);
-  --sakura-line: rgba(127, 55, 88, 0.18);
-  --sakura-glow: rgba(255, 117, 174, 0.32);
+  --sakura-primary: #d55b91;
+  --sakura-primary-hover: #bf3f7a;
+  --sakura-accent: #b13e73;
+  --sakura-text: #3d2b35;
+  --sakura-secondary-text: #7a3656;
+  --sakura-muted-text: #9b4f72;
+  --sakura-page: #fff6fa;
+  --sakura-panel: #ffe8f1;
+  --sakura-input: #ffffff;
+  --sakura-bubble: #ffe8f1;
+  --sakura-border: #eeacc8;
+  --window-width: 736px;
+  --window-height: 640px;
+  --portrait-x: 88px;
+  --portrait-y: 8px;
+  --portrait-width: 560px;
+  --portrait-height: 570px;
+  --bubble-x: 48px;
+  --bubble-y: 366px;
+  --bubble-width: 640px;
+  --bubble-height: 128px;
+  --input-x: 48px;
+  --input-y: 504px;
+  --input-width: 640px;
+  --input-height: 52px;
+  --speech-font-size: 16px;
+  --name-font-size: 13px;
+  --input-font-size: 15px;
+  --button-font-size: 13px;
 }
 
 * {
@@ -29,8 +52,9 @@ input {
 }
 
 button:focus-visible,
-input:focus-visible {
-  outline: 3px solid rgba(197, 56, 119, 0.32);
+input:focus-visible,
+summary:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--sakura-primary) 34%, transparent);
   outline-offset: 2px;
 }
 
@@ -48,287 +72,274 @@ input:focus-visible {
 
 .pet-stage {
   position: relative;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
   width: 100%;
   height: 100%;
-  padding: 18px;
   isolation: isolate;
 }
 
 .status-ribbon {
-  justify-self: center;
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 20;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px 7px 8px;
-  border: 1px solid var(--sakura-line);
+  gap: 7px;
+  max-width: min(82%, 360px);
+  padding: 6px 12px 6px 7px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 72%, transparent);
   border-radius: 999px;
-  color: var(--sakura-deep);
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 10px 34px rgba(91, 42, 67, 0.12);
-  backdrop-filter: blur(18px);
+  color: var(--sakura-secondary-text);
+  background: color-mix(in srgb, var(--sakura-input) 86%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--sakura-text) 13%, transparent);
+  backdrop-filter: blur(18px) saturate(1.15);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
   cursor: grab;
 }
 
 .status-ribbon__mark {
   display: grid;
   place-items: center;
-  width: 25px;
-  height: 25px;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
   border-radius: 50%;
   color: white;
-  background: var(--sakura-deep);
+  background: var(--sakura-primary);
   font-family: "Yu Mincho", "SimSun", serif;
 }
 
 .status-ribbon > *,
-.portrait-prototype > * {
+.portrait-stage > * {
   pointer-events: none;
 }
 
-.portrait-prototype {
-  position: relative;
-  align-self: stretch;
-  min-height: 0;
+.portrait-stage {
+  position: absolute;
+  left: var(--portrait-x);
+  top: var(--portrait-y);
+  width: var(--portrait-width);
+  height: var(--portrait-height);
   cursor: grab;
 }
 
-.portrait-prototype:active,
+.portrait-stage:active,
 .status-ribbon:active {
   cursor: grabbing;
 }
 
-.portrait-prototype__halo {
+.portrait-image {
   position: absolute;
-  left: 50%;
-  bottom: 58px;
-  width: min(72vw, 310px);
-  aspect-ratio: 1;
-  transform: translateX(-50%);
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.96) 0 29%, transparent 30%),
-    conic-gradient(from 10deg, transparent, rgba(255, 164, 201, 0.45), transparent 68%);
-  filter: blur(1px);
-  animation: halo-breathe 5s ease-in-out infinite;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  opacity: 1;
+  filter: drop-shadow(0 24px 32px color-mix(in srgb, var(--sakura-text) 20%, transparent));
+  transition: opacity 300ms ease;
 }
 
-.portrait-prototype__silhouette {
+.portrait-image--transition {
+  opacity: 0;
+}
+
+.portrait-image--visible {
+  opacity: 1;
+}
+
+.portrait-image--fading {
+  opacity: 0;
+}
+
+.portrait-fallback {
   position: absolute;
   left: 50%;
-  bottom: 82px;
+  bottom: 0;
   display: grid;
   place-items: center;
-  width: 210px;
-  height: 250px;
+  width: min(70%, 260px);
+  aspect-ratio: 0.84;
   transform: translateX(-50%);
-  border: 1px solid rgba(255, 255, 255, 0.75);
+  border: 1px solid color-mix(in srgb, white 70%, var(--sakura-border));
   border-radius: 48% 48% 42% 42% / 34% 34% 58% 58%;
-  color: var(--sakura-deep);
-  background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.92), rgba(255, 188, 216, 0.84)),
-    var(--sakura-petal);
-  box-shadow:
-    0 32px 60px rgba(111, 44, 77, 0.22),
-    inset 0 0 42px rgba(255, 255, 255, 0.62);
-}
-
-.portrait-prototype__ear {
-  position: absolute;
-  top: -34px;
-  width: 78px;
-  height: 88px;
-  border-radius: 12px 82px 18px 76px;
-  background: linear-gradient(145deg, #fff7fb, #f2a3c5);
-  z-index: -1;
-}
-
-.portrait-prototype__ear--left {
-  left: 5px;
-  transform: rotate(-18deg);
-}
-
-.portrait-prototype__ear--right {
-  right: 5px;
-  transform: scaleX(-1) rotate(-18deg);
-}
-
-.portrait-prototype__face {
-  margin-top: -12px;
+  color: var(--sakura-secondary-text);
+  background: linear-gradient(155deg, white, var(--sakura-panel));
+  box-shadow: 0 24px 48px color-mix(in srgb, var(--sakura-text) 18%, transparent);
   font-family: "Yu Mincho", "SimSun", serif;
   font-size: 30px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-}
-
-.portrait-prototype__caption {
-  position: absolute;
-  left: 50%;
-  bottom: 44px;
-  transform: translateX(-50%);
-  margin: 0;
-  color: rgba(57, 38, 50, 0.64);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.portrait-prototype__petal {
-  position: absolute;
-  width: 22px;
-  height: 15px;
-  border-radius: 80% 10% 80% 10%;
-  background: rgba(255, 129, 181, 0.72);
-  box-shadow: 0 7px 16px var(--sakura-glow);
-  animation: petal-drift 4.8s ease-in-out infinite;
-}
-
-.portrait-prototype__petal--one {
-  top: 25%;
-  left: 14%;
-}
-
-.portrait-prototype__petal--two {
-  top: 12%;
-  right: 16%;
-  animation-delay: -1.4s;
-}
-
-.portrait-prototype__petal--three {
-  top: 48%;
-  right: 8%;
-  animation-delay: -2.8s;
 }
 
 .speech-card {
+  position: absolute;
+  left: var(--bubble-x);
+  top: var(--bubble-y);
+  z-index: 10;
   display: grid;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--sakura-line);
-  border-radius: 26px 26px 18px 18px;
-  background: var(--sakura-mist);
-  box-shadow: 0 20px 52px rgba(76, 37, 58, 0.2);
-  backdrop-filter: blur(24px) saturate(1.15);
+  align-content: start;
+  gap: 6px;
+  width: var(--bubble-width);
+  height: var(--bubble-height);
+  min-height: 96px;
+  padding: 13px 18px 15px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 75%, transparent);
+  border-radius: 24px 24px 18px 18px;
+  color: var(--sakura-text);
+  background: color-mix(in srgb, var(--sakura-bubble) 88%, transparent);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--sakura-text) 17%, transparent);
+  backdrop-filter: blur(24px) saturate(1.12);
 }
 
-.speech-card__copy {
-  display: grid;
-  gap: 3px;
-  color: var(--sakura-ink);
-}
-
-.speech-card__copy strong {
+.character-name {
+  color: var(--sakura-secondary-text);
   font-family: "Yu Mincho", "SimSun", serif;
-  font-size: 19px;
-}
-
-.speech-card__copy > span:last-child {
-  color: rgba(57, 38, 50, 0.68);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.speech-card__copy > span[data-kind="error"] {
-  color: #a62c46;
-}
-
-.speech-card__copy > span[data-kind="success"] {
-  color: #356b55;
-}
-
-.speech-card__eyebrow {
-  color: var(--sakura-deep);
-  font-family: Consolas, "SFMono-Regular", monospace;
-  font-size: 10px;
+  font-size: var(--name-font-size);
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
+}
+
+.subtitle-text {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--speech-font-size);
+  font-weight: 600;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.input-card {
+  position: absolute;
+  left: var(--input-x);
+  top: var(--input-y);
+  z-index: 12;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: var(--input-width);
+  height: var(--input-height);
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 72%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--sakura-panel) 86%, transparent);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--sakura-text) 15%, transparent);
+  backdrop-filter: blur(22px) saturate(1.1);
 }
 
 .composer input {
   width: 100%;
-  height: 42px;
-  padding: 0 14px;
-  border: 1px solid rgba(115, 52, 83, 0.18);
-  border-radius: 14px;
-  color: var(--sakura-ink);
-  background: rgba(255, 255, 255, 0.86);
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 65%, transparent);
+  border-radius: 12px;
+  color: var(--sakura-text);
+  background: color-mix(in srgb, var(--sakura-input) 92%, transparent);
+  font-size: var(--input-font-size);
   user-select: text;
 }
 
 .composer input::placeholder {
-  color: rgba(84, 52, 69, 0.48);
+  color: color-mix(in srgb, var(--sakura-muted-text) 72%, transparent);
+}
+
+.icon-button,
+.primary-button,
+.prototype-actions button {
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 72%, transparent);
+  color: var(--sakura-secondary-text);
+  background: color-mix(in srgb, var(--sakura-input) 86%, transparent);
+  font-size: var(--button-font-size);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 12px;
+}
+
+.primary-button {
+  min-width: 58px;
+  height: 36px;
+  padding: 0 13px;
+  border-color: transparent;
+  border-radius: 12px;
+  color: white;
+  background: var(--sakura-primary);
+}
+
+.primary-button:hover {
+  background: var(--sakura-primary-hover);
+}
+
+button:disabled,
+input:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.prototype-tools {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 30;
+  color: var(--sakura-secondary-text);
+  font-size: 11px;
+}
+
+.prototype-tools summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 70%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--sakura-input) 82%, transparent);
+  cursor: pointer;
+  list-style: none;
+}
+
+.prototype-tools[open] {
+  width: 230px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--sakura-border) 70%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--sakura-panel) 92%, transparent);
+  backdrop-filter: blur(18px);
 }
 
 .prototype-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
+  margin: 8px 0;
 }
 
 .prototype-actions button {
-  min-height: 34px;
-  padding: 7px 10px;
-  border: 1px solid rgba(120, 51, 84, 0.16);
-  border-radius: 12px;
-  color: var(--sakura-deep);
-  background: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 140ms ease, background-color 140ms ease;
+  min-height: 30px;
+  padding: 5px;
+  border-radius: 9px;
 }
 
-.prototype-actions button:hover {
-  transform: translateY(-1px);
-  background: white;
+#prototype-result[data-kind="error"] {
+  color: #a62c46;
 }
 
-.prototype-actions button:active {
-  transform: translateY(0);
-}
-
-.prototype-actions button[aria-pressed="true"] {
-  color: white;
-  background: var(--sakura-deep);
-}
-
-.prototype-actions button:disabled {
-  cursor: wait;
-  opacity: 0.58;
-}
-
-@keyframes halo-breathe {
-  0%,
-  100% {
-    transform: translateX(-50%) scale(0.96);
-    opacity: 0.72;
-  }
-  50% {
-    transform: translateX(-50%) scale(1.04);
-    opacity: 1;
-  }
-}
-
-@keyframes petal-drift {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) rotate(8deg);
-  }
-  50% {
-    transform: translate3d(10px, 18px, 0) rotate(42deg);
-  }
+#prototype-result[data-kind="success"] {
+  color: #356b55;
 }
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    scroll-behavior: auto !important;
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;

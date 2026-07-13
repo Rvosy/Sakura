@@ -45,7 +45,10 @@ def _fake_context(base_dir: Path) -> SimpleNamespace:
             initial_message="hello",
             default_portrait_path=base_dir / "characters" / "demo" / "portrait.png",
             reply_tones=("neutral",),
-            portrait_choices={"neutral": "portrait.png"},
+            portrait_choices=("neutral",),
+            expression_portraits={
+                "neutral": base_dir / "characters" / "demo" / "portrait.png"
+            },
         ),
         settings=SimpleNamespace(
             base_url="https://api.example.com/v1",
@@ -95,6 +98,13 @@ def test_application_initializes_context_and_returns_json_startup_dto(tmp_path: 
     assert startup["base_dir"] == str(tmp_path.resolve())
     assert startup["character"]["id"] == "demo"
     assert startup["character"]["initial_message"] == "hello"
+    assert startup["character"]["portraits"] == {
+        "default": "characters/demo/portrait.png",
+        "expressions": {"neutral": "characters/demo/portrait.png"},
+    }
+    assert startup["theme"]["primary_color"].startswith("#")
+    assert startup["layout"]["portrait_scale_percent"] == 100
+    assert startup["subtitle"]["language"] == "zh"
     assert startup["runtime"]["tool_count"] == 2
     json.dumps(startup, ensure_ascii=False)
 
