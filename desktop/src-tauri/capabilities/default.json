@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Sakura Assistant trusted desktop surface",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

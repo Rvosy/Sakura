@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura Assistant</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠技术验证窗口">
+      <section class="status-ribbon" data-drag-region data-tauri-drag-region aria-live="polite">
+        <span class="status-ribbon__mark" aria-hidden="true">桜</span>
+        <span id="desktop-status">Tauri 桌面核心已就绪</span>
+      </section>
+
+      <section
+        class="portrait-prototype"
+        data-drag-region
+        data-tauri-drag-region
+        aria-label="角色立绘占位"
+      >
+        <div class="portrait-prototype__halo" aria-hidden="true"></div>
+        <div class="portrait-prototype__petal portrait-prototype__petal--one" aria-hidden="true"></div>
+        <div class="portrait-prototype__petal portrait-prototype__petal--two" aria-hidden="true"></div>
+        <div class="portrait-prototype__petal portrait-prototype__petal--three" aria-hidden="true"></div>
+        <div class="portrait-prototype__silhouette" aria-hidden="true">
+          <span class="portrait-prototype__ear portrait-prototype__ear--left"></span>
+          <span class="portrait-prototype__ear portrait-prototype__ear--right"></span>
+          <span class="portrait-prototype__face">• ᴗ •</span>
+        </div>
+        <p class="portrait-prototype__caption">拖动角色移动窗口</p>
+      </section>
+
+      <section class="speech-card" aria-label="桌宠控制与输入验证">
+        <div class="speech-card__copy">
+          <span class="speech-card__eyebrow">PHASE 1 · TECH GATE</span>
+          <strong>桌面壳正在等待 Brain</strong>
+          <span id="prototype-result">可验证拖动、输入法、音频与截图。</span>
+        </div>
+
+        <label class="composer" for="message-input">
+          <span class="sr-only">输入法测试</span>
+          <input
+            id="message-input"
+            name="message"
+            type="text"
+            autocomplete="off"
+            placeholder="在这里测试中文 / 日本語输入法"
+          />
+        </label>
+
+        <div class="prototype-actions" aria-label="原生能力原型">
+          <button id="audio-prototype" type="button">试听提示音</button>
+          <button id="capture-prototype" type="button">验证截图</button>
+          <button id="click-through-toggle" type="button" aria-pressed="false">鼠标穿透</button>
+          <button id="hide-pet" type="button">隐藏</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
