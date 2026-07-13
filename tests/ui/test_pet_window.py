@@ -31,6 +31,7 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
 )
 from app.agent.screen_observation import ScreenObservation
+from app.sensory.settings import SensorySettings
 from app.voice.tts_settings import GPTSoVITSTTSSettings
 from app.storage.visual_observation import VisualObservationRecord, VisualObservationStore
 
@@ -9470,9 +9471,17 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     class AgentRuntimeStub:
         def __init__(self) -> None:
             self.runtime_loop_settings = RuntimeLoopSettings()
+            self.sensory_pipeline = None
+            self.builtin_context_providers = []
 
         def set_runtime_loop_settings(self, settings):  # type: ignore[no-untyped-def]
             self.runtime_loop_settings = settings
+
+        def set_sensory_pipeline(self, pipeline):  # type: ignore[no-untyped-def]
+            self.sensory_pipeline = pipeline
+
+        def set_builtin_context_providers(self, providers):  # type: ignore[no-untyped-def]
+            self.builtin_context_providers = list(providers or [])
 
     class MinimalSettingsWindow:
         show_settings = pet_window_cls.show_settings
@@ -9481,6 +9490,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         _on_tauri_settings_applied = pet_window_cls._on_tauri_settings_applied
         _on_tauri_settings_apply_requested = pet_window_cls._on_tauri_settings_apply_requested
         _apply_tauri_settings_result = pet_window_cls._apply_tauri_settings_result
+        _apply_sensory_settings = pet_window_cls._apply_sensory_settings
         _on_tauri_settings_cancelled = pet_window_cls._on_tauri_settings_cancelled
         _on_tauri_settings_failed = pet_window_cls._on_tauri_settings_failed
         _on_tauri_settings_layout_preview = pet_window_cls._on_tauri_settings_layout_preview
@@ -9577,6 +9587,7 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.character_profile = CharacterProfileStub()
     window.tauri_settings_process = None
     window.screen_awareness_settings = ScreenAwarenessSettings(screen_context_enabled=True)
+    window.sensory_settings = SensorySettings()
     window.mcp_settings = MCPRuntimeSettings(windows_enabled=False)
     window.debug_log_settings = DebugLogSettings()
     window.startup_settings = StartupSettings()
