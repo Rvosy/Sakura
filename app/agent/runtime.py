@@ -857,7 +857,7 @@ class AgentRuntime:
                         error=SCREEN_OBSERVATION_DISABLED_ERROR,
                     )
 
-                log_event("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
+                log_event("AgentRuntime", "工具调用完成", _tool_result_for_log(prepared))
                 step_results.append(prepared)
                 execution_results.append(prepared)
                 tool_messages.extend(
@@ -961,7 +961,7 @@ class AgentRuntime:
                     "返回待确认动作",
                     {
                         "step_index": step_index,
-                        "pending_actions": [action.to_dict() for action in pending_actions],
+                        "pending_actions": [action.to_log_dict() for action in pending_actions],
                         "tools_elapsed_ms": int((time.perf_counter() - tools_started_at) * 1000),
                         "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
                     },
@@ -1076,7 +1076,7 @@ class AgentRuntime:
             "最终回复生成完成",
             {
                 "segments": len(final_reply.segments),
-                "actions": [_redact_tool_result_for_model(result) for result in execution_results],
+                "actions": [_tool_result_for_log(result) for result in execution_results],
                 "final_reply_elapsed_ms": int((time.perf_counter() - final_started_at) * 1000),
                 "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
             },
@@ -1099,7 +1099,7 @@ class AgentRuntime:
         log_event(
             "AgentRuntime",
             "执行已确认动作",
-            {**action.to_dict(), "approval_scope": approval_scope.value},
+            {**action.to_log_dict(), "approval_scope": approval_scope.value},
         )
         result = self.tools.execute_confirmed(action, approval_scope)
         check_cancelled(cancel_checker)
@@ -1191,7 +1191,7 @@ class AgentRuntime:
             "AgentRuntime",
             "已确认动作处理完成",
             {
-                "results": [_redact_tool_result_for_model(item) for item in results],
+                "results": [_tool_result_for_log(item) for item in results],
                 "segments": len(reply.segments),
             },
         )
@@ -1201,7 +1201,7 @@ class AgentRuntime:
         )
 
     def handle_cancelled_action(self, action: PendingToolAction) -> AgentResult:
-        log_event("AgentRuntime", "用户取消待确认动作", action.to_dict())
+        log_event("AgentRuntime", "用户取消待确认动作", action.to_log_dict())
         return AgentResult(
             reply=parse_chat_reply(
                 json.dumps(
@@ -2007,6 +2007,12 @@ def _redact_tool_result_for_model(result: ToolExecutionResult) -> dict[str, Any]
             }
     data["content"] = _truncate_value_for_model(redacted, MAX_TOOL_RESULT_CHARS)
     return data
+
+
+def _tool_result_for_log(result: ToolExecutionResult) -> dict[str, Any]:
+    if not result.log_content:
+        return result.to_log_dict()
+    return _redact_tool_result_for_model(result)
 
 
 def _truncate_value_for_model(value: Any, max_chars: int) -> Any:

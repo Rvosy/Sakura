@@ -80,6 +80,7 @@ class PendingToolAction:
     working_directory: str = ""
     risk_level: str = "normal"
     allowed_approval_scopes: tuple[ApprovalScope, ...] = (ApprovalScope.ONCE,)
+    log_arguments: bool = True
 
     def __init__(
         self,
@@ -95,6 +96,7 @@ class PendingToolAction:
         working_directory: str = "",
         risk_level: str = "normal",
         allowed_approval_scopes: tuple[ApprovalScope, ...] | list[ApprovalScope | str] | None = None,
+        log_arguments: bool = True,
     ) -> None:
         object.__setattr__(self, "id", id.strip() or uuid.uuid4().hex[:8])
         object.__setattr__(self, "tool_name", tool_name)
@@ -121,6 +123,7 @@ class PendingToolAction:
         object.__setattr__(self, "working_directory", details.working_directory)
         object.__setattr__(self, "risk_level", details.risk_level)
         object.__setattr__(self, "allowed_approval_scopes", details.allowed_scopes)
+        object.__setattr__(self, "log_arguments", bool(log_arguments))
 
     @classmethod
     def create(
@@ -130,6 +133,7 @@ class PendingToolAction:
         reason: str = "",
         tool_call_id: str = "",
         confirmation_details: ToolConfirmationDetails | None = None,
+        log_arguments: bool = True,
     ) -> "PendingToolAction":
         details = (confirmation_details or ToolConfirmationDetails()).normalized()
         return cls(
@@ -143,6 +147,7 @@ class PendingToolAction:
             working_directory=details.working_directory,
             risk_level=details.risk_level,
             allowed_approval_scopes=details.allowed_scopes,
+            log_arguments=log_arguments,
         )
 
     @classmethod
@@ -184,6 +189,7 @@ class PendingToolAction:
             working_directory=str(data.get("working_directory") or ""),
             risk_level=str(data.get("risk_level") or "normal"),
             allowed_approval_scopes=data.get("allowed_approval_scopes"),
+            log_arguments=bool(data.get("log_arguments", True)),
         )
 
     def with_continuation_messages(
@@ -203,6 +209,7 @@ class PendingToolAction:
             working_directory=self.working_directory,
             risk_level=self.risk_level,
             allowed_approval_scopes=self.allowed_approval_scopes,
+            log_arguments=self.log_arguments,
         )
 
     def allows_scope(self, scope: ApprovalScope) -> bool:
@@ -220,9 +227,16 @@ class PendingToolAction:
             "working_directory": self.working_directory,
             "risk_level": self.risk_level,
             "allowed_approval_scopes": [scope.value for scope in self.allowed_approval_scopes],
+            "log_arguments": self.log_arguments,
         }
         if include_context and self.continuation_messages:
             data["continuation_messages"] = self.continuation_messages
+        return data
+
+    def to_log_dict(self) -> dict[str, Any]:
+        data = self.to_dict()
+        if not self.log_arguments:
+            data["arguments"] = {"redacted": True}
         return data
 
 

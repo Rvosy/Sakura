@@ -17,6 +17,8 @@ from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.core.resource_manager import ResourceRegistry
+from app.terminal.manager import TerminalManager
+from app.terminal.settings import TerminalSettings
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,8 @@ class FeatureServices:
     memory_curation_state: MemoryCurationState
     memory_curator: MemoryCurator
     screen_awareness_settings: ScreenAwarenessSettings
+    terminal_settings: TerminalSettings
+    terminal_manager: TerminalManager
 
 
 @dataclass(frozen=True)
@@ -144,3 +148,11 @@ class AppContext:
     @property
     def screen_awareness_settings(self) -> ScreenAwarenessSettings:
         return self.features.screen_awareness_settings
+
+    @property
+    def terminal_settings(self) -> TerminalSettings:
+        return self.features.terminal_settings
+
+    @property
+    def terminal_manager(self) -> TerminalManager:
+        return self.features.terminal_manager

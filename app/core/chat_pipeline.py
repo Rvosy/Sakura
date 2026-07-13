@@ -71,7 +71,7 @@ class ChatPipeline:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
-        log_event("ChatWorker", "开始处理已确认动作", action.to_dict())
+        log_event("ChatWorker", "开始处理已确认动作", action.to_log_dict())
         if approval_scope is ApprovalScope.ONCE:
             return self.agent_runtime.handle_confirmed_action(
                 action,
@@ -92,7 +92,7 @@ class ChatPipeline:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        log_event("ChatWorker", "开始处理已取消动作", action.to_dict())
+        log_event("ChatWorker", "开始处理已取消动作", action.to_log_dict())
         return self.agent_runtime.handle_cancelled_action(action)
 
     def run_event(

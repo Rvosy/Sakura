@@ -81,6 +81,9 @@ class Tool:
     confirmation_builder: ToolConfirmationBuilder | None = None
     confirmation_predicate: ToolConfirmationPredicate | None = None
     approval_handler: ToolApprovalHandler | None = None
+    log_arguments: bool = True
+    log_result_content: bool = True
+    hidden_when_capability_disabled: bool = False
 
     @property
     def metadata(self) -> ToolMetadata:
@@ -96,6 +99,7 @@ class ToolExecutionResult:
     success: bool
     content: Any
     error: str = ""
+    log_content: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -105,6 +109,17 @@ class ToolExecutionResult:
         }
         if self.error:
             data["error"] = self.error
+        return data
+
+    def to_log_dict(self) -> dict[str, Any]:
+        data = self.to_dict()
+        if not self.log_content:
+            content = self.content
+            data["content"] = {
+                "redacted": True,
+                "type": type(content).__name__,
+                "chars": len(str(content)) if content is not None else 0,
+            }
         return data
 
 
@@ -134,6 +149,7 @@ class ToolRegistry:
             )
         }
         self._enabled_capabilities: set[str] = set()
+        self._enabled_groups: set[str] = set()
         from app.agent.tools.permission_policy import ToolPermissionPolicy
         self.permission_policy = ToolPermissionPolicy()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
@@ -216,8 +232,17 @@ class ToolRegistry:
         return {
             group_id
             for group_id, metadata in self._group_metadata.items()
-            if metadata.default_active
+            if metadata.default_active or group_id in self._enabled_groups
         }
+
+    def set_group_enabled(self, group_id: str, enabled: bool) -> None:
+        normalized = group_id.strip()
+        if not normalized:
+            return
+        if enabled:
+            self._enabled_groups.add(normalized)
+        else:
+            self._enabled_groups.discard(normalized)
 
     def group_prompt_hints(self, active_groups: set[str]) -> tuple[str, ...]:
         return tuple(
@@ -317,6 +342,12 @@ class ToolRegistry:
         for tool in self.all():
             if tool.name in {"search_tools", "list_tool_groups"}:
                 continue
+            if (
+                tool.hidden_when_capability_disabled
+                and tool.capability
+                and tool.capability not in self._enabled_capabilities
+            ):
+                continue
             if keyword and not _tool_matches_keyword(tool, keyword):
                 continue
             results.append(
@@ -336,6 +367,12 @@ class ToolRegistry:
         """列出所有工具组及数量。"""
         counts: dict[str, int] = {}
         for tool in self.all():
+            if (
+                tool.hidden_when_capability_disabled
+                and tool.capability
+                and tool.capability not in self._enabled_capabilities
+            ):
+                continue
             counts[tool.group] = counts.get(tool.group, 0) + 1
         return [
             {"group": group, "tool_count": count}
@@ -363,7 +400,7 @@ class ToolRegistry:
             {
                 "name": name,
                 "known": tool is not None,
-                "arguments": arguments,
+                "arguments": arguments if tool is None or tool.log_arguments else {"redacted": True},
                 "reason": reason,
             },
         )
@@ -415,8 +452,9 @@ class ToolRegistry:
             reason=reason,
             tool_call_id=tool_call_id,
             confirmation_details=confirmation_details,
+            log_arguments=tool.log_arguments,
         )
-        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event("ToolRegistry", "工具等待用户确认", action.to_log_dict())
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -464,7 +502,7 @@ class ToolRegistry:
                     "name": name,
                     "group": tool.group,
                     "risk": tool.risk,
-                    "arguments": arguments,
+                    "arguments": arguments if tool.log_arguments else {"redacted": True},
                 },
             )
             self._emit_tool_event(
@@ -486,6 +524,7 @@ class ToolRegistry:
             tool_name=name,
             success=True,
             content=content,
+            log_content=tool.log_result_content,
         )
         log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
         self._emit_tool_event("tool.finished", {"name": name})
@@ -681,6 +720,6 @@ def _matches_schema_type(value: Any, schema_type: str) -> bool:
 
 
 def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict[str, Any]:
-    data = result.to_dict()
+    data = result.to_log_dict()
     data["elapsed_ms"] = int((time.perf_counter() - started_at) * 1000)
     return data

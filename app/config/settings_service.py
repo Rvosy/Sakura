@@ -26,6 +26,7 @@ from app.config.models import (
 )
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
+from app.terminal.settings import TerminalSettings
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,
     ThemeSettings,
@@ -537,6 +538,23 @@ class AppSettingsService:
                 "max_agent_steps_per_turn": int(normalized.max_agent_steps_per_turn),
                 "max_tool_calls_per_step": int(normalized.max_tool_calls_per_step),
                 "max_tool_calls_per_turn": int(normalized.max_tool_calls_per_turn),
+            },
+        )
+
+    def load_terminal_settings(self) -> TerminalSettings:
+        terminal = self._system_section("terminal")
+        return TerminalSettings(
+            enabled=_bool_value(terminal.get("enabled"), False),
+            default_cwd=str(terminal.get("default_cwd") or ""),
+        ).normalized()
+
+    def save_terminal_settings(self, settings: TerminalSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "terminal",
+            {
+                "enabled": bool(normalized.enabled),
+                "default_cwd": normalized.default_cwd,
             },
         )
 

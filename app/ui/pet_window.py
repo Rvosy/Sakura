@@ -3664,7 +3664,7 @@ class PetWindow(QWidget):
         action = self.pending_tool_action
         self._log_interaction_stage(
             "confirm_action",
-            {**action.to_dict(), "approval_scope": approval_scope.value},
+            {**action.to_log_dict(), "approval_scope": approval_scope.value},
         )
         self._set_pending_tool_action(None)
         self._clear_queued_reply_segments_for_action_resolution()
@@ -3677,7 +3677,7 @@ class PetWindow(QWidget):
         self._mark_user_activity()
         self._begin_interaction("cancel_action_clicked")
         action = self.pending_tool_action
-        self._log_interaction_stage("cancel_action", action.to_dict())
+        self._log_interaction_stage("cancel_action", action.to_log_dict())
         self._set_pending_tool_action(None)
         self._clear_queued_reply_segments_for_action_resolution()
         self._run_action_worker(cancelled_action=action)
