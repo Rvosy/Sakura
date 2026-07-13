@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agent.actions import PendingToolAction
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 
 ToolHandler = Callable[[dict[str, Any]], Any]
@@ -132,36 +132,14 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
-        debug_log(
-            "ToolRegistry",
-            "注册工具",
-            {
-                "name": tool.name,
-                "group": tool.group,
-                "risk": tool.risk,
-                "requires_confirmation": tool.requires_confirmation,
-                "source": tool.source,
-                "capability": tool.capability,
-            },
-        )
 
-    def register_from_provider(self, provider: object) -> int:
-        """从 ToolProvider 批量注册工具。
-
-        返回成功注册的数量。
-        """
-        contribute = getattr(provider, "contribute_tools", None)
-        if contribute is None:
-            debug_log(
-                "ToolRegistry",
-                "Provider 不支持 contribute_tools",
-                {"provider": type(provider).__name__},
-            )
-            return 0
-        tools = contribute()
-        for tool in tools:
-            self.register(tool)
-        return len(tools)
+    def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
+        """移除工具；expected 可防止误删后来覆盖的同名工具。"""
+        current = self._tools.get(name)
+        if current is None or (expected is not None and current is not expected):
+            return False
+        del self._tools[name]
+        return True
 
     # ---- 查询 ----
 
@@ -308,7 +286,7 @@ class ToolRegistry:
         permission_policy 参数接受 ToolPermissionPolicy 实例，用于集中控制确认逻辑。
         """
         tool = self.get(name)
-        debug_log(
+        log_event(
             "ToolRegistry",
             "准备工具执行",
             {
@@ -338,7 +316,12 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具参数无效", result.to_dict())
+            log_event("ToolRegistry", "工具参数无效", result.to_dict())
+            return result
+        validation_error = _validate_tool_arguments(arguments, tool.parameters)
+        if validation_error:
+            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
+            log_event("ToolRegistry", "工具参数无效", result.to_dict())
             return result
 
         action = PendingToolAction.create(
@@ -347,7 +330,7 @@ class ToolRegistry:
             reason=reason,
             tool_call_id=tool_call_id,
         )
-        debug_log("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -361,7 +344,7 @@ class ToolRegistry:
                 content="",
                 error=f"未知工具：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if tool.handler is None:
             result = ToolExecutionResult(
@@ -370,7 +353,7 @@ class ToolRegistry:
                 content="",
                 error=f"工具未配置处理器：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if not isinstance(arguments, dict):
             result = ToolExecutionResult(
@@ -379,11 +362,16 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            return result
+        validation_error = _validate_tool_arguments(arguments, tool.parameters)
+        if validation_error:
+            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
 
         try:
-            debug_log(
+            log_event(
                 "ToolRegistry",
                 "开始执行工具",
                 {
@@ -405,7 +393,7 @@ class ToolRegistry:
                 content="",
                 error=str(exc),
             )
-            debug_log("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
             self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
             return result
         result = ToolExecutionResult(
@@ -413,7 +401,7 @@ class ToolRegistry:
             success=True,
             content=content,
         )
-        debug_log("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
         self._emit_tool_event("tool.finished", {"name": name})
         return result
 
@@ -512,6 +500,66 @@ def _is_null_only_schema(schema: Any) -> bool:
         return False
     schema_type = schema.get("type")
     return schema_type == "null" or schema_type == ["null"]
+
+
+def _validate_tool_arguments(value: Any, schema: Any, path: str = "arguments") -> str:
+    if not isinstance(schema, dict) or not schema:
+        return ""
+    allowed_types = schema.get("type")
+    if isinstance(allowed_types, str):
+        allowed = [allowed_types]
+    elif isinstance(allowed_types, list):
+        allowed = [item for item in allowed_types if isinstance(item, str)]
+    else:
+        allowed = []
+    if allowed and not any(_matches_schema_type(value, item) for item in allowed):
+        return f"{path} 类型错误，期望 {'/'.join(allowed)}。"
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        return f"{path} 必须是允许的枚举值。"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            return f"{path} 不能小于 {minimum}。"
+        if isinstance(maximum, (int, float)) and value > maximum:
+            return f"{path} 不能大于 {maximum}。"
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        required = schema.get("required")
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in value:
+                    return f"{path}.{name} 是必填参数。"
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(str(name) for name in value if name not in properties)
+            if unknown:
+                return f"{path} 包含未声明参数：{', '.join(unknown)}。"
+        for name, item in value.items():
+            child_schema = properties.get(name)
+            if isinstance(child_schema, dict):
+                error = _validate_tool_arguments(item, child_schema, f"{path}.{name}")
+                if error:
+                    return error
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            error = _validate_tool_arguments(item, schema["items"], f"{path}[{index}]")
+            if error:
+                return error
+    return ""
+
+
+def _matches_schema_type(value: Any, schema_type: str) -> bool:
+    return {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+        "null": value is None,
+    }.get(schema_type, True)
 
 
 def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict[str, Any]:

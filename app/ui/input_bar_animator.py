@@ -80,6 +80,7 @@ class InputBarAnimator(QObject):
         self._apply_resting_state()
         self._poll_timer.start()
 
+
     def set_before_show(self, callback: Callable[[], None] | None) -> None:
         """按当前视觉效果模式动态替换显示前回调。
 
@@ -149,8 +150,11 @@ class InputBarAnimator(QObject):
 
         应可见则经 _animate → before_show 截「新位置」桌面后慢慢淡入现身，否则保持收起。
         输入栏为子控件已随主窗口移动到新位置，无需外部重定位。
+
+        幂等：已恢复时（_suspended == False）直接返回，避免 X11 上 moveEvent
+        与 mouseReleaseEvent 两条路径重复触发导致动画打断。
         """
-        if not self._started:
+        if not self._started or not self._suspended:
             self._suspended = False
             return
         self._suspended = False

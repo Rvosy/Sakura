@@ -36,7 +36,9 @@ python -m pytest tests/unit
 - 若无法运行测试，应在最终回复中说明原因和未验证风险。
 
 ## Git 与文件安全
-- Commit 使用fix: feat: style: docs: refactor: perf: test: chore: 等常规类型，保持简洁明了。
+- Commit 使用fix: feat: style: docs: refactor: perf: test: chore: 等常规类型，并且使用中文 ,保持简洁明了。
+- 开发新功能或者进行新修复时, 要从最新的dev分支新建一个feat/xxx, fix/xxx refactor/xxx 格式的分支,进行开发, 最后在用中文提出pr向dev合并
+- 提pr前必须要运行完整测试
 - 不要还原用户已有改动，除非用户明确要求。
 - 不使用 `git reset --hard`、`git checkout --` 等破坏性命令，除非用户明确要求。
 - 可读写范围内只修改完成任务必需的文件。

@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.debug_log import debug_log
 from app.core.gui_log import (
     GUI_LOG_SCOPE_PROGRAM,
     GUI_LOG_SCOPE_TTS,
     GuiLogBuffer,
     clear_gui_logs,
     get_gui_log_buffer,
-    record_debug_log_for_gui,
-    record_tts_service_output,
 )
+from app.core.runtime_log import log_event, log_tts_service_output
 
 
 @pytest.fixture(autouse=True)
@@ -21,200 +19,83 @@ def clear_logs_after_test():  # type: ignore[no-untyped-def]
     clear_gui_logs()
 
 
-def test_gui_log_records_even_when_terminal_and_file_logs_disabled(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("app.core.debug_log._load_debug_values", lambda: {})
+def test_gui_log_records_key_events_even_when_console_and_file_disabled(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "app.core.runtime_log._load_debug_values",
+        lambda: {"enabled": False, "file_enabled": False},
+    )
 
-    debug_log("TTS", "发送 GPT-SoVITS 请求", {"api_key": "sk-secret", "text": "不应完整显示的语音文本"})
+    log_event("TTS", "发送 GPT-SoVITS 请求", {"api_key": "sk-secret", "text": "不应完整显示的语音文本"})
 
     assert capsys.readouterr().out == ""
     records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-    assert len(records) == 1
-    assert records[0].message == "送入 TTS：GPT-SoVITS"
-
-
-def test_gui_log_routes_program_and_native_tts_records_to_separate_scopes() -> None:
-    record_debug_log_for_gui("Startup", "应用初始化完成")
-    record_tts_service_output("GPT-SoVITS", 'INFO: 127.0.0.1:49840 - "POST /tts HTTP/1.1" 200 OK')
-
-    program_records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
+    assert records[0].message.startswith("送入 TTS：GPT-SoVITS ")
+    assert records[0].text_preview == "不应完整显示的语音文本"
+    assert "不应完整显示的语音文本" not in records[0].detail
     tts_records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS)
-
-    assert [record.message for record in program_records] == ["应用初始化完成"]
-    assert [record.message for record in tts_records] == ["HTTP POST /tts -> 200 OK"]
+    assert [record.message for record in tts_records] == [records[0].message]
 
 
-def test_gui_log_sanitizes_sensitive_and_private_text_detail() -> None:
-    record_debug_log_for_gui(
-        "TTS",
-        "发送 GPT-SoVITS 请求",
-        {
-            "api_key": "sk-secret",
-            "text": "不应完整显示的语音文本",
-            "payload": {
-                "prompt_text": "参考文本也不能完整显示",
-                "top_k": 15,
-            },
-        },
-    )
+def test_gui_log_suppresses_plugin_eventbus_noise_even_at_trace(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """插件事件总线成功订阅/派发是高频内部噪声，trace 下也不进入 GUI 日志。"""
+    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"profile": "trace"})
 
-    detail = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)[0].detail
-    assert "<redacted>" in detail
-    assert "不应完整显示的语音文本" not in detail
-    assert "参考文本也不能完整显示" not in detail
-    assert '"chars"' in detail
+    log_event("PluginEventBus", "订阅事件", {"event": "test"})
+    log_event("PluginEventBus", "派发事件", {"event": "app.started"})
+
+    assert get_gui_log_buffer().snapshot() == []
 
 
-def test_gui_log_compacts_software_request_and_reply_events() -> None:
-    record_debug_log_for_gui("API", "准备发送原生工具聊天补全请求", {"error_count": 0})
-    record_debug_log_for_gui("API", "HTTP 请求体已构建", {"error_count": 0})
-    record_debug_log_for_gui("API", "原生工具模型返回", {"content": "不应完整显示"})
-    record_debug_log_for_gui("Startup", "后台启动服务已创建", {"error_count": 0})
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-
-    assert [(record.level, record.message) for record in records] == [
-        ("info", "发送请求（带工具）"),
-        ("info", "收到回复：工具调用"),  # 无 tool_calls 字段时不追加工具名
-        ("info", "后台启动服务已创建"),
-    ]
-
-
-def test_gui_log_tool_call_reply_includes_tool_names() -> None:
-    # 内部自定义格式：call["name"] 直接存工具名
-    record_debug_log_for_gui(
+def test_gui_log_compacts_api_tool_and_tts_timeline() -> None:
+    log_event("API", "准备发送原生工具聊天补全请求", {"model": "demo", "messages": [], "tools": []})
+    log_event(
         "API",
         "原生工具模型返回",
-        {
-            "content": {"type": "text", "chars": 0},
-            "tool_calls": [
-                {"type": "tool_call", "id": "call_abc", "name": "observe_screen", "argument_keys": []},
-                {"type": "tool_call", "id": "call_def", "name": "get_current_time", "argument_keys": []},
-            ],
-        },
+        {"tool_calls": [{"name": "observe_screen", "arguments": {"reason": "看看屏幕"}}]},
     )
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-    assert records[0].message == "收到回复：工具调用：observe_screen、get_current_time"
-
-
-def test_gui_log_native_tool_reply_with_empty_tool_calls_shows_as_text() -> None:
-    # tool_calls 为空列表时模型实际只返回了文本，不应标为"工具调用"
-    record_debug_log_for_gui(
-        "API",
-        "原生工具模型返回",
-        {"content": {"type": "text", "chars": 598}, "tool_calls": []},
-    )
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-    assert records[0].message == "收到回复：文本"
-
-
-def test_gui_log_plain_request_label_has_no_tool_marker() -> None:
-    record_debug_log_for_gui("API", "准备发送聊天补全请求", {"model": "gemini"})
-    record_debug_log_for_gui("API", "模型原始文本返回", {"content": "hello"})
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-    assert [(r.level, r.message) for r in records] == [
-        ("info", "发送请求"),
-        ("info", "收到回复：文本"),
-    ]
-
-
-def test_gui_log_keeps_key_tts_software_events() -> None:
-    record_debug_log_for_gui("TTS", "提交播放请求")
-    record_debug_log_for_gui("TTS", "提交预生成请求")
-    record_debug_log_for_gui("TTS", "请求播放预生成音频")
-    record_debug_log_for_gui("TTS", "开始播放音频")
-    record_debug_log_for_gui("TTS", "发送 GPT-SoVITS 请求")
-    record_debug_log_for_gui("TTS", "GPT-SoVITS 请求成功")
-    record_debug_log_for_gui("TTS", "预生成音频已就绪")
-    record_debug_log_for_gui("TTS", "音频播放完成")
-    record_debug_log_for_gui("TTS", "临时音频已写入")
-    record_debug_log_for_gui("ChatWorker", "处理完成")
+    log_event("ToolRegistry", "工具执行成功", {"tool_name": "observe_screen", "elapsed_ms": 820, "success": True})
+    log_event("TTS", "GPT-SoVITS 请求成功", {"provider": "gpt-sovits", "bytes": 2048, "elapsed_ms": 530})
 
     records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
 
     assert [record.message for record in records] == [
-        "开始播放",
-        "送入 TTS：GPT-SoVITS",
-        "合成完成：GPT-SoVITS",
-        "播放完成",
+        "发送模型请求",
+        "收到工具调用：observe_screen",
+        "工具执行完成：observe_screen 820ms",
+        "TTS 合成完成：GPT-SoVITS 2048B",
     ]
+    assert "看看屏幕" not in records[1].detail
+    assert [
+        record.message for record in get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS)
+    ] == ["TTS 合成完成：GPT-SoVITS 2048B"]
 
 
-def test_gui_log_keeps_internal_preparation_events_for_troubleshooting() -> None:
-    record_debug_log_for_gui("TTS", "本地 GPT-SoVITS 服务启动并探测成功")
-    record_debug_log_for_gui("TTS", "角色权重切换完成")
+def test_gui_log_routes_tts_service_summary_to_tts_scope(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"profile": "info", "file_enabled": False})
 
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-
-    assert [record.message for record in records] == [
-        "准备：GPT-SoVITS 服务已就绪",
-        "准备：TTS 角色权重切换完成",
-    ]
-
-
-def test_tts_service_output_is_compacted_without_full_text() -> None:
-    record_tts_service_output("GPT-SoVITS", "########## 合成音频 ##########")
-    record_tts_service_output("GPT-SoVITS", "实际输入的目标文本(切句后): ['そんなの当たり前だっ。']")
-    record_tts_service_output("GPT-SoVITS", "100%|██████████| 1/1 [00:00<00:00, 111.08it/s]")
+    log_tts_service_output("GPT-SoVITS", "########## 合成音频 ##########")
+    log_tts_service_output("GPT-SoVITS", "实际输入的目标文本(切句后): ['そんなの当たり前だっ。']")
+    log_tts_service_output("GPT-SoVITS", 'INFO: 127.0.0.1:49840 - "POST /tts HTTP/1.1" 200 OK')
+    log_tts_service_output("GPT-SoVITS", 'INFO:     Uvicorn running on http://127.0.0.1:9880 (Press CTRL+C to quit)')
 
     records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS)
 
     assert [record.message for record in records] == [
-        "开始合成音频",
-        "收到合成文本（11 字）",
-        "语义 token 预测 100%（1/1，111.08 it/s）",
+        "TTS 服务开始合成音频",
+        "TTS 服务收到合成文本",
+        "TTS 服务已就绪：http://127.0.0.1:9880",
     ]
-    assert all("そんなの" not in record.message for record in records)
+    assert all("そんなの" not in record.detail for record in records)
+    assert get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM) == []
 
 
-def test_tts_service_semantic_progress_merges_in_place() -> None:
-    record_tts_service_output("GPT-SoVITS", "########## 合成音频 ##########")
-    record_tts_service_output("GPT-SoVITS", "  4%|▍         | 60/1500 [00:00<00:13, 104.91it/s]")
-    record_tts_service_output("GPT-SoVITS", " 24%|██▍       | 363/1500 [00:03<00:10, 105.23it/s]")
+def test_tts_progress_stays_out_of_runtime_gui_log(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("app.core.runtime_log._load_debug_values", lambda: {"profile": "trace"})
 
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS)
+    emitted = log_tts_service_output("GPT-SoVITS", " 24%|██▍       | 363/1500 [00:03<00:10, 105.23it/s]")
 
-    # 相邻进度记录原地合并，只保留最新一条
-    assert [record.message for record in records] == [
-        "开始合成音频",
-        "语义 token 预测 24%（363/1500，105.23 it/s）",
-    ]
-    assert records[-1].merge_key != ""
-
-
-def test_tts_service_eos_replaces_progress_and_drops_trailing_frame() -> None:
-    record_tts_service_output("GPT-SoVITS", " 24%|██▍       | 363/1500 [00:03<00:10, 105.23it/s]")
-    record_tts_service_output("GPT-SoVITS", "T2S Decoding EOS [128 -> 363]")
-    # tqdm 收尾时停在中途百分比的最终帧不应覆盖 EOS 完成行
-    record_tts_service_output("GPT-SoVITS", " 24%|██▍       | 363/1500 [00:03<00:10, 105.23it/s]")
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS)
-
-    # EOS 完成行应携带最近一次进度行记录的推理速度
-    assert [record.message for record in records] == [
-        "语义 token 预测完成：EOS（128 → 363，105.23 it/s）",
-    ]
-
-
-def test_gui_log_keeps_tts_text_preview_for_display() -> None:
-    record_debug_log_for_gui(
-        "TTS",
-        "发送 GPT-SoVITS 请求",
-        {"text": "今天天气真好喵", "api_key": "sk-secret"},
-    )
-    record_debug_log_for_gui("API", "模型原始文本返回", {"text": "API 文本不应出预览"})
-
-    records = get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_PROGRAM)
-
-    assert records[0].message == "送入 TTS：GPT-SoVITS"
-    assert records[0].text_preview == "今天天气真好喵"
-    # detail 字段仍按既有规则脱敏，仅 text_preview 提供展示用文本
-    assert "今天天气真好喵" not in records[0].detail
-    assert "<redacted>" in records[0].detail
-    # 非 TTS 分类不提取预览
-    assert records[1].text_preview == ""
+    assert not emitted
+    assert get_gui_log_buffer().snapshot(scope=GUI_LOG_SCOPE_TTS) == []
 
 
 def test_gui_log_buffer_keeps_scope_limited_ring() -> None:

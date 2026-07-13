@@ -15,14 +15,14 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from PySide6.QtCore import QObject, QThread, QTimer
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 # 停止后台线程时的默认等待时长，与 PetWindow.THREAD_SHUTDOWN_WAIT_MS 对齐。
 DEFAULT_THREAD_SHUTDOWN_WAIT_MS = 1_000
@@ -33,6 +33,14 @@ DEFAULT_PROCESS_TERMINATE_TIMEOUT_S = 5
 
 # (signal, slot)：把 worker 的某个信号连接到一个槽。
 SignalBinding = tuple[Any, Callable[..., Any]]
+
+
+class AsyncSubmitTimeout(TimeoutError):
+    """异步提交超时；cancel_settled 表示协程已确认取消完成。"""
+
+    def __init__(self, message: str, *, cancel_settled: bool) -> None:
+        super().__init__(message)
+        self.cancel_settled = cancel_settled
 
 
 class ResourceState(str, Enum):
@@ -183,6 +191,7 @@ class QtWorkerResource:
             return True
         # 超时 lingering：manager 已持有 (thread, worker) 引用并接管 deleteLater；
         # 标记 finalized 以避免线程真正结束时与 lingering 释放重复清理。
+        self._null_owner_attrs()
         self._finalized = True
         self._manager._unregister(self)
         self.thread = None
@@ -197,9 +206,7 @@ class QtWorkerResource:
             return
         self._finalized = True
         thread, worker = self.thread, self.worker
-        self._manager.retain_wrappers(thread, worker)
-        _delete_later_quietly(worker)
-        _delete_later_quietly(thread)
+        self._manager._retire_qobjects(worker, thread)
         self._null_owner_attrs()
         self.thread = None
         self.worker = None
@@ -264,7 +271,7 @@ class ThreadResource:
             try:
                 self._cancel()
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "ResourceManager",
                     "线程取消回调异常",
                     {"thread": self.label, "error": str(exc)},
@@ -277,7 +284,7 @@ class ThreadResource:
             return True
         thread.join(timeout_ms / 1000)
         if thread.is_alive():
-            debug_log(
+            log_event(
                 "ResourceManager",
                 "Python 线程未在退出等待时间内结束，转后台自然结束",
                 {"thread": self.label, "wait_ms": timeout_ms},
@@ -370,7 +377,7 @@ class ThreadGroupResource:
             try:
                 self._cancel()
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "ResourceManager",
                     "线程组取消回调异常",
                     {"thread_group": self.label, "error": str(exc)},
@@ -411,7 +418,7 @@ class ThreadGroupResource:
                         f"{self.label}:{thread.name}" if self.label else thread.name,
                     )
                 self._manager._unregister(self)
-                debug_log(
+                log_event(
                     "ResourceManager",
                     "Python 线程组未在退出等待时间内结束，转后台自然结束",
                     {
@@ -500,14 +507,14 @@ class ProcessResource:
                 return
         except Exception:  # noqa: BLE001
             return
-        debug_log("ResourceManager", "终止本地子进程", {"process": self.label, "pid": getattr(process, "pid", None)})
+        log_event("ResourceManager", "终止本地子进程", {"process": self.label, "pid": getattr(process, "pid", None)})
         try:
             if self._terminator is not None:
                 self._terminator(process, self._terminate_timeout_s)
             else:
                 _default_terminate_process(process, self._terminate_timeout_s)
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "ResourceManager",
                 "本地子进程正常终止失败，尝试强制结束",
                 {"process": self.label, "error": str(exc)},
@@ -516,7 +523,7 @@ class ProcessResource:
                 process.kill()
                 process.wait(timeout=self._terminate_timeout_s)
             except Exception as kill_exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "ResourceManager",
                     "本地子进程强制结束失败",
                     {"process": self.label, "error": str(kill_exc)},
@@ -537,7 +544,7 @@ class ProcessResource:
         try:
             self.process = self._restart_factory()
         except Exception as exc:  # noqa: BLE001
-            debug_log("ResourceManager", "本地子进程重启失败", {"process": self.label, "error": str(exc)})
+            log_event("ResourceManager", "本地子进程重启失败", {"process": self.label, "error": str(exc)})
             self.process = None
             self.state = ResourceState.FAILED
             return False
@@ -593,7 +600,7 @@ class ServiceResource:
         try:
             return bool(self._is_running())
         except Exception as exc:  # noqa: BLE001
-            debug_log("ResourceManager", "服务运行态查询失败", {"service": self.label, "error": str(exc)})
+            log_event("ResourceManager", "服务运行态查询失败", {"service": self.label, "error": str(exc)})
             return False
 
     def health(self) -> ResourceState:
@@ -601,7 +608,7 @@ class ServiceResource:
             try:
                 return self._health()
             except Exception as exc:  # noqa: BLE001
-                debug_log("ResourceManager", "服务健康检查失败", {"service": self.label, "error": str(exc)})
+                log_event("ResourceManager", "服务健康检查失败", {"service": self.label, "error": str(exc)})
                 return ResourceState.DEGRADED
         if self.state in (ResourceState.STOPPING, ResourceState.STOPPED, ResourceState.FAILED):
             return self.state
@@ -624,7 +631,7 @@ class ServiceResource:
         except Exception as exc:  # noqa: BLE001
             clean = False
             self.state = ResourceState.FAILED
-            debug_log("ResourceManager", "服务关闭失败", {"service": self.label, "error": str(exc)})
+            log_event("ResourceManager", "服务关闭失败", {"service": self.label, "error": str(exc)})
         else:
             self.state = ResourceState.STOPPED if clean else ResourceState.DEGRADED
         finally:
@@ -700,7 +707,23 @@ class AsyncLoopResource:
         if loop is None or self.state in (ResourceState.STOPPING, ResourceState.STOPPED):
             raise RuntimeError("asyncio 事件循环尚未运行。")
         future: Future[Any] = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError as exc:
+            future.cancel()
+            cancel_settled = False
+            try:
+                future.result(timeout=min(0.5, max(0.05, timeout)))
+            except CancelledError:
+                cancel_settled = True
+            except TimeoutError:
+                cancel_settled = False
+            except BaseException:
+                cancel_settled = True
+            raise AsyncSubmitTimeout(
+                f"异步操作超时：{self.label or self._thread_name}",
+                cancel_settled=cancel_settled,
+            ) from exc
 
     def is_running(self) -> bool:
         thread = self.thread
@@ -714,7 +737,7 @@ class AsyncLoopResource:
 
     def restart(self, *, reason: str = "") -> bool:
         if reason:
-            debug_log("ResourceManager", "重启 asyncio 事件循环", {"loop": self.label, "reason": reason})
+            log_event("ResourceManager", "重启 asyncio 事件循环", {"loop": self.label, "reason": reason})
         self.stop(DEFAULT_THREAD_SHUTDOWN_WAIT_MS)
         self._manager._register(self, label=self.label, shutdown_order=900)
         self.start(name=self._thread_name, daemon=self._daemon)
@@ -743,7 +766,7 @@ class AsyncLoopResource:
         if thread.is_alive():
             self._manager._keep_lingering_thread(thread, self.label or thread.name)
             self._manager._unregister(self)
-            debug_log(
+            log_event(
                 "ResourceManager",
                 "asyncio 事件循环线程未在退出等待时间内结束",
                 {"loop": self.label, "wait_ms": timeout_ms},
@@ -800,7 +823,7 @@ class ResourceRegistry:
             try:
                 entry.resource.stop(timeout_ms)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "ResourceManager",
                     "受管资源关闭异常",
                     {"resource": entry.label, "error": str(exc)},
@@ -917,7 +940,7 @@ class ResourceRegistry:
             if thread in self._lingering_threads:
                 return
             self._lingering_threads.append(thread)
-        debug_log("ResourceManager", "登记 lingering Python 线程", {"thread": label})
+        log_event("ResourceManager", "登记 lingering Python 线程", {"thread": label})
 
 
 class ResourceManager(QObject):
@@ -941,14 +964,6 @@ class ResourceManager(QObject):
     def registry(self) -> ResourceRegistry:
         """当前窗口/协调器共享的 App 级资源域。"""
         return self._registry
-
-    @property
-    def _resources(self) -> list[StoppableResource]:
-        return self._registry._resources
-
-    @property
-    def _lingering_threads(self) -> list[threading.Thread]:
-        return self._registry._lingering_threads
 
     # ---- Phase 2：worker 工厂与批量关闭 ----------------------------------
 
@@ -1115,23 +1130,6 @@ class ResourceManager(QObject):
 
     # ---- Phase 1：关闭机制、lingering 线程、wrapper 保留 -----------------
 
-    def stop_qt_thread(
-        self,
-        thread: QThread | None,
-        worker: QObject | None,
-        *,
-        label: str,
-        timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
-    ) -> bool:
-        """停止一个未经 spawn 注册的裸 QThread（Phase 1 委托入口）。
-
-        返回 ``True`` 表示已干净停止（或线程为空 / RuntimeError）；``False`` 表示
-        超时转入 lingering。调用方据此决定是否清空自身持有的 thread/worker 属性。
-        """
-        return self._stop_thread_mechanics(
-            thread, worker, label=label, timeout_ms=timeout_ms
-        )
-
     def _stop_thread_mechanics(
         self,
         thread: QThread | None,
@@ -1142,7 +1140,7 @@ class ResourceManager(QObject):
     ) -> bool:
         if thread is None:
             return True
-        debug_log("ResourceManager", "准备关闭后台线程", {"thread": label})
+        log_event("ResourceManager", "准备关闭后台线程", {"thread": label})
         try:
             cancel = getattr(worker, "cancel", None)
             if callable(cancel):
@@ -1151,7 +1149,7 @@ class ResourceManager(QObject):
             if thread.isRunning():
                 thread.quit()
                 if not thread.wait(timeout_ms):
-                    debug_log(
+                    log_event(
                         "ResourceManager",
                         "后台线程未在退出等待时间内结束",
                         {"thread": label, "wait_ms": timeout_ms},
@@ -1159,7 +1157,7 @@ class ResourceManager(QObject):
                     self._keep_lingering(thread, worker)
                     return False
         except RuntimeError as exc:
-            debug_log(
+            log_event(
                 "ResourceManager",
                 "关闭后台线程失败",
                 {"thread": label, "error": str(exc)},
@@ -1169,17 +1167,23 @@ class ResourceManager(QObject):
     def _keep_lingering(self, thread: QThread, worker: QObject | None) -> None:
         if any(item_thread is thread for item_thread, _worker in self._lingering):
             return
+        try:
+            thread.setParent(None)
+        except RuntimeError as exc:
+            log_event("ResourceManager", "后台线程脱离窗口父对象失败", {"error": str(exc)})
         self._lingering.append((thread, worker))
         try:
-            thread.finished.connect(
-                lambda _thread=thread: self._release_lingering(_thread)
-            )
+            thread.finished.connect(self._release_finished_lingering)
         except RuntimeError:
             self._release_lingering(thread)
 
     def _keep_lingering_thread(self, thread: threading.Thread, label: str) -> None:
         """登记一个 join 超时的裸 Python 线程。"""
         self._registry._keep_lingering_thread(thread, label)
+
+    def _release_finished_lingering(self) -> None:
+        if isinstance(thread := self.sender(), QThread):
+            self._release_lingering(thread)
 
     def _release_lingering(self, thread: QThread) -> None:
         remaining: list[tuple[QThread, QObject | None]] = []
@@ -1190,10 +1194,14 @@ class ResourceManager(QObject):
                 continue
             remaining.append((item_thread, item_worker))
         self._lingering = remaining
-        _delete_later_quietly(released_worker)
+        self._retire_qobjects(released_worker, thread)
+
+    def _retire_qobjects(self, worker: QObject | None, thread: QThread | None) -> None:
+        self._retain_wrappers(thread, worker)
+        _delete_later_quietly(worker)
         _delete_later_quietly(thread)
 
-    def retain_wrappers(self, *objects: QObject | None) -> None:
+    def _retain_wrappers(self, *objects: QObject | None) -> None:
         """退役 QObject wrapper 暂存 1 秒后再 prune，避开 Shiboken 双重析构窗口。
 
         queued 信号可能在 Qt 正在销毁同一 QObject 时到达 Python；若此刻丢掉最后一个
@@ -1220,3 +1228,5 @@ class ResourceManager(QObject):
             except (RuntimeError, TypeError):
                 pass
         self._retired_wrappers = alive
+        if alive:
+            QTimer.singleShot(WRAPPER_RETENTION_MS, self._prune_wrappers)

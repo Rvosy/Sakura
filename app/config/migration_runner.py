@@ -19,18 +19,19 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text, rename_with_retry
 from app.storage.paths import StoragePaths
 
 CONFIG_VERSION_KEY = "config_version"
 # 当前代码期望的数据形态版本；新增迁移步骤时同步 +1
-CURRENT_CONFIG_VERSION = 3
+CURRENT_CONFIG_VERSION = 4
 
 
 @dataclass
@@ -113,7 +114,7 @@ class MigrationRunner:
         from_version = self.current_version()
         results: list[MigrationResult] = []
         for step in self.pending():
-            debug_log("Migration", f"migration.{step.name}.started", {"to_version": step.version})
+            log_event("Migration", f"migration.{step.name}.started", {"to_version": step.version})
             backup_dir = (
                 self.paths.migration_backup_dir
                 / f"{time.strftime('%Y%m%d-%H%M%S')}_{step.name}"
@@ -127,14 +128,14 @@ class MigrationRunner:
                 step.apply(context)
                 self._write_version(step.version)
             except Exception as exc:  # noqa: BLE001 - 迁移失败不允许炸掉启动
-                debug_log(
+                log_event(
                     "Migration",
                     f"migration.{step.name}.failed",
                     {"error": str(exc), "backup_dir": str(backup_dir)},
                 )
                 results.append(MigrationResult(name=step.name, status="failed", error=str(exc)))
                 break
-            debug_log(
+            log_event(
                 "Migration",
                 f"migration.{step.name}.completed",
                 {"version": step.version, "backup_dir": str(backup_dir)},
@@ -176,7 +177,7 @@ def _migrate_dotenv(context: MigrationContext) -> None:
 
     env_path = context.base_dir / ".env"
     if not env_path.is_file():
-        debug_log("Migration", "migration.v0_to_v1.env.skipped", {"reason": "no .env"})
+        log_event("Migration", "migration.v0_to_v1.env.skipped", {"reason": "no .env"})
         return
     context.backup_file(env_path)
     context.backup_file(context.paths.api_config())
@@ -187,6 +188,9 @@ def _migrate_dotenv(context: MigrationContext) -> None:
         context.paths.api_config(),
         context.paths.system_config(),
     )
+    errors = [str(error) for error in result.get("errors", []) if str(error)]
+    if errors:
+        raise ValueError("；".join(errors))
     # 已知未映射键（如 GPT_SOVITS_REF_AUDIO_PATH，参考音频现由角色包接管）：
     # 显式记录跳过，不静默丢弃
     migrated = set(result.get("migrated", []))
@@ -196,10 +200,10 @@ def _migrate_dotenv(context: MigrationContext) -> None:
         if key not in migrated
     ]
     rename_with_retry(env_path, env_path.with_name(env_path.name + _ENV_MIGRATED_SUFFIX))
-    debug_log(
+    log_event(
         "Migration",
         "migration.v0_to_v1.env.applied",
-        {"migrated": sorted(migrated), "skipped": skipped_keys, "errors": result.get("errors", [])},
+        {"migrated": sorted(migrated), "skipped": skipped_keys, "errors": []},
     )
 
 
@@ -231,7 +235,7 @@ def _migrate_legacy_single_chat_history(context: MigrationContext) -> None:
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(legacy_path, target)
-        debug_log(
+        log_event(
             "Migration",
             "migration.v0_to_v1.legacy_history.applied",
             {"target": str(target)},
@@ -299,7 +303,7 @@ def _merge_variant_files_in_dir(
         stems = [f.name[: -len(".jsonl")] for f in group]
         registered = [s for s in stems if s in registered_ids]
         if len(registered) != 1:
-            debug_log(
+            log_event(
                 "Migration",
                 "migration.v1_to_v2.variant.skipped",
                 {
@@ -318,7 +322,7 @@ def _merge_variant_files_in_dir(
             context.backup_file(variant)
             _merge_jsonl(variant, canonical)
             rename_with_retry(variant, variant.with_name(variant.name + _ENV_MIGRATED_SUFFIX))
-            debug_log(
+            log_event(
                 "Migration",
                 "migration.v1_to_v2.variant.merged",
                 {"dir": directory.name, "variant": variant.name, "into": canonical.name},
@@ -329,7 +333,14 @@ def _merge_jsonl(source: Path, target: Path) -> None:
     """把 source 的行并入 target：能解析出时间戳则整体按时间归并，否则保序拼接。"""
     source_lines = _read_jsonl_lines(source)
     target_lines = _read_jsonl_lines(target)
-    merged = target_lines + source_lines
+    target_counts = Counter(target_lines)
+    seen_source: Counter[str] = Counter()
+    additions: list[str] = []
+    for line in source_lines:
+        seen_source[line] += 1
+        if seen_source[line] > target_counts[line]:
+            additions.append(line)
+    merged = target_lines + additions
     timestamps = [_line_timestamp(line) for line in merged]
     if all(ts is not None for ts in timestamps):
         merged = [line for _, line in sorted(zip(timestamps, merged), key=lambda p: p[0])]
@@ -359,28 +370,101 @@ def _line_timestamp(line: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _migration_bool_value(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _migration_int_value(value: object, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_legacy_screen_awareness(raw: dict[str, object]) -> dict[str, bool | int]:
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+
+    defaults = ScreenAwarenessSettings()
+    settings = ScreenAwarenessSettings(
+        enabled=_migration_bool_value(raw.get("enabled"), defaults.enabled),
+        screen_context_enabled=_migration_bool_value(
+            raw.get("screen_context_enabled"), defaults.screen_context_enabled
+        ),
+        check_interval_minutes=_migration_int_value(
+            raw.get("check_interval_minutes"), defaults.check_interval_minutes
+        ),
+        cooldown_minutes=_migration_int_value(
+            raw.get("cooldown_minutes"), defaults.cooldown_minutes
+        ),
+        screen_context_batch_limit=_migration_int_value(
+            raw.get("screen_context_batch_limit"), defaults.screen_context_batch_limit
+        ),
+    ).normalized()
+    return {
+        "enabled": settings.enabled,
+        "screen_context_enabled": settings.screen_context_enabled,
+        "check_interval_minutes": settings.check_interval_minutes,
+        "cooldown_minutes": settings.cooldown_minutes,
+        "screen_context_batch_limit": settings.screen_context_batch_limit,
+    }
+
+
 def _migrate_v2_to_v3(context: MigrationContext) -> None:
-    """复制旧 proactive_care 配置到 screen_awareness；旧段保留用于回滚。"""
+    """把旧 proactive_care 配置规范化到 screen_awareness。"""
     system_path = context.paths.system_config()
     data = load_yaml_mapping(system_path)
     if "screen_awareness" in data:
-        debug_log(
-            "Migration",
-            "migration.v2_to_v3.screen_awareness.skipped",
-            {"reason": "screen_awareness 已存在"},
-        )
+        if not isinstance(data["screen_awareness"], dict):
+            context.backup_file(system_path)
+            raise ValueError("screen_awareness 配置节必须是对象")
         return
-    proactive = data.get("proactive_care")
-    if not isinstance(proactive, dict):
-        proactive = {}
+
+    if "proactive_care" not in data:
+        context.backup_file(system_path)
+        data["screen_awareness"] = {}
+        save_yaml_mapping(system_path, data)
+        return
+
+    legacy = data["proactive_care"]
     context.backup_file(system_path)
-    data["screen_awareness"] = dict(proactive)
+    if not isinstance(legacy, dict):
+        raise ValueError("proactive_care 配置节必须是对象")
+    data["screen_awareness"] = _normalize_legacy_screen_awareness(legacy)
     save_yaml_mapping(system_path, data)
-    debug_log(
-        "Migration",
-        "migration.v2_to_v3.screen_awareness.applied",
-        {"copied_keys": sorted(data["screen_awareness"].keys())},
-    )
+
+
+# ---------------------------------------------------------------------------
+# v3 → v4：删除退役的 proactive_care 配置节
+# ---------------------------------------------------------------------------
+
+
+def _migrate_v3_to_v4(context: MigrationContext) -> None:
+    system_path = context.paths.system_config()
+    data = load_yaml_mapping(system_path)
+    if "proactive_care" not in data:
+        return
+
+    context.backup_file(system_path)
+    legacy = data["proactive_care"]
+    if "screen_awareness" in data:
+        if not isinstance(data["screen_awareness"], dict):
+            raise ValueError("screen_awareness 配置节必须是对象")
+    else:
+        if not isinstance(legacy, dict):
+            raise ValueError("proactive_care 配置节必须是对象")
+        data["screen_awareness"] = _normalize_legacy_screen_awareness(legacy)
+
+    del data["proactive_care"]
+    save_yaml_mapping(system_path, data)
 
 
 ALL_MIGRATIONS: list[MigrationStep] = [
@@ -401,5 +485,11 @@ ALL_MIGRATIONS: list[MigrationStep] = [
         name="v2_to_v3",
         description="旧主动配置迁移为主动屏幕感知配置",
         apply=_migrate_v2_to_v3,
+    ),
+    MigrationStep(
+        version=4,
+        name="v3_to_v4",
+        description="删除退役的旧主动配置节",
+        apply=_migrate_v3_to_v4,
     ),
 ]

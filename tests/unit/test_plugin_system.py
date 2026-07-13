@@ -27,15 +27,16 @@ from app.plugins import (
 from app.plugins.models import (
     PERMISSION_CHAT_UI,
     PERMISSION_EVENT_MESSAGE,
+    PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
-    PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     ChatUIWidgetContribution,
+    PluginSettingsContribution,
+    PluginSettingsField,
     PromptPatchContribution,
     RendererContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -69,6 +70,26 @@ class TestPluginManifest:
         assert m.required is False
 
 
+def _registered_plugin_handler(handler, *, decorator: bool):  # type: ignore[no-untyped-def]
+    registry = PluginCapabilityRegistry()
+    if decorator:
+        registry.tool(
+            name="demo",
+            description="demo",
+            parameters={"type": "object", "properties": {}},
+        )(handler)
+    else:
+        registry.register_tool(
+            ToolContribution(
+                name="demo",
+                description="demo",
+                parameters={"type": "object", "properties": {}},
+                handler=handler,
+            )
+        )
+    return registry.tools[0].handler
+
+
 class TestPluginCapabilityRegistry:
     """能力注册表"""
 
@@ -81,12 +102,18 @@ class TestPluginCapabilityRegistry:
         reg = PluginCapabilityRegistry()
         reg.register_tool(ToolContribution(name="t1", description="d", parameters={}, handler=None))
         reg.register_tools_tab(ToolsTabContribution(tab_id="tab", title="T", build=lambda p: None))
-        reg.register_settings_panel(SettingsPanelContribution(section_id="s", title="S", build=lambda p: None))
+        reg.register_plugin_settings(
+            PluginSettingsContribution(
+                section_id="ps",
+                title="PS",
+                fields=(PluginSettingsField("enabled", "启用", "boolean"),),
+            )
+        )
         reg.register_chat_ui_widget(ChatUIWidgetContribution(widget_id="w", build=lambda p: None))
         reg.register_prompt_patch(PromptPatchContribution(patch_id="p", system_prompt_append="append"))
         assert len(reg.tools) == 1
         assert len(reg.tools_tabs) == 1
-        assert len(reg.settings_panels) == 1
+        assert len(reg.plugin_settings) == 1
         assert len(reg.chat_ui_widgets) == 1
         assert len(reg.prompt_patches) == 1
 
@@ -118,6 +145,57 @@ class TestPluginCapabilityRegistry:
         assert len(reg.tools) == 1
         assert reg.tools[0].parameters["required"] == ["value"]
         assert reg.tools[0].handler({"value": "ok"}) == {"value": "ok"}  # type: ignore[misc]
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_receives_argument_dict(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(
+            lambda arguments: arguments["text"],
+            decorator=decorator,
+        )
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_maps_named_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(
+            lambda text, count=1: text * count,
+            decorator=decorator,
+        )
+        assert handler is not None
+        assert handler({"text": "a", "count": 2}) == "aa"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_zero_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(lambda: "ok", decorator=decorator)
+        assert handler is not None
+        assert handler({}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_keyword_only_arguments(self, decorator: bool) -> None:
+        def keyword_only(*, text: str) -> str:
+            return text
+
+        handler = _registered_plugin_handler(keyword_only, decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_supports_var_keyword_arguments(self, decorator: bool) -> None:
+        handler = _registered_plugin_handler(lambda **kwargs: kwargs, decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == {"text": "ok"}
+
+    @pytest.mark.parametrize("decorator", [False, True])
+    def test_handler_falls_back_when_signature_is_unavailable(self, decorator: bool) -> None:
+        class Uninspectable:
+            __signature__ = "invalid"
+
+            def __call__(self, arguments):  # type: ignore[no-untyped-def]
+                return arguments["text"]
+
+        handler = _registered_plugin_handler(Uninspectable(), decorator=decorator)
+        assert handler is not None
+        assert handler({"text": "ok"}) == "ok"
 
 
 class TestPluginDiscovery:
@@ -201,6 +279,17 @@ class TestPluginDiscovery:
         assert len(enabled) == 1
         assert enabled[0].plugin_id == "a"
 
+    def test_broken_manifest_does_not_hide_healthy_plugins(self) -> None:
+        base = _runtime_root("broken_manifest_isolated")
+        _write_plugin_manifest(base, "healthy", priority=100)
+        broken = base / "plugins" / "broken"
+        broken.mkdir(parents=True)
+        (broken / "plugin.yaml").write_text("id: [broken", encoding="utf-8")
+
+        specs = PluginDiscovery(base).discover()
+
+        assert [spec.plugin_id for spec in specs] == ["healthy"]
+
 
 class TestPluginManager:
     """插件管理器"""
@@ -213,6 +302,22 @@ class TestPluginManager:
         assert results == []
         assert mgr.loaded_count == 0
         assert mgr.failed_count == 0
+
+    def test_load_all_twice_shutdowns_and_replaces_registered_tools(self) -> None:
+        base = _runtime_root("reload_plugins")
+        _write_demo_plugin(base)
+        registry = ToolRegistry()
+        manager = PluginManager(base)
+
+        first = manager.load_all(registry)
+        first_tool = registry.get("demo_echo")
+        second = manager.load_all(registry)
+        second_tool = registry.get("demo_echo")
+
+        assert first[0].loaded and second[0].loaded
+        assert first_tool is not None and second_tool is not None
+        assert second_tool is not first_tool
+        assert [tool.name for tool in registry.all()].count("demo_echo") == 1
 
     def test_collect_tools_empty(self) -> None:
         base = _runtime_root("empty_tools")
@@ -244,8 +349,8 @@ class TestPluginManager:
         assert registry.get("demo_echo") is not None
         assert registry.execute("demo_echo", {"text": "hi"}).content == {"text": "hi"}
         assert [tab.title for tab in mgr.tools_tabs] == ["Demo 工具"]
-        assert [panel.title for panel in mgr.settings_panels] == ["Demo 设置"]
-        assert [panel.plugin_id for panel in mgr.settings_panels] == ["demo"]
+        assert [settings.title for settings in mgr.plugin_settings] == ["Demo 设置"]
+        assert [settings.plugin_id for settings in mgr.plugin_settings] == ["demo"]
         assert [widget.widget_id for widget in mgr.chat_ui_widgets] == ["demo_widget"]
         assert mgr.prompt_patches[0].system_prompt_append == "demo system"
 
@@ -280,6 +385,28 @@ class TestPluginManager:
 
         assert not results[0].loaded
         assert "未知权限" in str(results[0].error)
+
+    def test_v1_plugin_marks_failed(self) -> None:
+        base = _runtime_root("v1_plugin")
+        _write_demo_plugin(base, api_version=1)
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "插件 API 版本不支持：1" in str(results[0].error)
+        assert "当前支持 2" in str(results[0].error)
+
+    def test_settings_panel_permission_is_not_supported(self) -> None:
+        base = _runtime_root("settings_panel_permission")
+        _write_demo_plugin(base, permissions=(PERMISSION_TOOL, "settings_panel"))
+        mgr = PluginManager(base)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "未知权限" in str(results[0].error)
+        assert "settings_panel" in str(results[0].error)
 
     def test_missing_capability_permission_marks_plugin_failed(self) -> None:
         base = _runtime_root("missing_capability_permission")
@@ -389,6 +516,28 @@ class TestPluginManager:
 
         assert mgr.loaded_count == 1
 
+    def test_emit_event_rejects_unknown_host_event(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        import app.plugins.manager as manager_module
+
+        logs = []
+        monkeypatch.setattr(
+            manager_module,
+            "log_event",
+            lambda channel, message, payload=None, **kwargs: logs.append(
+                (channel, message, payload)
+            ),
+        )
+        manager = PluginManager(_runtime_root("unknown_event"))
+
+        with pytest.raises(ValueError, match="未知插件事件：message.typo"):
+            manager.emit_event("message.typo")
+
+        assert (
+            "PluginManager",
+            "拒绝未知插件事件",
+            {"event_type": "message.typo"},
+        ) in logs
+
     def test_plugin_load_result(self) -> None:
         spec = PluginSpec(entry="test:Test")
         result = PluginLoadResult(spec=spec, error="load failed")
@@ -415,11 +564,17 @@ class TestContributionTypes:
         assert tc.risk == "medium"
         assert tc.requires_confirmation
 
-    def test_settings_panel_contribution(self) -> None:
-        sp = SettingsPanelContribution(section_id="test", title="Test Panel",
-                                       build=lambda p: None, order=50.0)
-        assert sp.section_id == "test"
-        assert sp.order == 50.0
+    def test_plugin_settings_contribution(self) -> None:
+        contribution = PluginSettingsContribution(
+            section_id="browser",
+            title="Browser",
+            fields=(PluginSettingsField("headless", "无头", "boolean", default=False),),
+            order=40.0,
+        )
+
+        assert contribution.section_id == "browser"
+        assert contribution.fields[0].key == "headless"
+        assert contribution.order == 40.0
 
     def test_prompt_patch_contribution(self) -> None:
         pp = PromptPatchContribution(patch_id="p1", system_prompt_append="extra prompt")
@@ -441,11 +596,11 @@ class TestContributionTypes:
 def _runtime_root(name: str) -> Path:
     root = (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "plugin_system"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -460,10 +615,11 @@ def _write_plugin_manifest(
     permissions: tuple[str, ...] | None = (
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
-        PERMISSION_SETTINGS_PANEL,
+        PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),
+    api_version: int = 2,
 ) -> Path:
     plugin_dir = base / "plugins" / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -476,7 +632,7 @@ def _write_plugin_manifest(
         )
     (plugin_dir / "plugin.yaml").write_text(
         f"""
-api_version: 1
+api_version: {api_version}
 id: {plugin_id}
 name: {plugin_id}
 author: Demo Author
@@ -502,24 +658,27 @@ def _write_demo_plugin(
     permissions: tuple[str, ...] | None = (
         PERMISSION_TOOL,
         PERMISSION_TOOLS_TAB,
-        PERMISSION_SETTINGS_PANEL,
+        PERMISSION_PLUGIN_SETTINGS,
         PERMISSION_CHAT_UI,
         PERMISSION_PROMPT_PATCH,
     ),
+    api_version: int = 2,
 ) -> None:
     plugin_dir = _write_plugin_manifest(
         base,
         plugin_id,
         priority=priority,
         permissions=permissions,
+        api_version=api_version,
     )
     plugin_dir.joinpath("plugin.py").write_text(
         f'''
 from app.plugins import PluginBase
 from app.plugins import (
     ChatUIWidgetContribution,
+    PluginSettingsContribution,
+    PluginSettingsField,
     PromptPatchContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -537,7 +696,11 @@ class DemoPlugin(PluginBase):
             handler=lambda args: {{"text": args["text"]}},
         ))
         register.register_tools_tab(ToolsTabContribution("demo_tools", "Demo 工具", lambda parent=None: None))
-        register.register_settings_panel(SettingsPanelContribution("demo_settings", "Demo 设置", lambda parent=None: None))
+        register.register_plugin_settings(PluginSettingsContribution(
+            section_id="demo_settings",
+            title="Demo 设置",
+            fields=(PluginSettingsField("enabled", "启用", "boolean"),),
+        ))
         register.register_chat_ui_widget(ChatUIWidgetContribution("demo_widget", lambda parent=None: None))
         register.register_prompt_patch(PromptPatchContribution("demo_patch", system_prompt_append="demo system"))
 '''.strip(),

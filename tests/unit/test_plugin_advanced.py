@@ -41,11 +41,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _runtime_root(name: str) -> Path:
     root = (
         PROJECT_ROOT
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "plugin_advanced"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -87,7 +87,7 @@ def _write_plugin(
         )
     (plugin_dir / "plugin.yaml").write_text(
         f"""
-api_version: 1
+api_version: 2
 id: {plugin_id}
 name: {plugin_id}
 version: 1.0.0
@@ -408,5 +408,5 @@ class TestBuiltinPluginsDiscoverable:
         playwright = [spec for spec in specs if spec.plugin_id == "playwright_browser"]
         assert playwright, "playwright_browser 应仍可被发现"
         assert "tool" in playwright[0].permissions
-        assert "settings_panel" in playwright[0].permissions
+        assert "plugin_settings" in playwright[0].permissions
 

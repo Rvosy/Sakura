@@ -1,8 +1,8 @@
-"""app/ui/settings/workers.py — 设置窗口的后台 Worker。
+"""app/ui/settings/workers.py — Tauri 设置页复用的后台 Worker。
 
-从 settings_dialog.py 拆出：API 连通性测试、模型列表探测、TTS 试听、
-记忆列表加载、嵌入模型导入、主题 AI 生成、角色包导出。
-全部为纯 QObject worker，不持有任何设置页控件。
+覆盖 API 连通性测试、模型列表探测、TTS 试听、记忆列表加载、
+嵌入模型导入、主题 AI 生成、角色包导出。全部为纯 QObject worker，
+不持有任何设置页控件。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from app.config.character_archive import (
     export_character_voice_archive,
 )
 from app.config.character_loader import CharacterProfile
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
 from app.sensory.models import SensoryRequest, SensorySource
@@ -194,7 +194,7 @@ class TTSTestWorker(QObject):
                     try:
                         close()
                     except Exception as exc:  # noqa: BLE001
-                        debug_log("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
+                        log_event("TTS", "TTS 检测失败后清理 Provider 失败", {"error": str(exc)})
             self.finished.emit()
 
 

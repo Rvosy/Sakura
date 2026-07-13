@@ -51,7 +51,7 @@ class SensoryContextProvider:
             if _observation_allowed(observation, settings)
         ]
         if not candidates:
-            return ""
+            return ()
         ranked = sorted(
             candidates,
             key=lambda observation: _score_observation(observation, user_text, event_type),

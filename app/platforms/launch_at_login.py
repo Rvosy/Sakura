@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import plistlib
-import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -104,6 +103,33 @@ def set_launch_at_login_enabled(
         _set_linux_autostart_enabled(target.command, enabled, home_dir=home_dir)
         return
     raise LaunchAtLoginError(f"Unsupported platform: {target.platform}")
+
+
+def is_launch_at_login_enabled(
+    base_dir: Path,
+    *,
+    platform: str | None = None,
+    home_dir: Path | None = None,
+    windows_registry: Any | None = None,
+) -> bool:
+    target = resolve_launch_at_login_target(base_dir, platform=platform)
+    if not target.supported:
+        raise LaunchAtLoginError(target.reason or "Launch at login is not supported.")
+    if target.platform == "macos":
+        return _macos_launch_agent_path(home_dir=home_dir).is_file()
+    if target.platform == "linux":
+        return _linux_autostart_path(home_dir=home_dir).is_file()
+    if target.platform == "windows":
+        winreg = windows_registry or _import_winreg()
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        access = getattr(winreg, "KEY_QUERY_VALUE", 0)
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, access) as key:
+                winreg.QueryValueEx(key, WINDOWS_RUN_VALUE_NAME)
+        except FileNotFoundError:
+            return False
+        return True
+    return False
 
 
 def ensure_launch_at_login_state(
@@ -243,7 +269,7 @@ def _linux_autostart_path(*, home_dir: Path | None = None) -> Path:
 
 
 def _linux_desktop_entry(command: tuple[str, ...]) -> str:
-    exec_line = " ".join(shlex.quote(part) for part in command)
+    exec_line = " ".join(_desktop_exec_quote(part) for part in command)
     return "\n".join(
         (
             "[Desktop Entry]",
@@ -255,6 +281,13 @@ def _linux_desktop_entry(command: tuple[str, ...]) -> str:
             "",
         )
     )
+
+
+def _desktop_exec_quote(value: str) -> str:
+    escaped = str(value).replace("%", "%%")
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
 
 
 def _unlink_if_exists(path: Path) -> None:

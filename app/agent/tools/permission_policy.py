@@ -38,13 +38,15 @@ class ToolPermissionPolicy:
     # ---- 浏览器工具 (free_access 可跳过) ----
 
     BROWSER_FREE_ACCESS_TOOLS: frozenset[str] = frozenset({
-        "playwright_navigate",
         "playwright_get_text",
         "playwright_search_web",
         "playwright_screenshot",
         "playwright_click",
+    })
+
+    ALWAYS_CONFIRM_TOOL_NAMES: frozenset[str] = frozenset({
+        "playwright_navigate",
         "playwright_fill",
-        "playwright_evaluate",
     })
 
     # ---- 判断逻辑 ----
@@ -73,6 +75,8 @@ class ToolPermissionPolicy:
 
     def _is_always_high_risk(self, tool: Tool) -> bool:
         """检查是否属于不可豁免的高风险工具。"""
+        if tool.name in self.ALWAYS_CONFIRM_TOOL_NAMES:
+            return True
         if tool.risk == "high":
             return True
         if tool.confirmation_risk in {"delete_file", "file_delete", "destructive_file"}:

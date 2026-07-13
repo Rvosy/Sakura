@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.backchannel.models import EMOTIONS
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 # 情感打分制:从"首个信号命中即采用"升级为累计打分。
 # 词典走子串匹配 + 最长匹配压制(「不开心」命中时压住其子串「开心」),
@@ -25,12 +25,12 @@ def load_emotion_lexicon(path: Path = _LEXICON_PATH) -> dict[str, dict[str, floa
         if not isinstance(entries, dict):
             raise ValueError("entries 必须是对象")
     except Exception as exc:  # noqa: BLE001
-        debug_log("Backchannel", "情感词典加载失败,打分器空转", {"path": str(path), "error": str(exc)})
+        log_event("Backchannel", "情感词典加载失败,打分器空转", {"path": str(path), "error": str(exc)})
         return {}
     lexicon: dict[str, dict[str, float]] = {}
     for emotion, words in entries.items():
         if emotion not in EMOTIONS or not isinstance(words, dict):
-            debug_log("Backchannel", "情感词典条目已跳过", {"emotion": emotion})
+            log_event("Backchannel", "情感词典条目已跳过", {"emotion": emotion})
             continue
         cleaned: dict[str, float] = {}
         for word, weight in words.items():

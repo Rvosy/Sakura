@@ -11,6 +11,7 @@ from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tools import Tool, ToolRegistry
+from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -167,7 +168,7 @@ def create_builtin_tool_registry(
                 name="memory_search",
                 description=(
                     "搜索 Sakura 的长期记忆。需要跨会话信息、用户偏好、项目状态或过往约定时使用。"
-                    "首次调用可能返回 status='loading'，这时直接告诉主人记忆系统正在初始化，不要重复调用。"
+                    "首次调用可能返回 status='loading'，这时说明记忆系统正在初始化，等待后再试。"
                 ),
                 parameters={
                     "type": "object",
@@ -275,6 +276,14 @@ def create_builtin_tool_registry(
             group="default",
             risk="low",
         )
+    )
+    log_event(
+        "ToolRegistry",
+        "内置工具注册完成",
+        {
+            "tool_count": len(registry._tools),
+            "tool_names": sorted(registry._tools.keys()),
+        },
     )
     return registry
 

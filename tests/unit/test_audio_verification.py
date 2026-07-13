@@ -2,8 +2,8 @@
 
 覆盖：
 - _verify_generated_audio 对缺失/空/不可解析/参数异常/合法 wav 的判定
-- 播放完成兜底：时长解析失败时按上限兜底（修复原"跳过兜底导致挂起"缺陷）、
-  超长音频截断到上限
+- 播放完成兜底：时长解析失败时按未知时长兜底（修复原"跳过兜底导致挂起"缺陷）、
+  已知长音频按真实时长等待
 - _play_next 播放前校验失败时跳过条目并继续队列
 """
 
@@ -16,14 +16,13 @@ from pathlib import Path
 
 import pytest
 
-import app.voice.tts as tts_module
 from app.voice.audio_checks import _verify_generated_audio
 import app.voice.tts_playback as tts_playback
-from app.voice.tts import (
+from app.voice.tts_playback import (
+    TTSPlaybackEndpoint,
     _AUDIO_FINISH_FALLBACK_GRACE_MS,
-    _AUDIO_FINISH_FALLBACK_MAX_MS,
+    _AUDIO_FINISH_FALLBACK_UNKNOWN_MS,
 )
-from app.voice.tts_playback import TTSPlaybackEndpoint
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_audio_verification"
@@ -93,7 +92,7 @@ class TestFinishFallback:
         stub = self._provider_stub()
         TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(stub, broken, 1)
         assert scheduled, "解析失败时未安排兜底，会导致播放流程可能永久挂起"
-        assert scheduled[0] == _AUDIO_FINISH_FALLBACK_MAX_MS
+        assert scheduled[0] == _AUDIO_FINISH_FALLBACK_UNKNOWN_MS
 
     def test_normal_duration_uses_duration_plus_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         root = _make_dir("fallback_normal")
@@ -108,7 +107,7 @@ class TestFinishFallback:
         TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
         assert scheduled[0] == 1000 + _AUDIO_FINISH_FALLBACK_GRACE_MS
 
-    def test_oversized_duration_clamped_to_max(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_known_long_duration_is_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         root = _make_dir("fallback_long")
         wav = root / "long.wav"
         _write_wav(wav, frames=16000 * 120)  # 120 秒
@@ -119,7 +118,7 @@ class TestFinishFallback:
             staticmethod(lambda delay, _fn: scheduled.append(int(delay))),
         )
         TTSPlaybackEndpoint._schedule_current_audio_finish_fallback(self._provider_stub(), wav, 1)
-        assert scheduled[0] == _AUDIO_FINISH_FALLBACK_MAX_MS
+        assert scheduled == [120_000 + _AUDIO_FINISH_FALLBACK_GRACE_MS]
 
 
 class TestPlayNextSkipsInvalidAudio:
@@ -137,7 +136,6 @@ class TestPlayNextSkipsInvalidAudio:
         stub._current_finished = None
         stub._current_started_emitted = False
         stub._playback_finish_token = 0
-        stub._playback_backend = "media_player"
         stub._pending_audio = [
             (bad, None, None, None, "坏的"),
             (good, None, None, None, "好的"),

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, get_args, get_origin
 
 from app.plugins.models import (
     ChatUIWidgetContribution,
     ContextProviderContribution,
+    PluginSettingsContribution,
     PromptPatchContribution,
     RendererContribution,
-    SettingsPanelContribution,
     ToolContribution,
     ToolsTabContribution,
 )
@@ -23,7 +23,7 @@ class PluginCapabilities:
 
     plugin_id: str
     tools: list[ToolContribution] = field(default_factory=list)
-    settings_panels: list[SettingsPanelContribution] = field(default_factory=list)
+    plugin_settings: list[PluginSettingsContribution] = field(default_factory=list)
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
     prompt_patches: list[PromptPatchContribution] = field(default_factory=list)
@@ -36,7 +36,7 @@ class PluginCapabilityRegistry:
     """插件初始化时使用的能力注册表。"""
 
     tools: list[ToolContribution] = field(default_factory=list)
-    settings_panels: list[SettingsPanelContribution] = field(default_factory=list)
+    plugin_settings: list[PluginSettingsContribution] = field(default_factory=list)
     tools_tabs: list[ToolsTabContribution] = field(default_factory=list)
     chat_ui_widgets: list[ChatUIWidgetContribution] = field(default_factory=list)
     prompt_patches: list[PromptPatchContribution] = field(default_factory=list)
@@ -44,10 +44,12 @@ class PluginCapabilityRegistry:
     renderers: list[RendererContribution] = field(default_factory=list)
 
     def register_tool(self, contribution: ToolContribution) -> None:
-        self.tools.append(contribution)
+        self.tools.append(
+            replace(contribution, handler=_normalize_tool_handler(contribution.handler))
+        )
 
-    def register_settings_panel(self, contribution: SettingsPanelContribution) -> None:
-        self.settings_panels.append(contribution)
+    def register_plugin_settings(self, contribution: PluginSettingsContribution) -> None:
+        self.plugin_settings.append(contribution)
 
     def register_tools_tab(self, contribution: ToolsTabContribution) -> None:
         self.tools_tabs.append(contribution)
@@ -83,7 +85,7 @@ class PluginCapabilityRegistry:
                     name=name,
                     description=description,
                     parameters=parameters or _schema_from_signature(func),
-                    handler=_handler_from_callable(func),
+                    handler=func,
                     group=group,
                     risk=risk,
                     requires_confirmation=requires_confirmation,
@@ -95,12 +97,19 @@ class PluginCapabilityRegistry:
         return decorator
 
 
-def _handler_from_callable(func: Callable[..., Any]) -> Callable[[dict[str, Any]], Any]:
-    signature = inspect.signature(func)
-    parameters = list(signature.parameters.values())
+def _normalize_tool_handler(
+    handler: Callable[..., Any] | None,
+) -> Callable[[dict[str, Any]], Any] | None:
+    if handler is None or not callable(handler):
+        return None
+    try:
+        parameters = list(inspect.signature(handler).parameters.values())
+    except (TypeError, ValueError):
+        return lambda arguments: handler(arguments)
+    if not parameters:
+        return lambda _arguments: handler()
     if len(parameters) == 1:
         parameter = parameters[0]
-        annotation = parameter.annotation
         if (
             parameter.kind
             in {
@@ -110,25 +119,28 @@ def _handler_from_callable(func: Callable[..., Any]) -> Callable[[dict[str, Any]
             }
             and (
                 parameter.name in {"args", "arguments"}
-                or annotation in {dict, dict[str, Any]}
+                or parameter.annotation in {dict, dict[str, Any]}
             )
         ):
-            return lambda arguments: func(arguments)
+            return lambda arguments: handler(arguments)
 
-    def handler(arguments: dict[str, Any]) -> Any:
-        kwargs = {
-            parameter.name: arguments[parameter.name]
-            for parameter in parameters
-            if parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
+    def wrapped(arguments: dict[str, Any]) -> Any:
+        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+            return handler(**arguments)
+        return handler(
+            **{
+                parameter.name: arguments[parameter.name]
+                for parameter in parameters
+                if parameter.kind
+                in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+                and parameter.name in arguments
             }
-            and parameter.name in arguments
-        }
-        return func(**kwargs)
+        )
 
-    return handler
+    return wrapped
 
 
 def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:

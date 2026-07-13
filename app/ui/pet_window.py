@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -61,16 +62,15 @@ from app.agent.memory_curator import (
     MemoryCurationResult,
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
+from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
 from app.core.app_context import AppContext
 from app.config.character_loader import (
-    THEME_SOURCE_PACKAGE,
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
     load_character_system_prompt,
-    save_character_theme,
 )
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.agent.runtime_events import (
@@ -88,17 +88,31 @@ from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.debug_log import debug_log, summarize_messages
 from app.config.model_slots import ResolvedModelSlot, resolve_model_slot
 from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
 )
-from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
+from app.config.defaults import (
+    DEFAULT_BUTTON_FONT_SIZE,
+    DEFAULT_INPUT_FONT_SIZE,
+    DEFAULT_NAME_FONT_SIZE,
+    DEFAULT_SPEECH_FONT_SIZE,
+    SPEECH_FONT_SIZE_MIN,
+    SPEECH_FONT_SIZE_MAX,
+    NAME_FONT_SIZE_MIN,
+    NAME_FONT_SIZE_MAX,
+    INPUT_FONT_SIZE_MIN,
+    INPUT_FONT_SIZE_MAX,
+    BUTTON_FONT_SIZE_MIN,
+    BUTTON_FONT_SIZE_MAX,
+)
+from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
+from app.core.runtime_log import log_event, summarize_messages
+from app.config.settings_service import BackchannelSettings, BubbleSettings, DebugLogSettings, StartupSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
@@ -114,6 +128,11 @@ from app.core.mobile_chat_worker import MobileChatWorker
 from app.core.resource_manager import ResourceManager
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
 from app.plugins.manager import (
     PLUGIN_EVENT_AI_MESSAGE,
     PLUGIN_EVENT_APP_START,
@@ -122,6 +141,7 @@ from app.plugins.manager import (
     PLUGIN_EVENT_TTS_START,
     PLUGIN_EVENT_USER_MESSAGE,
 )
+from app.plugins.discovery import save_plugin_enabled_overrides
 from app.plugins.events import (
     EVENT_APP_CLOSING,
     EVENT_APP_STARTED,
@@ -134,6 +154,8 @@ from app.ui.state import PetUiState, PetUiStateStore
 from app.ui.error_messages import format_failure_message
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
+    is_launch_at_login_enabled,
+    is_launch_at_login_supported,
     set_launch_at_login_enabled,
 )
 from app.ui.history_window import HistoryWindow
@@ -144,6 +166,7 @@ from app.agent.screen_awareness import (
     SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS,
     SCREEN_AWARENESS_TIMER_POLL_INTERVAL_MS,
     ScreenAwarenessSettings,
+    screen_context_resolution_size,
 )
 from app.agent.screen_observation import (
     CapturedScreenImage,
@@ -156,7 +179,14 @@ from app.agent.screen_observation import (
     build_screen_observation_user_message,
     capture_screen_image,
 )
-from app.ui.settings_dialog import SettingsDialog
+from app.ui.tauri_settings import (
+    TauriSettingsProcess,
+    TauriSettingsResult,
+    apply_tauri_plugin_settings,
+    resolve_tauri_settings_binary,
+    tts_settings_from_tauri_result,
+)
+from app.ui.tauri_studio import TauriStudioProcess, resolve_tauri_studio_binary
 from app.ui.tts_bundle_dialog import (
     cancel_active_tts_bundle_downloads_for_shutdown,
     has_active_tts_bundle_download,
@@ -191,7 +221,11 @@ from app.ui.subtitle_controller import (
     normalize_subtitle_display_speed,
 )
 from app.voice.factory import create_tts_provider
-from app.voice.tts_settings import DEFAULT_GPT_SOVITS_API_URL, GPTSoVITSTTSSettings, TTSConfigError
+from app.voice.tts_settings import (
+    DEFAULT_GPT_SOVITS_API_URL,
+    GPTSoVITSTTSSettings,
+    TTSConfigError,
+)
 from app.voice.tts import (
     NullTTSProvider,
     TTSPreparedAudio,
@@ -205,11 +239,6 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
-from app.sensory.context import SensoryContextProvider
-from app.sensory.pipeline import SensoryPipeline
-from app.sensory.providers import build_provider_registry
-from app.sensory.settings import SensorySettings
-from app.sensory.store import SensoryObservationStore
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.card_container import CardContainer
@@ -221,9 +250,10 @@ from app.ui import (
     PortraitController,
     SubtitleController,
     ToolConfirmationPanel,
+    VirtualDesktopCapture,
     build_pet_tray_menu,
+    capture_virtual_desktop,
     capture_virtual_desktop_pixmap,
-    crop_logical_region,
 )
 from app.ui.styles import pet_window_stylesheet
 from app.ui.theme import (
@@ -231,7 +261,7 @@ from app.ui.theme import (
     ThemeSettings,
     build_app_chrome_stylesheet,
     build_message_box_stylesheet,
-    merge_theme_with_character,
+    resolve_effective_theme,
     theme_colors_to_mapping,
 )
 from app.voice import VoicePlaybackController
@@ -247,6 +277,13 @@ MEMORY_STATUS_DISPLAY_MS = 7_000
 MEMORY_STATUS_STARTUP_DELAY_MS = 1_000
 SPEAKING_STATE_TIMEOUT_MS = 45_000
 THREAD_SHUTDOWN_WAIT_MS = 1_000
+_TAURI_SETTINGS_CONFIG_NAMES = (
+    "api.yaml",
+    "characters.yaml",
+    "system_config.yaml",
+    "mcp.yaml",
+    "plugins.yaml",
+)
 TRANSIENT_PROGRESS_MESSAGE_KEY = "_sakura_transient_progress"
 SUBTITLE_LANGUAGE_JA = "ja"
 SUBTITLE_LANGUAGE_ZH = "zh"
@@ -261,7 +298,35 @@ SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT = (
     "刚刚说过什么；不要逐字复述，应结合屏幕变化找话题，并避免连续重复同一类话题或休息提醒。"
 )
 SCREEN_AWARENESS_EVENT_TYPE = "screen_awareness_check"
-LEGACY_PROACTIVE_EVENT_TYPE = "proactive_check"
+INTERACTION_STAGE_EVENT = "agent.interaction.stage"
+_INTERACTION_STAGE_LABELS = {
+    "send_message_ignored": "发送被忽略",
+    "request_messages_ready": "请求上下文已准备",
+    "chat_worker_started": "聊天 Worker 已启动",
+    "agent_progress_received": "收到 Agent 中间回复",
+    "agent_result_received": "收到 Agent 回复",
+    "screen_observation_followup_queued": "屏幕观察追问已排队",
+    "screen_observation_missing_user_message": "屏幕观察缺少关联消息",
+    "screen_observation_failed": "屏幕观察失败",
+    "event_screen_observation_failed": "主动事件屏幕观察失败",
+    "screen_observation_worker_restart": "屏幕观察 Worker 重启",
+    "event_screen_observation_worker_restart": "主动事件屏幕观察 Worker 重启",
+    "confirm_action": "确认执行动作",
+    "cancel_action": "取消待确认动作",
+    "action_worker_start": "动作 Worker 准备启动",
+    "action_result_received": "收到动作执行回复",
+    "event_worker_started": "主动事件 Worker 已启动",
+    "event_result_received": "收到主动事件回复",
+    "event_silent": "主动事件无回复",
+    "event_error": "主动事件失败",
+    "worker_error": "Worker 失败",
+    "tts_speak_requested": "请求即时 TTS",
+    "tts_prepared_speak_requested": "请求播放预生成 TTS",
+    "next_segment_tts_prepare_requested": "请求预生成下一段 TTS",
+    "tts_skipped_language_guard": "语言守卫跳过 TTS",
+    "tts_error_visible": "TTS 错误已显示",
+    "interaction_finished": "交互结束",
+}
 SCREEN_AWARENESS_VISUAL_SOURCE = "screen_awareness_context"
 SCREEN_AWARENESS_STATE_FILE = "screen_awareness_state.json"
 SCREEN_AWARENESS_HEALTH_TOPIC = "health_reminder"
@@ -281,13 +346,28 @@ SCREEN_AWARENESS_HEALTH_KEYWORDS = (
     "补水",
 )
 
-# 兼容旧测试和旧插件引用；新代码请使用 SCREEN_AWARENESS_*。
-PROACTIVE_RECENT_CONVERSATION_LIMIT = SCREEN_AWARENESS_RECENT_CONVERSATION_LIMIT
-PROACTIVE_RECENT_CONVERSATION_CONTENT_LIMIT = SCREEN_AWARENESS_RECENT_CONVERSATION_CONTENT_LIMIT
-PROACTIVE_RECENT_CONVERSATION_SUMMARY_HINT = SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
-PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER = SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 REPLY_HISTORY_PANEL_WIDTH = 34
 REPLY_HISTORY_PANEL_HEIGHT = 70
+
+
+def _snapshot_config_files(base_dir: Path) -> dict[Path, bytes | None]:
+    config_dir = StoragePaths(base_dir).config_dir
+    paths = {config_dir / name for name in _TAURI_SETTINGS_CONFIG_NAMES}
+    if config_dir.is_dir():
+        paths.update(path for path in config_dir.iterdir() if path.is_file() and path.suffix == ".yaml")
+    return {path: path.read_bytes() if path.is_file() else None for path in paths}
+
+
+def _restore_config_files(snapshot: dict[Path, bytes | None]) -> None:
+    for path, data in snapshot.items():
+        if data is None:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 REPLY_HISTORY_BUTTON_SIZE = 30
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
@@ -408,31 +488,31 @@ class TTSReadyWarmupWorker(QObject):
             ensure_ready = getattr(self.provider, "ensure_ready", None)
             if not callable(ensure_ready):
                 return
-            debug_log("TTS", "开始后台预热 TTS 服务", {"provider": type(self.provider).__name__})
+            log_event("TTS", "开始后台预热 TTS 服务", {"provider": type(self.provider).__name__})
             ok, message = ensure_ready()
             self._cancel_token.throw_if_cancelled()
             if ok:
-                debug_log(
+                log_event(
                     "TTS",
                     "后台预热 TTS 服务完成",
                     {"provider": type(self.provider).__name__, "message": message},
                 )
                 self.succeeded.emit(message)
             else:
-                debug_log(
+                log_event(
                     "TTS",
                     "后台预热 TTS 服务失败",
                     {"provider": type(self.provider).__name__, "message": message},
                 )
                 self.failed.emit(message)
         except OperationCancelled:
-            debug_log("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
+            log_event("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
         except Exception as exc:  # noqa: BLE001
             if self._cancel_token.is_cancelled():
-                debug_log("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
+                log_event("TTS", "后台预热 TTS 服务已取消", {"provider": type(self.provider).__name__})
                 return
             message = f"TTS 服务预热失败：{exc}"
-            debug_log(
+            log_event(
                 "TTS",
                 "后台预热 TTS 服务异常",
                 {"provider": type(self.provider).__name__, "error": str(exc)},
@@ -464,11 +544,22 @@ class ScreenObservationEncodeWorker(QObject):
         try:
             self._cancel_token.throw_if_cancelled()
             max_edge = _screen_observation_max_edge_from_context(self.context)
-            if self.context.get("preserve_original_resolution") is True:
+            max_width: int | None = None
+            max_height: int | None = None
+            resolution = self.context.get("screen_context_resolution")
+            if resolution is not None:
+                max_width, max_height = screen_context_resolution_size(
+                    self.captured.image.width(),
+                    self.captured.image.height(),
+                    resolution,
+                )
+            elif self.context.get("preserve_original_resolution") is True:
                 max_edge = max(1, self.captured.image.width(), self.captured.image.height())
             observation = build_screen_observation_from_image(
                 self.captured,
                 max_edge=max_edge,
+                max_width=max_width,
+                max_height=max_height,
             )
             self._cancel_token.throw_if_cancelled()
         except OperationCancelled:
@@ -490,6 +581,14 @@ def _screen_observation_max_edge_from_context(context: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return SCREEN_OBSERVATION_MAX_EDGE
     return max(1, max_edge)
+
+
+@dataclass(frozen=True)
+class _MemoryCurationRunContext:
+    mode: str
+    character_id: str
+    target_history_count: int
+    consumed_turns: int
 
 
 class PetWindow(QWidget):
@@ -549,8 +648,8 @@ class PetWindow(QWidget):
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
-        self.theme_settings = merge_theme_with_character(
-            self.settings_service.load_theme_settings(),
+        self.theme_settings = _effective_character_theme(
+            self.settings_service,
             self.character_profile,
         )
         self.memory_curation_settings = context.memory_curation_settings
@@ -559,9 +658,7 @@ class PetWindow(QWidget):
         self.subtitle_language = self._load_subtitle_language()
         self.screen_observation_enabled = self._load_screen_observation_enabled()
         self.autonomous_screen_observation_enabled = self._load_autonomous_screen_observation_enabled()
-        self.screen_awareness_settings = getattr(context, "screen_awareness_settings", None)
-        if self.screen_awareness_settings is None:
-            self.screen_awareness_settings = context.proactive_care_settings
+        self.screen_awareness_settings = context.screen_awareness_settings
         self.model_vision_enabled = self.screen_observation_enabled
         self.agent_runtime.set_model_vision_enabled(self.model_vision_enabled)
         self.agent_runtime.set_autonomous_screen_observation_enabled(
@@ -577,23 +674,39 @@ class PetWindow(QWidget):
         self._registered_secondary_windows: set[QWidget] = set()
         self.history_window: HistoryWindow | None = None
         self.runtime_log_window: RuntimeLogWindow | None = None
-        self.settings_dialog: SettingsDialog | None = None
+        self.tauri_settings_process: TauriSettingsProcess | None = None
+        self.tauri_studio_process: TauriStudioProcess | None = None
+        self._tauri_original_layout: tuple[int, int, int, int, int] | None = None
+        self._tauri_original_font_sizes: tuple[int, int, int, int] | None = None
         self.messages: list[dict[str, Any]] = []
         self.worker_thread: QThread | None = None
         self.worker: ChatWorker | EventWorker | None = None
         self.memory_curation_thread: QThread | None = None
         self.memory_curation_worker: MemoryCurationWorker | None = None
-        self.memory_curation_mode = ""
-        self.memory_curation_target_history_count = 0
-        self.memory_curation_consumed_turns = 0
+        self.memory_curation_run: _MemoryCurationRunContext | None = None
+        self._auto_memory_curation_failure_attempts = 0
+        self._suppress_auto_memory_curation_restart = False
         self.drag_anchor: QPoint | None = None
         # 是否正在拖动窗口：首次 move 置位，用于拖动时收起输入栏、区分单击与拖动（单击桌宠唤回气泡）。
         self._dragging = False
+        # Wayland 下 startSystemMove 后为 True，防后续 mouseMove 走 self.move 与合成器冲突。
+        self._using_system_drag = False
+        # 记录本轮是否已经发生拖拽；系统拖拽可能先完成、后补发 release，
+        # 因此不能随 _dragging 一起提前清除，否则补发的 release 会被误判为单击。
+        self._drag_release_pending = False
+        # 鼠标是否在窗口内：由 enterEvent/leaveEvent 追踪，绕开 Wayland 上
+        # QCursor.pos() 离开窗口后返回陈旧坐标的问题。
+        self._cursor_in_window = False
         self.portrait_scale_percent = self._load_portrait_scale_percent()
         self.control_panel_width = self._load_control_panel_width()
         self.bubble_height = self._load_bubble_height()
         self.control_panel_vertical_offset = self._load_control_panel_vertical_offset()
         self.input_bar_offset = self._load_input_bar_offset()
+        # 字体大小
+        self.speech_font_size = self._load_speech_font_size()
+        self.name_font_size = self._load_name_font_size()
+        self.input_font_size = self._load_input_font_size()
+        self.button_font_size = self._load_button_font_size()
         # 自适应文本气泡高度（None = 使用用户设置的 bubble_height）
         self._auto_fit_bubble_height: int | None = None
         (
@@ -615,7 +728,6 @@ class PetWindow(QWidget):
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
-        self.pending_screen_observation_event_reminder_id: str | None = None
         self.pending_visual_observation_jobs: list[VisualObservationJob] = []
         self.pending_event_visual_observation_jobs: list[VisualObservationJob] = []
         self.plugin_chat_ui_widget_instances: list[QWidget] = []
@@ -625,13 +737,11 @@ class PetWindow(QWidget):
         self.pet_hidden_at: float | None = None
         self._runtime_app_closed_logged = False
         self._shutdown_in_progress = False
+        self._quit_approved = False
         # 后台线程生命周期、lingering 线程与退役 wrapper 统一由资源管理器治理。
         self.resource_manager = ResourceManager(self, registry=context.resource_registry)
         self._register_runtime_service_resources()
         self.screen_observation_followup_in_progress = False
-        self.active_reminder_id: str | None = None
-        self.active_reminder_text = ""
-        self.active_event_type = ""
         self.active_event: AgentEvent | None = None
         self.memory_status_message_active = False
         self.memory_status_last_status = ""
@@ -668,7 +778,7 @@ class PetWindow(QWidget):
             self.reminder_timer.start()
             self._sync_screen_awareness_timer()
             QTimer.singleShot(0, self._maybe_start_memory_backfill)
-        debug_log(
+        log_event(
             "PetWindow",
             "窗口运行状态初始化",
             {
@@ -808,7 +918,6 @@ class PetWindow(QWidget):
         )
         self.speech_timer = self.subtitle_controller.speech_timer
         if not self.startup_initializing:
-            QTimer.singleShot(0, self._warm_up_current_tts_playback)
             QTimer.singleShot(0, self._start_current_tts_ready_warmup)
 
         bubble_header = QHBoxLayout()
@@ -860,7 +969,6 @@ class PetWindow(QWidget):
         self.send_button.setObjectName("sendButton")
         self.send_button.setFixedHeight(38)
         self.send_button.clicked.connect(self._handle_send_button_clicked)
-        self.reply_waiting_ui_active = False
 
         self.screenshot_button = QToolButton(self.input_bar)
         self.screenshot_button.setObjectName("screenshotButton")
@@ -973,63 +1081,6 @@ class PetWindow(QWidget):
             if sys.platform == "darwin":
                 application.installEventFilter(self)
 
-    @property
-    def proactive_care_settings(self) -> Any:
-        """兼容旧属性；新代码请使用 screen_awareness_settings。"""
-        return self.screen_awareness_settings
-
-    @proactive_care_settings.setter
-    def proactive_care_settings(self, value: Any) -> None:
-        self.screen_awareness_settings = value
-
-    @property
-    def proactive_care_timer(self) -> QTimer:
-        return self.screen_awareness_timer
-
-    @proactive_care_timer.setter
-    def proactive_care_timer(self, value: QTimer) -> None:
-        self.screen_awareness_timer = value
-
-    @property
-    def last_proactive_care_at(self) -> float | None:
-        return self.last_screen_awareness_at
-
-    @last_proactive_care_at.setter
-    def last_proactive_care_at(self, value: float | None) -> None:
-        self.last_screen_awareness_at = value
-
-    @property
-    def last_proactive_screen_context_at(self) -> float | None:
-        return self.last_screen_awareness_context_at
-
-    @last_proactive_screen_context_at.setter
-    def last_proactive_screen_context_at(self, value: float | None) -> None:
-        self.last_screen_awareness_context_at = value
-
-    @property
-    def proactive_screen_context_batch_started_at(self) -> float | None:
-        return self.screen_awareness_context_batch_started_at
-
-    @proactive_screen_context_batch_started_at.setter
-    def proactive_screen_context_batch_started_at(self, value: float | None) -> None:
-        self.screen_awareness_context_batch_started_at = value
-
-    @property
-    def proactive_screen_contexts(self) -> list[dict[str, Any]]:
-        return self.screen_awareness_contexts
-
-    @proactive_screen_contexts.setter
-    def proactive_screen_contexts(self, value: list[dict[str, Any]]) -> None:
-        self.screen_awareness_contexts = value
-
-    @property
-    def proactive_screen_context_dropped_count(self) -> int:
-        return self.screen_awareness_context_dropped_count
-
-    @proactive_screen_context_dropped_count.setter
-    def proactive_screen_context_dropped_count(self, value: int) -> None:
-        self.screen_awareness_context_dropped_count = value
-
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self._layout_stage()
@@ -1039,6 +1090,19 @@ class PetWindow(QWidget):
         super().moveEvent(event)
         # 气泡/输入栏是子控件会自动跟随；独立渲染器窗口需要同步屏幕坐标。
         self._sync_renderer_overlay_geometry()
+
+        # Wayland 下合成器接管 startSystemMove 后通常不投递
+        # mouseReleaseEvent，借 moveEvent 监测松手并恢复 UI。
+        # 标志位无条件重置，不耦合 animator._suspended（仅动画恢复需要守卫）。
+        if getattr(self, "_using_system_drag", False):
+            app = QApplication.instance()
+            if app and not (app.mouseButtons() & Qt.MouseButton.LeftButton):
+                animator = getattr(self, "input_bar_animator", None)
+                self._using_system_drag = False
+                self._dragging = False
+                self.drag_anchor = None
+                if animator is not None and getattr(animator, "_suspended", False):
+                    QTimer.singleShot(0, self._finish_drag_resume)
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
@@ -1064,6 +1128,18 @@ class PetWindow(QWidget):
         super().hideEvent(event)
         # 子控件随主窗口隐藏，无需单独 hide。
         self._refresh_tray_menu()
+
+    def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """鼠标进入窗口区域。在 Wayland 上 QCursor.pos() 离开窗口后返回陈旧
+        坐标，此事件是追踪鼠标驻留状态的可靠来源。"""
+        super().enterEvent(event)
+        self._cursor_in_window = True
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """鼠标离开窗口区域。Wayland 合成器通过 wl_pointer.leave 可靠投递此事件，
+        用于将 _cursor_in_window 置 False，绕开 QCursor.pos() 的陈旧坐标问题。"""
+        super().leaveEvent(event)
+        self._cursor_in_window = False
 
     def changeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().changeEvent(event)
@@ -1152,14 +1228,14 @@ class PetWindow(QWidget):
                     self._set_portrait_overlay_suppressed(True)
                 self._sync_renderer_overlay_geometry(manager=manager)
                 manager.show()
-                debug_log(
+                log_event(
                     "RendererManager",
                     "已启用独立角色渲染窗口",
                     {"renderer": manager.active_renderer_name},
                 )
             return manager
         except Exception as exc:  # noqa: BLE001 — 渲染后端初始化失败不得影响桌宠启动
-            debug_log("RendererManager", "初始化失败，回退现有显示", {"error": str(exc)})
+            log_event("RendererManager", "初始化失败，回退现有显示", {"error": str(exc)})
             return None
 
     def _activate_renderer_manager(self) -> Any:
@@ -1178,7 +1254,7 @@ class PetWindow(QWidget):
         try:
             manager.close()
         except Exception as exc:  # noqa: BLE001
-            debug_log("RendererManager", "关闭失败", {"error": str(exc)})
+            log_event("RendererManager", "关闭失败", {"error": str(exc)})
         finally:
             self.renderer_manager = None
             self._set_portrait_overlay_suppressed(False)
@@ -1260,7 +1336,7 @@ class PetWindow(QWidget):
             self._gaze_last = (nx, ny)
             manager.look_at(nx, ny)
         except Exception as exc:  # noqa: BLE001 — 视线追踪异常不得影响主窗口
-            debug_log("RendererManager", "视线追踪更新失败", {"error": str(exc)})
+            log_event("RendererManager", "视线追踪更新失败", {"error": str(exc)})
 
     def _sync_renderer_overlay_geometry(
         self,
@@ -1277,9 +1353,9 @@ class PetWindow(QWidget):
         top_left = self.mapToGlobal(QPoint(px, py))
         try:
             manager.set_geometry(top_left.x(), top_left.y(), pw, ph)
-            manager.stack_below(self, topmost=bool(getattr(self, "always_on_top_enabled", False)))
+            manager.stack_below(self, topmost=self._effective_topmost())
         except Exception as exc:  # noqa: BLE001 — 渲染后端异常不得影响主窗口
-            debug_log("RendererManager", "同步渲染窗口几何失败", {"error": str(exc)})
+            log_event("RendererManager", "同步渲染窗口几何失败", {"error": str(exc)})
 
     def _set_portrait_overlay_suppressed(self, suppressed: bool) -> None:
         """独立渲染器接管角色显示时隐藏原 PNG 立绘。"""
@@ -1303,6 +1379,30 @@ class PetWindow(QWidget):
             suppress()
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if getattr(self, "_quit_approved", False):
+            event.accept()
+            super().closeEvent(event)
+            return
+        event.ignore()
+        if self.request_quit():
+            event.accept()
+
+    @Slot()
+    def request_quit(self) -> bool:
+        migration_thread = getattr(self, "tts_migration_thread", None)
+        try:
+            migration_running = bool(
+                migration_thread is not None and migration_thread.isRunning()
+            )
+        except RuntimeError:
+            migration_running = False
+        if migration_running:
+            QMessageBox.information(
+                self,
+                "TTS 数据迁移中",
+                "请等待 TTS 数据迁移完成后再退出 Sakura。",
+            )
+            return False
         if has_active_tts_bundle_download():
             reply = QMessageBox.question(
                 self,
@@ -1312,24 +1412,42 @@ class PetWindow(QWidget):
                 QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+                return False
             if not cancel_active_tts_bundle_downloads_for_shutdown():
                 QMessageBox.information(
                     self,
                     "TTS 下载中",
                     "下载线程仍在停止，请稍后再退出 Sakura。",
                 )
-                event.ignore()
-                return
+                return False
+        self._quit_approved = True
         self.close_external_tools()
-        super().closeEvent(event)
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
+        else:
+            self.close()
+        return True
 
     @Slot()
     def close_external_tools(self) -> None:
         if getattr(self, "_shutdown_in_progress", False):
             return
         self._shutdown_in_progress = True
+        close_tauri_settings = getattr(
+            self,
+            "_close_tauri_settings_process_for_shutdown",
+            None,
+        )
+        if callable(close_tauri_settings):
+            close_tauri_settings()
+        close_tauri_studio = getattr(
+            self,
+            "_close_tauri_studio_process_for_shutdown",
+            None,
+        )
+        if callable(close_tauri_studio):
+            close_tauri_studio()
         self._emit_app_closed_event()
         self._stop_speaking_state_watchdog()
         self.messages = _without_transient_progress_messages(self.messages)
@@ -1416,7 +1534,7 @@ class PetWindow(QWidget):
         try:
             emit_event(event_type, payload or {}, source=source)
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "PluginManager",
                 "插件事件派发失败",
                 {"event_type": event_type, "error": str(exc)},
@@ -1435,7 +1553,7 @@ class PetWindow(QWidget):
         try:
             emit_bus(event_name, payload or {})
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "PluginEventBus",
                 "插件总线事件派发失败",
                 {"event": event_name, "error": str(exc)},
@@ -1489,7 +1607,7 @@ class PetWindow(QWidget):
             try:
                 close()
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "TTS",
                     "关闭 TTS Provider 失败",
                     {"provider": type(provider).__name__, "error": str(exc)},
@@ -1519,6 +1637,16 @@ class PetWindow(QWidget):
     def _handle_mouse_press(self, event: QMouseEvent, source_widget: QWidget | None = None) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
             self._clear_input_focus_for_pet_interaction()
+            # Wayland 上 startSystemMove 后合成器可能不投递 mouseReleaseEvent，
+            # 状态会残留到下一次交互；新 press 开始前先恢复仍被挂起的输入栏，
+            # 再重置旧拖拽状态，避免旧看门狗因标志清除而无法完成恢复。
+            animator = getattr(self, "input_bar_animator", None)
+            if animator is not None and getattr(animator, "_suspended", False):
+                self._finish_drag_resume()
+            self._dragging = False
+            self._using_system_drag = False
+            self._drag_release_pending = False
+            # 只记锚点；首次 mouseMove 才决定走系统拖动还是 self.move，保留单击/拖动的区分。
             self.drag_anchor = self._drag_anchor_from_event(event, source_widget)
             event.accept()
             return True
@@ -1529,10 +1657,27 @@ class PetWindow(QWidget):
 
     def _handle_mouse_move(self, event: QMouseEvent) -> bool:
         if event.buttons() & Qt.MouseButton.LeftButton and self.drag_anchor is not None:
+            # 已交由系统拖拽接管，直接接受事件，不再执行 self.move 避免冲突。
+            if self._using_system_drag:
+                event.accept()
+                return True
+
             if not self._dragging:
                 # 首次进入拖动：收起输入栏，避免静态模糊背景与移动后的真实桌面对不上而穿帮。
                 self._dragging = True
+                self._drag_release_pending = True
                 self.input_bar_animator.suspend_for_drag()
+                # Wayland 下 QWidget.move() 被合成器忽略，改用 startSystemMove 委托合成器拖动。
+                window = self.windowHandle()
+                if window is not None and hasattr(window, "startSystemMove"):
+                    if window.startSystemMove():
+                        self._using_system_drag = True
+                        # 看门狗：部分合成器在零位移/原地松手时可能既不投递
+                        # mouseReleaseEvent 也不触发 moveEvent，超时后自动恢复 UI。
+                        QTimer.singleShot(1000, self._check_system_drag_timeout)
+                        event.accept()
+                        return True
+            # 回退路径（合成器不支持 startSystemMove 时）
             self.move(event.globalPosition().toPoint() - self.drag_anchor)
             event.accept()
             return True
@@ -1540,9 +1685,15 @@ class PetWindow(QWidget):
 
     def _handle_mouse_release(self, event: QMouseEvent) -> bool:
         if event.button() == Qt.MouseButton.LeftButton:
-            was_dragging = self._dragging
+            # 系统拖拽可能已由 moveEvent/看门狗完成 UI 恢复，随后才补发 release；
+            # _drag_release_pending 保留“本轮发生过拖拽”的事实，避免误触发单击行为。
+            was_dragging = self._dragging or bool(
+                getattr(self, "_drag_release_pending", False)
+            )
             self.drag_anchor = None
             self._dragging = False
+            self._using_system_drag = False
+            self._drag_release_pending = False
             if was_dragging:
                 # 拖动结束：延一帧等窗口真正落位，再重截新位置桌面并重新显示输入栏。
                 QTimer.singleShot(0, self._finish_drag_resume)
@@ -1556,6 +1707,20 @@ class PetWindow(QWidget):
             event.accept()
             return True
         return False
+
+    def _check_system_drag_timeout(self) -> None:
+        """startSystemMove 超时兜底：合成器未投递 moveEvent/mouseReleaseEvent
+        时的最后恢复手段；左键仍按压则延后 1s 重试。"""
+        if not self._using_system_drag:
+            return
+        app = QApplication.instance()
+        if app and (app.mouseButtons() & Qt.MouseButton.LeftButton):
+            QTimer.singleShot(1000, self._check_system_drag_timeout)
+            return
+        self._using_system_drag = False
+        self._dragging = False
+        self.drag_anchor = None
+        QTimer.singleShot(0, self._finish_drag_resume)
 
     def _finish_drag_resume(self) -> None:
         """拖动松手后：让输入栏按可见性重算（重截新位置桌面后现身）。
@@ -1574,19 +1739,20 @@ class PetWindow(QWidget):
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.handle_pet_clicked()
-        # 模型未在思考时，让输入栏现身并把焦点移入输入框。
+        # 模型未在工作时，让输入栏现身并把焦点移入输入框。
         # 先 set_force_visible(True) 使 input_card 同步 show()（hidden widget 无法接收焦点），
         # 设完焦点后立即释放 force_visible——_input_bar_pinned 会通过焦点继续维持可见。
         # 思考中不浮现：避免用户点击桌宠时反而让输入栏被焦点固定、无法随思考态收起。
-        if not getattr(self, "reply_waiting_ui_active", False):
-            animator = getattr(self, "input_bar_animator", None)
-            input_edit = getattr(self, "input_edit", None)
-            if animator is not None:
-                animator.set_force_visible(True)
-            if input_edit is not None:
-                input_edit.setFocus()
-            if animator is not None:
-                animator.set_force_visible(False)
+        worker_busy = (
+            self.worker_thread is not None
+            or self.screen_observation_followup_in_progress
+            or self.pending_screen_observation_messages is not None
+            or self.pending_screen_observation_event is not None
+        )
+        if not worker_busy:
+            self.input_bar_animator.set_force_visible(True)
+            self.input_edit.setFocus()
+            self.input_bar_animator.set_force_visible(False)
 
     def _apply_bubble_settings(self, settings: BubbleSettings) -> None:
         """应用气泡无操作自动隐藏配置到控制器（设置保存后调用）。"""
@@ -1705,9 +1871,9 @@ class PetWindow(QWidget):
                 try:
                     discard_prepared(handle)
                 except Exception as exc:  # noqa: BLE001
-                    debug_log("Backchannel", "让位丢弃接话预生成失败", {"error": str(exc)})
+                    log_event("Backchannel", "让位丢弃接话预生成失败", {"error": str(exc)})
         if removed:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "回复开始,未就绪的接话合成请求已让位",
                 {"removed": removed, "kept_ready": len(prepared)},
@@ -1728,7 +1894,7 @@ class PetWindow(QWidget):
         try:
             manifest = load_backchannel_manifest(path, profile=profile)
         except BackchannelManifestError as exc:
-            debug_log("Backchannel", "接话清单加载失败,功能停用", {"error": str(exc)})
+            log_event("Backchannel", "接话清单加载失败,功能停用", {"error": str(exc)})
             controller.set_manifest(None)
             return
         self.backchannel_manifest = manifest if manifest else None
@@ -1823,7 +1989,7 @@ class PetWindow(QWidget):
                     try:
                         discard_prepared(handle)
                     except Exception as exc:  # noqa: BLE001
-                        debug_log("Backchannel", "落盘后丢弃合成句柄失败", {"error": str(exc)})
+                        log_event("Backchannel", "落盘后丢弃合成句柄失败", {"error": str(exc)})
         provider = self.tts_provider
         queued = 0
         missing_audio = 0
@@ -1844,7 +2010,7 @@ class PetWindow(QWidget):
                     prepared[key] = provider.prepare(variant.ja, template.tone)
                     queued += 1
                 except Exception as exc:  # noqa: BLE001
-                    debug_log(
+                    log_event(
                         "Backchannel",
                         "接话音频预生成请求失败",
                         {
@@ -1855,7 +2021,7 @@ class PetWindow(QWidget):
                         },
                     )
         if missing_audio:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话清单存在缺失音频,已提交运行期预生成",
                 {
@@ -1879,10 +2045,20 @@ class PetWindow(QWidget):
     ) -> Path | None:
         if not audio:
             return None
-        path = Path(audio)
-        if not path.is_absolute() and manifest is not None and manifest.source_path is not None:
-            path = manifest.source_path.parent / path
-        return path if path.exists() else None
+        raw_path = Path(audio)
+        if raw_path.is_absolute() or str(audio).startswith(("\\\\", "//")):
+            return None
+        if manifest is None or manifest.source_path is None:
+            return None
+        try:
+            profile = getattr(self, "character_profile", None)
+            package_dir = getattr(profile, "package_dir", manifest.source_path.parent)
+            package_root = Path(package_dir).resolve(strict=True)
+            path = (manifest.source_path.parent / raw_path).resolve(strict=True)
+            path.relative_to(package_root)
+        except (OSError, ValueError):
+            return None
+        return path if path.is_file() else None
 
     def _copy_backchannel_audio_for_playback(self, source: Path) -> Path | None:
         suffix = source.suffix or ".wav"
@@ -1897,7 +2073,7 @@ class PetWindow(QWidget):
             shutil.copyfile(source, temp_path)
             return temp_path
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话预置音频复制失败",
                 {"audio_path": str(source), "error": str(exc)},
@@ -1950,7 +2126,7 @@ class PetWindow(QWidget):
         # 分段的合成(及由其 on_started 驱动的字幕)整体延后。
         # 补合成统一安排在空闲时机(回复完成/预热成功/清单加载)。
         if handle is None or handle.audio_path is None or handle.failed:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话音频尚未预生成完成,本次仅显示字幕",
                 {"template": choice.template.id, "text": choice.variant.ja},
@@ -1980,7 +2156,7 @@ class PetWindow(QWidget):
             )
         except Exception as exc:  # noqa: BLE001
             self._active_backchannel_audio = None
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话音频播放请求失败",
                 {"template": choice.template.id, "error": str(exc)},
@@ -2012,7 +2188,7 @@ class PetWindow(QWidget):
         try:
             discard_prepared(handle)
         except Exception as exc:  # noqa: BLE001
-            debug_log("Backchannel", "取消接话音频失败", {"error": str(exc)})
+            log_event("Backchannel", "取消接话音频失败", {"error": str(exc)})
 
     def _discard_backchannel_audio_cache(self) -> None:
         self._discard_active_backchannel_audio()
@@ -2026,7 +2202,7 @@ class PetWindow(QWidget):
                 if callable(discard_prepared):
                     discard_prepared(handle)
             except Exception as exc:  # noqa: BLE001
-                debug_log("Backchannel", "丢弃接话预生成音频失败", {"error": str(exc)})
+                log_event("Backchannel", "丢弃接话预生成音频失败", {"error": str(exc)})
         prepared.clear()
 
     @Slot(object)
@@ -2054,7 +2230,7 @@ class PetWindow(QWidget):
         if subtitle_controller is None or not subtitle_controller.is_reply_sequence_active():
             self.ui_state.finish("speaking_timeout")
             return
-        debug_log(
+        log_event(
             "PetWindow",
             "SPEAKING 状态超时，强制结束当前回复",
             {"timeout_ms": SPEAKING_STATE_TIMEOUT_MS},
@@ -2072,44 +2248,28 @@ class PetWindow(QWidget):
     def _reply_waiting_placeholder_text(self) -> str:
         return f"{self.character_profile.display_name}正在思考中…"
 
-    def _set_reply_waiting_ui(self, waiting: bool) -> None:
+    def _sync_reply_waiting_ui(self, waiting: bool) -> None:
         """切换回复等待期间的输入区状态：保留输入能力，只提示当前正在等待。"""
-        if getattr(self, "startup_initializing", False):
-            waiting = False
-        was_waiting = bool(getattr(self, "reply_waiting_ui_active", False))
-        self.reply_waiting_ui_active = waiting
-        if hasattr(self, "input_edit"):
-            self.input_edit.setPlaceholderText(
-                self._reply_waiting_placeholder_text()
-                if waiting
-                else self._normal_input_placeholder_text()
-            )
-            self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
-        if hasattr(self, "send_button"):
-            self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
-        release_empty_focus = getattr(self, "_release_empty_input_focus_after_reply_waiting", None)
-        if (waiting or (was_waiting and not waiting)) and callable(release_empty_focus):
-            release_empty_focus()
-        self._sync_input_bar_waiting_visibility()
+        if self.startup_initializing:
+            return
+        was_waiting = bool(self.input_edit.property("replyWaiting"))
+        self.input_edit.setPlaceholderText(
+            self._reply_waiting_placeholder_text()
+            if waiting
+            else self._normal_input_placeholder_text()
+        )
+        self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
+        self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
+        if waiting or was_waiting:
+            self._release_empty_input_focus_after_reply_waiting()
+        self.input_bar_animator.sync()
 
     def _release_empty_input_focus_after_reply_waiting(self) -> None:
         """回复等待切换时释放空输入框焦点，避免输入栏被焦点状态固定。"""
-        input_edit = getattr(self, "input_edit", None)
-        text = getattr(input_edit, "text", None)
-        if callable(text) and str(text()).strip():
+        if self.input_edit.text().strip():
             return
-        has_focus = getattr(input_edit, "hasFocus", None)
-        if not callable(has_focus) or not has_focus():
-            return
-        clear_focus = getattr(input_edit, "clearFocus", None)
-        if callable(clear_focus):
-            clear_focus()
-
-    def _sync_input_bar_waiting_visibility(self) -> None:
-        animator = getattr(self, "input_bar_animator", None)
-        sync = getattr(animator, "sync", None)
-        if callable(sync):
-            sync()
+        if self.input_edit.hasFocus():
+            self.input_edit.clearFocus()
 
     def _set_widget_dynamic_property(self, widget: QWidget | None, name: str, value: object) -> None:
         if widget is None:
@@ -2144,8 +2304,8 @@ class PetWindow(QWidget):
         try:
             entries = self.history_store.load()
         except OSError as exc:
-            debug_log("History", "回溯历史读取失败", {"error": str(exc)})
-            debug_log("History", "回溯历史读取失败", {"error": str(exc)})
+            log_event("History", "回溯历史读取失败", {"error": str(exc)})
+            log_event("History", "回溯历史读取失败", {"error": str(exc)})
             entries = []
         self.reply_history_segments = _reply_history_segments_from_entries(entries)
         self.reply_history_index = (
@@ -2274,7 +2434,6 @@ class PetWindow(QWidget):
     def _raise_open_dialogs(self) -> None:
         # 独立窗口打开时应始终在桌宠卡片之上，避免说话时被卡片盖住。
         for dialog in (
-            getattr(self, "settings_dialog", None),
             getattr(self, "history_window", None),
             getattr(self, "runtime_log_window", None),
         ):
@@ -2287,9 +2446,14 @@ class PetWindow(QWidget):
             self.tray_icon.setIcon(_build_status_tray_icon(self.theme_settings.primary_color))
 
     def _apply_fonts(self) -> None:
-        text_font = _rounded_chinese_font(13, QFont.Weight.Bold)
-        name_font = _rounded_japanese_font(10, QFont.Weight.Bold)
-        button_font = _rounded_chinese_font(11, QFont.Weight.ExtraBold)
+        speech_size = getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE)
+        name_size = getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE)
+        input_size = getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE)
+        button_size = getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE)
+
+        text_font = _rounded_chinese_font(input_size, QFont.Weight.Bold)
+        name_font = _rounded_japanese_font(name_size, QFont.Weight.Bold)
+        button_font = _rounded_chinese_font(button_size, QFont.Weight.ExtraBold)
 
         self.name_label.setFont(name_font)
         self._apply_speech_font()
@@ -2298,10 +2462,11 @@ class PetWindow(QWidget):
         self.send_button.setFont(button_font)
 
     def _apply_speech_font(self) -> None:
+        speech_size = getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE)
         if self.subtitle_language == SUBTITLE_LANGUAGE_ZH:
-            self.speech_label.setFont(_rounded_chinese_font(15, QFont.Weight.Medium))
+            self.speech_label.setFont(_rounded_chinese_font(speech_size, QFont.Weight.Medium))
             return
-        self.speech_label.setFont(_rounded_japanese_font(15, QFont.Weight.Medium))
+        self.speech_label.setFont(_rounded_japanese_font(speech_size, QFont.Weight.Medium))
 
     def _current_portrait_size(self) -> tuple[int, int]:
         """当前立绘标签实际尺寸；标签尚未贴图时回退到按缩放的名义尺寸。"""
@@ -2446,7 +2611,7 @@ class PetWindow(QWidget):
                     region = region.united(QRegion(child.geometry()))
             self.setMask(region)
         except Exception as exc:  # noqa: BLE001
-            debug_log("UI", "舞台碰撞遮罩更新失败,清除遮罩降级", {"error": str(exc)})
+            log_event("UI", "舞台碰撞遮罩更新失败,清除遮罩降级", {"error": str(exc)})
             self.clearMask()
 
     def _apply_stage_debug_overlay(self, enabled: bool, *, refresh: bool = False) -> None:
@@ -2521,47 +2686,37 @@ class PetWindow(QWidget):
             if blurred is not None and not blurred.isNull():
                 background.set_blurred_pixmap(blurred)
         except Exception as exc:  # noqa: BLE001
-            debug_log("UI", "输入栏软件模糊背景刷新失败", {"error": str(exc)})
+            log_event("UI", "输入栏软件模糊背景刷新失败", {"error": str(exc)})
 
     def _build_blurred_background(self, global_rect: QRect) -> QPixmap | None:
         """截取虚拟桌面，裁出 global_rect（逻辑全局坐标）对应区域并做高斯模糊。
 
-        capture_virtual_desktop_pixmap 返回的是「物理像素缓冲 + devicePixelRatio」的虚拟桌面图：
-        其 rect()/copy() 都按物理像素取址（width()=物理宽，非逻辑宽）。因此必须把逻辑全局坐标
-        乘以 devicePixelRatio 换算成物理像素再裁剪，否则裁出的区域会随坐标增大而向左上偏移，
-        在屏幕边缘表现为模糊背景与真实桌面错位。
+        截图保留每块屏幕自己的 devicePixelRatio；裁剪时按 global_rect 与各屏幕的交集分别换算，
+        因而输入栏跨越不同缩放比例的屏幕时也能保持坐标和内容对齐。
         """
-        desktop_pixmap, virtual_geometry = self._capture_virtual_desktop_pixmap()
-        if desktop_pixmap.isNull():
-            return None
-        cropped = crop_logical_region(desktop_pixmap, virtual_geometry, global_rect)
+        desktop_capture = self._capture_virtual_desktop()
+        cropped = desktop_capture.crop(global_rect)
         if cropped.isNull():
             return None
-        debug_log(
-            "UI",
-            "输入栏模糊背景裁剪",
-            {
-                "global_rect": f"{global_rect.x()},{global_rect.y()} {global_rect.width()}x{global_rect.height()}",
-                "virtual_geometry": f"{virtual_geometry.x()},{virtual_geometry.y()} {virtual_geometry.width()}x{virtual_geometry.height()}",
-                "desktop_px": f"{desktop_pixmap.width()}x{desktop_pixmap.height()}",
-                "dpr": f"{desktop_pixmap.devicePixelRatio():.2f}",
-                "cropped_px": f"{cropped.width()}x{cropped.height()}",
-            },
-        )
-        # 模糊力度：radius 作用在降采样后的小图上，downscale 越大放大回来越糊。
+        # 模糊背景裁剪：用降采样再放大实现毛玻璃效果。
         return make_blurred_pixmap(cropped, radius=4.0, downscale=2)
 
     def _cursor_in_pet_region(self) -> bool:
         if not self._input_bar_foreground_allowed():
             return False
+        # 快速路径：离开窗口后 leaveEvent 已将 _cursor_in_window 置 False，
+        # 绕开 Wayland 上 QCursor.pos() 离开窗口后返回陈旧坐标的问题。
+        if not self._cursor_in_window:
+            return False
         # 单窗口重构后气泡/输入栏已并入主窗口，主窗口几何即桌宠整体区域；
         # 但只有桌宠实际位于光标下方时才视为悬停，避免窗口被其他软件遮挡时误触发输入栏浮现。
         pos = QCursor.pos()
-        return (
+        result = (
             self.isVisible()
             and self.frameGeometry().contains(pos)
             and self._cursor_over_exposed_pet_window(pos)
         )
+        return result
 
     def _cursor_over_exposed_pet_window(self, pos: QPoint) -> bool:
         """确认当前全局坐标实际命中的 Qt 窗口属于桌宠。
@@ -2651,6 +2806,7 @@ class PetWindow(QWidget):
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
             on_show_settings=self.show_settings,
+            on_quit=getattr(self, "request_quit", QApplication.quit),
         )
 
     def _refresh_tray_menu(self) -> None:
@@ -2684,10 +2840,10 @@ class PetWindow(QWidget):
         self.active_interaction_id = f"interaction-{self.interaction_sequence}"
         self.active_interaction_started_at = now
         self.active_interaction_last_at = now
-        # UI 线程后续的 debug_log 自动带上交互 ID；worker/TTS 线程由各自入口恢复
+        # UI 线程后续的 log_event 自动带上交互 ID；worker/TTS 线程由各自入口恢复
         set_interaction_id(self.active_interaction_id)
         self.ui_state.begin_thinking(source)
-        debug_log(
+        log_event(
             "Latency",
             "输入事件开始",
             {
@@ -2700,21 +2856,12 @@ class PetWindow(QWidget):
 
     def _log_input_key_event(self, event: object) -> None:
         self._mark_user_activity()
-        key_event = event if isinstance(event, QKeyEvent) else None
-        debug_log(
-            "Input",
-            "输入框按键事件",
-            {
-                "key": int(key_event.key()) if key_event is not None else "",
-                "text": key_event.text() if key_event is not None else "",
-                "modifiers": str(key_event.modifiers()) if key_event is not None else "",
-                "input_chars": len(self.input_edit.text()),
-                "worker_busy": self.worker_thread is not None,
-            },
-        )
 
     def _log_interaction_stage(self, stage: str, data: dict[str, Any] | None = None) -> None:
         if not self.active_interaction_id or self.active_interaction_started_at is None:
+            return
+        stage_label = _INTERACTION_STAGE_LABELS.get(stage)
+        if stage_label is None:
             return
         now = time.perf_counter()
         previous = self.active_interaction_last_at or self.active_interaction_started_at
@@ -2722,12 +2869,14 @@ class PetWindow(QWidget):
         payload: dict[str, Any] = {
             "interaction_id": self.active_interaction_id,
             "stage": stage,
+            "stage_label": stage_label,
             "elapsed_ms": int((now - self.active_interaction_started_at) * 1000),
             "delta_ms": int((now - previous) * 1000),
         }
         if data:
-            payload.update(data)
-        debug_log("Latency", "交互阶段", payload)
+            for key, value in data.items():
+                payload["detail_stage" if key == "stage" else key] = value
+        log_event("Latency", "交互阶段", payload, event=INTERACTION_STAGE_EVENT)
 
     def _end_interaction(self, outcome: str) -> None:
         self._log_interaction_stage("interaction_finished", {"outcome": outcome})
@@ -2782,12 +2931,12 @@ class PetWindow(QWidget):
             show_themed_information(self, "截图已关闭", "请先在设置中开启屏幕观察权限。")
             return
 
-        debug_log("PetWindow", "开始手动框选截图")
+        log_event("PetWindow", "开始手动框选截图")
         QTimer.singleShot(120, self._show_manual_screenshot_overlay)
 
     def _show_manual_screenshot_overlay(self) -> None:
         try:
-            desktop_pixmap, virtual_geometry = self._capture_virtual_desktop_pixmap()
+            desktop_capture = self._capture_virtual_desktop()
         except RuntimeError as exc:
             show_themed_warning(
                 self,
@@ -2798,20 +2947,25 @@ class PetWindow(QWidget):
                     exc,
                 ),
             )
-            debug_log("PetWindow", "手动框选截图启动失败", {"error": str(exc)})
+            log_event("PetWindow", "手动框选截图启动失败", {"error": str(exc)})
             return
 
-        overlay = ManualScreenshotOverlay(desktop_pixmap, virtual_geometry)
+        overlay = ManualScreenshotOverlay(desktop_capture)
         overlay.selected.connect(self._handle_manual_screenshot_selected)
         overlay.cancelled.connect(self._handle_manual_screenshot_cancelled)
         overlay.destroyed.connect(self._clear_manual_screenshot_overlay_ref)
         self.manual_screenshot_overlay = overlay
-        overlay.show()
-        overlay.raise_()
-        overlay.activateWindow()
+        # 截图覆盖层与设置/历史等副窗口共用置顶抑制生命周期。Windows 原生置顶
+        # 生效时，仅给覆盖层设置 WindowStaysOnTopHint 仍可能被桌宠及独立渲染层盖住；
+        # 显示前先临时压低桌宠，覆盖层销毁后再按用户配置恢复。
+        self._register_secondary_window(overlay)
+        self._present_registered_secondary_window(overlay)
 
     def _capture_virtual_desktop_pixmap(self) -> tuple[QPixmap, QRect]:
         return capture_virtual_desktop_pixmap()
+
+    def _capture_virtual_desktop(self) -> VirtualDesktopCapture:
+        return capture_virtual_desktop()
 
     @Slot(object)
     def _handle_manual_screenshot_selected(self, pixmap: QPixmap) -> None:
@@ -2842,7 +2996,7 @@ class PetWindow(QWidget):
     def _finish_manual_screen_observation(self, observation: ScreenObservation) -> None:
         self.pending_manual_screen_observation = observation
         self._update_manual_screenshot_button()
-        debug_log(
+        log_event(
             "PetWindow",
             "手动框选截图已附加到下一条消息",
             {
@@ -2858,18 +3012,21 @@ class PetWindow(QWidget):
     def _handle_manual_screenshot_cancelled(self) -> None:
         self.show()
         self.raise_()
-        debug_log("PetWindow", "手动框选截图已取消")
+        log_event("PetWindow", "手动框选截图已取消")
 
     @Slot()
     def _clear_manual_screenshot_overlay_ref(self) -> None:
+        overlay = self.manual_screenshot_overlay
         self.manual_screenshot_overlay = None
+        if overlay is not None:
+            self._release_secondary_window(overlay)
 
     def _clear_manual_screen_observation(self) -> None:
         if self.pending_manual_screen_observation is None:
             return
         self.pending_manual_screen_observation = None
         self._update_manual_screenshot_button()
-        debug_log("PetWindow", "待发送手动截图已清除")
+        log_event("PetWindow", "待发送手动截图已清除")
 
     def _update_manual_screenshot_button(self) -> None:
         attached = self.pending_manual_screen_observation is not None
@@ -2900,7 +3057,7 @@ class PetWindow(QWidget):
             },
         )
         if (not text and manual_observation is None) or self.worker_thread is not None:
-            debug_log(
+            log_event(
                 "PetWindow",
                 "发送消息被忽略",
                 {
@@ -2976,7 +3133,7 @@ class PetWindow(QWidget):
                 runtime_event_queue.drain(),
             )
         request_messages = trim_messages_for_model(request_messages)
-        debug_log(
+        log_event(
             "PetWindow",
             "用户消息入队",
             {
@@ -2995,15 +3152,7 @@ class PetWindow(QWidget):
             },
         )
         self._record_user_message(recorded_user_text)
-        clear_screen_awareness_batch = getattr(
-            self,
-            "_clear_screen_awareness_context_batch",
-            None,
-        )
-        if callable(clear_screen_awareness_batch):
-            clear_screen_awareness_batch("sent_user_message")
-        else:
-            self._clear_proactive_screen_context_batch("sent_user_message")
+        self._clear_screen_awareness_context_batch("sent_user_message")
         if manual_observation is not None:
             self.pending_manual_screen_observation = None
             self._update_manual_screenshot_button()
@@ -3017,13 +3166,14 @@ class PetWindow(QWidget):
 
     def _show_waiting_reply_placeholder(self) -> None:
         """显示模型回复等待动效，并阻止自动隐藏在等待期间藏起气泡。"""
-        self._set_reply_waiting_ui(True)
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.notify_speaking()
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is None:
             return
+        if subtitle_controller.is_reply_sequence_active():
+            subtitle_controller.cancel_reply_flow()
         start_waiting_indicator = getattr(subtitle_controller, "start_waiting_indicator", None)
         if callable(start_waiting_indicator):
             start_waiting_indicator()
@@ -3035,7 +3185,7 @@ class PetWindow(QWidget):
         self.pending_visual_observation_jobs = []
         self._set_busy(True)
         self._log_interaction_stage("ui_busy_enabled")
-        debug_log(
+        log_event(
             "PetWindow",
             "启动聊天 Worker",
             {
@@ -3083,7 +3233,7 @@ class PetWindow(QWidget):
                 "metadata": progress.metadata,
             },
         )
-        debug_log(
+        log_event(
             "PetWindow",
             "收到 Agent 中间回复",
             {
@@ -3117,7 +3267,7 @@ class PetWindow(QWidget):
                 "actions": [action.type for action in result.actions],
             },
         )
-        debug_log(
+        log_event(
             "PetWindow",
             "收到 Agent 回复",
             {
@@ -3154,8 +3304,15 @@ class PetWindow(QWidget):
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
-        if not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions):
+        screen_action = next(
+            (action for action in result.actions if action.type == SCREEN_OBSERVATION_REQUEST_ACTION),
+            None,
+        )
+        if screen_action is None:
             return False
+        continuation_messages = screen_action.payload.get("continuation_messages", [])
+        if not isinstance(continuation_messages, list):
+            continuation_messages = []
         if (
             not self.screen_observation_enabled
             or not self.model_vision_enabled
@@ -3169,7 +3326,7 @@ class PetWindow(QWidget):
                     "autonomous_screen_observation_enabled": self.autonomous_screen_observation_enabled,
                 },
             )
-            debug_log(
+            log_event(
                 "PetWindow",
                 "屏幕观察请求被禁用",
                 {
@@ -3183,7 +3340,7 @@ class PetWindow(QWidget):
         user_message_index = _last_user_message_index(self.messages)
         if user_message_index is None:
             self._log_interaction_stage("screen_observation_missing_user_message")
-            debug_log("PetWindow", "屏幕观察缺少可关联用户消息")
+            log_event("PetWindow", "屏幕观察缺少可关联用户消息")
             self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的用户消息。"))
             return True
 
@@ -3194,7 +3351,7 @@ class PetWindow(QWidget):
         except RuntimeError as exc:
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("screen_observation_failed", {"error": str(exc)})
-            debug_log("PetWindow", "屏幕观察失败", {"error": str(exc)})
+            log_event("PetWindow", "屏幕观察失败", {"error": str(exc)})
             self._consume_agent_result(_build_screen_observation_failed_result(str(exc)))
             return True
         if not self._start_screen_observation_encode(
@@ -3203,6 +3360,7 @@ class PetWindow(QWidget):
                 "kind": "chat_followup",
                 "user_message_index": user_message_index,
                 "text": text,
+                "continuation_messages": continuation_messages,
             },
         ):
             self.screen_observation_followup_in_progress = False
@@ -3217,6 +3375,9 @@ class PetWindow(QWidget):
     ) -> None:
         user_message_index = int(context.get("user_message_index", -1))
         text = str(context.get("text", ""))
+        continuation_messages = context.get("continuation_messages", [])
+        if not isinstance(continuation_messages, list):
+            continuation_messages = []
         if user_message_index < 0 or user_message_index >= len(self.messages):
             self.screen_observation_followup_in_progress = False
             self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的用户消息。"))
@@ -3241,11 +3402,12 @@ class PetWindow(QWidget):
         ]
         # 截图消息包含 base64，必须作为本次 follow-up 的最后一条消息保留。
         # 中间进度回复已经展示给用户，不再放入这次入模上下文，避免字符裁剪丢掉截图。
+        continuation_base = continuation_messages or self.messages[:user_message_index]
         self.pending_screen_observation_messages = trim_messages_for_model(
-            [*self.messages[:user_message_index], observed_message]
+            [*continuation_base, observed_message]
         )
         self.screen_observation_followup_in_progress = False
-        debug_log(
+        log_event(
             "PetWindow",
             "屏幕观察 follow-up 已排队",
             {
@@ -3272,7 +3434,6 @@ class PetWindow(QWidget):
         self,
         result: AgentResult,
         event: AgentEvent | None,
-        reminder_id: str | None,
     ) -> bool:
         screen_action = _first_screen_observation_request(result)
         if screen_action is None:
@@ -3305,7 +3466,7 @@ class PetWindow(QWidget):
         except RuntimeError as exc:
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("event_screen_observation_failed", {"error": str(exc)})
-            debug_log("PetWindow", "主动事件屏幕观察失败", {"error": str(exc)})
+            log_event("PetWindow", "主动事件屏幕观察失败", {"error": str(exc)})
             self._consume_agent_result(_build_screen_observation_failed_result(str(exc)))
             return True
         if not self._start_screen_observation_encode(
@@ -3313,7 +3474,6 @@ class PetWindow(QWidget):
             {
                 "kind": "event_followup",
                 "event": event,
-                "reminder_id": reminder_id,
                 "reason": reason,
                 **self._screen_awareness_encode_options(),
             },
@@ -3334,8 +3494,6 @@ class PetWindow(QWidget):
             self._consume_agent_result(_build_screen_observation_failed_result("缺少可关联的主动事件。"))
             self._resume_screen_observation_followup_cleanup()
             return
-        reminder_id = context.get("reminder_id")
-        reminder_id = reminder_id if isinstance(reminder_id, str) else None
         reason = str(context.get("reason", "")).strip()
         payload = dict(event.payload)
         payload["screen_context"] = {
@@ -3348,7 +3506,6 @@ class PetWindow(QWidget):
         payload["screen_observation_requested_by_model"] = True
         payload["screen_observation_reason"] = reason
         self.pending_screen_observation_event = AgentEvent(type=event.type, payload=payload)
-        self.pending_screen_observation_event_reminder_id = reminder_id
         self.screen_observation_followup_in_progress = False
         visual_id = generate_visual_observation_id()
         self.pending_event_visual_observation_jobs = [
@@ -3361,7 +3518,7 @@ class PetWindow(QWidget):
             ),
         ]
         self._record_history("system", append_observation_marker("", observation, visual_id).strip())
-        debug_log(
+        log_event(
             "PetWindow",
             "主动事件屏幕观察 follow-up 已排队",
             {
@@ -3424,7 +3581,7 @@ class PetWindow(QWidget):
             self._finish_chat_screen_observation_followup(context, observation)
         elif kind == "event_followup":
             self._finish_event_screen_observation_followup(context, observation)
-        elif kind in {"screen_awareness_context", "proactive_context"}:
+        elif kind == "screen_awareness_context":
             self._finish_screen_awareness_context(context, observation)
         elif kind == "manual":
             self._finish_manual_screen_observation(observation)
@@ -3438,17 +3595,17 @@ class PetWindow(QWidget):
         if kind == "chat_followup":
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("screen_observation_failed", {"error": message})
-            debug_log("PetWindow", "屏幕观察失败", {"error": message})
+            log_event("PetWindow", "屏幕观察失败", {"error": message})
             self._consume_agent_result(_build_screen_observation_failed_result(message))
             self._resume_screen_observation_followup_cleanup()
         elif kind == "event_followup":
             self.screen_observation_followup_in_progress = False
             self._log_interaction_stage("event_screen_observation_failed", {"error": message})
-            debug_log("PetWindow", "主动事件屏幕观察失败", {"error": message})
+            log_event("PetWindow", "主动事件屏幕观察失败", {"error": message})
             self._consume_agent_result(_build_screen_observation_failed_result(message))
             self._resume_screen_observation_followup_cleanup()
-        elif kind in {"screen_awareness_context", "proactive_context"}:
-            debug_log("ScreenAwareness", "主动屏幕上下文编码失败", {"error": message})
+        elif kind == "screen_awareness_context":
+            log_event("ScreenAwareness", "主动屏幕上下文编码失败", {"error": message})
         elif kind == "manual":
             show_themed_warning(
                 self,
@@ -3459,17 +3616,13 @@ class PetWindow(QWidget):
                     message,
                 ),
             )
-            debug_log("PetWindow", "手动框选截图编码失败", {"error": message})
+            log_event("PetWindow", "手动框选截图编码失败", {"error": message})
 
     @Slot(object)
     def _handle_screen_observation_encode_cancelled(self, context: dict[str, Any]) -> None:
         if context.get("kind") in {"chat_followup", "event_followup"}:
             self.screen_observation_followup_in_progress = False
             self._resume_screen_observation_followup_cleanup()
-
-    def _retain_qobject_wrappers_until_deleted(self, *objects: QObject | None) -> None:
-        """委托资源管理器保留退役 wrapper，避开 Shiboken 双重析构窗口。"""
-        self.resource_manager.retain_wrappers(*objects)
 
     def _resume_screen_observation_followup_cleanup(self) -> None:
         if getattr(self, "_shutdown_in_progress", False):
@@ -3596,7 +3749,7 @@ class PetWindow(QWidget):
             try:
                 self._set_pending_tool_action(PendingToolAction.from_dict(action.payload))
             except ValueError as exc:
-                debug_log("Tool", "待确认动作无效", {"error": str(exc)})
+                log_event("Tool", "待确认动作无效", {"error": str(exc)})
             return
         self._set_pending_tool_action(None)
 
@@ -3607,15 +3760,16 @@ class PetWindow(QWidget):
         if hasattr(self, "input_bar_animator"):
             self.input_bar_animator.sync()
         panel_state = self.tool_confirmation_panel.state_snapshot()
-        debug_log(
-            "PetWindow",
-            "待确认动作 UI 状态已更新",
-            {
-                "has_action": has_action,
-                "tool_name": action.tool_name if action is not None else "",
-                **panel_state,
-            },
-        )
+        if has_action:
+            log_event(
+                "PetWindow",
+                "待确认动作 UI 状态已更新",
+                {
+                    "has_action": True,
+                    "tool_name": action.tool_name,
+                    **panel_state,
+                },
+            )
 
     def _clear_queued_reply_segments_for_action_resolution(self) -> None:
         self.subtitle_controller.clear_queued_reply_segments_for_action_resolution()
@@ -3648,8 +3802,7 @@ class PetWindow(QWidget):
             return False
         if (
             self.worker_thread is not None
-            or self.active_reminder_id is not None
-            or self.active_event_type
+            or self.active_event is not None
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
@@ -3670,10 +3823,7 @@ class PetWindow(QWidget):
         return True
 
     def _current_screen_awareness_settings(self) -> Any:
-        settings = getattr(self, "screen_awareness_settings", None)
-        if settings is not None:
-            return settings
-        return getattr(self, "proactive_care_settings")
+        return self.screen_awareness_settings
 
     def _should_capture_screen_awareness_context(self, now: float) -> bool:
         settings = self._current_screen_awareness_settings()
@@ -3696,7 +3846,7 @@ class PetWindow(QWidget):
         try:
             captured = capture_screen_image(self)
         except RuntimeError as exc:
-            debug_log("ScreenAwareness", "主动屏幕上下文获取失败", {"error": str(exc)})
+            log_event("ScreenAwareness", "主动屏幕上下文获取失败", {"error": str(exc)})
             return
         if not self._start_screen_observation_encode(
             captured,
@@ -3706,7 +3856,7 @@ class PetWindow(QWidget):
                 **self._screen_awareness_encode_options(),
             },
         ):
-            debug_log("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次截图")
+            log_event("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次截图")
             return
 
     def _finish_screen_awareness_context(
@@ -3732,17 +3882,24 @@ class PetWindow(QWidget):
         while len(self.screen_awareness_contexts) > batch_limit:
             self.screen_awareness_contexts.pop(0)
             self.screen_awareness_context_dropped_count += 1
-        debug_log(
+        batch_count = len(self.screen_awareness_contexts)
+        screen_name = observation.screen_name or "screen"
+        resolution = f"{observation.width}x{observation.height}"
+        log_event(
             "ScreenAwareness",
             "主动屏幕上下文已缓存",
             {
+                "screen": f"{screen_name} {resolution}",
+                "screen_name": screen_name,
+                "resolution": resolution,
                 "width": observation.width,
                 "height": observation.height,
                 "captured_at": observation.captured_at,
-                "screen_name": observation.screen_name,
-                "batch_count": len(self.screen_awareness_contexts),
+                "batch": f"{batch_count}/{batch_limit}",
+                "batch_count": batch_count,
+                "batch_limit": batch_limit,
                 "dropped_count": self.screen_awareness_context_dropped_count,
-                "image": observation.data_url,
+                "image_chars": len(observation.data_url),
             },
         )
 
@@ -3778,7 +3935,7 @@ class PetWindow(QWidget):
             payload["screen_contexts"] = screen_contexts
             payload["screen_context_window_started_at"] = screen_contexts[0].get("captured_at", "")
             payload["screen_context_window_ended_at"] = screen_contexts[-1].get("captured_at", "")
-            debug_log(
+            log_event(
                 "ScreenAwareness",
                 "主动屏幕上下文批次已附加",
                 {
@@ -3794,8 +3951,12 @@ class PetWindow(QWidget):
         return self._current_screen_awareness_settings().allows_screen_context()
 
     def _screen_awareness_encode_options(self) -> dict[str, Any]:
+        resolution = (
+            self._current_screen_awareness_settings().normalized().screen_context_resolution
+        )
         return {
-            "preserve_original_resolution": True,
+            "screen_context_resolution": resolution,
+            "preserve_original_resolution": resolution == "fullscreen",
             "detail": SCREEN_AWARENESS_IMAGE_DETAIL,
         }
 
@@ -3814,214 +3975,23 @@ class PetWindow(QWidget):
         self.last_screen_awareness_context_at = None
         self.screen_awareness_context_dropped_count = 0
         if had_batch:
-            debug_log("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
+            log_event("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
 
-    # 兼容旧方法名；新代码请使用 screen_awareness 命名。
-    def _check_proactive_care(self) -> None:
+    def _run_event_worker(self, event: AgentEvent) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        if not self._can_run_proactive_care():
-            return
-
-        now = time.perf_counter()
-        if self._should_capture_proactive_screen_context(now):
-            self._capture_proactive_screen_context(now)
-        if not self._should_send_proactive_care_batch(now):
-            return
-
-        event = self._build_proactive_care_event(now)
-        self.pending_event_visual_observation_jobs = [
-            *getattr(self, "pending_event_visual_observation_jobs", []),
-            *_build_screen_awareness_visual_observation_jobs(event),
-        ]
-        self.last_proactive_care_at = now
-        self._record_history("system", SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER)
-        self._clear_proactive_screen_context_batch("sent")
-        self._run_event_worker(event)
-
-    def _can_run_proactive_care(self) -> bool:
-        if not self._proactive_screen_context_allowed():
-            return False
-        if (
-            self.worker_thread is not None
-            or self.active_reminder_id is not None
-            or self.active_event_type
-            or self.pending_tool_action is not None
-            or self.pending_screen_observation_messages is not None
-            or self.screen_observation_followup_in_progress
-            or self.screen_observation_encode_thread is not None
-            or self.active_interaction_id
-        ):
-            return False
-        if self.input_edit.text().strip() or self.speech_timer.isActive():
-            return False
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.current_segment_in_progress():
-            return False
-        if subtitle_controller is None and getattr(self, "current_segment_sequence_id", None) is not None and (
-            not getattr(self, "current_segment_speech_done", True)
-            or not getattr(self, "current_segment_tts_done", True)
-        ):
-            return False
-        return True
-
-    def _should_capture_proactive_screen_context(self, now: float) -> bool:
-        settings = PetWindow._current_screen_awareness_settings(self)
-        check_interval_seconds = settings.check_interval_minutes * 60
-        seconds_since_pet_interaction = now - self.last_user_activity_at
-        if (
-            seconds_since_pet_interaction + SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS
-            < check_interval_seconds
-        ):
-            return False
-        if self.last_proactive_screen_context_at is None:
-            return True
-        return (
-            now - self.last_proactive_screen_context_at + SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS
-            >= check_interval_seconds
-        )
-
-    def _capture_proactive_screen_context(self, now: float) -> None:
-        self.last_proactive_screen_context_at = now
-        try:
-            captured = capture_screen_image(self)
-        except RuntimeError as exc:
-            debug_log("ScreenAwareness", "主动屏幕上下文获取失败", {"error": str(exc)})
-            return
-        if not self._start_screen_observation_encode(
-            captured,
-            {
-                "kind": "screen_awareness_context",
-                "captured_at_monotonic": now,
-                **self._screen_awareness_encode_options(),
-            },
-        ):
-            debug_log("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次截图")
-            return
-
-    def _finish_proactive_screen_context(
-        self,
-        context_data: dict[str, Any],
-        observation: ScreenObservation,
-    ) -> None:
-        captured_at_monotonic = context_data.get("captured_at_monotonic")
-        if not isinstance(captured_at_monotonic, (int, float)):
-            captured_at_monotonic = time.perf_counter()
-        context = {
-            "data_url": observation.data_url,
-            "width": observation.width,
-            "height": observation.height,
-            "captured_at": observation.captured_at,
-            "screen_name": observation.screen_name,
-        }
-        if not self.proactive_screen_contexts:
-            self.proactive_screen_context_batch_started_at = float(captured_at_monotonic)
-        self.proactive_screen_contexts.append(context)
-        batch_limit = (
-            PetWindow._current_screen_awareness_settings(self)
-            .normalized()
-            .screen_context_batch_limit
-        )
-        while len(self.proactive_screen_contexts) > batch_limit:
-            self.proactive_screen_contexts.pop(0)
-            self.proactive_screen_context_dropped_count += 1
-        debug_log(
-            "ScreenAwareness",
-            "主动屏幕上下文已缓存",
-            {
-                "width": observation.width,
-                "height": observation.height,
-                "captured_at": observation.captured_at,
-                "screen_name": observation.screen_name,
-                "batch_count": len(self.proactive_screen_contexts),
-                "dropped_count": self.proactive_screen_context_dropped_count,
-                "image": observation.data_url,
-            },
-        )
-
-    def _should_send_proactive_care_batch(self, now: float) -> bool:
-        if not self.proactive_screen_contexts:
-            return False
-        if self.proactive_screen_context_batch_started_at is None:
-            return False
-        return (
-            now - self.proactive_screen_context_batch_started_at
-            >= PetWindow._current_screen_awareness_settings(self).cooldown_minutes * 60
-        )
-
-    def _build_proactive_care_event(self, now: float | None = None) -> AgentEvent:
-        now = time.perf_counter() if now is None else now
-        screen_contexts = [dict(context) for context in self.proactive_screen_contexts]
-        settings = PetWindow._current_screen_awareness_settings(self)
-        payload: dict[str, Any] = {
-            "triggered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "seconds_since_pet_interaction": int(now - self.last_user_activity_at),
-            "check_interval_minutes": settings.check_interval_minutes,
-            "cooldown_minutes": settings.cooldown_minutes,
-            "screen_context_allowed": self._proactive_screen_context_allowed(),
-            "screen_context_count": len(screen_contexts),
-            "screen_context_dropped_count": self.proactive_screen_context_dropped_count,
-        }
-        recent_conversation = _build_screen_awareness_recent_conversation_for_window(self)
-        if recent_conversation:
-            payload["recent_conversation"] = recent_conversation
-            payload["recent_conversation_summary_hint"] = (
-                SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT
-            )
-        if screen_contexts:
-            payload["screen_contexts"] = screen_contexts
-            payload["screen_context_window_started_at"] = screen_contexts[0].get("captured_at", "")
-            payload["screen_context_window_ended_at"] = screen_contexts[-1].get("captured_at", "")
-            debug_log(
-                "ScreenAwareness",
-                "主动屏幕上下文批次已附加",
-                {
-                    "batch_count": len(screen_contexts),
-                    "dropped_count": self.proactive_screen_context_dropped_count,
-                    "started_at": payload["screen_context_window_started_at"],
-                    "ended_at": payload["screen_context_window_ended_at"],
-                },
-            )
-        return AgentEvent(type=LEGACY_PROACTIVE_EVENT_TYPE, payload=payload)
-
-    def _proactive_screen_context_allowed(self) -> bool:
-        return PetWindow._current_screen_awareness_settings(self).allows_screen_context()
-
-    def _sync_proactive_care_timer(self) -> None:
-        if self._proactive_screen_context_allowed():
-            if not self.proactive_care_timer.isActive():
-                self.proactive_care_timer.start()
-        else:
-            self.proactive_care_timer.stop()
-            self._clear_proactive_screen_context_batch("disabled")
-
-    def _clear_proactive_screen_context_batch(self, reason: str) -> None:
-        had_batch = bool(self.proactive_screen_contexts)
-        self.proactive_screen_contexts = []
-        self.proactive_screen_context_batch_started_at = None
-        self.last_proactive_screen_context_at = None
-        self.proactive_screen_context_dropped_count = 0
-        if had_batch:
-            debug_log("ScreenAwareness", "主动屏幕上下文批次已清空", {"reason": reason})
-
-    def _run_event_worker(self, event: AgentEvent, reminder_id: str | None = None) -> None:
-        if getattr(self, "startup_initializing", False):
-            return
-        if self.worker_thread is not None or self.active_reminder_id is not None or self.active_event_type:
+        if self.worker_thread is not None or self.active_event is not None:
             return
 
         self._begin_interaction(event.type)
         self._log_interaction_stage(
             "event_worker_start",
             {
-                "reminder_id": reminder_id,
+                "reminder_id": event.payload.get("id"),
                 "event": {"type": event.type, "payload": event.payload},
             },
         )
         self.active_event = event
-        self.active_event_type = event.type
-        self.active_reminder_id = reminder_id
-        self.active_reminder_text = str(event.payload.get("text", ""))
         self._set_busy(True)
         worker = EventWorker(
             self.agent_runtime,
@@ -4050,30 +4020,34 @@ class PetWindow(QWidget):
 
     @Slot(object)
     def _handle_event_reply(self, result: AgentResult) -> None:
+        self.messages = _without_transient_progress_messages(self.messages)
         if getattr(self, "_shutdown_in_progress", False):
-            self.messages = _without_transient_progress_messages(self.messages)
             self._clear_active_event()
             return
-        self.messages = _without_transient_progress_messages(self.messages)
+        event = self.active_event
+        event_type = event.type if event else ""
+        reminder_id = (
+            str(event.payload.get("id", "")).strip()
+            if event is not None and event.type == "reminder_due"
+            else ""
+        )
         self._log_interaction_stage(
             "event_result_received",
-            {"event_type": self.active_event_type, "segments": len(result.reply.segments)},
+            {"event_type": event_type, "segments": len(result.reply.segments)},
         )
-        event = self.active_event
-        reminder_id = self.active_reminder_id
-        if self._queue_event_screen_observation_followup(result, event, reminder_id):
+        if self._queue_event_screen_observation_followup(result, event):
             self._clear_active_event()
             return
         result = self._filter_screen_awareness_reply(result, event)
         self._clear_active_event()
         if not result.reply.text.strip() and not result.reply.translation.strip() and not result.actions:
             self._log_interaction_stage("event_silent", {"event_type": event.type if event else ""})
-            if reminder_id is not None:
+            if reminder_id:
                 self._mark_reminder_completed(reminder_id)
             self._end_interaction("event_silent")
             return
         self._consume_agent_result(result)
-        if reminder_id is not None:
+        if reminder_id:
             self._mark_reminder_completed(reminder_id)
 
     def _filter_screen_awareness_reply(
@@ -4089,7 +4063,7 @@ class PetWindow(QWidget):
         if not night_key:
             return result
         if self._screen_awareness_health_reminder_seen(night_key):
-            debug_log(
+            log_event(
                 "ScreenAwareness",
                 "夜间健康类主动提醒已达上限，改为屏幕内容分析",
                 {"night_key": night_key},
@@ -4137,20 +4111,20 @@ class PetWindow(QWidget):
                 backup=False,
             )
         except OSError as exc:
-            debug_log("ScreenAwareness", "主动屏幕感知状态保存失败", {"error": str(exc)})
+            log_event("ScreenAwareness", "主动屏幕感知状态保存失败", {"error": str(exc)})
 
     @Slot(str)
     def _handle_event_error(self, message: str) -> None:
         self.messages = _without_transient_progress_messages(self.messages)
-        if getattr(self, "_shutdown_in_progress", False):
-            self._clear_active_event()
-            return
-        event_type = self.active_event_type
-        self._log_interaction_stage("event_error", {"event_type": event_type, "message": message})
-        reminder_id = self.active_reminder_id
-        reminder_text = self.active_reminder_text
+        event = self.active_event
         self._clear_active_event()
-        debug_log("Event", "主动事件生成失败", {"error": message})
+        if getattr(self, "_shutdown_in_progress", False):
+            return
+        event_type = event.type if event else ""
+        self._log_interaction_stage("event_error", {"event_type": event_type, "message": message})
+        reminder_id = str(event.payload.get("id", "")).strip() if event else ""
+        reminder_text = str(event.payload.get("text", "")) if event else ""
+        log_event("Event", "主动事件生成失败", {"error": message})
         if event_type == "reminder_due":
             result = AgentResult(
                 reply=ChatReply(
@@ -4168,22 +4142,19 @@ class PetWindow(QWidget):
         elif _is_screen_awareness_event_type(event_type):
             self._log_interaction_stage("screen_awareness_error_silent")
             # 主动感知失败时静默结束本轮交互。若不结束，active_interaction_id 会一直占用，
-            # _can_run_proactive_care 会持续返回 False，导致此后不再触发任何主动感知。
+            # _can_run_screen_awareness 会持续返回 False，导致此后不再触发任何主动感知。
             self._end_interaction("screen_awareness_error_silent")
-        if reminder_id is not None:
+        if event_type == "reminder_due" and reminder_id:
             self._mark_reminder_completed(reminder_id)
 
     def _clear_active_event(self) -> None:
         self.active_event = None
-        self.active_event_type = ""
-        self.active_reminder_id = None
-        self.active_reminder_text = ""
 
     def _mark_reminder_completed(self, reminder_id: str) -> None:
         try:
             self.reminder_store.mark_completed(reminder_id)
         except ValueError as exc:
-            debug_log("Reminder", "标记完成失败", {"error": str(exc)})
+            log_event("Reminder", "标记完成失败", {"error": str(exc)})
 
     @Slot(str)
     def _handle_error(self, message: str) -> None:
@@ -4224,7 +4195,6 @@ class PetWindow(QWidget):
         if getattr(self, "_shutdown_in_progress", False):
             self.pending_screen_observation_messages = None
             self.pending_screen_observation_event = None
-            self.pending_screen_observation_event_reminder_id = None
             self.screen_observation_followup_in_progress = False
             return
         if self.screen_observation_followup_in_progress:
@@ -4241,14 +4211,12 @@ class PetWindow(QWidget):
             return
         if self.pending_screen_observation_event is not None:
             event = self.pending_screen_observation_event
-            reminder_id = self.pending_screen_observation_event_reminder_id
             self.pending_screen_observation_event = None
-            self.pending_screen_observation_event_reminder_id = None
             self._log_interaction_stage(
                 "event_screen_observation_worker_restart",
                 {"event_type": event.type},
             )
-            self._run_event_worker(event, reminder_id)
+            self._run_event_worker(event)
             return
         self._set_busy(False)
         self._log_interaction_stage("ui_busy_disabled")
@@ -4258,8 +4226,17 @@ class PetWindow(QWidget):
         if not self.memory_curation_settings.enabled:
             return
         pending_turns = self.memory_curation_state.increment_pending_turns()
-        debug_log("Memory", "自动记忆轮次已累计", {"pending_turns": pending_turns})
-        if pending_turns >= self.memory_curation_settings.trigger_turns:
+        trigger_turns = max(1, int(self.memory_curation_settings.trigger_turns))
+        log_event(
+            "Memory",
+            "自动记忆轮次已累计",
+            {
+                "pending_turns": pending_turns,
+                "trigger_turns": trigger_turns,
+                "remaining_turns": max(0, trigger_turns - pending_turns),
+            },
+        )
+        if pending_turns >= trigger_turns:
             QTimer.singleShot(0, self._maybe_start_auto_memory_curation)
 
     @Slot(object)
@@ -4299,17 +4276,19 @@ class PetWindow(QWidget):
             return
         if not self.memory_curation_settings.enabled:
             return
-        if self.memory_curation_state.pending_turns() < self.memory_curation_settings.trigger_turns:
+        trigger_turns = max(1, int(self.memory_curation_settings.trigger_turns))
+        if self.memory_curation_state.pending_turns() < trigger_turns:
             return
         if not self._memory_curation_can_start():
             return
-        entries = self.memory_curation_state.unprocessed_entries(self.history_store.load())
+        history_entries = self.history_store.load()
+        entries = self.memory_curation_state.unprocessed_entries(history_entries)
         if not entries:
             return
         self._start_memory_curation(
             entries,
             mode="auto",
-            target_history_count=len(self.history_store.load()),
+            target_history_count=len(history_entries),
             consumed_turns=self.memory_curation_state.pending_turns(),
         )
 
@@ -4354,78 +4333,160 @@ class PetWindow(QWidget):
         target_history_count: int,
         consumed_turns: int,
     ) -> None:
-        if not entries or self.memory_curation_thread is not None:
+        if not entries or self.memory_curation_thread is not None or (
+            self.memory_curation_run is not None
+        ):
             return
-        debug_log(
+        run = _MemoryCurationRunContext(
+            mode, self.character_profile.id, target_history_count, consumed_turns
+        )
+        log_event(
             "Memory",
             "启动记忆整理",
             {
-                "mode": mode,
+                "mode": run.mode,
+                "character_id": run.character_id,
                 "entry_count": len(entries),
-                "target_history_count": target_history_count,
-                "consumed_turns": consumed_turns,
+                "target_history_count": run.target_history_count,
+                "consumed_turns": run.consumed_turns,
+                "auto_attempt": self._auto_memory_curation_failure_attempts + 1
+                if run.mode == "auto"
+                else None,
+                "max_auto_attempts": MAX_AUTO_RETRY_ATTEMPTS
+                if run.mode == "auto"
+                else None,
             },
         )
-        self.memory_curation_mode = mode
-        self.memory_curation_target_history_count = target_history_count
-        self.memory_curation_consumed_turns = consumed_turns
-        worker = MemoryCurationWorker(self.memory_curator, entries)
-        self.resource_manager.spawn_qt_worker(
-            worker,
-            parent=self,
-            owner=self,
-            thread_attr="memory_curation_thread",
-            worker_attr="memory_curation_worker",
-            signal_bindings=[
-                (worker.finished, self._handle_memory_curation_finished),
-                (worker.failed, self._handle_memory_curation_failed),
-            ],
-            quit_on=[worker.finished, worker.failed, worker.cancelled],
-            on_finished=self._cleanup_memory_curation_worker,
+        worker_curator = self.memory_curator.snapshot(
+            memory_store=self.memory_store.scoped(run.character_id),
+            system_prompt=self.system_prompt,
         )
+        worker = MemoryCurationWorker(worker_curator, entries)
+        self.memory_curation_run = run
+        try:
+            self.resource_manager.spawn_qt_worker(
+                worker,
+                parent=self,
+                owner=self,
+                thread_attr="memory_curation_thread",
+                worker_attr="memory_curation_worker",
+                signal_bindings=[
+                    (worker.finished, self._handle_memory_curation_finished),
+                    (worker.failed, self._handle_memory_curation_failed),
+                ],
+                quit_on=[worker.finished, worker.failed, worker.cancelled],
+                on_finished=self._cleanup_memory_curation_worker,
+            )
+        except Exception:
+            self.memory_curation_run = None
+            raise
 
     @Slot(object)
     def _handle_memory_curation_finished(self, result: MemoryCurationResult) -> None:
-        if getattr(self, "_shutdown_in_progress", False):
+        if self._shutdown_in_progress:
             return
-        mode = self.memory_curation_mode
-        debug_log(
+        run = self.memory_curation_run
+        if run is None:
+            log_event("Memory", "记忆整理回调缺少运行上下文", {"callback": "finished"})
+            return
+        self._auto_memory_curation_failure_attempts = 0
+        self._suppress_auto_memory_curation_restart = False
+        log_event(
             "Memory",
             "记忆整理完成",
             {
-                "mode": mode,
+                "mode": run.mode,
                 "result": result,
-                "target_history_count": self.memory_curation_target_history_count,
-                "consumed_turns": self.memory_curation_consumed_turns,
+                "target_history_count": run.target_history_count,
+                "consumed_turns": run.consumed_turns,
             },
         )
+        current_character_id = self.character_profile.id
+        if run.character_id != current_character_id:
+            log_event(
+                "Memory",
+                "记忆整理完成但角色已切换，跳过进度写入",
+                {
+                    "curation_character_id": run.character_id,
+                    "current_character_id": current_character_id,
+                },
+            )
+            return
         self.memory_curation_state.mark_processed(
-            self.memory_curation_target_history_count,
-            consumed_turns=self.memory_curation_consumed_turns,
-            backfill_completed=True if mode == "backfill" else None,
+            run.target_history_count,
+            consumed_turns=run.consumed_turns,
+            backfill_completed=True if run.mode == "backfill" else None,
         )
 
     @Slot(str)
     def _handle_memory_curation_failed(self, message: str) -> None:
-        if getattr(self, "_shutdown_in_progress", False):
+        if self._shutdown_in_progress:
             return
-        debug_log(
+        run = self.memory_curation_run
+        if run is None:
+            log_event("Memory", "记忆整理回调缺少运行上下文", {"callback": "failed"})
+            return
+        attempt = 0
+        if run.mode == "auto":
+            attempt = self._auto_memory_curation_failure_attempts + 1
+            self._auto_memory_curation_failure_attempts = attempt
+        log_event(
             "Memory",
             "记忆整理失败",
             {
-                "mode": self.memory_curation_mode,
+                "mode": run.mode,
+                "attempt": attempt or None,
+                "max_attempts": MAX_AUTO_RETRY_ATTEMPTS
+                if run.mode == "auto"
+                else None,
                 "error": message,
             },
         )
+        if run.mode == "auto" and attempt >= MAX_AUTO_RETRY_ATTEMPTS:
+            consumed_turns = max(0, int(run.consumed_turns))
+            if run.character_id != self.character_profile.id:
+                log_event(
+                    "Memory",
+                    "自动记忆整理连续失败但角色已切换，跳过当前角色进度消费",
+                    {
+                        "curation_character_id": run.character_id,
+                        "current_character_id": self.character_profile.id,
+                        "attempt": attempt,
+                        "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                        "consumed_turns": consumed_turns,
+                        "error": message,
+                    },
+                )
+                self._auto_memory_curation_failure_attempts = 0
+                return
+            self.memory_curation_state.consume_pending_turns(consumed_turns)
+            self._suppress_auto_memory_curation_restart = True
+            self._auto_memory_curation_failure_attempts = 0
+            user_message = "自动记忆整理连续失败，已停止本轮，稍后会在下次整理时再试"
+            log_event(
+                "Memory",
+                "自动记忆整理连续失败",
+                {
+                    "attempt": attempt,
+                    "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                    "consumed_turns": consumed_turns,
+                    "error": message,
+                },
+            )
+            self._show_auto_memory_curation_stopped_message(user_message)
 
     @Slot()
     def _cleanup_memory_curation_worker(self) -> None:
-        self.memory_curation_mode = ""
-        self.memory_curation_target_history_count = 0
-        self.memory_curation_consumed_turns = 0
-        if getattr(self, "_shutdown_in_progress", False):
+        self.memory_curation_run = None
+        if self._shutdown_in_progress:
+            return
+        if self._suppress_auto_memory_curation_restart:
+            self._suppress_auto_memory_curation_restart = False
             return
         QTimer.singleShot(0, self._maybe_start_auto_memory_curation)
+
+    def _show_auto_memory_curation_stopped_message(self, message: str) -> None:
+        self.subtitle_controller.show_text_immediately(message)
 
     @Slot(object)
     def apply_deferred_services(self, services: "DeferredStartupServices") -> None:
@@ -4447,7 +4508,6 @@ class PetWindow(QWidget):
         self.tts_provider = services.tts_provider
         self.voice_playback_controller.set_provider(services.tts_provider)
         self._connect_tts_error_signal(services.tts_provider)
-        self._warm_up_tts_playback(services.tts_provider)
         self._start_tts_ready_warmup(services.tts_provider)
         self._prepare_backchannel_audio_cache()
         self.tool_registry = services.tool_registry
@@ -4484,7 +4544,7 @@ class PetWindow(QWidget):
         QTimer.singleShot(0, self._maybe_start_memory_backfill)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
-        debug_log(
+        log_event(
             "Startup",
             "后台启动服务已注入窗口",
             {
@@ -4495,7 +4555,7 @@ class PetWindow(QWidget):
             },
         )
         for error in services.errors:
-            debug_log("Startup", "后台初始化错误", {"error": error})
+            log_event("Startup", "后台初始化错误", {"error": error})
             if error.startswith("TTS"):
                 self._show_tts_error(error)
 
@@ -4510,32 +4570,32 @@ class PetWindow(QWidget):
         self._set_busy(False)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
-        debug_log("Startup", "后台启动服务失败", {"error": error})
-        debug_log("Startup", "后台初始化失败", {"error": error})
+        log_event("Startup", "后台启动服务失败", {"error": error})
+        log_event("Startup", "后台初始化失败", {"error": error})
 
     def _close_deferred_services(self, services: "DeferredStartupServices") -> None:
-        debug_log("Startup", "关闭期间收到后台启动结果，立即释放服务")
+        log_event("Startup", "关闭期间收到后台启动结果，立即释放服务")
         for provider in (getattr(services, "tts_provider", None),):
             close = getattr(provider, "close", None)
             if callable(close):
                 try:
                     close()
                 except Exception as exc:  # noqa: BLE001
-                    debug_log("TTS", "关闭延迟启动 TTS Provider 失败", {"error": str(exc)})
+                    log_event("TTS", "关闭延迟启动 TTS Provider 失败", {"error": str(exc)})
         mcp_tool_provider = getattr(services, "mcp_tool_provider", None)
         close_mcp = getattr(mcp_tool_provider, "close", None)
         if callable(close_mcp):
             try:
                 close_mcp()
             except Exception as exc:  # noqa: BLE001
-                debug_log("MCP", "关闭延迟启动 MCP Provider 失败", {"error": str(exc)})
+                log_event("MCP", "关闭延迟启动 MCP Provider 失败", {"error": str(exc)})
         plugin_manager = getattr(services, "plugin_manager", None)
         shutdown_all = getattr(plugin_manager, "shutdown_all", None)
         if callable(shutdown_all):
             try:
                 shutdown_all()
             except Exception as exc:  # noqa: BLE001
-                debug_log("PluginManager", "关闭延迟启动插件失败", {"error": str(exc)})
+                log_event("PluginManager", "关闭延迟启动插件失败", {"error": str(exc)})
 
     def _wire_plugin_service_backends(self) -> None:
         """把宿主真实后端注入插件服务门面（当前：输入框填充）。
@@ -4555,7 +4615,7 @@ class PetWindow(QWidget):
                 mobile_theme_sink=self._mobile_theme,
             )
         except Exception as exc:  # noqa: BLE001 — 装配失败不得阻断启动
-            debug_log("PetWindow", "注入插件服务后端失败", {"error": str(exc)})
+            log_event("PetWindow", "注入插件服务后端失败", {"error": str(exc)})
 
     def _mobile_characters(self) -> list[dict[str, str]]:
         return self.mobile_chat_bridge.characters()
@@ -4590,20 +4650,16 @@ class PetWindow(QWidget):
         return result
 
     def _mobile_chat_busy(self) -> bool:
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        is_reply_sequence_active = getattr(subtitle_controller, "is_reply_sequence_active", None)
-        reply_sequence_active = callable(is_reply_sequence_active) and bool(is_reply_sequence_active())
         return bool(
             self.worker_thread is not None
             or self._active_mobile_chat_request is not None
             or self._mobile_chat_requests
-            or self.active_reminder_id is not None
-            or self.active_event_type
+            or self.active_event is not None
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
             or self.screen_observation_encode_thread is not None
-            or reply_sequence_active
+            or self.subtitle_controller.is_reply_sequence_active()
         )
 
     @Slot(object)
@@ -4670,7 +4726,7 @@ class PetWindow(QWidget):
             self.input_edit.setFocus()
         except RuntimeError as exc:
             # 输入控件可能已被销毁
-            debug_log("PetWindow", "填入插件输入文本失败", {"error": str(exc)})
+            log_event("PetWindow", "填入插件输入文本失败", {"error": str(exc)})
 
     def _sync_plugin_chat_ui_widgets(self) -> None:
         layout = self.input_bar.layout() if hasattr(self, "input_bar") else None
@@ -4713,7 +4769,7 @@ class PetWindow(QWidget):
         try:
             connect(self._show_tts_error)
         except (TypeError, RuntimeError) as exc:
-            debug_log("TTS", "连接 TTS 错误提示信号失败", {"error": str(exc)})
+            log_event("TTS", "连接 TTS 错误提示信号失败", {"error": str(exc)})
 
     def _disconnect_tts_error_signal(self, provider: TTSProvider) -> None:
         error_signal = getattr(provider, "error_occurred", None)
@@ -4725,37 +4781,18 @@ class PetWindow(QWidget):
         except (TypeError, RuntimeError):
             pass
 
-    def _warm_up_current_tts_playback(self) -> None:
-        self._warm_up_tts_playback(self.tts_provider)
-
-    def _warm_up_tts_playback(self, provider: TTSProvider) -> None:
-        warm_up = getattr(provider, "warm_up_playback", None)
-        if not callable(warm_up):
-            return
-        try:
-            warm_up()
-        except Exception as exc:  # noqa: BLE001
-            debug_log(
-                "TTS",
-                "播放器预热请求失败",
-                {
-                    "provider": type(provider).__name__,
-                    "error": str(exc),
-                },
-            )
-
     def _start_current_tts_ready_warmup(self) -> None:
         self._start_tts_ready_warmup(self.tts_provider)
 
     def _start_tts_ready_warmup(self, provider: TTSProvider) -> None:
         if isinstance(provider, NullTTSProvider):
-            debug_log("TTS", "TTS 已关闭，跳过服务预热")
+            log_event("TTS", "TTS 已关闭，跳过服务预热")
             return
         ensure_ready = getattr(provider, "ensure_ready", None)
         if not callable(ensure_ready):
             return
         if self.tts_ready_warmup_thread is not None:
-            debug_log("TTS", "TTS 服务预热已在进行，跳过重复请求")
+            log_event("TTS", "TTS 服务预热已在进行，跳过重复请求")
             return
 
         worker = TTSReadyWarmupWorker(provider)
@@ -4796,6 +4833,7 @@ class PetWindow(QWidget):
         for provider, keep_local_service in pending:
             self._close_retired_tts_provider(provider, keep_local_service=keep_local_service)
 
+
     def _apply_startup_initializing_state(self) -> None:
         self.input_edit.setPlaceholderText(STARTUP_INITIALIZING_TEXT)
         self._set_busy(True)
@@ -4818,9 +4856,7 @@ class PetWindow(QWidget):
             self.send_button.setText("初始化")
         else:
             self.send_button.setText("等待" if busy else "发送")
-            set_reply_waiting_ui = getattr(self, "_set_reply_waiting_ui", None)
-            if callable(set_reply_waiting_ui):
-                set_reply_waiting_ui(busy)
+            self._sync_reply_waiting_ui(busy)
         self._log_interaction_stage("set_busy", {"busy": busy})
         update_reply_history_buttons = getattr(self, "_update_reply_history_buttons", None)
         if update_reply_history_buttons is not None:
@@ -4837,14 +4873,14 @@ class PetWindow(QWidget):
         try:
             add_listener(self.memory_status_changed.emit)
         except (TypeError, RuntimeError) as exc:
-            debug_log("Memory", "连接长期记忆状态监听失败", {"error": str(exc)})
+            log_event("Memory", "连接长期记忆状态监听失败", {"error": str(exc)})
 
     @Slot(str, str)
     def _handle_memory_status_changed(self, status: str, message: str) -> None:
         message = str(message).strip()
         if not message:
             return
-        debug_log("Memory", "长期记忆状态变化", {"status": status, "message": message})
+        log_event("Memory", "长期记忆状态变化", {"status": status, "message": message})
         if status in {"loading", "reloading", "failed"}:
             self._show_memory_status_message(status, message)
             return
@@ -4952,7 +4988,7 @@ class PetWindow(QWidget):
         self.tts_error_label.setVisible(True)
         self.tts_error_timer.start(TTS_ERROR_DISPLAY_MS)
         self._log_interaction_stage("tts_error_visible", {"message": message})
-        debug_log("TTS", "TTS 错误已显示到界面", {"message": message})
+        log_event("TTS", "TTS 错误已显示到界面", {"message": message})
 
     @Slot()
     def _hide_tts_error(self) -> None:
@@ -5022,7 +5058,7 @@ class PetWindow(QWidget):
             log.append(event)
         if inject:
             self.runtime_event_queue.push(event)
-        debug_log("PetWindow", "运行时事件", {"event": event.to_dict(), "inject": inject})
+        log_event("PetWindow", "运行时事件", {"event": event.to_dict(), "inject": inject})
 
     def _handle_application_activated(self) -> None:
         if getattr(self, "hidden_to_tray", False):
@@ -5061,10 +5097,29 @@ class PetWindow(QWidget):
     def show_settings(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        active_dialog = getattr(self, "settings_dialog", None)
-        if active_dialog is not None:
-            self._activate_settings_dialog(active_dialog)
+        active_process = getattr(self, "tauri_settings_process", None)
+        if active_process is not None:
+            # 设置页已在独立进程中打开（可能被最小化），右键唤起时还原并前置它，
+            # 而不是静默返回让用户找不回窗口。
+            if not active_process.focus_window():
+                show_themed_warning(self, "无法打开设置", "设置窗口无法恢复，请关闭后重试。")
             return
+        if self._try_show_tauri_settings():
+            return
+        # Tauri-only：二进制缺失或启动失败时不再回退 Qt 弹窗，给出明确提示。
+        show_themed_warning(
+            self,
+            "无法打开设置",
+            "设置程序（sakura-settings）未找到或启动失败。\n"
+            "请确认已构建 tools/settings-tauri，或用环境变量 "
+            "SAKURA_TAURI_SETTINGS_BIN 指定可执行文件路径。",
+        )
+
+    def _try_show_tauri_settings(self) -> bool:
+        if resolve_tauri_settings_binary(self.base_dir) is None:
+            return False
+        settings = self.screen_awareness_settings
+        api_settings = getattr(getattr(self, "api_client", None), "settings", None)
         try:
             tts_settings = self.settings_service.load_tts_settings(
                 validate_enabled=False,
@@ -5081,385 +5136,433 @@ class PetWindow(QWidget):
                 ),
             )
             tts_settings = self._default_tts_settings()
-
-        screen_awareness_settings = getattr(self, "screen_awareness_settings", None)
-        if screen_awareness_settings is None:
-            screen_awareness_settings = getattr(
-                self,
-                "proactive_care_settings",
-                ScreenAwarenessSettings(),
-            )
-        sensory_settings = getattr(self, "sensory_settings", None)
-        if sensory_settings is None:
-            load_sensory_settings = getattr(
-                self.settings_service,
-                "load_sensory_settings",
-                None,
-            )
-            sensory_settings = (
-                load_sensory_settings()
-                if callable(load_sensory_settings)
-                else SensorySettings()
-            )
-
-        dialog = SettingsDialog(
-            self.api_client.settings,
-            tts_settings,
-            self.base_dir,
-            self.character_registry,
-            self.character_profile,
-            screen_awareness_settings,
-            self.mcp_settings,
-            self.debug_log_settings,
-            self.memory_store,
-            getattr(self.plugin_manager, "tools_tabs", []),
-            getattr(self.plugin_manager, "settings_panels", []),
-            parent=self,
-            portrait_scale_percent=self.portrait_scale_percent,
-            control_panel_width=self.control_panel_width,
-            bubble_height=self.bubble_height,
-            control_panel_vertical_offset=self.control_panel_vertical_offset,
-            input_bar_offset=self.input_bar_offset,
-            subtitle_typing_interval_ms=self.subtitle_typing_interval_ms,
-            reply_segment_pause_ms=self.reply_segment_pause_ms,
-            theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
-            startup_settings=getattr(self, "startup_settings", StartupSettings()),
-            bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
-            backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
-            runtime_loop_settings=getattr(
-                self.agent_runtime,
-                "runtime_loop_settings",
-                RuntimeLoopSettings(),
-            ),
-            sensory_settings=sensory_settings,
-            on_layout_preview=self._preview_layout,
-            memory_curation_settings=getattr(self, "memory_curation_settings", None),
-            on_prepare_secondary_window=self._prepare_secondary_window,
-            on_present_secondary_window=self._present_registered_secondary_window,
-            on_release_secondary_window=self._release_secondary_window,
-            api_profiles=self.settings_service.load_api_profiles(),
-            model_selection=self.settings_service.load_model_selection(),
+        api_profiles = self.settings_service.load_api_profiles()
+        model_selection = self.settings_service.load_model_selection()
+        character_theme_overrides = _load_character_theme_overrides(self.settings_service)
+        runtime_loop_settings = getattr(
+            getattr(self, "agent_runtime", None),
+            "runtime_loop_settings",
+            RuntimeLoopSettings(),
         )
-        self.settings_dialog = dialog
-        # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
-        self._prepare_secondary_window(dialog)
-        # 记录打开前的立绘缩放与控制组布局，便于取消时回滚实时预览。
-        original_layout = (
+        process = TauriSettingsProcess(
+            base_dir=self.base_dir,
+            settings=settings,
+            mcp_settings=getattr(self, "mcp_settings", MCPRuntimeSettings()),
+            runtime_loop_settings=runtime_loop_settings,
+            debug_log_settings=getattr(self, "debug_log_settings", DebugLogSettings()),
+            subtitle_typing_interval_ms=getattr(
+                self,
+                "subtitle_typing_interval_ms",
+                SPEECH_TYPING_INTERVAL_MS,
+            ),
+            reply_segment_pause_ms=getattr(
+                self,
+                "reply_segment_pause_ms",
+                REPLY_SEGMENT_PAUSE_MS,
+            ),
+            bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
+            theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
+            character_registry=getattr(self, "character_registry", None),
+            current_character=getattr(self, "character_profile", None),
+            character_theme_overrides=character_theme_overrides,
+            portrait_scale_percent=getattr(self, "portrait_scale_percent", 100),
+            control_panel_width=getattr(self, "control_panel_width", DEFAULT_CONTROL_PANEL_WIDTH),
+            bubble_height=getattr(self, "bubble_height", DEFAULT_BUBBLE_HEIGHT),
+            control_panel_vertical_offset=getattr(
+                self,
+                "control_panel_vertical_offset",
+                DEFAULT_CONTROL_PANEL_VERTICAL_OFFSET,
+            ),
+            input_bar_offset=getattr(self, "input_bar_offset", DEFAULT_INPUT_BAR_OFFSET),
+            speech_font_size=getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+            name_font_size=getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE),
+            input_font_size=getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE),
+            button_font_size=getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE),
+            api_settings=api_settings,
+            api_profiles=api_profiles,
+            model_selection=model_selection,
+            tts_settings=tts_settings,
+            startup_settings=getattr(self, "startup_settings", StartupSettings()),
+            launch_at_login_supported=is_launch_at_login_supported(),
+            backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
+            memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            memory_store=getattr(self, "memory_store", None),
+            plugin_settings_contributions=getattr(
+                getattr(self, "plugin_manager", None),
+                "plugin_settings",
+                [],
+            ),
+            studio_launcher=getattr(self, "_open_tauri_studio_from_settings", None),
+            model=getattr(api_settings, "model", None),
+            parent_widget=self if isinstance(self, QWidget) else None,
+            parent=self if isinstance(self, QObject) else None,
+        )
+        # 记录打开前的立绘缩放与控制组布局，便于取消/失败时回滚实时预览。
+        self._tauri_original_layout = (
             self.portrait_scale_percent,
             self.control_panel_width,
             self.bubble_height,
             self.control_panel_vertical_offset,
             self.input_bar_offset,
         )
-        # 设置期间保持气泡稳定，但隐藏输入栏，避免输入栏挡住设置窗口或跟设置抢层级。
+        self._tauri_original_font_sizes = (
+            self.speech_font_size,
+            self.name_font_size,
+            self.input_font_size,
+            self.button_font_size,
+        )
+        # 必须在启动外部窗口前先撤销桌宠的实际置顶；否则设置窗口即使短暂置前，
+        # 取消临时 topmost 后仍可能重新落到常驻置顶的桌宠与输入栏下面。
+        self._set_secondary_windows_topmost_suppressed(True)
+        if not process.start():
+            self._tauri_original_layout = None
+            self._tauri_original_font_sizes = None
+            self._sync_secondary_window_state()
+            return False
+        self.tauri_settings_process = process
+        self._tauri_initial_tts_settings = tts_settings
+        process.completed.connect(self._on_tauri_settings_completed)
+        process.applied.connect(self._on_tauri_settings_applied)
+        process.apply_requested.connect(self._on_tauri_settings_apply_requested)
+        process.cancelled.connect(self._on_tauri_settings_cancelled)
+        process.failed.connect(self._on_tauri_settings_failed)
+        process.layout_preview.connect(self._on_tauri_settings_layout_preview)
+        # 设置进程存活期间持续压低桌宠；关闭、取消或失败后由现有生命周期统一恢复。
+        self._sync_secondary_window_state()
+        return True
+
+    def _open_tauri_studio_from_settings(self, character_id: str | None = None) -> bool:
+        active_process = getattr(self, "tauri_studio_process", None)
+        if active_process is not None:
+            return bool(active_process.focus_window())
+        if resolve_tauri_studio_binary(self.base_dir) is None:
+            return False
+        initial_character_id = str(character_id or getattr(self.character_profile, "id", "") or "")
+        process = TauriStudioProcess(
+            self.base_dir,
+            initial_character_id=initial_character_id,
+            parent=self if isinstance(self, QObject) else None,
+        )
+        process.closed.connect(self._on_tauri_studio_closed)
+        process.failed.connect(self._on_tauri_studio_failed)
+        if not process.start():
+            return False
+        self.tauri_studio_process = process
+        self._sync_secondary_window_state()
+        return True
+
+    @Slot()
+    def _on_tauri_studio_closed(self) -> None:
+        self.tauri_studio_process = None
+        self._sync_secondary_window_state()
+        try:
+            self.character_registry = CharacterRegistry(self.base_dir)
+        except Exception:  # noqa: BLE001 - closing the editor should not crash the pet window.
+            pass
+
+    @Slot(str)
+    def _on_tauri_studio_failed(self, message: str) -> None:
+        self.tauri_studio_process = None
+        self._sync_secondary_window_state()
+        show_themed_critical(self, "角色工作室", message)
+
+    def _close_tauri_studio_process_for_shutdown(self) -> None:
+        process = getattr(self, "tauri_studio_process", None)
+        if process is None:
+            return
+        self.tauri_studio_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        self._sync_secondary_window_state()
+
+    @Slot(object)
+    def _on_tauri_settings_layout_preview(self, payload: object) -> None:
+        """Tauri 角色页滑块拖动的实时预览：立即应用立绘/控制组布局，不持久化。"""
+        if not isinstance(payload, dict):
+            return
+
+        def _value(key: str, fallback: int) -> int:
+            value = payload.get(key, fallback)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        self._preview_layout(
+            _value("portrait_scale_percent", self.portrait_scale_percent),
+            _value("control_panel_width", self.control_panel_width),
+            _value("bubble_height", self.bubble_height),
+            _value("control_panel_vertical_offset", self.control_panel_vertical_offset),
+            _value("input_bar_offset", self.input_bar_offset),
+        )
+        # 字体拖动时实时预览（打字机模式下只更新 QFont，不持久化）
+        speech_font_size = payload.get("speech_font_size")
+        name_font_size = payload.get("name_font_size")
+        input_font_size = payload.get("input_font_size")
+        button_font_size = payload.get("button_font_size")
+        if any(v is not None for v in (speech_font_size, name_font_size, input_font_size, button_font_size)):
+            self._preview_fonts(
+                speech_font_size=_value("speech_font_size", self.speech_font_size),
+                name_font_size=_value("name_font_size", self.name_font_size),
+                input_font_size=_value("input_font_size", self.input_font_size),
+                button_font_size=_value("button_font_size", self.button_font_size),
+            )
+        # 拖动滑块时自动显示气泡和输入栏，方便实时查看效果
         bubble_auto_hide = getattr(self, "bubble_auto_hide", None)
         if bubble_auto_hide is not None:
-            bubble_auto_hide.notify_speaking()
-        # 非模态没有阻塞返回值，结果处理改由 finished 信号驱动；闭包捕获打开前状态用于回滚。
-        dialog.finished.connect(
-            lambda result: self._on_settings_dialog_finished(
-                dialog,
-                result,
-                original_layout,
-                bubble_auto_hide,
-            )
-        )
-        self._present_registered_secondary_window(dialog)
+            bubble_auto_hide.handle_pet_clicked()
+        input_animator = getattr(self, "input_bar_animator", None)
+        if input_animator is not None:
+            # force_visible = True 使 input_card 同步 show()，不依赖焦点也不依赖 hover。
+            input_animator.set_force_visible(True)
 
-    def _on_settings_dialog_finished(
-        self,
-        dialog: SettingsDialog,
-        dialog_result: int,
-        original_layout: tuple[int, int, int, int, int],
-        bubble_auto_hide: object,
-    ) -> None:
-        """设置窗口关闭后的结果处理（原 exec() 之后的同步逻辑，迁移到非模态信号回调）。"""
-        if getattr(self, "settings_dialog", None) is dialog:
-            self.settings_dialog = None
-        self._unregister_secondary_window(dialog)
+    @Slot(object)
+    def _on_tauri_settings_completed(self, result: object) -> None:
+        # 「保存」：应用并关闭窗口。
+        self._release_tauri_preview_force_state()
+        process = self.tauri_settings_process
+        self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
         self._sync_secondary_window_state()
-        # 关闭设置后恢复气泡自动隐藏计时与输入栏常规显隐。
-        if bubble_auto_hide is not None:
-            bubble_auto_hide.notify_settled()
-        if dialog_result != QDialog.DialogCode.Accepted:
-            # 取消/关闭：回滚到打开前的立绘与控制组布局，撤销实时预览的改动。
-            self._preview_layout(*original_layout)
-            return
-        result_subtitle_typing_interval_ms = getattr(
-            dialog,
-            "result_subtitle_typing_interval_ms",
-            self.subtitle_typing_interval_ms,
-        )
-        result_reply_segment_pause_ms = getattr(
-            dialog,
-            "result_reply_segment_pause_ms",
-            self.reply_segment_pause_ms,
-        )
-        result_theme_settings = getattr(
-            dialog,
-            "result_theme_settings",
-            getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
-        )
-        current_startup_settings = getattr(self, "startup_settings", StartupSettings())
-        result_startup_settings = getattr(
-            dialog,
-            "result_startup_settings",
-            current_startup_settings,
-        )
-        result_bubble_settings = getattr(
-            dialog,
-            "result_bubble_settings",
-            getattr(self, "bubble_settings", BubbleSettings()),
-        )
-        result_backchannel_settings = getattr(
-            dialog,
-            "result_backchannel_settings",
-            getattr(self, "backchannel_settings", BackchannelSettings()),
-        )
-        result_runtime_loop_settings = (
-            getattr(dialog, "result_runtime_loop_settings", None)
-            or getattr(self.agent_runtime, "runtime_loop_settings", RuntimeLoopSettings())
-        )
-        # result_memory_curation_settings 在用户未改动时可能为 None，用当前配置兜底。
-        result_memory_curation_settings = (
-            getattr(dialog, "result_memory_curation_settings", None)
-            or getattr(self, "memory_curation_settings", None)
-        )
-        result_sensory_settings = getattr(
-            dialog,
-            "result_sensory_settings",
-            getattr(self, "sensory_settings", SensorySettings()),
-        )
-        result_screen_awareness_settings = getattr(
-            dialog,
-            "result_screen_awareness_settings",
-            None,
-        )
-        if result_screen_awareness_settings is None:
-            result_screen_awareness_settings = getattr(
-                dialog,
-                "result_proactive_care_settings",
-                None,
-            )
-        result_control_panel_width = getattr(
-            dialog, "result_control_panel_width", self.control_panel_width
-        )
-        result_bubble_height = getattr(
-            dialog, "result_bubble_height", self.bubble_height
-        )
-        result_control_panel_vertical_offset = getattr(
-            dialog,
-            "result_control_panel_vertical_offset",
-            self.control_panel_vertical_offset,
-        )
-        result_input_bar_offset = getattr(
-            dialog, "result_input_bar_offset", self.input_bar_offset
-        )
-        if (
-            dialog.result_api_settings is None
-            or dialog.result_tts_settings is None
-            or dialog.result_character_id is None
-            or result_screen_awareness_settings is None
-            or dialog.result_mcp_settings is None
-            or dialog.result_debug_log_settings is None
-            or result_startup_settings is None
-            or not isinstance(result_startup_settings, StartupSettings)
-            or dialog.result_portrait_scale_percent is None
-            or result_theme_settings is None
-            or result_subtitle_typing_interval_ms is None
-            or result_reply_segment_pause_ms is None
-            or not isinstance(result_runtime_loop_settings, RuntimeLoopSettings)
-        ):
-            return
-        if result_backchannel_settings is None or not isinstance(
-            result_backchannel_settings,
-            BackchannelSettings,
-        ):
-            result_backchannel_settings = getattr(
-                self,
-                "backchannel_settings",
-                BackchannelSettings(),
-            )
-        if result_sensory_settings is None or not isinstance(
-            result_sensory_settings,
-            SensorySettings,
-        ):
-            result_sensory_settings = getattr(
-                self,
-                "sensory_settings",
-                SensorySettings(),
-            )
-        (
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
-        ) = normalize_subtitle_display_speed(
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
-        )
+        self._apply_tauri_settings_result(result, final=True)
 
-        dialog_character_registry = getattr(dialog, "character_registry", None) or self.character_registry
+    @Slot(object)
+    def _on_tauri_settings_applied(self, result: object) -> None:
+        # 「应用」：持久化并即时生效，但窗口保持打开。
+        self._apply_tauri_settings_result(result, final=False)
+
+    @Slot(str, object)
+    def _on_tauri_settings_apply_requested(self, request_id: str, result: object) -> None:
+        process = self.tauri_settings_process
+        ok = self._apply_tauri_settings_result(result, final=False)
+        if process is None:
+            return
+        resolve = getattr(process, "resolve_apply_request", None)
+        if callable(resolve):
+            resolve(
+                request_id,
+                ok=ok,
+                error="" if ok else "Tauri 设置没有保存成功。",
+            )
+
+    def _apply_tauri_settings_result(self, result: object, *, final: bool) -> bool:
+        if not isinstance(result, TauriSettingsResult):
+            self._on_tauri_settings_failed("Tauri 设置结果类型无效。")
+            return False
+        settings = result.screen_awareness
+        system_basic = result.system_basic
+        system_extra = result.system_extra
         try:
-            selected_profile = dialog_character_registry.get(dialog.result_character_id)
-        except CharacterConfigError as exc:
-            show_themed_critical(
-                self,
-                "角色配置无效",
-                format_failure_message(
-                    "无法读取当前选择的角色配置。",
-                    "请重新导入或选择一个完整的角色包。",
-                    exc,
-                ),
-            )
-            return
+            selected_profile = self.character_registry.get(result.character.character_id)
+        except CharacterConfigError:
+            self.character_registry = CharacterRegistry(self.base_dir)
+            try:
+                selected_profile = self.character_registry.get(result.character.character_id)
+            except CharacterConfigError as exc:
+                show_themed_critical(
+                    self,
+                    "角色配置无效",
+                    format_failure_message(
+                        "无法读取当前选择的角色配置。",
+                        "请重新导入或选择一个完整的角色包。",
+                        exc,
+                    ),
+                )
+                self._abort_tauri_settings_apply(final=final)
+                return False
 
-        new_tts_provider = self._create_tts_provider_from_settings(dialog.result_tts_settings)
+        tts_settings = self._tts_settings_from_tauri_result(result.tts, selected_profile)
+        new_tts_provider = self._create_tts_provider_from_settings(tts_settings)
         if new_tts_provider is None:
-            return
+            self._abort_tauri_settings_apply(final=final)
+            return False
 
-        api_changed = dialog.result_api_settings != self.api_client.settings
+        current_startup_settings = getattr(self, "startup_settings", StartupSettings())
+        result_startup_settings = (
+            system_extra.startup
+            if system_extra.launch_at_login_supported
+            else current_startup_settings
+        )
         startup_settings_changed = result_startup_settings != current_startup_settings
-        theme_write_mode = getattr(dialog, "result_theme_write_mode", "unchanged")
-        should_write_character_theme = _should_write_character_theme(theme_write_mode, selected_profile)
+        startup_external_before = current_startup_settings.launch_at_login
+        if startup_settings_changed:
+            try:
+                startup_external_before = is_launch_at_login_enabled(self.base_dir)
+            except (OSError, RuntimeError):
+                startup_external_before = current_startup_settings.launch_at_login
+        startup_external_attempted = False
+        api_changed = result.api.settings != self.api_client.settings
+        plugin_enabled_changed = False
+        plugin_settings_changed = False
+        config_snapshot = _snapshot_config_files(self.base_dir)
         try:
             if api_changed:
-                self.settings_service.save_api_settings(dialog.result_api_settings)
-            # 保存 API 配置集和模型选择（新格式）
-            api_profiles = getattr(dialog, "result_api_profiles", None)
-            model_selection = getattr(dialog, "result_model_selection", None)
-            if api_profiles is not None:
-                self.settings_service.save_api_profiles(api_profiles)
-            if model_selection is not None:
-                self.settings_service.save_model_selection(model_selection)
-            self.settings_service.save_tts_settings(dialog.result_tts_settings)
-            if should_write_character_theme:
-                save_character_theme(
-                    selected_profile,
-                    result_theme_settings,
-                    source=THEME_SOURCE_PACKAGE,
-                )
-                dialog_character_registry = CharacterRegistry(self.base_dir)
-                selected_profile = dialog_character_registry.get(selected_profile.id)
-            self.character_registry = dialog_character_registry
+                self.settings_service.save_api_settings(result.api.settings)
+            self.settings_service.save_api_profiles(result.api.profiles)
+            self.settings_service.save_model_selection(result.api.model_selection)
+            self.settings_service.save_tts_settings(tts_settings)
             self.settings_service.save_current_character_id(
                 self.character_registry,
                 selected_profile.id,
             )
-            save_screen_awareness_settings = getattr(
+            self.settings_service.save_screen_awareness_settings(settings)
+            save_mcp_runtime_settings = getattr(
                 self.settings_service,
-                "save_screen_awareness_settings",
+                "save_mcp_runtime_settings",
                 None,
             )
-            if callable(save_screen_awareness_settings):
-                save_screen_awareness_settings(result_screen_awareness_settings)
-            else:
-                self.settings_service.save_proactive_care_settings(
-                    result_screen_awareness_settings
-                )
-            self.settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings)
-            self.settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
-            if startup_settings_changed:
-                self._apply_launch_at_login_settings(result_startup_settings)
-                self.settings_service.save_startup_settings(result_startup_settings)
-            if result_theme_settings != getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS):
-                self.settings_service.save_theme_settings(result_theme_settings)
-            self._save_system_config_values(
-                "ui",
-                {
-                    "portrait_scale_percent": dialog.result_portrait_scale_percent,
-                    "subtitle_typing_interval_ms": result_subtitle_typing_interval_ms,
-                    "reply_segment_pause_ms": result_reply_segment_pause_ms,
-                },
-            )
-            self.settings_service.save_bubble_settings(result_bubble_settings)
-            save_backchannel_settings = getattr(
-                self.settings_service,
-                "save_backchannel_settings",
-                None,
-            )
-            if callable(save_backchannel_settings):
-                save_backchannel_settings(result_backchannel_settings)
+            if callable(save_mcp_runtime_settings):
+                save_mcp_runtime_settings(result.mcp)
             save_runtime_loop_settings = getattr(
                 self.settings_service,
                 "save_runtime_loop_settings",
                 None,
             )
             if callable(save_runtime_loop_settings):
-                save_runtime_loop_settings(result_runtime_loop_settings)
-            if result_memory_curation_settings is not None:
-                self.settings_service.save_memory_curation_settings(
-                    result_memory_curation_settings
+                save_runtime_loop_settings(result.runtime_loop)
+            if result.theme_changed:
+                save_theme_settings = getattr(self.settings_service, "save_theme_settings", None)
+                if callable(save_theme_settings):
+                    save_theme_settings(result.theme)
+                _save_character_theme_override(
+                    self.settings_service,
+                    selected_profile,
+                    result.theme,
                 )
-            save_sensory_settings = getattr(
+            self.settings_service.save_debug_log_settings(system_basic.debug_log)
+            self._save_system_config_values(
+                "ui",
+                {
+                    "portrait_scale_percent": result.character.portrait_scale_percent,
+                    "subtitle_typing_interval_ms": system_basic.subtitle_typing_interval_ms,
+                    "reply_segment_pause_ms": system_basic.reply_segment_pause_ms,
+                    "speech_font_size": system_basic.speech_font_size,
+                    "name_font_size": system_basic.name_font_size,
+                    "input_font_size": system_basic.input_font_size,
+                    "button_font_size": system_basic.button_font_size,
+                },
+            )
+            self.settings_service.save_bubble_settings(system_basic.bubble)
+            save_backchannel_settings = getattr(
                 self.settings_service,
-                "save_sensory_settings",
+                "save_backchannel_settings",
                 None,
             )
-            if callable(save_sensory_settings):
-                save_sensory_settings(result_sensory_settings)
-        except (CharacterConfigError, OSError) as exc:
+            if callable(save_backchannel_settings):
+                save_backchannel_settings(system_extra.backchannel)
+            save_memory_curation_settings = getattr(
+                self.settings_service,
+                "save_memory_curation_settings",
+                None,
+            )
+            if callable(save_memory_curation_settings):
+                save_memory_curation_settings(result.memory_curation)
+            if result.plugins.enabled_by_id:
+                plugin_enabled_changed = (
+                    save_plugin_enabled_overrides(
+                        self.base_dir,
+                        result.plugins.enabled_by_id,
+                    )
+                )
+            self._apply_layout_settings(
+                portrait_scale_percent=result.character.portrait_scale_percent,
+                control_panel_width=result.character.control_panel_width,
+                bubble_height=result.character.bubble_height,
+                vertical_offset=result.character.control_panel_vertical_offset,
+                input_bar_offset=result.character.input_bar_offset,
+                persist=True,
+                raise_on_persist_error=True,
+            )
+            plugin_settings_changed = apply_tauri_plugin_settings(
+                getattr(getattr(self, "plugin_manager", None), "plugin_settings", []),
+                result.plugins.settings_by_id,
+            )
+            if startup_settings_changed:
+                self.settings_service.save_startup_settings(result_startup_settings)
+                startup_external_attempted = True
+                self._apply_launch_at_login_settings(result_startup_settings)
+        except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
+            try:
+                _restore_config_files(config_snapshot)
+            except OSError as rollback_exc:
+                debug_log(
+                    "Settings",
+                    "Tauri 设置保存失败后回滚配置失败",
+                    {"error": str(rollback_exc)},
+                )
+            if startup_external_attempted:
+                try:
+                    set_launch_at_login_enabled(self.base_dir, startup_external_before)
+                except (OSError, RuntimeError) as rollback_exc:
+                    debug_log(
+                        "Settings",
+                        "Tauri 设置保存失败后回滚登录自启动失败",
+                        {"error": str(rollback_exc)},
+                    )
             show_themed_critical(
                 self,
                 "保存失败",
                 format_failure_message(
-                    "设置没有保存成功。",
+                    "Tauri 设置没有保存成功。",
                     "请检查 data 目录的写入权限和文件占用情况后重试。",
                     exc,
                 ),
             )
-            return
+            self._abort_tauri_settings_apply(new_tts_provider, final=final)
+            return False
 
-        # 更新 API client（新格式统一处理，替代旧 api_changed 块）
-        if api_profiles is not None and model_selection is not None:
-            _update_runtime_api_clients(
-                self,
-                api_profiles=api_profiles,
-                model_selection=model_selection,
-                base_settings=dialog.result_api_settings,
-            )
-        elif api_changed:
-            # 旧格式回退
-            self.api_client.update_settings(dialog.result_api_settings)
-            self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
-        self.agent_runtime.set_runtime_loop_settings(result_runtime_loop_settings)
-        self._apply_layout_settings(
-            portrait_scale_percent=dialog.result_portrait_scale_percent,
-            control_panel_width=result_control_panel_width,
-            bubble_height=result_bubble_height,
-            vertical_offset=result_control_panel_vertical_offset,
-            input_bar_offset=result_input_bar_offset,
-            persist=True,
+        _update_runtime_api_clients(
+            self,
+            api_profiles=result.api.profiles,
+            model_selection=result.api.model_selection,
+            base_settings=result.api.settings,
         )
-        self._apply_subtitle_display_speed(
-            result_subtitle_typing_interval_ms,
-            result_reply_segment_pause_ms,
+        self.screen_awareness_settings = settings
+        mcp_restart_required = result.mcp != getattr(
+            self,
+            "mcp_settings",
+            MCPRuntimeSettings(),
         )
-        self._apply_bubble_settings(result_bubble_settings)
-        if result_memory_curation_settings is not None:
-            self.memory_curation_settings = result_memory_curation_settings
+        self.mcp_settings = result.mcp
+        agent_runtime = getattr(self, "agent_runtime", None)
+        set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
+        if callable(set_runtime_loop_settings):
+            set_runtime_loop_settings(result.runtime_loop)
+        # 先更新字体实例属性，再生成主题样式表，确保 QSS 使用新值。
+        self._apply_fonts_values(
+            speech_font_size=system_basic.speech_font_size,
+            name_font_size=system_basic.name_font_size,
+            input_font_size=system_basic.input_font_size,
+            button_font_size=system_basic.button_font_size,
+        )
         apply_theme_settings = getattr(self, "_apply_theme_settings", None)
         if callable(apply_theme_settings):
-            apply_theme_settings(result_theme_settings)
+            apply_theme_settings(result.theme)
         else:
-            self.theme_settings = result_theme_settings
-        self.screen_awareness_settings = result_screen_awareness_settings
-        mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
-        self.mcp_settings = dialog.result_mcp_settings
-        self.debug_log_settings = dialog.result_debug_log_settings
+            self.theme_settings = result.theme
+        self.debug_log_settings = system_basic.debug_log
         eval_logger = getattr(self, "backchannel_eval_logger", None)
         if eval_logger is not None:
             eval_logger.set_enabled(self.debug_log_settings.enabled)
         self._apply_stage_debug_overlay(
-            self.debug_log_settings.stage_debug_overlay, refresh=True
+            self.debug_log_settings.stage_debug_overlay,
+            refresh=True,
         )
         self._apply_stage_collision_mask(
-            self.debug_log_settings.stage_collision_mask, refresh=True
+            self.debug_log_settings.stage_collision_mask,
+            refresh=True,
         )
+        self._apply_subtitle_display_speed(
+            system_basic.subtitle_typing_interval_ms,
+            system_basic.reply_segment_pause_ms,
+        )
+        self._apply_bubble_settings(system_basic.bubble)
         self.startup_settings = result_startup_settings
-        sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
-        if callable(sync_screen_awareness_timer):
-            sync_screen_awareness_timer()
-        else:
-            self._sync_proactive_care_timer()
+        self.memory_curation_settings = result.memory_curation
+        self._sync_screen_awareness_timer()
         discard_backchannel_audio_cache = getattr(
             self,
             "_discard_backchannel_audio_cache",
@@ -5467,11 +5570,6 @@ class PetWindow(QWidget):
         )
         if callable(discard_backchannel_audio_cache):
             discard_backchannel_audio_cache()
-        # 仅在 TTS 配置或角色变化时才重建 provider。无谓重建会在 TTS 服务
-        # 后台探测(warmup)期间退休/替换正被探测的旧 provider,后台 warmup
-        # 线程与主线程并发拆解同一 provider 引发原生闪退(切换接话语音等
-        # 不改 TTS 配置的保存场景尤其高发)。配置等价则保留现有 provider
-        # 及其在途 warmup。
         character_changed = selected_profile.id != getattr(self.character_profile, "id", None)
         if _tts_provider_needs_rebuild(
             self.tts_provider,
@@ -5494,47 +5592,62 @@ class PetWindow(QWidget):
             connect_tts_error_signal = getattr(self, "_connect_tts_error_signal", None)
             if callable(connect_tts_error_signal):
                 connect_tts_error_signal(new_tts_provider)
-            self._warm_up_tts_playback(new_tts_provider)
             start_tts_ready_warmup = getattr(self, "_start_tts_ready_warmup", None)
             if callable(start_tts_ready_warmup):
                 start_tts_ready_warmup(new_tts_provider)
         else:
-            # 配置与角色均未变:丢弃刚建好的等价 provider(adopt=False,未启动
-            # 服务/播放器,close 为惰性安全操作),保留现有 provider 不动。
             close_unused = getattr(new_tts_provider, "close", None)
             if callable(close_unused):
                 try:
                     close_unused()
                 except Exception as exc:  # noqa: BLE001
-                    debug_log("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
-            debug_log("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
+                    log_event("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
+            log_event("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
         self._apply_character(selected_profile)
-        apply_sensory_settings = getattr(self, "_apply_sensory_settings", None)
-        if callable(apply_sensory_settings):
-            apply_sensory_settings(result_sensory_settings, profile=selected_profile)
-        else:
-            self.sensory_settings = result_sensory_settings.normalized()
+        self._apply_sensory_settings(self.sensory_settings, profile=selected_profile)
         apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
         if callable(apply_backchannel_settings):
-            apply_backchannel_settings(result_backchannel_settings)
+            apply_backchannel_settings(system_extra.backchannel)
         else:
-            self.backchannel_settings = result_backchannel_settings
+            self.backchannel_settings = system_extra.backchannel
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
-        message = "设置已保存，后续聊天和朗读将使用新配置。"
-        if api_changed:
-            message += "\n\n长期记忆系统正在后台刷新 API 配置。"
+        if final:
+            self._tauri_initial_tts_settings = None
+            # 已应用并持久化最终设置，丢弃回滚基准。
+            self._tauri_original_layout = None
+            self._tauri_original_font_sizes = None
+        else:
+            # 「应用」后窗口仍打开：把布局和字号回滚基准更新为当前已应用状态，
+            # 以便后续滑块实时预览的「取消」回滚到这里而不是最初打开时。
+            self._tauri_initial_tts_settings = tts_settings
+            self._tauri_original_layout = (
+                result.character.portrait_scale_percent,
+                result.character.control_panel_width,
+                result.character.bubble_height,
+                result.character.control_panel_vertical_offset,
+                result.character.input_bar_offset,
+            )
+            self._tauri_original_font_sizes = (
+                system_basic.speech_font_size,
+                system_basic.name_font_size,
+                system_basic.input_font_size,
+                system_basic.button_font_size,
+            )
+        messages: list[str] = []
         if mcp_restart_required:
-            message += "\n\nWindows MCP 开关需要重启 Sakura 后才会生效。"
-        if startup_settings_changed:
-            message += "\n\n登录自启动设置已更新。"
-        if getattr(dialog, "result_plugin_config_changed", False):
-            message += "\n\n插件启用状态需要重启 Sakura 后才会生效。"
-        show_themed_information(self, "保存成功", message)
-
-    def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
-        """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
-        self._present_registered_secondary_window(dialog)
+            messages.append("桌面控制 MCP 开关需要重启 Sakura 后才会生效。")
+        if plugin_enabled_changed:
+            messages.append("插件启用状态需要重启 Sakura 后才会生效。")
+        elif plugin_settings_changed:
+            messages.append("插件设置已保存并即时生效。")
+        if messages:
+            show_themed_information(
+                self,
+                "设置已保存",
+                "\n\n".join(messages),
+            )
+        return True
 
     def _apply_sensory_settings(
         self,
@@ -5563,6 +5676,90 @@ class PetWindow(QWidget):
         self.agent_runtime.set_sensory_pipeline(pipeline)
         self.agent_runtime.set_builtin_context_providers(
             [SensoryContextProvider(normalized, store).contribution()]
+        )
+
+    def _abort_tauri_settings_apply(
+        self,
+        new_tts_provider: object | None = None,
+        *,
+        final: bool = True,
+    ) -> None:
+        if new_tts_provider is not None:
+            self._close_unused_tauri_tts_provider(new_tts_provider)
+        # 「应用」失败时窗口仍开着，不要还原布局预览/恢复置顶，保留用户编辑现场。
+        if final:
+            self._tauri_initial_tts_settings = None
+            self._restore_tauri_settings_preview()
+            self._sync_secondary_window_state()
+
+    def _close_unused_tauri_tts_provider(self, provider: object) -> None:
+        close_unused = getattr(provider, "close", None)
+        if not callable(close_unused):
+            return
+        try:
+            close_unused()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("TTS", "丢弃未应用的 TTS Provider 失败", {"error": str(exc)})
+
+    def _close_tauri_settings_process_for_shutdown(self) -> None:
+        process = getattr(self, "tauri_settings_process", None)
+        if process is None:
+            return
+        self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_settings_preview()
+        self._sync_secondary_window_state()
+
+    def _restore_tauri_layout_preview(self) -> None:
+        """撤销 Tauri 实时预览对立绘/控制组布局的改动，回到打开设置前的状态。"""
+        original_layout = getattr(self, "_tauri_original_layout", None)
+        self._tauri_original_layout = None
+        if original_layout is not None:
+            self._preview_layout(*original_layout)
+
+    def _restore_tauri_font_preview(self) -> None:
+        """撤销 Tauri 实时预览对字号的改动，回到最近一次已保存状态。"""
+        original_font_sizes = getattr(self, "_tauri_original_font_sizes", None)
+        self._tauri_original_font_sizes = None
+        if original_font_sizes is not None:
+            self._apply_fonts_values(*original_font_sizes)
+
+    def _restore_tauri_settings_preview(self) -> None:
+        """统一撤销 Tauri 布局/字号预览并释放临时强制显示状态。"""
+        self._release_tauri_preview_force_state()
+        self._restore_tauri_layout_preview()
+        self._restore_tauri_font_preview()
+
+    def _release_tauri_preview_force_state(self) -> None:
+        """释放 Tauri 设置预览期间的 force_visible（恢复常规显隐逻辑）。"""
+        input_animator = getattr(self, "input_bar_animator", None)
+        if input_animator is not None:
+            input_animator.set_force_visible(False)
+
+    @Slot()
+    def _on_tauri_settings_cancelled(self) -> None:
+        self.tauri_settings_process = None
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_settings_preview()
+        self._sync_secondary_window_state()
+
+    @Slot(str)
+    def _on_tauri_settings_failed(self, message: str) -> None:
+        process = self.tauri_settings_process
+        self.tauri_settings_process = None
+        shutdown = getattr(process, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        self._tauri_initial_tts_settings = None
+        self._restore_tauri_settings_preview()
+        self._sync_secondary_window_state()
+        show_themed_warning(
+            self,
+            "设置页打开失败",
+            f"{message}",
         )
 
     @Slot(bool)
@@ -5668,6 +5865,22 @@ class PetWindow(QWidget):
         self._apply_window_flags()
         if checked and not bool(getattr(self, "_secondary_windows_suppress_topmost", False)):
             self.raise_()
+        # Wayland 下 WindowStaysOnTopHint 被合成器忽略，弹一次性提示。
+        # 使用 QPA 平台名而非 XDG_SESSION_TYPE，避免 XWayland 误报。
+        app = QApplication.instance()
+        is_wayland_qpa = app is not None and app.platformName().startswith("wayland")
+        if checked and is_wayland_qpa:
+            if not getattr(self, "_wayland_topmost_warned", False):
+                self._wayland_topmost_warned = True
+                try:
+                    show_themed_information(
+                        self,
+                        "当前桌面不支持置顶",
+                        "Wayland 桌面环境没有标准的窗口置顶协议，"
+                        "因此「保持置顶」功能在您的系统上不可用。",
+                    )
+                except Exception:
+                    pass
         # 已打开的副窗口需跟随桌宠置顶状态更新，否则桌宠置顶后会反盖住它们。
         self._sync_secondary_windows_topmost()
         if hasattr(self, "tray_icon"):
@@ -5682,12 +5895,24 @@ class PetWindow(QWidget):
             _configure_secondary_window(window, keep_on_top=keep_on_top)
             _present_secondary_window(window)
 
+    def _tts_settings_from_tauri_result(
+        self,
+        result_tts: object,
+        selected_profile: CharacterProfile,
+    ) -> GPTSoVITSTTSSettings:
+        return tts_settings_from_tauri_result(
+            result_tts,
+            selected_profile,
+            self.base_dir,
+            previous=getattr(self, "_tauri_initial_tts_settings", None),
+        )
+
     def _create_tts_provider_from_settings(
         self,
         settings: GPTSoVITSTTSSettings,
     ) -> TTSProvider | None:
         if not settings.enabled:
-            debug_log("PetWindow", "设置保存后 TTS 保持关闭")
+            log_event("PetWindow", "设置保存后 TTS 保持关闭")
             return NullTTSProvider()
         try:
             # 统一走工厂；补传 base_dir 修正旧实现缓存目录回退 __file__ 推算的问题
@@ -5696,7 +5921,7 @@ class PetWindow(QWidget):
                 base_dir=self.base_dir,
                 adopt_existing_service=False,
             )
-            debug_log(
+            log_event(
                 "PetWindow",
                 "设置保存后 TTS Provider 已创建",
                 {
@@ -5707,7 +5932,7 @@ class PetWindow(QWidget):
             )
             return provider
         except TTSConfigError as exc:
-            debug_log("PetWindow", "TTS 配置无效", {"error": str(exc)})
+            log_event("PetWindow", "TTS 配置无效", {"error": str(exc)})
             show_themed_critical(
                 self,
                 "TTS 配置无效",
@@ -5734,7 +5959,7 @@ class PetWindow(QWidget):
         warmup_provider = getattr(self, "_tts_warmup_provider", None)
         if warmup_thread is not None and provider is warmup_provider:
             self._tts_pending_provider_closes.append((provider, keep_local_service))
-            debug_log(
+            log_event(
                 "TTS",
                 "服务预热在途,推迟关闭旧 TTS Provider",
                 {
@@ -5761,13 +5986,13 @@ class PetWindow(QWidget):
             if callable(detach):
                 try:
                     detach()
-                    debug_log(
+                    log_event(
                         "TTS",
                         "切换配置时保留本地 TTS 服务进程",
                         {"provider": type(provider).__name__},
                     )
                 except Exception as exc:  # noqa: BLE001
-                    debug_log(
+                    log_event(
                         "TTS",
                         "交出旧 TTS 本地服务所有权失败",
                         {"provider": type(provider).__name__, "error": str(exc)},
@@ -5777,7 +6002,7 @@ class PetWindow(QWidget):
             try:
                 close()
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "TTS",
                     "切换配置时关闭旧 TTS Provider 失败",
                     {"provider": type(provider).__name__, "error": str(exc)},
@@ -5817,8 +6042,8 @@ class PetWindow(QWidget):
         try:
             self.history_store.append(role, content, translation, tone, portrait, _debug=_debug)
         except OSError as exc:
-            debug_log("History", "写入失败", {"error": str(exc)})
-            debug_log(
+            log_event("History", "写入失败", {"error": str(exc)})
+            log_event(
                 "History",
                 "写入失败",
                 {
@@ -5849,13 +6074,13 @@ class PetWindow(QWidget):
     def _check_due_reminders(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
-        if self.worker_thread is not None or self.active_reminder_id is not None:
+        if self.worker_thread is not None or self.active_event is not None:
             return
         try:
             due_reminders = self.reminder_store.due_reminders()
         except ValueError as exc:
-            debug_log("Reminder", "读取失败", {"error": str(exc)})
-            debug_log("Reminder", "读取失败", {"error": str(exc)})
+            log_event("Reminder", "读取失败", {"error": str(exc)})
+            log_event("Reminder", "读取失败", {"error": str(exc)})
             return
         if not due_reminders:
             return
@@ -5865,9 +6090,9 @@ class PetWindow(QWidget):
         reminder_text = str(reminder.get("text", ""))
         reminder_trigger_at = str(reminder.get("trigger_at", ""))
         if not reminder_id:
-            debug_log("Reminder", "跳过缺少 id 的到期提醒", {"reminder": reminder})
+            log_event("Reminder", "跳过缺少 id 的到期提醒", {"reminder": reminder})
             return
-        debug_log(
+        log_event(
             "Reminder",
             "触发到期提醒",
             {
@@ -5885,8 +6110,7 @@ class PetWindow(QWidget):
                     "text": reminder_text,
                     "trigger_at": reminder_trigger_at,
                 },
-            ),
-            reminder_id,
+            )
         )
 
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:
@@ -5942,6 +6166,42 @@ class PetWindow(QWidget):
             system_values.get("input_bar_offset", DEFAULT_INPUT_BAR_OFFSET)
         )
 
+    def _load_speech_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_font_size(
+            system_values.get("speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+            default=DEFAULT_SPEECH_FONT_SIZE,
+            minimum=SPEECH_FONT_SIZE_MIN,
+            maximum=SPEECH_FONT_SIZE_MAX,
+        )
+
+    def _load_name_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_font_size(
+            system_values.get("name_font_size", DEFAULT_NAME_FONT_SIZE),
+            default=DEFAULT_NAME_FONT_SIZE,
+            minimum=NAME_FONT_SIZE_MIN,
+            maximum=NAME_FONT_SIZE_MAX,
+        )
+
+    def _load_input_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_font_size(
+            system_values.get("input_font_size", DEFAULT_INPUT_FONT_SIZE),
+            default=DEFAULT_INPUT_FONT_SIZE,
+            minimum=INPUT_FONT_SIZE_MIN,
+            maximum=INPUT_FONT_SIZE_MAX,
+        )
+
+    def _load_button_font_size(self) -> int:
+        system_values = self._load_system_config_values("ui")
+        return _normalize_font_size(
+            system_values.get("button_font_size", DEFAULT_BUTTON_FONT_SIZE),
+            default=DEFAULT_BUTTON_FONT_SIZE,
+            minimum=BUTTON_FONT_SIZE_MIN,
+            maximum=BUTTON_FONT_SIZE_MAX,
+        )
+
     def _load_subtitle_display_speed(self) -> tuple[int, int]:
         system_values = self._load_system_config_values("ui")
         return normalize_subtitle_display_speed(
@@ -5953,7 +6213,7 @@ class PetWindow(QWidget):
         system_values = self._load_system_config_values("screen_observation")
         if "enabled" in system_values:
             enabled = _parse_bool(system_values.get("enabled"), default=True)
-            debug_log("PetWindow", "屏幕观察 YAML 配置已加载", {"enabled": enabled})
+            log_event("PetWindow", "屏幕观察 YAML 配置已加载", {"enabled": enabled})
             return enabled
         return True
 
@@ -5962,7 +6222,7 @@ class PetWindow(QWidget):
         if "autonomous_enabled" in system_values:
             enabled = _parse_bool(system_values.get("autonomous_enabled"), default=True)
             enabled = enabled and self.screen_observation_enabled
-            debug_log("PetWindow", "自主屏幕观察 YAML 配置已加载", {"enabled": enabled})
+            log_event("PetWindow", "自主屏幕观察 YAML 配置已加载", {"enabled": enabled})
             return enabled
         return self.screen_observation_enabled
 
@@ -6050,7 +6310,15 @@ class PetWindow(QWidget):
             self._is_secondary_window_visible(window)
             for window in tuple(getattr(self, "_registered_secondary_windows", set()))
         )
-        self._set_secondary_windows_topmost_suppressed(has_visible_secondary_window)
+        # Tauri 设置与角色工作室是独立进程、不在副窗口登记表里，但它们存活期间同样要
+        # 压低桌宠置顶，否则置顶立绘会盖住系统取色器的放大预览。
+        tauri_active = (
+            getattr(self, "tauri_settings_process", None) is not None
+            or getattr(self, "tauri_studio_process", None) is not None
+        )
+        self._set_secondary_windows_topmost_suppressed(
+            has_visible_secondary_window or tauri_active
+        )
         set_background_quiesced = getattr(
             self,
             "_set_secondary_windows_background_quiesced",
@@ -6124,56 +6392,76 @@ class PetWindow(QWidget):
         QTimer.singleShot(0, self._sync_native_topmost_state)
 
     def _sync_native_topmost_state(self) -> None:
-        if not self.isVisible():
+        try:
+            visible = self.isVisible()
+        except RuntimeError:
+            # singleShot 回调可能晚于 QObject 销毁；此时无需再同步原生窗口状态。
             return
+        if not visible:
+            return
+        effective_topmost_fn = getattr(self, "_effective_topmost", None)
+        effective_topmost = (
+            bool(effective_topmost_fn())
+            if callable(effective_topmost_fn)
+            else bool(getattr(self, "always_on_top_enabled", False))
+        )
         if sys.platform == "win32":
             try:
                 import ctypes
+                from ctypes import wintypes
 
-                hwnd = int(self.winId())
-                hwnd_topmost = -1
-                hwnd_notopmost = -2
+                hwnd_topmost = wintypes.HWND(-1)
+                hwnd_notopmost = wintypes.HWND(-2)
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
-                effective_topmost = bool(
-                    self.always_on_top_enabled
-                    and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
-                )
                 insert_after = hwnd_topmost if effective_topmost else hwnd_notopmost
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
                     ctypes.windll.user32.SetWindowPos(
-                        int(window.winId()), insert_after, 0, 0, 0, 0, flags
+                        wintypes.HWND(int(window.winId())),
+                        insert_after,
+                        0,
+                        0,
+                        0,
+                        0,
+                        flags,
                     )
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
-                debug_log("PetWindow", "同步原生置顶状态失败", {"error": str(exc)})
+                log_event("PetWindow", "同步原生置顶状态失败", {"error": str(exc)})
             return
         if sys.platform == "darwin":
             try:
                 for window in self._topmost_sync_windows():
-                    effective_topmost = bool(
-                        self.always_on_top_enabled
-                        and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
-                    )
                     _set_macos_window_topmost(int(window.winId()), effective_topmost)
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
-                debug_log("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
+                log_event("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
 
     def _topmost_sync_windows(self):
         # 单窗口重构后只有主窗口一个顶层窗口，置顶仅作用于它。
         return [self]
+
+    def _effective_topmost(self) -> bool:
+        """实际生效的置顶：用户开启置顶且当前未被副窗口/Tauri 设置临时压低。
+
+        独立渲染窗口（立绘）与主窗口必须共用这一判定，否则压低主窗口置顶时
+        立绘 overlay 仍会保持置顶，盖住系统取色器的放大预览。
+        """
+        return bool(
+            getattr(self, "always_on_top_enabled", False)
+            and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
+        )
 
     def _stack_renderer_overlay_below(self) -> None:
         manager = getattr(self, "renderer_manager", None)
         if manager is None or not getattr(manager, "is_overlay_active", False):
             return
         try:
-            manager.stack_below(self, topmost=bool(getattr(self, "always_on_top_enabled", False)))
+            manager.stack_below(self, topmost=self._effective_topmost())
         except Exception as exc:  # noqa: BLE001
-            debug_log("RendererManager", "同步渲染窗口层级失败", {"error": str(exc)})
+            log_event("RendererManager", "同步渲染窗口层级失败", {"error": str(exc)})
 
     def _apply_layout_settings(
         self,
@@ -6184,6 +6472,7 @@ class PetWindow(QWidget):
         vertical_offset: object,
         input_bar_offset: object,
         persist: bool,
+        raise_on_persist_error: bool = False,
     ) -> None:
         """一次性应用「立绘缩放 + 控制组布局」：归一化 → 锁定立绘底边锚点 → 更新状态（含按需重贴立绘）
         → 单次统一布局（一次 setGeometry，全程抑帧）。persist=True 时无条件持久化控制组布局。
@@ -6225,9 +6514,9 @@ class PetWindow(QWidget):
         finally:
             self.setUpdatesEnabled(was_enabled)
         if persist:
-            self._save_control_panel_layout()
+            self._save_control_panel_layout(raise_on_error=raise_on_persist_error)
 
-    def _save_control_panel_layout(self) -> None:
+    def _save_control_panel_layout(self, *, raise_on_error: bool = False) -> None:
         try:
             self._save_system_config_values(
                 "ui",
@@ -6239,7 +6528,9 @@ class PetWindow(QWidget):
                 },
             )
         except OSError as exc:
-            debug_log("PetWindow", "保存控制组布局失败", {"error": str(exc)})
+            log_event("PetWindow", "保存控制组布局失败", {"error": str(exc)})
+            if raise_on_error:
+                raise
 
     def _preview_layout(
         self,
@@ -6257,6 +6548,44 @@ class PetWindow(QWidget):
             vertical_offset=vertical_offset,
             input_bar_offset=input_bar_offset,
             persist=False,
+        )
+
+    def _preview_fonts(
+        self,
+        speech_font_size: int,
+        name_font_size: int,
+        input_font_size: int,
+        button_font_size: int,
+    ) -> None:
+        """字体滑块拖动时实时更新 QFont/QSS，不持久化。"""
+        self._apply_fonts_values(
+            speech_font_size=speech_font_size,
+            name_font_size=name_font_size,
+            input_font_size=input_font_size,
+            button_font_size=button_font_size,
+        )
+
+    def _apply_fonts_values(
+        self,
+        speech_font_size: int,
+        name_font_size: int,
+        input_font_size: int,
+        button_font_size: int,
+    ) -> None:
+        """用指定值更新 QFont 和 QSS（预览/应用共用入口）。"""
+        self.speech_font_size = speech_font_size
+        self.name_font_size = name_font_size
+        self.input_font_size = input_font_size
+        self.button_font_size = button_font_size
+        self._apply_fonts()
+        self.setStyleSheet(
+            pet_window_stylesheet(
+                self.theme_settings,
+                speech_font_size=speech_font_size,
+                name_font_size=name_font_size,
+                input_font_size=input_font_size,
+                button_font_size=button_font_size,
+            )
         )
 
     def _apply_subtitle_display_speed(
@@ -6281,7 +6610,15 @@ class PetWindow(QWidget):
 
     def _apply_theme_settings(self, theme_settings: ThemeSettings) -> None:
         self.theme_settings = (theme_settings or DEFAULT_THEME_SETTINGS).normalized()
-        self.setStyleSheet(pet_window_stylesheet(self.theme_settings))
+        self.setStyleSheet(
+            pet_window_stylesheet(
+                self.theme_settings,
+                speech_font_size=getattr(self, "speech_font_size", DEFAULT_SPEECH_FONT_SIZE),
+                name_font_size=getattr(self, "name_font_size", DEFAULT_NAME_FONT_SIZE),
+                input_font_size=getattr(self, "input_font_size", DEFAULT_INPUT_FONT_SIZE),
+                button_font_size=getattr(self, "button_font_size", DEFAULT_BUTTON_FONT_SIZE),
+            )
+        )
         self._apply_app_chrome_stylesheet()
         self._apply_card_window_theme()
         if self.history_window is not None:
@@ -6417,7 +6754,7 @@ class PetWindow(QWidget):
         try:
             backdrop.apply(card, self._card_tint())
         except Exception as exc:  # noqa: BLE001
-            debug_log("UI", "输入栏 macOS 原生毛玻璃应用失败", {"error": str(exc)})
+            log_event("UI", "输入栏 macOS 原生毛玻璃应用失败", {"error": str(exc)})
 
     def _remove_input_bar_native_backdrop(self) -> None:
         """移除输入栏 macOS 原生毛玻璃层，避免模式切换或隐藏后残留。"""
@@ -6428,7 +6765,7 @@ class PetWindow(QWidget):
         try:
             backdrop.remove(card)
         except Exception as exc:  # noqa: BLE001
-            debug_log("UI", "输入栏 macOS 原生毛玻璃移除失败", {"error": str(exc)})
+            log_event("UI", "输入栏 macOS 原生毛玻璃移除失败", {"error": str(exc)})
 
     def _sync_input_bar_native_backdrop_geometry(self) -> None:
         """输入栏布局变化时同步 NSVisualEffectView frame。"""
@@ -6442,6 +6779,7 @@ class PetWindow(QWidget):
         previous_character_id = self.character_profile.id
         self.character_profile = profile
         self.system_prompt = load_character_system_prompt(profile)
+        self.memory_curator.set_system_prompt(self.system_prompt)
         self.memory_store.set_scope(profile.id)
         self.agent_runtime.update_character(
             self.system_prompt,
@@ -6598,7 +6936,7 @@ def _add_runtime_event_context_to_messages(
 
 
 def _is_screen_awareness_event_type(event_type: str) -> bool:
-    return event_type in {SCREEN_AWARENESS_EVENT_TYPE, LEGACY_PROACTIVE_EVENT_TYPE}
+    return event_type == SCREEN_AWARENESS_EVENT_TYPE
 
 
 def _is_screen_awareness_health_reply(reply: ChatReply) -> bool:
@@ -6822,7 +7160,7 @@ def _load_screen_awareness_history_entries(window: Any) -> list[ChatHistoryEntry
     try:
         entries = history_store.load()
     except OSError as exc:
-        debug_log("ScreenAwareness", "读取近期聊天历史失败", {"error": str(exc)})
+        log_event("ScreenAwareness", "读取近期聊天历史失败", {"error": str(exc)})
         return []
     return [entry for entry in entries if isinstance(entry, ChatHistoryEntry)]
 
@@ -6914,6 +7252,23 @@ def _compact_tts_error(message: str, limit: int = 160) -> str:
     if len(compacted) <= limit:
         return compacted
     return compacted[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _normalize_font_size(
+    value: object,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """把用户配置字号安全归一化，非法值回退默认值。"""
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -7023,8 +7378,42 @@ def _same_optional_path(left: Path | None, right: Path | None) -> bool:
     return left.resolve() == right.resolve()
 
 
-def _should_write_character_theme(theme_write_mode: object, profile: CharacterProfile) -> bool:
-    return theme_write_mode in {"manual", "ai"}
+def _load_character_theme_overrides(settings_service: object) -> dict[str, ThemeSettings]:
+    load = getattr(settings_service, "load_character_theme_overrides", None)
+    if not callable(load):
+        return {}
+    overrides = load()
+    return overrides if isinstance(overrides, dict) else {}
+
+
+def _effective_character_theme(
+    settings_service: object,
+    profile: CharacterProfile | None,
+) -> ThemeSettings:
+    load_theme = getattr(settings_service, "load_theme_settings", None)
+    user_theme = load_theme() if callable(load_theme) else DEFAULT_THEME_SETTINGS
+    profile_id = str(getattr(profile, "id", "") or "").strip()
+    override = _load_character_theme_overrides(settings_service).get(profile_id)
+    return resolve_effective_theme(profile, override, user_theme)
+
+
+def _save_character_theme_override(
+    settings_service: object,
+    profile: CharacterProfile,
+    theme: ThemeSettings,
+) -> None:
+    profile_id = str(getattr(profile, "id", "") or "").strip()
+    if not profile_id:
+        return
+    base = resolve_effective_theme(profile, None, theme)
+    if theme_colors_to_mapping(theme) == theme_colors_to_mapping(base):
+        delete = getattr(settings_service, "delete_character_theme_override", None)
+        if callable(delete):
+            delete(profile_id)
+        return
+    save = getattr(settings_service, "save_character_theme_override", None)
+    if callable(save):
+        save(profile_id, theme)
 
 
 def _configure_secondary_window(window, *, keep_on_top: bool = False) -> None:  # type: ignore[no-untyped-def]
@@ -7041,8 +7430,8 @@ def _configure_secondary_window(window, *, keep_on_top: bool = False) -> None:  
     # 生效），再靠 raise 浮在桌宠之上；桌宠未置顶时副窗口保持普通层，可正常退到后面。
     #
     # 注意：setParent(None) 会重置 window flags，所以必须先 detach、再设 flags。
-    # 窗口的 Python 引用由调用方持有（设置窗口靠 self.settings_dialog，历史/日志窗口靠
-    # self.history_window / self.runtime_log_window），脱离 Qt 对象树后生命周期仍安全。
+    # 窗口的 Python 引用由调用方持有（历史/日志窗口靠 self.history_window /
+    # self.runtime_log_window），脱离 Qt 对象树后生命周期仍安全。
     set_parent = getattr(window, "setParent", None)
     parent = getattr(window, "parent", None)
     if callable(set_parent) and callable(parent) and parent() is not None:
@@ -7159,10 +7548,8 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
     ns_window_collection_behavior_can_join_all_spaces = 1 << 0
     ns_window_collection_behavior_move_to_active_space = 1 << 1
     ns_window_collection_behavior_full_screen_auxiliary = 1 << 8
-    ns_floating_window_level = 3
-    ns_modal_panel_window_level = 8
 
-    level = ns_modal_panel_window_level if enabled else ns_floating_window_level
+    level = _macos_window_level(enabled)
     send_level(ns_window_ptr, ctypes.c_void_p(selector(b"setLevel:")), level)
 
     sel_set_hides_on_deactivate = selector(b"setHidesOnDeactivate:")
@@ -7194,6 +7581,13 @@ def _set_macos_window_topmost(window_id: int, enabled: bool) -> None:
     )
 
 
+def _macos_window_level(enabled: bool) -> int:
+    """置顶时使用 modal panel 层，暂停置顶时回到普通窗口层。"""
+    ns_normal_window_level = 0
+    ns_modal_panel_window_level = 8
+    return ns_modal_panel_window_level if enabled else ns_normal_window_level
+
+
 def _update_runtime_api_clients(
     window: Any,
     *,
@@ -7206,8 +7600,14 @@ def _update_runtime_api_clients(
     if chat_slot is None:
         return
 
-    window.api_client.update_settings(chat_slot.settings)
-    window.memory_store.reload_api_settings(chat_slot.settings, wait=False)
+    update_settings = getattr(window.api_client, "update_settings", None)
+    if callable(update_settings):
+        update_settings(chat_slot.settings)
+    else:
+        window.api_client.settings = chat_slot.settings
+    reload_api_settings = getattr(window.memory_store, "reload_api_settings", None)
+    if callable(reload_api_settings):
+        reload_api_settings(chat_slot.settings, wait=False)
 
     vision_slot = resolve_model_slot(
         api_profiles,
@@ -7218,17 +7618,6 @@ def _update_runtime_api_clients(
     window.agent_runtime.vision_api_client = _client_for_explicit_slot(
         vision_slot,
         MODEL_SLOT_VISION_CHAT,
-    )
-
-    visual_context_slot = resolve_model_slot(
-        api_profiles,
-        model_selection,
-        MODEL_SLOT_VISUAL_CONTEXT,
-        base_settings,
-    )
-    window.agent_runtime.visual_context_api_client = _client_for_explicit_slot(
-        visual_context_slot,
-        MODEL_SLOT_VISUAL_CONTEXT,
     )
 
     memory_slot = resolve_model_slot(
@@ -7266,7 +7655,6 @@ def _wire_runtime_llm_event_emitters(
         for client in (
             getattr(runtime, "api_client", None),
             getattr(runtime, "vision_api_client", None),
-            getattr(runtime, "visual_context_api_client", None),
         ):
             _set_llm_event_emitter(client, emitter)
     memory_curator = getattr(window, "memory_curator", None)

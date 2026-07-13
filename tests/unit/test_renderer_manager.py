@@ -11,12 +11,16 @@ from pathlib import Path
 from app.plugins import RendererContribution, RendererCreateContext
 from app.plugins.events import (
     EVENT_APP_CLOSING,
+    EVENT_APP_STARTED,
+    EVENT_LLM_REQUEST_FAILED,
+    EVENT_LLM_REQUEST_FINISHED,
     EVENT_LLM_REQUEST_STARTED,
+    EVENT_TTS_FINISHED,
     EVENT_TTS_STARTED,
     PluginEventBus,
 )
 from app.renderers.base import CharacterRenderer
-from app.renderers.manager import RendererManager
+from app.renderers.manager import RENDERER_EVENTS, RendererManager
 
 
 class FakeProfile:
@@ -68,6 +72,18 @@ def _contribution(create) -> RendererContribution:
         display_name="MMD",
         create=create,
         plugin_id="mmd_renderer",
+    )
+
+
+def test_renderer_subscribes_only_to_host_emitted_events() -> None:
+    assert RENDERER_EVENTS == (
+        EVENT_APP_STARTED,
+        EVENT_APP_CLOSING,
+        EVENT_TTS_STARTED,
+        EVENT_TTS_FINISHED,
+        EVENT_LLM_REQUEST_STARTED,
+        EVENT_LLM_REQUEST_FINISHED,
+        EVENT_LLM_REQUEST_FAILED,
     )
 
 

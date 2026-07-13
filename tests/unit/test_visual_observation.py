@@ -5,129 +5,22 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from app.agent.screen_observation import ScreenObservation
+import app.storage.visual_observation as visual_observation_module
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationRecord,
     VisualObservationStore,
     build_visual_context_message,
     visual_observation_record_from_summary,
-    summarize_visual_observation,
 )
 
 
-def test_summarize_visual_observation_saves_structured_text_without_image_data() -> None:
-    class Client:
-        def complete_raw(self, _system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
-            assert messages[0]["content"][1]["image_url"]["url"] == "data:image/jpeg;base64,abc"
-            return json.dumps(
-                {
-                    "summary": "聊天窗口里有一句鼓励的话。",
-                    "visible_texts": ["屏幕上的那句台词：你真的打算让我说吗？"],
-                    "uncertain_texts": [],
-                    "notable_elements": ["聊天气泡"],
-                    "confidence": 0.92,
-                    "sensitive_redacted": False,
-                },
-                ensure_ascii=False,
-            )
-
-    record = summarize_visual_observation(
-        Client(),
-        VisualObservationJob(
-            id="vis_test",
-            source="manual_screenshot",
-            user_text="看这里",
-            observation=ScreenObservation(
-                data_url="data:image/jpeg;base64,abc",
-                width=320,
-                height=180,
-                captured_at="2026-05-31T12:00:00+08:00",
-                screen_name="manual-selection",
-            ),
-        ),
-    )
-
-    assert record.id == "vis_test"
-    assert record.summary == "聊天窗口里有一句鼓励的话。"
-    assert record.visible_texts == ["屏幕上的那句台词：你真的打算让我说吗？"]
-    assert "base64" not in json.dumps(record.__dict__, ensure_ascii=False)
+def test_legacy_visual_summarizer_is_removed() -> None:
+    assert not hasattr(visual_observation_module, "summarize_visual_observation")
 
 
-def test_summarize_visual_observation_uses_high_detail_for_screen_contexts() -> None:
-    class Client:
-        def complete_raw(self, _system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
-            assert messages[0]["content"][1]["image_url"]["url"] == "data:image/jpeg;base64,screen"
-            assert messages[0]["content"][1]["image_url"]["detail"] == "high"
-            return json.dumps(
-                {
-                    "summary": "屏幕上有一段代码。",
-                    "visible_texts": ["def main()"],
-                    "uncertain_texts": [],
-                    "notable_elements": ["代码编辑器"],
-                    "confidence": 0.9,
-                    "sensitive_redacted": False,
-                },
-                ensure_ascii=False,
-            )
-
-    record = summarize_visual_observation(
-        Client(),
-        VisualObservationJob(
-            id="vis_screen",
-            source="screen_awareness_context",
-            user_text="主动屏幕感知上下文批次",
-            screen_contexts=[
-                {
-                    "data_url": "data:image/jpeg;base64,screen",
-                    "width": 1920,
-                    "height": 1080,
-                    "captured_at": "2026-05-31T12:00:00+08:00",
-                    "screen_name": "DISPLAY1",
-                }
-            ],
-        ),
-    )
-
-    assert record.id == "vis_screen"
-    assert record.summary == "屏幕上有一段代码。"
-
-
-def test_summarize_visual_observation_accepts_fenced_json() -> None:
-    class Client:
-        def complete_raw(self, _system_prompt, _messages, **kwargs):  # type: ignore[no-untyped-def]
-            assert kwargs["response_format"] == {"type": "json_object"}
-            return """```json
-{
-  "summary": "桌面上有调试日志。",
-  "visible_texts": ["Debug"],
-  "uncertain_texts": [],
-  "notable_elements": ["终端"],
-  "confidence": 0.8,
-  "sensitive_redacted": false
-}
-```"""
-
-    record = summarize_visual_observation(
-        Client(),
-        VisualObservationJob(
-            id="vis_fenced",
-            source="screen_awareness_context",
-            user_text="看看桌面",
-            screen_contexts=[
-                {
-                    "data_url": "data:image/jpeg;base64,screen",
-                    "width": 1280,
-                    "height": 720,
-                    "captured_at": "2026-05-31T12:00:00+08:00",
-                    "screen_name": "DISPLAY1",
-                }
-            ],
-        ),
-    )
-
-    assert record.summary == "桌面上有调试日志。"
-    assert record.visible_texts == ["Debug"]
+def test_unused_visual_observation_search_is_removed() -> None:
+    assert not hasattr(VisualObservationStore, "search")
 
 
 def test_visual_observation_record_from_summary_redacts_sensitive_text() -> None:

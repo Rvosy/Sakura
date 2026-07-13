@@ -23,7 +23,7 @@ def _disable_audio_player(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _studio_runtime_root(name: str) -> Path:
-    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / name / uuid.uuid4().hex
+    root = Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -516,6 +516,7 @@ def test_studio_styles_table_corner_and_theme_editor_backgrounds() -> None:
 
     assert "QTableCornerButton::section" in stylesheet
     assert "rgba(17, 34, 51" in stylesheet
+    assert "selection-dot.svg" in stylesheet
     assert panel.findChild(QWidget, "themeEditorGrid") is not None
     assert panel.findChild(QWidget, "themeEditorViewport") is not None
 

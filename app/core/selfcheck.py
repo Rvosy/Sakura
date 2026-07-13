@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.storage.paths import StoragePaths
 
 SEVERITY_FATAL = "fatal"
@@ -71,7 +71,7 @@ def run_startup_self_check(base_dir: Path) -> SelfCheckReport:
     issues.extend(_check_disk_space(paths.base_dir))
 
     report = SelfCheckReport(issues=tuple(issues))
-    debug_log(
+    log_event(
         "SelfCheck",
         "启动自检完成",
         {
@@ -80,7 +80,7 @@ def run_startup_self_check(base_dir: Path) -> SelfCheckReport:
         },
     )
     for issue in report.issues:
-        debug_log(
+        log_event(
             "SelfCheck",
             f"selfcheck.{issue.key}",
             {"severity": issue.severity, "message": issue.message, **issue.data},

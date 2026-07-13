@@ -2,7 +2,7 @@
 
 覆盖：
 - ContextVar 的设置/读取/清空
-- debug_log 自动附加 interaction_id（dict / None / 已显式给出三种形态）
+- log_event 自动附加 interaction_id（dict / None / 已显式给出三种形态）
 - 跨线程传递语义（线程入口恢复后日志可串联）
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 
-from app.core.debug_log import format_debug_data, sanitize_debug_data, _attach_interaction_id
+from app.core.runtime_log import format_log_attributes, sanitize_console_log_data, _attach_interaction_id
 from app.core.interaction import clear_interaction_id, get_interaction_id, set_interaction_id
 
 
@@ -45,7 +45,7 @@ class TestContextVar:
         assert get_interaction_id() == "interaction-7"
 
 
-class TestDebugLogAttachment:
+class TestRuntimeLogAttachment:
     def teardown_method(self) -> None:
         clear_interaction_id()
 
@@ -74,10 +74,10 @@ class TestDebugLogAttachment:
 
     def test_id_survives_sanitization(self) -> None:
         set_interaction_id("interaction-5")
-        data = sanitize_debug_data(_attach_interaction_id({"api_key": "secret"}))
+        data = sanitize_console_log_data(_attach_interaction_id({"api_key": "secret"}))
         assert data["interaction_id"] == "interaction-5"
         assert data["api_key"] != "secret"  # 脱敏照常生效
 
-    def test_format_debug_data_includes_id(self) -> None:
+    def test_format_log_attributes_includes_id(self) -> None:
         set_interaction_id("interaction-6")
-        assert "interaction-6" in format_debug_data(_attach_interaction_id(None))
+        assert "interaction-6" in format_log_attributes(_attach_interaction_id(None))

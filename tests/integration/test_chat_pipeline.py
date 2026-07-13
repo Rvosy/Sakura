@@ -89,7 +89,7 @@ def test_chat_pipeline_records_event_visual_observation_after_reply() -> None:
             )
 
     runtime = Runtime()
-    path = Path("__pycache__") / "test_runtime" / f"visual_pipeline_{uuid.uuid4().hex}.jsonl"
+    path = Path("temp") / "test_runtime" / f"visual_pipeline_{uuid.uuid4().hex}.jsonl"
     try:
         pipeline = ChatPipeline(
             runtime,  # type: ignore[arg-type]
@@ -127,6 +127,42 @@ def test_chat_pipeline_records_event_visual_observation_after_reply() -> None:
         path.unlink(missing_ok=True)
 
 
+def test_visual_observation_persistence_failure_does_not_fail_reply() -> None:
+    class Runtime(RuntimeStub):
+        def handle_event(self, event, progress_callback=None, cancel_checker=None):  # type: ignore[no-untyped-def]
+            return AgentResult(
+                parse_chat_reply("見たよ"),
+                [],
+                visual_observation={
+                    "summary": "screen",
+                    "visible_texts": [],
+                    "uncertain_texts": [],
+                    "notable_elements": [],
+                    "confidence": 1.0,
+                    "sensitive_redacted": False,
+                },
+            )
+
+    class FailingStore:
+        def append(self, _record) -> None:  # type: ignore[no-untyped-def]
+            raise OSError("disk full")
+
+    pipeline = ChatPipeline(Runtime(), visual_observation_store=FailingStore())  # type: ignore[arg-type]
+    result = pipeline.run_event(
+        AgentEvent(type="screen_awareness_check", payload={}),
+        visual_observation_jobs=[
+            VisualObservationJob(
+                id="vis-fail",
+                source="screen_awareness_context",
+                user_text="screen",
+                screen_contexts=[],
+            )
+        ],
+    )
+
+    assert result.reply.text == "見たよ"
+
+
 def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply() -> None:
     class Runtime(RuntimeStub):
         def __init__(self) -> None:
@@ -151,7 +187,7 @@ def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply()
             )
 
     runtime = Runtime()
-    path = Path("__pycache__") / "test_runtime" / f"visual_chat_{uuid.uuid4().hex}.jsonl"
+    path = Path("temp") / "test_runtime" / f"visual_chat_{uuid.uuid4().hex}.jsonl"
     try:
         pipeline = ChatPipeline(
             runtime,  # type: ignore[arg-type]

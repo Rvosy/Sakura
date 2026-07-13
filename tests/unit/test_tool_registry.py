@@ -5,10 +5,11 @@
 - ToolRegistry 注册 / 查询 / 描述 / 执行
 - ToolPermissionPolicy 确认策略
 - search_tools / active_groups / capability filtering
-- BuiltinToolProvider
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -84,6 +85,15 @@ class TestToolRegistryBasics:
         registry.register(_dummy_tool("a", group="default"))
         registry.register(_dummy_tool("b", group="memory"))
         assert registry.groups() == {"default", "memory"}
+
+
+def test_builtin_tools_have_one_production_assembly_path() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+
+    assert not (project_root / "app/agent/tools/builtin/provider.py").exists()
+    assert not (project_root / "app/agent/tools/builtin/__init__.py").exists()
+    assert not (project_root / "app/agent/tools/screen/__init__.py").exists()
+    assert not hasattr(ToolRegistry, "register_from_provider")
 
 
 class TestToolRegistryDescribe:
@@ -182,27 +192,6 @@ class TestToolRegistryExecution:
         result = registry.prepare_or_execute("risky", {})
         assert isinstance(result, PendingToolAction)
 
-    def test_register_from_provider(self) -> None:
-        """register_from_provider 批量注册测试"""
-
-        class SimpleProvider:
-            def contribute_tools(self) -> list[Tool]:
-                return [_dummy_tool("p1"), _dummy_tool("p2")]
-
-        registry = ToolRegistry()
-        count = registry.register_from_provider(SimpleProvider())
-        assert count == 2
-        assert registry.get("p1") is not None
-
-    def test_register_from_provider_no_contribute(self) -> None:
-        class BadProvider:
-            pass
-
-        registry = ToolRegistry()
-        count = registry.register_from_provider(BadProvider())
-        assert count == 0
-
-
 class TestToolRegistrySearch:
     """工具搜索功能"""
 
@@ -265,5 +254,6 @@ class TestToolPermissionPolicy:
 
     def test_browser_free_access_tool_recognized(self) -> None:
         policy = ToolPermissionPolicy()
-        assert policy.is_browser_free_access_tool("playwright_navigate")
+        assert policy.is_browser_free_access_tool("playwright_get_text")
+        assert not policy.is_browser_free_access_tool("playwright_navigate")
         assert not policy.is_browser_free_access_tool("unknown_tool")

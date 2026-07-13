@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.agent.screen_awareness import SCREEN_AWARENESS_IMAGE_DETAIL
-from app.core.cancellation import CancelChecker, OperationCancelled
 from app.llm.prompts.runtime import wrap_untrusted_runtime_facts
 from app.storage.atomic import atomic_write_text
 
@@ -86,12 +84,17 @@ class VisualObservationStore:
         atomic_write_text(self.path, text, encoding="utf-8")
 
     def recent(self, limit: int = 3, since_minutes: int | None = None) -> list[VisualObservationRecord]:
+        raw_records = self._load_raw_records()
+        pruned_records = self._prune(raw_records)
+        if pruned_records != raw_records:
+            text = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in pruned_records)
+            atomic_write_text(self.path, text, encoding="utf-8")
         threshold = None
         if since_minutes is not None:
             threshold = datetime.now().astimezone() - timedelta(minutes=since_minutes)
 
         records: list[VisualObservationRecord] = []
-        for item in reversed(self._load_raw_records()):
+        for item in reversed(pruned_records):
             record = _record_from_dict(item)
             if record is None:
                 continue
@@ -99,31 +102,6 @@ class VisualObservationStore:
                 created_at = _parse_iso(record.created_at)
                 if created_at is None or created_at < threshold:
                     continue
-            records.append(record)
-            if len(records) >= limit:
-                break
-        return records
-
-    def search(self, keyword: str, limit: int = 3) -> list[VisualObservationRecord]:
-        normalized = keyword.strip().casefold()
-        if not normalized:
-            return self.recent(limit=limit)
-
-        records: list[VisualObservationRecord] = []
-        for item in reversed(self._load_raw_records()):
-            record = _record_from_dict(item)
-            if record is None:
-                continue
-            haystack = "\n".join(
-                [
-                    record.summary,
-                    *record.visible_texts,
-                    *record.uncertain_texts,
-                    *record.notable_elements,
-                ]
-            ).casefold()
-            if normalized not in haystack:
-                continue
             records.append(record)
             if len(records) >= limit:
                 break
@@ -159,58 +137,6 @@ class VisualObservationStore:
 
 def generate_visual_observation_id() -> str:
     return f"vis_{uuid.uuid4().hex[:10]}"
-
-
-def summarize_visual_observation(
-    api_client: Any,
-    job: VisualObservationJob,
-    *,
-    cancel_checker: CancelChecker | None = None,
-) -> VisualObservationRecord:
-    """调用视觉模型生成结构化观察；失败时返回可追踪的最小记录。"""
-    metadata = _job_metadata(job)
-    fallback = _fallback_record(job, metadata, "视觉摘要生成失败。")
-    image_parts = _job_image_parts(job)
-    if not image_parts:
-        return fallback
-
-    try:
-        content = api_client.complete_raw(
-            _build_visual_summary_prompt(),
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": _build_visual_summary_user_text(job, metadata),
-                        },
-                        *image_parts,
-                    ],
-                }
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            cancel_checker=cancel_checker,
-        )
-    except OperationCancelled:
-        raise
-    except Exception as exc:
-        return _fallback_record(job, metadata, f"视觉摘要生成失败：{exc}")
-
-    parsed = _load_json_object(content)
-    if parsed is None:
-        return _fallback_record(job, metadata, "视觉摘要返回格式无法解析。")
-
-    record, redacted = _record_from_summary(job, metadata, parsed)
-    if redacted:
-        return VisualObservationRecord(
-            **{
-                **asdict(record),
-                "sensitive_redacted": True,
-            }
-        )
-    return record
 
 
 def extract_visual_observation_summary(content: str) -> dict[str, Any] | None:
@@ -281,87 +207,6 @@ def should_inject_visual_context(user_text: str) -> bool:
     return any(keyword.casefold() in normalized for keyword in VISUAL_CONTEXT_KEYWORDS)
 
 
-def _build_visual_summary_prompt() -> str:
-    return """
-你是桌面 Agent 的视觉观察整理器。你只负责把截图转成后续对话可检索的短期视觉记忆，并且只输出 JSON。
-不要输出 Markdown，不要解释，不要生成角色回复。
-
-提取重点：
-- 优先围绕 user_text 判断用户最可能关心的区域、文字和状态；但不要因此丢掉明显可见的错误、标题、按钮文字和台词。
-- 屏幕里明确可见的台词、字幕、聊天气泡、窗口标题、按钮文字、错误信息、代码片段。
-- 用户可能追问的对象、位置、状态和关键界面元素。
-- 看不清或不确定的文字放入 uncertain_texts，不要强行猜。
-- 遇到 API Key、token、密码、身份证、银行卡等敏感内容，必须打码为 [REDACTED]，并把 sensitive_redacted 设为 true。
-
-只返回如下 JSON：
-{
-  "summary": "一句到三句话概括画面",
-  "visible_texts": ["明确可见文字或台词"],
-  "uncertain_texts": ["不确定或部分可见文字"],
-  "notable_elements": ["关键窗口、控件、人物、状态"],
-  "confidence": 0.0,
-  "sensitive_redacted": false
-}
-""".strip()
-
-
-def _build_visual_summary_user_text(
-    job: VisualObservationJob,
-    metadata: dict[str, Any],
-) -> str:
-    return json.dumps(
-        {
-            "source": job.source,
-            "user_text": job.user_text,
-            "screen_name": metadata["screen_name"],
-            "width": metadata["width"],
-            "height": metadata["height"],
-            "captured_at": metadata["captured_at"],
-            "screen_context_count": len(job.screen_contexts or []) or 1,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
-def _job_image_parts(job: VisualObservationJob) -> list[dict[str, Any]]:
-    image_urls: list[tuple[str, str]] = []
-    if job.observation is not None:
-        data_url = getattr(job.observation, "data_url", "")
-        if isinstance(data_url, str) and data_url.startswith("data:image/"):
-            image_urls.append((data_url, "low"))
-    for context in job.screen_contexts or []:
-        data_url = context.get("data_url")
-        if isinstance(data_url, str) and data_url.startswith("data:image/"):
-            image_urls.append(
-                (
-                    data_url,
-                    _normalize_image_detail(
-                        context.get("detail"),
-                        default=SCREEN_AWARENESS_IMAGE_DETAIL,
-                    ),
-                )
-            )
-
-    return [
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": image_url,
-                "detail": detail,
-            },
-        }
-        for image_url, detail in image_urls[:3]
-    ]
-
-
-def _normalize_image_detail(value: Any, *, default: str = "low") -> str:
-    detail = str(value or "").strip().lower()
-    if detail in {"low", "high", "original", "auto"}:
-        return detail
-    return default
-
-
 def _job_metadata(job: VisualObservationJob) -> dict[str, Any]:
     if job.observation is not None:
         return {
@@ -430,28 +275,6 @@ def _summary_has_content(summary: dict[str, Any]) -> bool:
         or _string_list(summary.get("visible_texts"))
         or _string_list(summary.get("uncertain_texts"))
         or _string_list(summary.get("notable_elements"))
-    )
-
-
-def _fallback_record(
-    job: VisualObservationJob,
-    metadata: dict[str, Any],
-    summary: str,
-) -> VisualObservationRecord:
-    return VisualObservationRecord(
-        id=job.id,
-        created_at=_now_iso(),
-        source=job.source,
-        user_text=_redact_text(job.user_text)[0],
-        screen_name=metadata["screen_name"],
-        width=metadata["width"],
-        height=metadata["height"],
-        summary=summary,
-        visible_texts=[],
-        uncertain_texts=[],
-        notable_elements=[],
-        confidence=0.0,
-        sensitive_redacted=False,
     )
 
 

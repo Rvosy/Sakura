@@ -41,13 +41,9 @@ def test_old_reexport_symbols_are_not_available_from_former_modules() -> None:
     ):
         assert not hasattr(tts_module, name)
 
-    settings_dialog = importlib.import_module("app.ui.settings_dialog")
-    for name in (
-        "ApiConnectionTestWorker",
-        "TTSTestWorker",
-        "ModelComboBox",
-    ):
-        assert not hasattr(settings_dialog, name)
+    # 旧 Qt 设置窗已随 Tauri-only 迁移整体删除，模块不应再可导入。
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.ui.settings_dialog")
 
     runtime = importlib.import_module("app.agent.runtime")
     for name in (
@@ -58,6 +54,17 @@ def test_old_reexport_symbols_are_not_available_from_former_modules() -> None:
         assert not hasattr(runtime, name)
 
 
+def test_legacy_settings_panel_plugin_api_is_removed() -> None:
+    plugins_module = importlib.import_module("app.plugins")
+    models_module = importlib.import_module("app.plugins.models")
+
+    assert not hasattr(plugins_module, "SettingsPanelContribution")
+    assert not hasattr(plugins_module, "PERMISSION_SETTINGS_PANEL")
+    assert not hasattr(models_module, "SettingsPanelContribution")
+    assert not hasattr(models_module, "PERMISSION_SETTINGS_PANEL")
+    assert "settings_panel" not in models_module.KNOWN_PLUGIN_PERMISSIONS
+
+
 def test_plugin_importing_removed_sdk_fails_gracefully() -> None:
     # 针对已删除 sdk.* 编写的旧插件，应加载失败但不拖垮宿主，且其余插件不受影响。
     base = _runtime_root("old_sdk_plugin")
@@ -65,7 +72,7 @@ def test_plugin_importing_removed_sdk_fails_gracefully() -> None:
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         """
-api_version: 1
+api_version: 2
 id: old_sdk_plugin
 name: Old SDK Plugin
 entry: plugin:OldSdkPlugin
@@ -95,11 +102,11 @@ class OldSdkPlugin(PluginBase):
 def _runtime_root(name: str) -> Path:
     root = (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "public_api_cleanup"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root

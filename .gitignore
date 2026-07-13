@@ -17,11 +17,18 @@ runtime/
 /tts/
 env/
 node_modules/
+tools/settings-tauri/src-tauri/target/
+tools/settings-tauri/src-tauri/gen/
+tools/studio-tauri/src-tauri/target/
+tools/studio-tauri/src-tauri/gen/
 characters/
 
 .pytest_cache/
+.pytest-basetemp/
 .pytest_tmp/
 .pytest_tmp*/
+tmp_pytest/
+pytest_tmp_probe_delete/
 .playwright-mcp/
 .mypy_cache/
 .ruff_cache/
@@ -45,6 +52,8 @@ data/logs/
 data/cache/
 data/sakura.lock
 data/migration_backup/
+data/character_studio/
+data/.test_visual_context_*.tmp
 tts/
 data/config/api.yaml
 data/config/characters.yaml
@@ -53,6 +62,7 @@ data/config/mcp.yaml
 data/config/plugins.yaml
 task.md
 log.txt
+_cleanup_log.py
 
 # Plugin安装目录（只保留浏览器插件，其他插件继续忽略）
 plugins/*

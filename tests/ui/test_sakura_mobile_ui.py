@@ -2,48 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QLineEdit
-
+from app.agent import AgentEvent
 from app.llm.chat_reply import ChatSegment
 from app.ui.theme import DEFAULT_THEME_SETTINGS, build_settings_dialog_stylesheet
-
-
-def test_mobile_settings_panel_shows_token_and_links() -> None:
-    from plugins.sakura_mobile.settings_panel import SakuraMobileSettingsPanel
-
-    app = QApplication.instance() or QApplication([])
-    _ = app
-
-    class Plugin:
-        def config(self) -> dict[str, object]:
-            return {
-                "enabled": True,
-                "host": "0.0.0.0",
-                "port": 8765,
-                "token": "secret",
-            }
-
-        def status(self) -> dict[str, object]:
-            return {
-                **self.config(),
-                "running": True,
-                "error": "",
-                "local_url": "http://127.0.0.1:8765/?token=secret",
-                "lan_urls": ["http://192.168.1.23:8765/?token=secret"],
-            }
-
-    panel = SakuraMobileSettingsPanel(Plugin())
-
-    assert panel.token.echoMode() == QLineEdit.EchoMode.Normal
-    assert panel.token.text() == "secret"
-    assert panel.status_label.text() == "运行中"
-    assert panel.local_url.text() == "http://127.0.0.1:8765/?token=secret"
-    assert panel.lan_url.text() == "http://192.168.1.23:8765/?token=secret"
-
-    panel._copy(panel.local_url.text(), panel.copy_local_button)
-
-    assert QApplication.clipboard().text() == "http://127.0.0.1:8765/?token=secret"
-    assert panel.copy_local_button.text() == "已复制"
 
 
 def test_readonly_link_selection_stays_visible() -> None:
@@ -178,70 +139,60 @@ def test_mobile_chat_completion_ignores_other_character() -> None:
     assert window.messages == []
 
 
-def test_mobile_chat_ignores_background_memory_curation() -> None:
-    from app.ui.pet_window import PetWindow
+def test_mobile_chat_ignores_background_memory_curation(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.memory_curation_thread = object()
+    pet_window.active_event = None
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "is_reply_sequence_active",
+        lambda: False,
+    )
 
-    class MinimalWindow:
-        _mobile_chat_busy = PetWindow._mobile_chat_busy
-
-    window = MinimalWindow()
-    window.worker_thread = None
-    window._active_mobile_chat_request = None
-    window._mobile_chat_requests = []
-    window.memory_curation_thread = object()
-    window.active_reminder_id = None
-    window.active_event_type = ""
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.screen_observation_followup_in_progress = False
-    window.screen_observation_encode_thread = None
-    window.active_interaction_id = ""
-    window.subtitle_controller = SimpleNamespace(is_reply_sequence_active=lambda: False)
-
-    assert not window._mobile_chat_busy()
+    assert not pet_window._mobile_chat_busy()
+    pet_window.memory_curation_thread = None
 
 
-def test_mobile_chat_allows_stale_interaction_id_after_reply_sequence_done() -> None:
-    from app.ui.pet_window import PetWindow
+def test_mobile_chat_allows_stale_interaction_id_after_reply_sequence_done(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.active_interaction_id = "interaction-stale"
+    pet_window.active_event = None
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "is_reply_sequence_active",
+        lambda: False,
+    )
 
-    class MinimalWindow:
-        _mobile_chat_busy = PetWindow._mobile_chat_busy
-
-    window = MinimalWindow()
-    window.worker_thread = None
-    window._active_mobile_chat_request = None
-    window._mobile_chat_requests = []
-    window.memory_curation_thread = None
-    window.active_reminder_id = None
-    window.active_event_type = ""
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.screen_observation_followup_in_progress = False
-    window.screen_observation_encode_thread = None
-    window.active_interaction_id = "interaction-stale"
-    window.subtitle_controller = SimpleNamespace(is_reply_sequence_active=lambda: False)
-
-    assert not window._mobile_chat_busy()
+    assert not pet_window._mobile_chat_busy()
 
 
-def test_mobile_chat_is_busy_while_reply_sequence_active() -> None:
-    from app.ui.pet_window import PetWindow
+def test_mobile_chat_is_busy_while_reply_sequence_active(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.active_event = None
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "is_reply_sequence_active",
+        lambda: True,
+    )
 
-    class MinimalWindow:
-        _mobile_chat_busy = PetWindow._mobile_chat_busy
+    assert pet_window._mobile_chat_busy()
 
-    window = MinimalWindow()
-    window.worker_thread = None
-    window._active_mobile_chat_request = None
-    window._mobile_chat_requests = []
-    window.memory_curation_thread = None
-    window.active_reminder_id = None
-    window.active_event_type = ""
-    window.pending_tool_action = None
-    window.pending_screen_observation_messages = None
-    window.screen_observation_followup_in_progress = False
-    window.screen_observation_encode_thread = None
-    window.active_interaction_id = ""
-    window.subtitle_controller = SimpleNamespace(is_reply_sequence_active=lambda: True)
 
-    assert window._mobile_chat_busy()
+def test_mobile_chat_is_busy_while_active_event_exists(
+    pet_window,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    pet_window.active_event = AgentEvent(type="reminder_due", payload={"id": "r1"})
+    monkeypatch.setattr(
+        pet_window.subtitle_controller,
+        "is_reply_sequence_active",
+        lambda: False,
+    )
+
+    assert pet_window._mobile_chat_busy()

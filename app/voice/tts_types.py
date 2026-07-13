@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 TTSCallback = Callable[[], None]
 
@@ -37,7 +37,7 @@ class TTSPreparedAudio:
     on_finished: TTSCallback | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class _TTSRequest:
     text: str
     tone: str | None
@@ -46,6 +46,7 @@ class _TTSRequest:
     prepared_audio: TTSPreparedAudio | None = None
     # 发起请求时的交互 ID；请求线程入口恢复，使 TTS 日志可与该次交互串联
     interaction_id: str = ""
+    cancelled: bool = False
 
 
 class TTSServiceState(str, Enum):
@@ -75,7 +76,7 @@ def _set_service_state(provider: object, new_state: TTSServiceState, detail: dic
     payload = {"from": str(getattr(old_state, "value", old_state)), "to": new_state.value}
     if detail:
         payload.update(detail)
-    debug_log("TTS", "tts.service_state", payload)
+    log_event("TTS", "tts.service_state", payload, verbosity=3)
 
 
 def _provider_is_closed(provider: object) -> bool:

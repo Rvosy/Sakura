@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.sensory.models import (
     SensoryObservation,
     SensoryProviderMode,
@@ -28,7 +28,7 @@ class SensoryPipeline:
         normalized_request = request.normalized()
         source_settings = settings.sources[normalized_request.source]
         if not settings.enabled or source_settings.mode == SensoryProviderMode.OFF:
-            debug_log(
+            log_event(
                 "Sensory",
                 "感官请求已关闭，跳过",
                 {"source": normalized_request.source.value, "request_id": normalized_request.id},
@@ -38,7 +38,7 @@ class SensoryPipeline:
         try:
             observation = provider.observe(normalized_request).normalized()
         except SensoryProviderUnavailable as exc:
-            debug_log(
+            log_event(
                 "Sensory",
                 "感官 provider 不可用，已关闭本次请求",
                 {
@@ -49,7 +49,7 @@ class SensoryPipeline:
             )
             return None
         recorded = self.store.append(observation)
-        debug_log(
+        log_event(
             "Sensory",
             "感官观察已保存",
             {
@@ -68,7 +68,7 @@ class SensoryPipeline:
         if not settings.enabled:
             return None
         recorded = self.store.append(normalized)
-        debug_log(
+        log_event(
             "Sensory",
             "外部感官观察已镜像",
             {

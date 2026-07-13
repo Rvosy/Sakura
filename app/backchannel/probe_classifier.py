@@ -9,7 +9,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from app.backchannel.model_cache import DEFAULT_BACKCHANNEL_EMBEDDING_MODEL
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 # probe 头(逻辑回归)在标注数据上训练得到,随框架分发。零样本原型相似度只是检索,
 # 不是分类;这里 embedding 仅产出向量,意图由训练出的线性头判定。
@@ -117,7 +117,7 @@ class ProbeIntentClassifier:
                 )
             except Exception as exc:  # noqa: BLE001
                 self._load_failed = True
-                debug_log(
+                log_event(
                     "Backchannel",
                     "接话 probe 头加载失败,降级为规则分类",
                     {"path": str(self._head_path), "error": str(exc)},
@@ -144,7 +144,7 @@ class ProbeIntentClassifier:
                     self._encoder = SentenceTransformer(self._model_name, **self._model_kwargs)
             except Exception as exc:  # noqa: BLE001
                 self._load_failed = True
-                debug_log(
+                log_event(
                     "Backchannel",
                     "接话意图模型加载失败,降级为规则分类",
                     {"model": self._model_name, "error": str(exc)},
@@ -168,7 +168,7 @@ class ProbeIntentClassifier:
             raw = encoder.encode([text])
         except Exception as exc:  # noqa: BLE001
             self._load_failed = True
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话意图向量编码失败,降级为规则分类",
                 {"model": self._model_name, "error": str(exc)},

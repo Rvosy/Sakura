@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app.llm.chat_reply import ChatSegment
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.voice.text_language_guard import should_skip_tts_text
 from app.voice.tts import TTSPreparedAudio, TTSProvider
 
@@ -38,6 +38,12 @@ class VoicePlaybackController:
     def set_provider(self, tts_provider: TTSProvider) -> None:
         self.discard_prepared()
         self.tts_provider = tts_provider
+
+    def cancel_playback(self) -> None:
+        self.discard_prepared()
+        cancel = getattr(self.tts_provider, "cancel_playback", None)
+        if callable(cancel):
+            cancel()
 
     def speak_segment(
         self,
@@ -77,7 +83,7 @@ class VoicePlaybackController:
                 on_finished=self._wrap_tts_finished(segment, sequence_id, on_finished),
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "TTS",
                 "播放控制器捕获 TTS 异常，回退为仅显示字幕",
                 {
@@ -86,7 +92,7 @@ class VoicePlaybackController:
                     "error": str(exc),
                 },
             )
-            debug_log("TTS", "播放失败，已继续显示字幕", {"error": str(exc)})
+            log_event("TTS", "播放失败，已继续显示字幕", {"error": str(exc)})
             self._notify_error(f"播放失败，已继续显示字幕：{exc}")
             on_started()
             on_finished()
@@ -136,7 +142,7 @@ class VoicePlaybackController:
                 "portrait": next_segment.portrait,
             },
         )
-        debug_log(
+        log_event(
             "PetWindow",
             "预生成下一段 TTS",
             {
@@ -153,7 +159,7 @@ class VoicePlaybackController:
         except Exception as exc:  # noqa: BLE001
             self._prepared_next_segment = None
             self._prepared_next_tts = None
-            debug_log(
+            log_event(
                 "TTS",
                 "预生成下一段 TTS 失败，后续将即时播放或仅显示字幕",
                 {
@@ -162,7 +168,7 @@ class VoicePlaybackController:
                     "error": str(exc),
                 },
             )
-            debug_log("TTS", "预生成失败，已继续字幕流程", {"error": str(exc)})
+            log_event("TTS", "预生成失败，已继续字幕流程", {"error": str(exc)})
             self._notify_error(f"预生成失败，已继续字幕流程：{exc}")
 
     def discard_prepared(self) -> None:
@@ -187,7 +193,7 @@ class VoicePlaybackController:
         try:
             return self._target_text_lang_getter()
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "读取目标 TTS 文本语言失败，回退为 ja", {"error": str(exc)})
+            log_event("TTS", "读取目标 TTS 文本语言失败，回退为 ja", {"error": str(exc)})
             return "ja"
 
     def _should_skip_segment_tts(self, segment: ChatSegment) -> bool:
@@ -209,7 +215,7 @@ class VoicePlaybackController:
             "target_lang": self._target_text_lang(),
         }
         self._log_stage("tts_skipped_language_guard", payload)
-        debug_log("TTS", "语言守卫跳过异常文本 TTS", payload)
+        log_event("TTS", "语言守卫跳过异常文本 TTS", payload)
 
     def _notify_error(self, message: str) -> None:
         if self._on_error is None:
@@ -217,7 +223,7 @@ class VoicePlaybackController:
         try:
             self._on_error(message)
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "TTS 错误提示回调失败", {"error": str(exc)})
+            log_event("TTS", "TTS 错误提示回调失败", {"error": str(exc)})
 
     def _notify_tts_started(self, segment: ChatSegment, sequence_id: int) -> None:
         if self._on_tts_started is None:
@@ -225,7 +231,7 @@ class VoicePlaybackController:
         try:
             self._on_tts_started(segment, sequence_id)
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "TTS start hook 回调失败", {"error": str(exc)})
+            log_event("TTS", "TTS start hook 回调失败", {"error": str(exc)})
 
     def _notify_tts_finished(self, segment: ChatSegment, sequence_id: int) -> None:
         if self._on_tts_finished is None:
@@ -233,4 +239,4 @@ class VoicePlaybackController:
         try:
             self._on_tts_finished(segment, sequence_id)
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "TTS end hook 回调失败", {"error": str(exc)})
+            log_event("TTS", "TTS end hook 回调失败", {"error": str(exc)})

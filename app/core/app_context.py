@@ -162,8 +162,3 @@ class AppContext:
     @property
     def sensory_pipeline(self) -> SensoryPipeline:
         return self.features.sensory_pipeline
-
-    @property
-    def proactive_care_settings(self) -> ScreenAwarenessSettings:
-        """兼容旧调用点；新代码请使用 screen_awareness_settings。"""
-        return self.features.screen_awareness_settings

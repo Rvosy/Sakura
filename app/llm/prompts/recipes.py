@@ -5,15 +5,15 @@ from app.llm.prompts.blocks import (
     DEFAULT_REPLY_PORTRAITS,
     DEFAULT_REPLY_TONES,
     SEGMENTED_REPLY_FORMAT,
-    build_proactive_check_segment_rules,
+    build_screen_awareness_check_segment_rules,
     build_segment_protocol,
     context_acquisition_strategy_block,
     labels_or_default,
-    proactive_reply_decision_flow_block,
-    proactive_reply_examples_block,
-    proactive_rules_block,
-    proactive_scene_strategy_block,
-    proactive_web_research_rules_block,
+    screen_awareness_reply_decision_flow_block,
+    screen_awareness_reply_examples_block,
+    screen_awareness_rules_block,
+    screen_awareness_scene_strategy_block,
+    screen_awareness_web_research_rules_block,
 )
 from app.llm.prompts.render import render_blocks
 from app.llm.prompts.types import PromptBlock
@@ -97,7 +97,7 @@ def build_event_reply_protocol(
     )
 
 
-def build_proactive_check_reply_protocol(
+def build_screen_awareness_check_reply_protocol(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
 ) -> str:
@@ -107,7 +107,7 @@ def build_proactive_check_reply_protocol(
         reply_tones,
         reply_portraits,
         example_tone="中性",
-        segment_rules=build_proactive_check_segment_rules(),
+        segment_rules=build_screen_awareness_check_segment_rules(),
     )
 
 
@@ -145,7 +145,7 @@ def build_runtime_context_text(
     return render_blocks(blocks)
 
 
-def build_proactive_check_tool_system_prefix(
+def build_screen_awareness_check_tool_system_prefix(
     character_prompt: str,
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None,
@@ -160,7 +160,7 @@ def build_proactive_check_tool_system_prefix(
     在消息数组末尾单独注入），使前缀在多步与多轮间保持稳定。
     """
 
-    reply_protocol = build_proactive_check_reply_protocol(reply_tones, reply_portraits)
+    reply_protocol = build_screen_awareness_check_reply_protocol(reply_tones, reply_portraits)
     return render_blocks(
         [
             PromptBlock(None, character_prompt.strip()),
@@ -187,11 +187,11 @@ def build_proactive_check_tool_system_prefix(
                     ]
                 ),
             ),
-            proactive_reply_decision_flow_block(),
-            proactive_scene_strategy_block(),
-            proactive_web_research_rules_block(),
-            proactive_rules_block(include_tool_rules=True),
-            proactive_reply_examples_block(),
+            screen_awareness_reply_decision_flow_block(),
+            screen_awareness_scene_strategy_block(),
+            screen_awareness_web_research_rules_block(),
+            screen_awareness_rules_block(include_tool_rules=True),
+            screen_awareness_reply_examples_block(),
             PromptBlock(None, reply_protocol),
             PromptBlock(None, extra_instructions.strip()),
             PromptBlock(
@@ -213,7 +213,7 @@ def build_proactive_check_tool_system_prefix(
     )
 
 
-def build_proactive_check_tool_system_prompt(
+def build_screen_awareness_check_tool_system_prompt(
     character_prompt: str,
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None,
@@ -228,11 +228,11 @@ def build_proactive_check_tool_system_prompt(
 ) -> str:
     """构建主动屏幕感知 tool-loop 完整系统提示词（静态前缀 + 末尾运行时上下文）。
 
-    新工具循环已改为分别取用 build_proactive_check_tool_system_prefix 与
-    build_runtime_context_text，使前缀可缓存。本函数保留给历史调用点与既有测试。
+    新工具循环已改为分别取用 build_screen_awareness_check_tool_system_prefix 与
+    build_runtime_context_text，使前缀可缓存。本函数保留给直接构建完整提示词的调用点。
     """
 
-    prefix = build_proactive_check_tool_system_prefix(
+    prefix = build_screen_awareness_check_tool_system_prefix(
         character_prompt,
         reply_tones,
         reply_portraits,
@@ -264,18 +264,18 @@ def build_event_system_prompt(
         PromptBlock(None, character_prompt.strip()),
         PromptBlock(None, "你正在处理 Sakura 桌宠的主动事件。请用角色语气自然搭话、提问用户。"),
     ]
-    if event_type in {"screen_awareness_check", "proactive_check"}:
+    if event_type == "screen_awareness_check":
         blocks.extend(
             [
                 PromptBlock(
                     None,
-                    build_proactive_check_reply_protocol(reply_tones, reply_portraits),
+                    build_screen_awareness_check_reply_protocol(reply_tones, reply_portraits),
                 ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),
-                proactive_reply_decision_flow_block(),
-                proactive_scene_strategy_block(),
-                proactive_rules_block(),
-                proactive_reply_examples_block(),
+                screen_awareness_reply_decision_flow_block(),
+                screen_awareness_scene_strategy_block(),
+                screen_awareness_rules_block(),
+                screen_awareness_reply_examples_block(),
             ]
         )
     else:
@@ -295,34 +295,34 @@ def build_event_system_prompt(
     return render_blocks(blocks)
 
 
-def build_proactive_rules(*, include_tool_rules: bool = False) -> str:
-    return proactive_rules_block(include_tool_rules=include_tool_rules).body
+def build_screen_awareness_rules(*, include_tool_rules: bool = False) -> str:
+    return screen_awareness_rules_block(include_tool_rules=include_tool_rules).body
 
 
-def build_proactive_tool_loop_rules() -> str:
+def build_screen_awareness_tool_loop_rules() -> str:
     return render_blocks(
         [
             PromptBlock(None, "- 这是主动屏幕感知事件，不是用户直接发来的请求；整体保持低打扰。"),
             PromptBlock(None, "- 请用角色语气基于屏幕内容找话题、接续任务、提问或轻量协助。"),
-            proactive_reply_decision_flow_block(),
-            proactive_scene_strategy_block(),
-            proactive_web_research_rules_block(),
-            proactive_rules_block(include_tool_rules=True),
-            proactive_reply_examples_block(),
+            screen_awareness_reply_decision_flow_block(),
+            screen_awareness_scene_strategy_block(),
+            screen_awareness_web_research_rules_block(),
+            screen_awareness_rules_block(include_tool_rules=True),
+            screen_awareness_reply_examples_block(),
         ]
     )
 
 
-def build_proactive_reply_decision_flow() -> str:
+def build_screen_awareness_reply_decision_flow() -> str:
     """构建主动屏幕感知回复前的稳定判断链。"""
 
-    return proactive_reply_decision_flow_block().body
+    return screen_awareness_reply_decision_flow_block().body
 
 
-def build_proactive_scene_strategy_rules() -> str:
+def build_screen_awareness_scene_strategy_rules() -> str:
     """构建不同屏幕场景对应的主动搭话策略。"""
 
-    return proactive_scene_strategy_block().body
+    return screen_awareness_scene_strategy_block().body
 
 
 def build_theme_color_system_prompt(character_name: str) -> str:
@@ -359,25 +359,13 @@ def build_theme_color_system_prompt(character_name: str) -> str:
     )
 
 
-def build_proactive_web_research_rules() -> str:
+def build_screen_awareness_web_research_rules() -> str:
     """构建主动屏幕感知后台 Web 搜索规则。"""
 
-    return proactive_web_research_rules_block().body
+    return screen_awareness_web_research_rules_block().body
 
 
-def build_proactive_reply_examples() -> str:
+def build_screen_awareness_reply_examples() -> str:
     """构建主动屏幕感知好坏例子，减少泛化关怀和过度吃醋。"""
 
-    return proactive_reply_examples_block().body
-
-
-# 新命名导出；旧 proactive_* 名称保留给历史调用点。
-build_screen_awareness_check_reply_protocol = build_proactive_check_reply_protocol
-build_screen_awareness_check_tool_system_prompt = build_proactive_check_tool_system_prompt
-build_screen_awareness_check_tool_system_prefix = build_proactive_check_tool_system_prefix
-build_screen_awareness_reply_decision_flow = build_proactive_reply_decision_flow
-build_screen_awareness_scene_strategy_rules = build_proactive_scene_strategy_rules
-build_screen_awareness_rules = build_proactive_rules
-build_screen_awareness_tool_loop_rules = build_proactive_tool_loop_rules
-build_screen_awareness_web_research_rules = build_proactive_web_research_rules
-build_screen_awareness_reply_examples = build_proactive_reply_examples
+    return screen_awareness_reply_examples_block().body

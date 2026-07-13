@@ -186,7 +186,7 @@ def test_event_worker_forwards_progress_signal() -> None:
             )
 
     app = QApplication.instance() or QApplication([])
-    worker = EventWorker(Runtime(), AgentEvent(type="proactive_check", payload={}))  # type: ignore[arg-type]
+    worker = EventWorker(Runtime(), AgentEvent(type="screen_awareness_check", payload={}))  # type: ignore[arg-type]
     progress_replies = []
     finished_replies = []
     worker.progress.connect(lambda progress: progress_replies.append(progress.reply.translation))

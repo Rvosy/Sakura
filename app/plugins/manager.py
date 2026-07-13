@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import inspect
 import re
 import sys
 from dataclasses import dataclass, field, replace
@@ -14,7 +13,7 @@ from typing import Any
 
 from app.agent.tools.registry import Tool
 from app.agent.tools import ToolRegistry
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import DEFAULT_THREAD_SHUTDOWN_WAIT_MS, ResourceRegistry
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
@@ -28,9 +27,9 @@ from app.plugins.models import (
     PERMISSION_EVENT_CHARACTER,
     PERMISSION_EVENT_MESSAGE,
     PERMISSION_EVENT_TTS,
+    PERMISSION_PLUGIN_SETTINGS,
     PERMISSION_PROMPT_PATCH,
     PERMISSION_RENDERER,
-    PERMISSION_SETTINGS_PANEL,
     PERMISSION_TOOL,
     PERMISSION_TOOLS_TAB,
     SUPPORTED_API_VERSIONS,
@@ -38,12 +37,13 @@ from app.plugins.models import (
     PluginEvent,
     PluginManifest,
     PluginManifestView,
+    PluginSettingsContribution,
     PluginSpec,
     RendererContribution,
     ToolContribution,
 )
 from app.plugins.services import PluginServices
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, sanitize_file_stem
 
 
 OPENAI_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -86,6 +86,8 @@ class PluginManager:
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
     _event_bus: PluginEventBus = field(default_factory=PluginEventBus)
     _services: PluginServices = field(default_factory=PluginServices)
+    _registered_tool_registry: ToolRegistry | None = None
+    _registered_tools: dict[str, Tool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.resource_registry = self.resource_registry or ResourceRegistry()
@@ -111,14 +113,22 @@ class PluginManager:
 
     def load_all(self, tool_registry: ToolRegistry | None = None) -> list[PluginLoadResult]:
         """加载所有启用插件；传入 ToolRegistry 时同步注册工具贡献。"""
+        self.shutdown_all()
         specs = PluginDiscovery(self.base_dir).discover_enabled()
         results: list[PluginLoadResult] = []
         known_tool_names = _tool_names_from_registry(tool_registry)
         known_renderer_types: set[str] = set()
+        known_plugin_keys: dict[str, str] = {}
         self._plugins = []
         self._active_plugins = []
         for spec in specs:
-            result = self._load_one(spec, tool_registry, known_tool_names, known_renderer_types)
+            result = self._load_one(
+                spec,
+                tool_registry,
+                known_tool_names,
+                known_renderer_types,
+                known_plugin_keys,
+            )
             results.append(result)
             if result.loaded and result.capabilities is not None:
                 known_renderer_types.update(
@@ -126,7 +136,7 @@ class PluginManager:
                     for renderer in result.capabilities.renderers
                 )
             if result.error and spec.required:
-                debug_log(
+                log_event(
                     "PluginManager",
                     "必需插件加载失败，中止",
                     {"entry": spec.entry, "plugin_id": spec.plugin_id, "error": result.error},
@@ -141,6 +151,7 @@ class PluginManager:
         tool_registry: ToolRegistry | None,
         known_tool_names: set[str],
         known_renderer_types: set[str],
+        known_plugin_keys: dict[str, str],
     ) -> PluginLoadResult:
         result = PluginLoadResult(spec=spec)
         plugin: PluginBase | None = None
@@ -148,6 +159,12 @@ class PluginManager:
             plugin = _import_plugin(self.base_dir, spec)
             manifest = _build_manifest(plugin, spec)
             _validate_manifest(manifest)
+            plugin_key = sanitize_file_stem(manifest.plugin_id).casefold()
+            existing_plugin_id = known_plugin_keys.get(plugin_key)
+            if existing_plugin_id is not None:
+                raise ValueError(
+                    f"插件 id 与已加载插件发生冲突：{manifest.plugin_id} / {existing_plugin_id}"
+                )
             result.manifest = manifest
 
             capability_registry = PluginCapabilityRegistry()
@@ -173,9 +190,9 @@ class PluginManager:
             capabilities = PluginCapabilities(
                 plugin_id=manifest.plugin_id,
                 tools=list(all_tool_contributions),
-                settings_panels=[
-                    replace(panel, plugin_id=manifest.plugin_id)
-                    for panel in capability_registry.settings_panels
+                plugin_settings=[
+                    replace(settings, plugin_id=manifest.plugin_id)
+                    for settings in capability_registry.plugin_settings
                 ],
                 tools_tabs=list(capability_registry.tools_tabs),
                 chat_ui_widgets=list(capability_registry.chat_ui_widgets),
@@ -188,7 +205,10 @@ class PluginManager:
             )
             if tool_registry is not None:
                 for contribution in capabilities.tools:
-                    tool_registry.register(_contribution_to_app_tool(contribution))
+                    app_tool = _contribution_to_app_tool(contribution)
+                    tool_registry.register(app_tool)
+                    self._registered_tool_registry = tool_registry
+                    self._registered_tools[contribution.name] = app_tool
                     known_tool_names.add(contribution.name)
             else:
                 known_tool_names.update(contribution.name for contribution in capabilities.tools)
@@ -196,14 +216,15 @@ class PluginManager:
             result.loaded = True
             self._plugins.append(plugin)
             self._active_plugins.append((plugin, manifest))
-            debug_log(
+            known_plugin_keys[plugin_key] = manifest.plugin_id
+            log_event(
                 "PluginManager",
                 "插件已加载",
                 {
                     "plugin_id": manifest.plugin_id,
                     "tools": len(capabilities.tools),
                     "tools_tabs": len(capabilities.tools_tabs),
-                    "settings_panels": len(capabilities.settings_panels),
+                    "plugin_settings": len(capabilities.plugin_settings),
                     "chat_ui_widgets": len(capabilities.chat_ui_widgets),
                     "prompt_patches": len(capabilities.prompt_patches),
                     "context_providers": len(capabilities.context_providers),
@@ -218,7 +239,7 @@ class PluginManager:
             if result.manifest is not None:
                 self._services.resources.stop_plugin(result.manifest.plugin_id)
                 self._event_bus.remove_plugin(result.manifest.plugin_id)
-            debug_log(
+            log_event(
                 "PluginManager",
                 "插件加载失败",
                 {"entry": spec.entry, "plugin_id": spec.plugin_id, "error": str(exc)},
@@ -235,8 +256,8 @@ class PluginManager:
         """向拥有对应权限的插件派发生命周期事件。"""
         hook = _EVENT_HOOKS.get(event_type)
         if hook is None:
-            debug_log("PluginManager", "忽略未知插件事件", {"event_type": event_type})
-            return
+            log_event("PluginManager", "拒绝未知插件事件", {"event_type": event_type})
+            raise ValueError(f"未知插件事件：{event_type}")
         hook_name, permission = hook
         event = PluginEvent(event_type=event_type, payload=payload or {}, source=source)
         for plugin, manifest in list(self._active_plugins):
@@ -248,7 +269,7 @@ class PluginManager:
             try:
                 callback(event)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "PluginManager",
                     "插件事件 hook 失败",
                     {
@@ -265,12 +286,12 @@ class PluginManager:
                 tools.extend(result.capabilities.tools)
         return tools
 
-    def collect_settings_panels(self) -> list:
-        panels: list = []
+    def collect_plugin_settings(self) -> list[PluginSettingsContribution]:
+        settings: list[PluginSettingsContribution] = []
         for result in self._loaded:
             if result.capabilities:
-                panels.extend(result.capabilities.settings_panels)
-        return panels
+                settings.extend(result.capabilities.plugin_settings)
+        return settings
 
     def collect_tools_tabs(self) -> list:
         tabs: list = []
@@ -312,8 +333,8 @@ class PluginManager:
         return self.collect_tools_tabs()
 
     @property
-    def settings_panels(self) -> list:
-        return self.collect_settings_panels()
+    def plugin_settings(self) -> list[PluginSettingsContribution]:
+        return self.collect_plugin_settings()
 
     @property
     def chat_ui_widgets(self) -> list:
@@ -342,6 +363,13 @@ class PluginManager:
             )
             _shutdown_quietly(plugin)
             self._event_bus.remove_plugin(manifest.plugin_id)
+        registry = self._registered_tool_registry
+        if registry is not None:
+            for name, tool in list(self._registered_tools.items()):
+                registry.unregister(name, expected=tool)
+        self._registered_tool_registry = None
+        self._registered_tools.clear()
+        self._plugins = []
 
     @property
     def loaded_count(self) -> int:
@@ -478,7 +506,7 @@ def _validate_capability_permissions(
     checks = (
         (registry.tools, PERMISSION_TOOL, "工具"),
         (registry.tools_tabs, PERMISSION_TOOLS_TAB, "工具页"),
-        (registry.settings_panels, PERMISSION_SETTINGS_PANEL, "设置面板"),
+        (registry.plugin_settings, PERMISSION_PLUGIN_SETTINGS, "插件设置"),
         (registry.chat_ui_widgets, PERMISSION_CHAT_UI, "聊天 UI"),
         (registry.prompt_patches, PERMISSION_PROMPT_PATCH, "提示词补丁"),
         (registry.context_providers, PERMISSION_CONTEXT_PROVIDER, "上下文提供者"),
@@ -583,7 +611,7 @@ def _contribution_to_app_tool(contribution: ToolContribution) -> Tool:
         name=contribution.name,
         description=contribution.description,
         parameters=contribution.parameters,
-        handler=_normalize_tool_handler(contribution.handler),
+        handler=contribution.handler,
         requires_confirmation=contribution.requires_confirmation,
         group=contribution.group,
         risk=contribution.risk,
@@ -592,57 +620,11 @@ def _contribution_to_app_tool(contribution: ToolContribution) -> Tool:
     )
 
 
-def _normalize_tool_handler(handler: Any) -> Any:
-    """兼容 handler(args) 与 handler(**kwargs) 两种插件写法。"""
-
-    if handler is None or not callable(handler):
-        return None
-    try:
-        parameters = list(inspect.signature(handler).parameters.values())
-    except (TypeError, ValueError):
-        return lambda arguments: handler(arguments)
-    if not parameters:
-        return lambda _arguments: handler()
-    if len(parameters) == 1:
-        parameter = parameters[0]
-        annotation = parameter.annotation
-        if (
-            parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            }
-            and (
-                parameter.name in {"args", "arguments"}
-                or annotation in {dict, dict[str, Any]}
-            )
-        ):
-            return lambda arguments: handler(arguments)
-
-    def wrapped(arguments: dict[str, Any]) -> Any:
-        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
-            return handler(**arguments)
-        kwargs = {
-            parameter.name: arguments[parameter.name]
-            for parameter in parameters
-            if parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            }
-            and parameter.name in arguments
-        }
-        return handler(**kwargs)
-
-    return wrapped
-
-
 def _shutdown_quietly(plugin: PluginBase) -> None:
     try:
         plugin.shutdown()
     except Exception as exc:
-        debug_log(
+        log_event(
             "PluginManager",
             "插件关闭失败",
             {"plugin": getattr(plugin, "plugin_id", "unknown"), "error": str(exc)},

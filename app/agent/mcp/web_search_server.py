@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import html
+import http.client
 import json
+import socket
+import ssl
 import sys
 import base64
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from ipaddress import ip_address
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
 
 SERVER_NAME = "sakura-web-search"
 SERVER_VERSION = "0.1.0"
 DEFAULT_TIMEOUT_SECONDS = 12
+MAX_REDIRECTS = 5
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
@@ -359,16 +361,24 @@ def _read_url_text(url: str, max_bytes: int) -> str:
 
 
 def _read_url_text_with_metadata(url: str, max_bytes: int) -> tuple[str, str, str]:
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/json,text/plain"})
-    try:
-        with urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get("Content-Type", "")
-            body = response.read(max_bytes + 1)
-            final_url = response.geturl()
-    except HTTPError as exc:
-        raise RuntimeError(f"HTTP {exc.code}: {exc.reason}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"网络请求失败：{exc.reason}") from exc
+    current_url = _validate_public_http_url(url)
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        status, reason, headers, body = _request_public_url_once(current_url, max_bytes + 1)
+        if status in {301, 302, 303, 307, 308}:
+            location = headers.get("Location", "").strip()
+            if not location:
+                raise RuntimeError(f"HTTP {status}: 重定向缺少 Location。")
+            if redirect_count >= MAX_REDIRECTS:
+                raise RuntimeError("网页重定向次数过多。")
+            current_url = _validate_public_http_url(urljoin(current_url, location))
+            continue
+        if status >= 400:
+            raise RuntimeError(f"HTTP {status}: {reason}")
+        content_type = headers.get("Content-Type", "")
+        final_url = current_url
+        break
+    else:  # pragma: no cover - 循环上界保护
+        raise RuntimeError("网页重定向次数过多。")
 
     charset = _charset_from_content_type(content_type)
     if len(body) > max_bytes:
@@ -377,6 +387,84 @@ def _read_url_text_with_metadata(url: str, max_bytes: int) -> tuple[str, str, st
         return body.decode(charset, errors="replace"), content_type, final_url
     except LookupError:
         return body.decode("utf-8", errors="replace"), content_type, final_url
+
+
+def _request_public_url_once(
+    url: str,
+    max_bytes: int,
+) -> tuple[int, str, http.client.HTTPMessage, bytes]:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    addresses = _resolve_public_addresses(host, port)
+    target = parsed.path or "/"
+    if parsed.query:
+        target += f"?{parsed.query}"
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/json,text/plain",
+        "Host": host if parsed.port is None else f"{host}:{port}",
+        "Connection": "close",
+    }
+    last_error: OSError | None = None
+    for address in addresses:
+        connection: http.client.HTTPConnection
+        if parsed.scheme == "https":
+            connection = _PinnedHTTPSConnection(host, port, address, timeout=DEFAULT_TIMEOUT_SECONDS)
+        else:
+            connection = _PinnedHTTPConnection(host, port, address, timeout=DEFAULT_TIMEOUT_SECONDS)
+        try:
+            connection.request("GET", target, headers=headers)
+            response = connection.getresponse()
+            body = response.read(max_bytes)
+            return response.status, response.reason, response.headers, body
+        except OSError as exc:
+            last_error = exc
+        finally:
+            connection.close()
+    raise RuntimeError(f"网络请求失败：{last_error or '无法连接目标地址'}")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, address: str, **kwargs: Any) -> None:
+        super().__init__(host, port, **kwargs)
+        self._validated_address = address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, address: str, **kwargs: Any) -> None:
+        super().__init__(host, port, context=ssl.create_default_context(), **kwargs)
+        self._validated_address = address
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+
+
+def _resolve_public_addresses(host: str, port: int) -> list[str]:
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"域名解析失败：{host}") from exc
+    addresses: list[str] = []
+    for info in infos:
+        address = str(info[4][0]).split("%", 1)[0]
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses or any(not ip_address(address).is_global for address in addresses):
+        raise ValueError("出于安全考虑，不允许读取本机或私有网络地址。")
+    return addresses
 
 
 def _charset_from_content_type(content_type: str) -> str:
@@ -449,9 +537,12 @@ def _validate_public_http_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("url 必须是完整的 http 或 https 地址。")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("url 不允许包含用户名或密码。")
     host = parsed.hostname or ""
     if _is_blocked_host(host):
         raise ValueError("出于安全考虑，不允许读取本机或私有网络地址。")
+    _resolve_public_addresses(host, parsed.port or (443 if parsed.scheme == "https" else 80))
     return url
 
 

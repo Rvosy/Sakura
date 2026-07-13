@@ -13,7 +13,7 @@ from app.backchannel.models import (
     BackchannelTemplate,
     BackchannelVariant,
 )
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 
 
 class BackchannelManifestError(RuntimeError):
@@ -116,7 +116,7 @@ def _parse_template(
             _skip(path, entry_id, f"portrait 不在角色词表:{portrait}")
             return None
         if profile.reply_tones and tone not in profile.reply_tones:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话模板 tone 不在 reply_tones,保留(TTS 未知 tone 回退中性参考)",
                 {"manifest": str(path), "id": entry_id, "tone": tone},
@@ -171,7 +171,7 @@ def _optional_label(entry: dict[str, Any], key: str) -> str | None:
 
 
 def _skip(path: Path, entry_id: str, reason: str) -> None:
-    debug_log(
+    log_event(
         "Backchannel",
         "接话模板条目已跳过",
         {"manifest": str(path), "id": entry_id, "reason": reason},

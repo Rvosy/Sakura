@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
+import queue
+import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Callable, TypeVar
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from plugins.playwright_browser.config_model import default_config_path, load_config
+from plugins.playwright_browser.config_model import PlaywrightBrowserConfig
 
 
 T = TypeVar("T")
@@ -16,11 +20,61 @@ _playwright: Any | None = None
 _browser: Any | None = None
 _context: Any | None = None
 _page: Any | None = None
-_bg_executor: ThreadPoolExecutor | None = None
+_bg_executor: "_DaemonTaskRunner | None" = None
 _browser_thread_id: int | None = None
 _use_bg_thread = True
 _launch_lock = threading.Lock()
 _plugin_root = Path(__file__).resolve().parent
+_config_loader: Callable[[], PlaywrightBrowserConfig] | None = None
+_EVALUATE_TIMEOUT_SECONDS = 10.0
+_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
+class _DaemonTaskRunner:
+    """不会阻塞解释器退出的单线程任务执行器。"""
+
+    def __init__(self) -> None:
+        self._tasks: queue.Queue[tuple[Future[Any], Callable[[], Any]] | None] = queue.Queue()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="sakura-playwright",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, func: Callable[[], T]) -> Future[T]:
+        future: Future[T] = Future()
+        if self._closed:
+            future.set_exception(RuntimeError("Playwright 执行器已关闭。"))
+            return future
+        self._tasks.put((future, func))
+        return future
+
+    def shutdown(self, *, cancel_futures: bool = True) -> None:
+        self._closed = True
+        if cancel_futures:
+            while True:
+                try:
+                    item = self._tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not None:
+                    item[0].cancel()
+        self._tasks.put(None)
+
+    def _run(self) -> None:
+        while True:
+            item = self._tasks.get()
+            if item is None:
+                return
+            future, func = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(_run_on_browser_thread(func))
+            except BaseException as exc:  # noqa: BLE001 - Future 原样传递任务异常
+                future.set_exception(exc)
 
 
 def set_plugin_root(plugin_root: str | Path) -> None:
@@ -29,13 +83,22 @@ def set_plugin_root(plugin_root: str | Path) -> None:
     _plugin_root = Path(plugin_root)
 
 
+def set_config_loader(loader: Callable[[], PlaywrightBrowserConfig] | None) -> None:
+    """注入插件配置读取器；为空时回退到旧文件路径。"""
+    global _config_loader
+    _config_loader = loader
+
+
 def navigate(url: str) -> dict[str, str]:
     """打开指定网页，浏览器类型由插件配置决定。"""
+    _validate_public_url(url)
 
     def task() -> dict[str, str]:
         page = _ensure_browser()
         page.goto(url, wait_until="domcontentloaded")
-        return {"url": getattr(page, "url", url), "title": _safe_title(page)}
+        final_url = str(getattr(page, "url", url))
+        _validate_public_url(final_url)
+        return {"url": final_url, "title": _safe_title(page)}
 
     return _run_browser_task(task)
 
@@ -121,7 +184,7 @@ def evaluate(js_code: str) -> dict[str, Any]:
         page = _ensure_browser()
         return {"result": page.evaluate(js_code)}
 
-    return _run_browser_task(task)
+    return _run_browser_task(task, timeout=_EVALUATE_TIMEOUT_SECONDS)
 
 
 def shutdown_browser() -> None:
@@ -132,13 +195,15 @@ def shutdown_browser() -> None:
     _bg_executor = None
     if executor is not None and threading.get_ident() != _browser_thread_id:
         try:
-            executor.submit(_shutdown_browser_objects).result(timeout=5)
+            executor.submit(_shutdown_browser_objects).result(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except FutureTimeoutError:
+            pass
         finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+            executor.shutdown(cancel_futures=True)
     else:
         _shutdown_browser_objects()
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(cancel_futures=True)
     _playwright = None
     _browser = None
     _context = None
@@ -146,11 +211,15 @@ def shutdown_browser() -> None:
     _browser_thread_id = None
 
 
-def _run_browser_task(func: Callable[[], T]) -> T:
+def _run_browser_task(func: Callable[[], T], *, timeout: float | None = None) -> T:
     if not _use_bg_thread or threading.get_ident() == _browser_thread_id:
         return func()
     executor = _ensure_executor()
-    return executor.submit(_run_on_browser_thread, func).result()
+    try:
+        return executor.submit(func).result(timeout=timeout)
+    except FutureTimeoutError as exc:
+        _abandon_executor(executor)
+        raise TimeoutError("Playwright 页面操作超时，已放弃阻塞的浏览器线程。") from exc
 
 
 def _run_on_browser_thread(func: Callable[[], T]) -> T:
@@ -159,12 +228,25 @@ def _run_on_browser_thread(func: Callable[[], T]) -> T:
     return func()
 
 
-def _ensure_executor() -> ThreadPoolExecutor:
+def _ensure_executor() -> _DaemonTaskRunner:
     global _bg_executor
     with _launch_lock:
         if _bg_executor is None:
-            _bg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sakura-playwright")
+            _bg_executor = _DaemonTaskRunner()
         return _bg_executor
+
+
+def _abandon_executor(executor: _DaemonTaskRunner) -> None:
+    global _bg_executor, _playwright, _browser, _context, _page, _browser_thread_id
+    with _launch_lock:
+        if _bg_executor is executor:
+            _bg_executor = None
+    executor.shutdown(cancel_futures=True)
+    _playwright = None
+    _browser = None
+    _context = None
+    _page = None
+    _browser_thread_id = None
 
 
 def _ensure_browser() -> Any:
@@ -180,12 +262,53 @@ def _ensure_browser() -> Any:
 
     _playwright = _playwright or sync_playwright().start()
     if _browser is None:
-        cfg = load_config(default_config_path(_plugin_root))
+        cfg = _config_loader() if _config_loader is not None else load_config(default_config_path(_plugin_root))
         cfg.clamp()
         _browser = _launch_configured_browser(_playwright, cfg.browser_type, cfg.headless)
-    _context = _context or _browser.new_context()
+    if _context is None:
+        _context = _browser.new_context()
+        _context.route("**/*", _guard_browser_request)
     _page = _context.new_page()
     return _page
+
+
+def _guard_browser_request(route: Any, request: Any) -> None:
+    try:
+        _validate_public_url(str(request.url))
+    except (OSError, ValueError):
+        route.abort("blockedbyclient")
+        return
+    route.continue_()
+
+
+def _validate_public_url(url: str) -> None:
+    try:
+        parsed = urlparse(str(url).strip())
+    except ValueError as exc:
+        raise ValueError("浏览器 URL 无效。") from exc
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("浏览器只允许访问公网 HTTP(S) URL。")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("浏览器 URL 不允许包含凭据。")
+    host = (parsed.hostname or "").rstrip(".").casefold()
+    if not host or host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        raise ValueError("浏览器不允许访问本地或私网地址。")
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            addresses = {
+                ipaddress.ip_address(sockaddr[0])
+                for _family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
+                    host,
+                    parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+                    type=socket.SOCK_STREAM,
+                )
+            }
+        except (OSError, ValueError) as exc:
+            raise ValueError("浏览器 URL 的域名无法安全解析。") from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("浏览器不允许访问本地、私网或保留地址。")
 
 
 def _launch_configured_browser(playwright: Any, browser_type: str, headless: bool) -> Any:

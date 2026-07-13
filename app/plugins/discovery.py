@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from app.plugins.models import PluginSpec
+from app.core.runtime_log import log_event
 from app.storage.paths import StoragePaths
 
 
@@ -61,7 +62,15 @@ class PluginDiscovery:
             return []
         specs: list[PluginSpec] = []
         for manifest_path in sorted(plugins_dir.glob("*/plugin.yaml")):
-            raw = _load_yaml(manifest_path)
+            try:
+                raw = _load_yaml(manifest_path)
+            except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+                log_event(
+                    "PluginDiscovery",
+                    "跳过损坏的插件清单",
+                    {"path": str(manifest_path), "error": str(exc)},
+                )
+                continue
             if not isinstance(raw, dict):
                 continue
             spec = _spec_from_manifest(raw, manifest_path.parent)
@@ -70,7 +79,15 @@ class PluginDiscovery:
         return specs
 
     def _load_config_overrides(self) -> dict[str, PluginSpec]:
-        raw = _load_yaml(self._config_path)
+        try:
+            raw = _load_yaml(self._config_path)
+        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+            log_event(
+                "PluginDiscovery",
+                "插件覆盖配置损坏，忽略覆盖",
+                {"path": str(self._config_path), "error": str(exc)},
+            )
+            return {}
         if not isinstance(raw, list):
             return {}
         overrides: dict[str, PluginSpec] = {}

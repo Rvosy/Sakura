@@ -15,6 +15,7 @@ from app.ui.control_panel_layout import (
     STAGE_WIDTH_PANEL_PAD,
     PetLayout,
     compute_pet_layout,
+    normalize_input_bar_offset,
 )
 
 
@@ -84,6 +85,19 @@ def test_large_input_offset_grows_window_downward() -> None:
     assert lowered.portrait_anchor[1] == base.portrait_anchor[1]
     assert lowered.window_size[1] > base.window_size[1]
     assert _rect_bottom(lowered.input_rect) <= lowered.window_size[1]
+
+
+def test_input_bar_offset_preserves_non_overlapping_legacy_range() -> None:
+    assert normalize_input_bar_offset(-50) == 0
+    assert normalize_input_bar_offset(200) == 200
+    assert normalize_input_bar_offset(999) == 200
+
+    layout = compute_pet_layout(
+        portrait_width=560,
+        portrait_height=570,
+        input_bar_offset=-50,
+    )
+    assert layout.input_rect[1] >= _rect_bottom(layout.bubble_rect)
 
 
 def test_min_stage_height_clamp_keeps_portrait_bottom_pad() -> None:

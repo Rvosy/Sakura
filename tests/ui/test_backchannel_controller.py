@@ -266,7 +266,7 @@ def test_background_classify_thread_is_managed_and_shutdown_waits() -> None:
     assert group.is_running() is True
     assert controller.shutdown(timeout=0) is False
     assert group.state is ResourceState.STOPPING
-    assert threads[0] in manager._lingering_threads
+    assert threads[0] in manager.registry._lingering_threads
 
     release.set()
     assert controller.shutdown(timeout=1) is True

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.ui.theme import ThemeSettings, mix, rgba
+from app.ui.theme import SELECTION_DOT_URL, ThemeSettings, mix, rgba
 
 STUDIO_FONT_STACK = (
     '"Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", '
@@ -279,6 +279,7 @@ QCheckBox::indicator:hover {{
     border: 1px solid {theme.primary_color};
 }}
 QCheckBox::indicator:checked {{
+    image: url("{SELECTION_DOT_URL}");
     background: {theme.primary_color};
     border: 1px solid {theme.accent_color};
 }}

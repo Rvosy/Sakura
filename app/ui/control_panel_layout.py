@@ -8,8 +8,7 @@
 - bubble_height：气泡卡片的高度
 - vertical_offset：控制组整体的上下偏移（正值=向上抬升，远离屏幕底部）
 
-独立成模块是为了让 PetWindow 与 SettingsDialog 都能引用，又不引入二者之间的
-循环导入（PetWindow 已经 import SettingsDialog）。本模块保持零外部依赖。
+独立成模块是为了让 PetWindow 与 Tauri 设置页请求构建逻辑都能引用，同时保持零外部依赖。
 """
 
 from __future__ import annotations

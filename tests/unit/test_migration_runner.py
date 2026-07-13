@@ -41,9 +41,10 @@ def test_data_migration_failure_message_keeps_step_error() -> None:
 
     message = _format_data_migration_failure(report)
 
-    assert "处理建议" in message
-    assert "data/logs/sakura-runtime.log" in message
-    assert "诊断信息（截图时请保留）：\nv1_to_v2: WinError 5" in message
+    assert "原数据没有被覆盖" in message
+    assert "受影响功能本次可能使用默认值或暂不可用" in message
+    assert "兼容模式" not in message
+    assert "v1_to_v2: WinError 5" in message
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_migration_runner"
@@ -75,7 +76,7 @@ class TestRunnerProtocol:
         base = _make_base("fresh")
         runner = MigrationRunner(base)
         assert runner.current_version() == 0
-        assert [s.version for s in runner.pending()] == [1, 2, 3]
+        assert [s.version for s in runner.pending()] == [1, 2, 3, 4]
 
     def test_run_advances_version_to_current(self) -> None:
         base = _make_base("advance")
@@ -163,6 +164,18 @@ class TestV0ToV1:
         save_yaml_mapping(api_path, data)
         MigrationRunner(base).run()
         assert load_yaml_mapping(api_path)["llm"]["model"] == "user-changed"
+
+    def test_invalid_env_is_not_archived_and_does_not_advance_version(self) -> None:
+        base = _make_base("invalid_env")
+        env_path = base / ".env"
+        env_path.write_text('API_KEY="broken\n', encoding="utf-8")
+
+        report = MigrationRunner(base).run()
+
+        assert report.failed
+        assert env_path.is_file()
+        assert not (base / ".env.migrated").exists()
+        assert MigrationRunner(base).current_version() == 0
 
     def test_legacy_chat_history_split(self) -> None:
         base = _make_base("legacy_history")
@@ -299,9 +312,136 @@ class TestV1ToV2:
         assert "ok" in lines[1]
 
 
-class TestV2ToV3:
-    def test_copies_proactive_care_to_screen_awareness(self) -> None:
-        base = _make_base("screen_awareness_migration")
+class TestV3ToV4:
+    def test_only_legacy_section_is_normalized_and_removed(self) -> None:
+        base = _make_base("screen_awareness_v4_legacy")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 3,
+                "proactive_care": {
+                    "enabled": "false",
+                    "screen_context_enabled": "yes",
+                    "check_interval_minutes": "0",
+                    "cooldown_minutes": "999",
+                    "screen_context_batch_limit": "4",
+                },
+            },
+        )
+        before = paths.system_config().read_bytes()
+
+        report = MigrationRunner(base).run()
+        system = load_yaml_mapping(paths.system_config())
+
+        assert not report.failed
+        assert system[CONFIG_VERSION_KEY] == 4
+        assert "proactive_care" not in system
+        assert system["screen_awareness"] == {
+            "enabled": False,
+            "screen_context_enabled": False,
+            "check_interval_minutes": 1,
+            "cooldown_minutes": 120,
+            "screen_context_batch_limit": 4,
+        }
+        backups = list(paths.migration_backup_dir.rglob("system_config.yaml"))
+        assert backups
+        assert any(path.read_bytes() == before for path in backups)
+        after = paths.system_config().read_bytes()
+        second = MigrationRunner(base).run()
+        assert not second.results
+        assert paths.system_config().read_bytes() == after
+
+    def test_new_section_wins_and_legacy_section_is_removed(self) -> None:
+        base = _make_base("screen_awareness_v4_new_wins")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        new_section = {"check_interval_minutes": 11, "custom_key": "preserve"}
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 3,
+                "proactive_care": {
+                    "check_interval_minutes": 5,
+                    "cooldown_minutes": 17,
+                    "legacy_only": "must-not-survive",
+                },
+                "screen_awareness": new_section,
+            },
+        )
+
+        assert not MigrationRunner(base).run().failed
+        system = load_yaml_mapping(paths.system_config())
+        assert system["screen_awareness"] == new_section
+        assert "proactive_care" not in system
+
+    def test_invalid_v3_legacy_section_fails_without_writing_or_advancing(self) -> None:
+        base = _make_base("screen_awareness_v4_invalid")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {CONFIG_VERSION_KEY: 3, "proactive_care": ["invalid"]},
+        )
+        before = paths.system_config().read_bytes()
+
+        report = MigrationRunner(base).run()
+
+        assert report.failed
+        assert paths.system_config().read_bytes() == before
+        assert MigrationRunner(base).current_version() == 3
+        assert "proactive_care 配置节必须是对象" in report.results[0].error
+
+    def test_invalid_new_section_fails_instead_of_deleting_legacy_data(self) -> None:
+        base = _make_base("screen_awareness_v4_invalid_new")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 3,
+                "proactive_care": {"check_interval_minutes": 5},
+                "screen_awareness": "invalid",
+            },
+        )
+        before = paths.system_config().read_bytes()
+
+        report = MigrationRunner(base).run()
+
+        assert report.failed
+        assert paths.system_config().read_bytes() == before
+        assert MigrationRunner(base).current_version() == 3
+        assert "screen_awareness 配置节必须是对象" in report.results[0].error
+
+    def test_invalid_v2_legacy_section_fails_before_v3_is_written(self) -> None:
+        base = _make_base("screen_awareness_v2_invalid")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {CONFIG_VERSION_KEY: 2, "proactive_care": "invalid"},
+        )
+        before = paths.system_config().read_bytes()
+
+        report = MigrationRunner(base).run()
+
+        assert report.failed
+        assert report.results[0].name == "v2_to_v3"
+        assert "proactive_care 配置节必须是对象" in report.results[0].error
+        assert paths.system_config().read_bytes() == before
+        assert MigrationRunner(base).current_version() == 2
+        backups = list(paths.migration_backup_dir.rglob("system_config.yaml"))
+        assert backups
+        assert any(path.read_bytes() == before for path in backups)
+
+    def test_valid_v2_legacy_section_reaches_normalized_v4(self) -> None:
+        base = _make_base("screen_awareness_v2_valid")
         paths = StoragePaths(base)
         from app.config.yaml_config import save_yaml_mapping
 
@@ -310,25 +450,23 @@ class TestV2ToV3:
             {
                 CONFIG_VERSION_KEY: 2,
                 "proactive_care": {
-                    "enabled": True,
-                    "screen_context_enabled": True,
-                    "check_interval_minutes": 5,
-                    "cooldown_minutes": 8,
-                    "screen_context_batch_limit": 4,
+                    "enabled": "false",
+                    "check_interval_minutes": "0",
+                    "cooldown_minutes": "999",
                 },
             },
         )
 
-        report = MigrationRunner(base).run()
-
-        assert not report.failed
+        assert not MigrationRunner(base).run().failed
         system = load_yaml_mapping(paths.system_config())
-        assert system["screen_awareness"]["check_interval_minutes"] == 5
-        assert system["screen_awareness"]["cooldown_minutes"] == 8
-        assert system["proactive_care"]["screen_context_batch_limit"] == 4
+        assert system[CONFIG_VERSION_KEY] == 4
+        assert "proactive_care" not in system
+        assert system["screen_awareness"]["enabled"] is False
+        assert system["screen_awareness"]["check_interval_minutes"] == 1
+        assert system["screen_awareness"]["cooldown_minutes"] == 120
 
-    def test_existing_screen_awareness_is_not_overwritten(self) -> None:
-        base = _make_base("screen_awareness_existing")
+    def test_v2_valid_new_section_wins_over_invalid_legacy_section(self) -> None:
+        base = _make_base("screen_awareness_v2_new_wins")
         paths = StoragePaths(base)
         from app.config.yaml_config import save_yaml_mapping
 
@@ -336,15 +474,55 @@ class TestV2ToV3:
             paths.system_config(),
             {
                 CONFIG_VERSION_KEY: 2,
-                "proactive_care": {"check_interval_minutes": 5},
-                "screen_awareness": {"check_interval_minutes": 11},
+                "proactive_care": "invalid",
+                "screen_awareness": {},
             },
         )
 
-        MigrationRunner(base).run()
-
+        assert not MigrationRunner(base).run().failed
         system = load_yaml_mapping(paths.system_config())
-        assert system["screen_awareness"]["check_interval_minutes"] == 11
+        assert system[CONFIG_VERSION_KEY] == 4
+        assert system["screen_awareness"] == {}
+        assert "proactive_care" not in system
+
+    def test_v4_write_version_failure_retries_without_reapplying_data(
+        self,
+        monkeypatch,
+    ) -> None:  # type: ignore[no-untyped-def]
+        base = _make_base("screen_awareness_v4_version_retry")
+        paths = StoragePaths(base)
+        from app.config.yaml_config import save_yaml_mapping
+
+        save_yaml_mapping(
+            paths.system_config(),
+            {
+                CONFIG_VERSION_KEY: 3,
+                "proactive_care": {"check_interval_minutes": 5},
+            },
+        )
+        runner = MigrationRunner(base)
+        real_write_version = runner._write_version
+
+        def fail_v4_once(version: int) -> None:
+            if version == 4:
+                raise OSError("simulated version write failure")
+            real_write_version(version)
+
+        monkeypatch.setattr(runner, "_write_version", fail_v4_once)
+        first = runner.run()
+        migrated = load_yaml_mapping(paths.system_config())
+
+        assert first.failed
+        assert migrated[CONFIG_VERSION_KEY] == 3
+        assert "proactive_care" not in migrated
+        assert migrated["screen_awareness"]["check_interval_minutes"] == 5
+
+        second = MigrationRunner(base).run()
+        retried = load_yaml_mapping(paths.system_config())
+        assert not second.failed
+        assert retried[CONFIG_VERSION_KEY] == 4
+        assert retried["screen_awareness"] == migrated["screen_awareness"]
+        assert "proactive_care" not in retried
 
 
 class TestFullReplay:

@@ -63,21 +63,31 @@ jobs:
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          python -m pytest -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20
+          python -m pytest -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 --junitxml=pytest-results.xml
           EXIT_CODE=$?
           if [ $EXIT_CODE -eq 134 ]; then
-            echo "::warning::Qt cleanup crash after all tests passed — treating as success"
-            exit 0
+            python -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse("pytest-results.xml").getroot(); suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite")); tests = sum(int(s.attrib.get("tests", 0)) for s in suites); failures = sum(int(s.attrib.get("failures", 0)) for s in suites); errors = sum(int(s.attrib.get("errors", 0)) for s in suites); sys.exit(0 if tests > 0 and failures == 0 and errors == 0 else 1)'
+            if [ $? -eq 0 ]; then
+              echo "::warning::Qt cleanup crash after a complete passing test suite — treating as success"
+              exit 0
+            fi
           fi
           exit $EXIT_CODE
 
   release:
-    needs: [tag, test]
+    needs: [tag, test, bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Download verified bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ needs.tag.outputs.TAG }}-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -86,6 +96,7 @@ jobs:
           name: ${{ needs.tag.outputs.TAG }}
           generate_release_notes: true
           prerelease: ${{ needs.tag.outputs.PRERELEASE == 'true' }}
+          files: release-assets/*
 
   bundle:
     needs: [tag, test]
@@ -98,6 +109,11 @@ jobs:
             update_artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64-update.zip
             runtime_artifact: runtime-windows-x64.zip
             embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
+          - os: macos-latest
+            platform: macos-arm64
+            artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64.zip
+            update_artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64-update.zip
+            runtime_artifact: runtime-macos-arm64.zip
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -172,7 +188,7 @@ jobs:
       - name: Make scripts executable (macOS)
         if: matrix.platform != 'windows-x64'
         shell: bash
-        run: chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command
+        run: chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command scripts/install_gpt_sovits_macos.sh
 
       - name: Tidy macOS bundle layout
         if: matrix.platform != 'windows-x64'
@@ -196,6 +212,58 @@ jobs:
         shell: bash
         run: rm -f install.command start.command python-embed.zip
 
+      - name: Build Tauri applications (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $apps = @(
+            @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
+            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
+          )
+          foreach ($app in $apps) {
+            Push-Location $app.Directory
+            try {
+              cargo build --release --locked
+              $exe = Join-Path (Get-Location) "target/release/$($app.Binary)"
+              if (-not (Test-Path -LiteralPath $exe)) {
+                throw "Missing Tauri binary after build: $exe"
+              }
+              $keep = Join-Path $env:RUNNER_TEMP $app.Binary
+              Copy-Item -LiteralPath $exe -Destination $keep -Force
+              Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
+              $releaseDir = Join-Path (Get-Location) 'target/release'
+              New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+              Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir $app.Binary) -Force
+            } finally {
+              Pop-Location
+            }
+          }
+
+      - name: Build Tauri applications (macOS)
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          build_tauri() {
+            local directory="$1"
+            local binary="$2"
+            pushd "$directory" >/dev/null
+            cargo build --release --locked
+            local exe="$PWD/target/release/$binary"
+            if [ ! -f "$exe" ]; then
+              echo "Missing Tauri binary after build: $exe" >&2
+              exit 1
+            fi
+            local keep="$RUNNER_TEMP/$binary"
+            cp "$exe" "$keep"
+            rm -rf target
+            mkdir -p target/release
+            cp "$keep" "target/release/$binary"
+            chmod +x "target/release/$binary"
+            popd >/dev/null
+          }
+          build_tauri tools/settings-tauri/src-tauri sakura-settings
+          build_tauri tools/studio-tauri/src-tauri sakura-studio
+
       - name: Create bundle archive (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
@@ -213,6 +281,7 @@ jobs:
             'start.bat',
             'start_studio.bat',
             'update.bat',
+            'update-delete.json',
             'VERSION'
           ) | Where-Object { Test-Path -LiteralPath $_ }
           $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
@@ -222,6 +291,14 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          if (-not (Test-Path -LiteralPath $settingsExe)) {
+            throw "Missing Tauri settings exe in bundle stage: $settingsExe"
+          }
+          if (-not (Test-Path -LiteralPath $studioExe)) {
+            throw "Missing Tauri studio exe in bundle stage: $studioExe"
+          }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
 
       - name: Create update archive (Windows)
@@ -240,6 +317,7 @@ jobs:
             'start.bat',
             'start_studio.bat',
             'update.bat',
+            'update-delete.json',
             'VERSION'
           ) | Where-Object { Test-Path -LiteralPath $_ }
           $stage = New-Item -ItemType Directory -Path "update-stage" -Force
@@ -249,6 +327,14 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
+          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          if (-not (Test-Path -LiteralPath $settingsExe)) {
+            throw "Missing Tauri settings exe in update stage: $settingsExe"
+          }
+          if (-not (Test-Path -LiteralPath $studioExe)) {
+            throw "Missing Tauri studio exe in update stage: $studioExe"
+          }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
 
       - name: Create runtime archive (Windows)
@@ -280,17 +366,33 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
+          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "${{ matrix.artifact }}" \
             app plugins runtime third_party tools \
             LICENSE main.py requirements.txt VERSION \
-            scripts/install.sh scripts/start.sh install.command start.command \
+            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Create update archive (macOS)
+        if: matrix.platform != 'windows-x64'
+        shell: bash
+        run: |
+          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
+          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
+          zip -rq "${{ matrix.update_artifact }}" \
+            app plugins third_party tools \
+            LICENSE main.py requirements.txt VERSION \
+            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
+            update-delete.json \
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
+
+      - name: Upload verified bundle artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.tag.outputs.TAG }}
-          files: |
+          name: release-${{ needs.tag.outputs.TAG }}-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
             ${{ matrix.artifact }}
             ${{ matrix.update_artifact }}
             ${{ matrix.runtime_artifact }}
@@ -311,7 +413,7 @@ jobs:
             --clobber
 
   attach-assets:
-    needs: [tag, release, bundle]
+    needs: [tag, release]
     runs-on: ubuntu-latest
     permissions:
       contents: write

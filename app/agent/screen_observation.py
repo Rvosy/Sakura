@@ -134,12 +134,19 @@ def build_screen_observation_from_image(
     captured: CapturedScreenImage,
     *,
     max_edge: int = SCREEN_OBSERVATION_MAX_EDGE,
+    max_width: int | None = None,
+    max_height: int | None = None,
 ) -> ScreenObservation:
     """从已复制的 QImage 构造观察结果，可在后台线程执行。"""
     if captured.image.isNull():
         raise RuntimeError("屏幕截图为空。")
 
-    encoded_image = _scaled_image(captured.image, max_edge=max_edge)
+    encoded_image = _scaled_image(
+        captured.image,
+        max_edge=max_edge,
+        max_width=max_width,
+        max_height=max_height,
+    )
     return ScreenObservation(
         data_url=_encode_image_to_data_url(encoded_image),
         width=encoded_image.width(),
@@ -166,8 +173,26 @@ def build_screen_observation_from_pixmap(
     )
 
 
-def _scaled_image(image: QImage, *, max_edge: int = SCREEN_OBSERVATION_MAX_EDGE) -> QImage:
+def _scaled_image(
+    image: QImage,
+    *,
+    max_edge: int = SCREEN_OBSERVATION_MAX_EDGE,
+    max_width: int | None = None,
+    max_height: int | None = None,
+) -> QImage:
     from PySide6.QtCore import Qt
+
+    if max_width is not None and max_height is not None:
+        target_width = max(1, int(max_width))
+        target_height = max(1, int(max_height))
+        if image.width() <= target_width and image.height() <= target_height:
+            return image
+        return image.scaled(
+            target_width,
+            target_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
 
     max_edge = max(1, int(max_edge or SCREEN_OBSERVATION_MAX_EDGE))
     longest_edge = max(image.width(), image.height())

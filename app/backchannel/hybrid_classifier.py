@@ -23,18 +23,26 @@ class HybridBackchannelClassifier:
         self,
         rule_classifier: RuleClassifier | None = None,
         probe_classifier: ProbeIntentClassifier | None = None,
+        process_base_dir=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._rule_classifier = rule_classifier if rule_classifier is not None else RuleClassifier()
         self._probe_classifier = (
             probe_classifier if probe_classifier is not None else ProbeIntentClassifier()
         )
+        self.process_base_dir = process_base_dir
 
     @classmethod
-    def from_model_cache(cls, base_dir) -> "HybridBackchannelClassifier":  # type: ignore[no-untyped-def]
+    def from_model_cache(
+        cls,
+        base_dir,
+        *,
+        process_isolated: bool = True,
+    ) -> "HybridBackchannelClassifier":  # type: ignore[no-untyped-def]
         return cls(
             probe_classifier=ProbeIntentClassifier(
                 model_kwargs=backchannel_model_cache_kwargs(base_dir)
-            )
+            ),
+            process_base_dir=base_dir if process_isolated else None,
         )
 
     def preload(self) -> None:

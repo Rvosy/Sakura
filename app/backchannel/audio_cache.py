@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import uuid
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
+from app.storage.atomic import replace_with_retry
 
 NO_VOICE_FINGERPRINT = "novoice"
 
@@ -28,17 +30,47 @@ def voice_fingerprint(voice: _VoiceProfile | None) -> str:
     if voice is None:
         return NO_VOICE_FINGERPRINT
     digest = hashlib.sha256()
-    digest.update((voice.gpt_model_path.name if voice.gpt_model_path else "").encode("utf-8"))
-    digest.update(b"|")
-    digest.update(
-        (voice.sovits_model_path.name if voice.sovits_model_path else "").encode("utf-8")
-    )
-    digest.update(b"|")
+    _update_path_fingerprint(digest, voice.gpt_model_path)
+    _update_path_fingerprint(digest, voice.sovits_model_path)
+    _update_path_fingerprint(digest, voice.tone_ref_path, full=True)
     try:
-        digest.update(voice.tone_ref_path.read_bytes())
-    except OSError:
+        package_root = voice.tone_ref_path.parents[2]
+        for line in voice.tone_ref_path.read_text(encoding="utf-8").splitlines():
+            path_text = line.split("|", 1)[0].strip()
+            if not path_text:
+                continue
+            candidate = Path(path_text)
+            if not candidate.is_absolute():
+                candidate = package_root / candidate
+            _update_path_fingerprint(digest, candidate)
+    except (OSError, IndexError):
         pass
     return digest.hexdigest()[:8]
+
+
+def _update_path_fingerprint(
+    digest: "hashlib._Hash",
+    path: Path | None,
+    *,
+    full: bool = False,
+) -> None:
+    if path is None:
+        digest.update(b"<missing>")
+        return
+    candidate = Path(path)
+    digest.update(str(candidate).encode("utf-8", errors="surrogatepass"))
+    try:
+        stat_result = candidate.stat()
+        digest.update(f"|{stat_result.st_size}|".encode("ascii"))
+        with candidate.open("rb") as handle:
+            if full or stat_result.st_size <= 128 * 1024:
+                digest.update(handle.read())
+            else:
+                digest.update(handle.read(64 * 1024))
+                handle.seek(max(0, stat_result.st_size - 64 * 1024))
+                digest.update(handle.read(64 * 1024))
+    except OSError:
+        digest.update(b"<unreadable>")
 
 
 class BackchannelAudioCache:
@@ -67,7 +99,10 @@ class BackchannelAudioCache:
 
     def lookup(self, tone: str, ja_text: str) -> Path | None:
         path = self.path_for(tone, ja_text)
-        return path if path.exists() else None
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        path.unlink(missing_ok=True)
+        return None
 
     def store(self, tone: str, ja_text: str, source: Path) -> Path | None:
         """把合成产物复制进缓存。幂等;失败只记日志(缓存是优化不是依赖)。
@@ -77,15 +112,24 @@ class BackchannelAudioCache:
         """
         target = self.path_for(tone, ja_text)
         if target.exists():
-            return target
+            return target if target.is_file() and target.stat().st_size > 0 else None
+        temp_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
         try:
             self._root.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            shutil.copyfile(source, temp_target)
+            if temp_target.stat().st_size <= 0 or temp_target.stat().st_size != Path(source).stat().st_size:
+                raise OSError("缓存音频复制不完整")
+            replace_with_retry(temp_target, target)
             return target
         except OSError as exc:
-            debug_log(
+            log_event(
                 "Backchannel",
                 "接话音频写入磁盘缓存失败",
                 {"target": str(target), "error": str(exc)},
             )
             return None
+        finally:
+            try:
+                temp_target.unlink(missing_ok=True)
+            except OSError:
+                pass

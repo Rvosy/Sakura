@@ -62,6 +62,25 @@ def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
     bridge.close()
 
 
+def test_mcp_bridge_timeout_replaces_polluted_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ResourceRegistry()
+    bridge = MCPBridge(
+        MCPServerConfig(name="demo", transport="sse", url="https://example.com/mcp"),
+        default_call_timeout=1,
+        resource_registry=registry,
+    )
+    polluted_loop = bridge._loop_resource
+    monkeypatch.setattr(polluted_loop, "stop", lambda _timeout_ms: False)
+
+    bridge._invalidate_timed_out_connection()
+
+    assert bridge._loop_resource is not polluted_loop
+    assert bridge._loop_resource in registry._resources
+    bridge.close()
+
+
 def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() -> None:
     registry = ResourceRegistry()
     tool_registry = ToolRegistry()
@@ -118,8 +137,8 @@ class _FakeBridge:
 def _runtime_root_path(name: str) -> Path:
     return (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
-        / name
         / uuid.uuid4().hex
+        / name
     )

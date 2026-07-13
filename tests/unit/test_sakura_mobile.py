@@ -14,10 +14,13 @@ from app.agent.actions import AgentResult
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterProfile
+from app.core.http_client import urlopen_direct_for_loopback
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
 from app.llm.chat_reply import ChatReply, ChatSegment
+from app.plugins.capabilities import PluginCapabilityRegistry
 from app.storage.chat_history import ChatHistoryEntry
 from app.ui.theme import ThemeSettings, theme_colors_to_mapping
+from plugins.sakura_mobile.plugin import SakuraMobilePlugin
 from plugins.sakura_mobile import server as mobile_server
 
 
@@ -30,6 +33,62 @@ def test_mobile_default_config_is_lan_ready_but_disabled() -> None:
 
     assert config["enabled"] is False
     assert config["host"] == "0.0.0.0"
+
+
+def test_mobile_plugin_exposes_tauri_settings_contribution() -> None:
+    config = {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 8765,
+        "token": "secret",
+    }
+    saved_config: dict[str, object] = {}
+
+    class ContextStub:
+        base_dir = _runtime_root("plugin_settings")
+        services = SimpleNamespace(
+            resources=SimpleNamespace(register_cleanup=lambda *_args, **_kwargs: None),
+            mobile=None,
+        )
+
+        def get_config(self) -> dict[str, object]:
+            return dict(config)
+
+        def save_config(self, values: dict[str, object]) -> None:
+            saved_config.update(values)
+            config.update(values)
+
+        def log(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+    plugin = SakuraMobilePlugin()
+    registry = PluginCapabilityRegistry()
+    plugin.initialize(registry, ContextStub())  # type: ignore[arg-type]
+
+    assert len(registry.plugin_settings) == 1
+    contribution = registry.plugin_settings[0]
+    assert contribution.title == "手机端"
+    assert [field.key for field in contribution.fields] == [
+        "enabled",
+        "host",
+        "port",
+        "token",
+        "running",
+        "local_url",
+        "lan_urls",
+        "error",
+    ]
+    values = contribution.load()
+    assert values["token"] == "secret"
+    assert values["local_url"] == "http://127.0.0.1:8765/?token=secret"
+
+    contribution.save({"enabled": False, "host": "127.0.0.1", "port": 9000, "token": "next"})
+    assert saved_config == {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 9000,
+        "token": "next",
+    }
 
 
 def test_mobile_access_urls_include_local_and_lan(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,6 +148,29 @@ def test_mobile_page_writes_theme_variables() -> None:
     assert "button { border: 0; border-radius: 8px; background: var(--primary-color);" in html
 
 
+def test_plugin_mobile_theme_returns_default_when_backend_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.plugins.services as services_module
+    from app.plugins.services import PluginMobileService
+
+    logs: list[tuple[str, str, dict[str, object] | None]] = []
+    monkeypatch.setattr(
+        services_module,
+        "log_event",
+        lambda channel, message, payload=None, **_kwargs: logs.append((channel, message, payload)),
+    )
+    service = PluginMobileService()
+    service.set_backends(theme_sink=lambda: (_ for _ in ()).throw(RuntimeError("theme down")))
+
+    assert service.theme() == services_module._default_theme_mapping()
+    assert logs == [
+        (
+            "PluginMobileService",
+            "读取移动端主题失败，使用默认主题",
+            {"error": "theme down"},
+        )
+    ]
+
+
 def test_mobile_page_uses_current_character_name_for_labels() -> None:
     html = mobile_server._mobile_html("secret")
 
@@ -131,7 +213,7 @@ def test_mobile_chat_busy_returns_409() -> None:
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(request, timeout=5)
+            urlopen_direct_for_loopback(request, timeout=5)
         payload = json.loads(exc_info.value.read().decode("utf-8"))
         assert exc_info.value.code == 409
         assert payload == {"ok": False, "busy": True, "error": "Sakura 正忙，请稍后再试。"}

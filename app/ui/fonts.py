@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtGui import QFont, QFontDatabase
 
 
-def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:
+def _rounded_japanese_font(pixel_size: int, weight: QFont.Weight) -> QFont:
     family = _choose_font_family([
         "BIZ UDPGothic",
         "Meiryo",
@@ -14,13 +14,13 @@ def _rounded_japanese_font(point_size: int, weight: QFont.Weight) -> QFont:
         "Segoe UI",
     ])
     font = QFont(family)
-    font.setPointSize(point_size)
+    font.setPixelSize(pixel_size)
     font.setWeight(weight)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font
 
 
-def _rounded_chinese_font(point_size: int, weight: QFont.Weight) -> QFont:
+def _rounded_chinese_font(pixel_size: int, weight: QFont.Weight) -> QFont:
     family = _choose_font_family([
         "Microsoft YaHei UI",
         "Microsoft YaHei",
@@ -30,7 +30,7 @@ def _rounded_chinese_font(point_size: int, weight: QFont.Weight) -> QFont:
         "Segoe UI",
     ])
     font = QFont(family)
-    font.setPointSize(point_size)
+    font.setPixelSize(pixel_size)
     font.setWeight(weight)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font

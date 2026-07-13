@@ -9,6 +9,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from app.storage.archive_security import validate_zip_resource_limits
+
 # 接话意图分类用的句向量底座(probe 头骑在它上面)。常量定义在此(bge 缓存的归属地),
 # 不再从 embedding_classifier 导入——后者将随零样本原型方案一并移除。
 DEFAULT_BACKCHANNEL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -90,6 +92,14 @@ def import_backchannel_model_archive(
     backup_model_dir = destination_root / f".{BACKCHANNEL_MODEL_CACHE_NAME}.backup"
     try:
         with zipfile.ZipFile(archive, "r") as zf:
+            try:
+                validate_zip_resource_limits(
+                    zf,
+                    destination=destination_root,
+                    label="接话模型包",
+                )
+            except ValueError as exc:
+                raise BackchannelModelImportError(str(exc)) from exc
             model_prefix = _validate_model_zip_members(zf)
             temp_root.mkdir(parents=True, exist_ok=False)
             _extract_model_zip(zf, model_prefix, staging_model_dir)

@@ -17,7 +17,8 @@ from app.config.character_loader import (
     character_theme_from_mapping,
     character_theme_to_mapping,
 )
-from app.storage.atomic import rename_with_retry, replace_with_retry
+from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
+from app.storage.archive_security import ArchiveLimits, validate_zip_resource_limits
 
 
 ARCHIVE_FORMAT = "sakura.character.archive"
@@ -27,6 +28,10 @@ ARCHIVE_CHARACTER_ROOT = PurePosixPath("character")
 VOICE_ARCHIVE_FORMAT = "sakura.character.voice"
 VOICE_ARCHIVE_VERSION = 1
 VOICE_ARCHIVE_ROOT = PurePosixPath("voice")
+MAX_ARCHIVE_MEMBERS = 4096
+MAX_ARCHIVE_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
+MAX_ARCHIVE_COMPRESSION_RATIO = 200
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _SAFE_CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -68,7 +73,7 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
 
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            _validate_zip_members(zf)
+            _validate_zip_members(zf, characters_dir)
             manifest = _read_manifest(zf)
             character_data = _validated_character_data(manifest)
 
@@ -150,13 +155,14 @@ def import_character_voice_archive(
 
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            _validate_voice_zip_members(zf)
+            _validate_voice_zip_members(zf, characters_dir)
             manifest = _read_manifest(zf)
             voice_data = _validated_voice_data(manifest)
             normalized_voice = _normalized_voice_archive(voice_data)
 
             temp_root = characters_dir / f"voice_import_{uuid.uuid4().hex}"
             backup_voice_dir = temp_root / "backup_voice"
+            cleanup_temp_root = True
             try:
                 temp_root.mkdir(parents=True, exist_ok=False)
                 extract_dir = temp_root / "extract"
@@ -167,29 +173,48 @@ def import_character_voice_archive(
                 if not source_voice_dir.is_dir():
                     raise CharacterArchiveError("语音包缺少 voice/ 资源目录。")
 
-                shutil.copytree(source_voice_dir, staging_package_dir / "voice")
+                staging_voice_dir = staging_package_dir / "voice"
+                shutil.copytree(source_voice_dir, staging_voice_dir)
                 _validate_voice_referenced_files(staging_package_dir, normalized_voice)
 
-                if target_voice_dir.exists():
-                    rename_with_retry(target_voice_dir, backup_voice_dir)
-                moved = False
+                old_voice_moved = False
                 try:
-                    shutil.copytree(staging_package_dir / "voice", target_voice_dir)
-                    moved = True
+                    if target_voice_dir.exists():
+                        rename_with_retry(target_voice_dir, backup_voice_dir)
+                        old_voice_moved = True
+                    rename_with_retry(staging_voice_dir, target_voice_dir)
                     _write_character_voice_manifest(target_dir, normalized_voice)
                     profile = CharacterRegistry(base_dir).get(character_id)
-                except Exception:
-                    if moved and target_voice_dir.exists():
-                        shutil.rmtree(target_voice_dir, ignore_errors=True)
-                    if backup_voice_dir.exists():
-                        rename_with_retry(backup_voice_dir, target_voice_dir)
-                    manifest_path.write_text(original_manifest, encoding="utf-8")
+                except Exception as exc:
+                    recovery_errors: list[str] = []
+                    try:
+                        if target_voice_dir.exists():
+                            shutil.rmtree(target_voice_dir)
+                    except OSError as recovery_exc:
+                        recovery_errors.append(f"清理半成品失败：{recovery_exc}")
+                    if old_voice_moved and backup_voice_dir.exists():
+                        try:
+                            rename_with_retry(backup_voice_dir, target_voice_dir)
+                        except OSError as recovery_exc:
+                            recovery_errors.append(f"恢复原语音目录失败：{recovery_exc}")
+                    try:
+                        atomic_write_text(manifest_path, original_manifest)
+                    except OSError as recovery_exc:
+                        recovery_errors.append(f"恢复角色清单失败：{recovery_exc}")
+                    if recovery_errors:
+                        cleanup_temp_root = False
+                        raise CharacterArchiveError(
+                            "语音包导入失败且自动恢复不完整；"
+                            f"备份保留在 {temp_root}。"
+                            + "；".join(recovery_errors)
+                        ) from exc
                     raise
                 else:
                     if backup_voice_dir.exists():
-                        shutil.rmtree(backup_voice_dir, ignore_errors=True)
+                        shutil.rmtree(backup_voice_dir)
             finally:
-                shutil.rmtree(temp_root, ignore_errors=True)
+                if cleanup_temp_root:
+                    shutil.rmtree(temp_root, ignore_errors=True)
     except zipfile.BadZipFile as exc:
         raise CharacterArchiveError("不是有效的 Sakura .voice ZIP 包。") from exc
 
@@ -370,7 +395,8 @@ def export_character_voice_archive(profile: CharacterProfile, output_path: Path)
         temp_output.unlink(missing_ok=True)
 
 
-def _validate_zip_members(zf: zipfile.ZipFile) -> None:
+def _validate_zip_members(zf: zipfile.ZipFile, destination: Path | None = None) -> None:
+    _validate_zip_resource_limits(zf, "角色包", destination=destination)
     found_manifest = False
     for info in zf.infolist():
         member = str(info.filename or "").replace("\\", "/").rstrip("/")
@@ -388,7 +414,8 @@ def _validate_zip_members(zf: zipfile.ZipFile) -> None:
         raise CharacterArchiveError("角色包缺少 manifest.json。")
 
 
-def _validate_voice_zip_members(zf: zipfile.ZipFile) -> None:
+def _validate_voice_zip_members(zf: zipfile.ZipFile, destination: Path | None = None) -> None:
+    _validate_zip_resource_limits(zf, "语音包", destination=destination)
     found_manifest = False
     for info in zf.infolist():
         member = str(info.filename or "").replace("\\", "/").rstrip("/")
@@ -404,6 +431,28 @@ def _validate_voice_zip_members(zf: zipfile.ZipFile) -> None:
             raise CharacterArchiveError(f"语音包资源必须位于 voice/ 下：{member}")
     if not found_manifest:
         raise CharacterArchiveError("语音包缺少 manifest.json。")
+
+
+def _validate_zip_resource_limits(
+    zf: zipfile.ZipFile,
+    archive_label: str,
+    *,
+    destination: Path | None = None,
+) -> None:
+    try:
+        validate_zip_resource_limits(
+            zf,
+            destination=destination or Path.cwd(),
+            label=archive_label,
+            limits=ArchiveLimits(
+                max_members=MAX_ARCHIVE_MEMBERS,
+                max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+                max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES,
+                max_compression_ratio=MAX_ARCHIVE_COMPRESSION_RATIO,
+            ),
+        )
+    except ValueError as exc:
+        raise CharacterArchiveError(str(exc)) from exc
 
 
 def _read_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
@@ -622,9 +671,9 @@ def _tone_ref_audio_files(package_dir: Path, tone_ref_path: Path | None) -> list
     return paths
 
 def _write_character_manifest(package_dir: Path, character_data: dict[str, Any]) -> None:
-    (package_dir / "character.json").write_text(
+    atomic_write_text(
+        package_dir / "character.json",
         json.dumps(character_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 

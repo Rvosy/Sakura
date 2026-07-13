@@ -58,6 +58,6 @@ class TestPetUiStateStore:
         assert store.state == PetUiState.THINKING
 
     def test_set_state_with_reason_logged(self, store: PetUiStateStore) -> None:
-        # 仅验证 reason 路径不抛异常（日志内容由 debug_log 测试覆盖）
+        # 仅验证 reason 路径不抛异常（日志内容由 runtime_log 测试覆盖）
         store.set_state(PetUiState.SPEAKING, reason="manual")
         assert store.state == PetUiState.SPEAKING

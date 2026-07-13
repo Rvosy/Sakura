@@ -563,6 +563,15 @@ def test_sensory_store_prunes_by_retention_and_limit(tmp_path: Path) -> None:
     assert [record.id for record in records] == ["obs_3", "obs_2"]
 
 
+def test_sensory_context_returns_empty_tuple_without_observations(tmp_path: Path) -> None:
+    provider = SensoryContextProvider(
+        settings=SensorySettings(enabled=True),
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+    )
+
+    assert provider.build_context({"messages": [ChatMessage(role="user", content="刚才发生什么？")]}) == ()
+
+
 def test_sensory_context_filters_by_source_confidence_relevance_and_budget(tmp_path: Path) -> None:
     store = SensoryObservationStore(tmp_path / "sensory.jsonl")
     now = datetime.now().astimezone().isoformat(timespec="seconds")

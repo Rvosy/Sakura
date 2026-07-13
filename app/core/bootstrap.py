@@ -14,7 +14,6 @@ from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
 )
 from app.core.app_context import AppContext, CoreServices, FeatureServices, StorageServices
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
@@ -26,7 +25,7 @@ from app.config.character_loader import (
 )
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import ResourceRegistry
 from app.voice.factory import create_tts_provider
 from app.voice.tts import (
@@ -88,7 +87,7 @@ def load_startup_state(base_dir: Path) -> StartupState:
     chat_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_CHAT, settings)
     if chat_slot is not None:
         settings = chat_slot.settings
-    debug_log(
+    log_event(
         "Startup",
         "API 配置已加载",
         {
@@ -104,7 +103,7 @@ def load_startup_state(base_dir: Path) -> StartupState:
         settings_service.load_current_character_id(character_registry)
     )
     system_prompt = load_character_system_prompt(character_profile)
-    debug_log(
+    log_event(
         "Startup",
         "角色配置已加载",
         {
@@ -147,11 +146,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     model_selection = settings_service.load_model_selection()
     vision_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISION_CHAT, settings)
     vision_api_client = _client_for_explicit_slot(vision_slot, MODEL_SLOT_VISION_CHAT)
-    visual_context_slot = resolve_model_slot(api_profiles, model_selection, MODEL_SLOT_VISUAL_CONTEXT, settings)
-    visual_context_api_client = _client_for_explicit_slot(
-        visual_context_slot,
-        MODEL_SLOT_VISUAL_CONTEXT,
-    )
 
     resource_registry = ResourceRegistry()
     memory_store = MemoryStore(
@@ -190,7 +184,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     agent_runtime = AgentRuntime(
         api_client=api_client,
         vision_api_client=vision_api_client,
-        visual_context_api_client=visual_context_api_client,
         system_prompt=system_prompt,
         reply_tones=character_profile.reply_tones,
         reply_portraits=character_profile.portrait_choices,
@@ -230,7 +223,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     memory_curator = MemoryCurator(memory_curator_client, memory_store, system_prompt=system_prompt)
     screen_awareness_settings = settings_service.load_screen_awareness_settings()
 
-    debug_log(
+    log_event(
         "Startup",
         "初始主窗口服务已创建",
         {
@@ -309,7 +302,7 @@ def build_deferred_services(
         try:
             purge_tts_cache(base_dir)
         except OSError as exc:
-            debug_log("Startup", "TTS 缓存启动清理失败，已忽略", {"error": str(exc)})
+            log_event("Startup", "TTS 缓存启动清理失败，已忽略", {"error": str(exc)})
         check_cancelled(cancel_checker)
 
         try:
@@ -318,11 +311,11 @@ def build_deferred_services(
             )
             tts_provider = create_tts_provider(tts_settings, base_dir=base_dir)
         except TTSConfigError as exc:
-            debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
+            log_event("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
             errors.append(f"TTS 配置无效，已禁用：{exc}")
             tts_provider = NullTTSProvider()
         check_cancelled(cancel_checker)
-        debug_log(
+        log_event(
             "Startup",
             "TTS Provider 已创建",
             {"provider": type(tts_provider).__name__},
@@ -348,8 +341,8 @@ def build_deferred_services(
         except OperationCancelled:
             raise
         except Exception as exc:  # noqa: BLE001
-            debug_log("Plugin", "启动加载失败，已跳过插件", {"error": str(exc)})
-            debug_log("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
+            log_event("Plugin", "启动加载失败，已跳过插件", {"error": str(exc)})
+            log_event("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
             errors.append(f"插件加载失败，已跳过：{exc}")
         check_cancelled(cancel_checker)
         for result in plugin_manager.results:
@@ -367,7 +360,7 @@ def build_deferred_services(
         _close_deferred_service_objects(tts_provider, mcp_tool_provider, plugin_manager)
         raise
 
-    debug_log(
+    log_event(
         "Startup",
         "后台启动服务已创建",
         {
@@ -399,19 +392,19 @@ def _close_deferred_service_objects(
         try:
             close_tts()
         except Exception as exc:  # noqa: BLE001
-            debug_log("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
+            log_event("TTS", "取消后台启动时关闭 TTS Provider 失败", {"error": str(exc)})
     close_mcp = getattr(mcp_tool_provider, "close", None)
     if callable(close_mcp):
         try:
             close_mcp()
         except Exception as exc:  # noqa: BLE001
-            debug_log("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
+            log_event("MCP", "取消后台启动时关闭 MCP Provider 失败", {"error": str(exc)})
     shutdown_all = getattr(plugin_manager, "shutdown_all", None)
     if callable(shutdown_all):
         try:
             shutdown_all()
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
+            log_event("PluginManager", "取消后台启动时关闭插件失败", {"error": str(exc)})
 
 
 def _normalize_portrait_scale_percent(value: object) -> int:

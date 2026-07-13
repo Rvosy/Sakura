@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import plistlib
-import shlex
 from pathlib import Path
 
 import pytest
@@ -11,6 +10,7 @@ from app.platforms.launch_at_login import (
     LINUX_AUTOSTART_FILENAME,
     WINDOWS_RUN_VALUE_NAME,
     LaunchAtLoginError,
+    is_launch_at_login_enabled,
     resolve_launch_at_login_target,
     set_launch_at_login_enabled,
 )
@@ -43,10 +43,10 @@ def test_linux_autostart_desktop_file_is_written_and_removed(tmp_path: Path) -> 
 
     desktop_path = home / ".config" / "autostart" / LINUX_AUTOSTART_FILENAME
     content = desktop_path.read_text(encoding="utf-8")
-    start_script = shlex.quote(str(root / "scripts" / "start.sh"))
     assert "Type=Application" in content
     assert "Name=Sakura Desktop Pet" in content
-    assert f"Exec=/bin/bash {start_script}" in content
+    escaped_script = str(root / "scripts" / "start.sh").replace("\\", "\\\\")
+    assert f'Exec="/bin/bash" "{escaped_script}"' in content
     assert "X-GNOME-Autostart-enabled=true" in content
 
     set_launch_at_login_enabled(root, False, platform="linux", home_dir=home)
@@ -81,6 +81,28 @@ def test_windows_run_key_uses_packaged_runtime_python(tmp_path: Path) -> None:
     )
 
     assert WINDOWS_RUN_VALUE_NAME not in registry.values
+
+
+def test_launch_at_login_state_is_read_cross_platform(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    home = tmp_path / "home"
+
+    assert not is_launch_at_login_enabled(root, platform="darwin", home_dir=home)
+    set_launch_at_login_enabled(root, True, platform="darwin", home_dir=home)
+    assert is_launch_at_login_enabled(root, platform="darwin", home_dir=home)
+
+    registry = FakeWinreg()
+    assert not is_launch_at_login_enabled(
+        root,
+        platform="win32",
+        windows_registry=registry,
+    )
+    set_launch_at_login_enabled(root, True, platform="win32", windows_registry=registry)
+    assert is_launch_at_login_enabled(
+        root,
+        platform="win32",
+        windows_registry=registry,
+    )
 
 
 def test_windows_run_key_prefers_start_bat_when_available(tmp_path: Path) -> None:
@@ -120,6 +142,7 @@ class FakeRegistryKey:
 class FakeWinreg:
     HKEY_CURRENT_USER = object()
     KEY_SET_VALUE = 0x0002
+    KEY_QUERY_VALUE = 0x0001
     REG_SZ = 1
 
     def __init__(self) -> None:
@@ -141,6 +164,12 @@ class FakeWinreg:
     def DeleteValue(self, _key: FakeRegistryKey, name: str) -> None:
         try:
             del self.values[name]
+        except KeyError as exc:
+            raise FileNotFoundError(name) from exc
+
+    def QueryValueEx(self, _key: FakeRegistryKey, name: str) -> tuple[str, int]:
+        try:
+            return self.values[name], self.REG_SZ
         except KeyError as exc:
             raise FileNotFoundError(name) from exc
 

@@ -19,20 +19,25 @@ from app.config.model_slots import normalize_provider_models
 from app.config.models import (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
-    MODEL_SLOT_THEME_AI,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
 )
 from app.llm.api_client import ApiSettings
 from app.storage.paths import StoragePaths
-from app.ui.theme import ThemeSettings, theme_from_mapping, theme_to_mapping
+from app.ui.theme import (
+    DEFAULT_THEME_SETTINGS,
+    ThemeSettings,
+    theme_colors_to_mapping,
+    theme_from_mapping,
+    theme_to_mapping,
+)
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
+    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     ScreenAwarenessSettings,
 )
 from app.sensory.settings import SensorySettings, sensory_settings_from_config
@@ -50,15 +55,18 @@ from app.voice.tts_settings import (
 API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
+_LEGACY_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
+_LEGACY_DEFAULT_VISION_MODEL = "gpt-4o"
 
 
 @dataclass(frozen=True)
 class DebugLogSettings:
-    """调试日志配置。"""
+    """运行日志配置。"""
 
-    enabled: bool = False
+    enabled: bool = True
     body_enabled: bool = False
-    file_enabled: bool = False
+    file_enabled: bool = True
+    profile: str = "info"
     # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
     stage_debug_overlay: bool = False
     # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。
@@ -175,9 +183,9 @@ class AppSettingsService:
             60,
         )
         return ApiSettings(
-            base_url=str(data.get("base_url", "https://api.openai.com/v1")).strip().rstrip("/"),
+            base_url=str(data.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
             api_key=str(data.get("api_key", "")).strip(),
-            model=str(data.get("model", "gpt-4.1-mini")).strip(),
+            model=str(data.get("model", DEFAULT_TEXT_MODEL)).strip(),
             timeout_seconds=timeout_seconds,
             temperature=_optional_float(data.get("temperature"), minimum=0.0, maximum=2.0),
             top_p=_optional_float(data.get("top_p"), minimum=0.0, maximum=1.0),
@@ -237,7 +245,7 @@ class AppSettingsService:
                 alias=DEFAULT_PROFILE_ALIAS,
                 base_url=str(llm.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
                 api_key=str(llm.get("api_key", "")).strip(),
-                models=tuple(_dedupe([old_model or DEFAULT_TEXT_MODEL])),
+                models=tuple(_dedupe([old_model or _LEGACY_DEFAULT_TEXT_MODEL])),
             )
             # 写入新格式
             self.save_api_profiles([profile])
@@ -246,7 +254,7 @@ class AppSettingsService:
                 ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=DEFAULT_PROFILE_ID,
-                        model=old_model or DEFAULT_TEXT_MODEL,
+                        model=old_model or _LEGACY_DEFAULT_TEXT_MODEL,
                     ),
                 )
             )
@@ -294,9 +302,7 @@ class AppSettingsService:
             return ModelSelectionSettings(
                 chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
                 vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-                visual_context=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISUAL_CONTEXT)),
                 memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
-                theme_ai=_optional_slot_selection(raw_slots.get(MODEL_SLOT_THEME_AI)),
             )
 
         # #110 旧格式迁移：视觉/文本模型两槽位。
@@ -315,18 +321,18 @@ class AppSettingsService:
                 settings = ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=str(data.get("text_profile_id", "")).strip(),
-                        model=str(data.get("text_model", DEFAULT_TEXT_MODEL)).strip(),
+                        model=str(data.get("text_model", _LEGACY_DEFAULT_TEXT_MODEL)).strip(),
                     ),
                     vision_chat=ModelSlotSelection(
                         profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
                     ),
                 )
             else:
                 settings = ModelSelectionSettings(
                     chat=ModelSlotSelection(
                         profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", DEFAULT_VISION_MODEL)).strip(),
+                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
                     ),
                 )
             self.save_model_selection(settings)
@@ -337,7 +343,7 @@ class AppSettingsService:
         return ModelSelectionSettings(
             chat=ModelSlotSelection(
                 profile_id=DEFAULT_PROFILE_ID if llm.get("base_url") else "",
-                model=old_model or DEFAULT_TEXT_MODEL,
+                model=old_model or (_LEGACY_DEFAULT_TEXT_MODEL if llm.get("base_url") else ""),
             ),
         )
 
@@ -347,9 +353,7 @@ class AppSettingsService:
         for slot in (
             MODEL_SLOT_CHAT,
             MODEL_SLOT_VISION_CHAT,
-            MODEL_SLOT_VISUAL_CONTEXT,
             MODEL_SLOT_MEMORY_CURATION,
-            MODEL_SLOT_THEME_AI,
         ):
             selection = settings.get(slot)
             if selection is None:
@@ -370,7 +374,6 @@ class AppSettingsService:
         character_profile: CharacterProfile | None = None,
     ) -> GPTSoVITSTTSSettings:
         data = self._api_section("tts")
-        playback_backend = str(data.get("playback_backend", "")).strip()
         gpt_sovits = _mapping(data.get("gpt_sovits"))
         genie_tts = _mapping(data.get("genie_tts"))
         provider = str(data.get("provider", "")).strip().lower()
@@ -430,8 +433,6 @@ class AppSettingsService:
                 onnx_model_dir=onnx_model_dir,
                 validate_enabled=validate_enabled,
             )
-            if playback_backend:
-                settings = replace(settings, playback_backend=playback_backend)
         else:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
                 onnx_model_dir = StoragePaths(self.base_dir).tts_bundle_onnx_for("default")
@@ -451,24 +452,24 @@ class AppSettingsService:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
             )
-            if playback_backend:
-                settings = replace(settings, playback_backend=playback_backend)
         if settings.enabled and validate_enabled:
             settings.validate()
         return settings
 
     def save_tts_settings(self, settings: GPTSoVITSTTSSettings) -> None:
         data = load_yaml_mapping(self.api_config_path)
+        existing_tts = data.get("tts")
+        tts_data: dict[str, object] = (
+            dict(existing_tts) if isinstance(existing_tts, dict) else {}
+        )
         saved_provider = settings.provider if settings.enabled else TTS_PROVIDER_NONE
         section_provider = (
             settings.provider
             if settings.provider in {TTS_PROVIDER_GENIE, TTS_PROVIDER_GPT_SOVITS}
             else TTS_PROVIDER_GPT_SOVITS
         )
-        tts_data: dict[str, object] = {
-            "provider": saved_provider,
-            "enabled": bool(settings.enabled),
-        }
+        tts_data["provider"] = saved_provider
+        tts_data["enabled"] = bool(settings.enabled)
         if section_provider == TTS_PROVIDER_GENIE:
             tts_data["genie_tts"] = {
                 "api_url": settings.api_url.strip() or DEFAULT_GENIE_TTS_API_URL,
@@ -543,24 +544,30 @@ class AppSettingsService:
     def load_debug_log_settings(self) -> DebugLogSettings:
         debug = self._system_section("debug")
         return DebugLogSettings(
-            enabled=_bool_value(debug.get("enabled"), False),
+            enabled=_bool_value(debug.get("enabled"), True),
             body_enabled=_bool_value(debug.get("body_enabled"), False),
-            file_enabled=_bool_value(debug.get("file_enabled"), False),
+            file_enabled=_bool_value(debug.get("file_enabled"), True),
+            profile=_log_level_value(debug.get("profile"), "info"),
             stage_debug_overlay=_bool_value(debug.get("stage_debug_overlay"), False),
             stage_collision_mask=_bool_value(debug.get("stage_collision_mask"), True),
         )
 
     def save_debug_log_settings(self, settings: DebugLogSettings) -> None:
-        self.save_system_values(
-            "debug",
+        data = load_yaml_mapping(self.system_config_path)
+        debug = _mapping(data.get("debug"))
+        debug.pop("raw_tts_service_enabled", None)
+        debug.update(
             {
                 "enabled": bool(settings.enabled),
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
+                "profile": _log_level_value(settings.profile, "info"),
                 "stage_debug_overlay": bool(settings.stage_debug_overlay),
                 "stage_collision_mask": bool(settings.stage_collision_mask),
-            },
+            }
         )
+        data["debug"] = debug
+        save_yaml_mapping(self.system_config_path, data)
 
     def load_startup_settings(self) -> StartupSettings:
         startup = self._system_section("startup")
@@ -576,19 +583,77 @@ class AppSettingsService:
 
     def load_theme_settings(self) -> ThemeSettings:
         ui = self._system_section("ui")
-        return theme_from_mapping(ui.get("theme"))
+        saved = theme_from_mapping(ui.get("theme"))
+        return replace(
+            DEFAULT_THEME_SETTINGS,
+            ai_enabled=saved.ai_enabled,
+            visual_effect_mode=saved.visual_effect_mode,
+        )
 
     def save_theme_settings(self, settings: ThemeSettings) -> None:
         ui = self._system_section("ui")
-        ui["theme"] = theme_to_mapping(settings)
+        normalized = (settings or DEFAULT_THEME_SETTINGS).normalized()
+        ui["theme"] = theme_to_mapping(
+            replace(
+                DEFAULT_THEME_SETTINGS,
+                ai_enabled=normalized.ai_enabled,
+                visual_effect_mode=normalized.visual_effect_mode,
+            )
+        )
+        data = load_yaml_mapping(self.system_config_path)
+        data["ui"] = ui
+        save_yaml_mapping(self.system_config_path, data)
+
+    def load_character_theme_overrides(self) -> dict[str, ThemeSettings]:
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        if not isinstance(raw, dict):
+            return {}
+        overrides: dict[str, ThemeSettings] = {}
+        for character_id, value in raw.items():
+            key = str(character_id).strip()
+            if not key or not isinstance(value, dict):
+                continue
+            theme = theme_from_mapping(value).normalized()
+            overrides[key] = ThemeSettings(**theme_colors_to_mapping(theme))
+        return overrides
+
+    def load_character_theme_override(self, character_id: str) -> ThemeSettings | None:
+        return self.load_character_theme_overrides().get(str(character_id).strip())
+
+    def save_character_theme_override(self, character_id: str, settings: ThemeSettings) -> None:
+        key = str(character_id).strip()
+        if not key:
+            raise ValueError("角色主题覆盖缺少角色 ID。")
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        overrides = dict(raw) if isinstance(raw, dict) else {}
+        overrides[key] = theme_colors_to_mapping(settings or DEFAULT_THEME_SETTINGS)
+        ui["character_theme_overrides"] = overrides
+        data = load_yaml_mapping(self.system_config_path)
+        data["ui"] = ui
+        save_yaml_mapping(self.system_config_path, data)
+
+    def delete_character_theme_override(self, character_id: str) -> None:
+        key = str(character_id).strip()
+        if not key:
+            return
+        ui = self._system_section("ui")
+        raw = ui.get("character_theme_overrides")
+        if not isinstance(raw, dict) or key not in raw:
+            return
+        overrides = dict(raw)
+        overrides.pop(key, None)
+        if overrides:
+            ui["character_theme_overrides"] = overrides
+        else:
+            ui.pop("character_theme_overrides", None)
         data = load_yaml_mapping(self.system_config_path)
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
     def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
         screen_awareness = self._system_section("screen_awareness")
-        if not screen_awareness:
-            screen_awareness = self._system_section("proactive_care")
         return ScreenAwarenessSettings(
             enabled=_bool_value(screen_awareness.get("enabled"), True),
             screen_context_enabled=_bool_value(
@@ -607,6 +672,12 @@ class AppSettingsService:
                 screen_awareness.get("screen_context_batch_limit"),
                 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
             ),
+            screen_context_resolution=str(
+                screen_awareness.get(
+                    "screen_context_resolution",
+                    SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
+                )
+            ),
         )
 
     def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
@@ -618,6 +689,7 @@ class AppSettingsService:
             "check_interval_minutes": int(normalized.check_interval_minutes),
             "cooldown_minutes": int(normalized.cooldown_minutes),
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
+            "screen_context_resolution": normalized.screen_context_resolution,
         }
         save_yaml_mapping(self.system_config_path, data)
 
@@ -639,14 +711,6 @@ class AppSettingsService:
         sensory_api.update(normalized.to_api_mapping())
         api_data["sensory"] = sensory_api
         save_yaml_mapping(self.api_config_path, api_data)
-
-    def load_proactive_care_settings(self) -> ScreenAwarenessSettings:
-        """兼容旧调用点；新代码请使用 load_screen_awareness_settings。"""
-        return self.load_screen_awareness_settings()
-
-    def save_proactive_care_settings(self, settings: ScreenAwarenessSettings) -> None:
-        """兼容旧调用点；新代码请使用 save_screen_awareness_settings。"""
-        self.save_screen_awareness_settings(settings)
 
     def load_bubble_settings(self) -> BubbleSettings:
         ui = self._system_section("ui")
@@ -697,7 +761,7 @@ class AppSettingsService:
 
         memory = self._system_section("memory_curation")
         return MemoryCurationSettings(
-            enabled=_bool_value(memory.get("enabled"), True),
+            enabled=True,
             trigger_turns=_int_value(memory.get("trigger_turns"), 8),
             backfill_limit=_int_value(memory.get("backfill_limit"), 200),
         )
@@ -708,7 +772,7 @@ class AppSettingsService:
         self.save_system_values(
             "memory_curation",
             {
-                "enabled": bool(settings.enabled),
+                "enabled": True,
                 "trigger_turns": int(settings.trigger_turns),
                 "backfill_limit": int(settings.backfill_limit),
             },
@@ -779,6 +843,13 @@ def _legacy_model_names(data: dict[str, Any]) -> list[str]:
         names.append(str(data.get(key, "")).strip())
     llm = _mapping(data.get("llm"))
     names.append(str(llm.get("model", "")).strip())
+    if any(key in data for key in ("text_enabled", "text_profile_id", "vision_profile_id")):
+        if _bool_value(data.get("text_enabled"), True) and not str(data.get("text_model", "")).strip():
+            names.append(_LEGACY_DEFAULT_TEXT_MODEL)
+        if not str(data.get("vision_model", "")).strip():
+            names.append(_LEGACY_DEFAULT_VISION_MODEL)
+    elif llm.get("base_url") and not str(llm.get("model", "")).strip():
+        names.append(_LEGACY_DEFAULT_TEXT_MODEL)
     return _dedupe(names)
 
 
@@ -863,3 +934,16 @@ def _bool_value(value: Any, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _log_level_value(value: Any, default: str) -> str:
+    """验证并规范化日志级别值；兼容旧 profile 键名到新级别。
+
+    新有效值: error / warn / info / debug / trace
+    旧值映射:  support → error, normal → info, verbose → debug, warning → warn
+    """
+    raw = str(value or default).strip().lower()
+    if raw in {"error", "warn", "info", "debug", "trace"}:
+        return raw
+    _LEGACY_MAP = {"support": "error", "normal": "info", "verbose": "debug", "warning": "warn"}
+    return _LEGACY_MAP.get(raw, default)

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.agent.proactive_care import PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER
+from app.agent.screen_awareness import SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER
 from app.agent.screen_observation import (
     MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER,
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -36,7 +36,7 @@ _VISUAL_ID_SUFFIX_RE = re.compile(r"，视觉记录\s+visual_id=[^\]\s]+")
 _HISTORY_MARKER_DISPLAY_TEXT = {
     MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER: "（已附上你框选的画面）",
     SCREEN_OBSERVATION_HISTORY_MARKER: "（已看过当前屏幕）",
-    PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER: "刚才留意了一下屏幕状态。",
+    SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER: "刚才留意了一下屏幕状态。",
 }
 _RENDER_BATCH_SIZE = 40
 
@@ -68,6 +68,7 @@ class HistoryWindow(QDialog):
         self._render_generation = 0
         self._refresh_scheduled = False
         self._staged_history_content: QWidget | None = None
+        self._owned_timers: list[QTimer] = []
 
         self.setWindowTitle("历史记录")
         self.resize(620, 680)
@@ -153,9 +154,11 @@ class HistoryWindow(QDialog):
         if self._refresh_scheduled:
             return
         self._refresh_scheduled = True
-        QTimer.singleShot(0, self._run_scheduled_refresh)
+        self._single_shot(0, self._run_scheduled_refresh)
 
     def _run_scheduled_refresh(self) -> None:
+        if not self._is_alive():
+            return
         self._refresh_scheduled = False
         self.refresh()
 
@@ -263,6 +266,8 @@ class HistoryWindow(QDialog):
         self.history_layout.addStretch(1)
 
     def _render_next_batch(self, generation: int) -> None:
+        if not self._is_alive():
+            return
         if generation != self._render_generation:
             return
         if self._staged_history_content is None:
@@ -294,7 +299,7 @@ class HistoryWindow(QDialog):
             self._staged_history_content = None
             self._schedule_layout_update()
             return
-        QTimer.singleShot(0, lambda generation=generation: self._render_next_batch(generation))
+        self._single_shot(0, lambda generation=generation: self._render_next_batch(generation))
 
     def _add_entry(self, entry: ChatHistoryEntry, *, show_meta: bool = True) -> None:
         view = _entry_view_model(entry, self.subtitle_language, self.history_store.assistant_name)
@@ -364,7 +369,7 @@ class HistoryWindow(QDialog):
 
     def _schedule_layout_update(self) -> None:
         for delay_ms in (0, 60, 160, 320):
-            QTimer.singleShot(delay_ms, self._sync_history_layout)
+            self._single_shot(delay_ms, self._sync_history_layout)
 
     def _sync_history_layout(self) -> None:
         # 延迟触发的 singleShot 可能在窗口被销毁后才执行（典型场景是 pytest-qt
@@ -380,6 +385,29 @@ class HistoryWindow(QDialog):
         self.history_layout.activate()
         self.history_content.adjustSize()
         self._scroll_to_bottom()
+
+    def _single_shot(self, delay_ms: int, callback) -> None:  # type: ignore[no-untyped-def]
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        self._owned_timers.append(timer)
+
+        def run() -> None:
+            if timer in self._owned_timers:
+                self._owned_timers.remove(timer)
+            timer.deleteLater()
+            if self._is_alive():
+                callback()
+
+        timer.timeout.connect(run)
+        timer.start(max(0, int(delay_ms)))
+
+    def _is_alive(self) -> bool:
+        if shiboken6 is None:
+            return True
+        try:
+            return bool(shiboken6.isValid(self))
+        except RuntimeError:
+            return False
 
     def _scroll_to_bottom(self) -> None:
         scrollbar = self.history_view.verticalScrollBar()

@@ -13,16 +13,12 @@ from dataclasses import dataclass, field
 
 MODEL_SLOT_CHAT = "chat"
 MODEL_SLOT_VISION_CHAT = "vision_chat"
-MODEL_SLOT_VISUAL_CONTEXT = "visual_context"
 MODEL_SLOT_MEMORY_CURATION = "memory_curation"
-MODEL_SLOT_THEME_AI = "theme_ai"
 
 MODEL_SLOT_ORDER = (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_VISUAL_CONTEXT,
     MODEL_SLOT_MEMORY_CURATION,
-    MODEL_SLOT_THEME_AI,
 )
 
 MODEL_SLOT_UI_ORDER = (
@@ -34,24 +30,18 @@ MODEL_SLOT_UI_ORDER = (
 MODEL_SLOT_LABELS = {
     MODEL_SLOT_CHAT: "聊天模型",
     MODEL_SLOT_VISION_CHAT: "视觉模型",
-    MODEL_SLOT_VISUAL_CONTEXT: "视觉摘要模型",
     MODEL_SLOT_MEMORY_CURATION: "记忆整理模型",
-    MODEL_SLOT_THEME_AI: "AI 配色模型",
 }
 
 MODEL_SLOT_DESCRIPTIONS = {
     MODEL_SLOT_CHAT: "全局默认的角色聊天模型，必填。",
     MODEL_SLOT_VISION_CHAT: "当聊天模型不支持图片，或想要自定义视觉模型时使用；留空则由聊天模型直接看原图。",
-    MODEL_SLOT_VISUAL_CONTEXT: "用于把截图/屏幕转成可检索的视觉摘要；默认继承视觉模型。",
     MODEL_SLOT_MEMORY_CURATION: "用于自动整理长期记忆；留空则继承聊天模型。",
-    MODEL_SLOT_THEME_AI: "用于根据角色立绘生成主题配色；留空则继承视觉模型。",
 }
 
 MODEL_SLOT_FALLBACKS = {
     MODEL_SLOT_VISION_CHAT: (MODEL_SLOT_CHAT,),
-    MODEL_SLOT_VISUAL_CONTEXT: (MODEL_SLOT_VISION_CHAT, MODEL_SLOT_CHAT),
     MODEL_SLOT_MEMORY_CURATION: (MODEL_SLOT_CHAT,),
-    MODEL_SLOT_THEME_AI: (MODEL_SLOT_VISION_CHAT, MODEL_SLOT_CHAT),
 }
 
 
@@ -61,9 +51,9 @@ MODEL_SLOT_FALLBACKS = {
 class ApiSettings:
     """LLM API 连接配置。"""
 
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = ""
     api_key: str = ""
-    model: str = "gpt-4.1-mini"
+    model: str = ""
     timeout_seconds: int = 60
     # 角色对话生成参数；None 表示沿用内置默认/不发送该参数，保持历史行为。
     temperature: float | None = None
@@ -103,21 +93,15 @@ class ModelSelectionSettings:
 
     chat: ModelSlotSelection = field(default_factory=ModelSlotSelection)
     vision_chat: ModelSlotSelection | None = None
-    visual_context: ModelSlotSelection | None = None
     memory_curation: ModelSlotSelection | None = None
-    theme_ai: ModelSlotSelection | None = None
 
     def get(self, slot: str) -> ModelSlotSelection | None:
         if slot == MODEL_SLOT_CHAT:
             return self.chat
         if slot == MODEL_SLOT_VISION_CHAT:
             return self.vision_chat
-        if slot == MODEL_SLOT_VISUAL_CONTEXT:
-            return self.visual_context
         if slot == MODEL_SLOT_MEMORY_CURATION:
             return self.memory_curation
-        if slot == MODEL_SLOT_THEME_AI:
-            return self.theme_ai
         return None
 
     @property
@@ -143,15 +127,16 @@ class ModelSelectionSettings:
         return self.chat.model
 
 
-# ---- 调试日志 ----
+# ---- 运行日志 ----
 
 @dataclass(frozen=True)
 class DebugLogSettings:
-    """调试日志配置。"""
+    """运行日志配置。"""
 
-    enabled: bool = False
+    enabled: bool = True
     body_enabled: bool = False
-    file_enabled: bool = False
+    file_enabled: bool = True
+    profile: str = "info"
     # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
     stage_debug_overlay: bool = False
     # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。

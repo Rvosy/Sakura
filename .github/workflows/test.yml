@@ -54,11 +54,14 @@ jobs:
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          python -m pytest tests/unit -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20
+          python -m pytest tests/unit -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 --junitxml=pytest-results.xml
           EXIT_CODE=$?
           if [ $EXIT_CODE -eq 134 ]; then
-            echo "::warning::Qt cleanup crash after all tests passed — treating as success"
-            exit 0
+            python -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse("pytest-results.xml").getroot(); suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite")); tests = sum(int(s.attrib.get("tests", 0)) for s in suites); failures = sum(int(s.attrib.get("failures", 0)) for s in suites); errors = sum(int(s.attrib.get("errors", 0)) for s in suites); sys.exit(0 if tests > 0 and failures == 0 and errors == 0 else 1)'
+            if [ $? -eq 0 ]; then
+              echo "::warning::Qt cleanup crash after a complete passing test suite — treating as success"
+              exit 0
+            fi
           fi
           exit $EXIT_CODE
 
