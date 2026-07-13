@@ -6,6 +6,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -319,6 +320,11 @@ class TauriTerminalProcess(QObject):
         self._closing = True
         process = self._process
         if process is not None and process.state() != QProcess.ProcessState.NotRunning:
+            deadline = time.monotonic() + max(0, timeout_ms) / 1000
+
+            def remaining_ms() -> int:
+                return max(0, int((deadline - time.monotonic()) * 1000))
+
             payload = {
                 "id": uuid.uuid4().hex,
                 "version": TERMINAL_PROTOCOL_VERSION,
@@ -329,11 +335,11 @@ class TauriTerminalProcess(QObject):
             line = TERMINAL_REQUEST_MARKER + json.dumps(payload, ensure_ascii=True) + "\n"
             process.write(line.encode("utf-8"))
             process.closeWriteChannel()
-            if not process.waitForFinished(max(0, timeout_ms)):
+            if not process.waitForFinished(remaining_ms()):
                 process.terminate()
-                if not process.waitForFinished(max(0, timeout_ms)):
+                if not process.waitForFinished(remaining_ms()):
                     process.kill()
-                    process.waitForFinished(max(0, timeout_ms))
+                    process.waitForFinished(remaining_ms())
         self._fail_all("终端宿主已关闭。", notify=False)
         self._process = None
         self._ready = False

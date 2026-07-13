@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Stdin, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -165,13 +165,59 @@ struct SharedProcessState {
     exit_code: Option<u32>,
 }
 
+struct SharedProcess {
+    state: Mutex<SharedProcessState>,
+    changed: Condvar,
+}
+
+impl SharedProcess {
+    fn running() -> Self {
+        Self {
+            state: Mutex::new(SharedProcessState {
+                running: true,
+                stopped: false,
+                exit_code: None,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn mark_finished(&self, stopped: bool, exit_code: Option<u32>) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "terminal state lock is poisoned".to_string())?;
+        state.running = false;
+        state.stopped |= stopped;
+        if exit_code.is_some() {
+            state.exit_code = exit_code;
+        }
+        drop(state);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    fn wait_for_timeout(&self, timeout: Duration) -> bool {
+        let Ok(state) = self.state.lock() else {
+            return false;
+        };
+        match self
+            .changed
+            .wait_timeout_while(state, timeout, |state| state.running)
+        {
+            Ok((state, wait)) => wait.timed_out() && state.running,
+            Err(_) => false,
+        }
+    }
+}
+
 struct TerminalSession {
     id: String,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     ring: Arc<Mutex<RingBuffer>>,
-    process: Arc<Mutex<SharedProcessState>>,
+    process: Arc<SharedProcess>,
 }
 
 struct TerminalHost {
@@ -197,6 +243,7 @@ impl TerminalHost {
             refresh_process_state(session)?;
             if session
                 .process
+                .state
                 .lock()
                 .map_err(|_| "terminal state lock is poisoned".to_string())?
                 .running
@@ -235,11 +282,7 @@ impl TerminalHost {
         let killer = child.clone_killer();
         let session_id = next_session_id();
         let ring = Arc::new(Mutex::new(RingBuffer::new(self.ring_capacity)));
-        let process = Arc::new(Mutex::new(SharedProcessState {
-            running: true,
-            stopped: false,
-            exit_code: None,
-        }));
+        let process = Arc::new(SharedProcess::running());
 
         spawn_reader(
             app.clone(),
@@ -297,6 +340,7 @@ impl TerminalHost {
         refresh_process_state(session)?;
         if !session
             .process
+            .state
             .lock()
             .map_err(|_| "terminal state lock is poisoned".to_string())?
             .running
@@ -340,6 +384,7 @@ impl TerminalHost {
         refresh_process_state(session)?;
         let running = session
             .process
+            .state
             .lock()
             .map_err(|_| "terminal state lock is poisoned".to_string())?
             .running;
@@ -352,13 +397,9 @@ impl TerminalHost {
                 .child
                 .wait()
                 .map_err(|error| format!("等待终端进程退出失败：{error}"))?;
-            let mut state = session
+            session
                 .process
-                .lock()
-                .map_err(|_| "terminal state lock is poisoned".to_string())?;
-            state.running = false;
-            state.stopped = true;
-            state.exit_code = Some(status.exit_code());
+                .mark_finished(true, Some(status.exit_code()))?;
         }
         let result = session_result(session, current_cursor(session)?, 0)?;
         Ok(result)
@@ -421,6 +462,7 @@ fn refresh_process_state(session: &mut TerminalSession) -> Result<(), String> {
     let (running, stopped, exit_code) = {
         let state = session
             .process
+            .state
             .lock()
             .map_err(|_| "terminal state lock is poisoned".to_string())?;
         (state.running, state.stopped, state.exit_code)
@@ -434,16 +476,14 @@ fn refresh_process_state(session: &mut TerminalSession) -> Result<(), String> {
         .map_err(|error| format!("读取终端进程状态失败：{error}"))?
     {
         Some(status) => {
-            let mut state = session
+            session
                 .process
-                .lock()
-                .map_err(|_| "terminal state lock is poisoned".to_string())?;
-            state.running = false;
-            state.exit_code = Some(status.exit_code());
+                .mark_finished(false, Some(status.exit_code()))?;
         }
         None if !running => {
             session
                 .process
+                .state
                 .lock()
                 .map_err(|_| "terminal state lock is poisoned".to_string())?
                 .running = true;
@@ -473,6 +513,7 @@ fn session_result(
         .read(cursor, max_bytes);
     let process = session
         .process
+        .state
         .lock()
         .map_err(|_| "terminal state lock is poisoned".to_string())?;
     let state = if process.running {
@@ -497,7 +538,7 @@ fn spawn_reader(
     session_id: String,
     mut reader: Box<dyn Read + Send>,
     ring: Arc<Mutex<RingBuffer>>,
-    process: Arc<Mutex<SharedProcessState>>,
+    process: Arc<SharedProcess>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -521,8 +562,7 @@ fn spawn_reader(
                 Err(_) => break,
             }
         }
-        let (event_state, exit_code) = if let Ok(mut state) = process.lock() {
-            state.running = false;
+        let (event_state, exit_code) = if let Ok(state) = process.state.lock() {
             (
                 if state.stopped { "stopped" } else { "exited" }.to_string(),
                 state.exit_code,
@@ -530,6 +570,7 @@ fn spawn_reader(
         } else {
             ("exited".to_string(), None)
         };
+        let _ = process.mark_finished(false, exit_code);
         let _ = app.emit(
             STATE_EVENT,
             StateEvent {
@@ -545,20 +586,17 @@ fn spawn_timeout(
     app: AppHandle,
     session_id: String,
     mut killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
-    process: Arc<Mutex<SharedProcessState>>,
+    process: Arc<SharedProcess>,
     timeout_ms: u64,
 ) {
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(timeout_ms));
-        let should_stop = process.lock().map(|state| state.running).unwrap_or(false);
-        if !should_stop {
+        if !process.wait_for_timeout(Duration::from_millis(timeout_ms)) {
             return;
         }
+        // portable-pty only guarantees killing the root child. On Windows, descendants
+        // require a Job Object-backed implementation to guarantee process-tree cleanup.
         let _ = killer.kill();
-        if let Ok(mut state) = process.lock() {
-            state.running = false;
-            state.stopped = true;
-        }
+        let _ = process.mark_finished(true, None);
         let _ = app.emit(
             STATE_EVENT,
             StateEvent {
@@ -716,10 +754,10 @@ fn host_loop(mut reader: BufReader<Stdin>, app: AppHandle, nonce: String) {
         let result = handle_host_request(&app, &nonce, request);
         write_host_result(&request_id, result);
         if exit_after {
-            app.exit(0);
             break;
         }
     }
+    app.exit(0);
 }
 
 fn handle_host_request(
@@ -858,5 +896,31 @@ mod tests {
         assert!(validate_size(120, 30).is_ok());
         assert!(validate_size(1, 30).is_err());
         assert!(validate_size(120, 501).is_err());
+    }
+
+    #[test]
+    fn timeout_wait_is_woken_when_process_finishes() {
+        use std::sync::mpsc;
+
+        let process = Arc::new(SharedProcess::running());
+        let waiting_process = Arc::clone(&process);
+        let (sender, receiver) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            sender
+                .send(waiting_process.wait_for_timeout(Duration::from_secs(5)))
+                .unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        process.mark_finished(false, Some(0)).unwrap();
+
+        assert!(!receiver.recv_timeout(Duration::from_millis(250)).unwrap());
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn timeout_wait_reports_elapsed_deadline() {
+        let process = SharedProcess::running();
+        assert!(process.wait_for_timeout(Duration::from_millis(1)));
     }
 }

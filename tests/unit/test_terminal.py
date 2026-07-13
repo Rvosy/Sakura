@@ -232,7 +232,7 @@ def test_disabling_idle_terminal_closes_host_and_can_be_reenabled(tmp_path: Path
     manager.update_settings(TerminalSettings(enabled=False, default_cwd=str(tmp_path)))
     manager.update_settings(TerminalSettings(enabled=True, default_cwd=str(tmp_path)))
 
-    assert ("shutdown", 1000) in transport.calls
+    assert ("shutdown", 250) in transport.calls
     assert manager.enabled
 
 
@@ -283,6 +283,20 @@ def test_tauri_terminal_result_decodes_session_payload() -> None:
         _terminal_result({"session_id": "session-1", "state": "running", "output_b64": "!"})
 
 
+def test_tauri_terminal_host_exits_when_parent_pipe_closes() -> None:
+    source = (
+        Path(__file__).parents[2]
+        / "tools"
+        / "terminal-tauri"
+        / "src-tauri"
+        / "src"
+        / "lib.rs"
+    ).read_text(encoding="utf-8")
+    host_loop = source.split("fn host_loop", 1)[1].split("\nfn handle_host_request", 1)[0]
+
+    assert "\n    app.exit(0);\n}" in host_loop
+
+
 def test_tauri_terminal_requests_write_on_process_owner_thread(tmp_path: Path) -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtCore import QProcess
@@ -331,3 +345,56 @@ def test_tauri_terminal_requests_write_on_process_owner_thread(tmp_path: Path) -
 
     assert not worker.is_alive()
     assert completed[0].output == b"hi"
+
+
+def test_tauri_terminal_shutdown_uses_one_total_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PySide6.QtCore import QProcess
+
+    import app.terminal.tauri_process as tauri_process_module
+    from app.terminal.tauri_process import TauriTerminalProcess
+
+    clock = iter((10.0, 10.0, 10.1, 10.2))
+    monkeypatch.setattr(tauri_process_module.time, "monotonic", lambda: next(clock))
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.waits: list[int] = []
+            self.terminated = False
+            self.killed = False
+
+        def state(self):  # type: ignore[no-untyped-def]
+            return QProcess.ProcessState.Running
+
+        def write(self, payload: bytes) -> int:
+            return len(payload)
+
+        def closeWriteChannel(self) -> None:
+            return None
+
+        def waitForFinished(self, timeout_ms: int) -> bool:
+            self.waits.append(timeout_ms)
+            return False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    transport = TauriTerminalProcess(base_dir=tmp_path)
+    process = FakeQProcess()
+    transport._process = process  # type: ignore[assignment]
+
+    transport._shutdown_on_ui(250)
+
+    assert len(process.waits) == 3
+    assert 249 <= process.waits[0] <= 250
+    assert 149 <= process.waits[1] <= 150
+    assert 49 <= process.waits[2] <= 50
+    assert process.terminated
+    assert process.killed
+    assert transport._process is None
+    assert not transport._closing

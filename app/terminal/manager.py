@@ -24,6 +24,7 @@ TERMINAL_MIN_YIELD_MS = 250
 TERMINAL_MAX_YIELD_MS = 10_000
 TERMINAL_DEFAULT_TIMEOUT_MS = 120_000
 TERMINAL_MAX_TIMEOUT_MS = 30 * 60 * 1000
+TERMINAL_DISABLE_SHUTDOWN_TIMEOUT_MS = 250
 TERMINAL_MODEL_READ_MAX_BYTES = 16 * 1024
 TERMINAL_MODEL_TEXT_MAX_CHARS = 6000
 TERMINAL_MAX_ARGS = 128
@@ -106,7 +107,7 @@ class TerminalManager:
                 transport_to_close = self._transport
                 self._revoke_session_locked()
         if transport_to_close is not None:
-            transport_to_close.shutdown(1000)
+            transport_to_close.shutdown(TERMINAL_DISABLE_SHUTDOWN_TIMEOUT_MS)
 
     def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         command = normalize_terminal_command(arguments.get("command"))
