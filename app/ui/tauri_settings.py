@@ -103,6 +103,18 @@ from app.config.settings_service import (
     StartupSettings,
 )
 from app.llm.api_client import ApiSettings
+from app.sensory.models import SensoryProviderMode, SensorySource
+from app.sensory.providers import (
+    DEFAULT_LLAMA_CPP_ENDPOINT,
+    DEFAULT_LMSTUDIO_ENDPOINT,
+    DEFAULT_OLLAMA_ENDPOINT,
+)
+from app.sensory.settings import (
+    SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    SensoryProviderConfig,
+    SensorySettings,
+    SensorySourceSettings,
+)
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import (
     PERMISSION_CHAT_UI,
@@ -164,6 +176,8 @@ from app.ui.theme import (
 from app.ui.settings.workers import (
     ApiConnectionTestWorker,
     ApiModelListProbeWorker,
+    SensoryModelListProbeWorker,
+    SensoryModelTestWorker,
     TTSTestWorker,
     ThemeAiWorker,
     _has_exportable_voice_model,
@@ -186,7 +200,7 @@ from app.voice.tts_settings import (
 _LINGERING_RPC_WORKERS: list[tuple[QThread, QObject]] = []
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
-TAURI_SETTINGS_PROTOCOL_VERSION = 3
+TAURI_SETTINGS_PROTOCOL_VERSION = 4
 SETTINGS_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
@@ -248,6 +262,273 @@ def _api_probe_settings(method: str, params: dict[str, Any]) -> ApiSettings:
     )
 
 
+def _sensory_ui_mode(
+    source_settings: SensorySourceSettings,
+    provider: SensoryProviderConfig | None,
+) -> str:
+    if source_settings.mode == SensoryProviderMode.OFF:
+        return "off"
+    if source_settings.mode == SensoryProviderMode.API:
+        return "api"
+    if provider is not None:
+        network_scope = str(provider.extra.get("network_scope") or "").strip().lower()
+        if network_scope == "lan" or (
+            provider.endpoint and not _is_localhost_endpoint(provider.endpoint)
+        ):
+            return "lan"
+    return "local"
+
+
+def _sensory_backend(provider: SensoryProviderConfig | None) -> str:
+    if provider is None:
+        return "lmstudio"
+    explicit = provider.extra.get("backend") or provider.extra.get("provider")
+    if explicit:
+        backend = str(explicit).strip().lower()
+        aliases = {
+            "lm_studio": "lmstudio",
+            "lm-studio": "lmstudio",
+            "llama.cpp": "llama",
+            "llama_cpp": "llama",
+            "llamacpp": "llama",
+        }
+        backend = aliases.get(backend, backend)
+        if backend in {"lmstudio", "ollama", "llama", "openai_compatible"}:
+            return backend
+    text = " ".join([provider.provider_id, provider.endpoint]).lower()
+    if "ollama" in text or "127.0.0.1:11434" in text:
+        return "ollama"
+    if "llama" in text or "127.0.0.1:8080" in text:
+        return "llama"
+    if "lmstudio" in text or "lm-studio" in text or "127.0.0.1:1234" in text:
+        return "lmstudio"
+    return "openai_compatible"
+
+
+def _default_sensory_endpoint(backend: str, mode_ui: str = "local") -> str:
+    normalized_backend = str(backend or "").strip().lower()
+    normalized_mode = str(mode_ui or "").strip().lower()
+    if normalized_mode == "lan":
+        return {
+            "lmstudio": "http://<LAN-IP>:1234/v1",
+            "ollama": "http://<LAN-IP>:11434",
+            "llama": "http://<LAN-IP>:8080/v1",
+        }.get(normalized_backend, "http://<LAN-IP>:8000/v1")
+    if normalized_mode == "api":
+        return "https://api.openai.com/v1"
+    if normalized_backend in {"lmstudio", "lm_studio", "lm-studio"}:
+        return DEFAULT_LMSTUDIO_ENDPOINT
+    if normalized_backend == "ollama":
+        return DEFAULT_OLLAMA_ENDPOINT
+    if normalized_backend in {"llama", "llama.cpp", "llama_cpp", "llamacpp"}:
+        return DEFAULT_LLAMA_CPP_ENDPOINT
+    return "http://127.0.0.1:8000/v1"
+
+
+def _sensory_to_mapping(settings: SensorySettings | None) -> dict[str, Any]:
+    normalized = (settings or SensorySettings()).normalized()
+    sources: dict[str, dict[str, Any]] = {}
+    for source in SensorySource:
+        source_settings = normalized.sources[source]
+        provider = normalized.provider_for_source(source)
+        mode_ui = _sensory_ui_mode(source_settings, provider)
+        backend = _sensory_backend(provider)
+        endpoint = str(provider.endpoint).strip() if provider is not None else ""
+        sources[source.value] = {
+            "mode": mode_ui,
+            "backend": backend,
+            "endpoint": endpoint or _default_sensory_endpoint(backend, mode_ui),
+            "model": str(provider.model).strip() if provider is not None else "",
+            "api_key": str(provider.api_key).strip() if provider is not None else "",
+            "timeout_seconds": (
+                int(provider.timeout_seconds)
+                if provider is not None
+                else SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS
+            ),
+            "confidence_threshold": float(source_settings.confidence_threshold),
+            "context_enabled": bool(source_settings.context_enabled),
+            "context_limit": int(source_settings.context_limit),
+        }
+    return {
+        "enabled": bool(normalized.enabled),
+        "context_enabled": bool(normalized.context_enabled),
+        "context_budget_chars": int(normalized.context_budget_chars),
+        "retention_days": int(normalized.retention_days),
+        "retention_limit": int(normalized.retention_limit),
+        "sources": sources,
+    }
+
+
+def _sensory_provider_mode(mode_ui: str) -> SensoryProviderMode:
+    normalized = str(mode_ui or "").strip().lower()
+    if normalized == "api":
+        return SensoryProviderMode.API
+    if normalized in {"local", "lan"}:
+        return SensoryProviderMode.LOCAL
+    return SensoryProviderMode.OFF
+
+
+def _sensory_provider_id(source: SensorySource, backend: str, mode_ui: str) -> str:
+    if mode_ui == "lan":
+        return f"{source.value}_lan"
+    mode = _sensory_provider_mode(mode_ui)
+    if mode == SensoryProviderMode.OFF:
+        return ""
+    if backend == "openai_compatible" and mode == SensoryProviderMode.LOCAL:
+        return f"{source.value}_local_openai"
+    return f"{source.value}_{mode.value}"
+
+
+def _sensory_provider_config(
+    source: SensorySource,
+    state: Mapping[str, Any],
+) -> SensoryProviderConfig:
+    mode_ui = str(state.get("mode") or "off").strip().lower()
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    provider_id = _sensory_provider_id(source, backend, mode_ui)
+    endpoint = str(state.get("endpoint") or "").strip()
+    if not endpoint and mode_ui != "lan":
+        endpoint = _default_sensory_endpoint(backend, mode_ui)
+    extra: dict[str, Any] = {"backend": backend}
+    if mode_ui in {"local", "lan"}:
+        extra["network_scope"] = mode_ui
+    try:
+        timeout_seconds = int(state.get("timeout_seconds"))
+    except (TypeError, ValueError):
+        timeout_seconds = SENSORY_DEFAULT_PROVIDER_TIMEOUT_SECONDS
+    return SensoryProviderConfig(
+        provider_id=provider_id,
+        source=source,
+        mode=_sensory_provider_mode(mode_ui),
+        endpoint=endpoint,
+        model=str(state.get("model") or "").strip(),
+        api_key=str(state.get("api_key") or "").strip(),
+        timeout_seconds=timeout_seconds,
+        extra=extra,
+    ).normalized()
+
+
+def _sensory_source_label(source: SensorySource) -> str:
+    return {
+        SensorySource.VISION: "视觉",
+        SensorySource.SPEECH: "语音",
+        SensorySource.SOUND: "环境声音",
+    }[source]
+
+
+def _validate_sensory_state(
+    source: SensorySource,
+    state: Mapping[str, Any],
+    *,
+    require_model: bool,
+    validate_provider: bool = True,
+) -> None:
+    mode_ui = str(state.get("mode") or "off").strip().lower()
+    if mode_ui not in {"off", "local", "lan", "api"}:
+        raise ValueError(f"{_sensory_source_label(source)}的增强感知模式无效。")
+    if mode_ui == "off":
+        return
+    backend = str(state.get("backend") or "lmstudio").strip().lower()
+    if backend not in {"lmstudio", "ollama", "llama", "openai_compatible"}:
+        raise ValueError(f"{_sensory_source_label(source)}的增强感知后端无效。")
+    if not validate_provider:
+        return
+    endpoint = str(state.get("endpoint") or "").strip()
+    if require_model and not str(state.get("model") or "").strip():
+        raise ValueError(f"{_sensory_source_label(source)}的增强感知模型不能为空。")
+    if mode_ui in {"api", "lan"} and not _is_http_url(endpoint):
+        raise ValueError(
+            f"{_sensory_source_label(source)}选择远端或局域网模式时必须填写有效 Endpoint。"
+        )
+    if mode_ui == "lan":
+        if "<" in endpoint or ">" in endpoint:
+            raise ValueError("局域网 Endpoint 中的占位 IP 必须替换为实际地址。")
+        if _is_localhost_endpoint(endpoint):
+            raise ValueError("局域网 Endpoint 不能使用 localhost 或回环地址。")
+    if mode_ui == "local" and endpoint and not _is_http_url(endpoint):
+        raise ValueError(f"{_sensory_source_label(source)}的本机 Endpoint 无效。")
+    if mode_ui == "local" and backend == "openai_compatible" and not endpoint:
+        raise ValueError("OpenAI 兼容本机服务必须填写 Endpoint。")
+
+
+def _sensory_from_mapping_required(value: object) -> SensorySettings:
+    if not isinstance(value, dict):
+        raise ValueError("Tauri 设置结果缺少增强感知配置。")
+    raw_sources = value.get("sources")
+    if not isinstance(raw_sources, dict):
+        raise ValueError("Tauri 设置结果缺少增强感知来源配置。")
+    enabled = _required_bool(value, "enabled")
+    sources: dict[SensorySource, SensorySourceSettings] = {}
+    providers: dict[str, SensoryProviderConfig] = {}
+    for source in SensorySource:
+        state = raw_sources.get(source.value)
+        if not isinstance(state, dict):
+            raise ValueError(f"Tauri 设置结果缺少{_sensory_source_label(source)}配置。")
+        _validate_sensory_state(
+            source,
+            state,
+            require_model=True,
+            validate_provider=enabled,
+        )
+        mode_ui = str(state.get("mode") or "off").strip().lower()
+        mode = _sensory_provider_mode(mode_ui)
+        provider_id = ""
+        if mode != SensoryProviderMode.OFF:
+            provider = _sensory_provider_config(source, state)
+            provider_id = provider.provider_id
+            providers[provider_id] = provider
+        try:
+            confidence_threshold = float(state.get("confidence_threshold", 0.5))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{_sensory_source_label(source)}的最低置信度无效。") from exc
+        sources[source] = SensorySourceSettings(
+            mode=mode,
+            provider_id=provider_id,
+            confidence_threshold=confidence_threshold,
+            context_enabled=_required_bool(state, "context_enabled"),
+            context_limit=_required_int(state, "context_limit"),
+        ).normalized(source)
+    return SensorySettings(
+        enabled=enabled,
+        context_enabled=_required_bool(value, "context_enabled"),
+        context_budget_chars=_required_int(value, "context_budget_chars"),
+        retention_days=_required_int(value, "retention_days"),
+        retention_limit=_required_int(value, "retention_limit"),
+        sources=sources,
+        providers=providers,
+    ).normalized()
+
+
+def _sensory_rpc_selection(
+    params: dict[str, Any],
+    *,
+    require_model: bool,
+) -> tuple[SensorySource, SensoryProviderConfig]:
+    source_value = str(params.get("source") or "").strip().lower()
+    if source_value not in {source.value for source in SensorySource}:
+        raise ValueError("请选择有效的增强感知来源。")
+    source = SensorySource(source_value)
+    _validate_sensory_state(source, params, require_model=require_model)
+    if _sensory_provider_mode(str(params.get("mode") or "off")) == SensoryProviderMode.OFF:
+        raise ValueError("请先启用当前感官模型。")
+    return source, _sensory_provider_config(source, params)
+
+
+def _is_localhost_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    return (parsed.hostname or "").strip().lower() in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+        "0.0.0.0",
+    }
+
+
+def _is_http_url(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 @dataclass(frozen=True)
 class TauriSystemBasicResult:
     debug_log: DebugLogSettings = field(default_factory=DebugLogSettings)
@@ -306,6 +587,7 @@ class TauriSettingsResult:
     screen_awareness: ScreenAwarenessSettings
     mcp: MCPRuntimeSettings
     runtime_loop: RuntimeLoopSettings
+    sensory: SensorySettings = field(default_factory=SensorySettings)
     system_basic: TauriSystemBasicResult = field(default_factory=TauriSystemBasicResult)
     theme: ThemeSettings = field(default_factory=lambda: DEFAULT_THEME_SETTINGS)
     theme_changed: bool = True
@@ -517,6 +799,7 @@ def build_tauri_settings_request(
     api_settings: ApiSettings | None = None,
     api_profiles: list[ApiConfigProfile] | None = None,
     model_selection: ModelSelectionSettings | None = None,
+    sensory_settings: SensorySettings | None = None,
     tts_settings: GPTSoVITSTTSSettings | None = None,
     startup_settings: StartupSettings | None = None,
     launch_at_login_supported: bool = True,
@@ -592,6 +875,7 @@ def build_tauri_settings_request(
             api_profiles,
             model_selection,
         ),
+        "sensory": _sensory_to_mapping(sensory_settings),
         "tts": _tts_to_mapping(tts_settings, base_dir),
         "system_extra": _system_extra_to_mapping(
             startup_settings or StartupSettings(),
@@ -774,6 +1058,9 @@ def parse_tauri_settings_payload(
     api = raw.get("api")
     if not isinstance(api, dict):
         raise ValueError("Tauri 设置结果缺少模型配置。")
+    sensory = raw.get("sensory")
+    if not isinstance(sensory, dict):
+        raise ValueError("Tauri 设置结果缺少增强感知配置。")
     tts = raw.get("tts")
     if not isinstance(tts, dict):
         raise ValueError("Tauri 设置结果缺少语音配置。")
@@ -815,6 +1102,7 @@ def parse_tauri_settings_payload(
             max_tool_calls_per_step=_required_int(runtime_loop, "max_tool_calls_per_step"),
             max_tool_calls_per_turn=_required_int(runtime_loop, "max_tool_calls_per_turn"),
         ).normalized(),
+        sensory=_sensory_from_mapping_required(sensory),
         system_basic=TauriSystemBasicResult(
             debug_log=_debug_log_from_mapping(debug_log),
             subtitle_typing_interval_ms=subtitle_typing_interval_ms,
@@ -1061,6 +1349,7 @@ class TauriSettingsProcess(QObject):
         api_settings: ApiSettings | None = None,
         api_profiles: list[ApiConfigProfile] | None = None,
         model_selection: ModelSelectionSettings | None = None,
+        sensory_settings: SensorySettings | None = None,
         tts_settings: GPTSoVITSTTSSettings | None = None,
         startup_settings: StartupSettings | None = None,
         launch_at_login_supported: bool = True,
@@ -1106,6 +1395,7 @@ class TauriSettingsProcess(QObject):
         self.api_settings = api_settings or _default_api_settings()
         self.api_profiles = api_profiles
         self.model_selection = model_selection
+        self.sensory_settings = (sensory_settings or SensorySettings()).normalized()
         self.tts_settings = tts_settings
         self.startup_settings = startup_settings or StartupSettings()
         self.launch_at_login_supported = bool(launch_at_login_supported)
@@ -1129,6 +1419,7 @@ class TauriSettingsProcess(QObject):
         self._stdout_buffer = ""
         # 在途的异步探测线程，按 RPC id 索引，避免被 GC；窗口销毁时统一收尾。
         self._api_probes: dict[str, tuple[QThread, QObject]] = {}
+        self._sensory_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._memory_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._character_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._theme_ai_rpcs: dict[str, tuple[QThread, QObject]] = {}
@@ -1249,6 +1540,7 @@ class TauriSettingsProcess(QObject):
             api_settings=self.api_settings,
             api_profiles=self.api_profiles,
             model_selection=self.model_selection,
+            sensory_settings=self.sensory_settings,
             tts_settings=self.tts_settings,
             startup_settings=self.startup_settings,
             launch_at_login_supported=self.launch_at_login_supported,
@@ -1371,6 +1663,9 @@ class TauriSettingsProcess(QObject):
         if method in ("api.list_models", "api.test_connection"):
             self._dispatch_api_probe(request_id, method, params)
             return
+        if method in ("sensory.list_models", "sensory.test"):
+            self._dispatch_sensory_rpc(request_id, method, params)
+            return
         if method == "theme.generate_ai":
             self._dispatch_theme_ai_rpc(request_id, params)
             return
@@ -1437,6 +1732,44 @@ class TauriSettingsProcess(QObject):
                 self._queue_rpc_response(request_id, ok=True, result={"models": models})
 
         self._start_rpc_worker(request_id, worker, self._api_probes, _on_success)
+
+    def _dispatch_sensory_rpc(
+        self,
+        request_id: str,
+        method: str,
+        params: dict[str, Any],
+    ) -> None:
+        """在后台线程探测或测试增强感知模型，避免阻塞 Qt 主线程。"""
+        try:
+            source, config = _sensory_rpc_selection(
+                params,
+                require_model=method == "sensory.test",
+            )
+        except ValueError as exc:
+            self._send_rpc_response(request_id, ok=False, error=str(exc))
+            return
+
+        worker: QObject
+        if method == "sensory.test":
+            worker = SensoryModelTestWorker(config, source)
+        else:
+            worker = SensoryModelListProbeWorker(config)
+
+        def _on_success(payload: object) -> None:
+            if method == "sensory.list_models":
+                models = (
+                    [str(item) for item in payload if str(item).strip()]
+                    if isinstance(payload, list)
+                    else []
+                )
+                self._queue_rpc_response(request_id, ok=True, result={"models": models})
+                return
+            if not isinstance(payload, dict):
+                self._queue_rpc_response(request_id, ok=False, error="增强感知测试结果格式无效。")
+                return
+            self._queue_rpc_response(request_id, ok=True, result={"observation": payload})
+
+        self._start_rpc_worker(request_id, worker, self._sensory_rpcs, _on_success)
 
     def _dispatch_memory_rpc(self, request_id: str, method: str, params: dict[str, Any]) -> None:
         """在后台线程访问 mem0/Qdrant，避免记忆页加载阻塞 Qt 主事件循环。"""
@@ -1671,6 +2004,7 @@ class TauriSettingsProcess(QObject):
         _shutdown_rpc_maps(
             (
                 self._api_probes,
+                self._sensory_rpcs,
                 self._memory_rpcs,
                 self._character_rpcs,
                 self._theme_ai_rpcs,

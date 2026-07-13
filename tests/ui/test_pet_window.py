@@ -4870,7 +4870,7 @@ def test_load_font_sizes_falls_back_and_clamps_invalid_config() -> None:
 
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
-                "version": 3,
+                "version": 4,
                 "nonce": "nonce",
                 "screen_awareness": {
                     "enabled": True,
@@ -4939,6 +4939,27 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                     "vision_chat": {"profile_id": "", "model": ""},
                     "memory_curation": {"profile_id": "", "model": ""},
                 }
+            },
+        },
+        "sensory": {
+            "enabled": False,
+            "context_enabled": True,
+            "context_budget_chars": 1200,
+            "retention_days": 7,
+            "retention_limit": 300,
+            "sources": {
+                source: {
+                    "mode": "off",
+                    "backend": "lmstudio",
+                    "endpoint": "http://127.0.0.1:1234/v1",
+                    "model": "",
+                    "api_key": "",
+                    "timeout_seconds": 20,
+                    "confidence_threshold": 0.5,
+                    "context_enabled": True,
+                    "context_limit": 4,
+                }
+                for source in ("vision", "speech", "sound")
             },
         },
         "tts": {
@@ -5022,6 +5043,139 @@ def test_tauri_settings_result_parser_normalizes_runtime_loop() -> None:
     assert result.system_extra.backchannel.delay_ms == 5000
     assert result.memory_curation.enabled is True
     assert result.memory_curation.trigger_turns == 50
+
+
+def test_tauri_settings_sensory_round_trip_preserves_lan_and_api_modes() -> None:
+    from app.sensory.models import SensoryProviderMode, SensorySource
+    from app.sensory.settings import SensoryProviderConfig, SensorySourceSettings
+    from app.ui.tauri_settings import build_tauri_settings_request, parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    sensory = SensorySettings(
+        enabled=True,
+        context_enabled=True,
+        context_budget_chars=900,
+        sources={
+            SensorySource.VISION: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="vision_lan",
+                confidence_threshold=0.65,
+            ),
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.API,
+                provider_id="speech_api",
+                confidence_threshold=0.75,
+            ),
+        },
+        providers={
+            "vision_lan": SensoryProviderConfig(
+                provider_id="vision_lan",
+                source=SensorySource.VISION,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://192.168.1.20:1234/v1",
+                model="qwen-vl",
+                extra={"backend": "lmstudio", "network_scope": "lan"},
+            ),
+            "speech_api": SensoryProviderConfig(
+                provider_id="speech_api",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.API,
+                endpoint="https://audio.example.com/v1",
+                model="audio-model",
+                api_key="secret",
+                extra={"backend": "openai_compatible"},
+            ),
+        },
+    )
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        sensory_settings=sensory,
+        nonce="nonce",
+    )
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload["sensory"] = request["sensory"]
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert request["sensory"]["sources"]["vision"]["mode"] == "lan"
+    assert result.sensory.context_budget_chars == 900
+    assert result.sensory.sources[SensorySource.VISION].mode == SensoryProviderMode.LOCAL
+    assert result.sensory.providers["vision_lan"].extra["network_scope"] == "lan"
+    assert result.sensory.providers["speech_api"].api_key == "secret"
+
+
+def test_tauri_settings_result_parser_rejects_missing_sensory_config() -> None:
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    payload.pop("sensory")
+
+    with pytest.raises(ValueError, match="增强感知配置"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_allows_incomplete_provider_only_when_sensory_is_disabled() -> None:
+    from app.sensory.models import SensoryProviderMode, SensorySource
+    from app.ui.tauri_settings import parse_tauri_settings_payload
+    from app.ui.theme import theme_to_mapping
+
+    payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
+    sensory = payload["sensory"]
+    sensory["sources"]["vision"].update(  # type: ignore[index]
+        {
+            "mode": "lan",
+            "endpoint": "http://<LAN-IP>:1234/v1",
+            "model": "",
+            "confidence_threshold": 0.0,
+        }
+    )
+
+    result = parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+    assert result.sensory.enabled is False
+    assert result.sensory.sources[SensorySource.VISION].mode == SensoryProviderMode.LOCAL
+    assert result.sensory.sources[SensorySource.VISION].confidence_threshold == 0.0
+    assert result.sensory.providers["vision_lan"].model == ""
+
+    sensory["enabled"] = True  # type: ignore[index]
+    with pytest.raises(ValueError, match="模型不能为空"):
+        parse_tauri_settings_payload(payload, expected_nonce="nonce")
+
+
+def test_tauri_settings_uses_network_defaults_when_sensory_mode_changes() -> None:
+    from app.sensory.models import SensoryProviderMode, SensorySource
+    from app.sensory.settings import SensoryProviderConfig, SensorySourceSettings
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        sensory_settings=SensorySettings(
+            sources={
+                SensorySource.VISION: SensorySourceSettings(
+                    mode=SensoryProviderMode.API,
+                    provider_id="vision_api",
+                ),
+                SensorySource.SOUND: SensorySourceSettings(
+                    mode=SensoryProviderMode.LOCAL,
+                    provider_id="sound_lan",
+                ),
+            },
+            providers={
+                "sound_lan": SensoryProviderConfig(
+                    provider_id="sound_lan",
+                    source=SensorySource.SOUND,
+                    mode=SensoryProviderMode.LOCAL,
+                    model="audio-model",
+                    extra={"backend": "ollama", "network_scope": "lan"},
+                )
+            },
+        ),
+        nonce="nonce",
+    )
+
+    assert request["sensory"]["sources"]["vision"]["endpoint"] == "https://api.openai.com/v1"
+    assert request["sensory"]["sources"]["sound"]["endpoint"] == "http://<LAN-IP>:11434"
 
 
 def test_tauri_settings_result_parser_accepts_hidden_empty_tts_config_path() -> None:
@@ -5114,7 +5268,7 @@ def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
 
     payload = {
-        "version": 3,
+        "version": 4,
         "nonce": "nonce",
         "screen_awareness": {
             "enabled": True,
@@ -5140,7 +5294,7 @@ def test_tauri_settings_result_parser_rejects_stale_protocol() -> None:
     from app.ui.theme import theme_to_mapping
 
     payload = _tauri_settings_result_payload(theme_to_mapping(DEFAULT_THEME_SETTINGS))
-    payload["version"] = 2
+    payload["version"] = 3
 
     with pytest.raises(ValueError, match="协议不匹配"):
         parse_tauri_settings_payload(payload, expected_nonce="nonce")
@@ -5240,7 +5394,7 @@ def test_tauri_settings_request_includes_font_sizes_and_layout_limits() -> None:
         nonce="nonce",
     )
 
-    assert request["version"] == 3
+    assert request["version"] == 4
     assert request["system_basic"]["ui"] == {
         "subtitle_typing_interval_ms": 35,
         "reply_segment_pause_ms": 100,
@@ -5510,6 +5664,57 @@ def test_tauri_settings_mcp_change_message_mentions_restart(monkeypatch) -> None
     assert messages == ["桌面控制 MCP 开关需要重启 Sakura 后才会生效。"]
 
 
+def test_tauri_settings_apply_saves_and_rebuilds_sensory_pipeline() -> None:
+    from app.sensory.models import SensoryProviderMode, SensorySource
+    from app.sensory.settings import SensoryProviderConfig, SensorySourceSettings
+    from app.ui.pet_window import PetWindow
+
+    class SettingsServiceStub:
+        def __init__(self) -> None:
+            self.saved_sensory = None
+
+        def save_sensory_settings(self, settings):  # type: ignore[no-untyped-def]
+            self.saved_sensory = settings
+
+        def __getattr__(self, name: str):
+            if name.startswith("save_"):
+                return lambda *_args, **_kwargs: None
+            raise AttributeError(name)
+
+    class ApiClientStub:
+        settings = ApiSettings("https://api.example.com/v1", "test-key", "test-model")
+
+    sensory = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.VISION: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="vision_local",
+            )
+        },
+        providers={
+            "vision_local": SensoryProviderConfig(
+                provider_id="vision_local",
+                source=SensorySource.VISION,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:1234/v1",
+                model="qwen-vl",
+                extra={"backend": "lmstudio", "network_scope": "local"},
+            )
+        },
+    ).normalized()
+    service = SettingsServiceStub()
+    window = _minimal_settings_window(PetWindow, service, ApiClientStub(), object())
+    result = replace(_build_tauri_settings_result(), sensory=sensory)
+
+    assert window._apply_tauri_settings_result(result, final=True) is True
+
+    assert service.saved_sensory == sensory
+    assert window.sensory_settings == sensory
+    assert window.agent_runtime.sensory_pipeline is window.sensory_pipeline
+    assert len(window.agent_runtime.builtin_context_providers) == 1
+
+
 def test_tauri_settings_request_includes_per_character_theme() -> None:
     from types import SimpleNamespace
 
@@ -5561,6 +5766,25 @@ def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
         "setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });"
         in source
     )
+
+
+def test_tauri_settings_frontend_exposes_sensory_sources_and_rpc_actions() -> None:
+    html = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
+    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+
+    assert 'data-page="sensory"' in html
+    assert 'data-sensory-source="vision"' in html
+    assert 'data-sensory-source="speech"' in html
+    assert 'data-sensory-source="sound"' in html
+    assert '<option value="off">关闭该感官模型</option>' in html
+    assert '<option value="local">本机运行框架</option>' in html
+    assert '<option value="lan">局域网分布式计算</option>' in html
+    assert '<option value="api">远端 API</option>' in html
+    assert "function collectSensorySettings()" in source
+    assert "sensoryRpcDisabledStates" in source
+    assert "配置已修改，尚未测试。" in source
+    assert 'hostCall("sensory.list_models"' in source
+    assert 'hostCall("sensory.test"' in source
 
 
 def test_tauri_settings_frontend_disables_dependent_controls() -> None:
@@ -6013,11 +6237,11 @@ def test_tauri_settings_process_schedules_bounded_focus_retries_after_start(
     )
     fake = FakeQProcess()
     process._process = fake
-    process._request_payload = b'{"version": 3}'
+    process._request_payload = b'{"version": 4}'
 
     process._handle_started()
 
-    assert fake.writes == [b'{"version": 3}\n']
+    assert fake.writes == [b'{"version": 4}\n']
     assert [delay for delay, _callback in scheduled] == list(
         tauri_settings.SETTINGS_FOCUS_RETRY_DELAYS_MS
     )
@@ -6514,6 +6738,88 @@ def test_tauri_settings_memory_rpc_runs_off_main_thread() -> None:
     assert payload["id"] == "rpc-1"
     assert payload["ok"] is True
     assert payload["result"]["memories"][0]["content"] == "主人"
+
+
+def test_tauri_settings_sensory_rpc_runs_off_main_thread(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    import app.ui.settings.workers as settings_workers
+    from app.ui.tauri_settings import TAURI_SETTINGS_RPC_RESULT_MARKER, TauriSettingsProcess
+
+    started = threading.Event()
+    release = threading.Event()
+    worker_threads: list[threading.Thread] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":[{"id":"qwen-vl"}]}'
+
+    def fake_urlopen(_request, *, timeout):  # type: ignore[no-untyped-def]
+        assert timeout == 20
+        worker_threads.append(threading.current_thread())
+        started.set()
+        assert release.wait(2)
+        return FakeResponse()
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.write_threads: list[int] = []
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.write_threads.append(threading.get_ident())
+            self.writes.append(bytes(data))
+            return len(data)
+
+    monkeypatch.setattr(settings_workers.urllib.request, "urlopen", fake_urlopen)
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    owner_thread_id = threading.get_ident()
+    fake = FakeQProcess()
+    process = TauriSettingsProcess(base_dir=Path("."), settings=ScreenAwarenessSettings())
+    process._process = fake
+    request = {
+        "id": "sensory-rpc-1",
+        "method": "sensory.list_models",
+        "params": {
+            "source": "vision",
+            "mode": "local",
+            "backend": "lmstudio",
+            "endpoint": "http://127.0.0.1:1234/v1",
+            "model": "",
+            "api_key": "",
+            "timeout_seconds": 20,
+        },
+    }
+
+    started_at = time.monotonic()
+    process._handle_rpc_request(json.dumps(request))
+    elapsed = time.monotonic() - started_at
+    worker_started = _process_events_until(app, started.is_set, timeout_ms=3000)
+
+    assert elapsed < 0.2
+    assert worker_started
+    assert not fake.writes
+    assert worker_threads and worker_threads[0] is not threading.main_thread()
+
+    release.set()
+    assert _process_events_until(app, lambda: bool(fake.writes), timeout_ms=3000)
+    line = b"".join(fake.writes).decode("utf-8").strip()
+    assert line.startswith(TAURI_SETTINGS_RPC_RESULT_MARKER)
+    payload = json.loads(line[len(TAURI_SETTINGS_RPC_RESULT_MARKER):])
+    assert payload["id"] == "sensory-rpc-1"
+    assert payload["ok"] is True
+    assert payload["result"]["models"] == ["qwen-vl"]
+    assert fake.write_threads == [owner_thread_id]
 
 
 def test_pet_window_retires_tts_provider_by_closing_it() -> None:
@@ -9578,6 +9884,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         settings_service.load_api_profiles = lambda: []  # type: ignore[attr-defined]
     if not hasattr(settings_service, "load_model_selection"):
         settings_service.load_model_selection = ModelSelectionSettings  # type: ignore[attr-defined]
+    if not hasattr(settings_service, "save_sensory_settings"):
+        settings_service.save_sensory_settings = lambda _settings: None  # type: ignore[attr-defined]
 
     window = MinimalSettingsWindow()
     window.settings_service = settings_service

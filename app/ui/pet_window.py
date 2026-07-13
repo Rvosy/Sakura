@@ -5181,6 +5181,7 @@ class PetWindow(QWidget):
             api_settings=api_settings,
             api_profiles=api_profiles,
             model_selection=model_selection,
+            sensory_settings=getattr(self, "sensory_settings", SensorySettings()),
             tts_settings=tts_settings,
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             launch_at_login_supported=is_launch_at_login_supported(),
@@ -5403,6 +5404,7 @@ class PetWindow(QWidget):
                 self.settings_service.save_api_settings(result.api.settings)
             self.settings_service.save_api_profiles(result.api.profiles)
             self.settings_service.save_model_selection(result.api.model_selection)
+            self.settings_service.save_sensory_settings(result.sensory)
             self.settings_service.save_tts_settings(tts_settings)
             self.settings_service.save_current_character_id(
                 self.character_registry,
@@ -5604,7 +5606,7 @@ class PetWindow(QWidget):
                     log_event("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
             log_event("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
         self._apply_character(selected_profile)
-        self._apply_sensory_settings(self.sensory_settings, profile=selected_profile)
+        self._apply_sensory_settings(result.sensory, profile=selected_profile)
         apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
         if callable(apply_backchannel_settings):
             apply_backchannel_settings(system_extra.backchannel)

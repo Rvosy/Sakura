@@ -271,6 +271,7 @@ def test_chat_pipeline_injects_sensory_context_into_agent_runtime() -> None:
             enabled=True,
             sources={
                 SensorySource.VISION: SensorySourceSettings(
+                    mode=SensoryProviderMode.LOCAL,
                     confidence_threshold=0.5,
                     context_limit=3,
                 )

@@ -15,8 +15,9 @@ const RPC_MARKER: &str = "@@SAKURA_SETTINGS_RPC@@";
 const RPC_RESULT_MARKER: &str = "@@SAKURA_SETTINGS_RPC_RESULT@@";
 const CONTROL_MARKER: &str = "@@SAKURA_SETTINGS_CONTROL@@";
 const CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
-const PROTOCOL_VERSION: u8 = 3;
+const PROTOCOL_VERSION: u8 = 4;
 const DEFAULT_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const SENSORY_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 const LONG_HOST_RPC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 static RPC_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -184,6 +185,7 @@ fn host_rpc_timeout(method: &str) -> Option<Duration> {
         "character.import_archive"
         | "character.import_voice_archive"
         | "character.export_archive" => Some(LONG_HOST_RPC_TIMEOUT),
+        "sensory.list_models" | "sensory.test" => Some(SENSORY_HOST_RPC_TIMEOUT),
         _ => Some(DEFAULT_HOST_RPC_TIMEOUT),
     }
 }
@@ -438,6 +440,14 @@ mod tests {
             Some(Duration::from_secs(30 * 60))
         );
         assert_eq!(host_rpc_timeout("studio.launch"), None);
+        assert_eq!(
+            host_rpc_timeout("sensory.list_models"),
+            Some(Duration::from_secs(6 * 60))
+        );
+        assert_eq!(
+            host_rpc_timeout("sensory.test"),
+            Some(Duration::from_secs(6 * 60))
+        );
         assert_eq!(
             host_rpc_timeout("api.test_connection"),
             Some(Duration::from_secs(30))

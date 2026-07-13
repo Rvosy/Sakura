@@ -35,6 +35,10 @@
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></span>
               <span class="nav-item-label">模型</span>
             </button>
+            <button class="nav-item" type="button" data-page="sensory">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-6 10-6 10 6 10 6-3 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2.5"/><path d="M18 4v2"/><path d="M21 7h-2"/></svg></span>
+              <span class="nav-item-label">增强感知</span>
+            </button>
             <button class="nav-item" type="button" data-page="voice">
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>
               <span class="nav-item-label">语音</span>
@@ -392,6 +396,110 @@
               </label>
             </div>
           </details>
+        </section>
+
+        <section id="page-sensory" class="settings-page">
+          <fieldset class="settings-group">
+            <legend>增强感知</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryEnabled">
+                <span class="setting-title">启用增强感知工具</span>
+                <span class="setting-desc">允许主模型按需调用已配置的视觉、语音或声音模型。</span>
+              </label>
+              <span class="setting-toggle"><input id="sensoryEnabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryContextEnabled">
+                <span class="setting-title">注入感知上下文</span>
+                <span class="setting-desc">把近期感知摘要作为证据加入主模型上下文。</span>
+              </label>
+              <span class="setting-toggle"><input id="sensoryContextEnabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryContextBudget">
+                <span class="setting-title">上下文预算</span>
+                <span class="setting-desc">限制每轮注入的感知摘要总长度。</span>
+              </label>
+              <span class="field-unit"><input id="sensoryContextBudget" type="number" min="200" max="6000" step="100" /><span class="unit">字符</span></span>
+            </div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>感官模型</legend>
+            <div id="sensorySourceTabs" class="sensory-source-tabs" role="tablist" aria-label="感官来源">
+              <button type="button" data-sensory-source="vision" role="tab">视觉</button>
+              <button type="button" data-sensory-source="speech" role="tab">语音</button>
+              <button type="button" data-sensory-source="sound" role="tab">环境声音</button>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryMode">
+                <span class="setting-title">运行方式</span>
+                <span class="setting-desc">每个感官来源可独立关闭或连接不同位置的模型。</span>
+              </label>
+              <select id="sensoryMode">
+                <option value="off">关闭该感官模型</option>
+                <option value="local">本机运行框架</option>
+                <option value="lan">局域网分布式计算</option>
+                <option value="api">远端 API</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryBackend">
+                <span class="setting-title">推理后端</span>
+                <span class="setting-desc">选择提供 OpenAI 兼容或原生接口的运行框架。</span>
+              </label>
+              <select id="sensoryBackend">
+                <option value="lmstudio">LM Studio</option>
+                <option value="ollama">Ollama</option>
+                <option value="llama">llama.cpp</option>
+                <option value="openai_compatible">OpenAI 兼容 API</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryEndpoint">
+                <span class="setting-title">Endpoint</span>
+                <span class="setting-desc">模型服务的基础地址。</span>
+              </label>
+              <input id="sensoryEndpoint" class="wide-input" type="url" />
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryModel">
+                <span class="setting-title">模型</span>
+                <span class="setting-desc">填写模型 ID，或检测服务中已加载的模型。</span>
+              </label>
+              <input id="sensoryModel" class="wide-input" type="text" list="sensoryModelOptions" />
+              <datalist id="sensoryModelOptions"></datalist>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="sensoryApiKey">
+                <span class="setting-title">API Key</span>
+                <span class="setting-desc">本机服务通常可以留空。</span>
+              </label>
+              <input id="sensoryApiKey" class="wide-input" type="password" autocomplete="off" />
+            </div>
+            <details class="advanced-section">
+              <summary>高级参数</summary>
+              <div class="setting-row">
+                <label class="setting-row-text" for="sensoryTimeout">
+                  <span class="setting-title">请求超时</span>
+                  <span class="setting-desc">模型响应的最长等待时间。</span>
+                </label>
+                <span class="field-unit"><input id="sensoryTimeout" type="number" min="1" max="300" step="1" /><span class="unit">秒</span></span>
+              </div>
+              <div class="setting-row">
+                <label class="setting-row-text" for="sensoryConfidence">
+                  <span class="setting-title">最低置信度</span>
+                  <span class="setting-desc">低于该值的观察不会注入上下文。</span>
+                </label>
+                <input id="sensoryConfidence" type="number" min="0" max="1" step="0.05" />
+              </div>
+            </details>
+            <div class="sensory-actions">
+              <button id="sensoryProbeButton" class="secondary-button" type="button">检测模型</button>
+              <button id="sensoryTestButton" class="secondary-button" type="button">测试模型</button>
+              <p id="sensoryStatus" class="hint" role="status">未测试</p>
+            </div>
+          </fieldset>
         </section>
 
         <section id="page-voice" class="settings-page">
