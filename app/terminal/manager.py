@@ -31,6 +31,10 @@ TERMINAL_MAX_ARG_CHARS = 4096
 TERMINAL_MAX_COMMAND_CHARS = 16 * 1024
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_ANSI_CONTROL_STRING_RE = re.compile(
+    r"\x1B(?:\][^\x07]*(?:\x07|\x1B\\)|[PX^_].*?\x1B\\)",
+    re.DOTALL,
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|token|password|passwd|secret)\b(\s*[:=]\s*)([^\s]+)"
 )
@@ -93,12 +97,16 @@ class TerminalManager:
 
     def update_settings(self, settings: TerminalSettings) -> None:
         normalized = settings.normalized()
+        transport_to_close: TerminalTransport | None = None
         with self._lock:
             if not normalized.enabled and self._session_running:
                 raise TerminalBusyError("终端会话仍在运行，请先停止会话再关闭终端能力。")
             self._settings = normalized
             if not normalized.enabled:
+                transport_to_close = self._transport
                 self._revoke_session_locked()
+        if transport_to_close is not None:
+            transport_to_close.shutdown(1000)
 
     def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         command = normalize_terminal_command(arguments.get("command"))
@@ -232,6 +240,15 @@ class TerminalManager:
         if transport is not None:
             transport.shutdown(timeout_ms)
 
+    def transport_failed(self, reason: str = "") -> None:
+        """撤销崩溃宿主对应的会话与进程授权。"""
+        self._mark_transport_failed()
+        log_event(
+            "Terminal",
+            "终端宿主不可用",
+            {"reason": reason[:240]} if reason else {},
+        )
+
     def _resolve_cwd(self, value: object) -> str:
         configured = self.settings.default_cwd
         raw = str(value or configured).strip()
@@ -305,6 +322,7 @@ def normalize_terminal_command(value: object) -> tuple[str, ...]:
 
 def sanitize_terminal_output(output: bytes) -> str:
     text = output[:TERMINAL_MODEL_READ_MAX_BYTES].decode("utf-8", errors="replace")
+    text = _ANSI_CONTROL_STRING_RE.sub("", text)
     text = _ANSI_ESCAPE_RE.sub("", text)
     text = "".join(char for char in text if char in "\n\r\t" or ord(char) >= 32)
     text = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)

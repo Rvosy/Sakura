@@ -4869,7 +4869,7 @@ def test_load_font_sizes_falls_back_and_clamps_invalid_config() -> None:
 
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
-                "version": 3,
+                "version": 4,
                 "nonce": "nonce",
                 "screen_awareness": {
                     "enabled": True,
@@ -4968,6 +4968,10 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                 "trigger_turns": 8,
                 "backfill_limit": 200,
             }
+        },
+        "terminal": {
+            "enabled": False,
+            "default_cwd": "",
         },
         "plugins": {"enabled_by_id": {}},
     }
@@ -5113,7 +5117,7 @@ def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
 
     payload = {
-        "version": 3,
+        "version": 4,
         "nonce": "nonce",
         "screen_awareness": {
             "enabled": True,
@@ -5239,7 +5243,7 @@ def test_tauri_settings_request_includes_font_sizes_and_layout_limits() -> None:
         nonce="nonce",
     )
 
-    assert request["version"] == 3
+    assert request["version"] == 4
     assert request["system_basic"]["ui"] == {
         "subtitle_typing_interval_ms": 35,
         "reply_segment_pause_ms": 100,
@@ -9449,7 +9453,12 @@ def test_tts_ready_warmup_worker_reports_failure() -> None:
 
 def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
+    from types import SimpleNamespace
+
+    from app.agent.tools import ToolRegistry
     from app.config.models import ModelSelectionSettings
+    from app.terminal.manager import TerminalManager
+    from app.terminal.settings import TerminalSettings
 
     class CharacterProfileStub:
         id = "sakura"
@@ -9568,6 +9577,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         settings_service.load_api_profiles = lambda: []  # type: ignore[attr-defined]
     if not hasattr(settings_service, "load_model_selection"):
         settings_service.load_model_selection = ModelSelectionSettings  # type: ignore[attr-defined]
+    if not hasattr(settings_service, "save_terminal_settings"):
+        settings_service.save_terminal_settings = lambda _settings: None  # type: ignore[attr-defined]
 
     window = MinimalSettingsWindow()
     window.settings_service = settings_service
@@ -9583,6 +9594,9 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.theme_settings = DEFAULT_THEME_SETTINGS
     window.memory_store = memory_store
     window.agent_runtime = AgentRuntimeStub()
+    window.terminal_manager = TerminalManager(TerminalSettings())
+    window.terminal_process = SimpleNamespace(binary_available=True)
+    window.tool_registry = ToolRegistry()
     window.plugin_manager = PluginManagerStub()
     window.portrait_scale_percent = 100
     window.control_panel_width = 640

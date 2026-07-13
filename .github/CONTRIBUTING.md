@@ -17,6 +17,7 @@ Sakura 是 Python 3.12 / PySide6 桌面应用，主要源码在 `app/`。仓库�
 | `tests/ui/` | PySide6 界面测试 |
 | `tools/settings-tauri/` | Tauri 设置页 |
 | `tools/studio-tauri/` | Tauri 角色工作室 |
+| `tools/terminal-tauri/` | Tauri 可见终端与 PTY 宿主 |
 
 `third_party/` 和 `tools/mcp/` 含有第三方或外部工具代码，除非改动确实属于当前问题，否则不要顺手调整。也不要提交 `runtime/`、`data/`、角色资源、测试缓存或 Tauri 构建产物。
 
@@ -106,6 +107,9 @@ cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
 
 cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
+
+cargo fmt --manifest-path tools/terminal-tauri/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path tools/terminal-tauri/src-tauri/Cargo.toml
 ```
 
 界面改动除了自动测试，还应手动检查启动、保存设置、窗口关闭和高 DPI 显示。无法运行某项测试时，请在 PR 中写明原因和未验证的风险。

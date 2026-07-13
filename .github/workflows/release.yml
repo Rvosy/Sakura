@@ -218,7 +218,8 @@ jobs:
         run: |
           $apps = @(
             @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
-            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
+            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' },
+            @{ Directory = 'tools/terminal-tauri/src-tauri'; Binary = 'sakura-terminal.exe' }
           )
           foreach ($app in $apps) {
             Push-Location $app.Directory
@@ -263,6 +264,7 @@ jobs:
           }
           build_tauri tools/settings-tauri/src-tauri sakura-settings
           build_tauri tools/studio-tauri/src-tauri sakura-studio
+          build_tauri tools/terminal-tauri/src-tauri sakura-terminal
 
       - name: Create bundle archive (Windows)
         if: matrix.platform == 'windows-x64'
@@ -293,11 +295,15 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          $terminalExe = Join-Path $stage.FullName 'tools/terminal-tauri/src-tauri/target/release/sakura-terminal.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in bundle stage: $settingsExe"
           }
           if (-not (Test-Path -LiteralPath $studioExe)) {
             throw "Missing Tauri studio exe in bundle stage: $studioExe"
+          }
+          if (-not (Test-Path -LiteralPath $terminalExe)) {
+            throw "Missing Tauri terminal exe in bundle stage: $terminalExe"
           }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
 
@@ -329,11 +335,15 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          $terminalExe = Join-Path $stage.FullName 'tools/terminal-tauri/src-tauri/target/release/sakura-terminal.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in update stage: $settingsExe"
           }
           if (-not (Test-Path -LiteralPath $studioExe)) {
             throw "Missing Tauri studio exe in update stage: $studioExe"
+          }
+          if (-not (Test-Path -LiteralPath $terminalExe)) {
+            throw "Missing Tauri terminal exe in update stage: $terminalExe"
           }
           Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
 
@@ -368,6 +378,7 @@ jobs:
         run: |
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
+          test -x tools/terminal-tauri/src-tauri/target/release/sakura-terminal
           zip -rq "${{ matrix.artifact }}" \
             app plugins runtime third_party tools \
             LICENSE main.py requirements.txt VERSION \
@@ -380,6 +391,7 @@ jobs:
         run: |
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
+          test -x tools/terminal-tauri/src-tauri/target/release/sakura-terminal
           zip -rq "${{ matrix.update_artifact }}" \
             app plugins third_party tools \
             LICENSE main.py requirements.txt VERSION \

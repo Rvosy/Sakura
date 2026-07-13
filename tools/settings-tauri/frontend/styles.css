@@ -100,6 +100,13 @@ html.is-theme-view-transition::view-transition-new(root) {
   animation: shell-in var(--motion-slow) var(--ease) both;
 }
 
+.terminal-cwd-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 8px;
+  width: min(100%, 460px);
+}
+
 .nav-card,
 .detail-card {
   border: 1px solid var(--hairline);

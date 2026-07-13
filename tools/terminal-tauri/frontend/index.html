@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura 终端</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="terminal-bar">
+      <div class="terminal-title">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <span>Sakura 终端</span>
+        <span class="terminal-status" id="terminalStatus">等待会话</span>
+      </div>
+      <button id="stopButton" class="icon-button" type="button" title="停止进程" aria-label="停止进程" disabled>■</button>
+    </header>
+    <main id="terminal" aria-label="终端输出"></main>
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/addon-fit.js"></script>
+    <script src="terminal.js"></script>
+  </body>
+</html>

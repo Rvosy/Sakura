@@ -1,0 +1,102 @@
+:root {
+  color: #e8e8e8;
+  background: #181818;
+  font-family: "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 13px;
+  letter-spacing: 0;
+}
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+  background: #181818;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 10px 0 13px;
+  border-bottom: 1px solid #393939;
+  background: #242424;
+  user-select: none;
+}
+
+.terminal-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.terminal-status {
+  min-width: 0;
+  overflow: hidden;
+  color: #a5a5a5;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #777777;
+}
+
+.status-dot.is-running {
+  background: #4fc36a;
+}
+
+.status-dot.is-failed {
+  background: #e15b64;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #4c4c4c;
+  border-radius: 4px;
+  color: #efefef;
+  background: #303030;
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: #444444;
+}
+
+.icon-button:disabled {
+  color: #696969;
+  cursor: default;
+}
+
+#terminal {
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 8px 4px;
+}
+
+.xterm,
+.xterm-viewport {
+  width: 100%;
+  height: 100%;
+}

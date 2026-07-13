@@ -24,6 +24,8 @@ def build_pet_tray_menu(
     on_quit: Callable[[], None],
     window_visible: bool = True,
     interactions_enabled: bool = True,
+    terminal_enabled: bool = False,
+    on_show_terminal: Callable[[], None] | None = None,
 ) -> QMenu:
     """构建桌宠托盘和右键菜单。"""
 
@@ -75,6 +77,12 @@ def build_pet_tray_menu(
     runtime_log_action.setEnabled(interactions_enabled)
     runtime_log_action.triggered.connect(on_show_runtime_log)
     menu.addAction(runtime_log_action)
+
+    if terminal_enabled and on_show_terminal is not None:
+        terminal_action = QAction("终端", parent)
+        terminal_action.setEnabled(interactions_enabled)
+        terminal_action.triggered.connect(on_show_terminal)
+        menu.addAction(terminal_action)
 
     settings_action = QAction("设置", parent)
     settings_action.setEnabled(interactions_enabled)

@@ -17,6 +17,7 @@ Sakura is a Python 3.12 and PySide6 desktop application. Most application code l
 | `tests/ui/` | PySide6 UI tests |
 | `tools/settings-tauri/` | Tauri settings application |
 | `tools/studio-tauri/` | Tauri Character Studio |
+| `tools/terminal-tauri/` | Tauri visible terminal and PTY host |
 
 The `third_party/` and `tools/mcp/` directories contain third-party or external tool code. Leave them unchanged unless the task specifically requires it. Do not commit `runtime/`, `data/`, character assets, test caches, or Tauri build output.
 
@@ -106,6 +107,9 @@ cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
 
 cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
+
+cargo fmt --manifest-path tools/terminal-tauri/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path tools/terminal-tauri/src-tauri/Cargo.toml
 ```
 
 For UI changes, manually check startup, settings persistence, window shutdown, and high-DPI rendering as relevant. If a test cannot be run, explain why and identify the unverified risk in the pull request.

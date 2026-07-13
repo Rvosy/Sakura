@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -20,6 +23,12 @@ from app.terminal.models import (
     TerminalState,
 )
 from app.terminal.settings import TerminalSettings
+from app.terminal.tauri_process import (
+    TAURI_TERMINAL_BIN_ENV,
+    TauriTerminalError,
+    _terminal_result,
+    resolve_tauri_terminal_binary,
+)
 from app.terminal.tools import register_terminal_tools
 
 
@@ -193,6 +202,7 @@ def test_stopped_or_crashed_session_revokes_process_grant(tmp_path: Path) -> Non
 def test_terminal_output_is_bounded_cleaned_and_redacted() -> None:
     output = (
         b"\x1b[31mred\x1b[0m\n"
+        b"\x1b]0;malicious title\x07"
         b"API_KEY=abc123\npassword: hunter2\nAuthorization: Bearer secret-token\n"
         + b"x" * 20_000
     )
@@ -200,6 +210,7 @@ def test_terminal_output_is_bounded_cleaned_and_redacted() -> None:
     cleaned = sanitize_terminal_output(output)
 
     assert "\x1b" not in cleaned
+    assert "malicious title" not in cleaned
     assert "abc123" not in cleaned
     assert "hunter2" not in cleaned
     assert "secret-token" not in cleaned
@@ -213,3 +224,110 @@ def test_disabling_terminal_with_running_session_is_rejected(tmp_path: Path) -> 
 
     with pytest.raises(TerminalBusyError, match="先停止"):
         manager.update_settings(TerminalSettings(enabled=False, default_cwd=str(tmp_path)))
+
+
+def test_disabling_idle_terminal_closes_host_and_can_be_reenabled(tmp_path: Path) -> None:
+    manager, transport = _manager(tmp_path)
+
+    manager.update_settings(TerminalSettings(enabled=False, default_cwd=str(tmp_path)))
+    manager.update_settings(TerminalSettings(enabled=True, default_cwd=str(tmp_path)))
+
+    assert ("shutdown", 1000) in transport.calls
+    assert manager.enabled
+
+
+def test_transport_failure_revokes_process_grant(tmp_path: Path) -> None:
+    manager, _transport = _manager(tmp_path)
+    result = manager.execute({"command": ["printf", "hello"]})
+    manager.register_exec_approval(ApprovalScope.PROCESS, result)
+
+    assert manager.has_process_grant("session-1")
+    manager.transport_failed("host crashed")
+    assert not manager.has_process_grant("session-1")
+    assert manager.current_session_id == ""
+
+
+def test_tauri_terminal_binary_resolver_requires_executable_on_posix(tmp_path: Path) -> None:
+    binary = tmp_path / "sakura-terminal"
+    binary.write_text("binary", encoding="utf-8")
+    environment = {TAURI_TERMINAL_BIN_ENV: str(binary)}
+
+    assert resolve_tauri_terminal_binary(
+        tmp_path,
+        environ=environment,
+        platform="darwin",
+    ) is None
+    binary.chmod(0o700)
+    assert resolve_tauri_terminal_binary(
+        tmp_path,
+        environ=environment,
+        platform="darwin",
+    ) == binary
+
+
+def test_tauri_terminal_result_decodes_session_payload() -> None:
+    result = _terminal_result(
+        {
+            "session_id": "session-1",
+            "state": "running",
+            "output_b64": "aGVsbG8=",
+            "cursor": 5,
+            "exit_code": None,
+            "truncated": False,
+        }
+    )
+
+    assert result["output"] == b"hello"
+    assert result["state"] is TerminalState.RUNNING
+    with pytest.raises(TauriTerminalError):
+        _terminal_result({"session_id": "session-1", "state": "running", "output_b64": "!"})
+
+
+def test_tauri_terminal_requests_write_on_process_owner_thread(tmp_path: Path) -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QProcess
+
+    from app.terminal.tauri_process import TERMINAL_REQUEST_MARKER, TauriTerminalProcess
+
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+    transport = TauriTerminalProcess(base_dir=tmp_path)
+    owner_thread_id = threading.get_ident()
+
+    class FakeQProcess:
+        def state(self):  # type: ignore[no-untyped-def]
+            return QProcess.ProcessState.Running
+
+        def write(self, payload: bytes) -> int:
+            assert threading.get_ident() == owner_thread_id
+            line = payload.decode("utf-8").strip()
+            request = json.loads(line[len(TERMINAL_REQUEST_MARKER) :])
+            transport._resolve_pending(
+                request["id"],
+                result={
+                    "session_id": "session-1",
+                    "state": "running",
+                    "output_b64": "aGk=",
+                    "cursor": 2,
+                    "exit_code": None,
+                    "truncated": False,
+                },
+            )
+            return len(payload)
+
+    transport._process = FakeQProcess()  # type: ignore[assignment]
+    transport._ready = True
+    completed: list[TerminalReadResult] = []
+    worker = threading.Thread(
+        target=lambda: completed.append(
+            transport.read(session_id="session-1", cursor=0, max_bytes=16)
+        )
+    )
+    worker.start()
+    deadline = time.monotonic() + 1
+    while worker.is_alive() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert completed[0].output == b"hi"

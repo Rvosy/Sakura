@@ -127,6 +127,8 @@ from app.core.interaction import clear_interaction_id, set_interaction_id
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
 from app.core.mobile_chat_worker import MobileChatWorker
 from app.core.resource_manager import ResourceManager
+from app.terminal.tauri_process import TauriTerminalProcess
+from app.terminal.tools import set_terminal_tools_enabled
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.plugins.manager import (
@@ -625,6 +627,7 @@ class PetWindow(QWidget):
         self.memory_store = context.memory_store
         self.reminder_store = context.reminder_store
         self.tool_registry = context.tool_registry
+        self.terminal_manager = context.terminal_manager
         self.mcp_tool_provider = context.mcp_tool_provider
         self.plugin_manager = context.plugin_manager
         self._wire_plugin_service_backends()
@@ -732,6 +735,12 @@ class PetWindow(QWidget):
         self._quit_approved = False
         # 后台线程生命周期、lingering 线程与退役 wrapper 统一由资源管理器治理。
         self.resource_manager = ResourceManager(self, registry=context.resource_registry)
+        self.terminal_process = TauriTerminalProcess(
+            base_dir=self.base_dir,
+            on_failure=context.terminal_manager.transport_failed,
+            parent=self,
+        )
+        context.terminal_manager.bind_transport(self.terminal_process)
         self._register_runtime_service_resources()
         self.screen_observation_followup_in_progress = False
         self.active_event: AgentEvent | None = None
@@ -2799,9 +2808,25 @@ class PetWindow(QWidget):
             on_toggle_always_on_top=self._toggle_always_on_top,
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
+            terminal_enabled=getattr(getattr(self, "terminal_manager", None), "enabled", False),
+            on_show_terminal=getattr(self, "_show_terminal", lambda: None),
             on_show_settings=self.show_settings,
             on_quit=getattr(self, "request_quit", QApplication.quit),
         )
+
+    @Slot()
+    def _show_terminal(self) -> None:
+        if not self.terminal_process.binary_available:
+            show_themed_warning(
+                self,
+                "终端不可用",
+                "终端程序（sakura-terminal）未找到，请先构建 tools/terminal-tauri。",
+            )
+            return
+        try:
+            self.terminal_manager.show()
+        except RuntimeError as exc:
+            show_themed_warning(self, "终端不可用", str(exc))
 
     def _refresh_tray_menu(self) -> None:
         if hasattr(self, "tray_icon"):
@@ -5193,6 +5218,8 @@ class PetWindow(QWidget):
             launch_at_login_supported=is_launch_at_login_supported(),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            terminal_settings=self.terminal_manager.settings,
+            terminal_binary_available=self.terminal_process.binary_available,
             memory_store=getattr(self, "memory_store", None),
             plugin_settings_contributions=getattr(
                 getattr(self, "plugin_manager", None),
@@ -5401,11 +5428,16 @@ class PetWindow(QWidget):
             except (OSError, RuntimeError):
                 startup_external_before = current_startup_settings.launch_at_login
         startup_external_attempted = False
+        previous_terminal_settings = self.terminal_manager.settings
+        terminal_settings_applied = False
         api_changed = result.api.settings != self.api_client.settings
         plugin_enabled_changed = False
         plugin_settings_changed = False
         config_snapshot = _snapshot_config_files(self.base_dir)
         try:
+            self.terminal_manager.update_settings(result.terminal)
+            terminal_settings_applied = True
+            self.settings_service.save_terminal_settings(result.terminal)
             if api_changed:
                 self.settings_service.save_api_settings(result.api.settings)
             self.settings_service.save_api_profiles(result.api.profiles)
@@ -5492,6 +5524,11 @@ class PetWindow(QWidget):
                 startup_external_attempted = True
                 self._apply_launch_at_login_settings(result_startup_settings)
         except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
+            if terminal_settings_applied:
+                try:
+                    self.terminal_manager.update_settings(previous_terminal_settings)
+                except RuntimeError:
+                    pass
             try:
                 _restore_config_files(config_snapshot)
             except OSError as rollback_exc:
@@ -5534,6 +5571,7 @@ class PetWindow(QWidget):
             MCPRuntimeSettings(),
         )
         self.mcp_settings = result.mcp
+        set_terminal_tools_enabled(self.tool_registry, result.terminal.enabled)
         agent_runtime = getattr(self, "agent_runtime", None)
         set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
         if callable(set_runtime_loop_settings):
