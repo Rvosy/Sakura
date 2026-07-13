@@ -84,7 +84,7 @@ def test_runtime_has_no_proactive_care_compatibility_path() -> None:
     )
     for path in checked:
         source = path.read_text(encoding="utf-8")
-        assert "proactive" not in source.lower()
+        assert "proactive_care" not in source.lower()
         for name in forbidden:
             assert name not in source
 

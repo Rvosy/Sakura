@@ -1,0 +1,6 @@
+# 可选的旧 Qt 开发回退与 UI 测试依赖；生产 Tauri/Brain 不安装本文件。
+PySide6>=6.7
+PySide6-Addons>=6.7
+pyobjc-core>=12.0; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=12.0; sys_platform == "darwin"
+pytest-qt

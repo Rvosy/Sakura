@@ -31,7 +31,7 @@ from app.storage.paths import StoragePaths
 
 
 def test_data_migration_failure_message_keeps_step_error() -> None:
-    from main import _format_data_migration_failure
+    from legacy_qt_main import _format_data_migration_failure
 
     report = MigrationReport(
         from_version=1,

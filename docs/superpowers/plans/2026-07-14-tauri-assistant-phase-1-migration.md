@@ -710,16 +710,16 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml tray
 - Delete or archive: PySide6 production UI modules
 - Modify: related tests
 
-- [ ] `main.py` 不再导入 PySide6。
-- [ ] 默认启动 Tauri 主程序。
-- [ ] 开发入口把当前 `sys.executable` 通过 `SAKURA_PYTHON_EXE` 交给 Rust。
-- [ ] Brain Host 由 Tauri 创建，不允许用户同时启动第二个 Host。
-- [ ] 删除 Qt PetWindow、Qt History、Qt Tool Confirmation 和 Qt Tray 的生产路径。
-- [ ] 将仍需 PySide6 的旧开发工具移到独立可选 requirements；基础运行依赖不再包含 PySide6。
-- [ ] 删除旧 Qt UI 专用测试，保留并迁移其中的行为断言。
-- [ ] 加入静态测试，确保生产启动模块依赖图不含 PySide6。
-- [ ] 保留原数据目录，不执行破坏性迁移。
-- [ ] 连续一个开发版本保留明确的回退构建，不在运行时自动回退。
+- [x] `main.py` 不再导入 PySide6。
+- [x] 默认启动 Tauri 主程序。
+- [x] 开发入口把当前 `sys.executable` 通过 `SAKURA_PYTHON_EXE` 交给 Rust。
+- [x] Brain Host 由 Tauri 创建，不允许用户同时启动第二个 Host。
+- [x] Qt PetWindow、Qt History、Qt Tool Confirmation 和 Qt Tray 已退出生产路径，仅由显式旧 Qt 开发回退入口保留。
+- [x] 将仍需 PySide6 的旧开发工具移到独立可选 requirements；基础运行依赖不再包含 PySide6。
+- [x] 旧 Qt UI 测试按用户的回退保留约束继续验证 `legacy_qt_main.py`；生产入口行为断言已迁入新的 Tauri 契约测试，详见偏差记录。
+- [x] 加入静态测试，确保生产启动模块依赖图不含 PySide6。
+- [x] 保留原数据目录，不执行破坏性迁移。
+- [x] 连续一个开发版本保留明确的回退构建，不在运行时自动回退。
 
 **Verification:**
 
@@ -937,3 +937,9 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - Rust 将当前 `sakura-desktop.exe` 通过 `SAKURA_DESKTOP_EXE` 交给 Brain，开机启动写入 Tauri 主程序；旧 Qt 回退在没有该环境变量时仍沿用原入口。为避免修改本机用户的登录启动项，本轮只做注册表替身自动测试，真实开机启动留 Task 13 手工验收。
 - 单实例实机复验确认第二次启动不增加进程或窗口；Sakura Mobile 本机 API 返回当前 N.A.V.I. 角色；退出后无 Tauri、Brain Host 或 MCP 残留。系统托盘壳层仍无法由当前 Windows 自动化接口定位，菜单项与路由已由 Rust/静态契约覆盖，物理托盘点击留 Task 13。
 - 首次实机冷启动曾因混合接话分类器模型冷加载长时间停留在初始化；单独 Brain 帧握手在相同真实配置下约 4 秒完成，缓存预热后 Tauri 启动约 6 秒恢复正常。该冷启动性能风险按 Task 8 既有记录保留到 Task 13 测量，不在第一阶段改写分类器架构。
+
+### 2026-07-14：Task 12 的旧 Qt 显式回退保留
+
+- 计划原文要求删除或归档 PySide6 生产 UI 模块并删除旧 Qt UI 专用测试；用户同时明确要求，在对应 Tauri 功能、自动测试和手工验收全部完成前不得删除旧 Qt 路径。当前机器无法完成混合 DPI 多屏、物理托盘和人耳音频等硬件验收，因此实际最小调整为把原 `main.py` 归档为 `legacy_qt_main.py`，保留 `app/ui` 与其测试作为单独的开发回退构建，不再进入生产依赖图。
+- 新 `main.py` 是只依赖标准库的 Tauri 启动器，找不到桌面二进制时明确失败，不自动导入或回退 Qt；`requirements.txt` 与 `requirements-dev.txt` 不再强制安装 Qt，旧回退依赖集中在 `requirements-legacy-qt.txt`。
+- 真实 `runtime/python.exe main.py` 验收确认 release Tauri 先显示、Brain 就绪，启动器、Brain Host 与 MCP 三个 Python 进程均未加载 Qt/PySide6 模块；Alt+F4 正常返回 0，退出后无 Tauri、Python 或 MCP 残留。完整 pytest 为 1560 passed、3 skipped，Rust fmt、31 项测试和 release 构建通过。

@@ -3388,8 +3388,8 @@ def test_shutdown_closes_late_deferred_services() -> None:
 
 
 def test_deferred_startup_worker_closes_services_when_cancelled_after_move(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import main as main_module
-    from main import DeferredStartupWorker
+    import legacy_qt_main as main_module
+    from legacy_qt_main import DeferredStartupWorker
 
     class CloseableStub:
         def __init__(self) -> None:
@@ -7026,7 +7026,7 @@ def test_secondary_window_quiesce_leaves_input_bar_polling_enabled() -> None:
 
 
 def test_main_detects_missing_character_packages() -> None:
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("missing_characters")
     assert sakura_main._character_packages_missing(root)
@@ -7039,7 +7039,7 @@ def test_main_detects_missing_character_packages() -> None:
 
 
 def test_main_requires_initial_setup_until_character_and_chat_provider_exist() -> None:
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("initial_setup_required")
     assert sakura_main._initial_setup_required(root)
@@ -7076,7 +7076,7 @@ model_slots:
 
 
 def test_main_checks_initial_setup_before_building_app_context() -> None:
-    source = (Path(__file__).resolve().parents[2] / "main.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[2] / "legacy_qt_main.py").read_text(encoding="utf-8")
     startup = source[source.index("migration_report =") : source.index("character_issues =")]
 
     assert "initial_setup = _initial_setup_required(BASE_DIR)" in startup
@@ -7087,7 +7087,7 @@ def test_main_checks_initial_setup_before_building_app_context() -> None:
 
 
 def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("first_run_studio")
     calls: list[tuple[str, object]] = []
@@ -7145,7 +7145,7 @@ def test_main_first_run_studio_waits_for_close_and_requests_refresh(monkeypatch)
 
 
 def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
     from app.config.models import ModelSelectionSettings
 
     root = _ui_runtime_root("first_run_tauri_layout")
@@ -7322,7 +7322,7 @@ def test_main_first_run_tauri_save_persists_full_layout(monkeypatch) -> None:  #
 
 
 def test_main_first_run_missing_tauri_binary_fails_without_starting_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("first_run_missing_tauri_binary")
     started_process = False
@@ -7346,7 +7346,7 @@ def test_main_first_run_missing_tauri_binary_fails_without_starting_process(monk
 
 
 def test_main_selfcheck_runs_before_single_instance_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("selfcheck_before_lock")
     (root / "data").write_text("not a directory", encoding="utf-8")
@@ -7384,7 +7384,7 @@ def test_main_selfcheck_runs_before_single_instance_guard(monkeypatch: pytest.Mo
 
 
 def test_main_detects_legacy_tts_migration_even_when_tts_disabled() -> None:
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("disabled_tts_migration")
     api_config = root / "data" / "config" / "api.yaml"
@@ -7422,7 +7422,7 @@ tts:
 
 
 def test_main_detects_other_legacy_tts_bundle_when_current_provider_is_migrated() -> None:
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     root = _ui_runtime_root("multi_tts_migration")
     api_config = root / "data" / "config" / "api.yaml"
@@ -7467,7 +7467,7 @@ def test_tts_migration_dialog_shows_concise_copy_and_progress() -> None:
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
     from app.voice import tts_bundle
 
     QApplication = qtwidgets.QApplication
@@ -7507,7 +7507,7 @@ def test_tts_migration_dialog_marks_fast_migration_done() -> None:
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel", "QProgressBar", "QPushButton", "QWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
-    import main as sakura_main
+    import legacy_qt_main as sakura_main
 
     QApplication = qtwidgets.QApplication
     QLabel = qtwidgets.QLabel

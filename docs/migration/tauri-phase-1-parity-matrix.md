@@ -99,5 +99,5 @@
 | 9 | 指定 Python 24 passed；扩展 Python 47 passed；Rust capture 5 passed、全套 27 passed；fmt/build/clippy 通过 | 单屏 100% 的既有 xcap 能力已自动验证；真实框选、125/150/200% DPI 与混合多屏留 Task 13 | `feat: 迁移Tauri截图与主动事件` | 私有路径不进 WebView；Brain 即读即删；Python 保留空闲/冷却批次、视觉消息与摘要；提醒和主动观察统一事件 |
 | 10 | 指定 Python 58 passed；扩展 Python 203 passed；Rust 全套 30 passed；四个前端脚本语法、fmt/build 通过 | 同一 `sakura-desktop.exe` 内四窗口可用；设置重复打开只聚焦、应用成功；工作室读取真实角色；历史 50→100 游标分页；诊断状态完整 | `feat: 合并Tauri次级窗口` | 动态 WebView 必须派发到 Tauri 主线程；旧 Qt 独立桥按回退约束留 Task 12，工作室真实写入留 Task 13 验收副本 |
 | 11 | 指定 Python 81 passed；扩展 Python 239 passed；Rust 全套 31 passed；fmt/build 通过 | 双开只聚焦既有窗口；设置页显示 2 个插件及声明式字段；Mobile API 返回当前角色；退出无 Tauri/Brain/MCP 残留；物理托盘与真实开机启动留 Task 13 | `feat: 迁移Tauri启动与插件交互` | Brain 装配无 Qt 插件/MCP/Mobile；原生 UI 权限导入前拒绝；`SAKURA_DESKTOP_EXE` 指向 Tauri；混合接话冷启动性能留最终测量 |
-| 12 | 待执行 | 生产入口待验收 | 待提交 | PySide6 导入图必须为空 |
+| 12 | 完整 Python 1560 passed、3 skipped；生产入口契约 6 passed；Rust 31 passed；fmt/release build 通过 | `runtime/python.exe main.py` 启动 release Tauri，Brain 就绪；所有 Sakura Python 进程 Qt 模块数为 0；Alt+F4 返回 0 且无残留 | `feat: 切换Tauri生产入口` | 旧 Qt 仅保留为 `legacy_qt_main.py` 显式开发回退；基础依赖和正常启动图不含 PySide6 |
 | 13 | 待执行 | 干净 Windows x64 待验收 | 待提交 | 最终发布验收 |
