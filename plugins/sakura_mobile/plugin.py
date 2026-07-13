@@ -209,6 +209,7 @@ class SakuraMobilePlugin(PluginBase):
 
     def stop(self) -> None:
         server = self._server
+        thread = self._thread
         self._server = None
         self._thread = None
         if server is None:
@@ -218,6 +219,8 @@ class SakuraMobilePlugin(PluginBase):
             server.server_close()
         except OSError:
             pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
 
     def restart(self) -> None:
         self.stop()

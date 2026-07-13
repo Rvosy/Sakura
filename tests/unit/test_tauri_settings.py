@@ -6,7 +6,11 @@ from types import SimpleNamespace
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.brain_host.secondary_windows import apply_settings_payload, build_settings_request
+from app.brain_host.secondary_windows import (
+    apply_settings_payload,
+    build_settings_request,
+    secondary_host_call,
+)
 from app.config.settings_service import (
     AppSettingsService,
     BackchannelSettings,
@@ -15,6 +19,11 @@ from app.config.settings_service import (
     StartupSettings,
 )
 from app.config.theme import DEFAULT_THEME_SETTINGS
+from app.plugins.models import (
+    PluginSettingsAction,
+    PluginSettingsContribution,
+    PluginSettingsField,
+)
 
 
 class FakeSettingsService:
@@ -189,3 +198,97 @@ def test_apply_settings_saves_sections_and_updates_runtime_without_restarting_ap
 
 def test_settings_module_is_backed_by_app_settings_service() -> None:
     assert AppSettingsService.__module__ == "app.config.settings_service"
+
+
+def test_tauri_settings_discovers_yaml_plugins_and_serializes_declarative_settings(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "plugins" / "demo_plugin"
+    plugin_dir.mkdir(parents=True)
+    plugin_dir.joinpath("plugin.yaml").write_text(
+        """
+api_version: 2
+id: demo_plugin
+name: Demo Plugin
+entry: plugin:DemoPlugin
+enabled: true
+permissions:
+  - plugin_settings
+""".lstrip(),
+        encoding="utf-8",
+    )
+    contribution = PluginSettingsContribution(
+        section_id="demo",
+        title="Demo 设置",
+        fields=(
+            PluginSettingsField("enabled", "启用", "boolean", default=False),
+            PluginSettingsField("port", "端口", "integer", default=8765, minimum=1, maximum=65535),
+        ),
+        load=lambda: {"enabled": True, "port": 9000},
+        plugin_id="demo_plugin",
+    )
+    context = _context()
+    context.plugin_manager = SimpleNamespace(plugin_settings=[contribution], results=[])
+
+    request = build_settings_request(context, base_dir=tmp_path)
+
+    assert [item["id"] for item in request["plugins"]["items"]] == ["demo_plugin"]
+    plugin = request["plugins"]["items"][0]
+    assert plugin["permissions"] == ["plugin_settings"]
+    assert plugin["settings"][0]["values"] == {"enabled": True, "port": 9000}
+
+
+def test_tauri_settings_saves_declarative_plugin_values_and_runs_actions(tmp_path: Path) -> None:
+    saved: list[dict[str, object]] = []
+    actions: list[dict[str, object]] = []
+    contribution = PluginSettingsContribution(
+        section_id="demo",
+        title="Demo 设置",
+        fields=(
+            PluginSettingsField("enabled", "启用", "boolean", default=False),
+            PluginSettingsField("status", "状态", "readonly", default="", readonly=True),
+        ),
+        load=lambda: {"enabled": False, "status": "idle"},
+        save=lambda values: saved.append(dict(values)),
+        actions=(
+            PluginSettingsAction(
+                "refresh",
+                "刷新",
+                handler=lambda values: actions.append(dict(values)) or {"values": {"status": "ready"}},
+            ),
+        ),
+        plugin_id="demo_plugin",
+    )
+    context = _context()
+    context.plugin_manager = SimpleNamespace(plugin_settings=[contribution], results=[])
+    application = SimpleNamespace(
+        context=context,
+        config=SimpleNamespace(base_dir=tmp_path),
+        _screen_awareness_enabled=True,
+        _screen_context_resolution="fullscreen",
+        sync_scheduler_jobs=lambda **_kwargs: None,
+        refresh_character=lambda _character_id: None,
+        refresh_tts=lambda: None,
+    )
+    payload = build_settings_request(context, base_dir=tmp_path)
+    payload["plugins"] = {
+        "enabled_by_id": {},
+        "settings_by_id": {"demo_plugin": {"demo": {"enabled": True}}},
+    }
+
+    result = apply_settings_payload(application, payload)
+    action_result = secondary_host_call(
+        application,
+        "plugin.settings_action",
+        {
+            "plugin_id": "demo_plugin",
+            "section_id": "demo",
+            "action_id": "refresh",
+            "values": {"enabled": True},
+        },
+    )
+
+    assert result["applied"] is True
+    assert saved == [{"enabled": True}]
+    assert actions == [{"enabled": True}]
+    assert action_result == {"values": {"status": "ready"}}

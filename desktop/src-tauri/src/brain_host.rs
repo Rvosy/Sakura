@@ -114,7 +114,14 @@ impl BrainHostLaunchConfig {
         let explicit_python = std::env::var_os("SAKURA_PYTHON_EXE");
         let python_exe = resolve_python_executable(&base_dir, explicit_python.as_deref())
             .unwrap_or_else(|_| default_python_candidate(&base_dir));
-        Self::module(python_exe, base_dir, "app.brain_host")
+        let mut config = Self::module(python_exe, base_dir, "app.brain_host");
+        if let Ok(desktop_exe) = std::env::current_exe() {
+            config.environment.insert(
+                OsString::from("SAKURA_DESKTOP_EXE"),
+                desktop_exe.into_os_string(),
+            );
+        }
+        config
     }
 
     fn backoff(&self, restart_count: u32) -> Duration {
@@ -1127,6 +1134,17 @@ mod tests {
             Duration::from_millis(30),
         ];
         config
+    }
+
+    #[test]
+    fn current_app_passes_tauri_executable_to_brain_host() {
+        let config = BrainHostLaunchConfig::for_current_app();
+        let desktop_exe = config
+            .environment
+            .get(OsStr::new("SAKURA_DESKTOP_EXE"))
+            .expect("desktop executable should be passed to Brain Host");
+
+        assert!(Path::new(desktop_exe).is_file());
     }
 
     fn wait_for_status(

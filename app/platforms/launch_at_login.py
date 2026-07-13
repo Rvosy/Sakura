@@ -14,6 +14,7 @@ from app.storage.paths import StoragePaths
 LAUNCH_AT_LOGIN_LABEL = "com.rvosy.sakura.launch-at-login"
 WINDOWS_RUN_VALUE_NAME = "Sakura Desktop Pet"
 LINUX_AUTOSTART_FILENAME = "sakura-desktop-pet.desktop"
+SAKURA_DESKTOP_EXE_ENV = "SAKURA_DESKTOP_EXE"
 
 
 class LaunchAtLoginError(RuntimeError):
@@ -143,6 +144,9 @@ def ensure_launch_at_login_state(
 
 
 def _launch_command_for_platform(base_dir: Path, platform_key: str) -> list[str]:
+    desktop_executable = _desktop_executable_from_environment()
+    if desktop_executable is not None:
+        return [str(desktop_executable)]
     if getattr(sys, "frozen", False):
         return [sys.executable]
     if platform_key == "macos":
@@ -161,6 +165,19 @@ def _launch_command_for_platform(base_dir: Path, platform_key: str) -> list[str]
         if python_exe is not None:
             return [str(python_exe), str(base_dir / "main.py")]
     return [sys.executable, str(base_dir / "main.py")]
+
+
+def _desktop_executable_from_environment() -> Path | None:
+    raw_path = os.environ.get(SAKURA_DESKTOP_EXE_ENV, "").strip()
+    if not raw_path:
+        return None
+    try:
+        executable = Path(raw_path).resolve(strict=True)
+    except OSError as exc:
+        raise LaunchAtLoginError("Tauri 桌面主程序路径无效。") from exc
+    if not executable.is_file():
+        raise LaunchAtLoginError("Tauri 桌面主程序路径无效。")
+    return executable
 
 
 def _windows_python_executable(base_dir: Path) -> Path | None:

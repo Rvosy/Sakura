@@ -422,12 +422,12 @@ class PluginServices:
 
 
 def _default_theme_mapping() -> dict[str, object]:
-    from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
+    from app.config.theme import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
 
     return theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
 
 
 def _theme_mapping(data: Any) -> dict[str, object]:
-    from app.ui.theme import theme_colors_to_mapping, theme_from_mapping
+    from app.config.theme import theme_colors_to_mapping, theme_from_mapping
 
     return theme_colors_to_mapping(theme_from_mapping(data))

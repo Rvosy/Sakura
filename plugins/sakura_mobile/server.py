@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from app.config.theme import mix, theme_from_mapping
 from app.core.mobile_chat_bridge import MobileChatBusyError
 from app.core.runtime_log import log_event
-from app.ui.theme import mix, theme_from_mapping
 
 
 DEFAULT_HOST = "0.0.0.0"

@@ -114,6 +114,18 @@ def theme_to_mapping(settings: ThemeSettings) -> dict[str, object]:
     return data
 
 
+def mix(color: str, other: str, weight: float) -> str:
+    red, green, blue = _rgb(color)
+    other_red, other_green, other_blue = _rgb(other)
+    clamped = max(0.0, min(1.0, weight))
+    mixed = (
+        round(red * (1 - clamped) + other_red * clamped),
+        round(green * (1 - clamped) + other_green * clamped),
+        round(blue * (1 - clamped) + other_blue * clamped),
+    )
+    return "#{:02x}{:02x}{:02x}".format(*mixed)
+
+
 def resolve_effective_theme(
     profile: Any | None,
     override: ThemeSettings | None = None,
@@ -146,3 +158,8 @@ def _bool_value(value: object, default: bool) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    color = normalize_hex_color(hex_color, DEFAULT_PRIMARY_COLOR).lstrip("#")
+    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)

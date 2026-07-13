@@ -83,6 +83,26 @@ def test_windows_run_key_uses_packaged_runtime_python(tmp_path: Path) -> None:
     assert WINDOWS_RUN_VALUE_NAME not in registry.values
 
 
+def test_windows_run_key_uses_tauri_executable_from_brain_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _runtime_root(tmp_path / "release build")
+    desktop_exe = root / "sakura-desktop.exe"
+    desktop_exe.write_text("fake", encoding="utf-8")
+    monkeypatch.setenv("SAKURA_DESKTOP_EXE", str(desktop_exe))
+    registry = FakeWinreg()
+
+    set_launch_at_login_enabled(
+        root,
+        True,
+        platform="win32",
+        windows_registry=registry,
+    )
+
+    assert registry.values[WINDOWS_RUN_VALUE_NAME] == f'"{desktop_exe}"'
+
+
 def test_launch_at_login_state_is_read_cross_platform(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path)
     home = tmp_path / "home"

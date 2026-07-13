@@ -682,14 +682,14 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml
 - Modify: `plugins/sakura_mobile/*`
 - Create: `tests/integration/test_tauri_runtime_events.py`
 
-- [ ] 托盘提供显示、隐藏、设置、历史、工作室和退出。
-- [ ] 单实例第二次启动只聚焦现有窗口。
-- [ ] 开机启动指向 Tauri 主程序。
-- [ ] 插件事件从 Qt Signal 改为 Brain Host 事件。
-- [ ] 插件声明式设置继续由 Tauri 设置页渲染。
-- [ ] 非声明式 Qt 插件 UI 在第一阶段标记不兼容并拒绝加载。
-- [ ] Sakura Mobile 通过无 Qt bridge 提交聊天请求。
-- [ ] MCP 进程和插件在 Brain Host 退出时正确关闭。
+- [x] 托盘提供显示、隐藏、设置、历史、工作室和退出。
+- [x] 单实例第二次启动只聚焦现有窗口。
+- [x] 开机启动指向 Tauri 主程序。
+- [x] 插件事件从 Qt Signal 改为 Brain Host 事件。
+- [x] 插件声明式设置继续由 Tauri 设置页渲染。
+- [x] 非声明式 Qt 插件 UI 在第一阶段标记不兼容并拒绝加载。
+- [x] Sakura Mobile 通过无 Qt bridge 提交聊天请求。
+- [x] MCP 进程和插件在 Brain Host 退出时正确关闭。
 
 **Verification:**
 
@@ -928,3 +928,12 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - `app.agent` 与 `app.agent.mcp` 包入口原先 eager import Provider，单独导入设置 DTO 会间接加载 PySide6。实际改为保持公开 API 不变的 lazy export；设置资源任务从 Qt 包路径复制到无 UI 的 Core 模块，继续复用现有 TTS、接话和记忆模型资源行为。
 - 本机单屏 100% 验收已确认四类窗口属于同一个 `sakura-desktop.exe`，设置重复打开窗口数不增加，设置“应用”成功且不重启 App，工作室可读取真实角色，历史从 50 条游标分页到 100 条，诊断展示 Brain、插件、MCP、TTS、资源和 scheduler。
 - 按用户“旧 Qt 生产路径在对应自动测试和手工验收完成前保留”的约束，主 Tauri 路径已经完全绕过独立 settings/studio 子进程，但旧 Qt 回退所需的 process bridge 文件暂不删除；工作室真实保存会修改用户角色包，留到 Task 13 在验收副本中签字后，与 Qt 主链一起清理。
+
+### 2026-07-14：Task 11 的 Headless 插件装配与设置清单修正
+
+- 原计划只列出插件管理器与 Mobile 文件，但当前 Brain Host 仍停留在 `build_initial_app_context` 的延迟占位状态，插件与 MCP 实际未进入 Tauri 生产链。实际在 Brain Host 内装配无 Qt 工具、插件、MCP、事件发射器和 Mobile bridge；旧 Qt 延迟启动链继续保留到 Task 12 回退清理。
+- Headless `PluginManager` 新增原生 UI 兼容模式：声明 `tools_tab`、`chat_ui` 或 `renderer` 的插件在导入模块前即标记不兼容，防止第一阶段 Brain 正常路径加载 Qt UI；`plugin_settings` 声明式贡献保持可用。
+- 实机验收发现 Task 10 设置页仍按已废弃的 `plugin.json` 扫描，并丢弃已加载贡献的字段、保存器和动作。实际改为复用 `PluginDiscovery` 的 `plugin.yaml`/覆盖配置，序列化、校验和调用声明式设置；Tauri 设置页已显示 Sakura Mobile 与 Playwright Browser 共 2 个插件及其字段。
+- Rust 将当前 `sakura-desktop.exe` 通过 `SAKURA_DESKTOP_EXE` 交给 Brain，开机启动写入 Tauri 主程序；旧 Qt 回退在没有该环境变量时仍沿用原入口。为避免修改本机用户的登录启动项，本轮只做注册表替身自动测试，真实开机启动留 Task 13 手工验收。
+- 单实例实机复验确认第二次启动不增加进程或窗口；Sakura Mobile 本机 API 返回当前 N.A.V.I. 角色；退出后无 Tauri、Brain Host 或 MCP 残留。系统托盘壳层仍无法由当前 Windows 自动化接口定位，菜单项与路由已由 Rust/静态契约覆盖，物理托盘点击留 Task 13。
+- 首次实机冷启动曾因混合接话分类器模型冷加载长时间停留在初始化；单独 Brain 帧握手在相同真实配置下约 4 秒完成，缓存预热后 Tauri 启动约 6 秒恢复正常。该冷启动性能风险按 Task 8 既有记录保留到 Task 13 测量，不在第一阶段改写分类器架构。

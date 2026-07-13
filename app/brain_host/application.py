@@ -77,6 +77,7 @@ class BrainHostApplication:
         self.backchannel_service: Any | None = None
         self.scheduler: Any | None = None
         self.settings_resource_tasks: Any | None = None
+        self.mobile_bridge: Any | None = None
         self.state = "starting"
         self.startup: dict[str, Any] | None = None
         self.initialization_error: BrainHostError | None = None
@@ -95,6 +96,8 @@ class BrainHostApplication:
         self._screen_batch_started_at: float | None = None
         self._screen_context_dropped_count = 0
         self._last_user_activity_at = time.monotonic()
+        self._plugin_runtime_started = False
+        self._plugin_runtime_closing = False
 
     def set_event_sink(self, sink: EventSink | None) -> None:
         with self._state_lock:
@@ -110,6 +113,7 @@ class BrainHostApplication:
             return self.startup
         try:
             self.context = self._context_builder(self.config.base_dir)
+            self._install_headless_runtime_services()
             self.tts_service = _build_tts_service(self.context, self.config.base_dir)
             self.backchannel_service = _build_backchannel_service(
                 self.context,
@@ -146,6 +150,7 @@ class BrainHostApplication:
         self.state = "ready"
         self._configure_screen_observation_runtime()
         self.sync_scheduler_jobs(start=False)
+        self._emit_plugin_runtime_started()
         return self.startup
 
     def handle_request(
@@ -271,6 +276,15 @@ class BrainHostApplication:
                 self._messages.clear()
                 self._manual_observations.clear()
                 self._clear_screen_context_batch_locked()
+            self._emit_plugin_event(
+                "character.loaded",
+                {
+                    "character_id": profile.id,
+                    "character_name": profile.display_name,
+                    "previous_character_id": previous_id,
+                },
+                source="character",
+            )
         self._cancel_backchannel()
         if self.backchannel_service is not None:
             _close_quietly(self.backchannel_service, "close")
@@ -350,6 +364,175 @@ class BrainHostApplication:
             _close_quietly(previous, "close")
         self.startup = self._current_startup_state()
 
+    def _install_headless_runtime_services(self) -> None:
+        """在 Brain Host 内装配插件与 MCP，不创建任何 Qt 服务。"""
+
+        context = self.context
+        if context is None or not all(
+            hasattr(context, name)
+            for name in ("core", "features", "resource_registry", "agent_runtime")
+        ):
+            return
+
+        from app.agent import create_builtin_tool_registry
+        from app.agent.mcp import register_mcp_tools_from_config
+        from app.core.extensions import ExtensionRegistry
+        from app.core.mobile_chat_bridge import MobileChatBridge
+        from app.plugins.manager import PluginManager
+
+        tool_registry = create_builtin_tool_registry(
+            self.config.base_dir,
+            context.memory_store,
+            context.reminder_store,
+        )
+        tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
+        extension_registry = ExtensionRegistry()
+        extension_registry.apply_tools(tool_registry)
+        plugin_manager = PluginManager(
+            base_dir=self.config.base_dir,
+            resource_registry=context.resource_registry,
+            allow_native_ui=False,
+        )
+        mobile_bridge = MobileChatBridge(self)
+        plugin_manager.services.set_backends(
+            mobile_characters_sink=mobile_bridge.characters,
+            mobile_history_sink=mobile_bridge.history,
+            mobile_chat_sink=mobile_bridge.chat,
+            mobile_theme_sink=self._mobile_theme_mapping,
+        )
+        try:
+            plugin_manager.load_from_config(tool_registry)
+            mcp_settings = context.settings_service.load_mcp_runtime_settings()
+            mcp_tool_provider = register_mcp_tools_from_config(
+                self.config.base_dir,
+                tool_registry,
+                runtime_settings=mcp_settings,
+                resource_registry=context.resource_registry,
+            )
+        except Exception:
+            plugin_manager.shutdown_all()
+            raise
+
+        emitter = plugin_manager.emit_bus_event
+        tool_registry.set_event_emitter(emitter)
+        runtime = context.agent_runtime
+        runtime.tools = tool_registry
+        runtime.set_prompt_patches(plugin_manager.prompt_patches)
+        runtime.set_context_providers(plugin_manager.context_providers)
+        for client in (
+            getattr(runtime, "api_client", None),
+            getattr(runtime, "vision_api_client", None),
+            getattr(getattr(context, "memory_curator", None), "api_client", None),
+        ):
+            set_event_emitter = getattr(client, "set_event_emitter", None)
+            if callable(set_event_emitter):
+                set_event_emitter(emitter)
+
+        previous_plugin_manager = getattr(context, "plugin_manager", None)
+        self.context = replace(
+            context,
+            core=replace(context.core, tool_registry=tool_registry),
+            features=replace(
+                context.features,
+                extension_registry=extension_registry,
+                plugin_manager=plugin_manager,
+                mcp_settings=mcp_settings,
+                mcp_tool_provider=mcp_tool_provider,
+            ),
+            startup_initializing=False,
+        )
+        self.mobile_bridge = mobile_bridge
+        if previous_plugin_manager is not plugin_manager:
+            _close_quietly(previous_plugin_manager, "shutdown_all")
+
+    def _mobile_theme_mapping(self) -> dict[str, object]:
+        from app.config.theme import (
+            DEFAULT_THEME_SETTINGS,
+            resolve_effective_theme,
+            theme_colors_to_mapping,
+        )
+
+        context = self.context
+        if context is None:
+            return theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
+        service = getattr(context, "settings_service", None)
+        profile = getattr(context, "character_profile", None)
+        try:
+            user_theme = service.load_theme_settings()
+            override = service.load_character_theme_override(profile.id) if profile is not None else None
+            return theme_colors_to_mapping(resolve_effective_theme(profile, override, user_theme))
+        except (AttributeError, OSError, ValueError):
+            return theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
+
+    @property
+    def character_profile(self) -> Any:
+        return getattr(self.context, "character_profile", None)
+
+    @property
+    def character_registry(self) -> Any:
+        return getattr(self.context, "character_registry", None)
+
+    @property
+    def api_client(self) -> Any:
+        return getattr(self.context, "api_client", None)
+
+    @property
+    def agent_runtime(self) -> Any:
+        return getattr(self.context, "agent_runtime", None)
+
+    @property
+    def memory_store(self) -> Any:
+        return getattr(self.context, "memory_store", None)
+
+    def _create_history_store(self, profile: Any) -> Any:
+        from app.core.bootstrap import create_history_store
+
+        return create_history_store(self.config.base_dir, profile)
+
+    def submit_mobile_chat(
+        self,
+        bridge: Any,
+        character_id: str,
+        text: str,
+        image_data_url: str = "",
+    ) -> dict[str, Any]:
+        from app.core.mobile_chat_bridge import MobileChatBusyError
+
+        with self._state_lock:
+            if self.state != "ready" or self._assistant_busy_locked():
+                raise MobileChatBusyError("Sakura 正忙，请稍后再试。")
+            self._background_event_kind = "mobile_chat"
+        self._publish_busy(True, "mobile_chat")
+        try:
+            result = bridge.execute_chat(character_id, text, image_data_url)
+            clean_text = text.strip() or "请看这张图片。"
+            reply_text = str(result.get("reply_raw") or result.get("reply") or "").strip()
+            with self._state_lock:
+                self._messages.append({"role": "user", "content": clean_text})
+                if reply_text:
+                    self._messages.append({"role": "assistant", "content": reply_text})
+                self._last_user_activity_at = time.monotonic()
+            self._emit_user_plugin_events(clean_text, source="mobile")
+            if reply_text:
+                self._emit_plugin_event(
+                    "message.ai",
+                    {
+                        "text": reply_text,
+                        "segments": list(result.get("segments") or []),
+                        "character_id": character_id,
+                    },
+                    source="mobile",
+                )
+                self._emit_plugin_bus_event(
+                    "chat.message.sent",
+                    {"text": reply_text, "character_id": character_id},
+                )
+            return result
+        finally:
+            with self._state_lock:
+                self._background_event_kind = None
+            self._publish_busy(False, "mobile_chat")
+
     def _current_startup_state(self) -> dict[str, Any]:
         if self.context is None:
             return {}
@@ -404,11 +587,20 @@ class BrainHostApplication:
                 retryable=True,
                 details={"error_type": type(exc).__name__},
             ) from exc
+        plugin_payload = {
+            "synthesis_id": handle.request_id,
+            "segment_id": segment_id.strip(),
+            "text": text.strip(),
+            "tone": str(tone or ""),
+            "character_id": str(getattr(self.character_profile, "id", "")),
+        }
+        self._emit_tts_plugin_started(plugin_payload)
         self._watch_tts(
             handle,
             ipc_request_id=request_id or handle.request_id,
             segment_id=segment_id.strip(),
             audio_context=audio_context,
+            plugin_payload=plugin_payload,
         )
         return {"version": 1, "synthesisId": handle.request_id}
 
@@ -430,10 +622,11 @@ class BrainHostApplication:
         ipc_request_id: str,
         segment_id: str,
         audio_context: dict[str, Any] | None,
+        plugin_payload: dict[str, Any],
     ) -> None:
         watcher = threading.Thread(
             target=self._wait_for_tts,
-            args=(handle, ipc_request_id, segment_id, audio_context),
+            args=(handle, ipc_request_id, segment_id, audio_context, plugin_payload),
             name=f"sakura-tts-watch-{handle.request_id[-8:]}",
             daemon=True,
         )
@@ -447,15 +640,18 @@ class BrainHostApplication:
         ipc_request_id: str,
         segment_id: str,
         audio_context: dict[str, Any] | None,
+        plugin_payload: dict[str, Any],
     ) -> None:
         from app.voice.tts_synthesis_service import (
             TTSSynthesisCancelled,
             TTSSynthesisClosed,
         )
 
+        completion_status = "error"
         try:
             result = handle.result()
         except (TTSSynthesisCancelled, TTSSynthesisClosed):
+            completion_status = "cancelled"
             self._publish(
                 "tts.cancelled",
                 {
@@ -482,6 +678,7 @@ class BrainHostApplication:
                 },
             )
         else:
+            completion_status = "ready" if result.resource is not None else "skipped"
             if result.resource is not None and audio_context is not None:
                 cache = audio_context.get("cache")
                 store = getattr(cache, "store", None)
@@ -509,6 +706,9 @@ class BrainHostApplication:
                 except OSError:
                     pass
         finally:
+            self._emit_tts_plugin_finished(
+                {**plugin_payload, "status": completion_status}
+            )
             with self._state_lock:
                 self._watchers.discard(threading.current_thread())
 
@@ -587,6 +787,7 @@ class BrainHostApplication:
             self._last_user_activity_at = time.monotonic()
             self._messages.append({"role": "user", "content": recorded_user_text})
             self._record_history("user", recorded_user_text)
+            self._emit_user_plugin_events(recorded_user_text, source="user")
             self._watch_interaction(handle, source="chat")
             if self.backchannel_service is not None:
                 self.backchannel_service.schedule(user_text)
@@ -1273,6 +1474,7 @@ class BrainHostApplication:
             if reply.text.strip():
                 self._messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply(reply, _debug=result._debug)
+        self._emit_assistant_plugin_events(reply, source="agent")
 
     def _record_assistant_reply(self, reply: Any, _debug: dict[str, Any] | None = None) -> None:
         clean_segments = [segment for segment in reply.segments if segment.text.strip()]
@@ -1317,6 +1519,99 @@ class BrainHostApplication:
             return False
         return True
 
+    def _emit_plugin_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        source: str,
+    ) -> None:
+        manager = getattr(self.context, "plugin_manager", None)
+        emit_event = getattr(manager, "emit_event", None)
+        if not callable(emit_event):
+            return
+        try:
+            emit_event(event_type, payload or {}, source=source)
+        except (RuntimeError, ValueError):
+            return
+
+    def _emit_plugin_bus_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        manager = getattr(self.context, "plugin_manager", None)
+        emit_event = getattr(manager, "emit_bus_event", None)
+        if not callable(emit_event):
+            return
+        try:
+            emit_event(event_name, payload or {})
+        except RuntimeError:
+            return
+
+    def _emit_plugin_runtime_started(self) -> None:
+        if self._plugin_runtime_started:
+            return
+        profile = getattr(self.context, "character_profile", None)
+        if profile is None:
+            return
+        self._plugin_runtime_started = True
+        payload = {
+            "character_id": str(getattr(profile, "id", "")),
+            "character_name": str(getattr(profile, "display_name", "")),
+        }
+        self._emit_plugin_event("app.start", {**payload, "carryover": {}}, source="startup")
+        self._emit_plugin_event(
+            "character.loaded",
+            {**payload, "previous_character_id": ""},
+            source="startup",
+        )
+        self._emit_plugin_bus_event("app.started", payload)
+
+    def _emit_plugin_runtime_closing(self) -> None:
+        if self._plugin_runtime_closing or not self._plugin_runtime_started:
+            return
+        self._plugin_runtime_closing = True
+        self._emit_plugin_bus_event(
+            "app.closing",
+            {"interrupted_reply": bool(getattr(self.assistant, "busy", False))},
+        )
+
+    def _emit_user_plugin_events(self, text: str, *, source: str) -> None:
+        profile = getattr(self.context, "character_profile", None)
+        character_id = str(getattr(profile, "id", ""))
+        payload = {"text": text, "character_id": character_id}
+        self._emit_plugin_event("message.user", payload, source=source)
+        self._emit_plugin_bus_event("chat.message.received", payload)
+
+    def _emit_assistant_plugin_events(self, reply: Any, *, source: str) -> None:
+        profile = getattr(self.context, "character_profile", None)
+        character_id = str(getattr(profile, "id", ""))
+        segments = [
+            {
+                "text": segment.text,
+                "translation": segment.translation,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+            }
+            for segment in reply.segments
+            if segment.text.strip()
+        ]
+        payload = {"text": reply.text, "segments": segments, "character_id": character_id}
+        self._emit_plugin_event("message.ai", payload, source=source)
+        self._emit_plugin_bus_event(
+            "chat.message.sent",
+            {"text": reply.text, "character_id": character_id},
+        )
+
+    def _emit_tts_plugin_started(self, payload: dict[str, Any]) -> None:
+        self._emit_plugin_event("tts.start", payload, source="tts")
+        self._emit_plugin_bus_event("tts.started", payload)
+
+    def _emit_tts_plugin_finished(self, payload: dict[str, Any]) -> None:
+        self._emit_plugin_event("tts.end", payload, source="tts")
+        self._emit_plugin_bus_event("tts.finished", payload)
+
     def _hello(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if payload.get("protocol") != self.config.protocol_version:
             raise BrainHostError("PROTOCOL_VERSION_UNSUPPORTED", "protocol version mismatch")
@@ -1349,6 +1644,7 @@ class BrainHostApplication:
             return {"state": "stopped"}
         self.state = "stopping"
         context = self.context
+        self._emit_plugin_runtime_closing()
         if self.scheduler is not None:
             self.scheduler.stop(timeout=1)
         if self.assistant is not None:

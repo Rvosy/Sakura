@@ -47,6 +47,13 @@ from app.storage.paths import StoragePaths, sanitize_file_stem
 
 
 OPENAI_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+NATIVE_UI_PERMISSIONS = frozenset(
+    {
+        PERMISSION_TOOLS_TAB,
+        PERMISSION_CHAT_UI,
+        PERMISSION_RENDERER,
+    }
+)
 
 PLUGIN_EVENT_APP_START = "app.start"
 PLUGIN_EVENT_USER_MESSAGE = "message.user"
@@ -81,6 +88,7 @@ class PluginManager:
 
     base_dir: Path
     resource_registry: ResourceRegistry | None = None
+    allow_native_ui: bool = True
     _loaded: list[PluginLoadResult] = field(default_factory=list)
     _plugins: list[PluginBase] = field(default_factory=list)
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
@@ -156,6 +164,7 @@ class PluginManager:
         result = PluginLoadResult(spec=spec)
         plugin: PluginBase | None = None
         try:
+            _validate_runtime_compatibility(spec, allow_native_ui=self.allow_native_ui)
             plugin = _import_plugin(self.base_dir, spec)
             manifest = _build_manifest(plugin, spec)
             _validate_manifest(manifest)
@@ -183,6 +192,10 @@ class PluginManager:
             _validate_capability_permissions(
                 capability_registry,
                 manifest.permissions,
+            )
+            _validate_runtime_capabilities(
+                capability_registry,
+                allow_native_ui=self.allow_native_ui,
             )
             _validate_tool_contributions(all_tool_contributions, known_tool_names)
             _validate_renderer_contributions(capability_registry.renderers, known_renderer_types)
@@ -388,6 +401,42 @@ def _tool_names_from_registry(tool_registry: ToolRegistry | None) -> set[str]:
     if tool_registry is None:
         return set()
     return {tool.name for tool in tool_registry.all()}
+
+
+def _validate_runtime_compatibility(
+    spec: PluginSpec,
+    *,
+    allow_native_ui: bool,
+) -> None:
+    if allow_native_ui:
+        return
+    incompatible = sorted(set(spec.permissions) & NATIVE_UI_PERMISSIONS)
+    if incompatible:
+        raise ValueError(
+            "插件包含第一阶段 Tauri Brain Host 不兼容的非声明式 UI："
+            + ", ".join(incompatible)
+        )
+
+
+def _validate_runtime_capabilities(
+    capabilities: PluginCapabilityRegistry,
+    *,
+    allow_native_ui: bool,
+) -> None:
+    if allow_native_ui:
+        return
+    kinds: list[str] = []
+    if capabilities.tools_tabs:
+        kinds.append(PERMISSION_TOOLS_TAB)
+    if capabilities.chat_ui_widgets:
+        kinds.append(PERMISSION_CHAT_UI)
+    if capabilities.renderers:
+        kinds.append(PERMISSION_RENDERER)
+    if kinds:
+        raise ValueError(
+            "插件包含第一阶段 Tauri Brain Host 不兼容的非声明式 UI："
+            + ", ".join(kinds)
+        )
 
 
 def _import_plugin(base_dir: Path, spec: PluginSpec) -> PluginBase:

@@ -408,6 +408,55 @@ class TestPluginManager:
         assert "未知权限" in str(results[0].error)
         assert "settings_panel" in str(results[0].error)
 
+    def test_headless_manager_rejects_native_ui_plugin_before_import(self) -> None:
+        base = _runtime_root("headless_native_ui")
+        plugin_dir = _write_plugin_manifest(
+            base,
+            "native_ui",
+            permissions=(PERMISSION_TOOLS_TAB,),
+        )
+        plugin_dir.joinpath("plugin.py").write_text(
+            'raise RuntimeError("native UI module must not be imported")\n',
+            encoding="utf-8",
+        )
+        mgr = PluginManager(base, allow_native_ui=False)
+
+        results = mgr.load_all()
+
+        assert not results[0].loaded
+        assert "非声明式 UI" in str(results[0].error)
+        assert "must not be imported" not in str(results[0].error)
+
+    def test_headless_manager_keeps_declarative_settings_plugin(self) -> None:
+        base = _runtime_root("headless_declarative_settings")
+        plugin_dir = _write_plugin_manifest(
+            base,
+            "declarative_settings",
+            permissions=(PERMISSION_PLUGIN_SETTINGS,),
+        )
+        plugin_dir.joinpath("plugin.py").write_text(
+            '''
+from app.plugins import PluginBase, PluginSettingsContribution, PluginSettingsField
+
+class DemoPlugin(PluginBase):
+    plugin_id = "declarative_settings"
+
+    def initialize(self, register, context):
+        register.register_plugin_settings(PluginSettingsContribution(
+            section_id="demo",
+            title="Demo",
+            fields=(PluginSettingsField("enabled", "启用", "boolean"),),
+        ))
+'''.strip(),
+            encoding="utf-8",
+        )
+        mgr = PluginManager(base, allow_native_ui=False)
+
+        results = mgr.load_all()
+
+        assert results[0].loaded, results[0].error
+        assert [item.section_id for item in mgr.plugin_settings] == ["demo"]
+
     def test_missing_capability_permission_marks_plugin_failed(self) -> None:
         base = _runtime_root("missing_capability_permission")
         _write_demo_plugin(base, permissions=(PERMISSION_TOOL,))

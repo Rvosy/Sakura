@@ -184,7 +184,8 @@ def secondary_host_call(application: Any, method: str, params: Mapping[str, Any]
     if method in {"theme.pick_screen_color", "studio.pick_screen_color"}:
         return {"cancelled": True}
     if method == "plugin.settings_action":
-        return {"status": "unavailable", "message": "插件设置动作将在 Task 11 接入 Brain 事件。"}
+        contributions = getattr(getattr(application.context, "plugin_manager", None), "plugin_settings", [])
+        return _dispatch_plugin_settings_action(contributions, arguments)
     raise ValueError(f"未知次级窗口方法：{method}")
 
 
@@ -456,6 +457,12 @@ def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict
     if isinstance(enabled_by_id, dict) and enabled_by_id:
         if _save_plugin_enabled_overrides(application.config.base_dir, enabled_by_id):
             restart_required.append("plugins")
+    settings_by_id = plugin_data.get("settings_by_id", {}) if isinstance(plugin_data, dict) else {}
+    if isinstance(settings_by_id, dict):
+        _apply_plugin_settings(
+            getattr(getattr(context, "plugin_manager", None), "plugin_settings", []),
+            settings_by_id,
+        )
     return {
         "version": 1,
         "applied": True,
@@ -739,16 +746,85 @@ def _memory_mapping(settings: Any) -> dict[str, Any]:
 def _plugins_mapping(base_dir: Path, contributions: list[Any]) -> dict[str, Any]:
     settings_by_plugin: dict[str, list[Any]] = {}
     for contribution in contributions or []:
-        settings_by_plugin.setdefault(str(getattr(contribution, "plugin_id", "")), []).append(contribution)
+        plugin_id = str(getattr(contribution, "plugin_id", "")).strip()
+        if plugin_id:
+            settings_by_plugin.setdefault(plugin_id, []).append(contribution)
+    for values in settings_by_plugin.values():
+        values.sort(key=lambda item: float(getattr(item, "order", 100.0)))
     items = []
     for spec in _discover_plugins(base_dir):
+        plugin_id = str(spec["id"])
         items.append(
             {
                 **spec,
-                "settings": [],
+                "settings": [
+                    _plugin_settings_mapping(contribution)
+                    for contribution in settings_by_plugin.get(plugin_id, [])
+                ],
             }
         )
     return {"items": items, "permission_labels": PLUGIN_PERMISSION_LABELS}
+
+
+def _plugin_settings_mapping(contribution: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    error = ""
+    if callable(contribution.load):
+        try:
+            loaded = contribution.load()
+            if isinstance(loaded, dict):
+                values = dict(loaded)
+        except Exception as exc:  # noqa: BLE001 - 单个插件失败不阻断设置页
+            error = str(exc)
+    fields = [_plugin_settings_field_mapping(field, values) for field in contribution.fields]
+    return {
+        "section_id": str(contribution.section_id),
+        "title": str(contribution.title),
+        "order": float(contribution.order),
+        "values": {str(field["key"]): field["value"] for field in fields},
+        "fields": fields,
+        "actions": [
+            {
+                "action_id": str(action.action_id),
+                "label": str(action.label),
+                "description": str(action.description or ""),
+                "danger": bool(action.danger),
+            }
+            for action in contribution.actions
+        ],
+        "error": error,
+    }
+
+
+def _plugin_settings_field_mapping(
+    field: Any,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    key = str(field.key)
+    mapping = {
+        "key": key,
+        "label": str(field.label),
+        "type": str(field.field_type or "text"),
+        "value": values.get(key, field.default),
+        "default": field.default,
+        "description": str(field.description or ""),
+        "options": [
+            {"value": option.get("value"), "label": str(option.get("label", option.get("value", "")))}
+            for option in field.options
+            if isinstance(option, dict)
+        ],
+        "required": bool(field.required),
+        "readonly": bool(field.readonly),
+        "copyable": bool(field.copyable),
+        "restart_required": bool(field.restart_required),
+    }
+    if field.minimum is not None:
+        mapping["minimum"] = field.minimum
+    if field.maximum is not None:
+        mapping["maximum"] = field.maximum
+    if field.step is not None:
+        mapping["step"] = field.step
+    return mapping
 
 
 def _settings_limits() -> dict[str, list[float | int]]:
@@ -1039,44 +1115,177 @@ def _optional_int(value: object) -> int | None:
 
 
 def _discover_plugins(base_dir: Path) -> list[dict[str, Any]]:
-    import json
+    from app.plugins.discovery import PluginDiscovery
 
-    items = []
-    for manifest_path in sorted((Path(base_dir) / "plugins").glob("*/plugin.json")):
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    items: list[dict[str, Any]] = []
+    for spec in PluginDiscovery(Path(base_dir)).discover():
+        plugin_id = str(spec.plugin_id or "").strip()
+        if not plugin_id:
             continue
-        if not isinstance(data, dict):
-            continue
-        plugin_id = str(data.get("id") or manifest_path.parent.name).strip()
         items.append(
             {
                 "id": plugin_id,
-                "name": str(data.get("name") or plugin_id),
-                "author": str(data.get("author") or ""),
-                "version": str(data.get("version") or "0.0.0"),
-                "description": str(data.get("description") or ""),
-                "enabled": bool(data.get("enabled", True)),
-                "required": bool(data.get("required", False)),
-                "permissions": [str(item) for item in data.get("permissions", [])],
-                "source": "manifest",
-                "priority": _int(data.get("priority"), 100),
-                "entry": str(data.get("entry") or ""),
+                "name": str(spec.name or plugin_id),
+                "author": str(spec.author or ""),
+                "version": str(spec.version or "0.0.0"),
+                "description": str(spec.description or ""),
+                "enabled": bool(spec.enabled),
+                "required": bool(spec.required),
+                "permissions": list(spec.permissions),
+                "source": str(spec.source or "manifest"),
+                "priority": int(spec.priority),
+                "entry": str(spec.entry or ""),
             }
         )
     return items
 
 
 def _save_plugin_enabled_overrides(base_dir: Path, enabled_by_id: Mapping[str, Any]) -> bool:
-    from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
+    from app.plugins.discovery import save_plugin_enabled_overrides
 
-    path = Path(base_dir) / "data" / "config" / "plugins.yaml"
-    data = load_yaml_mapping(path)
-    current = data.get("enabled")
     normalized = {str(key): bool(value) for key, value in enabled_by_id.items() if str(key)}
-    if current == normalized:
-        return False
-    data["enabled"] = normalized
-    save_yaml_mapping(path, data)
-    return True
+    return save_plugin_enabled_overrides(Path(base_dir), normalized)
+
+
+def _apply_plugin_settings(
+    contributions: list[Any],
+    settings_by_id: Mapping[str, Any],
+) -> bool:
+    by_key = _plugin_settings_by_key(contributions)
+    changed = False
+    for plugin_id, sections in settings_by_id.items():
+        if not isinstance(sections, Mapping):
+            raise ValueError(f"插件设置无效：{plugin_id}")
+        for section_id, raw_values in sections.items():
+            if not isinstance(raw_values, Mapping):
+                raise ValueError(f"插件设置无效：{plugin_id}.{section_id}")
+            contribution = by_key.get((str(plugin_id), str(section_id)))
+            if contribution is None:
+                raise ValueError(f"未知插件设置区块：{plugin_id}.{section_id}")
+            values = _normalize_plugin_settings(contribution, raw_values)
+            current = _current_plugin_settings(contribution)
+            if values == current:
+                continue
+            if callable(contribution.save):
+                contribution.save(values)
+                changed = True
+    return changed
+
+
+def _dispatch_plugin_settings_action(
+    contributions: list[Any],
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    plugin_id = _required_text(params, "plugin_id")
+    section_id = _required_text(params, "section_id")
+    action_id = _required_text(params, "action_id")
+    contribution = _plugin_settings_by_key(contributions).get((plugin_id, section_id))
+    if contribution is None:
+        raise ValueError(f"未知插件设置区块：{plugin_id}.{section_id}")
+    action = next((item for item in contribution.actions if item.action_id == action_id), None)
+    if action is None or not callable(action.handler):
+        raise ValueError(f"未知插件设置动作：{plugin_id}.{section_id}.{action_id}")
+    raw_values = params.get("values", {})
+    if not isinstance(raw_values, Mapping):
+        raise ValueError("插件设置动作 values 必须是对象。")
+    result = action.handler(_normalize_plugin_settings(contribution, raw_values))
+    return result if isinstance(result, dict) else {"result": result}
+
+
+def _plugin_settings_by_key(
+    contributions: list[Any],
+) -> dict[tuple[str, str], Any]:
+    result: dict[tuple[str, str], Any] = {}
+    for contribution in contributions or []:
+        plugin_id = str(contribution.plugin_id or "").strip()
+        section_id = str(contribution.section_id or "").strip()
+        if plugin_id and section_id:
+            result[(plugin_id, section_id)] = contribution
+    return result
+
+
+def _current_plugin_settings(contribution: Any) -> dict[str, Any]:
+    values: Mapping[str, Any] = {}
+    if callable(contribution.load):
+        try:
+            loaded = contribution.load()
+            if isinstance(loaded, Mapping):
+                values = loaded
+        except Exception:  # noqa: BLE001 - 读取失败时仍允许保存
+            pass
+    return _normalize_plugin_settings(contribution, values)
+
+
+def _normalize_plugin_settings(
+    contribution: Any,
+    values: Mapping[str, Any],
+) -> dict[str, Any]:
+    fields = {str(field.key): field for field in contribution.fields}
+    unknown = next((str(key) for key in values if str(key) not in fields), "")
+    if unknown:
+        raise ValueError(
+            f"未知插件设置字段：{contribution.plugin_id}.{contribution.section_id}.{unknown}"
+        )
+    result: dict[str, Any] = {}
+    for key, field in fields.items():
+        if field.readonly:
+            continue
+        result[key] = _normalize_plugin_setting_value(
+            contribution,
+            field,
+            values.get(key, field.default),
+        )
+    return result
+
+
+def _normalize_plugin_setting_value(
+    contribution: Any,
+    field: Any,
+    value: Any,
+) -> Any:
+    field_type = str(field.field_type or "text").strip().lower()
+    label = f"{contribution.plugin_id}.{contribution.section_id}.{field.key}"
+    if field_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        return value
+    if field_type == "integer":
+        if isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"插件设置字段无效：{label}") from exc
+        if field.minimum is not None:
+            parsed = max(int(field.minimum), parsed)
+        if field.maximum is not None:
+            parsed = min(int(field.maximum), parsed)
+        return parsed
+    if field_type == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"插件设置字段无效：{label}")
+        try:
+            parsed_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"插件设置字段无效：{label}") from exc
+        if field.minimum is not None:
+            parsed_float = max(float(field.minimum), parsed_float)
+        if field.maximum is not None:
+            parsed_float = min(float(field.maximum), parsed_float)
+        return parsed_float
+    if field_type == "select":
+        allowed = [item.get("value") for item in field.options if isinstance(item, dict)]
+        if allowed and value not in allowed:
+            raise ValueError(f"插件设置字段无效：{label}")
+        return value
+    text = "" if value is None else str(value)
+    if field.required and not text.strip():
+        raise ValueError(f"插件设置字段不能为空：{label}")
+    return text
+
+
+def _required_text(mapping: Mapping[str, Any], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"插件设置 RPC 缺少字段：{key}")
+    return value.strip()
