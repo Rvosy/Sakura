@@ -27,16 +27,19 @@ export class ChatController {
     this.submitting = false;
   }
 
-  async send(text) {
+  async send(text, observationId = null) {
     const message = String(text || "").trim();
-    if (!message || this.store.getState().interaction.busy) return null;
+    const attachedObservationId = String(observationId || "").trim();
+    if ((!message && !attachedObservationId) || this.store.getState().interaction.busy) return null;
     this.confirmationView.hide();
     this.submitting = true;
     this.store.setInteractionState({ busy: true, interactionId: null });
     this.subtitleController.setText("……");
     this.setStatus("正在等待角色回复…", "ready");
     try {
-      const accepted = await this.invoke("chat_send", { text: message });
+      const args = { text: message };
+      if (attachedObservationId) args.observationId = attachedObservationId;
+      const accepted = await this.invoke("chat_send", args);
       this.#acceptInteraction(accepted);
       return accepted;
     } catch (error) {

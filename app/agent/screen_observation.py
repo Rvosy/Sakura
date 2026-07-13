@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QImage
@@ -22,6 +24,7 @@ SCREEN_OBSERVATION_HISTORY_MARKER = "[Sakura 已自主观察屏幕]"
 MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER = "[Sakura 已附加手动框选截图]"
 SCREEN_OBSERVATION_MAX_EDGE = 1280
 SCREEN_OBSERVATION_JPEG_QUALITY = 70
+SCREEN_OBSERVATION_MAX_BYTES = 24 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,50 @@ class CapturedScreenImage:
     image: QImage
     captured_at: str
     screen_name: str
+
+
+def build_screen_observation_from_private_resource(
+    resource: Mapping[str, Any],
+    *,
+    base_dir: Path,
+) -> ScreenObservation:
+    """读取 Rust 生成的受控 JPEG，并在离开本函数前删除临时文件。"""
+
+    raw_path = resource.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("截图资源缺少 path。")
+    capture_root = (Path(base_dir).resolve() / "data" / "cache" / "captures").resolve()
+    try:
+        path = Path(raw_path).resolve(strict=True)
+        path.relative_to(capture_root)
+    except (OSError, ValueError) as exc:
+        raise ValueError("截图资源必须位于受控截图目录。") from exc
+    if not path.is_file():
+        raise ValueError("截图资源不是普通文件。")
+
+    try:
+        mime_type = resource.get("mimeType", resource.get("mime_type"))
+        if mime_type != "image/jpeg" or path.suffix.casefold() not in {".jpg", ".jpeg"}:
+            raise ValueError("截图资源必须是 JPEG。")
+        width = _positive_resource_int(resource, "width")
+        height = _positive_resource_int(resource, "height")
+        captured_at = _resource_text(resource, "capturedAt", "captured_at")
+        screen_name = _resource_text(resource, "screenName", "screen_name") or "screen"
+        if path.stat().st_size > SCREEN_OBSERVATION_MAX_BYTES:
+            raise ValueError("截图资源超过大小限制。")
+        image_bytes = path.read_bytes()
+        if not image_bytes.startswith(b"\xff\xd8\xff") or not image_bytes.endswith(b"\xff\xd9"):
+            raise ValueError("截图资源内容不是有效 JPEG。")
+    finally:
+        path.unlink(missing_ok=True)
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return ScreenObservation(
+        data_url=f"data:image/jpeg;base64,{encoded}",
+        width=width,
+        height=height,
+        captured_at=captured_at or datetime.now().astimezone().isoformat(timespec="seconds"),
+        screen_name=screen_name,
+    )
 
 
 def should_observe_screen(text: str) -> bool:
@@ -250,3 +297,18 @@ def _marker_with_visual_id(marker: str, visual_id: str | None) -> str:
     if marker.endswith("]"):
         return f"{marker[:-1]}，视觉记录 visual_id={visual_id}]"
     return f"{marker}，视觉记录 visual_id={visual_id}"
+
+
+def _positive_resource_int(resource: Mapping[str, Any], key: str) -> int:
+    try:
+        value = int(resource.get(key, 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"截图资源 {key} 无效。") from exc
+    if value <= 0:
+        raise ValueError(f"截图资源 {key} 无效。")
+    return value
+
+
+def _resource_text(resource: Mapping[str, Any], snake_case: str, camel_case: str) -> str:
+    value = resource.get(snake_case, resource.get(camel_case, ""))
+    return value.strip() if isinstance(value, str) else ""

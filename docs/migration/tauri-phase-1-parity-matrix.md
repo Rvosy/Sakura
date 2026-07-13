@@ -96,7 +96,7 @@
 | 6 | 指定 Python 6 passed；扩展 Python 49 passed；Rust windows 5 passed；Rust 全套 20 passed；fmt/build 通过 | 单屏 100% 下真实角色立绘、主题、字幕、输入和受控资源 URL 已验证；多 DPI/混合多屏、物理鼠标与托盘仍见 ADR-0001 | `feat: 迁移Tauri桌宠前端` | 单一 Store；JS 布局与 Qt 纯模型逐项等价；资源协议拒绝路径逃逸 |
 | 7 | 指定与扩展 Python 41 passed；Rust 全套 21 passed；fmt/build/clippy 通过 | Python/Node/fake Brain 已覆盖发送、进度、最终回复、取消、错误和 action ID 确认；真实在线模型与真实工具留 Task 13 | `feat: 接通Tauri聊天与工具确认` | Brain 请求立即返回；后台事件串行转发；现有 ChatHistoryStore 格式不变；公开 DTO 不泄露 continuation context |
 | 8 | 指定与扩展 Python 127 passed；Rust audio 3 passed、全套 23 passed；fmt/build/clippy 通过 | 实机 Tauri 启动后正常退出码 0、无 Brain 残留；自动覆盖无 Qt 合成、受控资源、顺序播放、取消和快速接话；真实设备人耳验收留 Task 13 | `feat: 迁移Tauri语音播放链` | Rust 不向 WebView暴露路径；随机 token、TTL、单次消费；预置/缓存接话音频与即时合成都走同一播放链 |
-| 9 | 待执行 | 多屏截图待验收 | 待提交 | 观察与主动事件 |
+| 9 | 指定 Python 24 passed；扩展 Python 47 passed；Rust capture 5 passed、全套 27 passed；fmt/build/clippy 通过 | 单屏 100% 的既有 xcap 能力已自动验证；真实框选、125/150/200% DPI 与混合多屏留 Task 13 | `feat: 迁移Tauri截图与主动事件` | 私有路径不进 WebView；Brain 即读即删；Python 保留空闲/冷却批次、视觉消息与摘要；提醒和主动观察统一事件 |
 | 10 | 待执行 | 次级窗口待验收 | 待提交 | 设置/工作室/历史/诊断 |
 | 11 | 待执行 | 托盘/双开待验收 | 待提交 | 启动与插件交互 |
 | 12 | 待执行 | 生产入口待验收 | 待提交 | PySide6 导入图必须为空 |

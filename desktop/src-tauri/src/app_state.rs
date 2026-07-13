@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -13,6 +13,7 @@ use crate::brain_host::{
     BrainHostLaunchConfig, BrainHostRequestError, BrainHostStatus, BrainHostSupervisor,
     EventCallback, StatusCallback,
 };
+use crate::capture::{self, CaptureManager};
 
 pub const BRAIN_STATUS_EVENT: &str = "sakura://brain-status";
 pub const TTS_PLAYBACK_EVENT: &str = "sakura://tts-playback-state";
@@ -20,14 +21,19 @@ const CHARACTER_ASSET_SCHEME: &str = "sakura-asset";
 const MAX_CHARACTER_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
 pub struct DesktopAppState {
-    brain: BrainHostSupervisor,
+    brain: Arc<BrainHostSupervisor>,
+    capture: Arc<CaptureManager>,
     audio: Option<AudioManager>,
     audio_error: Option<String>,
 }
 
 impl DesktopAppState {
-    pub fn start(app: AppHandle) -> Self {
+    pub fn start(app: AppHandle) -> Result<Self, String> {
         let launch_config = BrainHostLaunchConfig::for_current_app();
+        let capture = Arc::new(CaptureManager::new(
+            launch_config.base_dir.join("data/cache/captures"),
+        )?);
+        let brain_slot = Arc::new(OnceLock::<Arc<BrainHostSupervisor>>::new());
         let audio_app = app.clone();
         let audio_callback: AudioEventCallback = Arc::new(move |event: AudioPlaybackEvent| {
             let _ = audio_app.emit(TTS_PLAYBACK_EVENT, event);
@@ -40,17 +46,41 @@ impl DesktopAppState {
             Err(error) => (None, Some(error)),
         };
         let status_audio = audio.clone();
+        let status_capture = Arc::clone(&capture);
         let status_app = app.clone();
         let callback: StatusCallback = Arc::new(move |status| {
             if !status.accepting_requests {
                 if let Some(audio) = status_audio.as_ref() {
                     audio.reset();
                 }
+                status_capture.reset();
+                if let Some(window) = status_app.get_webview_window("capture") {
+                    let _ = window.close();
+                    let _ = status_app.emit_to(
+                        "main",
+                        "sakura://manual-observation-cancelled",
+                        json!({}),
+                    );
+                }
             }
             let _ = status_app.emit(BRAIN_STATUS_EVENT, status);
         });
         let event_audio = audio.clone();
+        let event_capture = Arc::clone(&capture);
+        let event_brain = Arc::clone(&brain_slot);
+        let event_app = app.clone();
         let event_callback: EventCallback = Arc::new(move |event| {
+            if event.method == "observation.capture_requested" {
+                if let Some(brain) = event_brain.get().cloned() {
+                    capture::handle_proactive_capture(
+                        Arc::clone(&event_capture),
+                        brain,
+                        event.payload,
+                        event_app.clone(),
+                    );
+                }
+                return;
+            }
             let name = format!("sakura://{}", event.method.replace(['.', '_'], "-"));
             let mut payload = event.payload;
             if event.method == "tts.audio_ready" {
@@ -64,7 +94,7 @@ impl DesktopAppState {
                     match registered {
                         Ok(public) => payload["resource"] = public,
                         Err(error) => {
-                            let _ = app.emit(
+                            let _ = event_app.emit(
                                 "sakura://tts-error",
                                 json!({
                                     "version": 1,
@@ -83,18 +113,20 @@ impl DesktopAppState {
                     }
                 }
             }
-            let _ = app.emit(&name, payload);
+            let _ = event_app.emit(&name, payload);
         });
-        let brain = BrainHostSupervisor::start_with_event_callback(
+        let brain = Arc::new(BrainHostSupervisor::start_with_event_callback(
             launch_config,
             Some(callback),
             Some(event_callback),
-        );
-        Self {
+        ));
+        let _ = brain_slot.set(Arc::clone(&brain));
+        Ok(Self {
             brain,
+            capture,
             audio,
             audio_error,
-        }
+        })
     }
 
     pub fn shutdown(&self) {
@@ -102,6 +134,7 @@ impl DesktopAppState {
         if let Some(audio) = self.audio.as_ref() {
             audio.shutdown();
         }
+        self.capture.reset();
     }
 
     pub fn brain_status(&self) -> BrainHostStatus {
@@ -120,8 +153,20 @@ impl DesktopAppState {
         build_pet_bootstrap(&startup, status.session_generation)
     }
 
-    fn request(&self, method: &str, payload: Value) -> Result<Value, BrainHostRequestError> {
+    pub(crate) fn request(
+        &self,
+        method: &str,
+        payload: Value,
+    ) -> Result<Value, BrainHostRequestError> {
         self.brain.request(method, payload, Duration::from_secs(5))
+    }
+
+    pub(crate) fn brain(&self) -> Arc<BrainHostSupervisor> {
+        Arc::clone(&self.brain)
+    }
+
+    pub(crate) fn capture_manager(&self) -> Arc<CaptureManager> {
+        Arc::clone(&self.capture)
     }
 
     fn audio(&self) -> Result<&AudioManager, String> {
@@ -147,8 +192,12 @@ pub fn pet_bootstrap(state: State<'_, DesktopAppState>) -> Result<Value, String>
 pub fn chat_send(
     state: State<'_, DesktopAppState>,
     text: String,
+    observation_id: Option<String>,
 ) -> Result<Value, BrainHostRequestError> {
-    state.request("chat.send", json!({"text": text}))
+    state.request(
+        "chat.send",
+        json!({"text": text, "observation_id": observation_id}),
+    )
 }
 
 #[tauri::command]

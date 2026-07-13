@@ -31,6 +31,11 @@ class PeriodicScheduler:
         thread = self._thread
         return thread is not None and thread.is_alive()
 
+    @property
+    def job_names(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._jobs))
+
     def add_job(
         self,
         name: str,

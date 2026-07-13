@@ -5,6 +5,7 @@ import { SubtitleController } from "./pet/subtitle_controller.js";
 import { ChatController } from "./chat/chat_controller.js";
 import { ConfirmationView } from "./chat/confirmation_view.js";
 import { AudioController } from "./audio/audio_controller.js";
+import { CaptureController } from "./capture/capture_controller.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -83,6 +84,11 @@ const confirmationView = new ConfirmationView({
   rejectButton: elements.rejectAction,
   onConfirm: (actionId) => chatController.confirm(actionId).catch(() => {}),
   onReject: (actionId) => chatController.reject(actionId).catch(() => {}),
+});
+const captureController = new CaptureController({
+  store: petStore,
+  invoke: callDesktop,
+  setStatus: setResult,
 });
 
 chatController = new ChatController({
@@ -225,6 +231,23 @@ window.addEventListener("DOMContentLoaded", () => {
       subtitleController.showSegments([segment]);
       audioController.queueSegments([segment]);
     });
+    listen("sakura://assistant-busy-changed", ({ payload }) => {
+      if (payload?.kind === "chat") return;
+      petStore.setInteractionState({ busy: Boolean(payload?.busy), interactionId: null });
+    });
+    listen("sakura://assistant-proactive-message", ({ payload }) => {
+      const segments = payload?.reply?.segments || [];
+      if (segments.length) subtitleController.showSegments(segments);
+      if (segments.length) audioController.queueSegments(segments);
+      setResult(payload?.kind === "reminder" ? "提醒已送达。" : "主动观察已完成。", "success");
+    });
+    listen("sakura://manual-observation-ready", ({ payload }) =>
+      captureController.handleReady(payload),
+    );
+    listen("sakura://manual-observation-cancelled", () => captureController.handleCancelled());
+    listen("sakura://manual-observation-error", ({ payload }) =>
+      captureController.handleError(payload),
+    );
     listen("sakura://character-changed", () => audioController.stop().catch(() => {}));
     listen("sakura://settings-changed", () => audioController.stop().catch(() => {}));
   }
@@ -234,7 +257,9 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 window.addEventListener("sakura:chat-send", ({ detail }) => {
-  chatController.send(detail.text).then(() => {
+  chatController.send(detail.text, detail.observationId).then((accepted) => {
+    if (!accepted) return;
+    captureController.clearAttachment();
     elements.input.value = "";
   }).catch(() => {});
 });
@@ -244,5 +269,5 @@ window.addEventListener("sakura:chat-cancel", () => {
 });
 
 window.addEventListener("sakura:capture-request", () => {
-  setResult("待接通框选截图。", "ready");
+  captureController.open().catch(() => {});
 });

@@ -1,0 +1,52 @@
+:root {
+  color-scheme: dark;
+  font-family: "Microsoft YaHei UI", sans-serif;
+}
+
+html,
+body,
+.capture-shade {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  cursor: crosshair;
+  user-select: none;
+  background: rgba(5, 8, 18, 0.24);
+}
+
+.capture-shade {
+  position: relative;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+#capture-instruction {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 9px 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(14, 18, 32, 0.82);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.selection-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #ff7fb5;
+  background: rgba(255, 127, 181, 0.08);
+  box-shadow: 0 0 0 99999px rgba(3, 6, 15, 0.42), 0 0 18px rgba(255, 127, 181, 0.75);
+  pointer-events: none;
+}
+
+body.capturing {
+  opacity: 0;
+}

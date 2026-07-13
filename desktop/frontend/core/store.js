@@ -13,6 +13,12 @@ const initialState = () => ({
     synthesisId: null,
     playbackId: null,
   },
+  observation: {
+    attached: false,
+    observationId: null,
+    width: 0,
+    height: 0,
+  },
 });
 
 export function createPetStore() {
@@ -50,6 +56,12 @@ export function createPetStore() {
           synthesisId: null,
           playbackId: null,
         },
+        observation: {
+          attached: false,
+          observationId: null,
+          width: 0,
+          height: 0,
+        },
       };
       publish();
     },
@@ -71,6 +83,30 @@ export function createPetStore() {
         audio: {
           ...state.audio,
           ...patch,
+        },
+      };
+      publish();
+    },
+
+    setObservationState(patch) {
+      state = {
+        ...state,
+        observation: {
+          ...state.observation,
+          ...patch,
+        },
+      };
+      publish();
+    },
+
+    clearObservation() {
+      state = {
+        ...state,
+        observation: {
+          attached: false,
+          observationId: null,
+          width: 0,
+          height: 0,
         },
       };
       publish();

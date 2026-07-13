@@ -16,7 +16,9 @@ pub fn run() {
         }))
         .setup(|app| {
             tray::build_tray(app)?;
-            app.manage(app_state::DesktopAppState::start(app.handle().clone()));
+            let state = app_state::DesktopAppState::start(app.handle().clone())
+                .map_err(std::io::Error::other)?;
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +39,10 @@ pub fn run() {
             windows::set_always_on_top,
             windows::apply_pet_window_layout,
             audio::play_audio_prototype,
+            capture::list_capture_monitors,
+            capture::open_capture_overlay,
+            capture::capture_selected_region,
+            capture::cancel_capture_overlay,
             capture::capture_screen_prototype,
         ])
         .build(tauri::generate_context!())

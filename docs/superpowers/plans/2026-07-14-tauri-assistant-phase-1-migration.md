@@ -621,15 +621,15 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml audio
 - Create: `tests/integration/test_tauri_observation_contract.py`
 - Add Rust capture tests
 
-- [ ] Rust 枚举显示器并完成全屏、指定显示器和区域截图。
-- [ ] 前端实现框选覆盖层，不使用 Qt Overlay。
-- [ ] 截图通过临时资源描述符发送给 Brain。
-- [ ] Python 端保留现有缩放、编码、视觉消息和摘要逻辑。
-- [ ] 主动屏幕观察由 Python scheduler 决策，由 Rust 执行捕获。
-- [ ] 用户聊天、截图和主动事件共享同一忙碌状态。
-- [ ] 截图默认不持久化；正常退出和崩溃恢复均清理。
-- [ ] 提醒和主动消息通过统一事件进入前端。
-- [ ] 用户关闭主动观察后停止相关调度。
+- [x] Rust 枚举显示器并完成全屏、指定显示器和区域截图。
+- [x] 前端实现框选覆盖层，不使用 Qt Overlay。
+- [x] 截图通过临时资源描述符发送给 Brain。
+- [x] Python 端保留现有缩放、编码、视觉消息和摘要逻辑。
+- [x] 主动屏幕观察由 Python scheduler 决策，由 Rust 执行捕获。
+- [x] 用户聊天、截图和主动事件共享同一忙碌状态。
+- [x] 截图默认不持久化；正常退出和崩溃恢复均清理。
+- [x] 提醒和主动消息通过统一事件进入前端。
+- [x] 用户关闭主动观察后停止相关调度。
 
 **Verification:**
 
@@ -913,3 +913,10 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - Python `tts.synthesize` 立即返回 synthesis ID，后台事件只把私有路径交给 Rust。Rust canonicalize 并限制路径在 `data/cache/tts`、核对媒体类型和文件大小，再向 WebView 发不含路径的一次性资源 token；token 有固定 TTL、单次消费、Brain 重启/退出清理。Rust 独立播放线程单一拥有 rodio 输出、停止、音量和播放状态，启用 WAV 解码所需的 rodio `wav` feature。
 - 快速接话新增无 Qt 延迟/分类服务，继续复用 `RuleClassifier`/`HybridBackchannelClassifier`、`TemplateResolver`、角色 manifest 和 `BackchannelAudioCache`。角色包预置音频或磁盘缓存会先复制到受控临时目录，再走同一 Rust 播放链；未命中时走同一 TTS 合成链并回填现有缓存。Hybrid 在第一阶段改为 Brain 内单线程 executor 执行并用 token 忽略迟到结果，Task 13 需比较首次模型冷加载性能。
 - 角色/设置事件、Brain 重启和应用退出都会停止旧播放并清理资源；对应角色切换与设置事件将在 Task 10 接通业务命令。当前自动测试覆盖资源隔离、取消迟到结果、顺序播放、缓存和状态事件；人耳设备验收仍受 ADR-0001 限制，保留到 Task 13。
+
+### 2026-07-14：Task 9 的截图编码边界与主动调度
+
+- 当前长期运行 Python 环境没有 Pillow、OpenCV 或 imageio，直接把 Rust 捕获的原始 RGBA 交给 Python 会迫使第一阶段新增一套大体积图像运行时。最小调整为在 Rust 受控资源边界完成区域拼接、等比缩放和 JPEG 编码；Python 仍负责受控路径校验、即读即删、base64 data URL、OpenAI 兼容视觉消息、历史 marker、视觉摘要和短期视觉记录。该调整不把路径或图像字节暴露给 WebView。
+- 主动观察的空闲判断、检查间隔、冷却批次、批次上限、禁用后移除 job、提醒轮询和与聊天共享的忙碌仲裁仍位于 Brain Host。Rust 只响应 `observation.capture_requested`，并从独立线程回送私有资源，避免在 Brain supervisor 的事件回调线程内同步请求造成死锁。
+- 手动截图先在 Brain 建立 capture session，Tauri 透明覆盖窗只回传框选坐标；Rust 使用物理坐标裁剪跨显示器区域，Brain 返回一次性 observation ID，前端发送消息时只携带该 ID。临时 JPEG 具有随机名、大小限制、TTL 和 session/退出清理；Brain 读取后立即删除，未发送的附件只留在当前 Python 进程内存中，重启或退出自然失效。
+- 当前自动测试覆盖负坐标虚拟桌面、跨屏裁剪数学、显示器选择、缩放、路径逃逸、资源 TTL/重置、一次性 observation、主动批次、提醒和统一事件 DTO。真实 125/150/200% DPI、混合 DPI 多屏与物理框选仍受 ADR-0001 硬件限制，保留到 Task 13 手工签字。

@@ -86,6 +86,7 @@ export class PetController {
     this.elements.send.hidden = busy;
     this.elements.cancel.hidden = !busy;
     this.elements.capture.disabled = busy;
+    this.elements.capture.textContent = state.observation?.attached ? "已截" : "截";
   }
 
   #bindInput() {
@@ -112,7 +113,11 @@ export class PetController {
 
   #sendMessage() {
     const text = this.elements.input.value.trim();
-    if (!text || this.store.getState().interaction.busy) return;
-    this.emit("sakura:chat-send", { text });
+    const state = this.store.getState();
+    if ((!text && !state.observation?.attached) || state.interaction.busy) return;
+    this.emit("sakura:chat-send", {
+      text,
+      observationId: state.observation?.observationId || null,
+    });
   }
 }

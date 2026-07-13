@@ -192,7 +192,7 @@ impl BrainHostRequestError {
         }
     }
 
-    fn transport(message: impl Into<String>) -> Self {
+    pub(crate) fn transport(message: impl Into<String>) -> Self {
         Self {
             code: "BRAIN_TRANSPORT_FAILED".into(),
             message: message.into(),

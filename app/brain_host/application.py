@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import secrets
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,10 +83,22 @@ class BrainHostApplication:
         self._state_lock = threading.RLock()
         self._watchers: set[threading.Thread] = set()
         self._backchannel_audio_requests: dict[str, dict[str, Any]] = {}
+        self._manual_observations: dict[str, tuple[Any, str]] = {}
+        self._capture_session_id: str | None = None
+        self._pending_capture_request_id: str | None = None
+        self._background_event_kind: str | None = None
+        self._screen_awareness_enabled = False
+        self._screen_context_resolution = "fullscreen"
+        self._screen_contexts: list[dict[str, Any]] = []
+        self._screen_batch_started_at: float | None = None
+        self._screen_context_dropped_count = 0
+        self._last_user_activity_at = time.monotonic()
 
     def set_event_sink(self, sink: EventSink | None) -> None:
         with self._state_lock:
             self._event_sink = sink
+        if sink is not None and self.state == "ready" and self.scheduler is not None:
+            self.scheduler.start()
 
     def shutdown(self) -> dict[str, Any]:
         return self._shutdown()
@@ -131,6 +145,8 @@ class BrainHostApplication:
             )
             return None
         self.state = "ready"
+        self._configure_screen_observation_runtime()
+        self.sync_scheduler_jobs(start=False)
         return self.startup
 
     def handle_request(
@@ -154,6 +170,16 @@ class BrainHostApplication:
             return self._chat_confirm_action(payload, request_id=request_id)
         if method == "chat.reject_action":
             return self._chat_reject_action(payload, request_id=request_id)
+        if method == "observation.capture_started":
+            return self._observation_capture_started()
+        if method == "observation.capture_cancelled":
+            return self._observation_capture_cancelled(payload)
+        if method == "observation.capture_failed":
+            return self._observation_capture_failed(payload)
+        if method == "observation.push":
+            return self._observation_push(payload)
+        if method == "observation.configure":
+            return self._observation_configure(payload)
         if method == "tts.synthesize":
             return self._tts_synthesize(payload, request_id=request_id)
         if method == "tts.cancel":
@@ -320,29 +346,507 @@ class BrainHostApplication:
         request_id: str | None,
     ) -> dict[str, Any]:
         text = payload.get("text")
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
+            raise BrainHostError("INVALID_REQUEST", "聊天消息必须是字符串。")
+        observation_id = payload.get("observation_id", payload.get("observationId"))
+        if observation_id is not None and not isinstance(observation_id, str):
+            raise BrainHostError("INVALID_REQUEST", "observationId 必须是字符串。")
+        observation_id = str(observation_id or "").strip()
+        if not text.strip() and not observation_id:
             raise BrainHostError("INVALID_REQUEST", "聊天消息不能为空。")
         assistant = self._require_assistant()
-        user_text = text.strip()
+        user_text = text.strip() or "请看看这张截图。"
         with self._state_lock:
+            if self._capture_session_id or self._pending_capture_request_id or self._background_event_kind:
+                raise BrainHostError(
+                    "ASSISTANT_BUSY",
+                    "截图或主动事件正在处理中，请稍后再发送消息。",
+                    retryable=True,
+                )
             from app.llm.context_trimming import trim_messages_for_model
+            from app.storage.visual_observation import VisualObservationJob
+
+            request_user_message: dict[str, Any] = {"role": "user", "content": user_text}
+            recorded_user_text = user_text
+            visual_jobs: list[VisualObservationJob] = []
+            if observation_id:
+                stored = self._manual_observations.get(observation_id)
+                if stored is None:
+                    raise BrainHostError(
+                        "OBSERVATION_NOT_FOUND",
+                        "该截图已使用、已过期或不属于当前会话。",
+                    )
+                observation, visual_id = stored
+                from app.agent.screen_observation import (
+                    append_manual_observation_marker,
+                    build_screen_observation_user_message,
+                )
+
+                request_user_message = build_screen_observation_user_message(user_text, observation)
+                recorded_user_text = append_manual_observation_marker(
+                    user_text,
+                    observation,
+                    visual_id,
+                )
+                visual_jobs.append(
+                    VisualObservationJob(
+                        id=visual_id,
+                        source="manual_selection",
+                        user_text=user_text,
+                        observation=observation,
+                    )
+                )
 
             request_messages = trim_messages_for_model(
-                [*self._messages, {"role": "user", "content": user_text}]
+                [*self._messages, request_user_message]
             )
             handle = self._submit_with_progress(
                 lambda progress_callback: assistant.send_message(
                     request_messages,
+                    visual_observation_jobs=visual_jobs,
                     progress_callback=progress_callback,
                     request_id=request_id,
                 )
             )
-            self._messages.append({"role": "user", "content": user_text})
-            self._record_history("user", user_text)
+            if observation_id:
+                self._manual_observations.pop(observation_id, None)
+            self._clear_screen_context_batch_locked()
+            self._last_user_activity_at = time.monotonic()
+            self._messages.append({"role": "user", "content": recorded_user_text})
+            self._record_history("user", recorded_user_text)
             self._watch_interaction(handle, source="chat")
             if self.backchannel_service is not None:
                 self.backchannel_service.schedule(user_text)
         return self._accepted_interaction(handle)
+
+    def _observation_capture_started(self) -> dict[str, Any]:
+        self._require_assistant()
+        with self._state_lock:
+            if self._assistant_busy_locked():
+                raise BrainHostError(
+                    "ASSISTANT_BUSY",
+                    "聊天、截图或主动事件正在处理中。",
+                    retryable=True,
+                )
+            self._manual_observations.clear()
+            self._last_user_activity_at = time.monotonic()
+            self._capture_session_id = f"capture-{secrets.token_hex(16)}"
+            capture_session_id = self._capture_session_id
+        self._publish_busy(True, "capture")
+        return {"version": 1, "captureSessionId": capture_session_id}
+
+    def _observation_capture_cancelled(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        capture_session_id = _required_id(payload, "capture_session_id", "captureSessionId")
+        with self._state_lock:
+            if capture_session_id != self._capture_session_id:
+                raise BrainHostError("CAPTURE_SESSION_NOT_FOUND", "截图会话已失效。")
+            self._capture_session_id = None
+        self._publish_busy(False, "capture")
+        return {"version": 1, "captureSessionId": capture_session_id, "cancelled": True}
+
+    def _observation_capture_failed(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        capture_request_id = _required_id(
+            payload,
+            "capture_request_id",
+            "captureRequestId",
+        )
+        with self._state_lock:
+            if capture_request_id != self._pending_capture_request_id:
+                raise BrainHostError("CAPTURE_REQUEST_NOT_FOUND", "主动截图请求已失效。")
+            self._pending_capture_request_id = None
+        self._publish_busy(False, "screen_awareness")
+        return {"version": 1, "captureRequestId": capture_request_id, "failed": True}
+
+    def _observation_push(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        source = payload.get("source")
+        resource = payload.get("resource")
+        if source not in {"manual", "screen_awareness"} or not isinstance(resource, Mapping):
+            raise BrainHostError("INVALID_REQUEST", "截图来源或资源描述无效。")
+        from app.agent.screen_observation import build_screen_observation_from_private_resource
+
+        try:
+            observation = build_screen_observation_from_private_resource(
+                resource,
+                base_dir=self.config.base_dir,
+            )
+        except (OSError, ValueError) as exc:
+            raise BrainHostError(
+                "CAPTURE_RESOURCE_REJECTED",
+                "截图资源未通过校验。",
+                details={"errorType": type(exc).__name__},
+            ) from exc
+        if source == "manual":
+            capture_session_id = _required_id(
+                payload,
+                "capture_session_id",
+                "captureSessionId",
+            )
+            with self._state_lock:
+                if capture_session_id != self._capture_session_id:
+                    raise BrainHostError("CAPTURE_SESSION_NOT_FOUND", "截图会话已失效。")
+                from app.storage.visual_observation import generate_visual_observation_id
+
+                observation_id = f"observation-{secrets.token_hex(16)}"
+                visual_id = generate_visual_observation_id()
+                self._manual_observations[observation_id] = (observation, visual_id)
+                self._capture_session_id = None
+            self._publish_busy(False, "capture")
+            return {
+                "version": 1,
+                "observationId": observation_id,
+                "width": observation.width,
+                "height": observation.height,
+                "screenName": observation.screen_name,
+            }
+
+        capture_request_id = _required_id(
+            payload,
+            "capture_request_id",
+            "captureRequestId",
+        )
+        with self._state_lock:
+            if capture_request_id != self._pending_capture_request_id:
+                raise BrainHostError("CAPTURE_REQUEST_NOT_FOUND", "主动截图请求已失效。")
+            self._pending_capture_request_id = None
+            now = time.monotonic()
+            context = {
+                "data_url": observation.data_url,
+                "width": observation.width,
+                "height": observation.height,
+                "captured_at": observation.captured_at,
+                "screen_name": observation.screen_name,
+                "detail": "high",
+            }
+            if self._screen_batch_started_at is None:
+                self._screen_batch_started_at = now
+            self._screen_contexts.append(context)
+            settings = self._screen_awareness_settings()
+            while len(self._screen_contexts) > settings.screen_context_batch_limit:
+                self._screen_contexts.pop(0)
+                self._screen_context_dropped_count += 1
+            should_dispatch = (
+                now - self._screen_batch_started_at >= settings.cooldown_minutes * 60
+            )
+            contexts = [dict(item) for item in self._screen_contexts] if should_dispatch else []
+            dropped_count = self._screen_context_dropped_count
+            if should_dispatch:
+                self._clear_screen_context_batch_locked()
+        if should_dispatch:
+            dispatched = self._dispatch_screen_awareness(
+                contexts,
+                capture_request_id,
+                dropped_count=dropped_count,
+            )
+        else:
+            dispatched = False
+            self._publish_busy(False, "screen_awareness")
+        return {
+            "version": 1,
+            "captureRequestId": capture_request_id,
+            "accepted": True,
+            "dispatched": dispatched,
+        }
+
+    def _observation_configure(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise BrainHostError("INVALID_REQUEST", "enabled 必须是布尔值。")
+        with self._state_lock:
+            self._screen_awareness_enabled = enabled
+            if not enabled:
+                self._pending_capture_request_id = None
+                self._clear_screen_context_batch_locked()
+        self.sync_scheduler_jobs(start=False)
+        if not enabled:
+            self._publish_busy(False, "screen_awareness")
+        return {"version": 1, "screenAwarenessEnabled": enabled}
+
+    def sync_scheduler_jobs(self, *, start: bool) -> None:
+        scheduler = self.scheduler
+        if scheduler is None:
+            return
+        scheduler.add_job("reminders", 1.0, self.check_due_reminders)
+        if self._screen_awareness_enabled:
+            settings = self._screen_awareness_settings()
+            interval = settings.check_interval_minutes * 60
+            scheduler.add_job(
+                "screen-awareness",
+                interval,
+                self.request_screen_awareness_capture,
+            )
+        else:
+            scheduler.remove_job("screen-awareness")
+        if start:
+            scheduler.start()
+
+    def check_due_reminders(self) -> bool:
+        if self.state != "ready" or self.context is None:
+            return False
+        with self._state_lock:
+            if self._assistant_busy_locked():
+                return False
+        store = getattr(self.context, "reminder_store", None)
+        due_reminders = getattr(store, "due_reminders", None)
+        if not callable(due_reminders):
+            return False
+        try:
+            reminders = due_reminders()
+        except ValueError:
+            return False
+        if not reminders:
+            return False
+        reminder = reminders[0]
+        reminder_id = str(reminder.get("id", "")).strip()
+        if not reminder_id:
+            return False
+        from app.agent.actions import AgentEvent
+
+        event = AgentEvent(
+            "reminder_due",
+            {
+                "id": reminder_id,
+                "text": str(reminder.get("text", "")),
+                "trigger_at": str(reminder.get("trigger_at", "")),
+            },
+        )
+        return self._dispatch_proactive_event(
+            event,
+            kind="reminder",
+            event_id=reminder_id,
+        )
+
+    def request_screen_awareness_capture(self) -> bool:
+        if self.state != "ready":
+            return False
+        with self._state_lock:
+            if not self._screen_awareness_enabled or self._assistant_busy_locked():
+                return False
+            if (
+                time.monotonic() - self._last_user_activity_at
+                < self._screen_awareness_settings().check_interval_minutes * 60
+            ):
+                return False
+            capture_request_id = f"capture-request-{secrets.token_hex(16)}"
+            self._pending_capture_request_id = capture_request_id
+            resolution = self._screen_context_resolution
+        self._publish_busy(True, "screen_awareness")
+        published = self._publish(
+            "observation.capture_requested",
+            {
+                "version": 1,
+                "captureRequestId": capture_request_id,
+                "target": {"kind": "fullscreen"},
+                "resolution": resolution,
+            },
+        )
+        if not published:
+            with self._state_lock:
+                self._pending_capture_request_id = None
+            self._publish_busy(False, "screen_awareness")
+            return False
+        return True
+
+    def _dispatch_screen_awareness(
+        self,
+        contexts: list[dict[str, Any]],
+        capture_request_id: str,
+        *,
+        dropped_count: int,
+    ) -> bool:
+        from app.agent.actions import AgentEvent
+        from app.storage.visual_observation import (
+            VisualObservationJob,
+            generate_visual_observation_id,
+        )
+
+        recent_conversation = [
+            dict(message)
+            for message in self._messages[-12:]
+            if message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+        ]
+        event = AgentEvent(
+            "screen_awareness_check",
+            {
+                "triggered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "screen_context_allowed": True,
+                "screen_context_count": len(contexts),
+                "screen_context_dropped_count": dropped_count,
+                "screen_contexts": contexts,
+                "recent_conversation": recent_conversation,
+                "capture_request_id": capture_request_id,
+            },
+        )
+        visual_id = generate_visual_observation_id()
+        jobs = [
+            VisualObservationJob(
+                id=visual_id,
+                source="screen_awareness_context",
+                user_text="主动屏幕感知上下文",
+                screen_contexts=contexts,
+            )
+        ]
+        self._record_history("system", "[已抓取屏幕上下文]")
+        return self._dispatch_proactive_event(
+            event,
+            kind="screen_awareness",
+            event_id=capture_request_id,
+            visual_observation_jobs=jobs,
+            busy_already_published=True,
+        )
+
+    def _dispatch_proactive_event(
+        self,
+        event: Any,
+        *,
+        kind: str,
+        event_id: str,
+        visual_observation_jobs: list[Any] | None = None,
+        busy_already_published: bool = False,
+    ) -> bool:
+        assistant = self._require_assistant()
+        handle = assistant.dispatch_event(
+            event,
+            visual_observation_jobs=visual_observation_jobs,
+        )
+        if handle is None:
+            if busy_already_published:
+                self._publish_busy(False, kind)
+            return False
+        with self._state_lock:
+            self._background_event_kind = kind
+        if not busy_already_published:
+            self._publish_busy(True, kind)
+        watcher = threading.Thread(
+            target=self._wait_for_proactive_event,
+            args=(handle, kind, event_id),
+            name=f"sakura-proactive-{handle.interaction_id[-8:]}",
+            daemon=True,
+        )
+        with self._state_lock:
+            self._watchers.add(watcher)
+        watcher.start()
+        return True
+
+    def _wait_for_proactive_event(self, handle: Any, kind: str, event_id: str) -> None:
+        try:
+            result = handle.result()
+        except Exception:  # noqa: BLE001
+            if kind == "reminder":
+                from app.llm.chat_reply import ChatReply, ChatSegment
+
+                reminder = self._reminder_by_id(event_id)
+                text = str(reminder.get("text", "")) if reminder else ""
+                fallback = ChatReply(
+                    [
+                        ChatSegment(
+                            ja=f"時間だよ。{text}",
+                            zh=f"到时间了：{text}",
+                            tone="请求",
+                            portrait="伸手命令",
+                        )
+                    ]
+                )
+                self._record_assistant_reply(fallback)
+                self._publish(
+                    "assistant.proactive_message",
+                    {
+                        "version": 1,
+                        "kind": kind,
+                        "eventId": event_id,
+                        "reply": chat_reply_dto(fallback),
+                        "fallback": True,
+                    },
+                )
+        else:
+            self._record_completed_result(result)
+            if result.reply.text.strip() or result.reply.translation.strip() or result.actions:
+                self._publish(
+                    "assistant.proactive_message",
+                    {
+                        "version": 1,
+                        "kind": kind,
+                        "eventId": event_id,
+                        "reply": chat_reply_dto(result.reply),
+                        "fallback": False,
+                    },
+                )
+        finally:
+            if kind == "reminder":
+                self._complete_reminder(event_id)
+            with self._state_lock:
+                self._background_event_kind = None
+                self._watchers.discard(threading.current_thread())
+            self._publish_busy(False, kind)
+
+    def _reminder_by_id(self, reminder_id: str) -> dict[str, Any] | None:
+        store = getattr(self.context, "reminder_store", None)
+        due_reminders = getattr(store, "due_reminders", None)
+        if not callable(due_reminders):
+            return None
+        try:
+            return next(
+                (item for item in due_reminders() if str(item.get("id", "")) == reminder_id),
+                None,
+            )
+        except ValueError:
+            return None
+
+    def _complete_reminder(self, reminder_id: str) -> None:
+        store = getattr(self.context, "reminder_store", None)
+        mark_completed = getattr(store, "mark_completed", None)
+        if callable(mark_completed):
+            try:
+                mark_completed(reminder_id)
+            except ValueError:
+                pass
+
+    def _assistant_busy_locked(self) -> bool:
+        return bool(
+            self._capture_session_id
+            or self._pending_capture_request_id
+            or self._background_event_kind
+            or (self.assistant is not None and bool(getattr(self.assistant, "busy", False)))
+        )
+
+    def _clear_screen_context_batch_locked(self) -> None:
+        self._screen_contexts.clear()
+        self._screen_batch_started_at = None
+        self._screen_context_dropped_count = 0
+
+    def _publish_busy(self, busy: bool, kind: str) -> None:
+        self._publish(
+            "assistant.busy_changed",
+            {"version": 1, "busy": bool(busy), "kind": kind},
+        )
+
+    def _screen_awareness_settings(self) -> Any:
+        from app.agent.screen_awareness import ScreenAwarenessSettings
+
+        settings = getattr(self.context, "screen_awareness_settings", None)
+        return settings.normalized() if hasattr(settings, "normalized") else ScreenAwarenessSettings()
+
+    def _configure_screen_observation_runtime(self) -> None:
+        settings = self._screen_awareness_settings()
+        settings_service = getattr(self.context, "settings_service", None)
+        load_values = getattr(settings_service, "load_system_values", None)
+        try:
+            values = load_values("screen_observation") if callable(load_values) else {}
+        except (OSError, ValueError):
+            values = {}
+        screen_enabled = bool(values.get("enabled", True))
+        autonomous_enabled = bool(values.get("autonomous_enabled", True)) and screen_enabled
+        runtime = getattr(self.context, "agent_runtime", None)
+        set_vision = getattr(runtime, "set_model_vision_enabled", None)
+        if callable(set_vision):
+            set_vision(screen_enabled)
+        set_autonomous = getattr(runtime, "set_autonomous_screen_observation_enabled", None)
+        if callable(set_autonomous):
+            set_autonomous(autonomous_enabled)
+        self._screen_awareness_enabled = (
+            settings.allows_screen_context() and screen_enabled and autonomous_enabled
+        )
+        self._screen_context_resolution = settings.screen_context_resolution
 
     def _chat_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         interaction_id = _required_id(payload, "interaction_id", "interactionId")
@@ -682,6 +1186,11 @@ class BrainHostApplication:
             _close_quietly(self.backchannel_service, "close")
         with self._state_lock:
             watchers = tuple(self._watchers)
+            self._manual_observations.clear()
+            self._capture_session_id = None
+            self._pending_capture_request_id = None
+            self._background_event_kind = None
+            self._clear_screen_context_batch_locked()
         for watcher in watchers:
             if watcher is not threading.current_thread():
                 watcher.join(timeout=1)

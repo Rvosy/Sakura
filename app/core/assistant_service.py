@@ -210,8 +210,10 @@ class AssistantApplication:
         self,
         event: AgentEvent,
         *,
+        visual_observation_jobs: list[Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> InteractionHandle | None:
+        copied_jobs = list(visual_observation_jobs or [])
         with self._lock:
             if self._closed or self._active is not None:
                 return None
@@ -219,6 +221,7 @@ class AssistantApplication:
                 "event",
                 lambda interaction: self.pipeline.run_event(
                     event,
+                    visual_observation_jobs=copied_jobs,
                     progress_callback=self._progress_callback(interaction),
                     cancel_checker=interaction.cancel_token.throw_if_cancelled,
                 ),
