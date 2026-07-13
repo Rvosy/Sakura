@@ -146,3 +146,22 @@ class ChatPipeline:
                 "sensitive_redacted": record.sensitive_redacted,
             },
         )
+
+
+def pending_actions_from_result(result: AgentResult) -> tuple[PendingToolAction, ...]:
+    """从 AgentResult 中恢复待确认动作，忽略畸形或重复 action。"""
+
+    pending: list[PendingToolAction] = []
+    seen: set[str] = set()
+    for action in result.actions:
+        if action.type != "pending_action":
+            continue
+        try:
+            item = PendingToolAction.from_dict(action.payload)
+        except (TypeError, ValueError):
+            continue
+        if item.id in seen:
+            continue
+        seen.add(item.id)
+        pending.append(item)
+    return tuple(pending)

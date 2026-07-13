@@ -833,6 +833,16 @@ class ResourceRegistry:
         with self._lock:
             return [entry.resource for entry in self._entries]
 
+    @property
+    def active_resource_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def resource_labels(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(entry.label for entry in self._entries)
+
     def stop_all(self, timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS) -> None:
         with self._lock:
             entries = tuple(sorted(self._entries, key=lambda entry: entry.shutdown_order, reverse=True))

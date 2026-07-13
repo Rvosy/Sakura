@@ -475,22 +475,22 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml ipc
 - Modify: `app/backchannel/controller.py`
 - Modify: `app/core/resource_manager.py`
 
-- [ ] 将 `PetWindow` 中的聊天会话状态移入 `AssistantApplication`。
-- [ ] 为每次交互维护：
+- [x] 将 `PetWindow` 中的聊天会话状态移入 `AssistantApplication`。
+- [x] 为每次交互维护：
   - interaction ID；
   - active request；
   - cancellation token；
   - pending action；
   - progress callback；
   - reply result。
-- [ ] 使用标准线程池或受控 worker 替代 `ChatWorker` / `EventWorker`。
-- [ ] 将提醒轮询、主动互动和记忆整理调度移出 QTimer。
-- [ ] 保证同一时间只有一个前台聊天任务。
-- [ ] 主动事件不得抢占当前用户聊天。
-- [ ] 将待确认动作保存在 Python 端映射中。
-- [ ] `confirm_action` 只接受 action ID。
-- [ ] 为关闭顺序、取消和 worker 泄漏建立测试。
-- [ ] 保留 `ChatPipeline` 和 `AgentRuntime` 的行为测试。
+- [x] 使用标准线程池或受控 worker 替代 `ChatWorker` / `EventWorker`。
+- [x] 将提醒轮询、主动互动和记忆整理调度移出 QTimer。
+- [x] 保证同一时间只有一个前台聊天任务。
+- [x] 主动事件不得抢占当前用户聊天。
+- [x] 将待确认动作保存在 Python 端映射中。
+- [x] `confirm_action` 只接受 action ID。
+- [x] 为关闭顺序、取消和 worker 泄漏建立测试。
+- [x] 保留 `ChatPipeline` 和 `AgentRuntime` 的行为测试。
 
 **Verification:**
 
@@ -881,3 +881,9 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - 实际代码中 `AppSettingsService` 通过 `app.ui.theme`、`AppContext` 通过 `app.voice.tts`，以及资源注册表通过 `app.core.resource_manager` 间接加载 PySide6；直接照计划组装 `AppContext` 无法满足 Task 3 导入守卫。
 - 最小调整为：把主题数据模型和 TTS Provider 契约移到无 Qt 模块；Qt UI 继续从兼容入口复用同一类型；`ResourceManager` 在 `SAKURA_HEADLESS=1` 时不导入 PySide6，Task 4 再继续抽离实际调度和 worker 生命周期。
 - Headless 运行日志的控制台 sink 改写 stderr，保证 stdout 只包含长度前缀协议帧。现有 Qt 主入口仍维持原 stdout 行为。
+
+### 2026-07-14：AssistantApplication 与旧 Qt 适配层并存
+
+- 计划文件只列出修改 `memory_curation_worker.py` 和 `backchannel/controller.py`，但直接复用二者会让 Brain Host 导入 Qt。实际最小调整额外新增 `app/agent/memory_curation_task.py` 与 `app/backchannel/decision.py`，把记忆整理执行和快速接话决策抽成无 Qt 服务；旧 Qt 类继续作为兼容适配器委托给这些服务。
+- `PeriodicScheduler` 已替代新 Brain Host 路径中的 QTimer 调度基础，并由 `BrainHostApplication` 统一持有和关闭。提醒、主动观察和记忆整理的具体 job 注册分别依赖后续聊天事件 DTO、Rust 截图和前端呈现，因此按 Task 7/9 接通；旧 `PetWindow` 的 QTimer 在对应 Tauri 功能和手工验收完成前保留，不进入新的生产 Brain Host 路径。
+- `AssistantApplication` 使用单前台标准线程池、协作取消与 Python session action map。确认/拒绝提交只有在线程池接受任务后才消费 action ID，避免窄竞态导致待确认动作丢失。

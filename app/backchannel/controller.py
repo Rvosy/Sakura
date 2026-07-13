@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import random
 import multiprocessing
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from app.backchannel.decision import BackchannelClassifier, BackchannelDecisionService
 from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice, TemplateResolver
 from app.core.runtime_log import log_event
@@ -17,11 +18,6 @@ if TYPE_CHECKING:
 DisplayCallback = Callable[[BackchannelChoice], None]
 # 分类完成回调:用于评测日志,记录 (输入文本, 标签, 选中模板)。
 ClassifiedCallback = Callable[[str, "BackchannelLabel | None", BackchannelChoice | None], None]
-
-
-class BackchannelClassifier(Protocol):
-    def classify(self, text: str) -> BackchannelLabel | None:
-        ...
 
 
 class _ClassifySignals(QObject):
@@ -59,6 +55,10 @@ class BackchannelController(QObject):
         self._classifier = classifier
         self._display = display
         self._on_classified = on_classified
+        self._decision = BackchannelDecisionService(
+            classifier,
+            on_classified=on_classified,
+        )
         self._settings = settings.normalized()
         self._rng = rng if rng is not None else random.Random()
         self._resolver: TemplateResolver | None = None
@@ -104,6 +104,7 @@ class BackchannelController(QObject):
             self._resolver = TemplateResolver(manifest, rng=self._rng)
         else:
             self._resolver = None
+        self._decision.resolver = self._resolver
 
     def set_settings(self, settings: "BackchannelSettings") -> None:
         self._settings = settings.normalized()
@@ -114,6 +115,7 @@ class BackchannelController(QObject):
         self.cancel()
         self._stop_classifier_process()
         self._classifier = classifier
+        self._decision.classifier = classifier
 
     def schedule(self, text: str) -> None:
         """用户消息已发送:启动接话延迟计时。延迟内回复到达则被 cancel 跳过。"""
@@ -170,7 +172,7 @@ class BackchannelController(QObject):
         if getattr(self._classifier, "prefers_background", False):
             self._dispatch_async(self._pending_text)
             return
-        label = self._classifier.classify(self._pending_text)
+        label = self._decision.classify(self._pending_text)
         self._finish_classification(self._pending_text, label)
 
     def _dispatch_async(self, text: str) -> None:
@@ -339,8 +341,6 @@ class BackchannelController(QObject):
             return
         # phase 参数有意不传:相位(repeated_issue/tool_running/long_wait)
         # 由后续迭代的会话相位跟踪器提供,v1 相位条目仅随清单预置。
-        choice = self._resolver.resolve(label)
-        if self._on_classified is not None:
-            self._on_classified(text, label, choice)
+        choice = self._decision.resolve(text, label)
         if choice is not None:
             self._display(choice)

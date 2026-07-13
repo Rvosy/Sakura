@@ -62,6 +62,8 @@ class BrainHostApplication:
         self.config = config
         self._context_builder = context_builder or _build_context
         self.context: Any | None = None
+        self.assistant: Any | None = None
+        self.scheduler: Any | None = None
         self.state = "starting"
         self.startup: dict[str, Any] | None = None
         self.initialization_error: BrainHostError | None = None
@@ -72,6 +74,23 @@ class BrainHostApplication:
         try:
             self.context = self._context_builder(self.config.base_dir)
             self.startup = startup_state_dto(self.context)
+            if hasattr(self.context, "agent_runtime"):
+                from app.brain_host.scheduler import PeriodicScheduler
+                from app.core.assistant_service import AssistantApplication
+                from app.core.chat_pipeline import ChatPipeline
+
+                self.assistant = AssistantApplication(
+                    ChatPipeline(
+                        self.context.agent_runtime,
+                        visual_observation_store=getattr(
+                            self.context,
+                            "visual_observation_store",
+                            None,
+                        ),
+                    ),
+                    session_id=self.config.session_id,
+                )
+                self.scheduler = PeriodicScheduler()
         except Exception as exc:  # noqa: BLE001
             self.state = "failed"
             self.initialization_error = BrainHostError(
@@ -125,6 +144,10 @@ class BrainHostApplication:
             return {"state": "stopped"}
         self.state = "stopping"
         context = self.context
+        if self.scheduler is not None:
+            self.scheduler.stop(timeout=1)
+        if self.assistant is not None:
+            self.assistant.close(wait=True)
         if context is not None:
             _close_quietly(getattr(context, "mcp_tool_provider", None), "close")
             _close_quietly(getattr(context, "plugin_manager", None), "shutdown_all")

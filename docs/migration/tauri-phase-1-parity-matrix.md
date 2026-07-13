@@ -91,7 +91,7 @@
 | 1 | Python 5 passed；Rust 4 passed；fmt/build 通过 | 单屏 100% 下透明、IME、音频 API、截图、穿透、隐藏/恢复、单实例已验证；其余见 ADR-0001 | `feat: 建立Tauri桌面主程序` | Task 6 前补物理拖动、托盘、多 DPI/多屏和人耳音频签字 |
 | 2 | Python 17 passed；Rust IPC 6 passed | 不适用 | `feat: 实现Brain Host帧协议` | Python/Rust 共用 golden frame；8 MiB、大端、分片、错误与 session 约束已覆盖 |
 | 3 | 指定测试 13 passed；兼容回归 468 passed | `python -m app.brain_host` 实际帧握手/健康/关闭通过 | `feat: 建立无Qt Brain Host` | 真实 AppContext 保留角色/配置；正常 Host 导入图无 PySide6/app.ui；stdout 仅协议帧 |
-| 4 | 待执行 | 不适用 | 待提交 | 无 Qt Assistant 服务 |
+| 4 | 计划测试 141 passed；扩展回归 222 passed；PetWindow 272 passed | 不适用 | `refactor: 抽离无Qt助手服务` | 单前台交互、协作取消、session action map、标准线程池与无 Qt scheduler；Headless 导入图无 PySide6/app.ui |
 | 5 | 待执行 | Brain 崩溃恢复待验收 | 待提交 | Host 监管 |
 | 6 | 待执行 | 桌宠视觉待验收 | 待提交 | 前端状态/立绘/字幕/输入 |
 | 7 | 待执行 | 聊天与确认待验收 | 待提交 | 聊天契约 |
