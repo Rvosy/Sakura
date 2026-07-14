@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
-const PROTOCOL_VERSION: u8 = 1;
+const PROTOCOL_VERSION: u8 = 2;
 const REQUEST_MARKER: &str = "@@SAKURA_TERMINAL_REQUEST@@";
 const RESULT_MARKER: &str = "@@SAKURA_TERMINAL_RESULT@@";
 const READY_MARKER: &str = "@@SAKURA_TERMINAL_READY@@";
+const HOST_EVENT_MARKER: &str = "@@SAKURA_TERMINAL_EVENT@@";
 const OUTPUT_EVENT: &str = "sakura://terminal-output";
 const STATE_EVENT: &str = "sakura://terminal-state";
+const APPROVAL_EVENT: &str = "sakura://terminal-approval";
 const DEFAULT_RING_BYTES: usize = 1024 * 1024;
 const MAX_RING_BYTES: usize = 4 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 16 * 1024;
@@ -77,6 +79,40 @@ struct ReadParams {
 struct WriteParams {
     session_id: String,
     data_b64: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ApprovalRequest {
+    id: String,
+    tool_name: String,
+    summary: String,
+    command: Vec<String>,
+    cwd: String,
+    risk_level: String,
+    allowed_scopes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShowApprovalParams {
+    approval: ApprovalRequest,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApprovalIdParams {
+    approval_id: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ApprovalEvent {
+    approval: Option<ApprovalRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApprovalResolution {
+    #[serde(rename = "type")]
+    event_type: String,
+    approval_id: String,
+    decision: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -222,6 +258,7 @@ struct TerminalSession {
 
 struct TerminalHost {
     session: Mutex<Option<TerminalSession>>,
+    approval: Mutex<Option<ApprovalRequest>>,
     ring_capacity: usize,
 }
 
@@ -229,8 +266,79 @@ impl TerminalHost {
     fn new(ring_capacity: usize) -> Self {
         Self {
             session: Mutex::new(None),
+            approval: Mutex::new(None),
             ring_capacity,
         }
+    }
+
+    fn set_approval(&self, approval: ApprovalRequest) -> Result<ApprovalRequest, String> {
+        validate_approval(&approval)?;
+        let mut pending = self
+            .approval
+            .lock()
+            .map_err(|_| "terminal approval lock is poisoned".to_string())?;
+        if let Some(current) = pending.as_ref() {
+            if current.id != approval.id {
+                return Err("已有终端命令等待确认。".to_string());
+            }
+        }
+        *pending = Some(approval.clone());
+        Ok(approval)
+    }
+
+    fn approval_snapshot(&self) -> Result<Option<ApprovalRequest>, String> {
+        self.approval
+            .lock()
+            .map(|pending| pending.clone())
+            .map_err(|_| "terminal approval lock is poisoned".to_string())
+    }
+
+    fn clear_approval(&self, approval_id: &str) -> Result<bool, String> {
+        let mut pending = self
+            .approval
+            .lock()
+            .map_err(|_| "terminal approval lock is poisoned".to_string())?;
+        let matches = pending
+            .as_ref()
+            .is_some_and(|approval| approval.id == approval_id);
+        if matches {
+            pending.take();
+        }
+        Ok(matches)
+    }
+
+    fn resolve_approval(
+        &self,
+        approval_id: &str,
+        decision: &str,
+    ) -> Result<ApprovalResolution, String> {
+        let mut pending = self
+            .approval
+            .lock()
+            .map_err(|_| "terminal approval lock is poisoned".to_string())?;
+        let approval = pending
+            .as_ref()
+            .ok_or_else(|| "当前没有等待确认的终端命令。".to_string())?;
+        if approval.id != approval_id {
+            return Err("终端确认请求已过期。".to_string());
+        }
+        if decision != "cancel"
+            && !approval
+                .allowed_scopes
+                .iter()
+                .any(|scope| scope == decision)
+        {
+            return Err("当前终端命令不允许该授权范围。".to_string());
+        }
+        if !matches!(decision, "once" | "process" | "cancel") {
+            return Err("终端确认决策无效。".to_string());
+        }
+        pending.take();
+        Ok(ApprovalResolution {
+            event_type: "approval_resolved".to_string(),
+            approval_id: approval_id.to_string(),
+            decision: decision.to_string(),
+        })
     }
 
     fn spawn(&self, app: &AppHandle, params: SpawnParams) -> Result<SessionResult, String> {
@@ -434,6 +542,48 @@ fn validate_spawn(params: &SpawnParams) -> Result<(), String> {
     if params.yield_time_ms > 10_000 || params.timeout_ms == 0 || params.timeout_ms > MAX_TIMEOUT_MS
     {
         return Err("终端等待或超时参数超出范围。".to_string());
+    }
+    Ok(())
+}
+
+fn validate_approval(approval: &ApprovalRequest) -> Result<(), String> {
+    if approval.id.is_empty() || approval.id.len() > 128 {
+        return Err("终端确认 ID 无效。".to_string());
+    }
+    if !matches!(
+        approval.tool_name.as_str(),
+        "terminal_exec" | "terminal_write"
+    ) {
+        return Err("终端确认工具无效。".to_string());
+    }
+    if approval.summary.len() > MAX_ARG_CHARS
+        || approval.cwd.len() > MAX_ARG_CHARS
+        || !matches!(
+            approval.risk_level.as_str(),
+            "low" | "normal" | "medium" | "high"
+        )
+    {
+        return Err("终端确认说明无效。".to_string());
+    }
+    if approval.command.len() > MAX_ARGS
+        || approval
+            .command
+            .iter()
+            .any(|argument| argument.contains('\0') || argument.len() > MAX_ARG_CHARS)
+    {
+        return Err("终端确认命令无效。".to_string());
+    }
+    if approval.tool_name == "terminal_exec" && approval.command.is_empty() {
+        return Err("终端执行确认缺少 argv。".to_string());
+    }
+    if approval.allowed_scopes.is_empty()
+        || !approval.allowed_scopes.iter().any(|scope| scope == "once")
+        || approval
+            .allowed_scopes
+            .iter()
+            .any(|scope| !matches!(scope.as_str(), "once" | "process"))
+    {
+        return Err("终端确认授权范围无效。".to_string());
     }
     Ok(())
 }
@@ -647,7 +797,12 @@ fn load_request(state: State<'_, TerminalHost>) -> Result<Value, String> {
         .map_err(|_| "terminal session lock is poisoned".to_string())?
         .as_ref()
         .map(|session| session.id.clone());
-    Ok(json!({"session_id": session_id, "read_max_bytes": MAX_READ_BYTES}))
+    let approval = state.approval_snapshot()?;
+    Ok(json!({
+        "session_id": session_id,
+        "read_max_bytes": MAX_READ_BYTES,
+        "approval": approval,
+    }))
 }
 
 #[tauri::command]
@@ -703,6 +858,19 @@ fn terminal_stop(app: AppHandle, state: State<'_, TerminalHost>) -> Result<Sessi
     Ok(result)
 }
 
+#[tauri::command]
+fn terminal_resolve_approval(
+    approval_id: String,
+    decision: String,
+    app: AppHandle,
+    state: State<'_, TerminalHost>,
+) -> Result<(), String> {
+    let resolution = state.resolve_approval(&approval_id, &decision)?;
+    let _ = app.emit(APPROVAL_EVENT, ApprovalEvent { approval: None });
+    write_host_event(&resolution);
+    Ok(())
+}
+
 fn read_init() -> Result<(InitRequest, BufReader<Stdin>), String> {
     let mut reader = BufReader::new(std::io::stdin());
     let mut line = String::new();
@@ -725,6 +893,14 @@ fn write_host_result(id: &str, result: Result<Value, String>) {
     if let Ok(line) = serde_json::to_string(&payload) {
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(stdout, "{RESULT_MARKER}{line}");
+        let _ = stdout.flush();
+    }
+}
+
+fn write_host_event<T: Serialize>(event: &T) {
+    if let Ok(line) = serde_json::to_string(event) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "{HOST_EVENT_MARKER}{line}");
         let _ = stdout.flush();
     }
 }
@@ -805,8 +981,33 @@ fn handle_host_request(
             show_window(app)?;
             Ok(json!({"shown": true}))
         }
+        "show_approval" => {
+            let params: ShowApprovalParams = serde_json::from_value(request.params)
+                .map_err(|error| format!("show_approval 参数无效：{error}"))?;
+            let approval = state.set_approval(params.approval)?;
+            let _ = app.emit(
+                APPROVAL_EVENT,
+                ApprovalEvent {
+                    approval: Some(approval),
+                },
+            );
+            show_window(app)?;
+            Ok(json!({"shown": true}))
+        }
+        "clear_approval" => {
+            let params: ApprovalIdParams = serde_json::from_value(request.params)
+                .map_err(|error| format!("clear_approval 参数无效：{error}"))?;
+            let cleared = state.clear_approval(&params.approval_id)?;
+            if cleared {
+                let _ = app.emit(APPROVAL_EVENT, ApprovalEvent { approval: None });
+            }
+            Ok(json!({"cleared": cleared}))
+        }
         "shutdown" => {
             state.stop_active();
+            if let Ok(Some(approval)) = state.approval_snapshot() {
+                let _ = state.clear_approval(&approval.id);
+            }
             Ok(json!({"stopped": true}))
         }
         _ => Err("未知终端宿主方法。".to_string()),
@@ -834,7 +1035,8 @@ pub fn run() {
             terminal_snapshot,
             terminal_write,
             terminal_resize,
-            terminal_stop
+            terminal_stop,
+            terminal_resolve_approval
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -854,6 +1056,13 @@ pub fn run() {
             ..
         } => {
             api.prevent_close();
+            let state = app.state::<TerminalHost>();
+            if let Ok(Some(approval)) = state.approval_snapshot() {
+                if let Ok(resolution) = state.resolve_approval(&approval.id, "cancel") {
+                    let _ = app.emit(APPROVAL_EVENT, ApprovalEvent { approval: None });
+                    write_host_event(&resolution);
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
@@ -896,6 +1105,58 @@ mod tests {
         assert!(validate_size(120, 30).is_ok());
         assert!(validate_size(1, 30).is_err());
         assert!(validate_size(120, 501).is_err());
+    }
+
+    fn approval(scopes: &[&str]) -> ApprovalRequest {
+        ApprovalRequest {
+            id: "approval-1".to_string(),
+            tool_name: "terminal_exec".to_string(),
+            summary: "printf hello".to_string(),
+            command: vec!["printf".to_string(), "hello".to_string()],
+            cwd: "/tmp".to_string(),
+            risk_level: "low".to_string(),
+            allowed_scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn approval_requires_known_tool_and_once_scope() {
+        assert!(validate_approval(&approval(&["once", "process"])).is_ok());
+
+        let mut unknown = approval(&["once"]);
+        unknown.tool_name = "open_url".to_string();
+        assert!(validate_approval(&unknown).is_err());
+
+        let process_only = approval(&["process"]);
+        assert!(validate_approval(&process_only).is_err());
+    }
+
+    #[test]
+    fn approval_resolution_rejects_stale_or_disallowed_decisions() {
+        let host = TerminalHost::new(DEFAULT_RING_BYTES);
+        host.set_approval(approval(&["once"])).unwrap();
+
+        assert!(host.resolve_approval("stale", "once").is_err());
+        assert!(host.resolve_approval("approval-1", "process").is_err());
+        assert!(host.approval_snapshot().unwrap().is_some());
+
+        let resolved = host.resolve_approval("approval-1", "once").unwrap();
+        assert_eq!(resolved.approval_id, "approval-1");
+        assert_eq!(resolved.decision, "once");
+        assert!(host.approval_snapshot().unwrap().is_none());
+    }
+
+    #[test]
+    fn approval_can_be_cancelled_when_window_closes() {
+        let host = TerminalHost::new(DEFAULT_RING_BYTES);
+        host.set_approval(approval(&["once", "process"])).unwrap();
+
+        let pending = host.approval_snapshot().unwrap().unwrap();
+        let resolved = host.resolve_approval(&pending.id, "cancel").unwrap();
+
+        assert_eq!(resolved.approval_id, "approval-1");
+        assert_eq!(resolved.decision, "cancel");
+        assert!(host.approval_snapshot().unwrap().is_none());
     }
 
     #[test]

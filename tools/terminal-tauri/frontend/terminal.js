@@ -5,6 +5,16 @@ const container = document.getElementById("terminal");
 const statusText = document.getElementById("terminalStatus");
 const statusDot = document.getElementById("statusDot");
 const stopButton = document.getElementById("stopButton");
+const approvalPanel = document.getElementById("approvalPanel");
+const approvalSummary = document.getElementById("approvalSummary");
+const approvalRisk = document.getElementById("approvalRisk");
+const approvalCommandField = document.getElementById("approvalCommandField");
+const approvalCommand = document.getElementById("approvalCommand");
+const approvalCwdField = document.getElementById("approvalCwdField");
+const approvalCwd = document.getElementById("approvalCwd");
+const cancelApprovalButton = document.getElementById("cancelApprovalButton");
+const approveProcessButton = document.getElementById("approveProcessButton");
+const approveOnceButton = document.getElementById("approveOnceButton");
 const terminal = new window.Terminal({
   cursorBlink: true,
   convertEol: false,
@@ -26,6 +36,7 @@ let sessionId = "";
 let cursor = 0;
 let running = false;
 let resizeTimer = null;
+let pendingApproval = null;
 
 function encodeUtf8(value) {
   const bytes = new TextEncoder().encode(value);
@@ -71,6 +82,58 @@ function applyResult(result) {
   setState(result.state, result.exit_code ?? null);
 }
 
+function riskLabel(risk) {
+  return {
+    low: "低风险",
+    normal: "普通风险",
+    medium: "中风险",
+    high: "高风险",
+  }[risk] || "中风险";
+}
+
+function setApprovalBusy(busy) {
+  cancelApprovalButton.disabled = busy;
+  approveProcessButton.disabled = busy;
+  approveOnceButton.disabled = busy;
+}
+
+function applyApproval(approval) {
+  pendingApproval = approval || null;
+  approvalPanel.hidden = !pendingApproval;
+  window.setTimeout(resize, 0);
+  if (!pendingApproval) {
+    setApprovalBusy(false);
+    window.setTimeout(() => terminal.focus(), 0);
+    return;
+  }
+
+  const command = Array.isArray(pendingApproval.command) ? pendingApproval.command : [];
+  const scopes = Array.isArray(pendingApproval.allowed_scopes)
+    ? pendingApproval.allowed_scopes
+    : ["once"];
+  approvalSummary.textContent = pendingApproval.summary || "执行终端操作";
+  approvalRisk.textContent = riskLabel(pendingApproval.risk_level);
+  approvalRisk.dataset.risk = pendingApproval.risk_level || "medium";
+  approvalCommandField.hidden = command.length === 0;
+  approvalCommand.textContent = JSON.stringify(command);
+  approvalCwdField.hidden = !pendingApproval.cwd;
+  approvalCwd.textContent = pendingApproval.cwd || "";
+  approveProcessButton.hidden = !scopes.includes("process");
+  setApprovalBusy(false);
+  approveOnceButton.focus();
+}
+
+async function resolveApproval(decision) {
+  if (!pendingApproval) return;
+  const approvalId = pendingApproval.id;
+  setApprovalBusy(true);
+  try {
+    await invoke("terminal_resolve_approval", { approvalId, decision });
+  } catch {
+    setApprovalBusy(false);
+  }
+}
+
 async function snapshot() {
   if (!sessionId) return;
   try {
@@ -109,14 +172,23 @@ stopButton.addEventListener("click", async () => {
   }
 });
 
+cancelApprovalButton.addEventListener("click", () => resolveApproval("cancel"));
+approveOnceButton.addEventListener("click", () => resolveApproval("once"));
+approveProcessButton.addEventListener("click", () => resolveApproval("process"));
+
 window.addEventListener("resize", () => {
   window.clearTimeout(resizeTimer);
   resizeTimer = window.setTimeout(resize, 80);
 });
 
 async function load() {
+  await listen("sakura://terminal-approval", (event) => {
+    const payload = event.payload || {};
+    applyApproval(payload.approval || null);
+  });
   const request = await invoke("load_request");
   sessionId = request.session_id || "";
+  applyApproval(request.approval || null);
   await listen("sakura://terminal-output", (event) => {
     const payload = event.payload || {};
     if (sessionId && payload.session_id !== sessionId) return;
@@ -133,7 +205,7 @@ async function load() {
   });
   await resize();
   await snapshot();
-  terminal.focus();
+  if (!pendingApproval) terminal.focus();
 }
 
 load().catch(() => setState("failed"));

@@ -17,6 +17,7 @@ from app.terminal.manager import (
     normalize_terminal_command,
     sanitize_terminal_output,
 )
+from app.terminal.approval import suppress_segment_tts, terminal_approval_payload
 from app.terminal.models import (
     TerminalReadResult,
     TerminalSpawnResult,
@@ -131,6 +132,44 @@ def test_terminal_exec_always_waits_for_confirmation_with_free_access(tmp_path: 
     assert pending.allows_scope(ApprovalScope.PROCESS)
     assert pending.summary == "printf hello"
     assert pending.to_log_dict()["arguments"] == {"redacted": True}
+
+
+def test_terminal_approval_payload_exposes_display_fields_without_continuation_context(
+    tmp_path: Path,
+) -> None:
+    manager, _transport = _manager(tmp_path)
+    registry = ToolRegistry()
+    register_terminal_tools(registry, manager)
+    pending = registry.prepare_or_execute(
+        "terminal_exec",
+        {"command": ["printf", "hello"], "cwd": str(tmp_path)},
+    )
+
+    assert isinstance(pending, PendingToolAction)
+    payload = terminal_approval_payload(pending)
+
+    assert payload == {
+        "id": pending.id,
+        "tool_name": "terminal_exec",
+        "summary": "printf hello",
+        "command": ["printf", "hello"],
+        "cwd": str(tmp_path.resolve()),
+        "risk_level": "low",
+        "allowed_scopes": ["once", "process"],
+    }
+    assert "continuation_messages" not in payload
+
+
+def test_suppress_segment_tts_preserves_visible_text() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    segments = [ChatSegment(ja="確認して。", zh="请确认", tone="请求", portrait="站立")]
+
+    suppressed = suppress_segment_tts(segments)
+
+    assert suppressed[0].text == "確認して。"
+    assert suppressed[0].translation == "请确认"
+    assert suppressed[0].suppress_tts
 
 
 def test_unknown_and_shell_commands_do_not_offer_process_scope(tmp_path: Path) -> None:
@@ -345,6 +384,79 @@ def test_tauri_terminal_requests_write_on_process_owner_thread(tmp_path: Path) -
 
     assert not worker.is_alive()
     assert completed[0].output == b"hi"
+
+
+def test_tauri_terminal_parses_valid_approval_resolution_only(tmp_path: Path) -> None:
+    from app.terminal.tauri_process import TauriTerminalProcess
+
+    transport = TauriTerminalProcess(base_dir=tmp_path)
+    resolved: list[tuple[str, str]] = []
+    transport.approval_resolved.connect(
+        lambda approval_id, decision: resolved.append((approval_id, decision))
+    )
+
+    transport._handle_host_event(
+        json.dumps(
+            {
+                "type": "approval_resolved",
+                "approval_id": "approval-1",
+                "decision": "once",
+            }
+        )
+    )
+    transport._handle_host_event(
+        json.dumps(
+            {
+                "type": "approval_resolved",
+                "approval_id": "approval-1",
+                "decision": "always",
+            }
+        )
+    )
+    transport._handle_host_event("not-json")
+
+    assert resolved == [("approval-1", "once")]
+
+
+def test_tauri_terminal_sends_approval_through_versioned_host_protocol(tmp_path: Path) -> None:
+    from PySide6.QtCore import QProcess
+
+    from app.terminal.tauri_process import (
+        TERMINAL_PROTOCOL_VERSION,
+        TERMINAL_REQUEST_MARKER,
+        TauriTerminalProcess,
+    )
+
+    writes: list[dict[str, object]] = []
+
+    class FakeQProcess:
+        def state(self):  # type: ignore[no-untyped-def]
+            return QProcess.ProcessState.Running
+
+        def write(self, payload: bytes) -> int:
+            line = payload.decode("utf-8").strip()
+            writes.append(json.loads(line[len(TERMINAL_REQUEST_MARKER) :]))
+            return len(payload)
+
+    transport = TauriTerminalProcess(base_dir=tmp_path)
+    transport._process = FakeQProcess()  # type: ignore[assignment]
+    transport._ready = True
+
+    transport._show_approval_on_ui(
+        {
+            "id": "approval-1",
+            "tool_name": "terminal_exec",
+            "summary": "printf hello",
+            "command": ["printf", "hello"],
+            "cwd": str(tmp_path),
+            "risk_level": "low",
+            "allowed_scopes": ["once", "process"],
+        }
+    )
+
+    assert writes[0]["version"] == TERMINAL_PROTOCOL_VERSION == 2
+    assert writes[0]["method"] == "show_approval"
+    assert writes[0]["params"]["approval"]["id"] == "approval-1"  # type: ignore[index]
 
 
 def test_tauri_terminal_shutdown_uses_one_total_deadline(

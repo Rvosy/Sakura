@@ -22,10 +22,11 @@ from app.terminal.models import (
 )
 
 
-TERMINAL_PROTOCOL_VERSION = 1
+TERMINAL_PROTOCOL_VERSION = 2
 TERMINAL_REQUEST_MARKER = "@@SAKURA_TERMINAL_REQUEST@@"
 TERMINAL_RESULT_MARKER = "@@SAKURA_TERMINAL_RESULT@@"
 TERMINAL_READY_MARKER = "@@SAKURA_TERMINAL_READY@@"
+TERMINAL_EVENT_MARKER = "@@SAKURA_TERMINAL_EVENT@@"
 TERMINAL_RING_BYTES = 1024 * 1024
 TERMINAL_REQUEST_TIMEOUT_SECONDS = 15.0
 TAURI_TERMINAL_BIN_ENV = "SAKURA_TAURI_TERMINAL_BIN"
@@ -77,8 +78,12 @@ class TauriTerminalProcess(QObject):
 
     request_queued = Signal(str, str, object)
     show_queued = Signal()
+    approval_queued = Signal(object)
+    approval_clear_queued = Signal(str)
     shutdown_queued = Signal(int)
     host_failed = Signal(str)
+    approval_resolved = Signal(str, str)
+    approval_failed = Signal(str, str)
 
     def __init__(
         self,
@@ -95,12 +100,21 @@ class TauriTerminalProcess(QObject):
         self._ready = False
         self._queued_ids: list[str] = []
         self._request_payloads: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._notification_requests: dict[str, tuple[str, str]] = {}
         self._pending_lock = threading.Lock()
         self._pending: dict[str, _PendingRequest] = {}
         self._closing = False
 
         self.request_queued.connect(self._dispatch_request, Qt.ConnectionType.QueuedConnection)
         self.show_queued.connect(self._show_on_ui, Qt.ConnectionType.QueuedConnection)
+        self.approval_queued.connect(
+            self._show_approval_on_ui,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.approval_clear_queued.connect(
+            self._clear_approval_on_ui,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.shutdown_queued.connect(self._shutdown_on_ui, Qt.ConnectionType.QueuedConnection)
         if on_failure is not None:
             self.host_failed.connect(on_failure)
@@ -154,6 +168,19 @@ class TauriTerminalProcess(QObject):
 
     def show(self) -> None:
         self.show_queued.emit()
+
+    def request_approval(self, approval: dict[str, Any]) -> bool:
+        """在终端宿主中显示由 Python 创建的待确认动作。"""
+        approval_id = str(approval.get("id") or "").strip()
+        if not approval_id or not self.binary_available:
+            return False
+        self.approval_queued.emit(dict(approval))
+        return True
+
+    def clear_approval(self, approval_id: str) -> None:
+        normalized = approval_id.strip()
+        if normalized:
+            self.approval_clear_queued.emit(normalized)
 
     def shutdown(self, timeout_ms: int) -> None:
         if QThread.currentThread() is self.thread():
@@ -259,11 +286,27 @@ class TauriTerminalProcess(QObject):
                 for request_id in queued:
                     self._write_request(request_id)
                 continue
+            if line.startswith(TERMINAL_EVENT_MARKER):
+                self._handle_host_event(line[len(TERMINAL_EVENT_MARKER) :])
+                continue
             if not line.startswith(TERMINAL_RESULT_MARKER):
                 continue
             try:
                 payload = json.loads(line[len(TERMINAL_RESULT_MARKER) :])
                 request_id = str(payload.get("id") or "")
+                notification = self._notification_requests.pop(request_id, None)
+                if notification is not None:
+                    method, approval_id = notification
+                    if payload.get("ok") is not True:
+                        error = str(payload.get("error") or "终端宿主请求失败。")
+                        log_event(
+                            "Terminal",
+                            "终端宿主通知请求失败",
+                            {"method": method, "error": error},
+                        )
+                        if method == "show_approval":
+                            self.approval_failed.emit(approval_id, error)
+                    continue
                 if payload.get("ok") is True:
                     self._resolve_pending(request_id, result=payload.get("result"))
                 else:
@@ -273,6 +316,18 @@ class TauriTerminalProcess(QObject):
                     )
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
+
+    def _handle_host_event(self, raw_payload: str) -> None:
+        try:
+            payload = json.loads(raw_payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict) or payload.get("type") != "approval_resolved":
+            return
+        approval_id = str(payload.get("approval_id") or "").strip()
+        decision = str(payload.get("decision") or "").strip()
+        if approval_id and decision in {"once", "process", "cancel"}:
+            self.approval_resolved.emit(approval_id, decision)
 
     @Slot()
     def _handle_stderr(self) -> None:
@@ -310,6 +365,51 @@ class TauriTerminalProcess(QObject):
             return
         request_id = uuid.uuid4().hex
         self._request_payloads[request_id] = ("show", {})
+        if self._ready:
+            self._write_request(request_id)
+        else:
+            self._queued_ids.append(request_id)
+
+    @Slot(object)
+    def _show_approval_on_ui(self, approval: object) -> None:
+        if not isinstance(approval, dict):
+            return
+        approval_id = str(approval.get("id") or "").strip()
+        if not approval_id:
+            return
+        self._dispatch_notification(
+            "show_approval",
+            {"approval": dict(approval)},
+            approval_id=approval_id,
+        )
+
+    @Slot(str)
+    def _clear_approval_on_ui(self, approval_id: str) -> None:
+        process = self._process
+        if process is None or process.state() == QProcess.ProcessState.NotRunning:
+            return
+        self._dispatch_notification(
+            "clear_approval",
+            {"approval_id": approval_id},
+            approval_id=approval_id,
+        )
+
+    def _dispatch_notification(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        approval_id: str,
+    ) -> None:
+        if self._closing:
+            return
+        if not self._ensure_process():
+            if method == "show_approval":
+                self.approval_failed.emit(approval_id, "终端程序未找到或启动失败。")
+            return
+        request_id = uuid.uuid4().hex
+        self._request_payloads[request_id] = (method, params)
+        self._notification_requests[request_id] = (method, approval_id)
         if self._ready:
             self._write_request(request_id)
         else:
@@ -384,6 +484,7 @@ class TauriTerminalProcess(QObject):
             self._pending.clear()
         self._queued_ids.clear()
         self._request_payloads.clear()
+        self._notification_requests.clear()
         for request in pending:
             request.error = reason
             request.event.set()

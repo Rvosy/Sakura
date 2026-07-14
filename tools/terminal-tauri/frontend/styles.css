@@ -19,8 +19,12 @@ body {
 
 body {
   display: grid;
-  grid-template-rows: 38px minmax(0, 1fr);
+  grid-template-rows: 38px auto minmax(0, 1fr);
   background: #181818;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .terminal-bar {
@@ -87,6 +91,122 @@ body {
 .icon-button:disabled {
   color: #696969;
   cursor: default;
+}
+
+.approval-panel {
+  display: grid;
+  gap: 12px;
+  max-height: min(46vh, 360px);
+  padding: 14px 16px;
+  overflow: auto;
+  border-bottom: 1px solid #424242;
+  background: #202020;
+}
+
+.approval-heading,
+.approval-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.approval-eyebrow,
+.approval-field > span {
+  display: block;
+  margin-bottom: 4px;
+  color: #a5a5a5;
+  font-size: 12px;
+}
+
+.approval-heading h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.risk-badge {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid #565656;
+  border-radius: 4px;
+  color: #d8d8d8;
+  background: #303030;
+  font-size: 12px;
+}
+
+.risk-badge[data-risk="high"] {
+  border-color: #9b4a50;
+  color: #ffb4b9;
+  background: #3a2325;
+}
+
+.risk-badge[data-risk="medium"] {
+  border-color: #8a6a39;
+  color: #f1c77c;
+  background: #382f21;
+}
+
+.approval-details {
+  display: grid;
+  gap: 9px;
+}
+
+.approval-field {
+  min-width: 0;
+}
+
+.approval-field code {
+  display: block;
+  max-height: 86px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid #414141;
+  border-radius: 4px;
+  color: #f0f0f0;
+  background: #171717;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.approval-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.approval-actions button {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid #555555;
+  border-radius: 4px;
+  color: #efefef;
+  font: inherit;
+  cursor: pointer;
+}
+
+.approval-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.secondary-button {
+  background: #303030;
+}
+
+.primary-button {
+  border-color: #6a8dba !important;
+  background: #315d8d;
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: #414141;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #3a6da4;
 }
 
 #terminal {

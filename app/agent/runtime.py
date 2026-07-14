@@ -2152,13 +2152,22 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
     if len(actions) == 1:
         action = actions[0]
         text = _describe_pending_action(action)
+        terminal_confirmation = action.tool_name.startswith("terminal_")
         return parse_chat_reply(
             json.dumps(
                 {
                     "segments": [
                         {
-                            "ja": "実行する前に確認させて。",
-                            "zh": f"执行前需要你确认：{text}",
+                            "ja": (
+                                "ターミナルで確認してね。"
+                                if terminal_confirmation
+                                else "実行する前に確認させて。"
+                            ),
+                            "zh": (
+                                f"请在终端窗口确认：{text}"
+                                if terminal_confirmation
+                                else f"执行前需要你确认：{text}"
+                            ),
                             "tone": "请求",
                             "portrait": "伸手命令",
                         }
@@ -2186,6 +2195,8 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
 
 
 def _describe_pending_action(action: PendingToolAction) -> str:
+    if action.tool_name.startswith("terminal_"):
+        return action.summary or "执行终端操作"
     if action.tool_name == "open_url":
         return f"打开网页 {action.arguments.get('url', '')}"
     if action.tool_name == "open_local_folder":
