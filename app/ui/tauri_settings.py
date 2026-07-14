@@ -286,6 +286,8 @@ class TauriTtsResult:
     python_path: str = ""
     tts_config_path: str = ""
     timeout_seconds: int = 60
+    use_remote_paths: bool = False
+    remote_characters_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -357,6 +359,8 @@ def tts_settings_from_tauri_result(
     work_dir = _optional_tauri_path(getattr(result_tts, "work_dir", ""), base_dir)
     python_path = _optional_tauri_path(getattr(result_tts, "python_path", ""), base_dir)
     tts_config_path = _optional_tauri_path(getattr(result_tts, "tts_config_path", ""), base_dir)
+    use_remote_paths = bool(getattr(result_tts, "use_remote_paths", False))
+    remote_characters_path = str(getattr(result_tts, "remote_characters_path", ""))
     selected_voice = getattr(selected_profile, "voice", None)
     if enabled and selected_voice is None:
         enabled = False
@@ -385,6 +389,9 @@ def tts_settings_from_tauri_result(
             text_lang=text_lang,
             timeout_seconds=timeout_seconds,
             tone_references=previous.tone_references,
+            use_remote_paths=use_remote_paths,
+            remote_characters_path=remote_characters_path,
+            character_package_dir=getattr(selected_profile, "package_dir", None),
         )
     else:
         settings = GPTSoVITSTTSSettings.from_character_profile(
@@ -400,6 +407,8 @@ def tts_settings_from_tauri_result(
             tts_config_path=tts_config_path,
             onnx_model_dir=onnx_model_dir,
             validate_enabled=False,
+            use_remote_paths=use_remote_paths,
+            remote_characters_path=remote_characters_path,
         )
     return settings
 
@@ -1121,6 +1130,7 @@ class TauriSettingsProcess(QObject):
         self.model = model
         self.parent_widget = parent_widget
         self._process: QProcess | None = None
+        self._rpc_response_file = None
         self._nonce = ""
         self._done = False
         self._cleaned = False
@@ -1145,18 +1155,58 @@ class TauriSettingsProcess(QObject):
         process.setProgram(str(binary))
         process.setArguments([])
         process.setWorkingDirectory(str(self.base_dir))
-        process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
-        process.started.connect(self._handle_started)
-        process.finished.connect(self._handle_finished)
-        process.errorOccurred.connect(self._handle_error)
-        process.readyReadStandardOutput.connect(self._handle_stdout)
 
-        self._process = process
-        self._nonce = str(request["nonce"])
-        self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-        self._startup_focus_complete = False
-        process.start()
-        return True
+        rpc_r = None
+        rpc_w = None
+        try:
+            if sys.platform != "win32":
+                # 绕过 std::io::stdin() 的内部 Mutex/BufReader 冲突（改用独立 pipe）
+                _os = __import__("os")
+                rpc_r, rpc_w = _os.pipe()
+                _os.set_inheritable(rpc_r, True)
+                _os.set_inheritable(rpc_w, False)
+                self._rpc_response_file = _os.fdopen(rpc_w, "wb", buffering=0)
+
+                env = QProcessEnvironment.systemEnvironment()
+                env.insert("SAKURA_RPC_RESPONSE_FD", str(rpc_r))
+                process.setProcessEnvironment(env)
+                process.setProcessChannelMode(QProcess.ForwardedErrorChannel)
+            else:
+                self._rpc_response_file = None
+                process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
+
+            process.started.connect(self._handle_started)
+            process.finished.connect(self._handle_finished)
+            process.errorOccurred.connect(self._handle_error)
+            process.readyReadStandardOutput.connect(self._handle_stdout)
+
+            self._process = process
+            self._nonce = str(request["nonce"])
+            self._request_payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+            self._startup_focus_complete = False
+            process.start()
+            if sys.platform != "win32" and rpc_r is not None:
+                _os.close(rpc_r)  # 父进程不再需要读端，子进程已继承
+                rpc_r = None
+            return True
+        except Exception as exc:
+            if sys.platform != "win32":
+                _os = __import__("os")
+                if rpc_r is not None:
+                    try:
+                        _os.close(rpc_r)
+                    except OSError:
+                        pass
+                if rpc_w is not None:
+                    try:
+                        if self._rpc_response_file is not None:
+                            self._rpc_response_file.close()
+                            self._rpc_response_file = None
+                        else:
+                            _os.close(rpc_w)
+                    except OSError:
+                        pass
+            raise exc
 
     def focus_window(self) -> bool:
         """把已打开的 Tauri 设置窗口还原并前置（用于重复唤起时找回最小化的窗口）。"""
@@ -1626,9 +1676,17 @@ class TauriSettingsProcess(QObject):
             + "\n"
         )
         try:
-            process.write(line.encode("utf-8"))
-        except RuntimeError:
-            return
+            rpc_file = self._rpc_response_file
+            if rpc_file is not None:
+                rpc_file.write(line.encode("utf-8"))
+                rpc_file.flush()
+            else:
+                process.write(line.encode("utf-8"))
+        except (OSError, RuntimeError) as exc:
+            if not self._done:
+                self._done = True
+                self.failed.emit(f"RPC 响应通道写入失败：{exc}")
+                self._cleanup()
 
     def _queue_rpc_response(
         self,
@@ -2102,6 +2160,8 @@ def _tts_to_mapping(settings: GPTSoVITSTTSSettings | None, base_dir: Path | None
         "tts_config_path": _path_to_text(current.tts_config_path),
         "provider_defaults": _tts_provider_defaults(base_dir),
         "timeout_seconds": _clamp_int_value(current.timeout_seconds, 1, 600),
+        "use_remote_paths": bool(current.use_remote_paths),
+        "remote_characters_path": current.remote_characters_path,
     }
 
 
@@ -2553,6 +2613,8 @@ def _tts_from_mapping_required(mapping: dict[str, Any]) -> TauriTtsResult:
         python_path=_required_str(mapping, "python_path").strip(),
         tts_config_path=_required_str(mapping, "tts_config_path").strip(),
         timeout_seconds=_clamp_int_value(_required_int(mapping, "timeout_seconds"), 1, 600),
+        use_remote_paths=_required_bool(mapping, "use_remote_paths"),
+        remote_characters_path=_required_str(mapping, "remote_characters_path"),
     )
 
 
@@ -2575,6 +2637,8 @@ def _tts_settings_for_profile(
     work_dir = _optional_path_for_tauri(result_tts.work_dir, base_dir)
     python_path = _optional_path_for_tauri(result_tts.python_path, base_dir)
     tts_config_path = _optional_path_for_tauri(result_tts.tts_config_path, base_dir)
+    use_remote_paths = bool(result_tts.use_remote_paths)
+    remote_characters_path = str(result_tts.remote_characters_path)
     if selected_voice is None or not hasattr(profile, "package_dir"):
         return GPTSoVITSTTSSettings(
             enabled=False,
@@ -2591,6 +2655,9 @@ def _tts_settings_for_profile(
             ref_lang=ref_lang,
             text_lang=text_lang,
             timeout_seconds=result_tts.timeout_seconds,
+            use_remote_paths=use_remote_paths,
+            remote_characters_path=remote_characters_path,
+            character_package_dir=getattr(profile, "package_dir", None),
         )
     return GPTSoVITSTTSSettings.from_character_profile(
         character_profile=profile,
@@ -2605,6 +2672,8 @@ def _tts_settings_for_profile(
         tts_config_path=tts_config_path,
         onnx_model_dir=onnx_model_dir,
         validate_enabled=False,
+        use_remote_paths=use_remote_paths,
+        remote_characters_path=remote_characters_path,
     )
 
 

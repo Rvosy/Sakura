@@ -438,6 +438,21 @@
                 <input id="ttsApiUrl" class="wide-input" type="text" />
               </div>
               <div class="setting-row">
+                <label class="setting-row-text" for="ttsUseRemotePaths">
+                  <span class="setting-title">连接到远程服务器</span>
+                  <span class="setting-desc">角色文件在远程服务器上，路径映射到远程端。</span>
+                </label>
+                <span class="setting-toggle"><input id="ttsUseRemotePaths" type="checkbox" /></span>
+              </div>
+              <div id="ttsRemoteCharactersRow" class="setting-row" hidden>
+                <label class="setting-row-text" for="ttsRemoteCharactersPath">
+                  <span class="setting-title">远程服务器角色文件夹路径</span>
+                  <span class="setting-desc">远程服务器上当前角色的完整文件夹路径。</span>
+                </label>
+                <input id="ttsRemoteCharactersPath" class="wide-input" type="text" />
+                <p class="hint">提示：此路径用于将本地角色文件映射到远程服务器。切换角色后，若新角色在远程服务器上的路径不同，请手动更新。</p>
+              </div>
+              <div class="setting-row">
                 <label class="setting-row-text" for="ttsWorkDir">
                   <span class="setting-title">工作目录</span>
                   <span class="setting-desc">TTS 引擎运行所在的工作目录路径。</span>

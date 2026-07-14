@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import ctypes
 import faulthandler
@@ -402,8 +403,22 @@ def _format_data_migration_failure(report: MigrationReport) -> str:
     )
 
 
+def _normalize_proxy_env() -> None:
+    """将环境变量中 ``socks://`` scheme 规范化为 ``socks5://``。
+
+    httpx 只识别 ``http://``、``https://`` 和 ``socks5://`` 三种 proxy scheme，
+    不识别 ``socks://``。部分工具（如 clash）设的 ``ALL_PROXY=socks://…`` 会
+    导致 httpx 初始化时抛出 ``ValueError: Unknown scheme for proxy URL``。
+    """
+    for key in ("ALL_PROXY", "all_proxy"):
+        value = os.environ.get(key)
+        if value and value.startswith("socks://"):
+            os.environ[key] = "socks5://" + value[len("socks://"):]
+
+
 def main() -> int:
     _enable_crash_diagnostics(BASE_DIR)
+    _normalize_proxy_env()
     qInstallMessageHandler(_qt_message_handler)
     _configure_windows_high_dpi()
     app = QApplication(sys.argv)

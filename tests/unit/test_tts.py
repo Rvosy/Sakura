@@ -2171,3 +2171,90 @@ def test_purge_tts_cache_removes_residual_files_keeps_dir() -> None:
     assert cache_dir.is_dir()
     assert sub_dir.is_dir()  # 非文件项不应被删除
     assert not any(entry.is_file() for entry in cache_dir.iterdir())
+
+
+def test_gpt_sovits_settings_to_remote_path() -> None:
+    """验证 to_remote_path() 在启用远程路径时正确映射，关闭时返回 None。"""
+    settings = GPTSoVITSTTSSettings(
+        enabled=True,
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text="hello",
+        character_package_dir=Path("/local/characters/Sophia"),
+        use_remote_paths=True,
+        remote_characters_path="C:/Users/UIOPQ/Portable/sakura/characters/Sophia_Lancaster_2",
+    )
+
+    remote = settings.to_remote_path(
+        Path("/local/characters/Sophia/tone_refs/VO03_0056.wav")
+    )
+    assert remote == (
+        "C:/Users/UIOPQ/Portable/sakura/characters/"
+        "Sophia_Lancaster_2/tone_refs/VO03_0056.wav"
+    )
+
+    remote = settings.to_remote_path(
+        Path("/local/characters/Sophia/models/gpt.ckpt")
+    )
+    assert remote == (
+        "C:/Users/UIOPQ/Portable/sakura/characters/"
+        "Sophia_Lancaster_2/models/gpt.ckpt"
+    )
+
+    settings_disabled = GPTSoVITSTTSSettings(
+        enabled=True,
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text="hello",
+        character_package_dir=Path("/local/characters/Sophia"),
+        use_remote_paths=False,
+        remote_characters_path="",
+    )
+    assert settings_disabled.to_remote_path(Path("/local/characters/Sophia/tone_refs/ref.wav")) is None
+
+
+def test_gpt_sovits_settings_to_remote_path_no_package_dir() -> None:
+    """当 character_package_dir 为 None 时，to_remote_path 应返回 None。"""
+    settings = GPTSoVITSTTSSettings(
+        enabled=True,
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text="hello",
+        use_remote_paths=True,
+        remote_characters_path="C:/remote/characters/Sophia",
+        character_package_dir=None,
+    )
+    assert settings.to_remote_path(Path("/local/characters/Sophia/tone_refs/ref.wav")) is None
+
+
+def test_gpt_sovits_settings_to_remote_path_outside_package_dir() -> None:
+    """路径不在 character_package_dir 下时，to_remote_path 应返回 None。"""
+    settings = GPTSoVITSTTSSettings(
+        enabled=True,
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text="hello",
+        character_package_dir=Path("/local/characters/Sophia"),
+        use_remote_paths=True,
+        remote_characters_path="C:/remote/characters/Sophia",
+    )
+    assert settings.to_remote_path(Path("/etc/passwd")) is None
+
+
+def test_gpt_sovits_settings_post_init_strips_remote_path() -> None:
+    """验证 __post_init__ 会去除 remote_characters_path 中的引号。"""
+    settings = GPTSoVITSTTSSettings(
+        enabled=True,
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text_path=Path("/local/characters/Sophia/tone_refs/ref.wav"),
+        ref_text="hello",
+        character_package_dir=Path("/local/characters/Sophia"),
+        use_remote_paths=True,
+        remote_characters_path='  "C:/remote/characters/Sophia"  ',
+    )
+    assert settings.remote_characters_path == "C:/remote/characters/Sophia"

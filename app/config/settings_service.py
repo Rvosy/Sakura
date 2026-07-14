@@ -414,6 +414,8 @@ class AppSettingsService:
         ref_lang = "ja"
         text_lang = "ja"
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
+        use_remote_paths = _bool_value(provider_data.get("use_remote_paths"), False)
+        remote_characters_path = str(provider_data.get("remote_characters_path", ""))
         onnx_model_dir = _optional_path(genie_tts.get("onnx_model_dir"), self.base_dir)
         if character_profile is not None:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
@@ -431,6 +433,8 @@ class AppSettingsService:
                 tts_config_path=tts_config_path,
                 onnx_model_dir=onnx_model_dir,
                 validate_enabled=validate_enabled,
+                use_remote_paths=use_remote_paths,
+                remote_characters_path=remote_characters_path,
             )
         else:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
@@ -487,6 +491,8 @@ class AppSettingsService:
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),
+                "use_remote_paths": bool(settings.use_remote_paths),
+                "remote_characters_path": settings.remote_characters_path,
             }
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)

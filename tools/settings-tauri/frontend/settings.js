@@ -46,6 +46,9 @@ const fields = {
   ttsResourceCard: document.getElementById("ttsResourceCard"),
   ttsTestButton: document.getElementById("ttsTestButton"),
   ttsTimeout: document.getElementById("ttsTimeout"),
+  ttsUseRemotePaths: document.getElementById("ttsUseRemotePaths"),
+  ttsRemoteCharactersPath: document.getElementById("ttsRemoteCharactersPath"),
+  ttsRemoteCharactersRow: document.getElementById("ttsRemoteCharactersRow"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
   themeAiButton: document.getElementById("themeAiButton"),
@@ -961,6 +964,13 @@ function syncTtsState() {
   fields.ttsPythonPath.readOnly = false;
   fields.ttsConfigPath.disabled = true;
   setControlDisabled(fields.ttsTestButton, !active);
+
+  // 远程路径相关控件：仅 custom-gpt-sovits 启用编辑
+  const isCustomGptSovits = fields.ttsProvider.value === "custom-gpt-sovits";
+  const remoteChecked = fields.ttsUseRemotePaths.checked;
+  fields.ttsRemoteCharactersRow.hidden = !active || !isCustomGptSovits || !remoteChecked;
+  setControlDisabled(fields.ttsUseRemotePaths, !active || !isCustomGptSovits);
+  setControlDisabled(fields.ttsRemoteCharactersPath, !active || !isCustomGptSovits || !remoteChecked);
   syncTtsBundleNotice();
   syncBackchannelState({ renderResource: false });
   if (request) {
@@ -1008,6 +1018,10 @@ async function testTtsSettings() {
 function handleTtsProviderChange() {
   resourceState.ttsBundleKey = "";
   applyTtsProviderDefaults(lastTtsProvider);
+  if (fields.ttsProvider.value !== "custom-gpt-sovits") {
+    fields.ttsUseRemotePaths.checked = false;
+    fields.ttsRemoteCharactersPath.value = "";
+  }
   syncTtsState();
 }
 
@@ -4103,6 +4117,8 @@ function collectTtsSettings() {
     python_path: fields.ttsPythonPath.value.trim(),
     tts_config_path: fields.ttsConfigPath.value.trim(),
     timeout_seconds: clampInt(fields.ttsTimeout.value, request.limits.tts_timeout_seconds),
+    use_remote_paths: fields.ttsUseRemotePaths.checked,
+    remote_characters_path: fields.ttsRemoteCharactersPath.value.trim(),
   };
 }
 
@@ -4337,6 +4353,8 @@ async function load() {
   fields.ttsPythonPath.value = request.tts.python_path;
   fields.ttsConfigPath.value = request.tts.tts_config_path;
   fields.ttsTimeout.value = request.tts.timeout_seconds;
+  fields.ttsUseRemotePaths.checked = request.tts.use_remote_paths;
+  fields.ttsRemoteCharactersPath.value = request.tts.remote_characters_path || "";
   lastTtsProvider = fields.ttsProvider.value;
   applyTtsProviderDefaults(lastTtsProvider);
 
@@ -4440,6 +4458,7 @@ fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
 fields.ttsEnabled.addEventListener("change", syncTtsState);
 fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
+fields.ttsUseRemotePaths.addEventListener("change", syncTtsState);
 fields.ttsTestButton.addEventListener("click", testTtsSettings);
 fields.backchannelEnabled.addEventListener("change", syncBackchannelState);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);

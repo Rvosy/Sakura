@@ -4948,6 +4948,8 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
             "python_path": "",
             "tts_config_path": "",
             "timeout_seconds": 60,
+            "use_remote_paths": False,
+            "remote_characters_path": "",
         },
         "system_extra": {
             "startup": {
@@ -5036,6 +5038,8 @@ def test_tauri_settings_result_parser_accepts_hidden_empty_tts_config_path() -> 
         "python_path": "",
         "tts_config_path": "",
         "timeout_seconds": 60,
+        "use_remote_paths": False,
+        "remote_characters_path": "",
     }
 
     result = parse_tauri_settings_payload(payload, expected_nonce="nonce")

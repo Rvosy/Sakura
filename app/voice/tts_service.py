@@ -1093,14 +1093,18 @@ class TTSServiceSupervisor:
         weights_path: Path,
         fail_callback: Callable[[str], None],
     ) -> bool:
+        remote_path = (
+            self.settings.to_remote_path(weights_path)
+            or str(weights_path)
+        )
         url = _build_tts_endpoint_url(
             self.settings.api_url,
             endpoint,
-            {"weights_path": str(weights_path)},
+            {"weights_path": remote_path},
         )
         request = urllib.request.Request(url=url, method="GET")
         try:
-            log_event("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
+            log_event("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path, "remote_path": remote_path})
             with urlopen_direct_for_loopback(request, timeout=self.settings.timeout_seconds) as response:
                 response.read()
                 log_event(
@@ -1109,6 +1113,7 @@ class TTSServiceSupervisor:
                     {
                         "endpoint": endpoint,
                         "weights_path": weights_path,
+                        "remote_path": remote_path,
                         "status": getattr(response, "status", None),
                     },
                 )

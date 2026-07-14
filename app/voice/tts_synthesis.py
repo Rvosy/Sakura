@@ -160,13 +160,17 @@ class GPTSoVITSSynthesisEngine:
                 return None
 
             reference = queue._select_reference(request.tone)
+            ref_audio_path = (
+                settings.to_remote_path(reference.ref_audio_path)
+                or str(reference.ref_audio_path)
+            )
             payload = {
                 "text": request.text,
                 "text_lang": _resolve_request_text_lang(
                     request.text,
                     settings.text_lang,
                 ),
-                "ref_audio_path": str(reference.ref_audio_path),
+                "ref_audio_path": ref_audio_path,
                 "prompt_text": reference.ref_text,
                 "prompt_lang": reference.ref_lang,
                 "text_split_method": "cut1",

@@ -56,6 +56,28 @@ class GPTSoVITSTTSSettings:
     text_lang: str = "ja"
     timeout_seconds: int = 60
     tone_references: dict[str, list[ToneReference]] = field(default_factory=dict)
+    use_remote_paths: bool = False
+    remote_characters_path: str = ""
+    character_package_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        cleaned = self.remote_characters_path.strip().strip('"').strip("'")
+        if cleaned != self.remote_characters_path:
+            object.__setattr__(self, "remote_characters_path", cleaned)
+
+    def to_remote_path(self, local_path: Path) -> str | None:
+        """将本地绝对路径映射为远程服务器路径（POSIX 风格）。"""
+        if not self.use_remote_paths or not self.remote_characters_path:
+            return None
+        pkg_dir = self.character_package_dir
+        if pkg_dir is None:
+            return None
+        try:
+            relative = local_path.relative_to(pkg_dir)
+        except ValueError:
+            return None
+        remote = Path(self.remote_characters_path) / relative
+        return remote.as_posix()
 
     @classmethod
     def from_character_profile(
@@ -72,15 +94,18 @@ class GPTSoVITSTTSSettings:
         tts_config_path: Path | None = None,
         onnx_model_dir: Path | None = None,
         validate_enabled: bool = True,
+        use_remote_paths: bool = False,
+        remote_characters_path: str = "",
     ) -> "GPTSoVITSTTSSettings":
         provider = _normalize_tts_provider(provider, enabled)
+        package_dir = character_profile.package_dir
         if character_profile.voice is None:
             settings = cls(
                 provider=provider,
                 enabled=enabled,
                 api_url=api_url,
-                ref_audio_path=character_profile.package_dir,
-                ref_text_path=character_profile.package_dir,
+                ref_audio_path=package_dir,
+                ref_text_path=package_dir,
                 ref_text="",
                 ref_lang=ref_lang,
                 text_lang=text_lang,
@@ -90,6 +115,9 @@ class GPTSoVITSTTSSettings:
                 tts_config_path=tts_config_path,
                 character_name=character_profile.display_name or character_profile.id,
                 onnx_model_dir=onnx_model_dir,
+                use_remote_paths=use_remote_paths,
+                remote_characters_path=remote_characters_path,
+                character_package_dir=package_dir,
             )
             if enabled and validate_enabled:
                 settings.validate()
@@ -98,15 +126,15 @@ class GPTSoVITSTTSSettings:
         voice = character_profile.voice
         tone_references = _load_tone_references(
             voice.tone_ref_path,
-            character_profile.package_dir,
+            package_dir,
         )
         neutral_reference = _select_neutral_reference(tone_references)
         settings = cls(
             provider=provider,
             enabled=enabled,
             api_url=api_url,
-            ref_audio_path=neutral_reference.ref_audio_path if neutral_reference else character_profile.package_dir,
-            ref_text_path=neutral_reference.ref_audio_path if neutral_reference else character_profile.package_dir,
+            ref_audio_path=neutral_reference.ref_audio_path if neutral_reference else package_dir,
+            ref_text_path=neutral_reference.ref_audio_path if neutral_reference else package_dir,
             ref_text=neutral_reference.ref_text if neutral_reference else "",
             gpt_model_path=voice.gpt_model_path,
             sovits_model_path=voice.sovits_model_path,
@@ -119,6 +147,9 @@ class GPTSoVITSTTSSettings:
             text_lang=text_lang,
             timeout_seconds=timeout_seconds,
             tone_references=tone_references,
+            use_remote_paths=use_remote_paths,
+            remote_characters_path=remote_characters_path,
+            character_package_dir=package_dir,
         )
         if enabled and validate_enabled:
             settings.validate()

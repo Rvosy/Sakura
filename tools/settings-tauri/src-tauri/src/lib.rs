@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
+#[cfg(unix)]
+use std::os::unix::io::FromRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -252,7 +254,18 @@ fn close_settings_window(window: Window) -> Result<(), String> {
 }
 
 pub fn run() {
-    let (request, rpc, window_control) = match read_request_and_spawn_rpc_reader() {
+    #[cfg(unix)]
+    let rpc_response_fd = std::env::var("SAKURA_RPC_RESPONSE_FD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let (request, rpc, window_control) = match {
+        #[cfg(unix)]
+        { read_request_and_spawn_rpc_reader(rpc_response_fd) }
+        #[cfg(not(unix))]
+        { read_request_and_spawn_rpc_reader() }
+    } {
         Ok(state) => state,
         Err(error) => {
             eprintln!("{error}");
@@ -292,8 +305,64 @@ pub fn run() {
         .expect("failed to run Sakura settings window");
 }
 
+#[cfg(unix)]
+fn read_request_and_spawn_rpc_reader(rpc_response_fd: std::os::unix::io::RawFd) -> Result<(Value, HostRpc, WindowControl), String> {
+    if rpc_response_fd < 3 {
+        return Err("SAKURA_RPC_RESPONSE_FD must refer to a non-standard fd".to_string());
+    }
+    let mut initial_line = String::new();
+    {
+        let stdin_guard = std::io::stdin().lock();
+        let mut reader = std::io::BufReader::new(stdin_guard);
+        let bytes = reader
+            .read_line(&mut initial_line)
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            return Err("request payload is empty".to_string());
+        }
+    }
+    let value: Value = serde_json::from_str(initial_line.trim_end()).map_err(|error| error.to_string())?;
+    if !matches!(value, Value::Object(_)) {
+        return Err("request payload must be a JSON object".to_string());
+    }
+    let rpc = HostRpc::new();
+    let pending = rpc.pending.clone();
+    let window_control = WindowControl::default();
+    let reader_window_control = window_control.clone();
+    std::thread::spawn(move || {
+        // 从独立 pipe fd 读取 RPC 响应，绕过 std::io::stdin() 的全局内部 Mutex。
+        let file = unsafe { std::fs::File::from_raw_fd(rpc_response_fd) };
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim_end();
+                    if let Some(command) = parse_window_control_line(trimmed) {
+                        reader_window_control.execute(command);
+                        continue;
+                    }
+                    if let Some(response) = parse_rpc_response_line(trimmed) {
+                        if let Ok(mut pending) = pending.lock() {
+                            if let Some(sender) = pending.remove(&response.id) {
+                                let _ = sender.send(response);
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        clear_pending_rpcs(&pending);
+    });
+    Ok((value, rpc, window_control))
+}
+
+#[cfg(not(unix))]
 fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc, WindowControl), String> {
-    let mut reader = BufReader::new(std::io::stdin());
+    let mut reader = std::io::BufReader::new(std::io::stdin());
     let mut data = String::new();
     let bytes = reader
         .read_line(&mut data)
@@ -310,6 +379,7 @@ fn read_request_and_spawn_rpc_reader() -> Result<(Value, HostRpc, WindowControl)
     let window_control = WindowControl::default();
     let reader_window_control = window_control.clone();
     std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(std::io::stdin());
         let mut line = String::new();
         loop {
             line.clear();
