@@ -234,6 +234,19 @@ def test_release_workflows_build_and_package_all_tauri_apps() -> None:
         assert 'chmod +x "target/release/$binary"' in workflow
 
 
+def test_terminal_rust_workflow_checks_host_only_when_relevant() -> None:
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/terminal-rust.yml").read_text(encoding="utf-8")
+
+    assert '"tools/terminal-tauri/**"' in workflow
+    assert '".github/workflows/terminal-rust.yml"' in workflow
+    assert "libwebkit2gtk-4.1-dev" in workflow
+    assert "rustup toolchain install stable --profile minimal --component rustfmt" in workflow
+    assert "cargo fmt --check" in workflow
+    assert "cargo check --locked --all-targets" in workflow
+    assert "cargo test --locked" in workflow
+
+
 def test_tauri_settings_request_includes_terminal_availability(tmp_path: Path) -> None:
     from app.agent.screen_awareness import ScreenAwarenessSettings
     from app.terminal.settings import TerminalSettings
