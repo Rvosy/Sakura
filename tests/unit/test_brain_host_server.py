@@ -35,6 +35,14 @@ class _Registry:
         self.stop_calls.append(timeout_ms)
 
 
+class _Closable:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 def _fake_context(base_dir: Path) -> SimpleNamespace:
     registry = _Registry()
     return SimpleNamespace(
@@ -61,6 +69,7 @@ def _fake_context(base_dir: Path) -> SimpleNamespace:
         mcp_tool_provider=None,
         plugin_manager=SimpleNamespace(results=[]),
         tts_provider=SimpleNamespace(service_ready=False, close=lambda: None),
+        memory_store=_Closable(),
         resource_registry=registry,
     )
 
@@ -170,6 +179,7 @@ def test_system_hello_health_and_shutdown(tmp_path: Path) -> None:
     assert health["ready"] is True
     assert health["character_id"] == "demo"
     assert shutdown == {"state": "stopped"}
+    assert context.memory_store.close_calls == 1
     assert context.resource_registry.stop_calls == [1_000]
 
 

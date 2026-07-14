@@ -1705,6 +1705,7 @@ class BrainHostApplication:
             if watcher is not threading.current_thread():
                 watcher.join(timeout=1)
         if context is not None:
+            _close_quietly(getattr(context, "memory_store", None), "close")
             _close_quietly(getattr(context, "mcp_tool_provider", None), "close")
             _close_quietly(getattr(context, "plugin_manager", None), "shutdown_all")
             _close_quietly(getattr(context, "tts_provider", None), "close")
