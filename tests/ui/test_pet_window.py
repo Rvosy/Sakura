@@ -6004,7 +6004,7 @@ def test_tauri_settings_process_schedules_bounded_focus_retries_after_start(
     monkeypatch.setattr(
         tauri_settings.QTimer,
         "singleShot",
-        lambda delay, callback: scheduled.append((delay, callback)),
+        lambda delay, _receiver, callback: scheduled.append((delay, callback)),
     )
     process = tauri_settings.TauriSettingsProcess(
         base_dir=Path("."),
