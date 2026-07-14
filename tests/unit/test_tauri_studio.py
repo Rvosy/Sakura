@@ -248,6 +248,16 @@ def test_ci_only_accepts_exit_134_after_valid_junit_results() -> None:
         assert "tests > 0 and failures == 0 and errors == 0" in workflow
 
 
+def test_ci_installs_legacy_qt_dependencies_for_retained_qt_tests() -> None:
+    root = Path(__file__).parents[2]
+    test_workflow = (root / ".github/workflows/test.yml").read_text(encoding="utf-8")
+    release_workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    install_command = "pip install -r requirements-legacy-qt.txt -q"
+
+    assert test_workflow.count(install_command) == 2
+    assert release_workflow.count(install_command) == 1
+
+
 def test_character_selector_distinguishes_workspace_and_published_roles() -> None:
     frontend = Path(__file__).parents[2] / "tools" / "studio-tauri" / "frontend"
     index = (frontend / "index.html").read_text(encoding="utf-8")
