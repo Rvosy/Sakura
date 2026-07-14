@@ -65,6 +65,40 @@ def test_set_backends_wires_mobile_theme_sink() -> None:
     assert theme["text_color"] == DEFAULT_THEME_SETTINGS.text_color
 
 
+def test_set_backends_wires_mobile_stream_sink() -> None:
+    services = PluginServices()
+    progress: list[dict[str, object]] = []
+
+    def stream_chat(
+        character_id: str,
+        text: str,
+        image_data_url: str,
+        callback,  # type: ignore[no-untyped-def]
+    ) -> dict[str, object]:
+        callback({"event": "segment", "text": text})
+        return {
+            "character_id": character_id,
+            "image": image_data_url,
+            "reply": "done",
+        }
+
+    services.set_backends(mobile_chat_stream_sink=stream_chat)
+
+    result = services.mobile.chat_stream(
+        "demo",
+        "hello",
+        "data:image/png;base64,AA==",
+        progress_callback=progress.append,
+    )
+
+    assert progress == [{"event": "segment", "text": "hello"}]
+    assert result == {
+        "character_id": "demo",
+        "image": "data:image/png;base64,AA==",
+        "reply": "done",
+    }
+
+
 def test_mobile_service_requires_permission() -> None:
     services = PluginServices()
 

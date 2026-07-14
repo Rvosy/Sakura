@@ -7,10 +7,12 @@ import socket
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -110,6 +112,24 @@ class MobilePluginService:
     def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
         return self.mobile_service.chat(character_id, text, image_data_url)
 
+    def chat_stream(
+        self,
+        character_id: str,
+        text: str,
+        image_data_url: str = "",
+        *,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        chat_stream = getattr(self.mobile_service, "chat_stream", None)
+        if callable(chat_stream):
+            return chat_stream(
+                character_id,
+                text,
+                image_data_url,
+                progress_callback=progress_callback,
+            )
+        return self.chat(character_id, text, image_data_url)
+
     def theme(self) -> dict[str, object]:
         theme = getattr(self.mobile_service, "theme", None)
         if callable(theme):
@@ -184,6 +204,7 @@ def _is_lan_ipv4(address: str) -> bool:
 def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPRequestHandler]:
     class MobileRequestHandler(BaseHTTPRequestHandler):
         server_version = "SakuraMobile/0.1"
+        protocol_version = "HTTP/1.1"
 
         def do_GET(self) -> None:  # noqa: N802
             try:
@@ -220,11 +241,14 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 parsed = urlparse(self.path)
                 self._require_rate_limit()
                 self._log_request_start("POST", parsed.path)
-                if parsed.path != "/api/chat":
+                if parsed.path not in {"/api/chat", "/api/chat/stream"}:
                     self._send_error(HTTPStatus.NOT_FOUND, "Not found")
                     return
                 data = self._read_json_body()
                 self._require_token(parsed, data)
+                if parsed.path == "/api/chat/stream":
+                    self._send_chat_stream(data)
+                    return
                 result = service.chat(
                     str(data.get("character_id") or ""),
                     str(data.get("text") or ""),
@@ -315,6 +339,65 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def _send_chat_stream(self, data: dict[str, Any]) -> None:
+            events: Queue[tuple[str, dict[str, Any]]] = Queue()
+
+            def progress_callback(payload: dict[str, Any]) -> None:
+                event_name = str(payload.get("event") or "progress").strip() or "progress"
+                events.put((event_name, dict(payload)))
+
+            def run_chat() -> None:
+                try:
+                    result = service.chat_stream(
+                        str(data.get("character_id") or ""),
+                        str(data.get("text") or ""),
+                        str(data.get("image") or data.get("image_data_url") or ""),
+                        progress_callback=progress_callback,
+                    )
+                except MobileChatBusyError as exc:
+                    events.put(
+                        (
+                            "error",
+                            {"ok": False, "busy": True, "error": str(exc)},
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - 通过 SSE 返回给请求方
+                    events.put(("error", {"ok": False, "error": str(exc)}))
+                else:
+                    events.put(("done", result))
+
+            worker = threading.Thread(
+                target=run_chat,
+                name="SakuraMobileStream",
+                daemon=True,
+            )
+            worker.start()
+
+            self.send_response(HTTPStatus.OK.value)
+            self._send_common_headers()
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self._write_sse_event("ready", {"ok": True})
+
+            while True:
+                try:
+                    event_name, payload = events.get(timeout=10)
+                except Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+                self._write_sse_event(event_name, payload)
+                if event_name in {"done", "error"}:
+                    return
+
+        def _write_sse_event(self, event_name: str, data: dict[str, Any]) -> None:
+            payload = json.dumps(data, ensure_ascii=False, default=str)
+            event = event_name.replace("\r", "").replace("\n", "").strip() or "message"
+            self.wfile.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+            self.wfile.flush()
 
         def _send_common_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -499,6 +582,75 @@ async function fetchJson(path, options = {{}}) {{
   if (!res.ok) throw new Error(data.error || '请求失败');
   return data;
 }}
+function decodeEventBlock(block) {{
+  let eventName = 'message';
+  const dataLines = [];
+  for (const rawLine of block.split('\\n')) {{
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('event:')) {{
+      eventName = line.slice(6).trim() || 'message';
+      continue;
+    }}
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  }}
+  if (!dataLines.length) return null;
+  return {{ eventName, payload: JSON.parse(dataLines.join('\\n')) }};
+}}
+async function readEventStream(response, onEvent) {{
+  const dispatch = block => {{
+    const decoded = decodeEventBlock(block);
+    if (decoded) onEvent(decoded.eventName, decoded.payload);
+  }};
+  if (!response.body || typeof response.body.getReader !== 'function') {{
+    const textBody = (await response.text()).replace(/\\r\\n/g, '\\n');
+    for (const block of textBody.split('\\n\\n')) dispatch(block);
+    return;
+  }}
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {{
+    const chunk = await reader.read();
+    buffer += decoder.decode(chunk.value || new Uint8Array(), {{ stream: !chunk.done }});
+    buffer = buffer.replace(/\\r\\n/g, '\\n');
+    let boundary = buffer.indexOf('\\n\\n');
+    while (boundary >= 0) {{
+      dispatch(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf('\\n\\n');
+    }}
+    if (chunk.done) break;
+  }}
+  if (buffer.trim()) dispatch(buffer);
+}}
+async function fetchChatStream(payload, onEvent) {{
+  const res = await fetchWithTimeout(api('/api/chat/stream'), {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(payload)
+  }});
+  if (!res.ok) {{
+    let errorData = {{}};
+    try {{ errorData = await res.json(); }} catch (_err) {{}}
+    throw new Error(errorData.error || '请求失败');
+  }}
+  let finalResult = null;
+  await readEventStream(res, (eventName, eventPayload) => {{
+    if (eventName === 'error') {{
+      const error = new Error(eventPayload.error || '请求失败');
+      error.busy = Boolean(eventPayload.busy);
+      throw error;
+    }}
+    if (eventName === 'done') {{
+      finalResult = eventPayload;
+      return;
+    }}
+    onEvent(eventName, eventPayload);
+  }});
+  if (!finalResult) throw new Error('流式回复提前结束。');
+  return finalResult;
+}}
 function errorText(err) {{
   if (err && err.name === 'AbortError') return '请求超时，请稍后再试。';
   return String(err && err.message ? err.message : err);
@@ -626,6 +778,7 @@ form.addEventListener('submit', async (event) => {{
   if (!value && !file) return;
   send.disabled = true;
   setStatus(thinkingText());
+  let pendingTyping = null;
   try {{
     await loadHistory();
     addMessage('user', value + (file ? '\\n（已附加图片）' : ''));
@@ -634,24 +787,43 @@ form.addEventListener('submit', async (event) => {{
     image.value = '';
     camera.value = '';
     syncMediaSelection('');
-    const data = await fetchJson('/api/chat', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{
-        token: TOKEN,
-        character_id: character.value,
-        text: value,
-        image: imageData
-      }})
+    pendingTyping = addTypingMessage();
+    let streamedSegmentCount = 0;
+    const data = await fetchChatStream({{
+      token: TOKEN,
+      character_id: character.value,
+      text: value,
+      image: imageData
+    }}, (eventName, eventPayload) => {{
+      if (eventName !== 'segment') return;
+      const segments = Array.isArray(eventPayload.segments) ? eventPayload.segments : [];
+      for (const segment of segments) {{
+        const content = cleanAssistantText(segment.content);
+        if (!content) continue;
+        if (pendingTyping) {{
+          pendingTyping.remove();
+          pendingTyping = null;
+        }}
+        addMessage('assistant', content);
+        streamedSegmentCount += 1;
+      }}
+      if (streamedSegmentCount) setStatus('');
     }});
-    const segments = Array.isArray(data.segments) ? data.segments : [];
-    if (segments.length) {{
-      await showAssistantSegments(segments);
-    }} else {{
-      await showAssistantSegments([{{ content: data.reply || '' }}]);
+    if (pendingTyping) {{
+      pendingTyping.remove();
+      pendingTyping = null;
+    }}
+    if (!streamedSegmentCount) {{
+      const segments = Array.isArray(data.segments) ? data.segments : [];
+      if (segments.length) {{
+        await showAssistantSegments(segments);
+      }} else {{
+        await showAssistantSegments([{{ content: data.reply || '' }}]);
+      }}
     }}
     setStatus('');
   }} catch (err) {{
+    if (pendingTyping) pendingTyping.remove();
     setStatus(errorText(err));
   }} finally {{
     send.disabled = false;

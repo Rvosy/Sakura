@@ -10,13 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.actions import AgentResult
+from app.agent.actions import AgentProgress, AgentResult
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterProfile
 from app.core.http_client import urlopen_direct_for_loopback
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
+from app.core.mobile_chat_worker import MobileChatWorker
 from app.llm.chat_reply import ChatReply, ChatSegment
+from app.llm.streaming_reply import STREAMING_REPLY_STAGE
 from app.plugins.capabilities import PluginCapabilityRegistry
 from app.storage.chat_history import ChatHistoryEntry
 from app.ui.theme import ThemeSettings, theme_colors_to_mapping
@@ -116,6 +118,17 @@ def test_mobile_page_refreshes_history_before_submit_message() -> None:
     submit_handler = html[html.index("form.addEventListener('submit'") : html.index("loadCharacters().catch")]
 
     assert submit_handler.index("await loadHistory();") < submit_handler.index("addMessage('user'")
+
+
+def test_mobile_page_uses_streaming_chat_endpoint() -> None:
+    html = mobile_server._mobile_html("secret")
+    submit_handler = html[html.index("form.addEventListener('submit'") : html.index("loadCharacters().catch")]
+
+    assert "api('/api/chat/stream')" in html
+    assert "response.body.getReader()" in html
+    assert "eventName !== 'segment'" in submit_handler
+    assert "streamedSegmentCount" in submit_handler
+    assert "fetchJson('/api/chat'" not in submit_handler
 
 
 def test_mobile_page_writes_theme_variables() -> None:
@@ -223,6 +236,101 @@ def test_mobile_chat_busy_returns_409() -> None:
         thread.join(timeout=5)
 
 
+def test_mobile_chat_stream_emits_segments_before_done() -> None:
+    class StreamingBackend:
+        def characters(self) -> list[dict[str, str]]:
+            return []
+
+        def history(self, _character_id: str, *, limit: int = 50) -> list[dict[str, str]]:
+            return []
+
+        def chat_stream(
+            self,
+            _character_id: str,
+            _text: str,
+            _image_data_url: str = "",
+            *,
+            progress_callback,  # type: ignore[no-untyped-def]
+        ) -> dict[str, object]:
+            progress_callback(
+                {
+                    "event": "segment",
+                    "stage": STREAMING_REPLY_STAGE,
+                    "segments": [{"content": "第一句。"}],
+                    "metadata": {"segment_index": 0},
+                }
+            )
+            return {
+                "reply": "第一句。",
+                "segments": [{"content": "第一句。"}],
+                "streamed": True,
+            }
+
+    base_dir = _runtime_root("stream")
+    server = mobile_server.run_mobile_server(
+        base_dir,
+        StreamingBackend(),
+        host="127.0.0.1",
+        port=0,
+        token="secret",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/chat/stream?token=secret",
+            data=b'{"text":"hello"}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen_direct_for_loopback(request, timeout=5) as response:
+            payload = response.read().decode("utf-8")
+            content_type = response.headers.get("Content-Type", "")
+
+        assert content_type.startswith("text/event-stream")
+        assert "event: ready" in payload
+        assert "event: segment" in payload
+        assert '"content": "第一句。"' in payload
+        assert "event: done" in payload
+        assert payload.index("event: segment") < payload.index("event: done")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_mobile_chat_worker_forwards_stream_callback() -> None:
+    progress: list[dict[str, object]] = []
+    results: list[dict[str, object]] = []
+
+    class Bridge:
+        def execute_chat(
+            self,
+            _character_id: str,
+            _text: str,
+            _image_data_url: str,
+            *,
+            progress_callback,  # type: ignore[no-untyped-def]
+        ) -> dict[str, object]:
+            progress_callback({"event": "segment"})
+            return {"reply": "done"}
+
+    worker = MobileChatWorker(
+        Bridge(),
+        "demo",
+        "hello",
+        "",
+        progress_callback=progress.append,
+    )
+    worker.finished.connect(results.append)
+
+    worker.run()
+
+    assert progress == [{"event": "segment"}]
+    assert results == [{"reply": "done"}]
+
+
 def test_mobile_session_keeps_empty_tool_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.core.mobile_chat_bridge as bridge_module
     base_dir = _runtime_root("empty_tools")
@@ -317,6 +425,28 @@ def test_mobile_chat_returns_without_inline_memory_curation(monkeypatch: pytest.
         def handle_user_message(self, _messages: list[object]) -> AgentResult:
             return AgentResult(ChatReply([ChatSegment("返事。", translation="回复。")]))
 
+        def should_stream_user_message(self, _messages: list[object]) -> bool:
+            return True
+
+        def handle_streaming_user_message(
+            self,
+            _messages: list[object],
+            *,
+            progress_callback,  # type: ignore[no-untyped-def]
+        ) -> AgentResult:
+            segment = ChatSegment("続き。", translation="继续。")
+            progress_callback(
+                AgentProgress(
+                    ChatReply([segment]),
+                    stage=STREAMING_REPLY_STAGE,
+                    metadata={"segment_index": 0},
+                )
+            )
+            return AgentResult(
+                ChatReply([segment]),
+                _debug={"streamed": True},
+            )
+
     class HistoryStore:
         def __init__(self) -> None:
             self.entries: list[ChatHistoryEntry] = []
@@ -391,6 +521,32 @@ def test_mobile_chat_returns_without_inline_memory_curation(monkeypatch: pytest.
     assert result["reply"] == "回复。"
     assert completed.payload is not None
     assert [entry.role for entry in history_store.load()] == ["user", "assistant"]
+
+    progress: list[dict[str, object]] = []
+    stream_result = MobileChatBridge(host).execute_chat(
+        "demo",
+        "stream",
+        progress_callback=progress.append,
+    )
+
+    assert stream_result["reply"] == "继续。"
+    assert stream_result["streamed"] is True
+    assert progress == [
+        {
+            "event": "segment",
+            "stage": STREAMING_REPLY_STAGE,
+            "segments": [
+                {
+                    "content": "继续。",
+                    "raw_content": "続き。",
+                    "translation": "继续。",
+                    "tone": "中性",
+                    "portrait": "",
+                }
+            ],
+            "metadata": {"segment_index": 0},
+        }
+    ]
 
 
 def test_mobile_chat_only_exposes_current_character() -> None:

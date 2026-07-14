@@ -11,16 +11,32 @@ class MobileChatWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, bridge: Any, character_id: str, text: str, image_data_url: str) -> None:
+    def __init__(
+        self,
+        bridge: Any,
+        character_id: str,
+        text: str,
+        image_data_url: str,
+        *,
+        progress_callback: Any = None,
+    ) -> None:
         super().__init__()
         self._bridge = bridge
         self._character_id = character_id
         self._text = text
         self._image_data_url = image_data_url
+        self._progress_callback = progress_callback
 
     @Slot()
     def run(self) -> None:
         try:
-            self.finished.emit(self._bridge.execute_chat(self._character_id, self._text, self._image_data_url))
+            self.finished.emit(
+                self._bridge.execute_chat(
+                    self._character_id,
+                    self._text,
+                    self._image_data_url,
+                    progress_callback=self._progress_callback,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - delivered to the HTTP caller below
             self.failed.emit(str(exc))

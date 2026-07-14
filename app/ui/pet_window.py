@@ -4606,6 +4606,7 @@ class PetWindow(QWidget):
                 mobile_characters_sink=self._mobile_characters,
                 mobile_history_sink=self._mobile_history,
                 mobile_chat_sink=self._mobile_chat,
+                mobile_chat_stream_sink=self._mobile_chat_stream,
                 mobile_theme_sink=self._mobile_theme,
             )
         except Exception as exc:  # noqa: BLE001 — 装配失败不得阻断启动
@@ -4620,17 +4621,79 @@ class PetWindow(QWidget):
     def _mobile_chat(self, character_id: str, text: str, image_data_url: str) -> dict[str, Any]:
         return self.mobile_chat_bridge.chat(character_id, text, image_data_url)
 
+    def _mobile_chat_stream(
+        self,
+        character_id: str,
+        text: str,
+        image_data_url: str,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self.mobile_chat_bridge.chat_stream(
+            character_id,
+            text,
+            image_data_url,
+            progress_callback=progress_callback,
+        )
+
     def _mobile_theme(self) -> dict[str, object]:
         return theme_colors_to_mapping(getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS))
 
     def mobile_context_providers(self, _profile: CharacterProfile) -> list[Any]:
         return list(getattr(self.plugin_manager, "context_providers", []))
 
-    def submit_mobile_chat(self, bridge: MobileChatBridge, character_id: str, text: str, image_data_url: str) -> dict[str, Any]:
+    def submit_mobile_chat(
+        self,
+        bridge: MobileChatBridge,
+        character_id: str,
+        text: str,
+        image_data_url: str,
+    ) -> dict[str, Any]:
+        return self._submit_mobile_chat_request(
+            bridge,
+            character_id,
+            text,
+            image_data_url,
+        )
+
+    def submit_mobile_chat_stream(
+        self,
+        bridge: MobileChatBridge,
+        character_id: str,
+        text: str,
+        image_data_url: str,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_mobile_chat_request(
+            bridge,
+            character_id,
+            text,
+            image_data_url,
+            progress_callback=progress_callback,
+        )
+
+    def _submit_mobile_chat_request(
+        self,
+        bridge: MobileChatBridge,
+        character_id: str,
+        text: str,
+        image_data_url: str,
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         """Marshal an HTTP request into the single host Agent worker lane."""
         if self._mobile_chat_busy():
             raise MobileChatBusyError(MOBILE_CHAT_BUSY_MESSAGE)
-        request: dict[str, Any] = {"bridge": bridge, "character_id": character_id, "text": text, "image_data_url": image_data_url, "done": threading.Event(), "result": None, "error": "", "busy": False}
+        request: dict[str, Any] = {
+            "bridge": bridge,
+            "character_id": character_id,
+            "text": text,
+            "image_data_url": image_data_url,
+            "progress_callback": progress_callback,
+            "done": threading.Event(),
+            "result": None,
+            "error": "",
+            "busy": False,
+        }
         self.mobile_chat_requested.emit(request)
         if not request["done"].wait(timeout=300):
             raise TimeoutError("移动端聊天等待超时。")
@@ -4677,7 +4740,13 @@ class PetWindow(QWidget):
             return
         request = self._mobile_chat_requests.pop(0)
         self._active_mobile_chat_request = request
-        worker = MobileChatWorker(request["bridge"], str(request["character_id"]), str(request["text"]), str(request["image_data_url"]))
+        worker = MobileChatWorker(
+            request["bridge"],
+            str(request["character_id"]),
+            str(request["text"]),
+            str(request["image_data_url"]),
+            progress_callback=request.get("progress_callback"),
+        )
         self.resource_manager.spawn_qt_worker(
             worker, parent=self, owner=self, thread_attr="worker_thread", worker_attr="worker",
             signal_bindings=[(worker.finished, self._handle_mobile_chat_result), (worker.failed, self._handle_mobile_chat_error)],
