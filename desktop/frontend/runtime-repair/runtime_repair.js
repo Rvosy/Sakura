@@ -1,6 +1,8 @@
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
 
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const phase = document.getElementById("repair-phase");
 const code = document.getElementById("repair-code");
 const message = document.getElementById("repair-message");

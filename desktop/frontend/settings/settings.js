@@ -441,6 +441,10 @@ function applyTheme(theme) {
   });
 }
 
+function revealSettings() {
+  document.documentElement.classList.remove("is-bootstrapping");
+}
+
 function runThemeTransition(update) {
   if (reduceMotionQuery?.matches || typeof document.startViewTransition !== "function") {
     update();
@@ -4612,4 +4616,6 @@ detailCard?.addEventListener("input", (event) => {
   }
 })();
 
-load().catch((error) => setError(String(error)));
+load()
+  .catch((error) => setError(String(error)))
+  .finally(revealSettings);

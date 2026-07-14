@@ -1,4 +1,7 @@
 const invoke = window.__TAURI__?.core?.invoke;
+
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const cards = document.querySelector("#cards");
 const status = document.querySelector("#status");
 const raw = document.querySelector("#raw");

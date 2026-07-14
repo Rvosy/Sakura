@@ -59,6 +59,15 @@ body {
   height: 100%;
 }
 
+html.is-bootstrapping,
+html.is-bootstrapping body {
+  background: transparent;
+}
+
+html.is-bootstrapping body {
+  opacity: 0;
+}
+
 body {
   margin: 0;
   color: var(--sakura-text);
@@ -754,54 +763,17 @@ body.is-onboarding #page-character {
 }
 
 input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
-  display: grid;
-  place-items: center;
   width: 18px;
   height: 18px;
   min-width: 18px;
   margin: 0;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--sakura-primary) 62%, var(--sakura-border));
-  border-radius: 5px;
-  background: var(--surface-raised);
+  accent-color: var(--sakura-primary);
   cursor: pointer;
-  transition:
-    border-color var(--motion-base) var(--ease),
-    background-color var(--motion-base) var(--ease),
-    box-shadow var(--motion-base) var(--ease),
-    transform var(--motion-fast) var(--ease);
-}
-
-input[type="checkbox"]::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #fff;
-  transform: scale(0);
-  transition: transform var(--motion-base) var(--ease);
-}
-
-input[type="checkbox"]:hover:not(:disabled) {
-  border-color: var(--sakura-primary);
-  background: var(--tint-faint);
-  transform: translateY(-1px);
-}
-
-input[type="checkbox"]:checked {
-  border-color: var(--sakura-primary);
-  background: var(--sakura-primary);
-}
-
-input[type="checkbox"]:checked::before {
-  transform: scale(1);
 }
 
 input[type="checkbox"]:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  outline: 2px solid var(--sakura-primary);
+  outline-offset: 2px;
 }
 
 input[type="checkbox"]:disabled {

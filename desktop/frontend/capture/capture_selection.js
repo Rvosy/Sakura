@@ -1,4 +1,7 @@
 const invoke = window.__TAURI__?.core?.invoke;
+
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const box = document.querySelector("#selection-box");
 const params = new URLSearchParams(window.location.search);
 const captureSessionId = params.get("captureSessionId") || "";

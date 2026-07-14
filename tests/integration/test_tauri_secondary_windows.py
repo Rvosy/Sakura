@@ -66,6 +66,25 @@ def test_secondary_frontends_are_part_of_one_tauri_app() -> None:
         assert f"app_state::{command}" in rust_lib
 
 
+def test_settings_frontend_restores_native_checkboxes_and_hides_default_theme_until_loaded() -> None:
+    settings = ROOT / "desktop" / "frontend" / "settings"
+    html = (settings / "index.html").read_text(encoding="utf-8")
+    styles = (settings / "styles.css").read_text(encoding="utf-8")
+    script = (settings / "settings.js").read_text(encoding="utf-8")
+
+    checkbox_block = styles.split('input[type="checkbox"] {', 1)[1].split("}", 1)[0]
+
+    assert '<html lang="zh-CN" class="is-bootstrapping">' in html
+    assert "html.is-bootstrapping body" in styles
+    assert "background: transparent" in styles
+    assert "opacity: 0" in styles
+    assert 'document.documentElement.classList.remove("is-bootstrapping")' in script
+    assert ".finally(revealSettings);" in script
+    assert "accent-color: var(--sakura-primary)" in checkbox_block
+    assert "appearance: none" not in checkbox_block
+    assert 'input[type="checkbox"]::before' not in styles
+
+
 def test_secondary_python_import_graph_does_not_load_qt() -> None:
     source = """
 import json, sys

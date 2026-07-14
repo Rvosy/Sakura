@@ -1,4 +1,7 @@
 const invoke = window.__TAURI__?.core?.invoke;
+
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
 const list = document.querySelector("#history-list");
 const status = document.querySelector("#status");
 const loadMore = document.querySelector("#load-more");
