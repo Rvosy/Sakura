@@ -104,3 +104,39 @@ def test_tauri_remains_the_only_owner_of_brain_host_process() -> None:
     assert "app.brain_host" not in main_source
     assert "BrainHostSupervisor" in rust_state
     assert "tauri_plugin_single_instance::init" in rust_entry
+
+
+def test_windows_installer_does_not_require_legacy_qt() -> None:
+    installer = (ROOT / "install.bat").read_text(encoding="utf-8")
+
+    assert "PySide6" not in installer
+    assert "项目路径包含非英文字符" not in installer
+    assert "import playwright" in installer
+
+
+def test_release_workflows_build_and_package_the_production_desktop() -> None:
+    workflows = [
+        ROOT / ".github" / "workflows" / "package.yml",
+        ROOT / ".github" / "workflows" / "release.yml",
+    ]
+
+    for path in workflows:
+        source = path.read_text(encoding="utf-8")
+        assert "desktop/src-tauri" in source, path
+        assert "sakura-desktop.exe" in source, path
+        assert "sakura-desktop" in source, path
+        assert "legacy_qt_main.py" in source, path
+        assert "requirements-legacy-qt.txt" in source, path
+
+
+def test_phase_one_docs_describe_tauri_brain_and_compatibility_boundary() -> None:
+    technical = (ROOT / "docs" / "TECHNICAL_README.md").read_text(encoding="utf-8")
+    contributing = (ROOT / ".github" / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "Tauri" in technical
+    assert "Brain Host" in technical
+    assert "Capability Broker" in technical
+    assert "Permission Manager" in technical
+    assert "插件沙箱" in technical
+    assert "desktop/src-tauri" in contributing
+    assert "cargo test --manifest-path desktop/src-tauri/Cargo.toml" in contributing

@@ -17,6 +17,8 @@
 
 > 如果你只是想运行桌宠，下载 `sakura-v0.9.8-windows-x64.zip` 这个**完整包**。`runtime` 包不是完整程序，单独下载后不能直接启动。
 
+`0.9.9-dev` 及后续完整包还会在根目录携带 `sakura-desktop.exe`（macOS 为 `sakura-desktop`）。它是唯一生产桌面程序；`runtime` 中的 Python 作为后台 Brain Host 使用。
+
 ---
 
 ## 第二步：安装依赖
@@ -29,6 +31,14 @@
 
 > 如果是直接拉取的源码，需要先从 Release 页面下载对应平台的预编译依赖包（`sakura-runtime-*.zip`），把里面的 `runtime` 文件夹放到项目根目录，再运行安装脚本。不管下载的是 Release 完整包还是 GitHub 源码，这一步都要做。装完命令行窗口会自动关闭。
 
+源码开发还需要 Rust stable 和 Tauri 2 对应的系统依赖，然后先构建桌面程序：
+
+```powershell
+cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
+```
+
+生产依赖不再安装 PySide6。只有需要运行旧 Qt 开发回退或其 UI 测试时，才额外安装 `requirements-legacy-qt.txt`。
+
 ---
 
 ## 第三步：启动
@@ -37,7 +47,9 @@
 - **Mac 用户：** 双击 `start.command`，或在终端运行 `bash scripts/start.sh`
 - **Linux 用户：** 在终端运行 `bash scripts/start.sh`
 
-首次启动会先让你选择或导入角色，再配置 API 供应商和模型。已有角色与 API 配置的用户不会重复进入引导。
+这些脚本都会调用 `main.py`，再由它启动 Tauri 主程序和后台 Brain Host；不会自动回退到旧 Qt。如果提示未找到 Tauri 主程序，请确认完整包根目录存在 `sakura-desktop`，或按上面的 Cargo 命令先完成源码构建。
+
+首次启动若尚未配置角色或模型，可从桌宠菜单打开**设置**和**角色工作室**完成配置。已有 `data/`、`characters/`、聊天历史、记忆和插件配置会直接沿用，不需要破坏性迁移。
 
 ---
 
@@ -121,6 +133,6 @@ Windows 的 `0.9.9-dev` 及后续构建包含 `update.bat`。先退出 Sakura，
 
 ## 角色工作室（Windows / macOS）
 
-Release 完整包会同时携带 Tauri 设置页和角色工作室二进制。在 Sakura 设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
+Release 完整包由同一个 Tauri 桌面程序创建设置和角色工作室窗口。在设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
 
-Windows 仍可使用 `start_studio.bat` 启动旧的独立工作室入口。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。
+迁移期仍保留 `start_studio.bat` 和旧 Qt 入口供开发回退，但正常用户不需要使用。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。

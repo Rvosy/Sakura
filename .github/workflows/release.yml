@@ -217,6 +217,7 @@ jobs:
         shell: pwsh
         run: |
           $apps = @(
+            @{ Directory = 'desktop/src-tauri'; Binary = 'sakura-desktop.exe' },
             @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
             @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
           )
@@ -234,6 +235,9 @@ jobs:
               $releaseDir = Join-Path (Get-Location) 'target/release'
               New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
               Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir $app.Binary) -Force
+              if ($app.Binary -eq 'sakura-desktop.exe') {
+                Copy-Item -LiteralPath $keep -Destination (Join-Path $env:GITHUB_WORKSPACE $app.Binary) -Force
+              }
             } finally {
               Pop-Location
             }
@@ -261,6 +265,9 @@ jobs:
             chmod +x "target/release/$binary"
             popd >/dev/null
           }
+          build_tauri desktop/src-tauri sakura-desktop
+          cp desktop/src-tauri/target/release/sakura-desktop ./sakura-desktop
+          chmod +x ./sakura-desktop
           build_tauri tools/settings-tauri/src-tauri sakura-settings
           build_tauri tools/studio-tauri/src-tauri sakura-studio
 
@@ -275,9 +282,12 @@ jobs:
             'third_party',
             'tools',
             'install.bat',
+            'legacy_qt_main.py',
             'LICENSE',
             'main.py',
+            'requirements-legacy-qt.txt',
             'requirements.txt',
+            'sakura-desktop.exe',
             'start.bat',
             'start_studio.bat',
             'update.bat',
@@ -291,8 +301,12 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $desktopExe = Join-Path $stage.FullName 'sakura-desktop.exe'
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          if (-not (Test-Path -LiteralPath $desktopExe)) {
+            throw "Missing Tauri desktop exe in bundle stage: $desktopExe"
+          }
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in bundle stage: $settingsExe"
           }
@@ -311,9 +325,12 @@ jobs:
             'third_party',
             'tools',
             'install.bat',
+            'legacy_qt_main.py',
             'LICENSE',
             'main.py',
+            'requirements-legacy-qt.txt',
             'requirements.txt',
+            'sakura-desktop.exe',
             'start.bat',
             'start_studio.bat',
             'update.bat',
@@ -327,8 +344,12 @@ jobs:
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          $desktopExe = Join-Path $stage.FullName 'sakura-desktop.exe'
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
+          if (-not (Test-Path -LiteralPath $desktopExe)) {
+            throw "Missing Tauri desktop exe in update stage: $desktopExe"
+          }
           if (-not (Test-Path -LiteralPath $settingsExe)) {
             throw "Missing Tauri settings exe in update stage: $settingsExe"
           }
@@ -366,11 +387,12 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
+          test -x sakura-desktop
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "${{ matrix.artifact }}" \
             app plugins runtime third_party tools \
-            LICENSE main.py requirements.txt VERSION \
+            LICENSE legacy_qt_main.py main.py requirements-legacy-qt.txt requirements.txt sakura-desktop VERSION \
             scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
 
@@ -378,11 +400,12 @@ jobs:
         if: matrix.platform != 'windows-x64'
         shell: bash
         run: |
+          test -x sakura-desktop
           test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "${{ matrix.update_artifact }}" \
             app plugins third_party tools \
-            LICENSE main.py requirements.txt VERSION \
+            LICENSE legacy_qt_main.py main.py requirements-legacy-qt.txt requirements.txt sakura-desktop VERSION \
             scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
             update-delete.json \
             -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'

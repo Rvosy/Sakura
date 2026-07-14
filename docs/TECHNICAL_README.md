@@ -4,55 +4,50 @@
 
 ## 设计思路
 
-Sakura 采用直接的运行时结构：UI 负责收集用户输入、截图、确认面板和主动事件，`ChatWorker` / `ChatPipeline` 负责把它们整理成运行请求，`ContextOrchestrator` 按优先级、信任级别和 token 预算选择上下文，真正的对话决策与工具循环交给 `AgentRuntime`。
+Sakura 第一阶段采用“Tauri 桌面外壳 + Python Brain Host”的双进程结构。Tauri 是唯一生产桌面入口，负责所有用户可见窗口、托盘、单实例、屏幕捕获、音频播放、受控资源 URL 和 Brain Host 生命周期；WebView 只通过版本化 Tauri command/event 与 Rust 通信，不直接持有 Python 标准输入输出或本地文件路径。
+
+长期运行的 Python Brain Host 不导入 PySide6，负责加载现有角色与配置，组装 `AssistantApplication`、`ChatPipeline`、`AgentRuntime`、记忆、工具、插件、MCP、TTS 合成和主动调度。Rust 与 Brain 通过长度前缀 JSON 帧通信，每个请求都带协议版本、session、sequence 和 request ID；聊天、确认、TTS、截图与主动事件都使用可序列化 DTO。
 
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 
-最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。UI 只读取这份结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。耗时线程、子进程和外部服务统一交给 `ResourceManager`，退出时按依赖顺序关闭。
+最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。Brain 产出统一事件，Tauri 前端据此驱动字幕与立绘，Rust 音频线程负责顺序播放；如果模型输出格式不合格，运行时会尝试一次格式修复。退出时 Tauri 先停止接收新请求，再关闭 Brain、MCP、插件、TTS/音频和临时资源。
 
 ## 启动流程
 
-运行 `python main.py` 后：
+运行 `runtime/python.exe main.py` 后：
 
-1. 创建 `QApplication`，取得单实例锁
-2. 生成缺失的默认配置，执行版本化迁移并记录应用版本
-3. 检查数据目录写权限、配置文件、磁盘空间和记忆库锁
-4. `AppSettingsService` 加载 `data/config/*.yaml`
-5. `CharacterRegistry` 扫描角色包并加载人格卡、语气和立绘
-6. `bootstrap.py` 组装 `AppContext`、`ResourceManager`、工具、记忆、MCP、插件和 TTS
-7. 后台装配耗时服务，显示 `PetWindow`
+1. 标准库启动器解析发布包根目录或 `desktop/src-tauri/target/{release,debug}` 中的 `sakura-desktop`，把当前 Python 路径写入 `SAKURA_PYTHON_EXE`。
+2. Tauri 取得单实例所有权并立即创建透明桌宠窗口；重复启动只聚焦已有实例。
+3. Rust 监管器启动 `python -m app.brain_host`，生成新的 session 和进程凭据，并等待协议握手。
+4. Brain Host 生成缺失默认配置、执行版本化迁移与自检，加载 `data/config/*.yaml` 和当前角色包。
+5. Brain 组装无 Qt 的聊天、记忆、工具、插件、MCP、TTS 合成与主动调度服务，通过事件通知前端就绪。
+6. Tauri 持续监管 Brain，在有限次数内处理异常重启；应用退出时按顺序清理 Python、MCP、音频和临时资源。
 
 ```mermaid
 flowchart LR
-    A["main.py"] --> X["默认配置 / 迁移 / 自检"]
-    X --> B["data/config/*.yaml<br/>配置"]
-    X --> C["CharacterRegistry"]
-    C --> D["characters/sakura/character.json<br/>角色包"]
-    A --> E["OpenAICompatibleClient<br/>API 客户端"]
-    B --> E
-    X --> J["bootstrap.py"]
-    J --> K["AppContext"]
-    J --> R["ResourceManager"]
-    K --> L["PetWindow"]
-    L --> M["ChatWorker<br/>后台线程"]
-    M --> N["ChatPipeline<br/>运行管线"]
-    N --> O["ContextOrchestrator<br/>上下文预算与选择"]
-    O --> S["AgentRuntime<br/>原生 tool_calls 循环"]
-    S --> T["ToolRegistry"]
-    T --> U["内置工具 + MCP 工具 + 插件工具"]
-    S --> V["ChatReply<br/>分段 JSON 回复"]
-    V --> L
-    L --> W["字幕 / 立绘 / TTS / 接话"]
-    R --> M
-    R --> W
+    A["main.py<br/>标准库启动器"] --> B["Tauri 主进程"]
+    B --> C["桌宠 / 设置 / 工作室 / 历史 / 诊断"]
+    B --> D["托盘 / 单实例 / 截图 / Rust 音频"]
+    B --> E["BrainHostSupervisor"]
+    E --> F["python -m app.brain_host"]
+    F --> G["默认配置 / 迁移 / 自检"]
+    G --> H["角色 / ChatPipeline / AgentRuntime"]
+    H --> I["记忆 / 工具 / 插件 / MCP / TTS 合成"]
+    B <-->|"版本化帧与 DTO"| F
+    D -->|"受控资源描述符"| F
 ```
 
 ## 项目结构
 
 ```text
 .
-├── main.py                             # 应用入口
+├── main.py                             # 生产启动器，只启动 Tauri
+├── legacy_qt_main.py                   # 显式旧 Qt 开发回退，不自动使用
+├── desktop/                            # 生产 Tauri 桌面应用
+│   ├── frontend/                       # 桌宠、聊天、设置、工作室、历史和诊断前端
+│   └── src-tauri/                      # Rust 窗口、监管、IPC、截图、音频与托盘
 ├── app/
+│   ├── brain_host/                     # 长期运行的无 Qt Python Host 与帧协议
 │   ├── agent/                          # Agent 决策层
 │   │   ├── actions.py                  # 动作/事件/待确认数据结构
 │   │   ├── builtin_tools.py            # 内置工具（待办/提醒/笔记/记忆等）
@@ -74,9 +69,10 @@ flowchart LR
 │   │   └── mcp/                        # MCP 工具（桥接/配置/Provider）
 │   ├── core/                           # 应用核心
 │   │   ├── app_context.py              # AppContext 依赖容器
+│   │   ├── assistant_service.py         # 无 Qt 助手业务服务
 │   │   ├── bootstrap.py                # 启动装配
 │   │   ├── chat_pipeline.py            # ChatPipeline 对话编排
-│   │   ├── chat_worker.py              # Qt 后台线程 Worker
+│   │   ├── chat_worker.py              # 旧 Qt 回退适配器
 │   │   ├── instance.py                 # 单实例锁
 │   │   ├── resource_manager.py          # 线程、进程与服务生命周期
 │   │   ├── selfcheck.py                 # 启动环境自检
@@ -111,7 +107,7 @@ flowchart LR
 │   │   ├── paths.py                    # StoragePaths 统一路径
 │   │   ├── chat_history.py             # 聊天历史（JSONL）
 │   │   └── visual_observation.py       # 视觉观察记录（JSONL）
-│   ├── ui/                             # UI 组件
+│   ├── ui/                             # 旧 Qt 显式回退 UI，不进入生产启动图
 │   │   ├── pet_window.py               # 桌宠主窗口
 │   │   ├── tauri_settings.py           # Tauri 设置页桥接与请求构建
 │   │   ├── history_window.py           # 历史回看
@@ -120,7 +116,7 @@ flowchart LR
 │   │   ├── tool_confirmation_panel.py  # 工具确认面板
 │   │   ├── portrait_utils.py           # 立绘工具函数
 │   │   └── ...（其余 UI 组件）
-│   └── voice/                          # 语音
+│   └── voice/                          # TTS 服务、合成与旧 Qt 播放适配
 │       ├── tts.py / tts_settings.py     # Provider 与配置
 │       ├── tts_service.py               # 服务监管
 │       ├── tts_synthesis.py             # 合成队列
@@ -134,38 +130,60 @@ flowchart LR
 │   ├── chat_history/                   # 聊天记录
 │   ├── memory/                         # 长期记忆
 │   └── visual_observations/            # 视觉观察记录
-├── tests/                              # pytest 测试
+├── tests/                              # pytest 与跨进程契约测试
 │   ├── unit/                           # 单元测试（配置 / LLM / 工具 / 运行时等）
 │   ├── integration/                    # 集成测试（AgentRuntime / ChatPipeline 等）
-│   └── ui/                             # UI 测试
+│   └── ui/                             # 旧 Qt 回退行为测试
 ├── docs/                               # 文档
 │   ├── TECHNICAL_README.md             # 技术讲解 README
 │   └── SAKURA_PLUGIN_SDK.md            # 插件开发指南
-├── tools/studio/                       # SakuraCharacterStudio
+├── tools/settings-tauri/               # 迁移期独立设置工具兼容构建
+├── tools/studio-tauri/                 # 迁移期独立工作室兼容构建
 ├── tools/cleanup.py                    # 安全清理工具（默认 dry-run）
 └── tools/mcp/                          # MCP Server 运行时
 ```
 
 ## 运行与测试
 
-项目在 Release 完整包（或从 Release 下载 `runtime-*.zip` 后解压到根目录）时，根目录会包含 `runtime/`，Windows 可用 `./runtime/python.exe` 运行；从源码开发时也可以使用任意 Python 3.10+ 虚拟环境。
+Release 完整包包含 `runtime/` 和根目录下的 `sakura-desktop` 可执行文件。源码开发应使用仓库内置 runtime，并先构建生产 Tauri crate。
+
+构建生产桌面应用：
+
+```powershell
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
+```
 
 启动应用：
 
 ```powershell
-python main.py
+.\runtime\python.exe main.py
 ```
 
 运行全部测试：
 
 ```powershell
-python -m pytest
+.\runtime\python.exe -m pytest
 ```
 
 运行单元测试：
 
 ```powershell
-python -m pytest tests/unit
+.\runtime\python.exe -m pytest tests/unit
+```
+
+验证生产 Tauri crate：
+
+```powershell
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
+```
+
+旧 Qt 入口只用于一个开发版本内的显式回退和兼容测试：
+
+```powershell
+.\runtime\python.exe -m pip install -r requirements-legacy-qt.txt
+.\runtime\python.exe legacy_qt_main.py
 ```
 
 ## 配置项
@@ -245,3 +263,10 @@ macOS 一键安装完成后会自动回填这些字段。内置整合包如果�
 ## 插件开发
 
 插件相关代码位于 `plugins/` 和 `app/plugins/`；插件只通过 `app.plugins.*` 公开 API 接入。插件开发说明请看 [Sakura 插件 SDK 文档](SAKURA_PLUGIN_SDK.md)。
+
+## 第一阶段安全与兼容边界
+
+- 第一阶段继续由 Python `ToolRegistry`、现有工具确认策略和插件 capability 声明执行权限判断；前端确认时只回传 action ID，工具参数留在当前 Brain session。
+- 无 UI 插件、MCP 工具和声明式插件设置继续兼容；请求原生 Qt widget、renderer 或 chat UI 的插件会在导入前标记为不兼容。
+- WebView 不能获得任意文件路径、Shell 或 Brain 管道；截图、音频和角色资源都通过受控、限时、会话绑定的资源描述符传递。
+- 本阶段没有实现最终 Capability Broker、Permission Manager、插件沙箱、Credential Broker 或新的更新体系。这些仍属于后续阶段，当前实现不宣称提供最终插件安全边界。

@@ -6,17 +6,19 @@
 
 ## 开始之前
 
-Sakura 是 Python 3.12 / PySide6 桌面应用，主要源码在 `app/`。仓库还包含本地插件和两个 Tauri 工具：
+Sakura 的生产桌面应用由 Tauri 2 与长期运行的 Python 3.12 Brain Host 组成。Tauri 负责窗口、托盘、截图、音频和进程监管，Python 负责角色、聊天、记忆、工具、插件、MCP、TTS 合成与主动互动。
 
 | 目录 | 内容 |
 |---|---|
-| `app/` | Agent、配置、存储、插件系统、TTS 和桌面 UI |
+| `desktop/` | 生产 Tauri 前端与 Rust 主程序 |
+| `app/brain_host/` | 无 Qt Brain Host、DTO 和帧协议 |
+| `app/` | Agent、配置、存储、插件系统、TTS 和兼容层 |
 | `plugins/` | 随项目提供的插件 |
 | `tests/unit/` | 单元测试 |
 | `tests/integration/` | 跨模块集成测试 |
-| `tests/ui/` | PySide6 界面测试 |
-| `tools/settings-tauri/` | Tauri 设置页 |
-| `tools/studio-tauri/` | Tauri 角色工作室 |
+| `tests/ui/` | 旧 Qt 显式回退行为测试 |
+| `tools/settings-tauri/` | 迁移期独立设置工具兼容构建 |
+| `tools/studio-tauri/` | 迁移期独立角色工作室兼容构建 |
 
 `third_party/` 和 `tools/mcp/` 含有第三方或外部工具代码，除非改动确实属于当前问题，否则不要顺手调整。也不要提交 `runtime/`、`data/`、角色资源、测试缓存或 Tauri 构建产物。
 
@@ -38,6 +40,8 @@ Windows：
 ```powershell
 .\install.bat
 .\runtime\python.exe -m pip install -r requirements-dev.txt
+.\runtime\python.exe -m pip install -r requirements-legacy-qt.txt
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
 ```
 
 macOS / Linux：
@@ -45,6 +49,8 @@ macOS / Linux：
 ```bash
 bash scripts/install.sh
 ./runtime/bin/python3 -m pip install -r requirements-dev.txt
+./runtime/bin/python3 -m pip install -r requirements-legacy-qt.txt
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
 ```
 
 安装完成后，可以运行：
@@ -54,6 +60,8 @@ bash scripts/install.sh
 ```
 
 macOS / Linux 使用 `bash scripts/start.sh`。
+
+`main.py` 只启动 Tauri，不会自动回退 Qt。需要调试旧界面时显式运行 `legacy_qt_main.py`；不要让两个入口同时写同一份会话数据。
 
 ## 分支和提交
 
@@ -101,6 +109,10 @@ test: 增加配置迁移回归测试
 如果修改了 Tauri 设置页或角色工作室，还要检查对应 Rust 工程。以下命令中的目录按实际改动选择：
 
 ```powershell
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
+
 cargo fmt --manifest-path tools/settings-tauri/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
 
@@ -109,6 +121,8 @@ cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
 ```
 
 界面改动除了自动测试，还应手动检查启动、保存设置、窗口关闭和高 DPI 显示。无法运行某项测试时，请在 PR 中写明原因和未验证的风险。
+
+第一阶段继续使用 Python `ToolRegistry`、现有确认策略和插件 capability 声明。不要把它描述为已经完成 Capability Broker、Permission Manager、插件沙箱或 Credential Broker；这些属于后续阶段。
 
 ## 提交 Pull Request
 
