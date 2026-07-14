@@ -350,6 +350,34 @@ def test_action_ids_are_bound_to_the_current_session_and_rejection_uses_saved_ac
     application.handle_request("system.shutdown", {})
 
 
+def test_expired_action_id_is_rejected_before_tool_execution(tmp_path: Path) -> None:
+    now = [100.0]
+    store = PendingActionStore(ttl_seconds=30, clock=lambda: now[0])
+    store.add(
+        PendingToolAction("demo.expired", {"safe": True}, "expired", id="expired-action"),
+        session_id="session-chat",
+        interaction_id="old-interaction",
+    )
+    pipeline = ContractPipeline()
+    application, _history, _events = _application(
+        tmp_path,
+        pipeline,
+        pending_actions=store,
+    )
+    now[0] = 131.0
+
+    with pytest.raises(BrainHostError) as expired:
+        application.handle_request(
+            "chat.confirm_action",
+            {"action_id": "expired-action"},
+        )
+
+    assert expired.value.code == "ACTION_NOT_FOUND"
+    assert pipeline.confirmed == []
+    assert store.list_for_session("session-chat") == ()
+    application.handle_request("system.shutdown", {})
+
+
 def test_framed_transport_serializes_concurrent_event_and_response_writes() -> None:
     class SlowWriter:
         def __init__(self) -> None:
