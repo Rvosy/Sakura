@@ -50,6 +50,7 @@ from app.llm.api_client import (
     OpenAICompatibleClient,
 )
 from app.llm.chat_reply import ChatReply, ChatSegment
+from app.llm.streaming_reply import StreamingReplyUnavailable
 from app.storage.chat_history import ChatHistoryEntry
 
 
@@ -798,3 +799,97 @@ class TestAgentRuntimeBasics:
             )
 
         assert executed == []
+
+    def test_streaming_user_message_emits_segments_and_returns_final_reply(self) -> None:
+        client = _dummy_api_client()
+        client.runtime_context_role = "system"
+        client.stream_raw_text.return_value = iter(
+            [
+                '{"ja":"うん。","zh":"嗯。","tone":"开心",',
+                '"portrait":"站立待机"}\n',
+                '{"ja":"ゆっくり話そう。","zh":"慢慢聊吧。",'
+                '"tone":"中性","portrait":"站立待机"}\n',
+            ]
+        )
+        runtime = AgentRuntime(
+            client,
+            _dummy_system_prompt(),
+            reply_tones=["中性", "开心"],
+            reply_portraits=["站立待机"],
+        )
+        progress = []
+
+        result = runtime.handle_streaming_user_message(
+            [ChatMessage(role="user", content="今天陪我聊一会儿")],
+            progress_callback=progress.append,
+        )
+
+        assert [item.stage for item in progress] == [
+            "stream_segment",
+            "stream_segment",
+        ]
+        assert [item.reply.segments[0] for item in progress] == result.reply.segments
+        assert result.reply.translation == "嗯。\n慢慢聊吧。"
+        assert result._debug == {
+            "source": "streaming_chat",
+            "streamed": True,
+            "incomplete": False,
+        }
+        system_prompt = client.stream_raw_text.call_args.args[0]
+        assert "每完成一个句段就立刻输出一行独立 JSON" in system_prompt
+        runtime_context = client.stream_raw_text.call_args.kwargs["runtime_context"]
+        assert 'context id="runtime.agent_progress"' in runtime_context
+        client.complete_with_tools.assert_not_called()
+
+    def test_streaming_user_message_falls_back_before_first_segment(self) -> None:
+        client = _dummy_api_client()
+        client.stream_raw_text.side_effect = ApiRequestError("stream unsupported")
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+
+        with pytest.raises(StreamingReplyUnavailable, match="stream unsupported"):
+            runtime.handle_streaming_user_message(
+                [ChatMessage(role="user", content="陪我聊聊")],
+                progress_callback=lambda _progress: None,
+            )
+
+    def test_streaming_user_message_keeps_completed_segments_after_disconnect(self) -> None:
+        client = _dummy_api_client()
+        client.runtime_context_role = "system"
+
+        def interrupted_stream():  # type: ignore[no-untyped-def]
+            yield '{"ja":"うん。","zh":"嗯。","tone":"中性"}\n'
+            raise ApiRequestError("connection reset")
+
+        client.stream_raw_text.return_value = interrupted_stream()
+        runtime = AgentRuntime(client, _dummy_system_prompt(), reply_tones=["中性"])
+        progress = []
+
+        result = runtime.handle_streaming_user_message(
+            [ChatMessage(role="user", content="陪我聊聊")],
+            progress_callback=progress.append,
+        )
+
+        assert result.reply.translation == "嗯。"
+        assert len(progress) == 1
+        assert result._debug == {
+            "source": "streaming_chat",
+            "streamed": True,
+            "incomplete": True,
+            "stream_error": "connection reset",
+        }
+
+    def test_streaming_translation_repair_fills_missing_chinese_subtitle(self) -> None:
+        client = _dummy_api_client()
+        client.complete_with_tools.return_value = MagicMock(content='{"zh":"你好。"}')
+        runtime = AgentRuntime(client, _dummy_system_prompt())
+
+        repaired = runtime._repair_streaming_segment_translation(
+            ChatSegment("こんにちは。", "中性", "", "站立待机")
+        )
+
+        assert repaired == ChatSegment(
+            "こんにちは。",
+            "中性",
+            "你好。",
+            "站立待机",
+        )

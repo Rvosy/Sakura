@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+import queue
 import socket
 import threading
 import urllib.request
 from collections.abc import Callable
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlparse
 
@@ -15,6 +17,8 @@ from app.core.cancellation import CancelChecker, check_cancelled
 _LOOPBACK_PROXY_BYPASS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _CANCEL_POLL_SECONDS = 0.05
 _READ_CHUNK_SIZE = 64 * 1024
+_STREAM_QUEUE_SIZE = 128
+_STREAM_DONE = object()
 
 
 def is_loopback_url(url: str) -> bool:
@@ -115,6 +119,78 @@ def read_url_cancellable(
     if isinstance(error, BaseException):
         raise error
     return bytes(state.get("body", b"")), state.get("status")
+
+
+def iter_url_lines_cancellable(
+    opener: Callable[..., Any],
+    request: str | urllib.request.Request,
+    *,
+    timeout: float,
+    cancel_checker: CancelChecker | None = None,
+) -> Iterator[bytes]:
+    """逐行读取流式响应，并允许调用方取消后关闭活动连接。"""
+    if cancel_checker is None:
+        with opener(request, timeout=timeout) as response:
+            while True:
+                line = response.readline()
+                if not line:
+                    return
+                yield bytes(line)
+
+    items: queue.Queue[bytes | BaseException | object] = queue.Queue(
+        maxsize=_STREAM_QUEUE_SIZE
+    )
+    abort = threading.Event()
+    state: dict[str, Any] = {}
+    state_lock = threading.Lock()
+
+    def put_item(item: bytes | BaseException | object) -> None:
+        while not abort.is_set():
+            try:
+                items.put(item, timeout=_CANCEL_POLL_SECONDS)
+                return
+            except queue.Full:
+                continue
+
+    def run() -> None:
+        try:
+            with opener(request, timeout=timeout) as response:
+                with state_lock:
+                    state["response"] = response
+                while not abort.is_set():
+                    line = response.readline()
+                    if not line:
+                        break
+                    put_item(bytes(line))
+        except BaseException as exc:  # noqa: BLE001 - 原样回传 urllib/socket 异常
+            if not abort.is_set():
+                put_item(exc)
+        finally:
+            put_item(_STREAM_DONE)
+
+    threading.Thread(target=run, name="sakura-http-stream", daemon=True).start()
+    try:
+        while True:
+            check_cancelled(cancel_checker)
+            try:
+                item = items.get(timeout=_CANCEL_POLL_SECONDS)
+            except queue.Empty:
+                continue
+            if item is _STREAM_DONE:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield bytes(item)
+    finally:
+        abort.set()
+        with state_lock:
+            response = state.get("response")
+        close = getattr(response, "close", None)
+        if callable(close):
+            try:
+                close()
+            except OSError:
+                pass
 
 
 def _request_url(url: str | urllib.request.Request) -> str:

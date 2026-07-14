@@ -33,7 +33,7 @@
 
 插件中的 HTTP 服务使用 Python 标准库 `ThreadingHTTPServer`，不依赖 Flask、FastAPI 或单独的 Node 前端。移动网页的 HTML、CSS、JavaScript 内嵌在 `server.py`，因此部署时不需要额外构建静态资源。
 
-`MobileChatBridge` 只接受桌面当前角色的手机请求。它使用当前角色自己的提示词、聊天历史和记忆作用域；为避免手机端无法处理高风险确认，手机会话不暴露宿主工具。每次手机发消息前，它还会从主程序刷新 API Key、模型和上下文提供者，所以在电脑设置中更换模型后，下一条手机消息会自动使用新配置。
+`MobileChatBridge` 只接受桌面当前角色的手机请求。它使用当前角色自己的提示词、聊天历史和记忆作用域；为避免手机端无法处理高风险确认，手机会话不暴露宿主工具。普通文字聊天复用桌面端的流式句段协议，通过 SSE 立即推送已完成句段；图片或不适合流式处理的请求自动回退完整回复。每次手机发消息前，它还会从主程序刷新 API Key、模型和上下文提供者，所以在电脑设置中更换模型后，下一条手机消息会自动使用新配置。
 
 ## 对 Sakura 主体的改动
 
@@ -42,7 +42,7 @@
 | 文件 | 改动目的 |
 | --- | --- |
 | `app/core/mobile_chat_bridge.py` | 新增手机请求到 Sakura 运行时的桥接层，处理当前角色校验、聊天历史、图片消息、分段回复与记忆作用域。 |
-| `app/plugins/services.py` | 新增 `PluginMobileService`，只暴露 `characters()`、`history()`、`chat()` 三个能力。 |
+| `app/plugins/services.py` | 新增 `PluginMobileService`，只暴露角色、历史以及普通/流式聊天能力。 |
 | `app/plugins/__init__.py` | 导出新增的插件服务类型。 |
 | `app/ui/pet_window.py` | 在桌面主窗口准备好后，将真实角色、历史和聊天回调注入 `PluginMobileService`；手机回合完成时接入原有自动记忆整理计数。 |
 | `plugins/sakura_mobile/` | 插件清单、生命周期、Tauri 设置项、HTTP 服务和手机网页界面。 |
@@ -50,7 +50,7 @@
 这种设计有两个关键点：
 
 1. 手机端只允许访问桌面当前角色；聊天执行通过宿主队列串行化，避免网页端跨角色记忆串线。
-2. 插件只能通过 `PluginMobileService` 调用三项经过限定的能力，避免网页服务直接耦合 Sakura 内部 UI 和存储实现。
+2. 插件只能通过 `PluginMobileService` 调用经过限定的移动聊天能力，避免网页服务直接耦合 Sakura 内部 UI 和存储实现。
 
 
 ## 使用方法
@@ -131,10 +131,11 @@ data/plugins/sakura_mobile/config.json
 | `GET` | `/api/characters` | 获取桌面当前角色。 |
 | `GET` | `/api/history` | 获取角色历史消息。 |
 | `POST` | `/api/chat` | 发送文字和可选图片，获得回复分段。 |
+| `POST` | `/api/chat/stream` | 发送聊天请求，并通过 `ready`、`segment`、`done`、`error` SSE 事件接收回复。 |
 
 所有接口都需要 token。网页会从 URL 中读取 token，API 也接受查询参数、JSON 请求体或 `X-Sakura-Mobile-Token` 请求头中的 token。
 
-单次上传的请求体上限为 12 MiB。插件默认关闭；启用后的默认监听地址为 `0.0.0.0`，可供同一局域网设备访问。服务还会使用 30 秒连接超时、最多 8 个并发请求以及每客户端每分钟 60 次请求的限制。图片会作为 `data:image/...` 数据传给桌面端，再转为模型兼容的 `image_url` 消息；是否能够理解图片取决于当前选择的模型是否支持视觉输入。
+单次上传的请求体上限为 12 MiB。插件默认关闭；启用后的默认监听地址为 `0.0.0.0`，可供同一局域网设备访问。服务还会使用 30 秒连接超时、最多 8 个并发请求以及每客户端每分钟 60 次请求的限制。SSE 回复等待期间每 10 秒发送一次保活注释。图片会作为 `data:image/...` 数据传给桌面端，再转为模型兼容的 `image_url` 消息；是否能够理解图片取决于当前选择的模型是否支持视觉输入。
 
 ## 日志与排查
 

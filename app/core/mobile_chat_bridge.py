@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.agent.actions import AgentProgress
 from app.agent.runtime import AgentRuntime
 from app.agent.tools.registry import ToolRegistry
 from app.config.character_loader import CharacterProfile, load_character_system_prompt
+from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage, OpenAICompatibleClient
 from app.llm.context_trimming import trim_messages_for_model
+from app.llm.streaming_reply import STREAMING_REPLY_STAGE, StreamingReplyUnavailable
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 
 
 MAX_MOBILE_HISTORY_MESSAGES = 24
 MOBILE_IMAGE_MARKER = "（手机端发送了一张图片）"
+MobileProgressCallback = Callable[[dict[str, Any]], None]
 
 
 class MobileChatBusyError(RuntimeError):
@@ -58,7 +63,27 @@ class MobileChatBridge:
             raise RuntimeError("移动端聊天调度器尚未就绪。")
         return submit(self, character_id, text, image_data_url)
 
-    def execute_chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
+    def chat_stream(
+        self,
+        character_id: str,
+        text: str,
+        image_data_url: str = "",
+        *,
+        progress_callback: MobileProgressCallback,
+    ) -> dict[str, Any]:
+        submit = getattr(self._host, "submit_mobile_chat_stream", None)
+        if not callable(submit):
+            return self.chat(character_id, text, image_data_url)
+        return submit(self, character_id, text, image_data_url, progress_callback)
+
+    def execute_chat(
+        self,
+        character_id: str,
+        text: str,
+        image_data_url: str = "",
+        *,
+        progress_callback: MobileProgressCallback | None = None,
+    ) -> dict[str, Any]:
         """Execute one request inside the host-controlled Qt worker queue."""
         clean_text = text.strip()
         clean_image = image_data_url.strip()
@@ -90,7 +115,31 @@ class MobileChatBridge:
             previous_scope = memory_store.scope_id
             memory_store.set_scope(session.profile.id)
             try:
-                result = runtime.handle_user_message(messages)
+                result = None
+                should_stream = getattr(runtime, "should_stream_user_message", None)
+                stream_message = getattr(runtime, "handle_streaming_user_message", None)
+                if (
+                    progress_callback is not None
+                    and callable(should_stream)
+                    and callable(stream_message)
+                    and should_stream(messages)
+                ):
+                    try:
+                        result = stream_message(
+                            messages,
+                            progress_callback=lambda progress: _forward_mobile_progress(
+                                progress,
+                                progress_callback,
+                            ),
+                        )
+                    except StreamingReplyUnavailable as exc:
+                        log_event(
+                            "MobileChatBridge",
+                            "手机端流式回复不可用，回退完整回复",
+                            {"error": str(exc)},
+                        )
+                if result is None:
+                    result = runtime.handle_user_message(messages)
             finally:
                 memory_store.set_scope(previous_scope)
 
@@ -120,6 +169,8 @@ class MobileChatBridge:
             "tone": result.reply.tone,
             "segments": [_segment_for_mobile(segment) for segment in segments],
             "actions": [action.type for action in result.actions],
+            "streamed": bool((result._debug or {}).get("streamed")),
+            "incomplete": bool((result._debug or {}).get("incomplete")),
         }
 
     def _session(self, character_id: str) -> _MobileCharacterSession:
@@ -214,3 +265,33 @@ def _segment_for_mobile(segment: Any) -> dict[str, str]:
         "tone": segment.tone,
         "portrait": segment.portrait,
     }
+
+
+def _forward_mobile_progress(
+    progress: AgentProgress,
+    callback: MobileProgressCallback,
+) -> None:
+    if progress.stage != STREAMING_REPLY_STAGE:
+        return
+    segments = [
+        _segment_for_mobile(segment)
+        for segment in progress.reply.segments
+        if segment.text.strip()
+    ]
+    if not segments:
+        return
+    try:
+        callback(
+            {
+                "event": "segment",
+                "stage": progress.stage,
+                "segments": segments,
+                "metadata": dict(progress.metadata),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - 网页连接异常不得中断模型回复
+        log_event(
+            "MobileChatBridge",
+            "转发手机端流式句段失败",
+            {"error": str(exc)},
+        )

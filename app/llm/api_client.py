@@ -6,12 +6,17 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
-from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
+from app.core.http_client import (
+    iter_url_lines_cancellable,
+    read_url_cancellable,
+    urlopen_direct_for_loopback,
+)
 from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.core.runtime_log import log_event
@@ -312,6 +317,123 @@ class OpenAICompatibleClient:
         )
         return result
 
+    def stream_raw_text(
+        self,
+        system_prompt: str,
+        messages: list[ChatMessage],
+        temperature: float = 0.8,
+        *,
+        cancel_checker: CancelChecker | None = None,
+        runtime_context: str = "",
+        **chat_params: Any,
+    ) -> Iterator[str]:
+        """从 OpenAI 兼容 chat/completions 端点逐块返回 assistant 文本。"""
+        self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
+        check_cancelled(cancel_checker)
+        runtime_context_role = self._runtime_context_role
+        payload = _build_chat_completion_payload(
+            model=self.settings.model,
+            system_prompt=system_prompt,
+            messages=_messages_with_runtime_context(
+                messages, runtime_context, runtime_context_role
+            ),
+            temperature=temperature,
+            chat_params={**chat_params, "stream": True},
+        )
+        model_name = payload.get("model")
+        started_at = time.perf_counter()
+        chunk_count = 0
+        output_chars = 0
+        first_chunk_ms: int | None = None
+        self._emit_llm_event("llm.request.started", {"model": model_name, "stream": True})
+        log_event(
+            "API",
+            "准备发送流式聊天补全请求",
+            {
+                "base_url": _normalize_openai_base_url(self.settings.base_url),
+                "configured_base_url": self.settings.base_url,
+                "endpoint_host": urlparse(_normalize_openai_base_url(self.settings.base_url)).netloc,
+                "model": self.settings.model,
+                "timeout_seconds": self.settings.timeout_seconds,
+                "temperature": temperature,
+                "message_count": len(payload["messages"]),
+                "has_image": messages_contain_image(payload["messages"]),
+                "chat_params": _filter_supported_chat_params(chat_params),
+            },
+        )
+        try:
+            try:
+                chunks = self._stream_chat_completions_with_compatibility_fallbacks(
+                    payload,
+                    cancel_checker=cancel_checker,
+                )
+                for chunk in chunks:
+                    check_cancelled(cancel_checker)
+                    if not chunk:
+                        continue
+                    if first_chunk_ms is None:
+                        first_chunk_ms = int((time.perf_counter() - started_at) * 1000)
+                    chunk_count += 1
+                    output_chars += len(chunk)
+                    yield chunk
+            except ApiRequestError as exc:
+                if (
+                    chunk_count == 0
+                    and runtime_context.strip()
+                    and runtime_context_role == "system"
+                    and _is_runtime_context_role_unsupported_error(exc)
+                ):
+                    self._runtime_context_role = "user"
+                    payload = _build_chat_completion_payload(
+                        model=self.settings.model,
+                        system_prompt=system_prompt,
+                        messages=_messages_with_runtime_context(messages, runtime_context, "user"),
+                        temperature=temperature,
+                        chat_params={**chat_params, "stream": True},
+                    )
+                    log_event(
+                        "API",
+                        "流式端点不支持尾部 system 上下文，已回退为 user 上下文",
+                        {"error": str(exc)},
+                    )
+                    for chunk in self._stream_chat_completions_with_compatibility_fallbacks(
+                        payload,
+                        cancel_checker=cancel_checker,
+                    ):
+                        check_cancelled(cancel_checker)
+                        if not chunk:
+                            continue
+                        if first_chunk_ms is None:
+                            first_chunk_ms = int((time.perf_counter() - started_at) * 1000)
+                        chunk_count += 1
+                        output_chars += len(chunk)
+                        yield chunk
+                else:
+                    raise
+        except Exception as exc:  # noqa: BLE001 - 派发失败事件后原样抛出
+            self._emit_llm_event(
+                "llm.request.failed",
+                {"model": model_name, "stream": True, "error": str(exc)},
+            )
+            raise
+        else:
+            self._emit_llm_event(
+                "llm.request.finished",
+                {"model": model_name, "stream": True},
+            )
+        finally:
+            log_event(
+                "API",
+                "流式聊天补全结束",
+                {
+                    "model": self.settings.model,
+                    "chunk_count": chunk_count,
+                    "output_chars": output_chars,
+                    "first_chunk_ms": first_chunk_ms,
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                },
+            )
+
     def complete_with_tools(
         self,
         system_prompt: str,
@@ -472,6 +594,58 @@ class OpenAICompatibleClient:
                 raise
         raise ApiRequestError("API 兼容性自动回退已达到最大次数。")
 
+    def _stream_chat_completions_with_compatibility_fallbacks(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> Iterator[str]:
+        fallback_payload = dict(payload)
+        for param in self._unsupported_chat_params:
+            fallback_payload.pop(param, None)
+        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+            check_cancelled(cancel_checker)
+            emitted = False
+            try:
+                for chunk in self._stream_chat_completions(
+                    fallback_payload,
+                    cancel_checker=cancel_checker,
+                ):
+                    emitted = True
+                    yield chunk
+                return
+            except ApiRequestError as exc:
+                if emitted:
+                    raise
+                if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
+                    self._unsupported_chat_params.add("response_format")
+                    fallback_payload.pop("response_format", None)
+                    log_event(
+                        "API",
+                        "流式 response_format 不受支持，已回退普通流式请求",
+                        {
+                            "attempt": attempt,
+                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+                if "temperature" in fallback_payload and _is_temperature_unsupported_error(exc):
+                    self._unsupported_chat_params.add("temperature")
+                    fallback_payload.pop("temperature", None)
+                    log_event(
+                        "API",
+                        "流式模型不支持自定义 temperature，已回退默认温度",
+                        {
+                            "attempt": attempt,
+                            "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+                raise
+        raise ApiRequestError("流式 API 兼容性自动回退已达到最大次数。")
+
     def _ensure_chat_config(self, api_key_message: str) -> None:
         if not self.settings.api_key:
             raise ApiConfigError(api_key_message)
@@ -525,6 +699,88 @@ class OpenAICompatibleClient:
 
         self._emit_llm_event("llm.request.finished", {"model": model_name})
         return data
+
+    def _stream_chat_completions(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> Iterator[str]:
+        check_cancelled(cancel_checker)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        base_url = _normalize_openai_base_url(self.settings.base_url)
+        url = f"{base_url}/chat/completions"
+        request = urllib.request.Request(
+            url=url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.settings.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+        )
+        last_error: BaseException | None = None
+        for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
+            check_cancelled(cancel_checker)
+            emitted = False
+            started_at = time.perf_counter()
+            try:
+                for raw_line in iter_url_lines_cancellable(
+                    urlopen_direct_for_loopback,
+                    request,
+                    timeout=self.settings.timeout_seconds,
+                    cancel_checker=cancel_checker,
+                ):
+                    check_cancelled(cancel_checker)
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith((":", "event:", "id:", "retry:")):
+                        continue
+                    data_text = line[5:].strip() if line.startswith("data:") else line
+                    if data_text == "[DONE]":
+                        return
+                    try:
+                        data = json.loads(data_text)
+                    except json.JSONDecodeError as exc:
+                        raise ApiRequestError(f"流式 API 返回无法解析：{data_text[:500]}") from exc
+                    error = _stream_error_message(data)
+                    if error:
+                        raise ApiRequestError(error)
+                    for chunk in _extract_stream_text_chunks(data):
+                        emitted = True
+                        yield chunk
+                return
+            except urllib.error.HTTPError as exc:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                if emitted or exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                    raise ApiRequestError(_format_api_http_error(exc.code, error_body, url)) from exc
+                last_error = exc
+            except urllib.error.URLError as exc:
+                if emitted or attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                    raise ApiRequestError(f"流式 API 请求失败：{exc.reason}") from exc
+                last_error = exc
+            except TimeoutError as exc:
+                if emitted or attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                    raise ApiRequestError("流式 API 请求超时。") from exc
+                last_error = exc
+            except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
+                if emitted or attempt == MAX_AUTO_RETRY_ATTEMPTS:
+                    raise ApiRequestError(f"流式 API 连接中断：{exc}") from exc
+                last_error = exc
+
+            log_event(
+                "API",
+                "准备重试流式请求",
+                {
+                    "attempt": attempt,
+                    "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
+                    "delay_seconds": API_RETRY_DELAY_SECONDS * attempt,
+                    "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                    "last_error": str(last_error),
+                },
+            )
+            cancellable_sleep(API_RETRY_DELAY_SECONDS * attempt, cancel_checker)
+        raise ApiRequestError("流式 API 请求失败。")
 
     def _send_with_retries(
         self,
@@ -627,6 +883,57 @@ class OpenAICompatibleClient:
             cancellable_sleep(API_RETRY_DELAY_SECONDS * attempt, cancel_checker)
 
         raise ApiRequestError("API 请求失败。")
+
+
+def _extract_stream_text_chunks(data: Any) -> Iterator[str]:
+    if not isinstance(data, dict):
+        return
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            yield from _coerce_stream_content(delta.get("content"))
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            yield from _coerce_stream_content(message.get("content"))
+
+
+def _coerce_stream_content(content: Any) -> Iterator[str]:
+    if isinstance(content, str):
+        if content:
+            yield content
+        return
+    if not isinstance(content, list):
+        return
+    for item in content:
+        if isinstance(item, str):
+            if item:
+                yield item
+            continue
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            yield text
+
+
+def _stream_error_message(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    error = data.get("error")
+    if isinstance(error, str):
+        return error.strip()
+    if not isinstance(error, dict):
+        return ""
+    message = error.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return json.dumps(error, ensure_ascii=False, default=str)
 
 
 def _build_segmented_reply_instruction(

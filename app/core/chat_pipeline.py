@@ -6,6 +6,7 @@ from typing import Any
 from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
 from app.core.cancellation import CancelChecker, check_cancelled
 from app.core.runtime_log import log_event, summarize_messages
+from app.llm.streaming_reply import StreamingReplyUnavailable
 from app.storage.visual_observation import (
     VisualObservationJob,
     VisualObservationStore,
@@ -44,14 +45,38 @@ class ChatPipeline:
                 "messages": summarize_messages(messages),
             },
         )
-        result = self.agent_runtime.handle_user_message(
-            messages,
-            progress_callback=progress_callback,
-            cancel_checker=cancel_checker,
-        )
+        result: AgentResult | None = None
+        visual_jobs = visual_observation_jobs or []
+        should_stream = getattr(self.agent_runtime, "should_stream_user_message", None)
+        stream_message = getattr(self.agent_runtime, "handle_streaming_user_message", None)
+        if (
+            progress_callback is not None
+            and not visual_jobs
+            and callable(should_stream)
+            and callable(stream_message)
+            and should_stream(messages)
+        ):
+            try:
+                result = stream_message(
+                    messages,
+                    progress_callback=progress_callback,
+                    cancel_checker=cancel_checker,
+                )
+            except StreamingReplyUnavailable as exc:
+                log_event(
+                    "ChatWorker",
+                    "普通聊天流式回复不可用，回退完整 Agent 链路",
+                    {"error": str(exc)},
+                )
+        if result is None:
+            result = self.agent_runtime.handle_user_message(
+                messages,
+                progress_callback=progress_callback,
+                cancel_checker=cancel_checker,
+            )
         self._record_visual_observation_from_result(
             "ChatWorker",
-            visual_observation_jobs or [],
+            visual_jobs,
             result,
         )
         return result

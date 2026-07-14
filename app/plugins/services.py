@@ -153,6 +153,10 @@ class PluginMobileService:
         self._characters_sink: Callable[[], list[dict[str, str]]] | None = None
         self._history_sink: Callable[[str, int], list[dict[str, str]]] | None = None
         self._chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None
+        self._chat_stream_sink: (
+            Callable[[str, str, str, Callable[[dict[str, Any]], None]], dict[str, Any]]
+            | None
+        ) = None
         self._theme_sink: Callable[[], dict[str, object]] | None = None
 
     def set_backends(
@@ -161,6 +165,10 @@ class PluginMobileService:
         characters_sink: Callable[[], list[dict[str, str]]] | None = None,
         history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
         chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
+        chat_stream_sink: (
+            Callable[[str, str, str, Callable[[dict[str, Any]], None]], dict[str, Any]]
+            | None
+        ) = None,
         theme_sink: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         if characters_sink is not None:
@@ -169,6 +177,8 @@ class PluginMobileService:
             self._history_sink = history_sink
         if chat_sink is not None:
             self._chat_sink = chat_sink
+        if chat_stream_sink is not None:
+            self._chat_stream_sink = chat_stream_sink
         if theme_sink is not None:
             self._theme_sink = theme_sink
 
@@ -186,6 +196,23 @@ class PluginMobileService:
         if self._chat_sink is None:
             raise RuntimeError("移动端聊天服务尚未就绪。")
         return self._chat_sink(character_id, text, image_data_url)
+
+    def chat_stream(
+        self,
+        character_id: str,
+        text: str,
+        image_data_url: str = "",
+        *,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        if self._chat_stream_sink is None:
+            return self.chat(character_id, text, image_data_url)
+        return self._chat_stream_sink(
+            character_id,
+            text,
+            image_data_url,
+            progress_callback,
+        )
 
     def theme(self) -> dict[str, object]:
         if self._theme_sink is None:
@@ -390,6 +417,10 @@ class PluginServices:
         mobile_characters_sink: Callable[[], list[dict[str, str]]] | None = None,
         mobile_history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
         mobile_chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
+        mobile_chat_stream_sink: (
+            Callable[[str, str, str, Callable[[dict[str, Any]], None]], dict[str, Any]]
+            | None
+        ) = None,
         mobile_theme_sink: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """宿主装配时一次性注入真实后端（任意项可省略）。"""
@@ -405,6 +436,7 @@ class PluginServices:
             characters_sink=mobile_characters_sink,
             history_sink=mobile_history_sink,
             chat_sink=mobile_chat_sink,
+            chat_stream_sink=mobile_chat_stream_sink,
             theme_sink=mobile_theme_sink,
         )
 
