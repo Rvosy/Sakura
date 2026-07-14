@@ -86,6 +86,7 @@ from app.agent.runtime_events import (
 )
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply_result
 from app.llm.context_trimming import trim_messages_for_model
+from app.llm.streaming_reply import STREAMING_REPLY_STAGE
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.config.model_slots import ResolvedModelSlot, resolve_model_slot
@@ -3232,6 +3233,9 @@ class PetWindow(QWidget):
                 "metadata": progress.metadata,
             },
         )
+        if progress.stage == STREAMING_REPLY_STAGE:
+            self._show_reply_segments(reply.segments)
+            return
         self.messages.append(
             {
                 "role": "assistant",
@@ -3290,7 +3294,8 @@ class PetWindow(QWidget):
                     "character_id": self.character_profile.id,
                 },
             )
-        self._show_reply_segments(reply.segments)
+        if not (result._debug or {}).get("streamed"):
+            self._show_reply_segments(reply.segments)
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:

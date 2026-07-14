@@ -42,7 +42,21 @@ from app.llm.api_client import (
     is_vision_unsupported_error,
     messages_contain_image,
 )
-from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
+from app.llm.chat_reply import (
+    ChatReply,
+    ChatSegment,
+    parse_chat_reply,
+    parse_chat_reply_result,
+    sanitize_reply_tones,
+)
+from app.llm.streaming_reply import (
+    STREAMING_REPLY_STAGE,
+    StreamedReplyParser,
+    StreamingReplyUnavailable,
+    build_streaming_reply_instruction,
+    is_streaming_candidate,
+    needs_streaming_translation_repair,
+)
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
 from app.core.runtime_log import log_body_enabled, log_event, summarize_messages
 from app.agent.runtime_limits import (
@@ -298,6 +312,165 @@ class AgentRuntime:
         if callable(resolver):
             return resolver()
         return 0.8, {}
+
+    def should_stream_user_message(self, messages: list[ChatMessage]) -> bool:
+        """仅对无需工具或媒体处理的普通聊天启用低延迟流式回复。"""
+        if not is_streaming_candidate(messages):
+            return False
+        if tool_routing._should_prefer_browser_page_tools(messages):
+            return False
+        if tool_routing._latest_user_requests_visible_browser(messages):
+            return False
+        if tool_routing._latest_user_explicitly_requests_windows_control(messages):
+            return False
+        return True
+
+    def handle_streaming_user_message(
+        self,
+        messages: list[ChatMessage],
+        *,
+        progress_callback: ProgressCallback,
+        cancel_checker: CancelChecker | None = None,
+    ) -> AgentResult:
+        """流式生成普通聊天句段，并通过进度回调送入字幕/TTS 队列。"""
+        check_cancelled(cancel_checker)
+        if not self.should_stream_user_message(messages):
+            raise StreamingReplyUnavailable("当前消息需要完整 Agent 链路。")
+
+        snapshot = self._build_single_context_snapshot(messages, source="chat")
+        prompt_build = self._build_streaming_reply_result(snapshot)
+        dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
+        parser = StreamedReplyParser(self.reply_tones)
+        segments: list[ChatSegment] = []
+        raw_chars = 0
+        stream_error = ""
+        started_at = time.perf_counter()
+        log_event(
+            "AgentRuntime",
+            "开始普通聊天流式回复",
+            {"message_count": len(messages), "messages": summarize_messages(messages)},
+        )
+        try:
+            chunks = self._client_for_messages(messages).stream_raw_text(
+                prompt_build.system_prompt,
+                messages,
+                temperature=dialogue_temperature,
+                runtime_context=prompt_build.runtime_context,
+                cancel_checker=cancel_checker,
+                **dialogue_extra_params,
+            )
+            for chunk in chunks:
+                check_cancelled(cancel_checker)
+                raw_chars += len(chunk)
+                for segment in parser.feed(chunk):
+                    repaired = self._repair_streaming_segment_translation(
+                        segment,
+                        cancel_checker=cancel_checker,
+                    )
+                    segments.append(repaired)
+                    progress_callback(
+                        AgentProgress(
+                            reply=ChatReply([repaired]),
+                            stage=STREAMING_REPLY_STAGE,
+                            metadata={"segment_index": len(segments) - 1},
+                        )
+                    )
+            for segment in parser.finish():
+                repaired = self._repair_streaming_segment_translation(
+                    segment,
+                    cancel_checker=cancel_checker,
+                )
+                segments.append(repaired)
+                progress_callback(
+                    AgentProgress(
+                        reply=ChatReply([repaired]),
+                        stage=STREAMING_REPLY_STAGE,
+                        metadata={"segment_index": len(segments) - 1},
+                    )
+                )
+        except OperationCancelled:
+            raise
+        except ApiRequestError as exc:
+            if not segments:
+                raise StreamingReplyUnavailable(str(exc)) from exc
+            stream_error = str(exc)
+            log_event(
+                "AgentRuntime",
+                "流式连接中断，保留已完成句段",
+                {"segments": len(segments), "error": stream_error},
+            )
+
+        if not segments:
+            raise StreamingReplyUnavailable("流式端点没有返回可展示句段。")
+        self._record_runtime_role(prompt_build.inspection)
+        reply = ChatReply(segments)
+        log_event(
+            "AgentRuntime",
+            "普通聊天流式回复完成",
+            {
+                "segments": len(segments),
+                "reply_chars": len(reply.text),
+                "raw_chars": raw_chars,
+                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                "incomplete": bool(stream_error),
+            },
+        )
+        return AgentResult(
+            reply=reply,
+            _debug={
+                "source": "streaming_chat",
+                "streamed": True,
+                "incomplete": bool(stream_error),
+                **({"stream_error": stream_error} if stream_error else {}),
+            },
+        )
+
+    def _repair_streaming_segment_translation(
+        self,
+        segment: ChatSegment,
+        *,
+        cancel_checker: CancelChecker | None = None,
+    ) -> ChatSegment:
+        if not needs_streaming_translation_repair(segment):
+            return segment
+        check_cancelled(cancel_checker)
+        try:
+            turn = self.api_client.complete_with_tools(
+                (
+                    "你是 Sakura 的中文字幕修复器。"
+                    "把输入的 ja 日语台词翻译成自然、简洁的简体中文。"
+                    "只返回 JSON：{\"zh\":\"中文译文\"}。"
+                ),
+                [
+                    {
+                        "role": "user",
+                        "content": json.dumps({"ja": segment.text}, ensure_ascii=False),
+                    }
+                ],
+                tools=[],
+                tool_choice="none",
+                temperature=0,
+                structured_response=True,
+                cancel_checker=cancel_checker,
+            )
+            data = json.loads(turn.content)
+            translation = data.get("zh") if isinstance(data, dict) else None
+        except (ApiRequestError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            log_event(
+                "AgentRuntime",
+                "流式句段中文字幕修复失败，保留原句段",
+                {"error": str(exc)},
+            )
+            return segment
+        if not isinstance(translation, str) or not translation.strip():
+            return segment
+        return ChatSegment(
+            segment.text,
+            segment.tone,
+            translation.strip(),
+            segment.portrait,
+            suppress_tts=segment.suppress_tts,
+        )
 
     def _parse_final_reply_with_retry(
         self,
@@ -1452,6 +1625,23 @@ class AgentRuntime:
         return self._build_screen_awareness_tool_prompt_result(
             None, extra_instructions=extra_instructions
         ).system_prompt
+
+    def _build_streaming_reply_result(self, snapshot: ContextSnapshot | None = None):
+        sections = [
+            *self._persona_sections(),
+            PromptSection("reply.patch", self._reply_protocol_patch_text()),
+            PromptSection(
+                "streaming_reply.instructions",
+                build_streaming_reply_instruction(
+                    self.reply_tones,
+                    self.reply_portraits,
+                ),
+            ),
+        ]
+        return self._prompt_runtime().build(
+            PromptRecipe("streaming_reply", sections),
+            snapshot,
+        )
 
     def _build_final_reply_result(self, snapshot: ContextSnapshot | None = None):
         sections = [

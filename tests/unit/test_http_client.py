@@ -93,3 +93,71 @@ def test_read_url_cancellable_returns_without_waiting_for_blocked_read() -> None
         )
 
     assert time.monotonic() - started < 1
+
+
+def test_iter_url_lines_cancellable_yields_complete_lines() -> None:
+    closed = False
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.lines = iter([b"first\n", b"second\n", b""])
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            self.close()
+
+        def readline(self) -> bytes:
+            return next(self.lines)
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    lines = list(
+        http_client.iter_url_lines_cancellable(
+            lambda *_args, **_kwargs: FakeResponse(),
+            "https://example.test",
+            timeout=60,
+        )
+    )
+
+    assert lines == [b"first\n", b"second\n"]
+    assert closed
+
+
+def test_iter_url_lines_cancellable_closes_blocked_stream_on_cancel() -> None:
+    token = CancellationToken()
+    entered = threading.Event()
+    released = threading.Event()
+
+    class BlockingResponse:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def readline(self) -> bytes:
+            entered.set()
+            released.wait(5)
+            return b""
+
+        def close(self) -> None:
+            released.set()
+
+    threading.Thread(target=lambda: (entered.wait(1), token.cancel()), daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(OperationCancelled):
+        list(
+            http_client.iter_url_lines_cancellable(
+                lambda *_args, **_kwargs: BlockingResponse(),
+                "https://example.test",
+                timeout=60,
+                cancel_checker=token.throw_if_cancelled,
+            )
+        )
+
+    assert released.wait(1)
+    assert time.monotonic() - started < 1

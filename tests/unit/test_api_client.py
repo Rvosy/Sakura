@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
@@ -1018,3 +1019,108 @@ def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:
 
     assert reply.segments[0].text
     assert reply.segments[0].suppress_tts is True
+
+
+def test_stream_raw_text_parses_openai_sse_and_sends_stream_flag(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, Any] = {}
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        )
+    )
+
+    def fake_iter(_opener, request, **kwargs):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["accept"] = request.get_header("Accept")
+        captured["cancel_checker"] = kwargs.get("cancel_checker")
+        yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n'
+        yield b'data: {"choices":[{"delta":{"content":"kon"}}]}\n'
+        yield b'data: {"choices":[{"delta":{"content":[{"type":"text","text":"nichiwa"}]}}]}\n'
+        yield b"data: [DONE]\n"
+
+    monkeypatch.setattr("app.llm.api_client.iter_url_lines_cancellable", fake_iter)
+
+    chunks = list(
+        client.stream_raw_text(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            top_p=0.9,
+        )
+    )
+
+    assert chunks == ["kon", "nichiwa"]
+    assert captured["url"] == "https://api.example.com/v1/chat/completions"
+    assert captured["accept"] == "text/event-stream"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["top_p"] == 0.9
+
+
+def test_stream_raw_text_falls_back_runtime_context_role(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model")
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_stream(payload, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(payload)
+        if len(calls) == 1:
+            raise ApiRequestError("system role is not allowed after user messages")
+        return iter(["ok"])
+
+    monkeypatch.setattr(
+        client,
+        "_stream_chat_completions_with_compatibility_fallbacks",
+        fake_stream,
+    )
+
+    chunks = list(
+        client.stream_raw_text(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            runtime_context="runtime facts",
+        )
+    )
+
+    assert chunks == ["ok"]
+    assert calls[0]["messages"][-1] == {
+        "role": "system",
+        "content": "runtime facts",
+    }
+    assert calls[1]["messages"][-1]["role"] == "user"
+    assert "runtime facts" in calls[1]["messages"][-1]["content"]
+    assert client.runtime_context_role == "user"
+
+
+def test_stream_compatibility_fallback_removes_rejected_params(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model")
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_stream(payload, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(dict(payload))
+        if "response_format" in payload:
+            raise ApiRequestError("unsupported response_format json_object")
+        if "temperature" in payload:
+            raise ApiRequestError("temperature only supports the default value")
+        return iter(["ok"])
+
+    monkeypatch.setattr(client, "_stream_chat_completions", fake_stream)
+
+    chunks = list(
+        client.stream_raw_text(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            response_format={"type": "json_object"},
+        )
+    )
+
+    assert chunks == ["ok"]
+    assert len(calls) == MAX_AUTO_RETRY_ATTEMPTS
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+    assert "temperature" in calls[1]
+    assert "temperature" not in calls[2]

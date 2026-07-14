@@ -4,9 +4,10 @@ import json
 import uuid
 from pathlib import Path
 
-from app.agent import AgentEvent, AgentResult, PendingToolAction
+from app.agent import AgentEvent, AgentProgress, AgentResult, PendingToolAction
 from app.core.chat_pipeline import ChatPipeline
-from app.llm.chat_reply import parse_chat_reply
+from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply
+from app.llm.streaming_reply import StreamingReplyUnavailable
 from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
 
@@ -222,3 +223,53 @@ def test_chat_pipeline_keeps_images_and_records_visual_observation_after_reply()
         assert "截图里有一张设置页" in raw
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_chat_pipeline_uses_streaming_for_simple_chat() -> None:
+    class StreamingRuntime(RuntimeStub):
+        def should_stream_user_message(self, _messages):  # type: ignore[no-untyped-def]
+            return True
+
+        def handle_streaming_user_message(
+            self,
+            _messages,
+            *,
+            progress_callback,
+            cancel_checker=None,
+        ):  # type: ignore[no-untyped-def]
+            if cancel_checker is not None:
+                cancel_checker()
+            self.calls.append("stream")
+            segment = ChatSegment("うん。", translation="嗯。")
+            progress_callback(AgentProgress(ChatReply([segment]), stage="stream_segment"))
+            return AgentResult(ChatReply([segment]), _debug={"streamed": True})
+
+    runtime = StreamingRuntime()
+    progress: list[AgentProgress] = []
+    result = ChatPipeline(runtime).run_user_message(  # type: ignore[arg-type]
+        [{"role": "user", "content": "陪我聊聊"}],
+        progress_callback=progress.append,
+    )
+
+    assert runtime.calls == ["stream"]
+    assert result._debug == {"streamed": True}
+    assert [item.stage for item in progress] == ["stream_segment"]
+
+
+def test_chat_pipeline_falls_back_when_streaming_is_unavailable() -> None:
+    class StreamingRuntime(RuntimeStub):
+        def should_stream_user_message(self, _messages):  # type: ignore[no-untyped-def]
+            return True
+
+        def handle_streaming_user_message(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append("stream")
+            raise StreamingReplyUnavailable("provider closed the stream")
+
+    runtime = StreamingRuntime()
+    result = ChatPipeline(runtime).run_user_message(  # type: ignore[arg-type]
+        [{"role": "user", "content": "陪我聊聊"}],
+        progress_callback=lambda _progress: None,
+    )
+
+    assert runtime.calls == ["stream", "user:1"]
+    assert result.reply.text == "はい"

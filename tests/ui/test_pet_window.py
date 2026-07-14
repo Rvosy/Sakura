@@ -8574,6 +8574,77 @@ def test_progress_reply_records_segments_as_separate_history_entries() -> None:
     ]
 
 
+def test_streaming_progress_queues_segments_without_transient_history() -> None:
+    from app.agent import AgentProgress
+    from app.llm.streaming_reply import STREAMING_REPLY_STAGE
+    from app.ui.pet_window import PetWindow
+
+    class MinimalProgressWindow:
+        _handle_progress_reply = PetWindow._handle_progress_reply
+
+    window = MinimalProgressWindow()
+    from app.ui.state import PetUiStateStore
+
+    window.ui_state = PetUiStateStore()
+    window.messages = [{"role": "user", "content": "陪我聊聊"}]
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    shown: list[ChatSegment] = []
+    history: list[object] = []
+    window._show_reply_segments = lambda segments: shown.extend(segments)
+    window._record_assistant_reply_history = history.append
+    segment = ChatSegment("うん。", translation="嗯。")
+
+    window._handle_progress_reply(
+        AgentProgress(
+            reply=ChatReply([segment]),
+            stage=STREAMING_REPLY_STAGE,
+        )
+    )
+
+    assert shown == [segment]
+    assert window.messages == [{"role": "user", "content": "陪我聊聊"}]
+    assert history == []
+
+
+def test_streamed_final_reply_records_once_without_replaying_segments() -> None:
+    from app.ui.pet_window import PetWindow
+
+    class CharacterProfile:
+        id = "sakura"
+
+    class MinimalReplyWindow:
+        _handle_reply = PetWindow._handle_reply
+
+    window = MinimalReplyWindow()
+    window.messages = [{"role": "user", "content": "陪我聊聊"}]
+    window.character_profile = CharacterProfile()
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._queue_screen_observation_followup = lambda _result: False
+    recorded: list[tuple[ChatReply, dict | None]] = []
+    window._record_assistant_reply_history = (
+        lambda reply, _debug=None: recorded.append((reply, _debug))
+    )
+    plugin_events: list[tuple[object, object]] = []
+    window._emit_plugin_event = (
+        lambda event_type, payload, **_kwargs: plugin_events.append((event_type, payload))
+    )
+    shown: list[ChatSegment] = []
+    window._show_reply_segments = lambda segments: shown.extend(segments)
+    window._apply_pending_action_from_result = lambda _result: None
+    segment = ChatSegment("うん。", translation="嗯。")
+    result = AgentResult(
+        reply=ChatReply([segment]),
+        _debug={"streamed": True},
+    )
+
+    window._handle_reply(result)
+
+    assert window.messages[-1] == {"role": "assistant", "content": "うん。"}
+    assert recorded == [(result.reply, {"streamed": True})]
+    assert len(plugin_events) == 1
+    assert shown == []
+
+
 def test_assistant_reply_history_records_tone_and_portrait() -> None:
     from app.llm.chat_reply import ChatReply
     from app.ui.pet_window import PetWindow
