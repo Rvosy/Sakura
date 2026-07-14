@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,7 +157,7 @@ print(json.dumps(blocked))
     environment = os.environ.copy()
     environment["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", code],
+        [sys.executable, "-c", code],
         cwd=ROOT,
         env=environment,
         check=True,

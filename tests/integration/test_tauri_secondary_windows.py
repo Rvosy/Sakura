@@ -74,7 +74,7 @@ import app.core.settings_resource_tasks
 print(json.dumps({"qt": [name for name in sys.modules if name.startswith("PySide6")]}))
 """
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", source],
+        [sys.executable, "-c", source],
         cwd=ROOT,
         check=True,
         capture_output=True,

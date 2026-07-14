@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -185,7 +186,7 @@ import plugins.sakura_mobile.server
 print(json.dumps({"qt": [name for name in sys.modules if name.startswith("PySide6")]}))
 """
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", source],
+        [sys.executable, "-c", source],
         cwd=ROOT,
         check=True,
         capture_output=True,

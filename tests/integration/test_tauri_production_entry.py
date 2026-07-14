@@ -20,7 +20,7 @@ print(json.dumps({
 }))
 """
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", source],
+        [sys.executable, "-c", source],
         cwd=ROOT,
         check=True,
         capture_output=True,

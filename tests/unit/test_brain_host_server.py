@@ -266,7 +266,7 @@ print(json.dumps(blocked))
 """
 
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", code],
+        [sys.executable, "-c", code],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -303,7 +303,7 @@ print(json.dumps({
     environment["PYTHONIOENCODING"] = "utf-8"
 
     result = subprocess.run(
-        [str(ROOT / "runtime" / "python.exe"), "-c", code],
+        [sys.executable, "-c", code],
         cwd=ROOT,
         env=environment,
         check=True,
@@ -343,7 +343,7 @@ def test_python_module_entrypoint_serves_framed_system_requests(tmp_path: Path) 
     )
 
     process = subprocess.Popen(
-        [str(ROOT / "runtime" / "python.exe"), "-m", "app.brain_host"],
+        [sys.executable, "-m", "app.brain_host"],
         cwd=ROOT,
         env=environment,
         stdin=subprocess.PIPE,
