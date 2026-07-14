@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -26,18 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _module_url(relative: str) -> str:
     return (ROOT / relative).resolve().as_uri()
-
-
-def _run_node(source: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module", "-e", source],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return json.loads(result.stdout)
 
 
 class EventCollector:
@@ -414,8 +401,10 @@ def test_framed_transport_serializes_concurrent_event_and_response_writes() -> N
     assert {message["id"] for message in messages} == {"response-1", "event-1"}
 
 
-def test_tauri_chat_controller_routes_events_cancel_and_action_ids_only() -> None:
-    payload = _run_node(
+def test_tauri_chat_controller_routes_events_cancel_and_action_ids_only(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 import {{ createPetStore }} from {json.dumps(_module_url('desktop/frontend/core/store.js'))};
 import {{ ChatController }} from {json.dumps(_module_url('desktop/frontend/chat/chat_controller.js'))};

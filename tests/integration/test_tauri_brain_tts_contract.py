@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,18 +22,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _module_url(relative: str) -> str:
     return (ROOT / relative).resolve().as_uri()
-
-
-def _run_node(source: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module", "-e", source],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return json.loads(result.stdout)
 
 
 class Events:
@@ -174,8 +161,10 @@ def test_brain_tts_rejects_empty_text(tmp_path: Path) -> None:
     application.shutdown()
 
 
-def test_frontend_audio_controller_synthesizes_and_plays_segments_in_order() -> None:
-    payload = _run_node(
+def test_frontend_audio_controller_synthesizes_and_plays_segments_in_order(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 import {{ createPetStore }} from {json.dumps(_module_url('desktop/frontend/core/store.js'))};
 import {{ AudioController }} from {json.dumps(_module_url('desktop/frontend/audio/audio_controller.js'))};

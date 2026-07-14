@@ -20,11 +20,16 @@ from app.voice.tts import (
 )
 
 
-def _stub_provider(*, provider: str = "gpt-sovits", api_url: str = "http://127.0.0.1:9880/tts"):
+def _stub_provider(
+    base_dir: Path,
+    *,
+    provider: str = "gpt-sovits",
+    api_url: str = "http://127.0.0.1:9880/tts",
+):
     stub = types.SimpleNamespace()
     stub.settings = types.SimpleNamespace(provider=provider, api_url=api_url, timeout_seconds=3)
     stub._server_process = None
-    stub._base_dir = Path("D:/fake") if Path("D:/").exists() else Path("/fake")
+    stub._base_dir = base_dir
     return stub
 
 
@@ -44,15 +49,15 @@ class TestParseEndpoint:
 
 
 class TestStateTransitions:
-    def test_records_transition(self) -> None:
-        stub = _stub_provider()
+    def test_records_transition(self, tmp_path: Path) -> None:
+        stub = _stub_provider(tmp_path)
         _set_service_state(stub, TTSServiceState.PROBING)
         assert stub._service_state == TTSServiceState.PROBING
         _set_service_state(stub, TTSServiceState.READY, {"via": "probe"})
         assert stub._service_state == TTSServiceState.READY
 
-    def test_tolerates_stub_without_attribute(self) -> None:
-        stub = _stub_provider()
+    def test_tolerates_stub_without_attribute(self, tmp_path: Path) -> None:
+        stub = _stub_provider(tmp_path)
         # SimpleNamespace 没有预置 _service_state，首次设置走 getattr 默认值
         _set_service_state(stub, TTSServiceState.STARTING)
         assert stub._service_state == TTSServiceState.STARTING
@@ -69,8 +74,8 @@ class _AliveProcess:
 
 
 class TestWaitLocalServiceReady:
-    def test_process_exit_fails_with_log_path(self) -> None:
-        stub = _stub_provider()
+    def test_process_exit_fails_with_log_path(self, tmp_path: Path) -> None:
+        stub = _stub_provider(tmp_path)
         stub._server_process = _ExitedProcess()
         messages: list[str] = []
         ok = _wait_local_service_ready(
@@ -85,8 +90,8 @@ class TestWaitLocalServiceReady:
         assert "退出码：7" in messages[0]
         assert "启动日志" in messages[0]
 
-    def test_ready_check_success(self) -> None:
-        stub = _stub_provider()
+    def test_ready_check_success(self, tmp_path: Path) -> None:
+        stub = _stub_provider(tmp_path)
         stub._server_process = _AliveProcess()
         checks: list[int] = []
 
@@ -104,8 +109,16 @@ class TestWaitLocalServiceReady:
         assert ok
         assert len(checks) == 2
 
-    def test_timeout_fails(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        stub = _stub_provider(provider="genie-tts", api_url="http://127.0.0.1:9881/")
+    def test_timeout_fails(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ) -> None:  # type: ignore[no-untyped-def]
+        stub = _stub_provider(
+            tmp_path,
+            provider="genie-tts",
+            api_url="http://127.0.0.1:9881/",
+        )
         stub._server_process = _AliveProcess()
         # 压缩等待：sleep 跳过、时间快进
         clock = {"now": 0.0}
@@ -127,9 +140,9 @@ class TestWaitLocalServiceReady:
         assert "端口仍不可用" in messages[0]
         assert stub._service_state == TTSServiceState.FAILED
 
-    def test_failed_state_not_cached_as_checked(self) -> None:
+    def test_failed_state_not_cached_as_checked(self, tmp_path: Path) -> None:
         """失败不缓存：_service_checked 仍为 False，下次请求重新探测。"""
-        stub = _stub_provider()
+        stub = _stub_provider(tmp_path)
         stub._service_checked = False
         stub._server_process = _ExitedProcess()
         _wait_local_service_ready(

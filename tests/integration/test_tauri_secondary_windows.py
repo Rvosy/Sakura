@@ -38,6 +38,9 @@ def test_secondary_frontends_are_part_of_one_tauri_app() -> None:
         "history/history.js",
         "diagnostics/index.html",
         "diagnostics/diagnostics.js",
+        "runtime-repair/index.html",
+        "runtime-repair/runtime_repair.js",
+        "runtime-repair/styles.css",
     ):
         assert (frontend / relative).is_file()
     for kind in ("settings", "studio", "history", "diagnostics"):
@@ -46,6 +49,9 @@ def test_secondary_frontends_are_part_of_one_tauri_app() -> None:
         assert f"windows::open_{kind}_window" in rust_lib
     assert "run_on_main_thread" in rust_windows
     assert ".always_on_top(true)" in rust_windows
+    assert "show_onboarding_route" in rust_windows
+    assert "show_runtime_repair_route" in rust_windows
+    assert 'label: "runtime-repair"' in rust_windows
     for command in (
         "load_request",
         "host_call",

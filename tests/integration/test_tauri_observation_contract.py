@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -28,18 +27,6 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0sakura-observation\xff\xd9"
 
 def _module_url(relative: str) -> str:
     return (ROOT / relative).resolve().as_uri()
-
-
-def _run_node(source: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module", "-e", source],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return json.loads(result.stdout)
 
 
 class EventCollector:
@@ -349,8 +336,10 @@ def test_disabling_screen_awareness_removes_scheduler_job(tmp_path: Path) -> Non
     application.shutdown()
 
 
-def test_tauri_capture_controller_attaches_observation_and_passes_only_id_to_chat() -> None:
-    payload = _run_node(
+def test_tauri_capture_controller_attaches_observation_and_passes_only_id_to_chat(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 import {{ createPetStore }} from {json.dumps(_module_url('desktop/frontend/core/store.js'))};
 import {{ CaptureController }} from {json.dumps(_module_url('desktop/frontend/capture/capture_controller.js'))};

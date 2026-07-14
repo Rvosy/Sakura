@@ -30,6 +30,13 @@ enum StartupRoute {
     RuntimeRepair,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupRoutingDecision {
+    Wait,
+    Present(StartupRoute),
+    Stop,
+}
+
 pub struct DesktopAppState {
     brain: Arc<BrainHostSupervisor>,
     startup: Arc<Mutex<Option<Value>>>,
@@ -161,26 +168,34 @@ impl DesktopAppState {
         let route = Arc::clone(&self.startup_route);
         let _ = thread::Builder::new()
             .name("sakura-startup-router".into())
-            .spawn(move || loop {
-                let status = brain.status();
-                let next = match status.phase {
-                    crate::brain_host::BrainHostPhase::Ready => {
-                        let payload = brain.startup_state();
-                        *startup.lock().expect("startup state lock poisoned") = payload.clone();
-                        startup_route_from_payload(payload.as_ref())
+            .spawn(move || {
+                let mut routed_ready_generation = None;
+                loop {
+                    let status = brain.status();
+                    let current_route = *route.lock().expect("startup route lock poisoned");
+                    let payload = (status.phase == crate::brain_host::BrainHostPhase::Ready)
+                        .then(|| brain.startup_state())
+                        .flatten();
+                    match startup_routing_decision(
+                        current_route,
+                        routed_ready_generation,
+                        &status,
+                        payload.as_ref(),
+                    ) {
+                        StartupRoutingDecision::Wait => {}
+                        StartupRoutingDecision::Stop => break,
+                        StartupRoutingDecision::Present(next) => {
+                            if status.phase == crate::brain_host::BrainHostPhase::Ready {
+                                *startup.lock().expect("startup state lock poisoned") =
+                                    payload.clone();
+                                routed_ready_generation = Some(status.session_generation);
+                            }
+                            *route.lock().expect("startup route lock poisoned") = next;
+                            present_startup_route(&app, next);
+                        }
                     }
-                    crate::brain_host::BrainHostPhase::Diagnostic
-                    | crate::brain_host::BrainHostPhase::Stopped => StartupRoute::RuntimeRepair,
-                    crate::brain_host::BrainHostPhase::Starting
-                    | crate::brain_host::BrainHostPhase::Restarting
-                    | crate::brain_host::BrainHostPhase::Stopping => {
-                        thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
-                };
-                *route.lock().expect("startup route lock poisoned") = next;
-                present_startup_route(&app, next);
-                break;
+                    thread::sleep(Duration::from_millis(50));
+                }
             });
     }
 
@@ -313,6 +328,29 @@ fn startup_route_from_payload(startup: Option<&Value>) -> StartupRoute {
         Some("onboarding_required") | Some("needs_character") => StartupRoute::OnboardingRequired,
         Some("runtime_repair") | None => StartupRoute::RuntimeRepair,
         Some(_) => StartupRoute::RuntimeRepair,
+    }
+}
+
+fn startup_routing_decision(
+    current_route: StartupRoute,
+    routed_ready_generation: Option<u64>,
+    status: &BrainHostStatus,
+    startup: Option<&Value>,
+) -> StartupRoutingDecision {
+    match status.phase {
+        crate::brain_host::BrainHostPhase::Ready
+            if routed_ready_generation != Some(status.session_generation) =>
+        {
+            StartupRoutingDecision::Present(startup_route_from_payload(startup))
+        }
+        crate::brain_host::BrainHostPhase::Diagnostic
+            if current_route != StartupRoute::RuntimeRepair =>
+        {
+            StartupRoutingDecision::Present(StartupRoute::RuntimeRepair)
+        }
+        crate::brain_host::BrainHostPhase::Stopping
+        | crate::brain_host::BrainHostPhase::Stopped => StartupRoutingDecision::Stop,
+        _ => StartupRoutingDecision::Wait,
     }
 }
 
@@ -812,6 +850,23 @@ mod tests {
         })
     }
 
+    fn brain_status_fixture(
+        phase: crate::brain_host::BrainHostPhase,
+        session_generation: u64,
+    ) -> BrainHostStatus {
+        BrainHostStatus {
+            phase,
+            session_id: Some("session-test".into()),
+            session_generation,
+            restart_count: 0,
+            accepting_requests: true,
+            pending_request_count: 0,
+            temporary_resource_count: 0,
+            diagnostic: None,
+            last_shutdown_forced: false,
+        }
+    }
+
     #[test]
     fn windows_pet_bootstrap_uses_controlled_asset_urls_without_local_paths() {
         let temp = TempDir::new().unwrap();
@@ -846,6 +901,59 @@ mod tests {
             StartupRoute::RuntimeRepair
         );
         assert!(build_pet_bootstrap(&startup, 2).is_err());
+    }
+
+    #[test]
+    fn startup_routing_is_idempotent_and_rechecks_each_ready_generation() {
+        let first_ready = brain_status_fixture(crate::brain_host::BrainHostPhase::Ready, 1);
+        assert_eq!(
+            startup_routing_decision(
+                StartupRoute::Pending,
+                None,
+                &first_ready,
+                Some(&json!({"state": "ready"})),
+            ),
+            StartupRoutingDecision::Present(StartupRoute::Ready)
+        );
+        assert_eq!(
+            startup_routing_decision(
+                StartupRoute::Ready,
+                Some(1),
+                &first_ready,
+                Some(&json!({"state": "ready"})),
+            ),
+            StartupRoutingDecision::Wait
+        );
+
+        let recovered = brain_status_fixture(crate::brain_host::BrainHostPhase::Ready, 2);
+        assert_eq!(
+            startup_routing_decision(
+                StartupRoute::Ready,
+                Some(1),
+                &recovered,
+                Some(&json!({"state": "onboarding_required"})),
+            ),
+            StartupRoutingDecision::Present(StartupRoute::OnboardingRequired)
+        );
+    }
+
+    #[test]
+    fn startup_routing_preserves_ui_while_recovering_then_opens_repair_once() {
+        let recovering = brain_status_fixture(crate::brain_host::BrainHostPhase::Restarting, 2);
+        assert_eq!(
+            startup_routing_decision(StartupRoute::Ready, Some(1), &recovering, None),
+            StartupRoutingDecision::Wait
+        );
+
+        let diagnostic = brain_status_fixture(crate::brain_host::BrainHostPhase::Diagnostic, 4);
+        assert_eq!(
+            startup_routing_decision(StartupRoute::Ready, Some(1), &diagnostic, None),
+            StartupRoutingDecision::Present(StartupRoute::RuntimeRepair)
+        );
+        assert_eq!(
+            startup_routing_decision(StartupRoute::RuntimeRepair, Some(1), &diagnostic, None,),
+            StartupRoutingDecision::Wait
+        );
     }
 
     #[test]

@@ -950,3 +950,10 @@ cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
 - 当前 Windows x64 实机两次热启动的首个窗口句柄代理为 391.7 ms 与 485.8 ms，空闲 CPU 为 0.137% 与 0.059%。Brain 单进程工作集 313.0 MiB、私有内存 768.8 MiB、28 线程，均低于迁移前 Qt 主进程；含 Tauri、WebView、Brain、MCP 和控制台宿主的完整进程树工作集约 815.5 MiB、私有内存约 1093.7 MiB，因旧基线只统计 Qt 主进程，聚合内存不能直接同比。
 - 真实故障注入强制终止 Brain Host 后，Tauri 在约 394 ms 内创建新 Brain 进程，界面进入“Brain 已恢复 · 第 1 次重启”；缺少角色声线资源的隔离副本则在三次重启后保留 Tauri 诊断模式。真实 Windows 开机启动注册表启用/禁用均成功，目标为 `sakura-desktop.exe`，测试后已精确恢复原注册表值。
 - 工作室在 15 MiB 隔离角色副本中把显示名保存为 `N.A.V.I. Phase 1 验收`，原角色包仍为 `N.A.V.I.`，验收后临时目录已删除。当前设备只有单屏 100% DPI，且现有自动化无法替代物理托盘点击和人耳音频判断；干净 Windows 镜像、混合 DPI 多屏、物理鼠标/托盘、真实在线模型聊天与音频签字继续作为发布前未验证风险。
+
+### 2026-07-14：Gate A 启动状态机与测试门禁收口
+
+- 完整 pytest 在 Node 24 和当前 Windows 权限环境下复现为 `1545 passed, 3 skipped, 13 failed, 12 errors`。失败不是生产回归：前端契约测试仍传入 Node 24 已移除的 `--experimental-default-type=module`；TTS/存储测试直接探测受限 `D:\`；Backchannel 夹具使用 pytest `tmp_path_factory` 留下的 Windows `current` 链接。实际调整为集中 Node 模块运行器按能力探测旧参数，并把路径夹具改为仓库安全临时目录或 `tmp_path`，不跳过前端测试，也不修改生产路径逻辑。
+- 原 `begin_startup_routing` 在首次路由后退出，已进入 `ready` 的应用超过 Brain 重启阈值时只会更新主窗文案，无法切到 Runtime 修复；恢复后的新 Host 也没有由 Rust 重新评估 Bootstrap。实际改为持续观察 `session_generation`：`restarting` 期间保留当前 Tauri UI；每个新 generation 的 `ready` 只路由一次并刷新 Bootstrap；`diagnostic` 只切换一次修复页；相同状态事件不重复创建窗口。
+- Rust Hello 现在同时校验响应 session 和 payload protocol。Runtime 缺失及 payload 协议不兼容均由有限监管尝试进入 Diagnostic/Runtime 修复，不会落入首次设置或无限重启。
+- 隔离 release 验收确认：空配置进入首次设置且只有一个 Brain；缺 Runtime 在 4 次尝试后进入修复页；虚拟模型配置加现有角色进入桌宠；第二次启动不增加 desktop/Brain；强杀 Brain 时 UI 保留并换新 PID；主窗关闭后正常退出且无已记录子进程残留。Windows UI Automation 未暴露设置 WebView 的提交按钮，因此“真实点击完成首次设置”和“修复页物理点击打开诊断”继续标记受限，自动契约不替代该签字。

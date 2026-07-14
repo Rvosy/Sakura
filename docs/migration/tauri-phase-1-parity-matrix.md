@@ -57,6 +57,33 @@
 - “首帧”当前没有应用内打点；Task 1 起应在 Tauri `setup`、主窗口 `DOMContentLoaded`/首个渲染完成处增加可比较时间点。
 - 性能对比必须使用同一机器、同一角色、同一插件/MCP/TTS 配置，并分别记录首次冷启动和第二次热启动。
 
+### 1.5 Gate A 启动路由收口验证
+
+本轮先在 Node.js `v24.16.0` 下复现完整 Python 门禁：`1545 passed, 3 skipped, 13 failed, 12 errors`。其中 7 个失败来自 Node 24 已移除的 `--experimental-default-type=module`，其余失败/错误来自测试对受限 `D:\` 和 pytest 临时目录链接的环境假设。测试运行器现会先探测旧 Node 参数支持情况，Node 24 自动改用标准 ESM 入口；路径夹具改用仓库安全临时目录或 `tmp_path`，未修改生产逻辑。
+
+修复和 Gate A 收口后的自动验证：
+
+- `runtime/python.exe -m pytest`：`1571 passed, 3 skipped in 31.41s`。
+- desktop Rust：`37 passed`；`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 和 release build 通过。
+- `desktop/frontend` 下 17 个 JavaScript 文件全部通过 `node --check`。
+- Rust 覆盖 Runtime 缺失、Hello 协议不兼容、`onboarding_required` 不重启、有限崩溃恢复、`session_generation` 更新、重复状态幂等和超过阈值进入修复路由。
+- Python/前端覆盖无角色上下文设置、同进程重建角色上下文，以及同一 WebView 会话替换角色、主题、字幕和布局 Bootstrap。
+
+隔离实机验证使用 release `sakura-desktop.exe`，只在 `temp/gate-a-*` 临时目录写入虚拟配置，验收后已删除：
+
+| 场景 | 实际证据 | 结论 |
+|---|---|---|
+| `ready` | 隔离目录复制现有 N.A.V.I 角色并写入虚拟聊天模型配置；只显示桌宠业务窗口，Brain Host 数量为 1 | 通过 |
+| 第二次启动 | 第二个 desktop 进程自动退出；既有 desktop 和 Brain Host 数量仍分别为 1 | 通过 |
+| `brain_recovering` | 强制终止 Brain 后桌宠窗口保持可见；新 Brain PID 建立，旧 PID 未复用 | 通过 |
+| 恢复后退出 | 主窗口关闭后 desktop 正常退出；未发现 Brain 或已记录子进程残留 | 通过 |
+| `onboarding_required` | 空配置隔离目录显示 `Sakura 设置`，桌宠主窗保持隐藏，Brain Host 数量为 1 | 通过 |
+| `runtime_repair` | 隔离目录缺少 Runtime；4 次有限启动尝试后显示 `Sakura 启动修复`，桌宠和首次设置均未显示 | 通过 |
+| 同会话完成首次设置 | 自动契约通过；实机尝试刷新隔离设置 WebView 后，Windows UI Automation 未暴露“完成并启动 Sakura”按钮节点，无法替代真实点击 | 受限 |
+| 修复页打开诊断 | 修复页命令、诊断窗口幂等和 Brain 不可用时本地诊断 DTO 均有自动覆盖；本轮未完成物理点击 | 部分通过 |
+
+Gate A 的实现与自动门禁已收口；上述两项交互限制不提升为 Gate B 人工签字，也不作为删除 Qt 行为对照的依据。
+
 ## 2. 第一阶段等价矩阵
 
 状态枚举：`自动覆盖`、`部分覆盖`、`手工覆盖`、`待迁移`。
@@ -118,6 +145,7 @@
 | 11 | 指定 Python 81 passed；扩展 Python 239 passed；Rust 全套 31 passed；fmt/build 通过 | 双开只聚焦既有窗口；设置页显示 2 个插件及声明式字段；Mobile API 返回当前角色；退出无 Tauri/Brain/MCP 残留；物理托盘与真实开机启动留 Task 13 | `feat: 迁移Tauri启动与插件交互` | Brain 装配无 Qt 插件/MCP/Mobile；原生 UI 权限导入前拒绝；`SAKURA_DESKTOP_EXE` 指向 Tauri；混合接话冷启动性能留最终测量 |
 | 12 | 完整 Python 1560 passed、3 skipped；生产入口契约 6 passed；Rust 31 passed；fmt/release build 通过 | `runtime/python.exe main.py` 启动 release Tauri，Brain 就绪；所有 Sakura Python 进程 Qt 模块数为 0；Alt+F4 返回 0 且无残留 | `feat: 切换Tauri生产入口` | 旧 Qt 仅保留为 `legacy_qt_main.py` 显式开发回退；基础依赖和正常启动图不含 PySide6 |
 | 13 | 完整 Python 1563 passed、3 skipped；desktop Rust 31 passed；settings 6 passed；studio 5 passed；fmt/debug/release build 通过；发布契约 9 passed | 启动/诊断/空闲崩溃恢复/双开/退出/开机启动注册表/工作室副本保存通过；干净机、多 DPI 多屏、物理托盘与人耳音频受限 | `chore: 完成Tauri迁移发布验收` | 安装与打包链已携带生产桌面程序；受限项不标记为通过 |
+| 14 | 完整 Python 1571 passed、3 skipped；desktop Rust 37 passed；17 个前端脚本语法、fmt/clippy/release build 通过 | 隔离 ready、首次设置、Runtime 修复、双开、Brain 恢复和退出清理通过；同会话首次设置真实点击与修复页诊断点击受限 | `fix: 收口Tauri启动状态机门禁` | Node 24 与临时路径环境阻断已消除；启动路由按 session generation 持续评估且重复事件幂等 |
 
 ## 5. Task 13 逐项签字
 
@@ -155,3 +183,14 @@
 | Sakura Mobile | 通过 | 本机 API 返回当前 N.A.V.I.，共享 Brain 状态 |
 
 发布前仍必须在干净 Windows x64、多 DPI 多屏、物理托盘和真实音频设备上补齐“受限/部分通过”项；在这些签字完成前，不删除 `legacy_qt_main.py` 与旧 Qt 回退测试。
+
+## 6. Gate A 状态机签字
+
+| 状态或行为 | 自动证据 | 实机证据 | 当前结论 |
+|---|---|---|---|
+| `ready` 只路由桌宠 | Rust Bootstrap 路由和非 ready 禁止构建桌宠 DTO | 隔离 ready 仅显示桌宠业务窗 | 通过 |
+| `onboarding_required` 健康且不重启 | Python health、Rust 单 Host/零重启测试 | 隔离空配置显示首次设置，Brain 数量为 1 | 通过 |
+| 同会话首次设置完成后进入桌宠 | Python 同进程上下文重建、Rust 重新评估、前端 Bootstrap 替换测试 | Windows UI Automation 无法访问 WebView 按钮，未完成真实提交 | 自动通过、实机受限 |
+| `runtime_repair` 独立呈现 | Runtime 缺失与协议不兼容进入 Diagnostic；诊断 DTO 可脱离 Brain 返回 | 缺 Runtime 隔离目录显示修复页 | 通过；诊断按钮物理点击部分通过 |
+| `brain_recovering` 有限恢复 | Rust 退避、阈值、请求/资源失效和新 generation 测试 | 强杀 Brain 后 UI 保留并建立新 PID | 通过 |
+| 状态和窗口幂等 | 同 generation 重复 ready、重复 diagnostic 不重复 present；窗口标签复用 | 双开保持 1 个 desktop 和 1 个 Brain | 通过 |

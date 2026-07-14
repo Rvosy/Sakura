@@ -124,11 +124,12 @@ def main() -> int:
                 _response(
                     request,
                     {
-                        "protocol": 1,
+                        "protocol": 2 if mode == "incompatible_protocol" else 1,
                         "session_id": os.environ["SAKURA_SESSION_ID"],
                         "backend_state": "ready",
                         "startup": {
                             "fake": True,
+                            "launch": launch_count,
                             "state": (
                                 "onboarding_required"
                                 if mode == "onboarding_required"

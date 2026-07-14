@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 from app.ui.control_panel_layout import compute_pet_layout
@@ -9,18 +8,6 @@ from app.ui.control_panel_layout import compute_pet_layout
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "desktop" / "frontend"
-
-
-def _run_node(source: str) -> dict[str, object]:
-    result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module", "-e", source],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return json.loads(result.stdout)
 
 
 def _module_url(relative: str) -> str:
@@ -44,8 +31,10 @@ def test_tauri_pet_frontend_has_single_store_and_feature_modules() -> None:
     assert "createPetStore" not in app_source
 
 
-def test_store_and_theme_mapping_are_deterministic() -> None:
-    payload = _run_node(
+def test_store_and_theme_mapping_are_deterministic(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 import {{ createPetStore }} from {json.dumps(_module_url('desktop/frontend/core/store.js'))};
 import {{ themeToCssVariables }} from {json.dumps(_module_url('desktop/frontend/core/theme.js'))};
@@ -76,7 +65,9 @@ console.log(JSON.stringify({{
     }
 
 
-def test_js_layout_matches_existing_python_layout_model() -> None:
+def test_js_layout_matches_existing_python_layout_model(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
     cases = [
         {
             "portraitWidth": 560,
@@ -95,7 +86,7 @@ def test_js_layout_matches_existing_python_layout_model() -> None:
             "inputBarOffset": 120,
         },
     ]
-    js_layouts = _run_node(
+    js_layouts = node_module_runner(
         f"""
 import {{ computePetLayout }} from {json.dumps(_module_url('desktop/frontend/pet/layout.js'))};
 const cases = {json.dumps(cases)};
@@ -121,8 +112,10 @@ console.log(JSON.stringify({{ layouts: cases.map(computePetLayout) }}));
         }
 
 
-def test_subtitle_controller_segments_and_ignores_late_cancelled_callbacks() -> None:
-    payload = _run_node(
+def test_subtitle_controller_segments_and_ignores_late_cancelled_callbacks(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 import {{ SubtitleController }} from {json.dumps(_module_url('desktop/frontend/pet/subtitle_controller.js'))};
 const target = {{ textContent: "" }};
@@ -159,8 +152,10 @@ console.log(JSON.stringify({{ text: target.textContent, seen, completed }}));
     }
 
 
-def test_portrait_controller_maps_expression_and_finishes_crossfade() -> None:
-    payload = _run_node(
+def test_portrait_controller_maps_expression_and_finishes_crossfade(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
         f"""
 class ClassList {{
   constructor() {{ this.values = new Set(); }}
@@ -188,7 +183,7 @@ globalThis.window = {{ setTimeout: (callback) => (callback(), 1) }};
 const {{ PortraitController }} = await import({json.dumps(_module_url('desktop/frontend/pet/portrait_controller.js'))});
 const current = new FakeImage();
 const transition = new FakeImage();
-const fallback = {{ hidden: false }};
+const fallback = {{ hidden: false, dataset: {{}} }};
 const sizes = [];
 const controller = new PortraitController({{
   currentImage: current,
@@ -215,6 +210,94 @@ console.log(JSON.stringify({{
     assert payload["fallbackHidden"] is True
     assert payload["currentKey"] == "smile"
     assert payload["sizes"][-1] == {"width": 800, "height": 1000}  # type: ignore[index]
+
+
+def test_pet_controller_replaces_character_theme_and_layout_in_same_session(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+class FakeElement {{
+  constructor() {{
+    this.disabled = false;
+    this.hidden = false;
+    this.placeholder = "";
+    this.textContent = "";
+    this.value = "";
+    this.listeners = new Map();
+  }}
+  addEventListener(name, callback) {{ this.listeners.set(name, callback); }}
+}}
+const styles = {{}};
+globalThis.document = {{
+  documentElement: {{
+    dataset: {{}},
+    style: {{ setProperty: (name, value) => styles[name] = value }},
+  }},
+}};
+globalThis.window = {{ dispatchEvent: () => {{}} }};
+globalThis.CustomEvent = class {{ constructor(name, options) {{ this.name = name; this.detail = options.detail; }} }};
+const {{ createPetStore }} = await import({json.dumps(_module_url('desktop/frontend/core/store.js'))});
+const {{ PetController }} = await import({json.dumps(_module_url('desktop/frontend/pet/pet_controller.js'))});
+const elements = {{
+  characterName: new FakeElement(),
+  input: new FakeElement(),
+  send: new FakeElement(),
+  cancel: new FakeElement(),
+  capture: new FakeElement(),
+  openSettingsButton: new FakeElement(),
+  openHistoryButton: new FakeElement(),
+}};
+const layouts = [];
+const portraits = [];
+const subtitleConfigs = [];
+const subtitleTexts = [];
+const store = createPetStore();
+const controller = new PetController({{
+  store,
+  invoke: async (command, args) => layouts.push([command, args]),
+  portraitController: {{ setCharacter: (character) => portraits.push(character.id) }},
+  subtitleController: {{
+    configure: (subtitle) => subtitleConfigs.push(subtitle.language),
+    setText: (value) => subtitleTexts.push(value),
+  }},
+  elements,
+}});
+controller.applyBootstrap({{
+  sessionGeneration: 1,
+  character: {{ id: "first", displayName: "First", initialMessage: "first hello" }},
+  theme: {{ primary_color: "#111111", visual_effect_mode: "solid" }},
+  layout: {{ portrait_scale_percent: 100, control_panel_width: 640, bubble_height: 128 }},
+  subtitle: {{ language: "zh" }},
+}});
+controller.applyBootstrap({{
+  sessionGeneration: 2,
+  character: {{ id: "second", displayName: "Second", initialMessage: "second hello" }},
+  theme: {{ primary_color: "#222222", visual_effect_mode: "gaussian_blur" }},
+  layout: {{ portrait_scale_percent: 120, control_panel_width: 700, bubble_height: 160 }},
+  subtitle: {{ language: "ja" }},
+}});
+console.log(JSON.stringify({{
+  character: store.getState().character,
+  characterName: elements.characterName.textContent,
+  styles,
+  visualEffect: document.documentElement.dataset.visualEffect,
+  portraits,
+  subtitleConfigs,
+  subtitleTexts,
+  layouts,
+}}));
+"""
+    )
+
+    assert payload["character"]["id"] == "second"  # type: ignore[index]
+    assert payload["characterName"] == "Second"
+    assert payload["styles"]["--sakura-primary"] == "#222222"  # type: ignore[index]
+    assert payload["visualEffect"] == "gaussian_blur"
+    assert payload["portraits"] == ["first", "second"]
+    assert payload["subtitleConfigs"] == ["zh", "ja"]
+    assert payload["subtitleTexts"] == ["first hello", "second hello"]
+    assert len(payload["layouts"]) == 2  # type: ignore[arg-type]
 
 
 def test_pet_markup_has_portrait_subtitle_input_cancel_and_screenshot_controls() -> None:

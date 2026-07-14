@@ -516,6 +516,11 @@ impl ManagedProcess {
                     "Brain Host hello returned another session".to_string(),
                 ));
             }
+            if hello.get("protocol").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
+                return Err(LaunchError::Failed(
+                    "Brain Host hello protocol is incompatible".to_string(),
+                ));
+            }
             process.startup_state = hello.get("startup").cloned();
             let health = process.request_during_startup(
                 "system.health",
@@ -1265,9 +1270,16 @@ mod tests {
         });
 
         assert_ne!(first.session_id, second.session_id);
+        assert!(second.session_generation > first.session_generation);
         assert_eq!(second.pending_request_count, 0);
         assert_eq!(second.temporary_resource_count, 0);
         assert!(!resource.exists());
+        assert_eq!(
+            supervisor
+                .startup_state()
+                .and_then(|value| value.get("launch").cloned()),
+            Some(json!(2))
+        );
         let records = launch_records(&temp.path().join("launches.jsonl"));
         assert_ne!(records[0]["session_id"], records[1]["session_id"]);
         assert_ne!(records[0]["credential"], records[1]["credential"]);
@@ -1291,6 +1303,50 @@ mod tests {
             diagnostic.diagnostic.as_ref().unwrap().code,
             "BRAIN_RESTART_LIMIT"
         );
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn missing_python_enters_diagnostic_without_an_infinite_restart_loop() {
+        let temp = TempDir::new().unwrap();
+        let mut config = fixture_config(&temp, "healthy");
+        config.python_exe = temp.path().join("missing-runtime/python.exe");
+        config.max_restarts = 0;
+        let supervisor = BrainHostSupervisor::start(config, None);
+
+        let diagnostic = wait_for_status(&supervisor, Duration::from_secs(2), |status| {
+            status.phase == BrainHostPhase::Diagnostic
+        });
+
+        assert_eq!(diagnostic.restart_count, 0);
+        assert_eq!(diagnostic.diagnostic.as_ref().unwrap().attempts, 1);
+        assert!(diagnostic
+            .diagnostic
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("failed to start Brain Host"));
+        supervisor.shutdown();
+    }
+
+    #[test]
+    fn incompatible_hello_protocol_enters_diagnostic() {
+        let temp = TempDir::new().unwrap();
+        let mut config = fixture_config(&temp, "incompatible_protocol");
+        config.max_restarts = 0;
+        let supervisor = BrainHostSupervisor::start(config, None);
+
+        let diagnostic = wait_for_status(&supervisor, Duration::from_secs(3), |status| {
+            status.phase == BrainHostPhase::Diagnostic
+        });
+
+        assert!(diagnostic
+            .diagnostic
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("protocol is incompatible"));
+        assert_eq!(launch_records(&temp.path().join("launches.jsonl")).len(), 1);
         supervisor.shutdown();
     }
 

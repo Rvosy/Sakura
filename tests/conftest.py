@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
+import subprocess
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -52,6 +54,42 @@ _THREAD_ATTR_NAMES = (
     "_character_export_thread",
 )
 _TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / "temp" / "pytest_tmp_path"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _node_module_arguments() -> list[str]:
+    """兼容仍需 default-type 参数的旧 Node，并避开 Node 24 已移除的参数。"""
+    probe = subprocess.run(
+        ["node", "--experimental-default-type=module", "--input-type=module", "-e", ""],
+        cwd=_REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    arguments = ["node"]
+    if probe.returncode == 0:
+        arguments.append("--experimental-default-type=module")
+    arguments.append("--input-type=module")
+    return arguments
+
+
+@pytest.fixture(scope="session")
+def node_module_runner():  # type: ignore[no-untyped-def]
+    arguments = _node_module_arguments()
+
+    def run(source: str) -> dict[str, Any]:
+        result = subprocess.run(
+            [*arguments, "-e", source],
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    return run
 
 
 @pytest.fixture

@@ -94,7 +94,7 @@ class TestStoragePathsSnapshot:
     """路径映射快照：这些断言锁定既有数据文件位置，重构不得改变"""
 
     def setup_method(self) -> None:
-        self.base = Path("D:/fake_base") if Path("D:/").exists() else Path("/fake_base")
+        self.base = _TEST_TEMP_ROOT / "snapshot_base"
         self.paths = StoragePaths(self.base)
         self.data = self.base / "data"
 
