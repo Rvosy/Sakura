@@ -217,7 +217,8 @@ class TestRuntimeLimits:
         call = client.complete_with_tools.call_args
         runtime_context = call.kwargs["runtime_context"]
         request_messages = call.args[1]
-        assert "最近会话状态" in runtime_context
+        assert "上下文胶囊" in runtime_context
+        assert "跨会话续接" in runtime_context
         assert "继续执行计划" in runtime_context
         assert "用户：本轮问题" not in runtime_context
         assert all("最近会话状态" not in str(message.get("content", "")) for message in request_messages)
@@ -248,7 +249,7 @@ class TestRuntimeLimits:
         )
 
         runtime_context = client.complete_with_tools.call_args.kwargs["runtime_context"]
-        assert "最近会话状态" not in runtime_context
+        assert "上下文胶囊" not in runtime_context
 
 
 class TestToolCallCountLimits:

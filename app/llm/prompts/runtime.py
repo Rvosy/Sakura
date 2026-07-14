@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 from dataclasses import replace
 from datetime import datetime
@@ -20,9 +21,9 @@ from app.llm.prompts.types import (
 )
 
 
-DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET = 4096
-DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET = 2048
-DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET = 1024
+DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET = 16_384
+DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET = 4096
+DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET = 8192
 DEFAULT_PLUGIN_FRAGMENT_TOKEN_BUDGET = 512
 
 RUNTIME_FACTS_HEADER = (
@@ -108,13 +109,25 @@ class ContextPolicy:
     def __init__(
         self,
         *,
-        total_budget: int = DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET,
-        plugin_budget: int = DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET,
-        memory_budget: int = DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET,
+        total_budget: int | None = None,
+        plugin_budget: int | None = None,
+        memory_budget: int | None = None,
     ) -> None:
-        self.total_budget = total_budget
-        self.plugin_budget = plugin_budget
-        self.memory_budget = memory_budget
+        self.total_budget = _resolved_budget(
+            total_budget,
+            "SAKURA_DYNAMIC_CONTEXT_TOKENS",
+            DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET,
+        )
+        self.plugin_budget = _resolved_budget(
+            plugin_budget,
+            "SAKURA_PLUGIN_CONTEXT_TOKENS",
+            DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET,
+        )
+        self.memory_budget = _resolved_budget(
+            memory_budget,
+            "SAKURA_MEMORY_CONTEXT_TOKENS",
+            DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET,
+        )
 
     def select(
         self,
@@ -145,7 +158,7 @@ class ContextPolicy:
             own_budget = max(1, fragment.token_budget)
             if fragment.source.startswith("plugin:"):
                 own_budget = min(own_budget, DEFAULT_PLUGIN_FRAGMENT_TOKEN_BUDGET, remaining_plugin)
-            elif fragment.source == "memory":
+            elif fragment.source in {"memory", "context_capsule"}:
                 own_budget = min(own_budget, remaining_memory)
             allowed = min(own_budget, remaining_total)
             if allowed <= 0:
@@ -177,7 +190,7 @@ class ContextPolicy:
             remaining_total -= used
             if fragment.source.startswith("plugin:"):
                 remaining_plugin -= used
-            elif fragment.source == "memory":
+            elif fragment.source in {"memory", "context_capsule"}:
                 remaining_memory -= used
 
         return ContextSnapshot(
@@ -311,3 +324,16 @@ def _freshness_sort_key(value: str) -> float:
         return -datetime.fromisoformat(value).timestamp()
     except (TypeError, ValueError):
         return 0.0
+
+
+def _resolved_budget(value: int | None, env_name: str, default: int) -> int:
+    if value is not None:
+        return max(0, int(value))
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default
+    try:
+        configured = int(raw)
+    except ValueError:
+        return default
+    return max(0, min(262_144, configured))

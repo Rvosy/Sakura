@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 
+from app.agent.context_capsule import build_context_capsule_fragment
 from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage
 from app.llm.prompts.runtime import ContextPolicy
@@ -17,8 +18,8 @@ from app.plugins.models import ContextProviderContribution
 
 
 MAX_CONTEXT_INPUT_CHARS = 4000
-MAX_CONTEXT_RECENT_MESSAGES = 8
-MAX_CONTEXT_MESSAGE_CHARS = 1000
+MAX_CONTEXT_RECENT_MESSAGES = 32
+MAX_CONTEXT_MESSAGE_CHARS = 2000
 MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
 
@@ -37,7 +38,16 @@ class ContextOrchestrator:
         session_fragments: Iterable[ContextFragment] = (),
         memory_fragments: Iterable[ContextFragment] = (),
     ) -> ContextSnapshot:
-        fragments = [*_builtin_fragments(request), *session_fragments, *memory_fragments]
+        session_items = tuple(session_fragments)
+        memory_items = tuple(memory_fragments)
+        capsule = build_context_capsule_fragment(
+            request,
+            session_fragments=session_items,
+            memory_fragments=memory_items,
+        )
+        fragments = [*_builtin_fragments(request)]
+        if capsule is not None:
+            fragments.append(capsule)
         fragments.extend(_collect_provider_fragments(request, providers))
         return self.policy.select(request, fragments)
 
