@@ -332,6 +332,9 @@ def test_python_module_entrypoint_serves_framed_system_requests(tmp_path: Path) 
     environment.update(
         {
             "PYTHONIOENCODING": "utf-8",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "TOKENIZERS_PARALLELISM": "false",
             "SAKURA_BASE_DIR": str(tmp_path),
             "SAKURA_SESSION_ID": "session-test",
             "SAKURA_SESSION_CREDENTIAL": "credential-test",
