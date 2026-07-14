@@ -33,6 +33,7 @@ from app.ui.theme import (
     parse_ai_theme_response,
 )
 from app.voice.tts_settings import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
+from app.terminal.settings import TerminalSettings
 
 
 class CharacterRegistryStub:
@@ -51,6 +52,25 @@ def test_settings_service_keeps_missing_api_config_empty() -> None:
     assert service.load_api_settings() == ApiSettings("", "", "")
     assert service.load_api_profiles() == []
     assert service.load_model_selection() == ModelSelectionSettings()
+
+
+def test_terminal_settings_default_off_and_round_trip() -> None:
+    root = _runtime_root("terminal_settings")
+    service = AppSettingsService(root)
+
+    assert not service.load_terminal_settings().enabled
+
+    service.save_terminal_settings(
+        TerminalSettings(enabled=True, default_cwd=str(root))
+    )
+
+    restored = service.load_terminal_settings()
+    assert restored.enabled
+    assert restored.default_cwd == str(root.resolve())
+    assert load_yaml_mapping(service.system_config_path)["terminal"] == {
+        "enabled": True,
+        "default_cwd": str(root.resolve()),
+    }
 
 
 def test_settings_service_loads_yaml_api_config() -> None:

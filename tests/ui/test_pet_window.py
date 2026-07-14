@@ -4869,7 +4869,7 @@ def test_load_font_sizes_falls_back_and_clamps_invalid_config() -> None:
 
 def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str, object]:
     return {
-                "version": 3,
+                "version": 4,
                 "nonce": "nonce",
                 "screen_awareness": {
                     "enabled": True,
@@ -4968,6 +4968,10 @@ def _tauri_settings_result_payload(theme_payload: dict[str, object]) -> dict[str
                 "trigger_turns": 8,
                 "backfill_limit": 200,
             }
+        },
+        "terminal": {
+            "enabled": False,
+            "default_cwd": "",
         },
         "plugins": {"enabled_by_id": {}},
     }
@@ -5113,7 +5117,7 @@ def test_tauri_settings_result_parser_rejects_missing_system_basic() -> None:
     from app.ui.tauri_settings import parse_tauri_settings_payload
 
     payload = {
-        "version": 3,
+        "version": 4,
         "nonce": "nonce",
         "screen_awareness": {
             "enabled": True,
@@ -5239,7 +5243,7 @@ def test_tauri_settings_request_includes_font_sizes_and_layout_limits() -> None:
         nonce="nonce",
     )
 
-    assert request["version"] == 3
+    assert request["version"] == 4
     assert request["system_basic"]["ui"] == {
         "subtitle_typing_interval_ms": 35,
         "reply_segment_pause_ms": 100,
@@ -9449,7 +9453,12 @@ def test_tts_ready_warmup_worker_reports_failure() -> None:
 
 def _minimal_settings_window(pet_window_cls, settings_service, api_client, memory_store):  # type: ignore[no-untyped-def]
     import app.ui.pet_window as pet_window_module
+    from types import SimpleNamespace
+
+    from app.agent.tools import ToolRegistry
     from app.config.models import ModelSelectionSettings
+    from app.terminal.manager import TerminalManager
+    from app.terminal.settings import TerminalSettings
 
     class CharacterProfileStub:
         id = "sakura"
@@ -9568,6 +9577,8 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         settings_service.load_api_profiles = lambda: []  # type: ignore[attr-defined]
     if not hasattr(settings_service, "load_model_selection"):
         settings_service.load_model_selection = ModelSelectionSettings  # type: ignore[attr-defined]
+    if not hasattr(settings_service, "save_terminal_settings"):
+        settings_service.save_terminal_settings = lambda _settings: None  # type: ignore[attr-defined]
 
     window = MinimalSettingsWindow()
     window.settings_service = settings_service
@@ -9583,6 +9594,9 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.theme_settings = DEFAULT_THEME_SETTINGS
     window.memory_store = memory_store
     window.agent_runtime = AgentRuntimeStub()
+    window.terminal_manager = TerminalManager(TerminalSettings())
+    window.terminal_process = SimpleNamespace(binary_available=True)
+    window.tool_registry = ToolRegistry()
     window.plugin_manager = PluginManagerStub()
     window.portrait_scale_percent = 100
     window.control_panel_width = 640
@@ -10037,6 +10051,130 @@ def test_pet_input_stylesheet_has_waiting_send_button_state() -> None:
     assert '#petInput[replyWaiting="true"]' not in stylesheet
     assert "waitingBreath" not in stylesheet
     assert '#sendButton[replyWaiting="true"]:disabled' in stylesheet
+
+
+def test_terminal_pending_action_uses_terminal_surface_not_pet_panel(tmp_path: Path) -> None:
+    from app.agent import ApprovalScope, PendingToolAction
+    from app.ui.pet_window import PetWindow
+
+    class PanelStub:
+        def __init__(self) -> None:
+            self.actions: list[object] = []
+
+        def set_action(self, action) -> None:  # type: ignore[no-untyped-def]
+            self.actions.append(action)
+
+        def state_snapshot(self) -> dict[str, bool]:
+            return {"confirm_visible": False}
+
+    class TerminalStub:
+        def __init__(self) -> None:
+            self.approvals: list[dict[str, object]] = []
+
+        def request_approval(self, approval) -> bool:  # type: ignore[no-untyped-def]
+            self.approvals.append(approval)
+            return True
+
+        def clear_approval(self, _approval_id: str) -> None:
+            return None
+
+    class AnimatorStub:
+        def sync(self) -> None:
+            return None
+
+    action = PendingToolAction(
+        "terminal_exec",
+        {"command": ["printf", "hello"]},
+        "",
+        summary="printf hello",
+        working_directory=str(tmp_path),
+        risk_level="low",
+        allowed_approval_scopes=(ApprovalScope.ONCE, ApprovalScope.PROCESS),
+    )
+    window = PetWindow.__new__(PetWindow)
+    window.pending_tool_action = None
+    window.tool_confirmation_panel = PanelStub()
+    window.terminal_process = TerminalStub()
+    window.input_bar_animator = AnimatorStub()
+
+    PetWindow._set_pending_tool_action(window, action)
+
+    assert window.pending_tool_action is action
+    assert window.tool_confirmation_panel.actions == [None]
+    assert window.terminal_process.approvals[0]["command"] == ["printf", "hello"]
+
+
+def test_terminal_approval_voice_is_played_once_per_app_session() -> None:
+    from app.agent import PendingToolAction
+    from app.ui.pet_window import PetWindow
+
+    action = PendingToolAction("terminal_exec", {"command": ["pwd"]}, "")
+    segments = [ChatSegment(ja="確認して。", zh="请确认")]
+    window = PetWindow.__new__(PetWindow)
+    window._terminal_approval_voice_played = False
+
+    first = PetWindow._segments_for_pending_action(window, segments, action)
+    second = PetWindow._segments_for_pending_action(window, segments, action)
+
+    assert not first[0].suppress_tts
+    assert second[0].suppress_tts
+    assert second[0].translation == "请确认"
+
+
+def test_terminal_pending_action_does_not_pin_pet_input_bar() -> None:
+    from app.agent import PendingToolAction
+    from app.ui.pet_window import PetWindow
+
+    class InputStub:
+        def hasFocus(self) -> bool:  # noqa: N802 - Qt API compatibility.
+            return False
+
+        def text(self) -> str:
+            return ""
+
+    class MinimalWindow:
+        _input_bar_pinned = PetWindow._input_bar_pinned
+        input_edit = InputStub()
+        pending_tool_action = PendingToolAction(
+            "terminal_exec",
+            {"command": ["pwd"]},
+            "",
+        )
+
+        def _input_bar_foreground_allowed(self) -> bool:
+            return True
+
+    assert not MinimalWindow()._input_bar_pinned()
+
+
+def test_terminal_approval_decision_waits_for_chat_worker_cleanup() -> None:
+    from app.agent import PendingToolAction
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _handle_terminal_approval_resolved = PetWindow._handle_terminal_approval_resolved
+        _consume_deferred_terminal_approval = PetWindow._consume_deferred_terminal_approval
+
+    action = PendingToolAction("terminal_exec", {"command": ["pwd"]}, "")
+    window = MinimalWindow()
+    window.pending_tool_action = action
+    window.worker_thread = object()
+    window._deferred_terminal_approval = None
+    applied: list[tuple[str, str]] = []
+    window._apply_terminal_approval_decision = (
+        lambda approval_id, decision: applied.append((approval_id, decision))
+    )
+
+    window._handle_terminal_approval_resolved(action.id, "once")
+
+    assert applied == []
+    assert window._deferred_terminal_approval == (action.id, "once")
+
+    window.worker_thread = None
+    window._consume_deferred_terminal_approval()
+
+    assert applied == [(action.id, "once")]
+    assert window._deferred_terminal_approval is None
 
 
 def test_pet_window_applies_visual_effect_dynamic_property() -> None:

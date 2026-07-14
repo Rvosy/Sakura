@@ -56,6 +56,7 @@ from app.agent import (
     AgentEvent,
     AgentProgress,
     AgentResult,
+    ApprovalScope,
     PendingToolAction,
 )
 from app.agent.memory_curator import (
@@ -126,6 +127,13 @@ from app.core.interaction import clear_interaction_id, set_interaction_id
 from app.core.mobile_chat_bridge import MobileChatBridge, MobileChatBusyError
 from app.core.mobile_chat_worker import MobileChatWorker
 from app.core.resource_manager import ResourceManager
+from app.terminal.approval import (
+    is_terminal_approval,
+    suppress_segment_tts,
+    terminal_approval_payload,
+)
+from app.terminal.tauri_process import TauriTerminalProcess
+from app.terminal.tools import set_terminal_tools_enabled
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.plugins.manager import (
@@ -624,6 +632,7 @@ class PetWindow(QWidget):
         self.memory_store = context.memory_store
         self.reminder_store = context.reminder_store
         self.tool_registry = context.tool_registry
+        self.terminal_manager = context.terminal_manager
         self.mcp_tool_provider = context.mcp_tool_provider
         self.plugin_manager = context.plugin_manager
         self._wire_plugin_service_backends()
@@ -715,6 +724,8 @@ class PetWindow(QWidget):
             input_bar_offset=self.input_bar_offset,
         ).window_size
         self.pending_tool_action: PendingToolAction | None = None
+        self._terminal_approval_voice_played = False
+        self._deferred_terminal_approval: tuple[str, str] | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
@@ -731,6 +742,19 @@ class PetWindow(QWidget):
         self._quit_approved = False
         # 后台线程生命周期、lingering 线程与退役 wrapper 统一由资源管理器治理。
         self.resource_manager = ResourceManager(self, registry=context.resource_registry)
+        self.terminal_process = TauriTerminalProcess(
+            base_dir=self.base_dir,
+            on_failure=context.terminal_manager.transport_failed,
+            parent=self,
+        )
+        self.terminal_process.approval_resolved.connect(
+            self._handle_terminal_approval_resolved
+        )
+        self.terminal_process.approval_failed.connect(
+            self._handle_terminal_approval_failed
+        )
+        self.terminal_process.host_failed.connect(self._handle_terminal_host_failed)
+        context.terminal_manager.bind_transport(self.terminal_process)
         self._register_runtime_service_resources()
         self.screen_observation_followup_in_progress = False
         self.active_event: AgentEvent | None = None
@@ -975,8 +999,10 @@ class PetWindow(QWidget):
             self.confirm_pending_action,
             self.cancel_pending_action,
             self.input_bar,
+            on_confirm_process=self.confirm_pending_process_action,
         )
         self.confirm_action_button = self.tool_confirmation_panel.confirm_button
+        self.confirm_process_action_button = self.tool_confirmation_panel.process_button
         self.cancel_action_button = self.tool_confirmation_panel.cancel_button
 
         input_layout = QHBoxLayout()
@@ -2769,8 +2795,11 @@ class PetWindow(QWidget):
         return (
             self.input_edit.hasFocus()
             or bool(self.input_edit.text().strip())
-            # 用待确认动作状态而非 panel.isVisible()：输入栏卡片收起时 panel 的可见性会假阴性。
-            or self.pending_tool_action is not None
+            # 终端动作在独立窗口确认，不应把桌宠输入栏固定在前台。
+            or (
+                self.pending_tool_action is not None
+                and not is_terminal_approval(self.pending_tool_action)
+            )
         )
 
     def _create_tray_icon(self) -> None:
@@ -2796,9 +2825,25 @@ class PetWindow(QWidget):
             on_toggle_always_on_top=self._toggle_always_on_top,
             on_show_history=self.show_history,
             on_show_runtime_log=self.show_runtime_log,
+            terminal_enabled=getattr(getattr(self, "terminal_manager", None), "enabled", False),
+            on_show_terminal=getattr(self, "_show_terminal", lambda: None),
             on_show_settings=self.show_settings,
             on_quit=getattr(self, "request_quit", QApplication.quit),
         )
+
+    @Slot()
+    def _show_terminal(self) -> None:
+        if not self.terminal_process.binary_available:
+            show_themed_warning(
+                self,
+                "终端不可用",
+                "终端程序（sakura-terminal）未找到，请先构建 tools/terminal-tauri。",
+            )
+            return
+        try:
+            self.terminal_manager.show()
+        except RuntimeError as exc:
+            show_themed_warning(self, "终端不可用", str(exc))
 
     def _refresh_tray_menu(self) -> None:
         if hasattr(self, "tray_icon"):
@@ -3290,7 +3335,17 @@ class PetWindow(QWidget):
                     "character_id": self.character_profile.id,
                 },
             )
-        self._show_reply_segments(reply.segments)
+        pending_action_parser = getattr(self, "_pending_action_from_result", None)
+        segment_router = getattr(self, "_segments_for_pending_action", None)
+        pending_action = (
+            pending_action_parser(result) if callable(pending_action_parser) else None
+        )
+        display_segments = (
+            segment_router(reply.segments, pending_action)
+            if callable(segment_router)
+            else reply.segments
+        )
+        self._show_reply_segments(display_segments)
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
@@ -3645,15 +3700,27 @@ class PetWindow(QWidget):
 
     @Slot()
     def confirm_pending_action(self) -> None:
+        self._confirm_pending_action(ApprovalScope.ONCE)
+
+    @Slot()
+    def confirm_pending_process_action(self) -> None:
+        self._confirm_pending_action(ApprovalScope.PROCESS)
+
+    def _confirm_pending_action(self, approval_scope: ApprovalScope) -> None:
         if self.pending_tool_action is None or self.worker_thread is not None:
+            return
+        if not self.pending_tool_action.allows_scope(approval_scope):
             return
         self._mark_user_activity()
         self._begin_interaction("confirm_action_clicked")
         action = self.pending_tool_action
-        self._log_interaction_stage("confirm_action", action.to_dict())
+        self._log_interaction_stage(
+            "confirm_action",
+            {**action.to_log_dict(), "approval_scope": approval_scope.value},
+        )
         self._set_pending_tool_action(None)
         self._clear_queued_reply_segments_for_action_resolution()
-        self._run_action_worker(confirmed_action=action)
+        self._run_action_worker(confirmed_action=action, approval_scope=approval_scope)
 
     @Slot()
     def cancel_pending_action(self) -> None:
@@ -3662,7 +3729,7 @@ class PetWindow(QWidget):
         self._mark_user_activity()
         self._begin_interaction("cancel_action_clicked")
         action = self.pending_tool_action
-        self._log_interaction_stage("cancel_action", action.to_dict())
+        self._log_interaction_stage("cancel_action", action.to_log_dict())
         self._set_pending_tool_action(None)
         self._clear_queued_reply_segments_for_action_resolution()
         self._run_action_worker(cancelled_action=action)
@@ -3670,6 +3737,7 @@ class PetWindow(QWidget):
     def _run_action_worker(
         self,
         confirmed_action: PendingToolAction | None = None,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         cancelled_action: PendingToolAction | None = None,
     ) -> None:
         self._set_busy(True)
@@ -3677,12 +3745,14 @@ class PetWindow(QWidget):
             "action_worker_start",
             {
                 "confirmed": confirmed_action.tool_name if confirmed_action is not None else "",
+                "approval_scope": approval_scope.value,
                 "cancelled": cancelled_action.tool_name if cancelled_action is not None else "",
             },
         )
         worker = ChatWorker(
             self.agent_runtime,
             confirmed_action=confirmed_action,
+            approval_scope=approval_scope,
             cancelled_action=cancelled_action,
             interaction_id=self.active_interaction_id,
         )
@@ -3729,24 +3799,71 @@ class PetWindow(QWidget):
         if record_history:
             self.messages.append({"role": "assistant", "content": reply.text})
             self._record_assistant_reply_history(reply, _debug=result._debug)
-        self._show_reply_segments(reply.segments)
+        pending_action_parser = getattr(self, "_pending_action_from_result", None)
+        segment_router = getattr(self, "_segments_for_pending_action", None)
+        pending_action = (
+            pending_action_parser(result) if callable(pending_action_parser) else None
+        )
+        display_segments = (
+            segment_router(reply.segments, pending_action)
+            if callable(segment_router)
+            else reply.segments
+        )
+        self._show_reply_segments(display_segments)
         self._apply_pending_action_from_result(result)
 
     def _apply_pending_action_from_result(self, result: AgentResult) -> None:
+        self._set_pending_tool_action(self._pending_action_from_result(result))
+
+    def _pending_action_from_result(self, result: AgentResult) -> PendingToolAction | None:
         for action in result.actions:
             if action.type != "pending_action":
                 continue
             try:
-                self._set_pending_tool_action(PendingToolAction.from_dict(action.payload))
+                return PendingToolAction.from_dict(action.payload)
             except ValueError as exc:
                 log_event("Tool", "待确认动作无效", {"error": str(exc)})
-            return
-        self._set_pending_tool_action(None)
+            return None
+        return None
+
+    def _segments_for_pending_action(
+        self,
+        segments: list[ChatSegment],
+        action: PendingToolAction | None,
+    ) -> list[ChatSegment]:
+        if not is_terminal_approval(action):
+            return segments
+        if not segments:
+            return segments
+        if not self._terminal_approval_voice_played:
+            self._terminal_approval_voice_played = True
+            return segments
+        return suppress_segment_tts(segments)
 
     def _set_pending_tool_action(self, action: PendingToolAction | None) -> None:
+        previous = self.pending_tool_action
+        if (
+            is_terminal_approval(previous)
+            and (action is None or action.id != previous.id)
+        ):
+            deferred = getattr(self, "_deferred_terminal_approval", None)
+            if deferred is not None and deferred[0] == previous.id:
+                self._deferred_terminal_approval = None
+            self.terminal_process.clear_approval(previous.id)
         self.pending_tool_action = action
         has_action = action is not None
-        self.tool_confirmation_panel.set_action(action)
+        terminal_action = is_terminal_approval(action)
+        self.tool_confirmation_panel.set_action(None if terminal_action else action)
+        if terminal_action:
+            shown = self.terminal_process.request_approval(terminal_approval_payload(action))
+            if not shown:
+                QTimer.singleShot(
+                    0,
+                    lambda action_id=action.id: self._handle_terminal_approval_failed(
+                        action_id,
+                        "终端确认窗口不可用。",
+                    ),
+                )
         if hasattr(self, "input_bar_animator"):
             self.input_bar_animator.sync()
         panel_state = self.tool_confirmation_panel.state_snapshot()
@@ -3757,9 +3874,72 @@ class PetWindow(QWidget):
                 {
                     "has_action": True,
                     "tool_name": action.tool_name,
+                    "confirmation_surface": "terminal" if terminal_action else "pet",
                     **panel_state,
                 },
             )
+
+    @Slot(str, str)
+    def _handle_terminal_approval_resolved(self, approval_id: str, decision: str) -> None:
+        action = self.pending_tool_action
+        if not is_terminal_approval(action) or action.id != approval_id:
+            log_event(
+                "Terminal",
+                "忽略过期终端确认结果",
+                {"approval_id": approval_id, "decision": decision},
+            )
+            return
+        if self.worker_thread is not None:
+            self._deferred_terminal_approval = (approval_id, decision)
+            return
+        self._apply_terminal_approval_decision(approval_id, decision)
+
+    def _apply_terminal_approval_decision(self, approval_id: str, decision: str) -> None:
+        action = self.pending_tool_action
+        if not is_terminal_approval(action) or action.id != approval_id:
+            return
+        if decision == "cancel":
+            self.cancel_pending_action()
+            return
+        try:
+            scope = ApprovalScope(decision)
+        except ValueError:
+            log_event(
+                "Terminal",
+                "忽略无效终端授权范围",
+                {"approval_id": approval_id, "decision": decision},
+            )
+            return
+        self._confirm_pending_action(scope)
+
+    @Slot(str, str)
+    def _handle_terminal_approval_failed(self, approval_id: str, message: str) -> None:
+        action = self.pending_tool_action
+        if not is_terminal_approval(action) or action.id != approval_id:
+            return
+        log_event(
+            "Terminal",
+            "终端确认窗口失败，本次动作已取消",
+            {"approval_id": approval_id, "error": message},
+        )
+        show_themed_warning(
+            self,
+            "终端确认失败",
+            f"{message}\n本次终端操作不会执行。",
+        )
+        self._handle_terminal_approval_resolved(approval_id, "cancel")
+
+    @Slot(str)
+    def _handle_terminal_host_failed(self, message: str) -> None:
+        action = self.pending_tool_action
+        if is_terminal_approval(action):
+            self._handle_terminal_approval_failed(action.id, message)
+
+    def _consume_deferred_terminal_approval(self) -> None:
+        deferred = self._deferred_terminal_approval
+        self._deferred_terminal_approval = None
+        if deferred is not None:
+            self._apply_terminal_approval_decision(*deferred)
 
     def _clear_queued_reply_segments_for_action_resolution(self) -> None:
         self.subtitle_controller.clear_queued_reply_segments_for_action_resolution()
@@ -4209,6 +4389,7 @@ class PetWindow(QWidget):
             return
         self._set_busy(False)
         self._log_interaction_stage("ui_busy_disabled")
+        self._consume_deferred_terminal_approval()
         self._maybe_start_auto_memory_curation()
 
     def _record_completed_memory_turn(self) -> None:
@@ -5175,6 +5356,8 @@ class PetWindow(QWidget):
             launch_at_login_supported=is_launch_at_login_supported(),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
+            terminal_settings=self.terminal_manager.settings,
+            terminal_binary_available=self.terminal_process.binary_available,
             memory_store=getattr(self, "memory_store", None),
             plugin_settings_contributions=getattr(
                 getattr(self, "plugin_manager", None),
@@ -5383,11 +5566,21 @@ class PetWindow(QWidget):
             except (OSError, RuntimeError):
                 startup_external_before = current_startup_settings.launch_at_login
         startup_external_attempted = False
+        previous_terminal_settings = self.terminal_manager.settings
+        terminal_settings_applied = False
         api_changed = result.api.settings != self.api_client.settings
         plugin_enabled_changed = False
         plugin_settings_changed = False
         config_snapshot = _snapshot_config_files(self.base_dir)
         try:
+            if (
+                not result.terminal.enabled
+                and is_terminal_approval(getattr(self, "pending_tool_action", None))
+            ):
+                raise RuntimeError("有终端命令正在等待确认，请先在终端窗口确认或取消。")
+            self.terminal_manager.update_settings(result.terminal)
+            terminal_settings_applied = True
+            self.settings_service.save_terminal_settings(result.terminal)
             if api_changed:
                 self.settings_service.save_api_settings(result.api.settings)
             self.settings_service.save_api_profiles(result.api.profiles)
@@ -5474,6 +5667,11 @@ class PetWindow(QWidget):
                 startup_external_attempted = True
                 self._apply_launch_at_login_settings(result_startup_settings)
         except (CharacterConfigError, OSError, ValueError, RuntimeError) as exc:
+            if terminal_settings_applied:
+                try:
+                    self.terminal_manager.update_settings(previous_terminal_settings)
+                except RuntimeError:
+                    pass
             try:
                 _restore_config_files(config_snapshot)
             except OSError as rollback_exc:
@@ -5516,6 +5714,7 @@ class PetWindow(QWidget):
             MCPRuntimeSettings(),
         )
         self.mcp_settings = result.mcp
+        set_terminal_tools_enabled(self.tool_registry, result.terminal.enabled)
         agent_runtime = getattr(self, "agent_runtime", None)
         set_runtime_loop_settings = getattr(agent_runtime, "set_runtime_loop_settings", None)
         if callable(set_runtime_loop_settings):

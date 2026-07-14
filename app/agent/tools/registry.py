@@ -14,11 +14,24 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.agent.actions import PendingToolAction
+from app.agent.actions import ApprovalScope, PendingToolAction, ToolConfirmationDetails
 from app.core.runtime_log import log_event
 
 
 ToolHandler = Callable[[dict[str, Any]], Any]
+ToolConfirmationBuilder = Callable[[dict[str, Any]], ToolConfirmationDetails]
+ToolConfirmationPredicate = Callable[[dict[str, Any]], bool]
+ToolApprovalHandler = Callable[[PendingToolAction, ApprovalScope, "ToolExecutionResult"], None]
+
+
+@dataclass(frozen=True)
+class ToolGroupMetadata:
+    """工具组的模型提示与默认激活策略。"""
+
+    id: str
+    label: str = ""
+    prompt_hint: str = ""
+    default_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,13 @@ class Tool:
     risk: str = "low"
     capability: str | None = None
     source: str = "builtin"
+    confirmation_bypass_free_access: bool = False
+    confirmation_builder: ToolConfirmationBuilder | None = None
+    confirmation_predicate: ToolConfirmationPredicate | None = None
+    approval_handler: ToolApprovalHandler | None = None
+    log_arguments: bool = True
+    log_result_content: bool = True
+    hidden_when_capability_disabled: bool = False
 
     @property
     def metadata(self) -> ToolMetadata:
@@ -79,6 +99,7 @@ class ToolExecutionResult:
     success: bool
     content: Any
     error: str = ""
+    log_content: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -88,6 +109,17 @@ class ToolExecutionResult:
         }
         if self.error:
             data["error"] = self.error
+        return data
+
+    def to_log_dict(self) -> dict[str, Any]:
+        data = self.to_dict()
+        if not self.log_content:
+            content = self.content
+            data["content"] = {
+                "redacted": True,
+                "type": type(content).__name__,
+                "chars": len(str(content)) if content is not None else 0,
+            }
         return data
 
 
@@ -101,12 +133,29 @@ class ToolRegistry:
     - 工具搜索 (search_tools / list_tool_groups)
     """
 
-    def __init__(self, tools: list[Tool] | None = None) -> None:
+    def __init__(
+        self,
+        tools: list[Tool] | None = None,
+        group_metadata: list[ToolGroupMetadata] | None = None,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
+        self._group_metadata: dict[str, ToolGroupMetadata] = {
+            item.id: item
+            for item in (
+                ToolGroupMetadata("default", "内置工具", default_active=True),
+                ToolGroupMetadata("mcp", "MCP 工具", default_active=True),
+                ToolGroupMetadata("memory", "记忆工具", default_active=True),
+                ToolGroupMetadata("browser", "浏览器工具"),
+            )
+        }
+        self._enabled_capabilities: set[str] = set()
+        self._enabled_groups: set[str] = set()
         from app.agent.tools.permission_policy import ToolPermissionPolicy
         self.permission_policy = ToolPermissionPolicy()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
+        for metadata in group_metadata or []:
+            self.register_group(metadata)
         for tool in tools or []:
             self.register(tool)
 
@@ -132,6 +181,17 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
+
+    def register_group(self, metadata: ToolGroupMetadata) -> None:
+        group_id = metadata.id.strip()
+        if not group_id:
+            raise ValueError("工具组 id 不能为空。")
+        self._group_metadata[group_id] = ToolGroupMetadata(
+            id=group_id,
+            label=metadata.label.strip(),
+            prompt_hint=metadata.prompt_hint.strip(),
+            default_active=bool(metadata.default_active),
+        )
 
     def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
         """移除工具；expected 可防止误删后来覆盖的同名工具。"""
@@ -167,6 +227,42 @@ class ToolRegistry:
     def groups(self) -> set[str]:
         """返回所有工具组。"""
         return {tool.group for tool in self.all()}
+
+    def default_active_groups(self) -> set[str]:
+        return {
+            group_id
+            for group_id, metadata in self._group_metadata.items()
+            if metadata.default_active or group_id in self._enabled_groups
+        }
+
+    def set_group_enabled(self, group_id: str, enabled: bool) -> None:
+        normalized = group_id.strip()
+        if not normalized:
+            return
+        if enabled:
+            self._enabled_groups.add(normalized)
+        else:
+            self._enabled_groups.discard(normalized)
+
+    def group_prompt_hints(self, active_groups: set[str]) -> tuple[str, ...]:
+        return tuple(
+            metadata.prompt_hint
+            for group_id, metadata in self._group_metadata.items()
+            if group_id in active_groups and metadata.prompt_hint
+        )
+
+    @property
+    def enabled_capabilities(self) -> set[str]:
+        return set(self._enabled_capabilities)
+
+    def set_capability_enabled(self, capability: str, enabled: bool) -> None:
+        normalized = capability.strip()
+        if not normalized:
+            return
+        if enabled:
+            self._enabled_capabilities.add(normalized)
+        else:
+            self._enabled_capabilities.discard(normalized)
 
     # ---- 描述 (模型可见) ----
 
@@ -246,6 +342,12 @@ class ToolRegistry:
         for tool in self.all():
             if tool.name in {"search_tools", "list_tool_groups"}:
                 continue
+            if (
+                tool.hidden_when_capability_disabled
+                and tool.capability
+                and tool.capability not in self._enabled_capabilities
+            ):
+                continue
             if keyword and not _tool_matches_keyword(tool, keyword):
                 continue
             results.append(
@@ -265,6 +367,12 @@ class ToolRegistry:
         """列出所有工具组及数量。"""
         counts: dict[str, int] = {}
         for tool in self.all():
+            if (
+                tool.hidden_when_capability_disabled
+                and tool.capability
+                and tool.capability not in self._enabled_capabilities
+            ):
+                continue
             counts[tool.group] = counts.get(tool.group, 0) + 1
         return [
             {"group": group, "tool_count": count}
@@ -292,7 +400,7 @@ class ToolRegistry:
             {
                 "name": name,
                 "known": tool is not None,
-                "arguments": arguments,
+                "arguments": arguments if tool is None or tool.log_arguments else {"redacted": True},
                 "reason": reason,
             },
         )
@@ -324,13 +432,29 @@ class ToolRegistry:
             log_event("ToolRegistry", "工具参数无效", result.to_dict())
             return result
 
+        confirmation_details = ToolConfirmationDetails(risk_level=tool.risk)
+        if tool.confirmation_builder is not None:
+            try:
+                confirmation_details = tool.confirmation_builder(arguments).normalized()
+            except Exception as exc:  # noqa: BLE001 - 确认元数据异常时收紧权限而非绕过确认
+                log_event(
+                    "ToolRegistry",
+                    "工具确认信息构建失败，已按高风险单次执行处理",
+                    {"name": name, "error": str(exc)},
+                )
+                confirmation_details = ToolConfirmationDetails(
+                    summary=f"执行工具 {name}",
+                    risk_level="high",
+                )
         action = PendingToolAction.create(
             tool_name=name,
             arguments=arguments,
             reason=reason,
             tool_call_id=tool_call_id,
+            confirmation_details=confirmation_details,
+            log_arguments=tool.log_arguments,
         )
-        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event("ToolRegistry", "工具等待用户确认", action.to_log_dict())
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -378,7 +502,7 @@ class ToolRegistry:
                     "name": name,
                     "group": tool.group,
                     "risk": tool.risk,
-                    "arguments": arguments,
+                    "arguments": arguments if tool.log_arguments else {"redacted": True},
                 },
             )
             self._emit_tool_event(
@@ -400,9 +524,42 @@ class ToolRegistry:
             tool_name=name,
             success=True,
             content=content,
+            log_content=tool.log_result_content,
         )
         log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
         self._emit_tool_event("tool.finished", {"name": name})
+        return result
+
+    def execute_confirmed(
+        self,
+        action: PendingToolAction,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
+    ) -> ToolExecutionResult:
+        """执行已确认动作，并把授权结果通知工具所有者。"""
+        if not action.allows_scope(approval_scope):
+            return ToolExecutionResult(
+                tool_name=action.tool_name,
+                success=False,
+                content="",
+                error=f"工具动作不允许授权范围：{approval_scope.value}",
+            )
+        result = self.execute(action.tool_name, action.arguments)
+        tool = self.get(action.tool_name)
+        if result.success and tool is not None and tool.approval_handler is not None:
+            try:
+                tool.approval_handler(action, approval_scope, result)
+            except Exception as exc:  # noqa: BLE001 - 授权登记失败必须回报，不能静默放宽权限
+                log_event(
+                    "ToolRegistry",
+                    "工具授权结果登记失败",
+                    {"name": action.tool_name, "scope": approval_scope.value, "error": str(exc)},
+                )
+                return ToolExecutionResult(
+                    tool_name=action.tool_name,
+                    success=False,
+                    content="",
+                    error=f"工具已执行，但授权状态登记失败：{exc}",
+                )
         return result
 
 
@@ -563,6 +720,6 @@ def _matches_schema_type(value: Any, schema_type: str) -> bool:
 
 
 def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict[str, Any]:
-    data = result.to_dict()
+    data = result.to_log_dict()
     data["elapsed_ms"] = int((time.perf_counter() - started_at) * 1000)
     return data

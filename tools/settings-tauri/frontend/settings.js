@@ -20,6 +20,10 @@ const fields = {
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
   windowsMcp: document.getElementById("windowsMcp"),
+  terminalEnabled: document.getElementById("terminalEnabled"),
+  terminalDefaultCwd: document.getElementById("terminalDefaultCwd"),
+  terminalBrowseButton: document.getElementById("terminalBrowseButton"),
+  terminalAvailability: document.getElementById("terminalAvailability"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
   toolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
@@ -357,6 +361,39 @@ function syncDesktopMcpControl(mcp) {
   if (desc) {
     const experimental = desktop.experimental_text ? `${desktop.experimental_text}。` : "";
     desc.textContent = `${experimental}允许桌宠通过 MCP 操作桌面与应用，修改后需重启 Sakura。`;
+  }
+}
+
+function syncTerminalState() {
+  const available = Boolean(request?.terminal?.binary_available);
+  const enabled = fields.terminalEnabled.checked;
+  fields.terminalEnabled.disabled = !available && !enabled;
+  fields.terminalDefaultCwd.disabled = !enabled;
+  fields.terminalBrowseButton.disabled = !enabled;
+  fields.terminalAvailability.textContent = available
+    ? "终端组件已就绪。新命令仍会逐条请求确认。"
+    : "终端组件未构建，本次无法启用；已启用的配置仍可在此关闭。";
+}
+
+async function chooseTerminalDirectory() {
+  const dialogApi = window.__TAURI__?.dialog;
+  let selected = "";
+  if (dialogApi?.open) {
+    selected = await dialogApi.open({
+      title: "选择终端默认工作目录",
+      directory: true,
+      multiple: false,
+      defaultPath: fields.terminalDefaultCwd.value || undefined,
+    });
+  } else {
+    selected = window.prompt("请输入目录完整路径：", fields.terminalDefaultCwd.value) || "";
+  }
+  if (Array.isArray(selected)) {
+    [selected] = selected;
+  }
+  if (selected) {
+    fields.terminalDefaultCwd.value = String(selected);
+    fields.terminalDefaultCwd.dispatchEvent(new Event("input", { bubbles: true }));
   }
 }
 
@@ -4201,6 +4238,10 @@ function collectSettings() {
       windows_enabled: fields.windowsMcp.checked,
     },
     runtime_loop: collectRuntimeLoopSettings(),
+    terminal: {
+      enabled: fields.terminalEnabled.checked,
+      default_cwd: fields.terminalDefaultCwd.value.trim(),
+    },
     system_basic: collectSystemBasicSettings(),
     theme: collectThemeSettings(),
     theme_changed: themeChanged,
@@ -4319,6 +4360,9 @@ async function load() {
   fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
   syncDesktopMcpControl(request.mcp);
   fields.windowsMcp.checked = request.mcp.windows_enabled;
+  fields.terminalEnabled.checked = Boolean(request.terminal?.enabled);
+  fields.terminalDefaultCwd.value = request.terminal?.default_cwd || "";
+  syncTerminalState();
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
   fields.toolCallsPerStep.value = request.runtime_loop.max_tool_calls_per_step;
   fields.toolCallsPerTurn.value = request.runtime_loop.max_tool_calls_per_turn;
@@ -4428,6 +4472,8 @@ fields.characterEditorButton.addEventListener("click", launchCharacterStudio);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
+fields.terminalEnabled.addEventListener("change", syncTerminalState);
+fields.terminalBrowseButton.addEventListener("click", chooseTerminalDirectory);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);
 fields.onboardingCharacterStep.addEventListener("click", () => showOnboardingStep("character"));
 fields.onboardingProviderStep.addEventListener("click", () => showOnboardingStep("providers"));

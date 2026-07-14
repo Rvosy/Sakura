@@ -54,6 +54,7 @@ from app.agent.screen_awareness import (
     estimate_screen_context_image_tokens_for_size,
     screen_context_resolution_size,
 )
+from app.terminal.settings import TerminalSettings
 from app.config.character_archive import (
     CharacterArchiveError,
     export_character_archive,
@@ -186,7 +187,7 @@ from app.voice.tts_settings import (
 _LINGERING_RPC_WORKERS: list[tuple[QThread, QObject]] = []
 
 TAURI_SETTINGS_BIN_ENV = "SAKURA_TAURI_SETTINGS_BIN"
-TAURI_SETTINGS_PROTOCOL_VERSION = 3
+TAURI_SETTINGS_PROTOCOL_VERSION = 4
 SETTINGS_FOCUS_RETRY_DELAYS_MS = (100, 300, 700, 1500)
 
 # stdout 行以此标记开头时，携带一份实时布局预览（与 src-tauri/src/lib.rs 中常量保持一致）。
@@ -314,6 +315,7 @@ class TauriSettingsResult:
     tts: TauriTtsResult = field(default_factory=TauriTtsResult)
     system_extra: TauriSystemExtraResult = field(default_factory=TauriSystemExtraResult)
     memory_curation: MemoryCurationSettings = field(default_factory=MemoryCurationSettings)
+    terminal: TerminalSettings = field(default_factory=TerminalSettings)
     plugins: TauriPluginResult = field(default_factory=TauriPluginResult)
 
 
@@ -522,6 +524,8 @@ def build_tauri_settings_request(
     launch_at_login_supported: bool = True,
     backchannel_settings: BackchannelSettings | None = None,
     memory_curation_settings: MemoryCurationSettings | None = None,
+    terminal_settings: TerminalSettings | None = None,
+    terminal_binary_available: bool = False,
     plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
     model: str | None = None,
     parent_widget: QWidget | None = None,
@@ -599,6 +603,11 @@ def build_tauri_settings_request(
             backchannel_settings or BackchannelSettings(),
         ),
         "memory": _memory_to_mapping(memory_curation_settings or MemoryCurationSettings()),
+        "terminal": {
+            "enabled": bool((terminal_settings or TerminalSettings()).enabled),
+            "default_cwd": (terminal_settings or TerminalSettings()).normalized().default_cwd,
+            "binary_available": bool(terminal_binary_available),
+        },
         "plugins": _plugins_to_mapping(base_dir, plugin_settings_contributions),
         "resources": {},
         "theme_defaults": _theme_to_mapping(DEFAULT_THEME_SETTINGS),
@@ -783,6 +792,9 @@ def parse_tauri_settings_payload(
     memory = raw.get("memory")
     if not isinstance(memory, dict):
         raise ValueError("Tauri 设置结果缺少记忆配置。")
+    terminal = raw.get("terminal")
+    if not isinstance(terminal, dict):
+        raise ValueError("Tauri 设置结果缺少终端配置。")
     plugins = raw.get("plugins")
     if plugins is None:
         plugins = {}
@@ -855,6 +867,10 @@ def parse_tauri_settings_payload(
         tts=_tts_from_mapping_required(tts),
         system_extra=_system_extra_from_mapping_required(system_extra),
         memory_curation=_memory_from_mapping_required(memory),
+        terminal=TerminalSettings(
+            enabled=_required_bool(terminal, "enabled"),
+            default_cwd=str(terminal.get("default_cwd") or ""),
+        ).normalized(),
         plugins=_plugins_from_mapping_required(plugins),
     )
 
@@ -1066,6 +1082,8 @@ class TauriSettingsProcess(QObject):
         launch_at_login_supported: bool = True,
         backchannel_settings: BackchannelSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
+        terminal_settings: TerminalSettings | None = None,
+        terminal_binary_available: bool = False,
         memory_store: Any | None = None,
         plugin_settings_contributions: list[PluginSettingsContribution] | None = None,
         studio_launcher: Callable[[str | None], bool | Mapping[str, object]] | None = None,
@@ -1111,6 +1129,8 @@ class TauriSettingsProcess(QObject):
         self.launch_at_login_supported = bool(launch_at_login_supported)
         self.backchannel_settings = backchannel_settings or BackchannelSettings()
         self.memory_curation_settings = memory_curation_settings or MemoryCurationSettings()
+        self.terminal_settings = (terminal_settings or TerminalSettings()).normalized()
+        self.terminal_binary_available = bool(terminal_binary_available)
         self.memory_store = memory_store
         self.plugin_settings_contributions = list(plugin_settings_contributions or [])
         self.studio_launcher = studio_launcher
@@ -1254,6 +1274,8 @@ class TauriSettingsProcess(QObject):
             launch_at_login_supported=self.launch_at_login_supported,
             backchannel_settings=self.backchannel_settings,
             memory_curation_settings=self.memory_curation_settings,
+            terminal_settings=self.terminal_settings,
+            terminal_binary_available=self.terminal_binary_available,
             plugin_settings_contributions=self.plugin_settings_contributions,
             model=self.model,
             parent_widget=self.parent_widget,

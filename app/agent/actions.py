@@ -2,10 +2,42 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any
 import uuid
 
 from app.llm.chat_reply import ChatReply
+
+
+class ApprovalScope(str, Enum):
+    """用户对待确认工具动作授予的执行范围。"""
+
+    ONCE = "once"
+    PROCESS = "process"
+
+
+@dataclass(frozen=True)
+class ToolConfirmationDetails:
+    """工具提供给确认界面的结构化说明。"""
+
+    summary: str = ""
+    working_directory: str = ""
+    risk_level: str = "normal"
+    allowed_scopes: tuple[ApprovalScope, ...] = (ApprovalScope.ONCE,)
+
+    def normalized(self) -> "ToolConfirmationDetails":
+        risk_level = self.risk_level.strip().lower()
+        if risk_level not in {"low", "normal", "medium", "high"}:
+            risk_level = "medium"
+        scopes = tuple(dict.fromkeys(self.allowed_scopes))
+        if ApprovalScope.ONCE not in scopes:
+            scopes = (ApprovalScope.ONCE, *scopes)
+        return ToolConfirmationDetails(
+            summary=self.summary.strip(),
+            working_directory=self.working_directory.strip(),
+            risk_level=risk_level,
+            allowed_scopes=scopes,
+        )
 
 
 @dataclass(frozen=True)
@@ -44,6 +76,11 @@ class PendingToolAction:
     created_at: str
     tool_call_id: str = ""
     continuation_messages: list[dict[str, Any]] = field(default_factory=list)
+    summary: str = ""
+    working_directory: str = ""
+    risk_level: str = "normal"
+    allowed_approval_scopes: tuple[ApprovalScope, ...] = (ApprovalScope.ONCE,)
+    log_arguments: bool = True
 
     def __init__(
         self,
@@ -55,6 +92,11 @@ class PendingToolAction:
         created_at: str = "",
         tool_call_id: str = "",
         continuation_messages: list[dict[str, Any]] | None = None,
+        summary: str = "",
+        working_directory: str = "",
+        risk_level: str = "normal",
+        allowed_approval_scopes: tuple[ApprovalScope, ...] | list[ApprovalScope | str] | None = None,
+        log_arguments: bool = True,
     ) -> None:
         object.__setattr__(self, "id", id.strip() or uuid.uuid4().hex[:8])
         object.__setattr__(self, "tool_name", tool_name)
@@ -71,6 +113,17 @@ class PendingToolAction:
             "continuation_messages",
             [dict(message) for message in (continuation_messages or []) if isinstance(message, dict)],
         )
+        details = ToolConfirmationDetails(
+            summary=summary,
+            working_directory=working_directory,
+            risk_level=risk_level,
+            allowed_scopes=_normalize_approval_scopes(allowed_approval_scopes),
+        ).normalized()
+        object.__setattr__(self, "summary", details.summary)
+        object.__setattr__(self, "working_directory", details.working_directory)
+        object.__setattr__(self, "risk_level", details.risk_level)
+        object.__setattr__(self, "allowed_approval_scopes", details.allowed_scopes)
+        object.__setattr__(self, "log_arguments", bool(log_arguments))
 
     @classmethod
     def create(
@@ -79,7 +132,10 @@ class PendingToolAction:
         arguments: dict[str, Any],
         reason: str = "",
         tool_call_id: str = "",
+        confirmation_details: ToolConfirmationDetails | None = None,
+        log_arguments: bool = True,
     ) -> "PendingToolAction":
+        details = (confirmation_details or ToolConfirmationDetails()).normalized()
         return cls(
             tool_name=tool_name,
             arguments=dict(arguments),
@@ -87,6 +143,11 @@ class PendingToolAction:
             id=uuid.uuid4().hex[:8],
             created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             tool_call_id=tool_call_id.strip(),
+            summary=details.summary,
+            working_directory=details.working_directory,
+            risk_level=details.risk_level,
+            allowed_approval_scopes=details.allowed_scopes,
+            log_arguments=log_arguments,
         )
 
     @classmethod
@@ -124,6 +185,11 @@ class PendingToolAction:
                 for message in continuation_messages
                 if isinstance(message, dict)
             ],
+            summary=str(data.get("summary") or ""),
+            working_directory=str(data.get("working_directory") or ""),
+            risk_level=str(data.get("risk_level") or "normal"),
+            allowed_approval_scopes=data.get("allowed_approval_scopes"),
+            log_arguments=bool(data.get("log_arguments", True)),
         )
 
     def with_continuation_messages(
@@ -139,7 +205,15 @@ class PendingToolAction:
             created_at=self.created_at,
             tool_call_id=self.tool_call_id,
             continuation_messages=[dict(message) for message in continuation_messages],
+            summary=self.summary,
+            working_directory=self.working_directory,
+            risk_level=self.risk_level,
+            allowed_approval_scopes=self.allowed_approval_scopes,
+            log_arguments=self.log_arguments,
         )
+
+    def allows_scope(self, scope: ApprovalScope) -> bool:
+        return scope in self.allowed_approval_scopes
 
     def to_dict(self, *, include_context: bool = False) -> dict[str, Any]:
         data = {
@@ -149,10 +223,37 @@ class PendingToolAction:
             "reason": self.reason,
             "created_at": self.created_at,
             "tool_call_id": self.tool_call_id,
+            "summary": self.summary,
+            "working_directory": self.working_directory,
+            "risk_level": self.risk_level,
+            "allowed_approval_scopes": [scope.value for scope in self.allowed_approval_scopes],
+            "log_arguments": self.log_arguments,
         }
         if include_context and self.continuation_messages:
             data["continuation_messages"] = self.continuation_messages
         return data
+
+    def to_log_dict(self) -> dict[str, Any]:
+        data = self.to_dict()
+        if not self.log_arguments:
+            data["arguments"] = {"redacted": True}
+        return data
+
+
+def _normalize_approval_scopes(
+    values: tuple[ApprovalScope, ...] | list[ApprovalScope | str] | None,
+) -> tuple[ApprovalScope, ...]:
+    if values is None:
+        return (ApprovalScope.ONCE,)
+    scopes: list[ApprovalScope] = []
+    for value in values:
+        try:
+            scope = value if isinstance(value, ApprovalScope) else ApprovalScope(str(value))
+        except ValueError:
+            continue
+        if scope not in scopes:
+            scopes.append(scope)
+    return tuple(scopes) or (ApprovalScope.ONCE,)
 
 
 @dataclass(frozen=True)

@@ -289,6 +289,27 @@
             </div>
           </fieldset>
           <fieldset class="settings-group">
+            <legend>终端能力</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="terminalEnabled">
+                <span class="setting-title">允许桌宠使用可见终端</span>
+                <span class="setting-desc">命令以当前用户权限运行且没有系统沙箱；每条新命令都需要确认，后台子进程可能继续运行。</span>
+              </label>
+              <span class="setting-toggle"><input id="terminalEnabled" type="checkbox" /></span>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="terminalDefaultCwd">
+                <span class="setting-title">默认工作目录</span>
+                <span class="setting-desc">模型没有指定目录时，从这里启动命令。</span>
+              </label>
+              <div class="terminal-cwd-controls">
+                <input id="terminalDefaultCwd" type="text" spellcheck="false" />
+                <button id="terminalBrowseButton" type="button" class="secondary-button">选择</button>
+              </div>
+            </div>
+            <p id="terminalAvailability" class="hint"></p>
+          </fieldset>
+          <fieldset class="settings-group">
             <legend>工具循环上限</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="agentSteps">

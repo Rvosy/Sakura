@@ -37,6 +37,7 @@ from app.voice.tts_settings import TTSConfigError
 from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
+from app.terminal.manager import TerminalManager
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -142,6 +143,13 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     vision_api_client = _client_for_explicit_slot(vision_slot, MODEL_SLOT_VISION_CHAT)
 
     resource_registry = ResourceRegistry()
+    terminal_settings = settings_service.load_terminal_settings()
+    terminal_manager = TerminalManager(terminal_settings)
+    resource_registry.track_service(
+        stop_with_timeout=terminal_manager.stop,
+        label="terminal_manager",
+        shutdown_order=950,
+    )
     memory_store = MemoryStore(
         base_dir=base_dir,
         api_settings=settings,
@@ -154,6 +162,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         base_dir,
         memory_store,
         reminder_store,
+        terminal_manager,
     )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
@@ -246,6 +255,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
             screen_awareness_settings=screen_awareness_settings,
+            terminal_settings=terminal_settings,
+            terminal_manager=terminal_manager,
         ),
         startup_initializing=True,
     )
@@ -295,6 +306,7 @@ def build_deferred_services(
             base_dir,
             context.memory_store,
             context.reminder_store,
+            context.terminal_manager,
         )
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()

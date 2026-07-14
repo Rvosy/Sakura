@@ -7,7 +7,14 @@ from dataclasses import replace
 from threading import Lock
 from typing import Any, Callable
 
-from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.actions import (
+    AgentAction,
+    AgentEvent,
+    AgentProgress,
+    AgentResult,
+    ApprovalScope,
+    PendingToolAction,
+)
 from app.agent.context_orchestrator import ContextOrchestrator, build_context_request
 from app.agent.memory_recall import MemoryRecallService
 from app.agent.memory import MemoryStore
@@ -493,7 +500,7 @@ class AgentRuntime:
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory"}
+        active_groups = self.tools.default_active_groups()
         turn_memory_fragments = ()
         memory_status = "unknown"
         memory_needs_refresh = True
@@ -515,7 +522,9 @@ class AgentRuntime:
             )
             if browser_page_mode or visible_browser_guard_active:
                 active_groups.add("browser")
-            allowed_capabilities = {SCREEN_OBSERVATION_CAPABILITY} if allow_screen_observation else set()
+            allowed_capabilities = self.tools.enabled_capabilities
+            if allow_screen_observation:
+                allowed_capabilities.add(SCREEN_OBSERVATION_CAPABILITY)
             tool_defs = tool_routing._filter_openai_tools_for_browser_routing(
                 self.tools.describe_openai_tools(
                     allowed_capabilities=allowed_capabilities,
@@ -558,17 +567,23 @@ class AgentRuntime:
                     session_fragments=self._session_state_fragments(request),
                     memory_fragments=turn_memory_fragments,
                 )
+                group_hints = "\n".join(self.tools.group_prompt_hints(active_groups))
+                loop_extra_instructions = "\n".join(
+                    part
+                    for part in (planning_extra_instructions.strip(), group_hints)
+                    if part
+                )
                 prompt_build = (
                     self._build_screen_awareness_tool_prompt_result(
                         snapshot,
-                        extra_instructions=planning_extra_instructions,
+                        extra_instructions=loop_extra_instructions,
                         include_visual_observation=include_visual_observation,
                     )
                     if screen_awareness_mode
                     else self._build_tool_prompt_result(
                         snapshot,
                         allow_screen_observation=allow_screen_observation,
-                        extra_instructions=planning_extra_instructions,
+                        extra_instructions=loop_extra_instructions,
                         browser_page_mode=browser_page_guard_active,
                         visible_browser_mode=visible_browser_guard_active,
                         include_visual_observation=include_visual_observation,
@@ -842,7 +857,7 @@ class AgentRuntime:
                         error=SCREEN_OBSERVATION_DISABLED_ERROR,
                     )
 
-                log_event("AgentRuntime", "工具调用完成", _redact_tool_result_for_model(prepared))
+                log_event("AgentRuntime", "工具调用完成", _tool_result_for_log(prepared))
                 step_results.append(prepared)
                 execution_results.append(prepared)
                 tool_messages.extend(
@@ -946,7 +961,7 @@ class AgentRuntime:
                     "返回待确认动作",
                     {
                         "step_index": step_index,
-                        "pending_actions": [action.to_dict() for action in pending_actions],
+                        "pending_actions": [action.to_log_dict() for action in pending_actions],
                         "tools_elapsed_ms": int((time.perf_counter() - tools_started_at) * 1000),
                         "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
                     },
@@ -1061,7 +1076,7 @@ class AgentRuntime:
             "最终回复生成完成",
             {
                 "segments": len(final_reply.segments),
-                "actions": [_redact_tool_result_for_model(result) for result in execution_results],
+                "actions": [_tool_result_for_log(result) for result in execution_results],
                 "final_reply_elapsed_ms": int((time.perf_counter() - final_started_at) * 1000),
                 "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
             },
@@ -1075,13 +1090,18 @@ class AgentRuntime:
     def handle_confirmed_action(
         self,
         action: PendingToolAction,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
-        log_event("AgentRuntime", "执行已确认动作", action.to_dict())
-        result = self.tools.execute(action.tool_name, action.arguments)
+        log_event(
+            "AgentRuntime",
+            "执行已确认动作",
+            {**action.to_log_dict(), "approval_scope": approval_scope.value},
+        )
+        result = self.tools.execute_confirmed(action, approval_scope)
         check_cancelled(cancel_checker)
         results = [result]
         verification_result = _verify_confirmed_windows_click(self.tools, action.tool_name)
@@ -1171,7 +1191,7 @@ class AgentRuntime:
             "AgentRuntime",
             "已确认动作处理完成",
             {
-                "results": [_redact_tool_result_for_model(item) for item in results],
+                "results": [_tool_result_for_log(item) for item in results],
                 "segments": len(reply.segments),
             },
         )
@@ -1181,7 +1201,7 @@ class AgentRuntime:
         )
 
     def handle_cancelled_action(self, action: PendingToolAction) -> AgentResult:
-        log_event("AgentRuntime", "用户取消待确认动作", action.to_dict())
+        log_event("AgentRuntime", "用户取消待确认动作", action.to_log_dict())
         return AgentResult(
             reply=parse_chat_reply(
                 json.dumps(
@@ -1989,6 +2009,12 @@ def _redact_tool_result_for_model(result: ToolExecutionResult) -> dict[str, Any]
     return data
 
 
+def _tool_result_for_log(result: ToolExecutionResult) -> dict[str, Any]:
+    if not result.log_content:
+        return result.to_log_dict()
+    return _redact_tool_result_for_model(result)
+
+
 def _truncate_value_for_model(value: Any, max_chars: int) -> Any:
     text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= max_chars:
@@ -2126,13 +2152,22 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
     if len(actions) == 1:
         action = actions[0]
         text = _describe_pending_action(action)
+        terminal_confirmation = action.tool_name.startswith("terminal_")
         return parse_chat_reply(
             json.dumps(
                 {
                     "segments": [
                         {
-                            "ja": "実行する前に確認させて。",
-                            "zh": f"执行前需要你确认：{text}",
+                            "ja": (
+                                "ターミナルで確認してね。"
+                                if terminal_confirmation
+                                else "実行する前に確認させて。"
+                            ),
+                            "zh": (
+                                f"请在终端窗口确认：{text}"
+                                if terminal_confirmation
+                                else f"执行前需要你确认：{text}"
+                            ),
                             "tone": "请求",
                             "portrait": "伸手命令",
                         }
@@ -2160,6 +2195,8 @@ def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
 
 
 def _describe_pending_action(action: PendingToolAction) -> str:
+    if action.tool_name.startswith("terminal_"):
+        return action.summary or "执行终端操作"
     if action.tool_name == "open_url":
         return f"打开网页 {action.arguments.get('url', '')}"
     if action.tool_name == "open_local_folder":

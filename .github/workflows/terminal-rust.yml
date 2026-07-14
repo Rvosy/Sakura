@@ -1,0 +1,54 @@
+name: Terminal Rust
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "tools/terminal-tauri/**"
+      - ".github/workflows/terminal-rust.yml"
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "tools/terminal-tauri/**"
+      - ".github/workflows/terminal-rust.yml"
+
+concurrency:
+  group: terminal-rust-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terminal-rust:
+    name: Terminal Rust checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tauri system dependencies
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Check formatting
+        working-directory: tools/terminal-tauri/src-tauri
+        run: cargo fmt --check
+
+      - name: Check terminal host
+        working-directory: tools/terminal-tauri/src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Test terminal host
+        working-directory: tools/terminal-tauri/src-tauri
+        run: cargo test --locked

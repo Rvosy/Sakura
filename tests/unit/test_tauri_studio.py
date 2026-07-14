@@ -216,19 +216,69 @@ def test_portrait_default_radio_uses_themeable_custom_style() -> None:
     assert ".portrait-default-control input:checked::before" in stylesheet
 
 
-def test_release_workflows_build_and_package_both_tauri_apps() -> None:
+def test_release_workflows_build_and_package_all_tauri_apps() -> None:
     root = Path(__file__).parents[2]
     for relative_path in (".github/workflows/package.yml", ".github/workflows/release.yml"):
         workflow = (root / relative_path).read_text(encoding="utf-8")
 
         assert "tools/settings-tauri/src-tauri" in workflow
         assert "tools/studio-tauri/src-tauri" in workflow
+        assert "tools/terminal-tauri/src-tauri" in workflow
         assert "cargo build --release --locked" in workflow
         assert "target/release/sakura-settings.exe" in workflow
         assert "target/release/sakura-studio.exe" in workflow
+        assert "target/release/sakura-terminal.exe" in workflow
         assert "target/release/sakura-settings" in workflow
         assert "target/release/sakura-studio" in workflow
+        assert "target/release/sakura-terminal" in workflow
         assert 'chmod +x "target/release/$binary"' in workflow
+
+
+def test_terminal_rust_workflow_checks_host_only_when_relevant() -> None:
+    root = Path(__file__).parents[2]
+    workflow = (root / ".github/workflows/terminal-rust.yml").read_text(encoding="utf-8")
+
+    assert '"tools/terminal-tauri/**"' in workflow
+    assert '".github/workflows/terminal-rust.yml"' in workflow
+    assert "libwebkit2gtk-4.1-dev" in workflow
+    assert "rustup toolchain install stable --profile minimal --component rustfmt" in workflow
+    assert "cargo fmt --check" in workflow
+    assert "cargo check --locked --all-targets" in workflow
+    assert "cargo test --locked" in workflow
+
+
+def test_tauri_settings_request_includes_terminal_availability(tmp_path: Path) -> None:
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+    from app.terminal.settings import TerminalSettings
+    from app.ui.tauri_settings import build_tauri_settings_request
+
+    request = build_tauri_settings_request(
+        ScreenAwarenessSettings(),
+        base_dir=tmp_path,
+        terminal_settings=TerminalSettings(enabled=True, default_cwd=str(tmp_path)),
+        terminal_binary_available=True,
+    )
+
+    assert request["terminal"] == {
+        "enabled": True,
+        "default_cwd": str(tmp_path),
+        "binary_available": True,
+    }
+
+
+def test_terminal_webview_cannot_spawn_processes() -> None:
+    root = Path(__file__).parents[2]
+    rust = (
+        root / "tools" / "terminal-tauri" / "src-tauri" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    frontend = (root / "tools" / "terminal-tauri" / "frontend" / "terminal.js").read_text(
+        encoding="utf-8"
+    )
+    invoke_handler = rust.split(".invoke_handler(", 1)[1].split("])\n", 1)[0]
+
+    assert "terminal_spawn" not in invoke_handler
+    assert 'invoke("terminal_spawn"' not in frontend
+    assert '"spawn" =>' in rust
 
 
 def test_macos_packages_include_gpt_sovits_installer_script() -> None:

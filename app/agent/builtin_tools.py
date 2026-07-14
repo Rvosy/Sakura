@@ -14,12 +14,15 @@ from app.agent.tools import Tool, ToolRegistry
 from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
+from app.terminal.manager import TerminalManager
+from app.terminal.tools import register_terminal_tools
 
 
 def create_builtin_tool_registry(
     base_dir: Path,
     memory: MemoryStore | None = None,
     reminders: ReminderStore | None = None,
+    terminal_manager: TerminalManager | None = None,
 ) -> ToolRegistry:
     paths = StoragePaths(base_dir)
     store = TodoStore(paths.tasks_store())
@@ -277,6 +280,8 @@ def create_builtin_tool_registry(
             risk="low",
         )
     )
+    if terminal_manager is not None:
+        register_terminal_tools(registry, terminal_manager)
     log_event(
         "ToolRegistry",
         "内置工具注册完成",

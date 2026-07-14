@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura 终端</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="terminal-bar">
+      <div class="terminal-title">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <span>Sakura 终端</span>
+        <span class="terminal-status" id="terminalStatus">等待会话</span>
+      </div>
+      <button id="stopButton" class="icon-button" type="button" title="停止进程" aria-label="停止进程" disabled>■</button>
+    </header>
+    <section id="approvalPanel" class="approval-panel" aria-live="polite" hidden>
+      <div class="approval-heading">
+        <div>
+          <span class="approval-eyebrow">命令确认</span>
+          <h1 id="approvalSummary">等待确认</h1>
+        </div>
+        <span id="approvalRisk" class="risk-badge">普通风险</span>
+      </div>
+      <div class="approval-details">
+        <div class="approval-field" id="approvalCommandField">
+          <span>命令</span>
+          <code id="approvalCommand"></code>
+        </div>
+        <div class="approval-field" id="approvalCwdField">
+          <span>工作目录</span>
+          <code id="approvalCwd"></code>
+        </div>
+      </div>
+      <div class="approval-actions">
+        <button id="cancelApprovalButton" class="secondary-button" type="button">取消</button>
+        <button id="approveProcessButton" class="secondary-button" type="button" hidden>允许此进程继续交互</button>
+        <button id="approveOnceButton" class="primary-button" type="button">仅执行本次</button>
+      </div>
+    </section>
+    <main id="terminal" aria-label="终端输出"></main>
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/addon-fit.js"></script>
+    <script src="terminal.js"></script>
+  </body>
+</html>
