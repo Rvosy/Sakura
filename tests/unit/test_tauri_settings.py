@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
@@ -20,6 +22,7 @@ from app.config.settings_service import (
     StartupSettings,
 )
 from app.config.theme import DEFAULT_THEME_SETTINGS
+from app.config.yaml_config import save_yaml_mapping
 from app.plugins.models import (
     PluginSettingsAction,
     PluginSettingsContribution,
@@ -272,6 +275,54 @@ def test_apply_settings_saves_sections_and_updates_runtime_without_restarting_ap
     assert getattr(context.character_registry, "runtime_loop").max_agent_steps_per_turn == 7
     assert context.refreshed_character == "demo"
     assert context.tts_refreshed is True
+    assert result["runtimeLayout"]["control_panel_width"] == 700
+    assert result["runtimeLayout"]["control_panel_vertical_offset"] == 0
+
+
+def test_late_tts_save_failure_rolls_back_already_written_layout(tmp_path: Path) -> None:
+    class FailingDiskSettingsService(FakeSettingsService):
+        def __init__(self, root: Path) -> None:
+            super().__init__()
+            self.api_config_path = root / "data" / "config" / "api.yaml"
+            self.characters_config_path = root / "data" / "config" / "characters.yaml"
+            self.system_config_path = root / "data" / "config" / "system_config.yaml"
+            save_yaml_mapping(
+                self.system_config_path,
+                {"ui": dict(self.system_values["ui"])},
+            )
+
+        def save_system_values(self, section: str, values):  # type: ignore[no-untyped-def]
+            super().save_system_values(section, values)
+            save_yaml_mapping(
+                self.system_config_path,
+                {"ui": dict(self.system_values["ui"])},
+            )
+
+        def save_tts_settings(self, _value):  # type: ignore[no-untyped-def]
+            raise RuntimeError("模拟后续 TTS 保存失败")
+
+    context = _context()
+    service = FailingDiskSettingsService(tmp_path)
+    context.settings_service = service
+    application = SimpleNamespace(
+        context=context,
+        config=SimpleNamespace(base_dir=tmp_path),
+        _screen_awareness_enabled=True,
+        _screen_context_resolution="fullscreen",
+        sync_scheduler_jobs=lambda **_kwargs: None,
+        refresh_character=lambda _character_id: None,
+        refresh_tts=lambda: None,
+    )
+    payload = build_settings_request(context, base_dir=tmp_path)
+    payload["character"]["layout"]["control_panel_width"] = 820
+    before = service.system_config_path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="模拟后续 TTS 保存失败"):
+        apply_settings_payload(application, payload)
+
+    assert service.system_config_path.read_bytes() == before
+    assert application._screen_awareness_enabled is True
+    assert application._screen_context_resolution == "fullscreen"
 
 
 def test_settings_module_is_backed_by_app_settings_service() -> None:

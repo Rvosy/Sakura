@@ -14,6 +14,7 @@ import yaml
 
 from app.plugins.models import PluginSpec
 from app.core.runtime_log import log_event
+from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
 
@@ -178,7 +179,7 @@ def save_plugin_enabled_overrides(
     previous_text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if previous_text == next_text:
         return False
-    path.write_text(next_text, encoding="utf-8")
+    atomic_write_text(path, next_text, encoding="utf-8", backup=True)
     return True
 
 

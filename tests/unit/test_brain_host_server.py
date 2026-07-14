@@ -145,7 +145,13 @@ def test_application_initializes_context_and_returns_json_startup_dto(tmp_path: 
     }
     assert startup["theme"]["primary_color"].startswith("#")
     assert startup["layout"]["portrait_scale_percent"] == 100
+    assert startup["layout"]["control_panel_vertical_offset"] == 0
+    assert "vertical_offset" not in startup["layout"]
     assert startup["subtitle"]["language"] == "zh"
+    assert startup["bubble"] == {
+        "auto_hide_enabled": True,
+        "auto_hide_delay_seconds": 5,
+    }
     assert startup["preferences"] == {
         "version": 1,
         "subtitleLanguage": "zh",

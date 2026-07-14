@@ -4,6 +4,7 @@ const initialState = () => ({
   theme: {},
   layout: {},
   subtitle: {},
+  bubble: {},
   interaction: {
     busy: false,
     interactionId: null,
@@ -47,6 +48,7 @@ export function createPetStore() {
         theme: bootstrap?.theme ?? {},
         layout: bootstrap?.layout ?? {},
         subtitle: bootstrap?.subtitle ?? {},
+        bubble: bootstrap?.bubble ?? {},
         interaction: {
           busy: false,
           interactionId: null,

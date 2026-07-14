@@ -21,7 +21,7 @@ from app.config.models import (
     ModelSelectionSettings,
     ModelSlotSelection,
 )
-from app.config.yaml_config import load_yaml_mapping
+from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
 from app.ui.theme import (
@@ -364,6 +364,25 @@ def test_save_bubble_settings_preserves_other_ui_keys() -> None:
     # 写气泡配置时用读-改-写，原有 ui 键不应丢失。
     assert system["ui"]["subtitle_language"] == "ja"
     assert system["ui"]["bubble_auto_hide_delay_seconds"] == 8
+
+
+def test_legacy_vertical_offset_is_normalized_only_at_config_boundary() -> None:
+    root = _runtime_root("legacy_vertical_offset")
+    service = AppSettingsService(root)
+    save_yaml_mapping(
+        service.system_config_path,
+        {"ui": {"vertical_offset": 75, "bubble_height": 160}},
+    )
+
+    loaded = service.load_system_values("ui")
+
+    assert loaded["control_panel_vertical_offset"] == 75
+    assert "vertical_offset" not in loaded
+
+    service.save_system_values("ui", {"control_panel_vertical_offset": -40})
+    persisted = load_yaml_mapping(service.system_config_path)["ui"]
+    assert persisted["control_panel_vertical_offset"] == -40
+    assert "vertical_offset" not in persisted
 
 
 def test_settings_service_loads_and_saves_memory_curation_settings() -> None:

@@ -780,12 +780,18 @@ class AppSettingsService:
         save_yaml_mapping(self.characters_config_path, data)
 
     def load_system_values(self, section: str) -> dict[str, Any]:
-        return self._system_section(section)
+        values = self._system_section(section)
+        if section == "ui" and "vertical_offset" in values:
+            legacy_offset = values.pop("vertical_offset")
+            values.setdefault("control_panel_vertical_offset", legacy_offset)
+        return values
 
     def save_system_values(self, section: str, values: dict[str, Any]) -> None:
         data = load_yaml_mapping(self.system_config_path)
         current = _mapping(data.get(section))
         current.update(values)
+        if section == "ui" and "control_panel_vertical_offset" in values:
+            current.pop("vertical_offset", None)
         data[section] = current
         save_yaml_mapping(self.system_config_path, data)
 

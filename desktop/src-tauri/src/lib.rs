@@ -46,6 +46,7 @@ pub fn run() {
             app_state::host_call,
             app_state::save_settings,
             app_state::apply_settings,
+            app_state::begin_layout_preview,
             app_state::preview_layout,
             app_state::cancel_settings,
             app_state::show_studio,

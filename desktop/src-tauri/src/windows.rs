@@ -119,6 +119,10 @@ pub fn apply_pet_window_layout(
     width: f64,
     height: f64,
     bottom_margin: f64,
+    portrait_anchor_x: f64,
+    portrait_anchor_y: f64,
+    previous_portrait_anchor_x: Option<f64>,
+    previous_portrait_anchor_y: Option<f64>,
 ) -> Result<PetWindowPlacement, String> {
     let logical_width = width.clamp(320.0, 1200.0);
     let logical_height = height.clamp(420.0, 1200.0);
@@ -129,10 +133,30 @@ pub fn apply_pet_window_layout(
     let physical_width = (logical_width * scale_factor).round().max(1.0) as u32;
     let physical_height = (logical_height * scale_factor).round().max(1.0) as u32;
     let margin = (bottom_margin.max(0.0) * scale_factor).round() as u32;
-    let center_x = old_position.x.saturating_add((old_size.width / 2) as i32);
     let bounds = monitor_bounds(&monitor);
-    let (x, y) =
-        compute_pet_window_position(bounds, center_x, physical_width, physical_height, margin);
+    let (x, y) = match (previous_portrait_anchor_x, previous_portrait_anchor_y) {
+        (Some(previous_x), Some(previous_y)) => {
+            let global_anchor_x = old_position
+                .x
+                .saturating_add((previous_x * scale_factor).round() as i32);
+            let global_anchor_y = old_position
+                .y
+                .saturating_add((previous_y * scale_factor).round() as i32);
+            compute_pet_window_position_from_anchor(
+                bounds,
+                global_anchor_x,
+                global_anchor_y,
+                (portrait_anchor_x * scale_factor).round() as i32,
+                (portrait_anchor_y * scale_factor).round() as i32,
+                physical_width,
+                physical_height,
+            )
+        }
+        _ => {
+            let center_x = old_position.x.saturating_add((old_size.width / 2) as i32);
+            compute_pet_window_position(bounds, center_x, physical_width, physical_height, margin)
+        }
+    };
     window
         .set_size(LogicalSize::new(logical_width, logical_height))
         .map_err(|error| error.to_string())?;
@@ -318,6 +342,36 @@ fn compute_pet_window_position(
     (x, y)
 }
 
+fn compute_pet_window_position_from_anchor(
+    work_area: PhysicalBounds,
+    global_anchor_x: i32,
+    global_anchor_y: i32,
+    local_anchor_x: i32,
+    local_anchor_y: i32,
+    window_width: u32,
+    window_height: u32,
+) -> (i32, i32) {
+    let desired_x = global_anchor_x.saturating_sub(local_anchor_x);
+    let desired_y = global_anchor_y.saturating_sub(local_anchor_y);
+    let max_x = work_area
+        .x
+        .saturating_add(work_area.width.saturating_sub(window_width) as i32);
+    let max_y = work_area
+        .y
+        .saturating_add(work_area.height.saturating_sub(window_height) as i32);
+    let x = if window_width >= work_area.width {
+        work_area.x
+    } else {
+        desired_x.clamp(work_area.x, max_x)
+    };
+    let y = if window_height >= work_area.height {
+        work_area.y
+    } else {
+        desired_y.clamp(work_area.y, max_y)
+    };
+    (x, y)
+}
+
 pub fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
@@ -364,6 +418,54 @@ mod tests {
         assert_eq!(
             compute_pet_window_position(work_area, -400, 1600, 1200, 24),
             (-1280, 40)
+        );
+    }
+
+    #[test]
+    fn windows_pet_position_preserves_portrait_anchor_when_layout_changes() {
+        let work_area = PhysicalBounds {
+            x: -1920,
+            y: -200,
+            width: 2560,
+            height: 1600,
+        };
+        let global_anchor = (-420, 860);
+
+        for (window_size, local_anchor) in [
+            ((736, 640), (368, 578)),
+            // control_panel_vertical_offset=-200 / input_bar_offset=200
+            ((736, 956), (368, 578)),
+            // control_panel_vertical_offset=-200 / input_bar_offset=0
+            ((736, 756), (368, 578)),
+            ((956, 980), (478, 718)),
+            ((736, 1040), (368, 778)),
+        ] {
+            let (x, y) = compute_pet_window_position_from_anchor(
+                work_area,
+                global_anchor.0,
+                global_anchor.1,
+                local_anchor.0,
+                local_anchor.1,
+                window_size.0,
+                window_size.1,
+            );
+            assert_eq!(x + local_anchor.0, global_anchor.0);
+            assert_eq!(y + local_anchor.1, global_anchor.1);
+        }
+    }
+
+    #[test]
+    fn windows_pet_anchor_position_clamps_to_work_area_edges() {
+        let work_area = PhysicalBounds {
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+        };
+
+        assert_eq!(
+            compute_pet_window_position_from_anchor(work_area, 1910, 730, 400, 700, 900, 900,),
+            (1920, 0)
         );
     }
 

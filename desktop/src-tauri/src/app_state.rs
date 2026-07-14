@@ -636,13 +636,21 @@ pub fn save_settings(
     window: tauri::WebviewWindow,
     state: State<'_, DesktopAppState>,
     settings: Value,
+    preview_session_id: Option<String>,
+    preview_revision: Option<u64>,
 ) -> Result<(), String> {
     let response = apply_secondary_settings(&window, &state, settings)?;
-    let startup = state.refresh_startup()?;
-    let route = startup_route_from_payload(Some(&startup));
-    if state.startup_route() == StartupRoute::OnboardingRequired && route != StartupRoute::Ready {
-        return Err("首次设置尚未完成：请配置聊天模型并选择角色。".into());
-    }
+    emit_layout_preview_commit(
+        window.app_handle(),
+        &response,
+        preview_session_id.as_deref(),
+        preview_revision.unwrap_or_default(),
+    );
+    let startup = state.refresh_startup().ok();
+    let route = startup
+        .as_ref()
+        .map(|payload| startup_route_from_payload(Some(payload)))
+        .unwrap_or_else(|| state.startup_route());
     state.set_startup_route(route);
     emit_settings_refresh(window.app_handle(), &response);
     let app = window.app_handle().clone();
@@ -656,25 +664,71 @@ pub fn apply_settings(
     window: tauri::WebviewWindow,
     state: State<'_, DesktopAppState>,
     settings: Value,
+    preview_session_id: Option<String>,
+    preview_revision: Option<u64>,
 ) -> Result<Value, String> {
     let response = apply_secondary_settings(&window, &state, settings)?;
-    let startup = state.refresh_startup()?;
-    let route = startup_route_from_payload(Some(&startup));
-    if state.startup_route() != StartupRoute::Ready {
-        state.set_startup_route(route);
+    emit_layout_preview_commit(
+        window.app_handle(),
+        &response,
+        preview_session_id.as_deref(),
+        preview_revision.unwrap_or_default(),
+    );
+    if let Ok(startup) = state.refresh_startup() {
+        let route = startup_route_from_payload(Some(&startup));
+        if state.startup_route() != StartupRoute::Ready {
+            state.set_startup_route(route);
+        }
     }
     emit_settings_refresh(window.app_handle(), &response);
     Ok(response)
 }
 
 #[tauri::command]
-pub fn preview_layout(app: AppHandle, layout: Value) -> Result<(), String> {
-    app.emit_to("main", "sakura://layout-preview", layout)
-        .map_err(|error| error.to_string())
+pub fn begin_layout_preview(
+    app: AppHandle,
+    session_id: String,
+    revision: u64,
+    layout: Value,
+) -> Result<(), String> {
+    app.emit_to(
+        "main",
+        "sakura://layout-preview-begin",
+        json!({"sessionId": session_id, "revision": revision, "layout": layout}),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn cancel_settings(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn preview_layout(
+    app: AppHandle,
+    session_id: String,
+    revision: u64,
+    layout: Value,
+) -> Result<(), String> {
+    app.emit_to(
+        "main",
+        "sakura://layout-preview",
+        json!({"sessionId": session_id, "revision": revision, "layout": layout}),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_settings(
+    window: tauri::WebviewWindow,
+    preview_session_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(session_id) = preview_session_id.filter(|value| !value.trim().is_empty()) {
+        window
+            .app_handle()
+            .emit_to(
+                "main",
+                "sakura://layout-preview-restore",
+                json!({"sessionId": session_id}),
+            )
+            .map_err(|error| error.to_string())?;
+    }
     window.destroy().map_err(|error| error.to_string())
 }
 
@@ -706,6 +760,25 @@ fn apply_secondary_settings(
 
 fn emit_settings_refresh(app: &AppHandle, response: &Value) {
     let _ = app.emit("sakura://settings-changed", response.clone());
+}
+
+fn emit_layout_preview_commit(
+    app: &AppHandle,
+    response: &Value,
+    session_id: Option<&str>,
+    revision: u64,
+) {
+    let Some(session_id) = session_id.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let Some(layout) = response.get("runtimeLayout") else {
+        return;
+    };
+    let _ = app.emit_to(
+        "main",
+        "sakura://layout-preview-commit",
+        json!({"sessionId": session_id, "revision": revision, "layout": layout}),
+    );
 }
 
 fn secondary_window_kind(label: &str) -> Option<&'static str> {

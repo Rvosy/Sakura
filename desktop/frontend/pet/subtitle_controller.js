@@ -7,6 +7,9 @@ export class SubtitleController {
     setTimer = (callback, delay) => window.setTimeout(callback, delay),
     clearTimer = (timer) => window.clearTimeout(timer),
     onSegment = () => {},
+    onStart = () => {},
+    onTextChange = () => {},
+    onCancel = () => {},
     onComplete = () => {},
   }) {
     this.target = target;
@@ -16,6 +19,9 @@ export class SubtitleController {
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.onSegment = onSegment;
+    this.onStart = onStart;
+    this.onTextChange = onTextChange;
+    this.onCancel = onCancel;
     this.onComplete = onComplete;
     this.timer = null;
     this.sequence = 0;
@@ -34,10 +40,12 @@ export class SubtitleController {
   }
 
   showSegments(segments) {
-    this.cancel("");
+    this.#reset();
     this.segments = Array.isArray(segments) ? segments.filter(Boolean) : [];
     this.segmentIndex = 0;
     const sequence = this.sequence;
+    this.onStart();
+    this.#setText("");
     if (!this.segments.length) {
       this.onComplete();
       return;
@@ -46,16 +54,32 @@ export class SubtitleController {
   }
 
   setText(text) {
-    this.cancel(String(text ?? ""));
+    this.#reset();
+    this.onStart();
+    const replacement = String(text ?? "");
+    this.#setText(replacement);
+    this.onCancel(replacement);
   }
 
   cancel(replacement = "") {
+    this.#reset();
+    this.onStart();
+    const text = String(replacement ?? "");
+    this.#setText(text);
+    this.onCancel(text);
+  }
+
+  #reset() {
     this.sequence += 1;
     if (this.timer != null) this.clearTimer(this.timer);
     this.timer = null;
     this.segments = [];
     this.segmentIndex = 0;
-    this.target.textContent = String(replacement ?? "");
+  }
+
+  #setText(text) {
+    this.target.textContent = String(text ?? "");
+    this.onTextChange(this.target.textContent);
   }
 
   #startSegment(sequence) {
@@ -68,12 +92,12 @@ export class SubtitleController {
     this.onSegment(segment);
     const text = this.language === "ja" ? segment.ja || segment.zh || "" : segment.zh || segment.ja || "";
     const characters = Array.from(text);
-    this.target.textContent = "";
+    this.#setText("");
     let index = 0;
     const typeNext = () => {
       if (sequence !== this.sequence) return;
       if (index < characters.length) {
-        this.target.textContent += characters[index];
+        this.#setText(this.target.textContent + characters[index]);
         index += 1;
         this.timer = this.setTimer(typeNext, this.typingIntervalMs);
         return;

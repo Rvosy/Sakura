@@ -29,6 +29,7 @@ const elements = {
   transitionPortrait: document.querySelector("#portrait-transition"),
   portraitFallback: document.querySelector("#portrait-fallback"),
   characterName: document.querySelector("#character-name"),
+  bubble: document.querySelector("#speech-bubble"),
   subtitleText: document.querySelector("#subtitle-text"),
   send: document.querySelector("#send-message"),
   cancel: document.querySelector("#cancel-message"),
@@ -55,9 +56,15 @@ async function callDesktop(command, payload = {}) {
   return invoke(command, payload);
 }
 
+let petController = null;
+
 const subtitleController = new SubtitleController({
   target: elements.subtitleText,
   onSegment: (segment) => portraitController.showForSegment(segment),
+  onStart: () => petController?.handleSubtitleSpeaking(),
+  onTextChange: () => petController?.handleSubtitleTextChanged(),
+  onCancel: () => petController?.handleSubtitleSettled(),
+  onComplete: () => petController?.handleSubtitleSettled(),
 });
 
 const portraitController = new PortraitController({
@@ -67,7 +74,7 @@ const portraitController = new PortraitController({
   onNaturalSize: (size) => petController.setPortraitNaturalSize(size),
 });
 
-const petController = new PetController({
+petController = new PetController({
   store: petStore,
   invoke: callDesktop,
   portraitController,
@@ -117,7 +124,9 @@ chatController = new ChatController({
 const bootstrapLoader = createSessionBootstrapLoader({
   fetchBootstrap: () => callDesktop("pet_bootstrap"),
   applyBootstrap: (bootstrap) => {
-    petController.applyBootstrap(bootstrap);
+    petController.applyBootstrap(bootstrap).catch((error) => {
+      setResult(`桌宠布局刷新失败：${error}`, "error");
+    });
     contextMenu.applyBootstrap(bootstrap);
   },
 });
@@ -171,6 +180,7 @@ function renderBrainStatus(brain) {
 }
 
 elements.stage.addEventListener("pointerdown", async (event) => {
+  petController.handleUserInteraction();
   if (
     event.button !== 0 ||
     event.target.closest(
@@ -295,9 +305,24 @@ window.addEventListener("DOMContentLoaded", () => {
     listen("sakura://manual-observation-error", ({ payload }) =>
       captureController.handleError(payload),
     );
+    listen("sakura://layout-preview-begin", ({ payload }) => {
+      petController.beginLayoutPreview(payload || {}).catch((error) => {
+        setResult(`布局预览初始化失败：${error}`, "error");
+      });
+    });
     listen("sakura://layout-preview", ({ payload }) => {
       petController.previewLayout(payload || {}).catch((error) => {
         setResult(`布局预览失败：${error}`, "error");
+      });
+    });
+    listen("sakura://layout-preview-commit", ({ payload }) => {
+      petController.commitLayoutPreview(payload || {}).catch((error) => {
+        setResult(`布局应用失败：${error}`, "error");
+      });
+    });
+    listen("sakura://layout-preview-restore", ({ payload }) => {
+      petController.restoreLayoutPreview(payload || {}).catch((error) => {
+        setResult(`布局回退失败：${error}`, "error");
       });
     });
     listen("sakura://character-changed", () => {

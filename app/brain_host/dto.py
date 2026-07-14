@@ -106,6 +106,8 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
     plugin_results = getattr(plugin_manager, "results", ()) if plugin_manager is not None else ()
     settings_service = getattr(context, "settings_service", None)
     ui_values = _load_ui_values(settings_service)
+    load_bubble_settings = getattr(settings_service, "load_bubble_settings", None)
+    bubble_settings = load_bubble_settings() if callable(load_bubble_settings) else None
     preferences = menu_preferences_dto(context, ui_values=ui_values)
     model_settings = _chat_model_settings(context, settings_service)
     model_ready = all(
@@ -138,7 +140,7 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
                 ui_values.get("control_panel_width"), 420, 860, 640
             ),
             "bubble_height": _clamp_int(ui_values.get("bubble_height"), 96, 260, 128),
-            "vertical_offset": _clamp_int(
+            "control_panel_vertical_offset": _clamp_int(
                 ui_values.get("control_panel_vertical_offset"), -200, 200, 0
             ),
             "input_bar_offset": _clamp_int(
@@ -176,6 +178,14 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
             ),
             "segment_pause_ms": _clamp_int(
                 ui_values.get("reply_segment_pause_ms"), 0, 3000, 100
+            ),
+        },
+        "bubble": {
+            "auto_hide_enabled": bool(
+                getattr(bubble_settings, "auto_hide_enabled", True)
+            ),
+            "auto_hide_delay_seconds": _clamp_int(
+                getattr(bubble_settings, "auto_hide_delay_seconds", 5), 1, 120, 5
             ),
         },
         "preferences": preferences,

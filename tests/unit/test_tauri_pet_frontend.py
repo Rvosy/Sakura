@@ -20,10 +20,12 @@ def test_tauri_pet_frontend_has_single_store_and_feature_modules() -> None:
         FRONTEND / "core" / "theme.js",
         FRONTEND / "core" / "bootstrap_loader.js",
         FRONTEND / "pet" / "layout.js",
+        FRONTEND / "pet" / "bubble_controller.js",
         FRONTEND / "pet" / "portrait_controller.js",
         FRONTEND / "pet" / "subtitle_controller.js",
         FRONTEND / "pet" / "pet_controller.js",
         FRONTEND / "pet" / "context_menu.js",
+        FRONTEND / "settings" / "layout_preview_transaction.js",
     )
 
     assert all(path.is_file() for path in required)
@@ -120,7 +122,7 @@ def test_js_layout_matches_existing_python_layout_model(
             "portraitHeight": 570,
             "controlPanelWidth": 640,
             "bubbleHeight": 128,
-            "verticalOffset": 0,
+            "controlPanelVerticalOffset": 0,
             "inputBarOffset": 0,
         },
         {
@@ -128,7 +130,7 @@ def test_js_layout_matches_existing_python_layout_model(
             "portraitHeight": 510,
             "controlPanelWidth": 520,
             "bubbleHeight": 220,
-            "verticalOffset": 90,
+            "controlPanelVerticalOffset": 90,
             "inputBarOffset": 120,
         },
     ]
@@ -146,7 +148,7 @@ console.log(JSON.stringify({{ layouts: cases.map(computePetLayout) }}));
             portrait_height=case["portraitHeight"],
             control_panel_width=case["controlPanelWidth"],
             bubble_height=case["bubbleHeight"],
-            vertical_offset=case["verticalOffset"],
+            vertical_offset=case["controlPanelVerticalOffset"],
             input_bar_offset=case["inputBarOffset"],
         )
         assert js_layout == {  # type: ignore[comparison-overlap]
@@ -309,14 +311,14 @@ const controller = new PetController({{
   }},
   elements,
 }});
-controller.applyBootstrap({{
+await controller.applyBootstrap({{
   sessionGeneration: 1,
   character: {{ id: "first", displayName: "First", initialMessage: "first hello" }},
   theme: {{ primary_color: "#111111", visual_effect_mode: "solid" }},
   layout: {{ portrait_scale_percent: 100, control_panel_width: 640, bubble_height: 128 }},
   subtitle: {{ language: "zh" }},
 }});
-controller.applyBootstrap({{
+await controller.applyBootstrap({{
   sessionGeneration: 2,
   character: {{ id: "second", displayName: "Second", initialMessage: "second hello" }},
   theme: {{ primary_color: "#222222", visual_effect_mode: "gaussian_blur" }},
@@ -344,6 +346,333 @@ console.log(JSON.stringify({{
     assert payload["subtitleConfigs"] == ["zh", "ja"]
     assert payload["subtitleTexts"] == ["first hello", "second hello"]
     assert len(payload["layouts"]) == 2  # type: ignore[arg-type]
+
+
+def test_layout_preview_transaction_restores_cancel_x_and_post_apply_baseline(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+class FakeClassList {{
+  constructor() {{ this.values = new Set(); }}
+  toggle(value, enabled) {{ if (enabled) this.values.add(value); else this.values.delete(value); }}
+  has(value) {{ return this.values.has(value); }}
+}}
+class FakeElement {{
+  constructor() {{
+    this.disabled = false;
+    this.hidden = false;
+    this.placeholder = "";
+    this.textContent = "";
+    this.value = "";
+    this.scrollHeight = 0;
+    this.listeners = new Map();
+    this.classList = new FakeClassList();
+    this.attributes = new Map();
+  }}
+  addEventListener(name, callback) {{ this.listeners.set(name, callback); }}
+  setAttribute(name, value) {{ this.attributes.set(name, value); }}
+}}
+const styles = {{}};
+globalThis.document = {{
+  documentElement: {{
+    dataset: {{}},
+    style: {{ setProperty: (name, value) => styles[name] = value }},
+  }},
+}};
+globalThis.window = {{
+  dispatchEvent: () => {{}},
+  requestAnimationFrame: (callback) => callback(),
+  setTimeout,
+  clearTimeout,
+}};
+globalThis.CustomEvent = class {{ constructor(name, options) {{ this.name = name; this.detail = options.detail; }} }};
+const {{ createPetStore }} = await import({json.dumps(_module_url('desktop/frontend/core/store.js'))});
+const {{ PetController }} = await import({json.dumps(_module_url('desktop/frontend/pet/pet_controller.js'))});
+const {{ LayoutPreviewTransaction }} = await import({json.dumps(_module_url('desktop/frontend/settings/layout_preview_transaction.js'))});
+const base = {{
+  portrait_scale_percent: 100,
+  control_panel_width: 640,
+  bubble_height: 128,
+  control_panel_vertical_offset: 0,
+  input_bar_offset: 0,
+  speech_font_size: 16,
+  name_font_size: 13,
+  input_font_size: 15,
+  button_font_size: 13,
+}};
+const appliedA = {{ ...base, bubble_height: 180, control_panel_vertical_offset: 40, speech_font_size: 18 }};
+const previewB = {{ ...base, bubble_height: 260, control_panel_vertical_offset: -200, input_bar_offset: 200, speech_font_size: 22 }};
+const elements = {{
+  characterName: new FakeElement(), bubble: new FakeElement(), input: new FakeElement(),
+  send: new FakeElement(), cancel: new FakeElement(), capture: new FakeElement(),
+  openSettingsButton: new FakeElement(), openHistoryButton: new FakeElement(),
+}};
+const windowLayouts = [];
+const store = createPetStore();
+let controller;
+const invoke = async (command, args) => {{
+  if (command === "apply_pet_window_layout") {{ windowLayouts.push(args); return args; }}
+  if (command === "begin_layout_preview") return controller.beginLayoutPreview(args);
+  if (command === "preview_layout") return controller.previewLayout(args);
+  if (command === "cancel_settings") return controller.restoreLayoutPreview({{ sessionId: args.previewSessionId }});
+  if (command === "apply_settings" || command === "save_settings") {{
+    if (args.settings.fail) throw new Error("save failed");
+    await controller.commitLayoutPreview({{
+      sessionId: args.previewSessionId,
+      revision: args.previewRevision,
+      layout: args.settings.runtimeLayout,
+    }});
+    return {{ applied: true }};
+  }}
+  throw new Error(`unexpected command: ${{command}}`);
+}};
+controller = new PetController({{
+  store,
+  invoke,
+  portraitController: {{ setCharacter: () => {{}} }},
+  subtitleController: {{ configure: () => {{}}, setText: () => {{}} }},
+  elements,
+}});
+await controller.applyBootstrap({{
+  character: {{ id: "demo", displayName: "Demo", initialMessage: "hello" }},
+  theme: {{}}, layout: base, subtitle: {{}}, bubble: {{ auto_hide_enabled: false }},
+}});
+const snapshot = () => ({{
+  layout: {{ ...store.getState().layout }},
+  bubbleY: styles["--bubble-y"],
+  bubbleHeight: styles["--bubble-height"],
+  speechFont: styles["--speech-font-size"],
+  window: {{ ...windowLayouts.at(-1) }},
+}});
+const makeTransaction = (sessionId) => new LayoutPreviewTransaction({{
+  invoke, sessionId, scheduleFrame: () => {{}},
+}});
+
+const cancelTx = makeTransaction("cancel");
+await cancelTx.begin(base);
+cancelTx.preview(previewB);
+await cancelTx.flushPreview();
+const previewed = snapshot();
+await cancelTx.cancel();
+const cancelled = snapshot();
+
+const closeTx = makeTransaction("window-x");
+await closeTx.begin(base);
+closeTx.preview(previewB);
+await closeTx.flushPreview();
+await closeTx.cancel();
+const closedByX = snapshot();
+
+const applyTx = makeTransaction("apply-then-cancel");
+await applyTx.begin(base);
+applyTx.preview(appliedA);
+await applyTx.flushPreview();
+await applyTx.apply({{ runtimeLayout: appliedA }}, appliedA);
+applyTx.preview(previewB);
+await applyTx.flushPreview();
+await applyTx.cancel();
+const afterApplyCancel = snapshot();
+
+const saveTx = makeTransaction("save-close");
+await saveTx.begin(appliedA);
+saveTx.preview(previewB);
+await saveTx.flushPreview();
+await saveTx.save({{ runtimeLayout: previewB }}, previewB);
+const saved = snapshot();
+
+const failedTx = makeTransaction("failed-apply");
+await failedTx.begin(previewB);
+failedTx.preview(base);
+await failedTx.flushPreview();
+try {{ await failedTx.apply({{ fail: true, runtimeLayout: base }}, base); }} catch {{}}
+await failedTx.cancel();
+const failedApplyCancelled = snapshot();
+
+console.log(JSON.stringify({{
+  previewed, cancelled, closedByX, afterApplyCancel, saved, failedApplyCancelled,
+}}));
+"""
+    )
+
+    assert payload["previewed"]["layout"]["control_panel_vertical_offset"] == -200  # type: ignore[index]
+    assert payload["previewed"]["layout"]["input_bar_offset"] == 200  # type: ignore[index]
+    assert payload["cancelled"]["layout"] == {  # type: ignore[index]
+        "portrait_scale_percent": 100,
+        "control_panel_width": 640,
+        "bubble_height": 128,
+        "control_panel_vertical_offset": 0,
+        "input_bar_offset": 0,
+        "speech_font_size": 16,
+        "name_font_size": 13,
+        "input_font_size": 15,
+        "button_font_size": 13,
+    }
+    assert payload["cancelled"]["bubbleHeight"] == "128px"  # type: ignore[index]
+    assert payload["cancelled"]["speechFont"] == "16px"  # type: ignore[index]
+    assert payload["closedByX"]["layout"] == payload["cancelled"]["layout"]  # type: ignore[index]
+    assert payload["closedByX"]["window"]["width"] == payload["cancelled"]["window"]["width"]  # type: ignore[index]
+    assert payload["closedByX"]["window"]["height"] == payload["cancelled"]["window"]["height"]  # type: ignore[index]
+    assert payload["afterApplyCancel"]["layout"]["bubble_height"] == 180  # type: ignore[index]
+    assert payload["afterApplyCancel"]["layout"]["speech_font_size"] == 18  # type: ignore[index]
+    assert payload["saved"]["layout"]["bubble_height"] == 260  # type: ignore[index]
+    assert payload["failedApplyCancelled"]["layout"] == payload["saved"]["layout"]  # type: ignore[index]
+    assert payload["failedApplyCancelled"]["bubbleHeight"] == payload["saved"]["bubbleHeight"]  # type: ignore[index]
+
+
+def test_older_async_layout_preview_cannot_override_latest_value(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+class FakeElement {{
+  constructor() {{ this.value = ""; this.listeners = new Map(); this.classList = {{ toggle: () => {{}} }}; }}
+  addEventListener(name, callback) {{ this.listeners.set(name, callback); }}
+  setAttribute() {{}}
+}}
+const styles = {{}};
+globalThis.document = {{ documentElement: {{ dataset: {{}}, style: {{ setProperty: (name, value) => styles[name] = value }} }} }};
+globalThis.window = {{ dispatchEvent: () => {{}}, requestAnimationFrame: () => {{}}, setTimeout, clearTimeout }};
+globalThis.CustomEvent = class {{}};
+const {{ createPetStore }} = await import({json.dumps(_module_url('desktop/frontend/core/store.js'))});
+const {{ PetController }} = await import({json.dumps(_module_url('desktop/frontend/pet/pet_controller.js'))});
+const {{ LayoutPreviewTransaction }} = await import({json.dumps(_module_url('desktop/frontend/settings/layout_preview_transaction.js'))});
+const base = {{ portrait_scale_percent: 100, control_panel_width: 640, bubble_height: 128, control_panel_vertical_offset: 0, input_bar_offset: 0 }};
+const older = {{ ...base, control_panel_width: 500, control_panel_vertical_offset: 120 }};
+const latest = {{ ...base, control_panel_width: 800, control_panel_vertical_offset: -160 }};
+const elements = {{
+  characterName: new FakeElement(), bubble: new FakeElement(), input: new FakeElement(),
+  send: new FakeElement(), cancel: new FakeElement(), capture: new FakeElement(),
+}};
+const store = createPetStore();
+const controller = new PetController({{
+  store,
+  invoke: async () => {{}},
+  portraitController: {{ setCharacter: () => {{}} }},
+  subtitleController: {{ configure: () => {{}}, setText: () => {{}} }},
+  elements,
+}});
+await controller.applyBootstrap({{ character: {{ id: "demo" }}, theme: {{}}, layout: base, subtitle: {{}}, bubble: {{}} }});
+const pending = [];
+const tx = new LayoutPreviewTransaction({{
+  sessionId: "ordering",
+  scheduleFrame: () => {{}},
+  invoke: async (command, args) => {{
+    if (command === "begin_layout_preview") return controller.beginLayoutPreview(args);
+    if (command === "preview_layout") return new Promise((resolve) => pending.push({{ args, resolve }}));
+  }},
+}});
+await tx.begin(base);
+tx.preview(older);
+const olderPromise = tx.flushPreview();
+tx.preview(latest);
+const latestPromise = tx.flushPreview();
+await controller.previewLayout(pending[1].args);
+pending[1].resolve();
+await latestPromise;
+await controller.previewLayout(pending[0].args);
+pending[0].resolve();
+await olderPromise;
+console.log(JSON.stringify({{ layout: store.getState().layout, styles }}));
+"""
+    )
+
+    assert payload["layout"]["control_panel_width"] == 800  # type: ignore[index]
+    assert payload["layout"]["control_panel_vertical_offset"] == -160  # type: ignore[index]
+    assert payload["styles"]["--bubble-width"] == "800px"  # type: ignore[index]
+
+
+def test_bubble_expands_by_lines_to_cap_and_auto_hide_respects_runtime_settings(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+class FakeClassList {{
+  constructor() {{ this.values = new Set(); }}
+  toggle(value, enabled) {{ if (enabled) this.values.add(value); else this.values.delete(value); }}
+  has(value) {{ return this.values.has(value); }}
+}}
+class FakeElement {{
+  constructor() {{
+    this.value = ""; this.scrollHeight = 0; this.listeners = new Map();
+    this.classList = new FakeClassList(); this.attributes = new Map();
+  }}
+  addEventListener(name, callback) {{ this.listeners.set(name, callback); }}
+  setAttribute(name, value) {{ this.attributes.set(name, value); }}
+}}
+const frames = [];
+const bubbleHeights = [];
+globalThis.document = {{ documentElement: {{ dataset: {{}}, style: {{
+  setProperty: (name, value) => {{ if (name === "--bubble-height") bubbleHeights.push(value); }},
+}} }} }};
+globalThis.window = {{
+  dispatchEvent: () => {{}}, requestAnimationFrame: (callback) => frames.push(callback),
+  setTimeout, clearTimeout,
+}};
+globalThis.CustomEvent = class {{}};
+const {{ createPetStore }} = await import({json.dumps(_module_url('desktop/frontend/core/store.js'))});
+const {{ PetController }} = await import({json.dumps(_module_url('desktop/frontend/pet/pet_controller.js'))});
+const {{ BubbleAutoHideController }} = await import({json.dumps(_module_url('desktop/frontend/pet/bubble_controller.js'))});
+const elements = {{
+  characterName: new FakeElement(), bubble: new FakeElement(), input: new FakeElement(),
+  send: new FakeElement(), cancel: new FakeElement(), capture: new FakeElement(),
+}};
+const store = createPetStore();
+const controller = new PetController({{
+  store,
+  invoke: async () => {{}},
+  portraitController: {{ setCharacter: () => {{}} }},
+  subtitleController: {{ configure: () => {{}}, setText: () => {{}} }},
+  elements,
+}});
+await controller.applyBootstrap({{
+  character: {{ id: "demo" }}, theme: {{}}, subtitle: {{}},
+  layout: {{ portrait_scale_percent: 100, control_panel_width: 640, bubble_height: 96, control_panel_vertical_offset: 0, input_bar_offset: 0, speech_font_size: 16 }},
+  bubble: {{ auto_hide_enabled: false, auto_hide_delay_seconds: 5 }},
+}});
+elements.bubble.scrollHeight = 1000;
+controller.handleSubtitleTextChanged();
+while (frames.length) {{ frames.shift()(); await Promise.resolve(); }}
+await controller.applyLayout();
+
+let nextTimer = 1;
+const timers = new Map();
+const delays = [];
+const autoTarget = new FakeElement();
+const autoHide = new BubbleAutoHideController({{
+  target: autoTarget,
+  setTimer: (callback, delay) => {{ const id = nextTimer++; timers.set(id, callback); delays.push(delay); return id; }},
+  clearTimer: (id) => timers.delete(id),
+}});
+autoHide.configure({{ auto_hide_enabled: true, auto_hide_delay_seconds: 3 }});
+autoHide.notifySpeaking();
+const duringSpeaking = timers.size;
+autoHide.notifySettled();
+const timerId = Array.from(timers.keys()).at(-1);
+timers.get(timerId)();
+const hiddenAfterDelay = autoTarget.classList.has("is-auto-hidden");
+autoHide.handleUserInteraction();
+const shownAfterInteraction = !autoTarget.classList.has("is-auto-hidden");
+autoHide.configure({{ auto_hide_enabled: false, auto_hide_delay_seconds: 3 }});
+console.log(JSON.stringify({{
+  bubbleHeights, finalHeight: controller.adaptiveBubbleHeight,
+  duringSpeaking, hiddenAfterDelay, shownAfterInteraction,
+  disabledVisible: !autoTarget.classList.has("is-auto-hidden"), delays,
+}}));
+"""
+    )
+
+    numeric_heights = [int(value.removesuffix("px")) for value in payload["bubbleHeights"]]  # type: ignore[index]
+    assert numeric_heights[0] == 96
+    assert numeric_heights[-1] == 260
+    assert len(set(numeric_heights)) >= 4
+    assert max(numeric_heights) == 260
+    assert payload["finalHeight"] == 260
+    assert payload["duringSpeaking"] == 0
+    assert payload["hiddenAfterDelay"] is True
+    assert payload["shownAfterInteraction"] is True
+    assert payload["disabledVisible"] is True
+    assert 3000 in payload["delays"]  # type: ignore[operator]
 
 
 def test_pet_markup_has_portrait_subtitle_input_cancel_and_screenshot_controls() -> None:

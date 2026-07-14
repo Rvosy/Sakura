@@ -188,7 +188,8 @@ summary:focus-visible {
   height: var(--bubble-height);
   min-height: 96px;
   padding: 13px 18px 15px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid color-mix(in srgb, var(--sakura-border) 75%, transparent);
   border-radius: 24px 24px 18px 18px;
   color: var(--sakura-text);
@@ -196,6 +197,13 @@ summary:focus-visible {
   box-shadow: 0 18px 44px color-mix(in srgb, var(--sakura-text) 17%, transparent);
   backdrop-filter: blur(24px) saturate(1.12);
   cursor: grab;
+  transition: opacity 220ms ease, visibility 220ms ease;
+}
+
+.speech-card.is-auto-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .speech-card:active {
@@ -216,7 +224,7 @@ summary:focus-visible {
 
 .subtitle-text {
   margin: 0;
-  overflow: hidden;
+  overflow: visible;
   font-size: var(--speech-font-size);
   font-weight: 600;
   line-height: 1.65;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from contextlib import contextmanager
 from dataclasses import is_dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +75,8 @@ from app.config.theme import (
     theme_to_mapping,
 )
 from app.llm.api_client import ApiSettings
+from app.storage.atomic import atomic_write_bytes
+from app.storage.paths import StoragePaths
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
@@ -92,6 +95,47 @@ CONTROL_PANEL_WIDTH_LIMIT = (420, 860)
 BUBBLE_HEIGHT_LIMIT = (96, 260)
 CONTROL_PANEL_OFFSET_LIMIT = (-200, 200)
 INPUT_BAR_OFFSET_LIMIT = (0, 200)
+
+
+@contextmanager
+def _configuration_file_transaction(paths: list[Path]):
+    snapshots: dict[Path, bytes | None] = {}
+    for raw_path in paths:
+        path = Path(raw_path).resolve(strict=False)
+        if path in snapshots:
+            continue
+        snapshots[path] = path.read_bytes() if path.is_file() else None
+    try:
+        yield
+    except BaseException as error:
+        rollback_errors: list[str] = []
+        for path, content in snapshots.items():
+            try:
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(path, content)
+            except BaseException as rollback_error:  # pragma: no cover - rare filesystem failure
+                rollback_errors.append(f"{path}: {rollback_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"{error}；配置回滚失败：{'；'.join(rollback_errors)}"
+            ) from error
+        raise
+
+
+def _settings_transaction_paths(service: Any, base_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for attribute in (
+        "api_config_path",
+        "characters_config_path",
+        "system_config_path",
+    ):
+        value = getattr(service, attribute, None)
+        if value is not None:
+            paths.append(Path(value))
+    paths.append(StoragePaths(Path(base_dir)).plugins_config())
+    return paths
 
 PLUGIN_PERMISSION_LABELS = {
     "tool": {"group": "工具", "label": "Agent 工具"},
@@ -401,92 +445,251 @@ def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict
         "backfill_limit": _int(curation.get("backfill_limit"), 200),
     }
     memory = _replace_settings(current_memory, memory_values)
-
-    service.save_screen_awareness_settings(screen)
-    service.save_mcp_runtime_settings(mcp)
-    service.save_runtime_loop_settings(runtime_loop)
-    service.save_debug_log_settings(debug)
-    service.save_bubble_settings(bubble)
-    service.save_backchannel_settings(backchannel)
-    service.save_memory_curation_settings(memory)
-    service.save_startup_settings(startup)
-    service.save_current_character_id(registry, character_id)
-    if theme_changed:
-        service.save_theme_settings(theme)
-        save_override = getattr(service, "save_character_theme_override", None)
-        if callable(save_override):
-            save_override(character_id, theme)
-    service.save_system_values(
-        "ui",
-        {
-            "portrait_scale_percent": _clamp(layout.get("portrait_scale_percent"), *PORTRAIT_SCALE_LIMIT, 100),
-            "control_panel_width": _clamp(layout.get("control_panel_width"), *CONTROL_PANEL_WIDTH_LIMIT, 640),
-            "bubble_height": _clamp(layout.get("bubble_height"), *BUBBLE_HEIGHT_LIMIT, 128),
-            "control_panel_vertical_offset": _clamp(layout.get("control_panel_vertical_offset"), *CONTROL_PANEL_OFFSET_LIMIT, 0),
-            "input_bar_offset": _clamp(layout.get("input_bar_offset"), *INPUT_BAR_OFFSET_LIMIT, 0),
-            "subtitle_typing_interval_ms": _clamp(ui_data.get("subtitle_typing_interval_ms"), 5, 200, 35),
-            "reply_segment_pause_ms": _clamp(ui_data.get("reply_segment_pause_ms"), 0, 3000, 100),
-            "speech_font_size": _clamp(ui_data.get("speech_font_size"), SPEECH_FONT_SIZE_MIN, SPEECH_FONT_SIZE_MAX, DEFAULT_SPEECH_FONT_SIZE),
-            "name_font_size": _clamp(ui_data.get("name_font_size"), NAME_FONT_SIZE_MIN, NAME_FONT_SIZE_MAX, DEFAULT_NAME_FONT_SIZE),
-            "input_font_size": _clamp(ui_data.get("input_font_size"), INPUT_FONT_SIZE_MIN, INPUT_FONT_SIZE_MAX, DEFAULT_INPUT_FONT_SIZE),
-            "button_font_size": _clamp(ui_data.get("button_font_size"), BUTTON_FONT_SIZE_MIN, BUTTON_FONT_SIZE_MAX, DEFAULT_BUTTON_FONT_SIZE),
-        },
+    layout_values = {
+        "portrait_scale_percent": _clamp(
+            layout.get("portrait_scale_percent"), *PORTRAIT_SCALE_LIMIT, 100
+        ),
+        "control_panel_width": _clamp(
+            layout.get("control_panel_width"), *CONTROL_PANEL_WIDTH_LIMIT, 640
+        ),
+        "bubble_height": _clamp(
+            layout.get("bubble_height"), *BUBBLE_HEIGHT_LIMIT, 128
+        ),
+        "control_panel_vertical_offset": _clamp(
+            layout.get("control_panel_vertical_offset"),
+            *CONTROL_PANEL_OFFSET_LIMIT,
+            0,
+        ),
+        "input_bar_offset": _clamp(
+            layout.get("input_bar_offset"), *INPUT_BAR_OFFSET_LIMIT, 0
+        ),
+    }
+    ui_values = {
+        **layout_values,
+        "subtitle_typing_interval_ms": _clamp(
+            ui_data.get("subtitle_typing_interval_ms"), 5, 200, 35
+        ),
+        "reply_segment_pause_ms": _clamp(
+            ui_data.get("reply_segment_pause_ms"), 0, 3000, 100
+        ),
+        "speech_font_size": _clamp(
+            ui_data.get("speech_font_size"),
+            SPEECH_FONT_SIZE_MIN,
+            SPEECH_FONT_SIZE_MAX,
+            DEFAULT_SPEECH_FONT_SIZE,
+        ),
+        "name_font_size": _clamp(
+            ui_data.get("name_font_size"),
+            NAME_FONT_SIZE_MIN,
+            NAME_FONT_SIZE_MAX,
+            DEFAULT_NAME_FONT_SIZE,
+        ),
+        "input_font_size": _clamp(
+            ui_data.get("input_font_size"),
+            INPUT_FONT_SIZE_MIN,
+            INPUT_FONT_SIZE_MAX,
+            DEFAULT_INPUT_FONT_SIZE,
+        ),
+        "button_font_size": _clamp(
+            ui_data.get("button_font_size"),
+            BUTTON_FONT_SIZE_MIN,
+            BUTTON_FONT_SIZE_MAX,
+            DEFAULT_BUTTON_FONT_SIZE,
+        ),
+    }
+    prepared_api = _prepare_api_payload(payload.get("api"))
+    prepared_tts = _prepare_tts_payload(service, selected_profile, payload.get("tts"))
+    plugin_data = payload.get("plugins")
+    if plugin_data is not None and not isinstance(plugin_data, Mapping):
+        raise ValueError("plugins 必须是对象。")
+    enabled_by_id = plugin_data.get("enabled_by_id", {}) if isinstance(plugin_data, Mapping) else {}
+    settings_by_id = plugin_data.get("settings_by_id", {}) if isinstance(plugin_data, Mapping) else {}
+    if not isinstance(enabled_by_id, Mapping):
+        raise ValueError("plugins.enabled_by_id 必须是对象。")
+    if not isinstance(settings_by_id, Mapping):
+        raise ValueError("plugins.settings_by_id 必须是对象。")
+    normalized_enabled_by_id = {
+        str(key): bool(value) for key, value in enabled_by_id.items() if str(key)
+    }
+    prepared_plugins = _prepare_plugin_settings(
+        getattr(getattr(context, "plugin_manager", None), "plugin_settings", []),
+        settings_by_id,
     )
-    _save_api_payload(service, payload.get("api"))
-    _save_tts_payload(service, selected_profile, payload.get("tts"))
 
-    application._screen_awareness_enabled = screen.allows_screen_context()
-    application._screen_context_resolution = screen.screen_context_resolution
-    refresh_character = getattr(application, "refresh_character", None)
-    if bootstrap_only:
-        if callable(refresh_character):
-            refresh_character(character_id)
-    else:
-        runtime = getattr(context, "agent_runtime", None)
-        set_loop = getattr(runtime, "set_runtime_loop_settings", None)
-        if callable(set_loop):
-            set_loop(runtime_loop)
-        refresh_runtime = getattr(application, "refresh_runtime_settings", None)
-        if callable(refresh_runtime):
-            refresh_runtime(
-                screen_awareness=screen,
-                mcp=mcp,
-                debug=debug,
-                startup=startup,
-                memory_curation=memory,
+    previous_runtime = {
+        "screen": getattr(
+            context,
+            "screen_awareness_settings",
+            _call(service, "load_screen_awareness_settings", ScreenAwarenessSettings()),
+        ),
+        "mcp": previous_mcp,
+        "loop": getattr(
+            getattr(context, "agent_runtime", None),
+            "runtime_loop_settings",
+            _call(service, "load_runtime_loop_settings", RuntimeLoopSettings()),
+        ),
+        "debug": getattr(
+            context,
+            "debug_log_settings",
+            _call(service, "load_debug_log_settings", DebugLogSettings()),
+        ),
+        "startup": getattr(
+            context,
+            "startup_settings",
+            _call(service, "load_startup_settings", StartupSettings()),
+        ),
+        "memory": getattr(context, "memory_curation_settings", current_memory),
+        "character_id": str(getattr(getattr(context, "character_profile", None), "id", "")),
+        "screen_enabled": getattr(application, "_screen_awareness_enabled", True),
+        "screen_resolution": getattr(application, "_screen_context_resolution", "fullscreen"),
+    }
+    applied_plugins: list[tuple[Any, dict[str, Any]]] = []
+    runtime_started = False
+    restart_required: list[str] = []
+    try:
+        with _configuration_file_transaction(
+            _settings_transaction_paths(service, application.config.base_dir)
+        ):
+            service.save_screen_awareness_settings(screen)
+            service.save_mcp_runtime_settings(mcp)
+            service.save_runtime_loop_settings(runtime_loop)
+            service.save_debug_log_settings(debug)
+            service.save_bubble_settings(bubble)
+            service.save_backchannel_settings(backchannel)
+            service.save_memory_curation_settings(memory)
+            service.save_startup_settings(startup)
+            service.save_current_character_id(registry, character_id)
+            if theme_changed:
+                service.save_theme_settings(theme)
+                save_override = getattr(service, "save_character_theme_override", None)
+                if callable(save_override):
+                    save_override(character_id, theme)
+            service.save_system_values("ui", ui_values)
+            _save_prepared_api_payload(service, prepared_api)
+            _save_prepared_tts_payload(service, prepared_tts)
+            if normalized_enabled_by_id and _save_plugin_enabled_overrides(
+                application.config.base_dir, normalized_enabled_by_id
+            ):
+                restart_required.append("plugins")
+            _apply_prepared_plugin_settings(prepared_plugins, applied_plugins)
+
+            runtime_started = True
+            application._screen_awareness_enabled = screen.allows_screen_context()
+            application._screen_context_resolution = screen.screen_context_resolution
+            refresh_character = getattr(application, "refresh_character", None)
+            if bootstrap_only:
+                if callable(refresh_character):
+                    refresh_character(character_id)
+            else:
+                runtime = getattr(context, "agent_runtime", None)
+                set_loop = getattr(runtime, "set_runtime_loop_settings", None)
+                if callable(set_loop):
+                    set_loop(runtime_loop)
+                refresh_runtime = getattr(application, "refresh_runtime_settings", None)
+                if callable(refresh_runtime):
+                    refresh_runtime(
+                        screen_awareness=screen,
+                        mcp=mcp,
+                        debug=debug,
+                        startup=startup,
+                        memory_curation=memory,
+                    )
+                application.sync_scheduler_jobs(start=False)
+                refresh_api = getattr(application, "refresh_api_settings", None)
+                if callable(refresh_api):
+                    refresh_api()
+                if callable(refresh_character):
+                    refresh_character(character_id)
+            refresh_tts = getattr(application, "refresh_tts", None)
+            if not bootstrap_only and callable(refresh_tts):
+                refresh_tts()
+    except BaseException as error:
+        rollback_errors = _rollback_plugin_settings(applied_plugins)
+        if runtime_started:
+            rollback_errors.extend(
+                _restore_runtime_after_failed_settings(
+                    application,
+                    context,
+                    previous_runtime,
+                    bootstrap_only=bootstrap_only,
+                )
             )
-        application.sync_scheduler_jobs(start=False)
-        refresh_api = getattr(application, "refresh_api_settings", None)
-        if callable(refresh_api):
-            refresh_api()
-        if callable(refresh_character):
-            refresh_character(character_id)
-    refresh_tts = getattr(application, "refresh_tts", None)
-    if not bootstrap_only and callable(refresh_tts):
-        refresh_tts()
-    restart_required = []
+        if rollback_errors:
+            raise RuntimeError(
+                f"{error}；运行时回滚失败：{'；'.join(rollback_errors)}"
+            ) from error
+        raise
+
     if mcp != previous_mcp:
         restart_required.append("mcp")
-    plugin_data = payload.get("plugins")
-    enabled_by_id = plugin_data.get("enabled_by_id", {}) if isinstance(plugin_data, dict) else {}
-    if isinstance(enabled_by_id, dict) and enabled_by_id:
-        if _save_plugin_enabled_overrides(application.config.base_dir, enabled_by_id):
-            restart_required.append("plugins")
-    settings_by_id = plugin_data.get("settings_by_id", {}) if isinstance(plugin_data, dict) else {}
-    if isinstance(settings_by_id, dict):
-        _apply_plugin_settings(
-            getattr(getattr(context, "plugin_manager", None), "plugin_settings", []),
-            settings_by_id,
-        )
     return {
         "version": 1,
         "applied": True,
         "restartRequired": restart_required,
         "characterId": character_id,
         "theme": theme_to_mapping(theme),
-        "layout": dict(layout),
+        "layout": dict(layout_values),
+        "runtimeLayout": {
+            **layout_values,
+            "speech_font_size": ui_values["speech_font_size"],
+            "name_font_size": ui_values["name_font_size"],
+            "input_font_size": ui_values["input_font_size"],
+            "button_font_size": ui_values["button_font_size"],
+        },
         "settings": build_settings_request(application.context, base_dir=application.config.base_dir),
     }
+
+
+def _restore_runtime_after_failed_settings(
+    application: Any,
+    context: Any,
+    previous: Mapping[str, Any],
+    *,
+    bootstrap_only: bool,
+) -> list[str]:
+    errors: list[str] = []
+
+    def attempt(label: str, callback: Any) -> None:
+        if not callable(callback):
+            return
+        try:
+            callback()
+        except BaseException as error:  # pragma: no cover - defensive external rollback
+            errors.append(f"{label}: {error}")
+
+    application._screen_awareness_enabled = previous["screen_enabled"]
+    application._screen_context_resolution = previous["screen_resolution"]
+    previous_character_id = str(previous.get("character_id") or "")
+    refresh_character = getattr(application, "refresh_character", None)
+    if bootstrap_only:
+        if previous_character_id and callable(refresh_character):
+            attempt("角色", lambda: refresh_character(previous_character_id))
+        return errors
+
+    runtime = getattr(context, "agent_runtime", None)
+    set_loop = getattr(runtime, "set_runtime_loop_settings", None)
+    if callable(set_loop):
+        attempt("Agent 循环", lambda: set_loop(previous["loop"]))
+    refresh_runtime = getattr(application, "refresh_runtime_settings", None)
+    if callable(refresh_runtime):
+        attempt(
+            "运行时设置",
+            lambda: refresh_runtime(
+                screen_awareness=previous["screen"],
+                mcp=previous["mcp"],
+                debug=previous["debug"],
+                startup=previous["startup"],
+                memory_curation=previous["memory"],
+            ),
+        )
+    sync_scheduler = getattr(application, "sync_scheduler_jobs", None)
+    if callable(sync_scheduler):
+        attempt("调度器", lambda: sync_scheduler(start=False))
+    attempt("API", getattr(application, "refresh_api_settings", None))
+    if previous_character_id and callable(refresh_character):
+        attempt("角色", lambda: refresh_character(previous_character_id))
+    attempt("TTS", getattr(application, "refresh_tts", None))
+    return errors
 
 
 def build_studio_request(
@@ -882,22 +1085,31 @@ def _settings_limits() -> dict[str, list[float | int]]:
     }
 
 
-def _save_api_payload(service: Any, raw: object) -> None:
+def _prepare_api_payload(raw: object) -> dict[str, Any] | None:
     if not isinstance(raw, Mapping):
-        return
+        return None
     profiles = []
+    profile_ids: set[str] = set()
     for item in raw.get("profiles", []):
         if not isinstance(item, Mapping):
-            continue
-        profiles.append(
-            ApiConfigProfile(
-                id=str(item.get("id") or "").strip(),
-                alias=str(item.get("alias") or "").strip(),
-                base_url=str(item.get("base_url") or "").strip().rstrip("/"),
-                api_key=str(item.get("api_key") or "").strip(),
-                models=tuple(str(model).strip() for model in item.get("models", []) if str(model).strip()),
-            )
+            raise ValueError("API profiles 必须是对象列表。")
+        profile = ApiConfigProfile(
+            id=str(item.get("id") or "").strip(),
+            alias=str(item.get("alias") or "").strip(),
+            base_url=str(item.get("base_url") or "").strip().rstrip("/"),
+            api_key=str(item.get("api_key") or "").strip(),
+            models=tuple(
+                str(model).strip()
+                for model in item.get("models", [])
+                if str(model).strip()
+            ),
         )
+        if not profile.id:
+            raise ValueError("API 供应商缺少 id。")
+        if profile.id in profile_ids:
+            raise ValueError(f"API 供应商 id 重复：{profile.id}")
+        profile_ids.add(profile.id)
+        profiles.append(profile)
     selection_data = raw.get("model_selection")
     slots = selection_data.get("slots", {}) if isinstance(selection_data, Mapping) else {}
     selection = ModelSelectionSettings(
@@ -908,48 +1120,77 @@ def _save_api_payload(service: Any, raw: object) -> None:
     settings_data = raw.get("settings") if isinstance(raw.get("settings"), Mapping) else {}
     chat = selection.chat
     profile = next((item for item in profiles if item.id == chat.profile_id), profiles[0] if profiles else None)
+    api_settings = None
+    if profile is not None:
+        if not profile.base_url:
+            raise ValueError(f"API 供应商缺少 Base URL：{profile.id}")
+        selected_model = chat.model or (profile.models[0] if profile.models else "")
+        if not selected_model:
+            raise ValueError(f"API 供应商缺少模型：{profile.id}")
+        if chat.profile_id and chat.profile_id not in profile_ids:
+            raise ValueError(f"聊天模型引用了未知供应商：{chat.profile_id}")
+        if chat.model and chat.model not in profile.models:
+            raise ValueError(f"聊天模型不属于供应商 {profile.id}：{chat.model}")
+        api_settings = ApiSettings(
+            base_url=profile.base_url,
+            api_key=profile.api_key,
+            model=selected_model,
+            timeout_seconds=_clamp(settings_data.get("timeout_seconds"), 1, 600, 60),
+            temperature=_optional_float(settings_data.get("temperature")),
+            top_p=_optional_float(settings_data.get("top_p")),
+            max_tokens=_optional_int(settings_data.get("max_tokens")),
+        )
+    return {
+        "profiles": profiles,
+        "selection": selection,
+        "settings": api_settings,
+    }
+
+
+def _save_prepared_api_payload(service: Any, prepared: dict[str, Any] | None) -> None:
+    if prepared is None:
+        return
     save_profiles = getattr(service, "save_api_profiles", None)
     if callable(save_profiles):
-        save_profiles(profiles)
+        save_profiles(prepared["profiles"])
     save_selection = getattr(service, "save_model_selection", None)
     if callable(save_selection):
-        save_selection(selection)
+        save_selection(prepared["selection"])
     save_settings = getattr(service, "save_api_settings", None)
-    if profile is not None and callable(save_settings):
-        save_settings(
-            ApiSettings(
-                base_url=profile.base_url,
-                api_key=profile.api_key,
-                model=chat.model or (profile.models[0] if profile.models else ""),
-                timeout_seconds=_clamp(settings_data.get("timeout_seconds"), 1, 600, 60),
-                temperature=_optional_float(settings_data.get("temperature")),
-                top_p=_optional_float(settings_data.get("top_p")),
-                max_tokens=_optional_int(settings_data.get("max_tokens")),
-            )
-        )
+    if prepared["settings"] is not None and callable(save_settings):
+        save_settings(prepared["settings"])
+
+
+def _save_api_payload(service: Any, raw: object) -> None:
+    _save_prepared_api_payload(service, _prepare_api_payload(raw))
+
+
+def _prepare_tts_payload(service: Any, profile: Any, raw: object) -> Any | None:
+    if not isinstance(raw, Mapping):
+        return None
+    previous = _load_tts_settings(service, profile)
+    return _replace_settings(
+        previous,
+        {
+            "enabled": _bool(raw.get("enabled"), False),
+            "provider": str(raw.get("provider") or "none"),
+            "api_url": str(raw.get("api_url") or previous.api_url),
+            "work_dir": _optional_path(raw.get("work_dir")),
+            "python_path": _optional_path(raw.get("python_path")),
+            "tts_config_path": _optional_path(raw.get("tts_config_path")),
+            "timeout_seconds": _clamp(raw.get("timeout_seconds"), 1, 600, 60),
+        },
+    )
+
+
+def _save_prepared_tts_payload(service: Any, prepared: Any | None) -> None:
+    save_tts = getattr(service, "save_tts_settings", None)
+    if prepared is not None and callable(save_tts):
+        save_tts(prepared)
 
 
 def _save_tts_payload(service: Any, profile: Any, raw: object) -> None:
-    if not isinstance(raw, Mapping):
-        return
-    save_tts = getattr(service, "save_tts_settings", None)
-    if not callable(save_tts):
-        return
-    previous = _load_tts_settings(service, profile)
-    save_tts(
-        _replace_settings(
-            previous,
-            {
-                "enabled": _bool(raw.get("enabled"), False),
-                "provider": str(raw.get("provider") or "none"),
-                "api_url": str(raw.get("api_url") or previous.api_url),
-                "work_dir": _optional_path(raw.get("work_dir")),
-                "python_path": _optional_path(raw.get("python_path")),
-                "tts_config_path": _optional_path(raw.get("tts_config_path")),
-                "timeout_seconds": _clamp(raw.get("timeout_seconds"), 1, 600, 60),
-            },
-        )
-    )
+    _save_prepared_tts_payload(service, _prepare_tts_payload(service, profile, raw))
 
 
 def _dispatch_memory_rpc(store: Any, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1175,8 +1416,17 @@ def _apply_plugin_settings(
     contributions: list[Any],
     settings_by_id: Mapping[str, Any],
 ) -> bool:
+    prepared = _prepare_plugin_settings(contributions, settings_by_id)
+    applied: list[tuple[Any, dict[str, Any]]] = []
+    return _apply_prepared_plugin_settings(prepared, applied)
+
+
+def _prepare_plugin_settings(
+    contributions: list[Any],
+    settings_by_id: Mapping[str, Any],
+) -> list[tuple[Any, dict[str, Any], dict[str, Any]]]:
     by_key = _plugin_settings_by_key(contributions)
-    changed = False
+    prepared: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
     for plugin_id, sections in settings_by_id.items():
         if not isinstance(sections, Mapping):
             raise ValueError(f"插件设置无效：{plugin_id}")
@@ -1190,10 +1440,34 @@ def _apply_plugin_settings(
             current = _current_plugin_settings(contribution)
             if values == current:
                 continue
-            if callable(contribution.save):
-                contribution.save(values)
-                changed = True
+            prepared.append((contribution, values, current))
+    return prepared
+
+
+def _apply_prepared_plugin_settings(
+    prepared: list[tuple[Any, dict[str, Any], dict[str, Any]]],
+    applied: list[tuple[Any, dict[str, Any]]],
+) -> bool:
+    changed = False
+    for contribution, values, current in prepared:
+        if callable(contribution.save):
+            applied.append((contribution, current))
+            contribution.save(values)
+            changed = True
     return changed
+
+
+def _rollback_plugin_settings(applied: list[tuple[Any, dict[str, Any]]]) -> list[str]:
+    errors: list[str] = []
+    for contribution, previous in reversed(applied):
+        try:
+            if callable(contribution.save):
+                contribution.save(previous)
+        except BaseException as error:  # pragma: no cover - plugin-defined rollback failure
+            plugin_id = str(getattr(contribution, "plugin_id", "plugin"))
+            section_id = str(getattr(contribution, "section_id", "settings"))
+            errors.append(f"{plugin_id}.{section_id}: {error}")
+    return errors
 
 
 def _dispatch_plugin_settings_action(

@@ -66,6 +66,29 @@ def atomic_write_text(
         raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """原子写入原始字节；用于必须逐字节恢复的文件快照。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        replace_with_retry(Path(tmp_name), path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 # Windows 上文件/目录刚创建完就改名，可能撞上杀毒或索引器的瞬时句柄：
 # WinError 5（拒绝访问）/ WinError 32（共享冲突）。短退避重试即可恢复。
 _RETRYABLE_WINERRORS = {5, 32}

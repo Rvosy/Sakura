@@ -1,14 +1,14 @@
 export const layoutDefaults = Object.freeze({
   controlPanelWidth: 640,
   bubbleHeight: 128,
-  verticalOffset: 0,
+  controlPanelVerticalOffset: 0,
   inputBarOffset: 0,
 });
 
-const MIN_CONTROL_PANEL_WIDTH = 420;
-const MAX_CONTROL_PANEL_WIDTH = 860;
-const MIN_BUBBLE_HEIGHT = 96;
-const MAX_BUBBLE_HEIGHT = 260;
+export const MIN_CONTROL_PANEL_WIDTH = 420;
+export const MAX_CONTROL_PANEL_WIDTH = 860;
+export const MIN_BUBBLE_HEIGHT = 96;
+export const MAX_BUBBLE_HEIGHT = 260;
 const MIN_VERTICAL_OFFSET = -200;
 const MAX_VERTICAL_OFFSET = 200;
 const MAX_INPUT_BAR_OFFSET = 200;
@@ -42,11 +42,11 @@ export function computePetLayout(options) {
     MAX_BUBBLE_HEIGHT,
     layoutDefaults.bubbleHeight,
   );
-  const verticalOffset = clampInteger(
-    options.verticalOffset,
+  const controlPanelVerticalOffset = clampInteger(
+    options.controlPanelVerticalOffset,
     MIN_VERTICAL_OFFSET,
     MAX_VERTICAL_OFFSET,
-    layoutDefaults.verticalOffset,
+    layoutDefaults.controlPanelVerticalOffset,
   );
   const inputBarOffset = clampInteger(
     options.inputBarOffset,
@@ -60,7 +60,7 @@ export function computePetLayout(options) {
     Math.max(MIN_CONTROL_PANEL_WIDTH, windowWidth - BUBBLE_INNER_PAD),
   );
   const portraitTop = -portraitHeight;
-  const bubbleBottom = -BUBBLE_BOTTOM_ABOVE_PORTRAIT - verticalOffset;
+  const bubbleBottom = -BUBBLE_BOTTOM_ABOVE_PORTRAIT - controlPanelVerticalOffset;
   const bubbleTop = bubbleBottom - bubbleHeight;
   const inputTop = bubbleBottom + CONTROL_PANEL_GAP + inputBarOffset;
   const inputBottom = inputTop + INPUT_BAR_HEIGHT;

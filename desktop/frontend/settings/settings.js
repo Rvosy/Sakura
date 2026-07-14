@@ -1,4 +1,7 @@
+import { LayoutPreviewTransaction } from "./layout_preview_transaction.js";
+
 const invoke = window.__TAURI__.core.invoke;
+const layoutPreviewTransaction = new LayoutPreviewTransaction({ invoke });
 
 document.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -295,14 +298,9 @@ async function confirmDiscard() {
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
   try {
-    await invoke("cancel_settings");
-    return;
+    await layoutPreviewTransaction.cancel();
   } catch (error) {
-    const current = window.__TAURI__?.window?.getCurrentWindow?.();
-    if (current?.close) {
-      await current.close();
-      return;
-    }
+    bypassCloseGuard = false;
     throw error;
   }
 }
@@ -3921,6 +3919,16 @@ function collectCharacterSettings() {
   };
 }
 
+function collectRuntimeLayout() {
+  return {
+    ...collectCharacterSettings().layout,
+    speech_font_size: clampInt(fields.speechFontSize.value, request.limits.speech_font_size),
+    name_font_size: clampInt(fields.nameFontSize.value, request.limits.name_font_size),
+    input_font_size: clampInt(fields.inputFontSize.value, request.limits.input_font_size),
+    button_font_size: clampInt(fields.buttonFontSize.value, request.limits.button_font_size),
+  };
+}
+
 // 角色页的布局滑块：拖动时把数值实时回写到桌宠（preview_layout），保存时才落盘。
 const layoutSliders = [
   "portraitScale",
@@ -3945,55 +3953,13 @@ function updateSliderOutput(fieldKey) {
   }
 }
 
-let layoutPreviewPending = false;
 function requestLayoutPreview() {
-  if (!request || layoutPreviewPending) {
-    return;
-  }
-  layoutPreviewPending = true;
-  requestAnimationFrame(async () => {
-    layoutPreviewPending = false;
-    try {
-      await invoke("preview_layout", { layout: collectCharacterSettings().layout });
-    } catch (error) {
-      // 实时预览失败不应打断编辑
-    }
-  });
+  if (!request) return;
+  layoutPreviewTransaction.preview(collectRuntimeLayout());
 }
 
-let fontPreviewPending = false;
 function requestFontPreview() {
-  if (!request || fontPreviewPending) {
-    return;
-  }
-  fontPreviewPending = true;
-  requestAnimationFrame(async () => {
-    fontPreviewPending = false;
-    try {
-      await invoke("preview_layout", {
-        layout: {
-          speech_font_size: clampInt(
-            fields.speechFontSize.value,
-            request.limits.speech_font_size,
-          ),
-          name_font_size: clampInt(
-            fields.nameFontSize.value,
-            request.limits.name_font_size,
-          ),
-          input_font_size: clampInt(
-            fields.inputFontSize.value,
-            request.limits.input_font_size,
-          ),
-          button_font_size: clampInt(
-            fields.buttonFontSize.value,
-            request.limits.button_font_size,
-          ),
-        },
-      });
-    } catch (error) {
-      // 实时预览失败不应打断编辑
-    }
-  });
+  requestLayoutPreview();
 }
 
 function collectScreenAwarenessSettings() {
@@ -4419,6 +4385,9 @@ async function load() {
   // 给所有滑块追加数字输入框，滑块粗调 + 数字精确输入。
   upgradeSliderControls();
 
+  // 主窗口以已持久化值建立预览事务；后续取消/X 会按该会话恢复真实窗口状态。
+  await layoutPreviewTransaction.begin(collectRuntimeLayout());
+
   // 配置全部填充完毕后拍基线，作为「未保存改动」的比对基准。
   settingsBaseline = settingsSnapshot();
   refreshDirty();
@@ -4515,7 +4484,7 @@ fields.saveButton.addEventListener("click", async () => {
   setSubmissionBusy(true);
   fields.saveButton.textContent = "保存中…";
   try {
-    await invoke("save_settings", { settings });
+    await layoutPreviewTransaction.save(settings, collectRuntimeLayout());
     settingsBaseline = JSON.stringify(settings);
     refreshDirty();
     notify("已保存。", "success");
@@ -4550,7 +4519,7 @@ fields.applyButton.addEventListener("click", async () => {
   }
   setSubmissionBusy(true);
   try {
-    await invoke("apply_settings", { settings });
+    await layoutPreviewTransaction.apply(settings, collectRuntimeLayout());
     // 应用同样会持久化（仅不关窗），故重置基线，清掉「未保存」状态。
     settingsBaseline = JSON.stringify(settings);
     refreshDirty();
