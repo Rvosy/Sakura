@@ -5575,7 +5575,7 @@ class PetWindow(QWidget):
         try:
             if (
                 not result.terminal.enabled
-                and is_terminal_approval(self.pending_tool_action)
+                and is_terminal_approval(getattr(self, "pending_tool_action", None))
             ):
                 raise RuntimeError("有终端命令正在等待确认，请先在终端窗口确认或取消。")
             self.terminal_manager.update_settings(result.terminal)
