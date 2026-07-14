@@ -37,10 +37,10 @@ class _Registry:
 
 class _Closable:
     def __init__(self) -> None:
-        self.close_calls = 0
+        self.close_timeouts: list[int | None] = []
 
-    def close(self) -> None:
-        self.close_calls += 1
+    def close(self, *, timeout_ms: int | None = 1_000) -> None:
+        self.close_timeouts.append(timeout_ms)
 
 
 def _fake_context(base_dir: Path) -> SimpleNamespace:
@@ -179,7 +179,7 @@ def test_system_hello_health_and_shutdown(tmp_path: Path) -> None:
     assert health["ready"] is True
     assert health["character_id"] == "demo"
     assert shutdown == {"state": "stopped"}
-    assert context.memory_store.close_calls == 1
+    assert context.memory_store.close_timeouts == [None]
     assert context.resource_registry.stop_calls == [1_000]
 
 

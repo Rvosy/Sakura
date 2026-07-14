@@ -305,7 +305,11 @@ class MemoryStore:
                 self._status_message = ""
         _close_memory_client(old_memory)
 
-    def close(self) -> None:
+    def close(
+        self,
+        *,
+        timeout_ms: int | None = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+    ) -> None:
         """关闭长期记忆运行时并阻止迟到的后台加载结果重新写回。"""
         old_memory: Any | None = None
         with self._lock:
@@ -322,7 +326,7 @@ class MemoryStore:
             self._reload_error = ""
             self._status = "stopped"
             self._status_message = "长期记忆系统已关闭。"
-        self._thread_group.stop(DEFAULT_THREAD_SHUTDOWN_WAIT_MS)
+        self._thread_group.stop(timeout_ms)
         _close_memory_client(old_memory)
 
     def is_ready(self) -> bool:
@@ -1198,9 +1202,14 @@ class ScopedMemoryStore(MemoryStore):
     def needs_embedding_model_download(self) -> bool:
         return self._owner.needs_embedding_model_download()
 
-    def close(self) -> None:
+    def close(
+        self,
+        *,
+        timeout_ms: int | None = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+    ) -> None:
         """视图不拥有底层 mem0 运行时，关闭由 owner 负责。"""
 
+        _ = timeout_ms
         return None
 
     def _get_memory(self, *, wait: bool = True) -> Any | None:

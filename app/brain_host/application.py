@@ -1705,7 +1705,7 @@ class BrainHostApplication:
             if watcher is not threading.current_thread():
                 watcher.join(timeout=1)
         if context is not None:
-            _close_quietly(getattr(context, "memory_store", None), "close")
+            _close_memory_store_quietly(getattr(context, "memory_store", None))
             _close_quietly(getattr(context, "mcp_tool_provider", None), "close")
             _close_quietly(getattr(context, "plugin_manager", None), "shutdown_all")
             _close_quietly(getattr(context, "tts_provider", None), "close")
@@ -1824,6 +1824,15 @@ def _close_quietly(target: object | None, method: str) -> None:
     if callable(callback):
         try:
             callback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _close_memory_store_quietly(memory_store: object | None) -> None:
+    close = getattr(memory_store, "close", None)
+    if callable(close):
+        try:
+            close(timeout_ms=None)
         except Exception:  # noqa: BLE001
             pass
 
