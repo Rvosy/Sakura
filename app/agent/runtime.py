@@ -208,6 +208,7 @@ class AgentRuntime:
             fragment = build_session_state_fragment(
                 entries,
                 recent_message_count=len(request.recent_messages),
+                recent_messages=request.recent_messages,
                 freshness=entries[-1].created_at if entries else "",
                 current_input=request.current_input,
             )

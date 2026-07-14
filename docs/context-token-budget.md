@@ -3,7 +3,8 @@
 > 目的：盘清「一轮请求里到底有哪些东西、各占多少」，并给出按 token（而非字符）统一预算的设计，
 > 作为后续「显示预计 token」功能的参考底稿。
 >
-> 状态：设计/参考文档，非已落地实现。日期：2026-06-20。
+> 状态：部分落地。2026-07-14 已加入去重上下文胶囊、扩大默认预算和环境变量覆盖；
+> 模型窗口自动识别、完整请求 token 对账和 UI 展示仍属于后续设计。
 
 ---
 
@@ -62,8 +63,8 @@ self.messages（内存,append-only,只存"干净文本"）
 当前裁剪在 `app/llm/context_trimming.py:10`：
 
 ```python
-MAX_MODEL_CONTEXT_MESSAGES = 24
-MAX_MODEL_CONTEXT_CHARS = 40_000
+MAX_MODEL_CONTEXT_MESSAGES = 64
+MAX_MODEL_CONTEXT_CHARS = 120_000
 
 def trim_messages_for_model(messages):
     recent = messages[-MAX_MODEL_CONTEXT_MESSAGES:]
@@ -74,12 +75,23 @@ def trim_messages_for_model(messages):
 
 三个局限：
 1. **按字符不按 token**：CJK ≈ 1 token/字，ASCII ≈ 4 字/token，字符数与真实 token 偏差大且不稳定。
-2. **只统计了对话消息**：system 人格(~4k)、工具定义(~23KB)、runtime_context(~1.8k) 都没算进这 40k 闸门，
-   真实占用远大于"40k 字符"给人的印象。
+2. **只统计了对话消息**：system 人格(~4k)、工具定义(~23KB)、runtime_context 都没算进这 120k 闸门，
+   真实占用仍大于"120k 字符"给人的印象。
 3. **没有总窗口概念、没有 headroom、没有溢出兜底**：单条超大消息（大段 OCR/粘贴）仍可能把请求冲到模型上限 → API 报错。
 
 > 注：会话内的"硬遗忘"（FIFO 砍掉的旧消息）一部分被 `memory_curation`（每 3 轮全量读历史并固化要点）
 > 通过记忆召回补回，所以**不建议**为会话内溢出再上一套 LLM 摘要——长期记忆系统已覆盖大半。
+
+### 2.1 已落地的上下文胶囊
+
+`app/agent/context_capsule.py` 会把两类动态事实合并成一个胶囊：
+
+- 新会话开头读取的跨会话续接历史；
+- 本轮召回的相关长期记忆。
+
+胶囊不会再次复制实时消息窗口中已有的内容，也不会调用额外模型。默认最多回看 128 条经过清洗的
+持久化聊天记录，最终受 8192-token 胶囊预算和 `ContextPolicy` 总预算共同约束。历史仍保持 append-only，
+胶囊不会自动删除、压缩或改写聊天记录和长期记忆。
 
 ---
 
@@ -89,12 +101,29 @@ def trim_messages_for_model(messages):
 |---|---|---|
 | `estimate_prompt_tokens(text)` | `app/llm/prompts/runtime.py:71` | 保守估 token：非 ASCII 每字符 1，连续 ASCII 约 4 字符 1 token |
 | `truncate_to_token_budget(text, budget)` | `app/llm/prompts/runtime.py:89` | 按 token 预算截断文本，返回 (文本, 是否被截断) |
-| `ContextPolicy` 预算 | `app/llm/prompts/runtime.py:23-26,119` | runtime_context 已按 token 预算选择片段（total 4096 / plugin 2048 / memory 1024） |
+| `ContextPolicy` 预算 | `app/llm/prompts/runtime.py` | runtime_context 已按 token 预算选择片段（total 16384 / plugin 4096 / capsule+memory 8192） |
+| 上下文胶囊 | `app/agent/context_capsule.py` | 合并并去重跨会话历史与相关长期记忆，不额外调用模型 |
 | `PromptInspection.estimated_tokens` | `app/llm/prompts/types.py:129-142` | **已逐段 + 汇总**了 system_prompt 与 runtime_context 的估算 token（日志里被 redacted，但值已算出） |
 | `get_last_prompt_inspection()` | `app/agent/runtime.py:151` | 取最近一次 prompt 构建的脱敏检查（含 estimated_tokens） |
 
 **缺口**：`PromptInspection` 只覆盖 system_prompt + runtime_context，**没算**对话消息和工具定义；
 `api_client` **没有解析响应里的 `usage`**（无真实 token 对账，目前只能估）。
+
+### 3.1 大上下文模型覆盖
+
+默认值兼顾常见 128k 模型。使用 Gemini 等大上下文模型时，可以通过环境变量提高限制：
+
+| 环境变量 | 默认值 | 上限 |
+|---|---:|---:|
+| `SAKURA_MODEL_CONTEXT_MESSAGES` | 64 | 2000 |
+| `SAKURA_MODEL_CONTEXT_CHARS` | 120000 | 2000000 |
+| `SAKURA_CONTEXT_CAPSULE_HISTORY_MESSAGES` | 128 | 2000 |
+| `SAKURA_CONTEXT_CAPSULE_TOKENS` | 8192 | 262144 |
+| `SAKURA_DYNAMIC_CONTEXT_TOKENS` | 16384 | 262144 |
+| `SAKURA_MEMORY_CONTEXT_TOKENS` | 8192 | 262144 |
+| `SAKURA_PLUGIN_CONTEXT_TOKENS` | 4096 | 262144 |
+
+提高限制前需要确认模型上下文窗口和中转站请求体限制。
 
 ---
 
@@ -208,6 +237,7 @@ request_messages、runtime_context）。在这里算一份 `PromptTokenEstimate`
 
 ## 7. 关键文件索引
 - 裁剪：`app/llm/context_trimming.py:10`
+- 上下文胶囊：`app/agent/context_capsule.py`
 - token 估算/截断：`app/llm/prompts/runtime.py:71`（estimate）、`:89`（truncate）
 - runtime_context 预算与选择：`app/llm/prompts/runtime.py:23-26,119`（ContextPolicy）
 - prompt 构建（静态/动态分层 + inspection）：`app/llm/prompts/runtime.py:196`

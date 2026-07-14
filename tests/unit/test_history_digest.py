@@ -5,6 +5,7 @@ from app.agent.session_state_context import (
     SESSION_STATE_TOKEN_BUDGET,
     build_session_state_fragment,
 )
+from app.llm.prompts.types import ContextMessage
 from app.storage.chat_history import ChatHistoryEntry
 from app.storage.history_digest import (
     MAX_DIGEST_MESSAGES,
@@ -103,10 +104,25 @@ class TestBuildSessionStateFragment:
         assert "上次任务" in fragment.content
         assert "本轮问题" not in fragment.content
 
+    def test_excludes_messages_already_present_in_live_context(self) -> None:
+        entries = [
+            _entry("user", "更早的项目背景"),
+            _entry("assistant", "实时窗口已经包含这句"),
+        ]
+        fragment = build_session_state_fragment(
+            entries,
+            recent_messages=(ContextMessage("assistant", "实时窗口已经包含这句"),),
+        )
+
+        assert fragment is not None
+        assert "更早的项目背景" in fragment.content
+        assert "实时窗口已经包含这句" not in fragment.content
+
     def test_token_budget_keeps_newest_messages(self) -> None:
-        entries = [_entry("user", f"消息{i}：" + "中" * 220) for i in range(MAX_DIGEST_MESSAGES)]
+        entry_count = 80
+        entries = [_entry("user", f"消息{i}：" + "中" * 220) for i in range(entry_count)]
         fragment = build_session_state_fragment(entries)
         assert fragment is not None
         assert fragment.token_budget == SESSION_STATE_TOKEN_BUDGET
         assert "消息0：" not in fragment.content
-        assert f"消息{MAX_DIGEST_MESSAGES - 1}：" in fragment.content
+        assert f"消息{entry_count - 1}：" in fragment.content

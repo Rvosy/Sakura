@@ -2891,6 +2891,19 @@ def test_trim_messages_for_model_keeps_recent_messages_without_mutating_history(
     assert len(messages) == MAX_MODEL_CONTEXT_MESSAGES + 5
 
 
+def test_trim_messages_for_model_allows_large_context_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("SAKURA_MODEL_CONTEXT_MESSAGES", "200")
+    monkeypatch.setenv("SAKURA_MODEL_CONTEXT_CHARS", "500000")
+    messages = [
+        {"role": "user", "content": f"message {index}"}
+        for index in range(150)
+    ]
+
+    trimmed = trim_messages_for_model(messages)
+
+    assert len(trimmed) == 150
+
+
 def test_autonomous_screen_observation_can_request_screen_without_explicit_user_command() -> None:
     class ScreenRequestClient:
         def __init__(self) -> None:
