@@ -6,6 +6,7 @@ import { ChatController } from "./chat/chat_controller.js";
 import { ConfirmationView } from "./chat/confirmation_view.js";
 import { AudioController } from "./audio/audio_controller.js";
 import { CaptureController } from "./capture/capture_controller.js";
+import { createSessionBootstrapLoader } from "./core/bootstrap_loader.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -41,7 +42,6 @@ const elements = {
 
 let dragging = false;
 let clickThrough = false;
-let loadedSessionGeneration = null;
 
 function setResult(message, kind = "ready") {
   elements.result.textContent = message;
@@ -104,11 +104,13 @@ chatController = new ChatController({
   setStatus: setResult,
 });
 
+const bootstrapLoader = createSessionBootstrapLoader({
+  fetchBootstrap: () => callDesktop("pet_bootstrap"),
+  applyBootstrap: (bootstrap) => petController.applyBootstrap(bootstrap),
+});
+
 async function loadPetBootstrap(brain, { force = false } = {}) {
-  if (!brain?.acceptingRequests || (!force && brain.sessionGeneration === loadedSessionGeneration)) return;
-  const bootstrap = await callDesktop("pet_bootstrap");
-  loadedSessionGeneration = brain.sessionGeneration;
-  petController.applyBootstrap(bootstrap);
+  return bootstrapLoader.load(brain, { force });
 }
 
 async function refreshPetBootstrap() {
@@ -128,14 +130,14 @@ function renderBrainStatus(brain) {
     return;
   }
   if (phase === "restarting") {
-    loadedSessionGeneration = null;
+    bootstrapLoader.reset();
     petStore.resetSession();
     chatController.reset();
     elements.status.textContent = `Brain 正在恢复 · 第 ${brain.restartCount} 次重启`;
     return;
   }
   if (phase === "diagnostic") {
-    loadedSessionGeneration = null;
+    bootstrapLoader.reset();
     petStore.resetSession();
     chatController.reset();
     elements.status.textContent = "Brain Host 暂不可用 · 诊断模式";

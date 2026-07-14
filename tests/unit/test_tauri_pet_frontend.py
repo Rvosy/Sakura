@@ -18,6 +18,7 @@ def test_tauri_pet_frontend_has_single_store_and_feature_modules() -> None:
     required = (
         FRONTEND / "core" / "store.js",
         FRONTEND / "core" / "theme.js",
+        FRONTEND / "core" / "bootstrap_loader.js",
         FRONTEND / "pet" / "layout.js",
         FRONTEND / "pet" / "portrait_controller.js",
         FRONTEND / "pet" / "subtitle_controller.js",
@@ -29,6 +30,50 @@ def test_tauri_pet_frontend_has_single_store_and_feature_modules() -> None:
     app_source = (FRONTEND / "app.js").read_text(encoding="utf-8")
     assert 'from "./core/store.js"' in app_source
     assert "createPetStore" not in app_source
+
+
+def test_bootstrap_loader_coalesces_repeated_ready_status_events(
+    node_module_runner,
+) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+import {{ createSessionBootstrapLoader }} from {json.dumps(_module_url('desktop/frontend/core/bootstrap_loader.js'))};
+let resolveFirst;
+let resolveSecond;
+let fetchCount = 0;
+const applied = [];
+const loader = createSessionBootstrapLoader({{
+  fetchBootstrap: () => {{
+    fetchCount += 1;
+    return new Promise((resolve) => {{
+      if (fetchCount === 1) resolveFirst = resolve;
+      else resolveSecond = resolve;
+    }});
+  }},
+  applyBootstrap: (bootstrap) => applied.push(bootstrap.character.id),
+}});
+const firstBrain = {{ acceptingRequests: true, sessionGeneration: 1 }};
+const firstLoads = Array.from({{ length: 25 }}, () => loader.load(firstBrain));
+await Promise.resolve();
+const countDuringStatusStorm = fetchCount;
+resolveFirst({{ character: {{ id: "first" }} }});
+await Promise.all(firstLoads);
+await loader.load(firstBrain);
+loader.reset();
+const secondBrain = {{ acceptingRequests: true, sessionGeneration: 2 }};
+const secondLoads = [loader.load(secondBrain), loader.load(secondBrain)];
+await Promise.resolve();
+resolveSecond({{ character: {{ id: "second" }} }});
+await Promise.all(secondLoads);
+console.log(JSON.stringify({{ fetchCount, countDuringStatusStorm, applied }}));
+"""
+    )
+
+    assert payload == {
+        "fetchCount": 2,
+        "countDuringStatusStorm": 1,
+        "applied": ["first", "second"],
+    }
 
 
 def test_store_and_theme_mapping_are_deterministic(
