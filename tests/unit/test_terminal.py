@@ -23,6 +23,7 @@ from app.terminal.models import (
     TerminalSpawnResult,
     TerminalState,
 )
+from app.terminal.risk import DefaultTerminalRiskClassifier
 from app.terminal.settings import TerminalSettings
 from app.terminal.tauri_process import (
     TAURI_TERMINAL_BIN_ENV,
@@ -186,6 +187,96 @@ def test_unknown_and_shell_commands_do_not_offer_process_scope(tmp_path: Path) -
     assert isinstance(shell, PendingToolAction)
     assert shell.risk_level == "high"
     assert shell.allowed_approval_scopes == (ApprovalScope.ONCE,)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_level"),
+    [
+        (("pwd",), "low"),
+        (("cat", "README.md"), "low"),
+        (("cat", "~/.ssh/id_ed25519"), "medium"),
+        (("date", "--set=tomorrow"), "high"),
+        (("find", ".", "-exec", "rm", "{}", ";"), "high"),
+        (("rg", "--pre", "sh -c payload", "needle"), "high"),
+        (("sed", "-i", "s/old/new/", "file.txt"), "medium"),
+        (("tar", "--checkpoint-action=exec=sh payload", "-cf", "out.tar", "."), "high"),
+        (("python3.12", "-c", "print('hello')"), "high"),
+        (("script.py",), "high"),
+        (("setup.cmd",), "high"),
+        (("C:\\Windows\\System32\\cmd.exe", "/c", "dir"), "high"),
+        (("env", "python", "script.py"), "high"),
+        (("curl", "https://example.com"), "high"),
+        (("pip", "list"), "medium"),
+        (("pip", "show", "test"), "medium"),
+        (("pip", "install", "package"), "high"),
+        (("pip", "--index-url", "https://example.com/simple", "install", "package"), "high"),
+        (("make", "test"), "high"),
+        (("systemctl", "status", "service"), "high"),
+        (("cp", "source", "destination"), "medium"),
+    ],
+)
+def test_terminal_risk_classifier_is_argument_and_platform_aware(
+    command: tuple[str, ...],
+    expected_level: str,
+) -> None:
+    assessment = DefaultTerminalRiskClassifier().classify(command)
+
+    assert assessment.level == expected_level
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_level"),
+    [
+        (("git", "-C", "repo", "status"), "low"),
+        (("git", "--no-pager", "log", "-1"), "low"),
+        (("git", "--version"), "low"),
+        (("git", "--paginate", "log", "-1"), "medium"),
+        (("git", "-C", "repo", "reset", "--hard"), "high"),
+        (("git", "--work-tree=repo", "clean", "-fd"), "high"),
+        (("git", "-c", "core.pager=sh -c payload", "log"), "high"),
+        (("git", "diff", "--output=changes.diff"), "medium"),
+        (("git", "checkout", "--", "file.txt"), "high"),
+        (("git", "switch", "feature"), "medium"),
+        (("git", "push", "origin", "main"), "high"),
+    ],
+)
+def test_terminal_risk_classifier_parses_git_global_options(
+    command: tuple[str, ...],
+    expected_level: str,
+) -> None:
+    assessment = DefaultTerminalRiskClassifier().classify(command)
+
+    assert assessment.level == expected_level
+
+
+def test_high_risk_interpreter_never_offers_process_scope(tmp_path: Path) -> None:
+    manager, _transport = _manager(tmp_path)
+    registry = ToolRegistry()
+    register_terminal_tools(registry, manager)
+
+    pending = registry.prepare_or_execute(
+        "terminal_exec",
+        {"command": ["python3", "-c", "print('hello')"]},
+    )
+
+    assert isinstance(pending, PendingToolAction)
+    assert pending.risk_level == "high"
+    assert pending.allowed_approval_scopes == (ApprovalScope.ONCE,)
+
+
+def test_low_risk_git_pager_command_does_not_offer_process_scope(tmp_path: Path) -> None:
+    manager, _transport = _manager(tmp_path)
+    registry = ToolRegistry()
+    register_terminal_tools(registry, manager)
+
+    pending = registry.prepare_or_execute(
+        "terminal_exec",
+        {"command": ["git", "log", "-1"]},
+    )
+
+    assert isinstance(pending, PendingToolAction)
+    assert pending.risk_level == "low"
+    assert pending.allowed_approval_scopes == (ApprovalScope.ONCE,)
 
 
 def test_process_approval_allows_only_same_session_write(tmp_path: Path) -> None:

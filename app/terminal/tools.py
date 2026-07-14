@@ -135,7 +135,7 @@ def _exec_confirmation(manager: TerminalManager, arguments: dict[str, Any]) -> T
     command = normalize_terminal_command(arguments.get("command"))
     assessment = manager.classify(command)
     scopes = (ApprovalScope.ONCE,)
-    if assessment.level == "low":
+    if assessment.level == "low" and assessment.allow_process_scope:
         scopes = (ApprovalScope.ONCE, ApprovalScope.PROCESS)
     return ToolConfirmationDetails(
         summary=shlex.join(command),
