@@ -461,10 +461,11 @@ class CharacterStudioService:
                 dirty=False,
                 imported_assets=[str(item) for item in state.get("imported_assets", [])],
             )
+        active_character_id = str(current_character_id or profile.id)
         return {
             "saved_character_id": profile.id,
-            "current_character_id": str(current_character_id or ""),
-            "characters": self.list_characters(current_character_id=str(current_character_id or "")),
+            "current_character_id": active_character_id,
+            "characters": self.list_characters(current_character_id=active_character_id),
             "doc": saved_doc.to_payload(),
             "package_dir": str(draft_dir),
             "workspace_id": workspace_id,

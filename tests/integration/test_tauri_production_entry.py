@@ -103,6 +103,7 @@ def test_tauri_remains_the_only_owner_of_brain_host_process() -> None:
 
     assert "app.brain_host" not in main_source
     assert "BrainHostSupervisor" in rust_state
+    assert '"bootstrap.status"' in rust_state
     assert "tauri_plugin_single_instance::init" in rust_entry
 
 
@@ -112,6 +113,14 @@ def test_windows_installer_does_not_require_legacy_qt() -> None:
     assert "PySide6" not in installer
     assert "项目路径包含非英文字符" not in installer
     assert "import playwright" in installer
+
+
+def test_windows_batch_entrypoints_use_crlf_line_endings() -> None:
+    for path in sorted(ROOT.glob("*.bat")):
+        source = path.read_bytes()
+        bare_lf_count = source.replace(b"\r\n", b"").count(b"\n")
+
+        assert bare_lf_count == 0, path
 
 
 def test_release_workflows_build_and_package_the_production_desktop() -> None:

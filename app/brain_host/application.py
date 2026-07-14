@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from app.brain_host.dto import (
@@ -111,6 +112,8 @@ class BrainHostApplication:
     def initialize(self) -> dict[str, Any] | None:
         if self.state == "ready":
             return self.startup
+        from app.config.character_loader import CharacterConfigError
+
         try:
             self.context = self._context_builder(self.config.base_dir)
             self._install_headless_runtime_services()
@@ -138,6 +141,17 @@ class BrainHostApplication:
                     session_id=self.config.session_id,
                 )
                 self.scheduler = PeriodicScheduler()
+        except CharacterConfigError:
+            self.context = _build_characterless_context(self.config.base_dir)
+            self.assistant = None
+            self.tts_service = None
+            self.backchannel_service = None
+            self.scheduler = None
+            self.mobile_bridge = None
+            self.initialization_error = None
+            self.state = "ready"
+            self.startup = self._current_startup_state()
+            return self.startup
         except Exception as exc:  # noqa: BLE001
             self.state = "failed"
             self.initialization_error = BrainHostError(
@@ -147,6 +161,7 @@ class BrainHostApplication:
                 details={"error_type": type(exc).__name__},
             )
             return None
+        self.initialization_error = None
         self.state = "ready"
         self._configure_screen_observation_runtime()
         self.sync_scheduler_jobs(start=False)
@@ -167,6 +182,11 @@ class BrainHostApplication:
         if method == "system.shutdown":
             return self._shutdown()
         if method == "pet.bootstrap":
+            if self.context is None or self.state != "ready":
+                raise BrainHostError("BACKEND_UNAVAILABLE", "Brain Host 尚未就绪。", retryable=True)
+            self.startup = self._current_startup_state()
+            return self.startup
+        if method == "bootstrap.status":
             if self.context is None or self.state != "ready":
                 raise BrainHostError("BACKEND_UNAVAILABLE", "Brain Host 尚未就绪。", retryable=True)
             self.startup = self._current_startup_state()
@@ -236,6 +256,26 @@ class BrainHostApplication:
 
         registry = CharacterRegistry(self.config.base_dir)
         profile = registry.get(character_id)
+        if getattr(context, "character_profile", None) is None or not hasattr(
+            context, "agent_runtime"
+        ):
+            save_current = getattr(context.settings_service, "save_current_character_id", None)
+            if callable(save_current):
+                save_current(registry, profile.id)
+            self.context = None
+            self.startup = None
+            self.initialization_error = None
+            self.settings_resource_tasks = None
+            self.state = "starting"
+            startup = self.initialize()
+            active_profile = getattr(self.context, "character_profile", None)
+            if (
+                self.state != "ready"
+                or startup is None
+                or getattr(active_profile, "id", None) != profile.id
+            ):
+                raise ValueError("首个角色创建成功，但 Brain Host 重新初始化失败。")
+            return
         previous_id = str(getattr(getattr(context, "character_profile", None), "id", ""))
         system_prompt = load_character_system_prompt(profile)
         memory_store = context.memory_store
@@ -1633,8 +1673,9 @@ class BrainHostApplication:
             "state": self.state,
             "ready": self.state == "ready",
         }
-        if self.context is not None:
-            result["character_id"] = self.context.character_profile.id
+        profile = getattr(self.context, "character_profile", None)
+        if profile is not None:
+            result["character_id"] = profile.id
         if self.initialization_error is not None:
             result["error"] = self.initialization_error.to_dict()
         return result
@@ -1678,6 +1719,19 @@ def _build_context(base_dir: Path) -> Any:
     from app.core.bootstrap import build_initial_app_context
 
     return build_initial_app_context(base_dir)
+
+
+def _build_characterless_context(base_dir: Path) -> Any:
+    from app.config.settings_service import AppSettingsService
+
+    settings_service = AppSettingsService(base_dir=base_dir)
+    return SimpleNamespace(
+        base_dir=base_dir.resolve(),
+        settings_service=settings_service,
+        settings=settings_service.load_api_settings(),
+        character_profile=None,
+        character_registry=SimpleNamespace(profiles={}),
+    )
 
 
 def _build_tts_service(context: Any, base_dir: Path) -> Any:

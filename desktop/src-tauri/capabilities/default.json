@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Sakura Assistant trusted desktop surface",
-  "windows": ["main", "capture", "settings", "studio", "history", "diagnostics"],
+  "windows": ["main", "capture", "settings", "studio", "history", "diagnostics", "runtime-repair"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

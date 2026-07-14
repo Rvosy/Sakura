@@ -7,6 +7,7 @@ from app.agent.mcp import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
 from app.brain_host.secondary_windows import (
+    _dispatch_character_rpc,
     apply_settings_payload,
     build_settings_request,
     secondary_host_call,
@@ -164,6 +165,83 @@ def test_build_settings_request_matches_existing_frontend_contract() -> None:
     assert request["limits"]["portrait_scale_percent"] == [50, 150]
     assert request["theme_fields"]
     assert request["visual_effect_modes"]
+
+
+def test_onboarding_settings_request_does_not_require_character_context() -> None:
+    context = _context()
+    context.character_profile = None
+    context.character_registry = SimpleNamespace(profiles={})
+
+    request = build_settings_request(
+        context,
+        base_dir=Path("."),
+        nonce="nonce-onboarding",
+        onboarding=True,
+    )
+
+    assert request["onboarding"] is True
+    assert request["character"]["current_character_id"] == ""
+    assert request["character"]["characters"] == []
+    assert request["api"]["settings"]["timeout_seconds"] == 60
+
+
+def test_onboarding_apply_rebuilds_characterless_brain_in_current_process() -> None:
+    context = _context()
+    del context.agent_runtime
+    context.character_profile = None
+    payload = build_settings_request(
+        context,
+        base_dir=Path("."),
+        nonce="nonce-onboarding-apply",
+        onboarding=True,
+    )
+    payload["character"]["current_character_id"] = "demo"
+    refreshed: list[str] = []
+    application = SimpleNamespace(
+        context=context,
+        config=SimpleNamespace(base_dir=Path(".")),
+        _screen_awareness_enabled=True,
+        _screen_context_resolution="fullscreen",
+        refresh_character=lambda character_id: refreshed.append(character_id),
+        refresh_tts=lambda: (_ for _ in ()).throw(AssertionError("bootstrap path must reinitialize")),
+    )
+
+    result = apply_settings_payload(application, payload)
+
+    assert result["applied"] is True
+    assert refreshed == ["demo"]
+
+
+def test_onboarding_can_import_first_character_without_existing_registry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    imported = False
+    profile = SimpleNamespace(id="imported", display_name="Imported", voice=None)
+
+    def fake_import(_path: Path, _base_dir: Path) -> SimpleNamespace:
+        nonlocal imported
+        imported = True
+        return SimpleNamespace(character_id="imported")
+
+    def fake_registry(_base_dir: Path) -> SimpleNamespace:
+        if not imported:
+            raise AssertionError("首次导入前不能要求已有角色注册表")
+        return SimpleNamespace(all=lambda: [profile])
+
+    monkeypatch.setattr("app.brain_host.secondary_windows.import_character_archive", fake_import)
+    monkeypatch.setattr("app.brain_host.secondary_windows.CharacterRegistry", fake_registry)
+
+    result = _dispatch_character_rpc(
+        tmp_path,
+        "character.import_archive",
+        {"path": str(tmp_path / "first.char")},
+    )
+
+    assert result["current_character_id"] == "imported"
+    assert result["characters"] == [
+        {"id": "imported", "display_name": "Imported", "has_voice": False}
+    ]
 
 
 def test_apply_settings_saves_sections_and_updates_runtime_without_restarting_app() -> None:

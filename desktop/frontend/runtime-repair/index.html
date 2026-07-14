@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sakura 启动修复</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="repair-shell">
+      <section class="repair-card" aria-labelledby="repair-title">
+        <p class="eyebrow">Runtime Repair</p>
+        <h1 id="repair-title">Sakura 的基础运行环境需要修复</h1>
+        <p class="summary">
+          这不是模型或角色配置问题。Tauri 无法完成 Python Runtime、Brain Host
+          或协议的基础健康检查，因此桌宠和首次设置均不会启动。
+        </p>
+        <dl class="status-grid">
+          <div>
+            <dt>当前状态</dt>
+            <dd id="repair-phase">正在读取…</dd>
+          </div>
+          <div>
+            <dt>诊断代码</dt>
+            <dd id="repair-code">—</dd>
+          </div>
+        </dl>
+        <pre id="repair-message" class="diagnostic">等待 Runtime 诊断信息。</pre>
+        <p class="hint">
+          请修复或重新安装随 Sakura 提供的 Runtime 后重新启动应用。业务配置缺失会进入另一套首次设置流程。
+        </p>
+        <div class="actions">
+          <button id="refresh-status" type="button">重新检查状态</button>
+          <button id="open-diagnostics" class="secondary" type="button">打开诊断详情</button>
+        </div>
+      </section>
+    </main>
+    <script src="./runtime_repair.js"></script>
+  </body>
+</html>

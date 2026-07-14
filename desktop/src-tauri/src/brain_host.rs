@@ -900,6 +900,13 @@ fn supervise(
             }
         };
 
+        eprintln!(
+            "[Sakura] Brain Host failure (attempt {}/{}): {}",
+            restart_count + 1,
+            config.max_restarts + 1,
+            sanitize_diagnostic(&failure)
+        );
+
         invalidate_runtime(&shared);
         if restart_count >= config.max_restarts {
             mark_diagnostic(&shared, &callback, restart_count, &failure);
@@ -1208,6 +1215,30 @@ mod tests {
         let stopped = supervisor.status();
         assert_eq!(stopped.phase, BrainHostPhase::Stopped);
         assert!(!stopped.last_shutdown_forced);
+    }
+
+    #[test]
+    fn onboarding_required_is_healthy_and_does_not_restart_brain_host() {
+        let temp = TempDir::new().unwrap();
+        let record = temp.path().join("launches.jsonl");
+        let supervisor =
+            BrainHostSupervisor::start(fixture_config(&temp, "onboarding_required"), None);
+        let ready = wait_for_status(&supervisor, Duration::from_secs(5), |status| {
+            status.phase == BrainHostPhase::Ready
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        assert_eq!(ready.restart_count, 0);
+        assert_eq!(supervisor.status().phase, BrainHostPhase::Ready);
+        assert_eq!(
+            supervisor
+                .startup_state()
+                .and_then(|value| value.get("state").cloned()),
+            Some(json!("onboarding_required"))
+        );
+        assert_eq!(launch_records(&record).len(), 1);
+        supervisor.shutdown();
     }
 
     #[test]

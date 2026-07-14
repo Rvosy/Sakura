@@ -73,28 +73,19 @@ def pending_action_dto(action: PendingToolAction) -> dict[str, Any]:
 
 
 def startup_state_dto(context: Any) -> dict[str, Any]:
-    profile = context.character_profile
-    portrait = _relative_asset_path(context.base_dir, profile.default_portrait_path)
-    expression_portraits = _expression_portraits(profile)
-    portrait_choices = list(expression_portraits)
-    if not portrait_choices:
-        raw_choices = getattr(profile, "portrait_choices", ())
-        if isinstance(raw_choices, dict):
-            portrait_choices = [str(key) for key in raw_choices]
-        elif isinstance(raw_choices, (list, tuple)):
-            portrait_choices = [str(key) for key in raw_choices]
-    tool_registry = getattr(context, "tool_registry", None)
-    tools = tool_registry.all() if tool_registry is not None else ()
-    plugin_manager = getattr(context, "plugin_manager", None)
-    plugin_results = getattr(plugin_manager, "results", ()) if plugin_manager is not None else ()
-    settings_service = getattr(context, "settings_service", None)
-    ui_values = _load_ui_values(settings_service)
-
-    return {
-        "version": 1,
-        "state": "ready",
-        "base_dir": str(Path(context.base_dir).resolve()),
-        "character": {
+    profile = getattr(context, "character_profile", None)
+    character = None
+    if profile is not None:
+        portrait = _relative_asset_path(context.base_dir, profile.default_portrait_path)
+        expression_portraits = _expression_portraits(profile)
+        portrait_choices = list(expression_portraits)
+        if not portrait_choices:
+            raw_choices = getattr(profile, "portrait_choices", ())
+            if isinstance(raw_choices, dict):
+                portrait_choices = [str(key) for key in raw_choices]
+            elif isinstance(raw_choices, (list, tuple)):
+                portrait_choices = [str(key) for key in raw_choices]
+        character = {
             "id": profile.id,
             "display_name": profile.display_name,
             "initial_message": profile.initial_message,
@@ -108,7 +99,35 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
                     for key, path in expression_portraits.items()
                 },
             },
+        }
+    tool_registry = getattr(context, "tool_registry", None)
+    tools = tool_registry.all() if tool_registry is not None else ()
+    plugin_manager = getattr(context, "plugin_manager", None)
+    plugin_results = getattr(plugin_manager, "results", ()) if plugin_manager is not None else ()
+    settings_service = getattr(context, "settings_service", None)
+    ui_values = _load_ui_values(settings_service)
+    model_settings = _chat_model_settings(context, settings_service)
+    model_ready = all(
+        str(getattr(model_settings, field, "")).strip()
+        for field in ("base_url", "api_key", "model")
+    )
+    character_ready = profile is not None
+    missing = []
+    if not model_ready:
+        missing.append("model")
+    if not character_ready:
+        missing.append("character")
+
+    return {
+        "version": 1,
+        "state": "ready" if not missing else "onboarding_required",
+        "bootstrap": {
+            "model_ready": model_ready,
+            "character_ready": character_ready,
+            "missing": missing,
         },
+        "base_dir": str(Path(context.base_dir).resolve()),
+        "character": character,
         "theme": theme_to_mapping(_effective_theme(settings_service, profile)),
         "layout": {
             "portrait_scale_percent": _clamp_int(
@@ -161,9 +180,9 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
             ),
         },
         "model": {
-            "base_url": context.settings.base_url,
-            "model": context.settings.model,
-            "timeout_seconds": context.settings.timeout_seconds,
+            "base_url": str(getattr(model_settings, "base_url", "")),
+            "model": str(getattr(model_settings, "model", "")),
+            "timeout_seconds": int(getattr(model_settings, "timeout_seconds", 60)),
         },
         "runtime": {
             "tool_count": len(tools),
@@ -173,6 +192,28 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
             "startup_initializing": bool(getattr(context, "startup_initializing", False)),
         },
     }
+
+
+def _chat_model_settings(context: Any, settings_service: object | None) -> object | None:
+    load_settings = getattr(settings_service, "load_api_settings", None)
+    load_profiles = getattr(settings_service, "load_api_profiles", None)
+    load_selection = getattr(settings_service, "load_model_selection", None)
+    if not all(callable(callback) for callback in (load_settings, load_profiles, load_selection)):
+        return getattr(context, "settings", None)
+    try:
+        from app.config.model_slots import resolve_model_slot
+        from app.config.models import MODEL_SLOT_CHAT
+
+        settings = load_settings()
+        resolved = resolve_model_slot(
+            load_profiles(),
+            load_selection(),
+            MODEL_SLOT_CHAT,
+            settings,
+        )
+        return resolved.settings if resolved is not None else None
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def _relative_asset_path(base_dir: Path, path: object) -> str:

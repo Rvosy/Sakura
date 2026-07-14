@@ -2420,6 +2420,28 @@ async function launchCharacterStudio() {
   });
 }
 
+async function refreshCharactersAfterStudio() {
+  if (!request) {
+    return;
+  }
+  try {
+    const latest = await invoke("load_request");
+    request.character = latest.character;
+    request.theme_defaults = latest.theme_defaults;
+    renderCharacters();
+    refreshSelect(fields.characterSelect);
+    applySelectedCharacterTheme();
+    syncTtsState();
+    syncCharacterArchiveState();
+    updateOnboardingUi();
+    if (isOnboarding() && selectedCharacter()) {
+      showOnboardingStep("providers");
+    }
+  } catch (error) {
+    setError(`角色列表刷新失败：${error}`);
+  }
+}
+
 function resourcesSnapshot() {
   return resourceState.snapshot || request?.resources || {};
 }
@@ -4573,6 +4595,7 @@ detailCard?.addEventListener("input", (event) => {
 (function guardWindowClose() {
   try {
     window.__TAURI__?.event?.listen?.("sakura://settings-close-requested", requestCancelClose);
+    window.__TAURI__?.event?.listen?.("sakura://character-changed", refreshCharactersAfterStudio);
     const current = window.__TAURI__?.window?.getCurrentWindow?.();
     if (!current?.onCloseRequested) {
       return;

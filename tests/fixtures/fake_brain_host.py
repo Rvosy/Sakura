@@ -127,7 +127,14 @@ def main() -> int:
                         "protocol": 1,
                         "session_id": os.environ["SAKURA_SESSION_ID"],
                         "backend_state": "ready",
-                        "startup": {"fake": True},
+                        "startup": {
+                            "fake": True,
+                            "state": (
+                                "onboarding_required"
+                                if mode == "onboarding_required"
+                                else "ready"
+                            ),
+                        },
                     },
                     sequence=outbound_sequence,
                 )

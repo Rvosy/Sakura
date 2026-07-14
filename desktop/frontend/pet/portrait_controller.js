@@ -12,6 +12,7 @@ export class PortraitController {
 
   setCharacter(character) {
     this.assets = character?.portraits ?? { default: "", expressions: {} };
+    this.fallback.dataset.state = character ? "missing-portrait" : "needs-character";
     this.preloaded.clear();
     this.#preloadAll();
     this.show("default", { immediate: true });
@@ -25,6 +26,8 @@ export class PortraitController {
   show(key, { immediate = false } = {}) {
     const source = this.resolveAsset(key);
     if (!source) {
+      this.currentImage.removeAttribute("src");
+      this.transitionImage.removeAttribute("src");
       this.fallback.hidden = false;
       return;
     }
@@ -61,7 +64,10 @@ export class PortraitController {
     image.addEventListener(
       "error",
       () => {
-        if (token === this.transitionToken) this.fallback.hidden = false;
+        if (token === this.transitionToken) {
+          this.fallback.dataset.state = "missing-portrait";
+          this.fallback.hidden = false;
+        }
       },
       { once: true },
     );

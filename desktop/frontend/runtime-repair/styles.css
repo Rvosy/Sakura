@@ -1,0 +1,122 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #332a31;
+  background: #f8f1f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 640px;
+  min-height: 480px;
+  background:
+    radial-gradient(circle at 18% 12%, rgb(231 168 198 / 32%), transparent 34%),
+    linear-gradient(145deg, #fffafd, #f4e9f0);
+}
+
+.repair-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 36px;
+}
+
+.repair-card {
+  width: min(100%, 680px);
+  padding: 34px;
+  border: 1px solid #e2cbd8;
+  border-radius: 28px;
+  background: rgb(255 255 255 / 88%);
+  box-shadow: 0 24px 70px rgb(77 45 64 / 14%);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #a94676;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-family: "Yu Mincho", "SimSun", serif;
+  font-size: 28px;
+  line-height: 1.35;
+}
+
+.summary,
+.hint {
+  color: #685b63;
+  line-height: 1.75;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 24px 0 14px;
+}
+
+.status-grid div {
+  padding: 14px 16px;
+  border: 1px solid #ead8e2;
+  border-radius: 16px;
+  background: #fff8fc;
+}
+
+dt {
+  color: #8b7480;
+  font-size: 12px;
+}
+
+dd {
+  margin: 6px 0 0;
+  font-weight: 700;
+}
+
+.diagnostic {
+  min-height: 92px;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 16px;
+  color: #6d304d;
+  background: #f8e9f1;
+  font: 13px/1.65 Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 12px;
+  color: white;
+  background: #b84f82;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary {
+  border: 1px solid #d8bdcb;
+  color: #684052;
+  background: white;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}

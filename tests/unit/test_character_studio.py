@@ -239,6 +239,7 @@ def test_character_studio_disabling_voice_does_not_reload_stale_reference_file(t
 
     saved = service.save_character(doc, Path(opened["package_dir"]))
 
+    assert saved["current_character_id"] == "sakura"
     assert saved["doc"]["voice"] is None
     assert saved["doc"]["reference_audios"] == []
     assert saved["doc"]["reply_tones"] == []

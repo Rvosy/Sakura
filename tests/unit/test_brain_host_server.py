@@ -52,6 +52,7 @@ def _fake_context(base_dir: Path) -> SimpleNamespace:
         ),
         settings=SimpleNamespace(
             base_url="https://api.example.com/v1",
+            api_key="test-key",
             model="test-model",
             timeout_seconds=30,
         ),
@@ -95,6 +96,11 @@ def test_application_initializes_context_and_returns_json_startup_dto(tmp_path: 
 
     assert startup is not None
     assert startup["state"] == "ready"
+    assert startup["bootstrap"] == {
+        "model_ready": True,
+        "character_ready": True,
+        "missing": [],
+    }
     assert startup["base_dir"] == str(tmp_path.resolve())
     assert startup["character"]["id"] == "demo"
     assert startup["character"]["initial_message"] == "hello"
@@ -107,6 +113,38 @@ def test_application_initializes_context_and_returns_json_startup_dto(tmp_path: 
     assert startup["subtitle"]["language"] == "zh"
     assert startup["runtime"]["tool_count"] == 2
     json.dumps(startup, ensure_ascii=False)
+
+
+def test_missing_chat_model_uses_onboarding_state_without_failing_health(tmp_path: Path) -> None:
+    from app.brain_host.application import BrainHostApplication, BrainHostConfig
+
+    context = _fake_context(tmp_path)
+    context.settings = SimpleNamespace(
+        base_url="https://api.example.com/v1",
+        api_key="",
+        model="test-model",
+        timeout_seconds=30,
+    )
+    app = BrainHostApplication(
+        BrainHostConfig(tmp_path, "session-model-setup", "credential-model-setup", 1),
+        context_builder=lambda _base_dir: context,
+    )
+
+    startup = app.initialize()
+    health = app.handle_request("system.health", {})
+
+    assert startup is not None
+    assert startup["state"] == "onboarding_required"
+    assert startup["bootstrap"] == {
+        "model_ready": False,
+        "character_ready": True,
+        "missing": ["model"],
+    }
+    assert health == {
+        "state": "ready",
+        "ready": True,
+        "character_id": "demo",
+    }
 
 
 def test_system_hello_health_and_shutdown(tmp_path: Path) -> None:

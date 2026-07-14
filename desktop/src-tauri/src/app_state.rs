@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -21,8 +22,18 @@ pub const TTS_PLAYBACK_EVENT: &str = "sakura://tts-playback-state";
 const CHARACTER_ASSET_SCHEME: &str = "sakura-asset";
 const MAX_CHARACTER_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupRoute {
+    Pending,
+    OnboardingRequired,
+    Ready,
+    RuntimeRepair,
+}
+
 pub struct DesktopAppState {
     brain: Arc<BrainHostSupervisor>,
+    startup: Arc<Mutex<Option<Value>>>,
+    startup_route: Arc<Mutex<StartupRoute>>,
     capture: Arc<CaptureManager>,
     audio: Option<AudioManager>,
     audio_error: Option<String>,
@@ -124,6 +135,8 @@ impl DesktopAppState {
         let _ = brain_slot.set(Arc::clone(&brain));
         Ok(Self {
             brain,
+            startup: Arc::new(Mutex::new(None)),
+            startup_route: Arc::new(Mutex::new(StartupRoute::Pending)),
             capture,
             audio,
             audio_error,
@@ -140,6 +153,86 @@ impl DesktopAppState {
 
     pub fn brain_status(&self) -> BrainHostStatus {
         self.brain.status()
+    }
+
+    pub fn begin_startup_routing(&self, app: AppHandle) {
+        let brain = Arc::clone(&self.brain);
+        let startup = Arc::clone(&self.startup);
+        let route = Arc::clone(&self.startup_route);
+        let _ = thread::Builder::new()
+            .name("sakura-startup-router".into())
+            .spawn(move || loop {
+                let status = brain.status();
+                let next = match status.phase {
+                    crate::brain_host::BrainHostPhase::Ready => {
+                        let payload = brain.startup_state();
+                        *startup.lock().expect("startup state lock poisoned") = payload.clone();
+                        startup_route_from_payload(payload.as_ref())
+                    }
+                    crate::brain_host::BrainHostPhase::Diagnostic
+                    | crate::brain_host::BrainHostPhase::Stopped => StartupRoute::RuntimeRepair,
+                    crate::brain_host::BrainHostPhase::Starting
+                    | crate::brain_host::BrainHostPhase::Restarting
+                    | crate::brain_host::BrainHostPhase::Stopping => {
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                };
+                *route.lock().expect("startup route lock poisoned") = next;
+                present_startup_route(&app, next);
+                break;
+            });
+    }
+
+    fn startup_route(&self) -> StartupRoute {
+        *self
+            .startup_route
+            .lock()
+            .expect("startup route lock poisoned")
+    }
+
+    fn set_startup_route(&self, route: StartupRoute) {
+        *self
+            .startup_route
+            .lock()
+            .expect("startup route lock poisoned") = route;
+    }
+
+    fn cached_startup(&self) -> Option<Value> {
+        self.startup
+            .lock()
+            .expect("startup state lock poisoned")
+            .clone()
+    }
+
+    fn store_startup(&self, startup: Value) {
+        *self.startup.lock().expect("startup state lock poisoned") = Some(startup);
+    }
+
+    fn refresh_startup(&self) -> Result<Value, String> {
+        let startup = self
+            .request_with_timeout("bootstrap.status", json!({}), Duration::from_secs(5))
+            .map_err(|error| error.to_string())?;
+        self.store_startup(startup.clone());
+        Ok(startup)
+    }
+
+    fn bootstrap_status(&self) -> Result<Value, String> {
+        let status = self.brain.status();
+        match status.phase {
+            crate::brain_host::BrainHostPhase::Ready => self.refresh_startup(),
+            crate::brain_host::BrainHostPhase::Diagnostic
+            | crate::brain_host::BrainHostPhase::Stopped => Ok(json!({
+                "version": 1,
+                "state": "runtime_repair",
+                "diagnostic": status.diagnostic,
+            })),
+            _ => Ok(json!({
+                "version": 1,
+                "state": "brain_recovering",
+                "brain": status,
+            })),
+        }
     }
 
     fn local_diagnostics(&self) -> Value {
@@ -173,6 +266,7 @@ impl DesktopAppState {
         let startup = self
             .request_with_timeout("pet.bootstrap", json!({}), Duration::from_secs(5))
             .map_err(|error| error.to_string())?;
+        self.store_startup(startup.clone());
         build_pet_bootstrap(&startup, status.session_generation)
     }
 
@@ -210,9 +304,51 @@ impl DesktopAppState {
     }
 }
 
+fn startup_route_from_payload(startup: Option<&Value>) -> StartupRoute {
+    match startup
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+    {
+        Some("ready") => StartupRoute::Ready,
+        Some("onboarding_required") | Some("needs_character") => StartupRoute::OnboardingRequired,
+        Some("runtime_repair") | None => StartupRoute::RuntimeRepair,
+        Some(_) => StartupRoute::RuntimeRepair,
+    }
+}
+
+fn present_startup_route(app: &AppHandle, route: StartupRoute) {
+    match route {
+        StartupRoute::Pending => {}
+        StartupRoute::Ready => windows::show_ready_route(app),
+        StartupRoute::OnboardingRequired => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = windows::show_onboarding_route(app).await;
+            });
+        }
+        StartupRoute::RuntimeRepair => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = windows::show_runtime_repair_route(app).await;
+            });
+        }
+    }
+}
+
+pub fn show_application_window(app: &AppHandle) {
+    if let Some(state) = app.try_state::<DesktopAppState>() {
+        present_startup_route(app, state.startup_route());
+    }
+}
+
 #[tauri::command]
 pub fn brain_status(state: State<'_, DesktopAppState>) -> BrainHostStatus {
     state.brain_status()
+}
+
+#[tauri::command]
+pub fn bootstrap_status(state: State<'_, DesktopAppState>) -> Result<Value, String> {
+    state.bootstrap_status()
 }
 
 #[tauri::command]
@@ -360,8 +496,17 @@ pub fn save_settings(
     settings: Value,
 ) -> Result<(), String> {
     let response = apply_secondary_settings(&window, &state, settings)?;
+    let startup = state.refresh_startup()?;
+    let route = startup_route_from_payload(Some(&startup));
+    if state.startup_route() == StartupRoute::OnboardingRequired && route != StartupRoute::Ready {
+        return Err("首次设置尚未完成：请配置聊天模型并选择角色。".into());
+    }
+    state.set_startup_route(route);
     emit_settings_refresh(window.app_handle(), &response);
-    window.destroy().map_err(|error| error.to_string())
+    let app = window.app_handle().clone();
+    window.destroy().map_err(|error| error.to_string())?;
+    present_startup_route(&app, route);
+    Ok(())
 }
 
 #[tauri::command]
@@ -371,6 +516,11 @@ pub fn apply_settings(
     settings: Value,
 ) -> Result<Value, String> {
     let response = apply_secondary_settings(&window, &state, settings)?;
+    let startup = state.refresh_startup()?;
+    let route = startup_route_from_payload(Some(&startup));
+    if state.startup_route() != StartupRoute::Ready {
+        state.set_startup_route(route);
+    }
     emit_settings_refresh(window.app_handle(), &response);
     Ok(response)
 }
@@ -446,7 +596,7 @@ pub fn character_asset_protocol<R: Runtime>(
     let response = context
         .app_handle()
         .try_state::<DesktopAppState>()
-        .and_then(|state| state.brain.startup_state())
+        .and_then(|state| state.cached_startup())
         .ok_or_else(|| "Brain Host 启动状态不可用".to_string())
         .and_then(|startup| resolve_character_asset(&startup, request.uri().path()))
         .and_then(|path| read_character_asset(&path).map(|bytes| (path, bytes)));
@@ -467,10 +617,19 @@ pub fn character_asset_protocol<R: Runtime>(
 }
 
 fn build_pet_bootstrap(startup: &Value, session_generation: u64) -> Result<Value, String> {
-    let character = startup
+    let state = startup
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("ready");
+    if state != "ready" {
+        return Err("桌宠只能在首次设置完成后加载".to_string());
+    }
+    let character_value = startup
         .get("character")
-        .and_then(Value::as_object)
         .ok_or_else(|| "启动状态缺少角色信息".to_string())?;
+    let character = character_value
+        .as_object()
+        .ok_or_else(|| "启动状态角色信息格式无效".to_string())?;
     let character_id = required_text(character.get("id"), "character.id")?;
     let default_url = character_asset_url("/portrait/default");
     let expression_urls: Map<String, Value> = expression_entries(startup)
@@ -487,6 +646,7 @@ fn build_pet_bootstrap(startup: &Value, session_generation: u64) -> Result<Value
         .collect();
     Ok(json!({
         "version": startup.get("version").and_then(Value::as_u64).unwrap_or(1),
+        "state": state,
         "sessionGeneration": session_generation,
         "character": {
             "id": character_id,
@@ -663,6 +823,29 @@ mod tests {
             "http://sakura-asset.localhost/portrait/default"
         );
         assert!(!dto.to_string().contains(&temp.path().display().to_string()));
+    }
+
+    #[test]
+    fn startup_route_separates_onboarding_ready_and_runtime_repair() {
+        let startup = json!({
+            "version": 1,
+            "state": "onboarding_required",
+            "character": null,
+        });
+
+        assert_eq!(
+            startup_route_from_payload(Some(&startup)),
+            StartupRoute::OnboardingRequired
+        );
+        assert_eq!(
+            startup_route_from_payload(Some(&json!({"state": "ready"}))),
+            StartupRoute::Ready
+        );
+        assert_eq!(
+            startup_route_from_payload(None),
+            StartupRoute::RuntimeRepair
+        );
+        assert!(build_pet_bootstrap(&startup, 2).is_err());
     }
 
     #[test]

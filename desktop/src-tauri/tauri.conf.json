@@ -12,10 +12,10 @@
       {
         "label": "main",
         "title": "Sakura Assistant",
-        "width": 440,
-        "height": 720,
+        "width": 736,
+        "height": 640,
         "minWidth": 360,
-        "minHeight": 560,
+        "minHeight": 420,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -23,10 +23,10 @@
         "decorations": false,
         "transparent": true,
         "shadow": false,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "skipTaskbar": true,
         "center": true,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {

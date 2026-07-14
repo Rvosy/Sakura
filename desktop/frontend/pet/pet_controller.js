@@ -20,7 +20,9 @@ export class PetController {
     applyTheme(bootstrap.theme);
     this.subtitleController.configure(bootstrap.subtitle);
     this.portraitController.setCharacter(bootstrap.character);
-    this.subtitleController.setText(bootstrap.character?.initialMessage || "");
+    this.subtitleController.setText(
+      bootstrap.character?.initialMessage || "还没有角色，请打开角色工作室创建或导入角色。",
+    );
     this.applyLayout();
   }
 
@@ -85,13 +87,23 @@ export class PetController {
 
   render(state) {
     const busy = Boolean(state.interaction.busy);
+    const hasCharacter = Boolean(state.character);
     document.documentElement.dataset.speaking = String(Boolean(state.audio?.speaking));
+    document.documentElement.dataset.hasCharacter = String(hasCharacter);
     this.elements.characterName.textContent = state.character?.displayName || "Sakura";
-    this.elements.input.disabled = busy;
+    this.elements.input.disabled = busy || !hasCharacter;
+    this.elements.input.placeholder = hasCharacter ? "输入消息…" : "请先创建或导入角色";
     this.elements.send.hidden = busy;
+    this.elements.send.disabled = !hasCharacter;
     this.elements.cancel.hidden = !busy;
-    this.elements.capture.disabled = busy;
+    this.elements.capture.disabled = busy || !hasCharacter;
     this.elements.capture.textContent = state.observation?.attached ? "已截" : "截";
+    if (this.elements.openSettingsButton) {
+      this.elements.openSettingsButton.disabled = !hasCharacter;
+    }
+    if (this.elements.openHistoryButton) {
+      this.elements.openHistoryButton.disabled = !hasCharacter;
+    }
   }
 
   #bindInput() {

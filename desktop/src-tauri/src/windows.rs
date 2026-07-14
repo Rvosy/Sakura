@@ -74,6 +74,15 @@ const DIAGNOSTICS_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
     min_width: 680.0,
     min_height: 520.0,
 };
+const RUNTIME_REPAIR_WINDOW: SecondaryWindowSpec = SecondaryWindowSpec {
+    label: "runtime-repair",
+    title: "Sakura 启动修复",
+    path: "/runtime-repair/index.html",
+    width: 760.0,
+    height: 560.0,
+    min_width: 640.0,
+    min_height: 480.0,
+};
 
 #[tauri::command]
 pub fn start_dragging(window: WebviewWindow) -> Result<(), String> {
@@ -166,6 +175,23 @@ pub async fn open_diagnostics_window(app: AppHandle) -> Result<(), String> {
     open_secondary_window(app, DIAGNOSTICS_WINDOW).await
 }
 
+pub async fn show_onboarding_route(app: AppHandle) -> Result<(), String> {
+    hide_main_window(&app);
+    close_window(&app, RUNTIME_REPAIR_WINDOW.label);
+    open_secondary_window(app, SETTINGS_WINDOW).await
+}
+
+pub async fn show_runtime_repair_route(app: AppHandle) -> Result<(), String> {
+    hide_main_window(&app);
+    close_window(&app, SETTINGS_WINDOW.label);
+    open_secondary_window(app, RUNTIME_REPAIR_WINDOW).await
+}
+
+pub fn show_ready_route(app: &AppHandle) {
+    close_window(app, RUNTIME_REPAIR_WINDOW.label);
+    show_main_window(app);
+}
+
 async fn open_secondary_window(app: AppHandle, spec: SecondaryWindowSpec) -> Result<(), String> {
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     let main_thread_app = app.clone();
@@ -185,6 +211,7 @@ fn open_secondary_window_on_main_thread(
     spec: SecondaryWindowSpec,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(spec.label) {
+        let _ = window.set_title(spec.title);
         return focus_window(&window);
     }
     let window = WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App(spec.path.into()))
@@ -202,6 +229,12 @@ fn open_secondary_window_on_main_thread(
         .build()
         .map_err(|error| error.to_string())?;
     focus_window(&window)
+}
+
+fn close_window(app: &AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.destroy();
+    }
 }
 
 fn focus_window(window: &WebviewWindow) -> Result<(), String> {
@@ -351,5 +384,7 @@ mod tests {
         assert_eq!(HISTORY_WINDOW.path, "/history/index.html");
         assert_eq!(DIAGNOSTICS_WINDOW.label, "diagnostics");
         assert_eq!(DIAGNOSTICS_WINDOW.path, "/diagnostics/index.html");
+        assert_eq!(RUNTIME_REPAIR_WINDOW.label, "runtime-repair");
+        assert_eq!(RUNTIME_REPAIR_WINDOW.path, "/runtime-repair/index.html");
     }
 }

@@ -29,11 +29,11 @@ pub fn build_tray(app: &mut App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if matches!(event, tauri::tray::TrayIconEvent::DoubleClick { .. }) {
-                crate::windows::show_main_window(tray.app_handle());
+                crate::app_state::show_application_window(tray.app_handle());
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            SHOW_ID | INTERACT_ID => crate::windows::show_main_window(app),
+            SHOW_ID | INTERACT_ID => crate::app_state::show_application_window(app),
             HIDE_ID => crate::windows::hide_main_window(app),
             SETTINGS_ID => spawn_secondary_window(crate::windows::open_settings_window, app),
             HISTORY_ID => spawn_secondary_window(crate::windows::open_history_window, app),

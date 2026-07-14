@@ -111,10 +111,13 @@ PLUGIN_PERMISSION_LABELS = {
 
 def secondary_window_request(application: Any, kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "settings":
+        startup = application._current_startup_state()
+        application.startup = startup
         request = build_settings_request(
             application.context,
             base_dir=application.config.base_dir,
             nonce=str(payload.get("nonce") or "") or None,
+            onboarding=startup.get("state") != "ready",
         )
         request["resources"] = _settings_resource_manager(application).snapshot()
         return request
@@ -158,7 +161,9 @@ def secondary_host_call(application: Any, method: str, params: Mapping[str, Any]
     if method.startswith("studio."):
         result = dispatch_studio_rpc(application.config.base_dir, method, arguments)
         if method == "studio.save_character":
-            character_id = str(result.get("current_character_id") or "").strip()
+            character_id = str(
+                result.get("current_character_id") or result.get("saved_character_id") or ""
+            ).strip()
             refresh_character = getattr(application, "refresh_character", None)
             if character_id and callable(refresh_character):
                 refresh_character(character_id)
@@ -194,6 +199,7 @@ def build_settings_request(
     *,
     base_dir: Path,
     nonce: str | None = None,
+    onboarding: bool = False,
 ) -> dict[str, Any]:
     service = context.settings_service
     ui = _load_system_values(service, "ui")
@@ -211,11 +217,11 @@ def build_settings_request(
     bubble = _call(service, "load_bubble_settings", BubbleSettings()).normalized()
     user_theme = _call(service, "load_theme_settings", DEFAULT_THEME_SETTINGS).normalized()
     overrides = _call(service, "load_character_theme_overrides", {})
-    profile = context.character_profile
-    registry = context.character_registry
+    profile = getattr(context, "character_profile", None)
+    registry = getattr(context, "character_registry", SimpleNamespace(profiles={}))
     theme = resolve_effective_theme(
         profile,
-        overrides.get(profile.id) if isinstance(overrides, Mapping) else None,
+        overrides.get(getattr(profile, "id", "")) if isinstance(overrides, Mapping) else None,
         user_theme,
     )
     api_settings = _call(
@@ -252,7 +258,7 @@ def build_settings_request(
     return {
         "version": SETTINGS_PROTOCOL_VERSION,
         "nonce": nonce or secrets.token_urlsafe(16),
-        "onboarding": False,
+        "onboarding": bool(onboarding),
         "screen_awareness": _screen_mapping(screen),
         "mcp": {
             "windows_enabled": bool(getattr(mcp, "windows_enabled", False)),
@@ -331,6 +337,7 @@ def build_settings_request(
 def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     context = application.context
     service = context.settings_service
+    bootstrap_only = not hasattr(context, "agent_runtime")
     previous_mcp = getattr(context, "mcp_settings", MCPRuntimeSettings())
     screen_data = _required_mapping(payload, "screen_awareness")
     screen = ScreenAwarenessSettings(
@@ -367,6 +374,10 @@ def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict
     ).normalized()
     character_data = _required_mapping(payload, "character")
     character_id = str(character_data.get("current_character_id") or "").strip()
+    registry = getattr(context, "character_registry", None)
+    if registry is None or not callable(getattr(registry, "get", None)):
+        registry = CharacterRegistry(application.config.base_dir)
+    selected_profile = registry.get(character_id)
     layout = _required_mapping(character_data, "layout")
     theme = theme_from_mapping(_required_mapping(payload, "theme")).normalized()
     theme_changed = _bool(payload.get("theme_changed"), True)
@@ -399,7 +410,7 @@ def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict
     service.save_backchannel_settings(backchannel)
     service.save_memory_curation_settings(memory)
     service.save_startup_settings(startup)
-    service.save_current_character_id(context.character_registry, character_id)
+    service.save_current_character_id(registry, character_id)
     if theme_changed:
         service.save_theme_settings(theme)
         save_override = getattr(service, "save_character_theme_override", None)
@@ -422,32 +433,36 @@ def apply_settings_payload(application: Any, payload: Mapping[str, Any]) -> dict
         },
     )
     _save_api_payload(service, payload.get("api"))
-    _save_tts_payload(service, context.character_registry.get(character_id), payload.get("tts"))
+    _save_tts_payload(service, selected_profile, payload.get("tts"))
 
-    runtime = getattr(context, "agent_runtime", None)
-    set_loop = getattr(runtime, "set_runtime_loop_settings", None)
-    if callable(set_loop):
-        set_loop(runtime_loop)
     application._screen_awareness_enabled = screen.allows_screen_context()
     application._screen_context_resolution = screen.screen_context_resolution
-    refresh_runtime = getattr(application, "refresh_runtime_settings", None)
-    if callable(refresh_runtime):
-        refresh_runtime(
-            screen_awareness=screen,
-            mcp=mcp,
-            debug=debug,
-            startup=startup,
-            memory_curation=memory,
-        )
-    application.sync_scheduler_jobs(start=False)
-    refresh_api = getattr(application, "refresh_api_settings", None)
-    if callable(refresh_api):
-        refresh_api()
     refresh_character = getattr(application, "refresh_character", None)
-    if callable(refresh_character):
-        refresh_character(character_id)
+    if bootstrap_only:
+        if callable(refresh_character):
+            refresh_character(character_id)
+    else:
+        runtime = getattr(context, "agent_runtime", None)
+        set_loop = getattr(runtime, "set_runtime_loop_settings", None)
+        if callable(set_loop):
+            set_loop(runtime_loop)
+        refresh_runtime = getattr(application, "refresh_runtime_settings", None)
+        if callable(refresh_runtime):
+            refresh_runtime(
+                screen_awareness=screen,
+                mcp=mcp,
+                debug=debug,
+                startup=startup,
+                memory_curation=memory,
+            )
+        application.sync_scheduler_jobs(start=False)
+        refresh_api = getattr(application, "refresh_api_settings", None)
+        if callable(refresh_api):
+            refresh_api()
+        if callable(refresh_character):
+            refresh_character(character_id)
     refresh_tts = getattr(application, "refresh_tts", None)
-    if callable(refresh_tts):
+    if not bootstrap_only and callable(refresh_tts):
         refresh_tts()
     restart_required = []
     if mcp != previous_mcp:
@@ -542,7 +557,16 @@ def dispatch_studio_rpc(base_dir: Path, method: str, params: dict[str, Any]) -> 
 def history_page(context: Any, *, cursor: object, limit: object) -> dict[str, Any]:
     page_size = _clamp(limit, 1, 100, 50)
     offset = max(0, _int(cursor, 0))
-    store = context.history_store
+    store = getattr(context, "history_store", None)
+    if store is None:
+        return {
+            "version": 1,
+            "character": {"id": "", "displayName": "Sakura"},
+            "theme": theme_to_mapping(_current_theme(context)),
+            "items": [],
+            "nextCursor": None,
+            "hasMore": False,
+        }
     recent = store.load_recent(offset + page_size + 1)
     end = max(0, len(recent) - offset)
     start = max(0, end - page_size)
@@ -948,10 +972,10 @@ def _dispatch_memory_rpc(store: Any, method: str, params: dict[str, Any]) -> dic
 
 
 def _dispatch_character_rpc(base_dir: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
-    registry = CharacterRegistry(base_dir)
     if method == "character.import_archive":
         result = import_character_archive(_required_path(params, "path"), base_dir)
         return {"current_character_id": result.character_id, "characters": _character_summaries(CharacterRegistry(base_dir), result.character_id)}
+    registry = CharacterRegistry(base_dir)
     if method == "character.import_voice_archive":
         result = import_character_voice_archive(_required_path(params, "path"), base_dir, _required_text(params, "character_id"))
         return {"current_character_id": result.character_id, "characters": _character_summaries(CharacterRegistry(base_dir), result.character_id)}

@@ -164,3 +164,27 @@ def test_brain_routes_secondary_window_requests(tmp_path: Path, monkeypatch) -> 
         "method": "studio.list_characters",
         "params": {"current_character_id": "demo"},
     }
+
+
+def test_brain_stays_available_without_characters_and_allows_studio(tmp_path: Path) -> None:
+    application = BrainHostApplication(
+        BrainHostConfig(tmp_path, "session-empty", "credential-empty", 1)
+    )
+
+    startup = application.initialize()
+    health = application.handle_request("system.health", {})
+    studio = application.handle_request("window.request", {"kind": "studio"})
+
+    assert application.state == "ready"
+    assert startup is not None
+    assert startup["state"] == "onboarding_required"
+    assert startup["bootstrap"] == {
+        "model_ready": False,
+        "character_ready": False,
+        "missing": ["model", "character"],
+    }
+    assert startup["character"] is None
+    assert health["ready"] is True
+    assert "error" not in health
+    assert studio["characters"] == []
+    application.shutdown()

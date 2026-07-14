@@ -172,6 +172,10 @@ summary:focus-visible {
   font-size: 30px;
 }
 
+.portrait-fallback[hidden] {
+  display: none;
+}
+
 .speech-card {
   position: absolute;
   left: var(--bubble-x);

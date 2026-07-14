@@ -93,7 +93,8 @@ def test_tray_single_instance_and_secondary_window_contract() -> None:
     for function in ("open_settings_window", "open_history_window", "open_studio_window"):
         assert function in tray
     assert "tauri_plugin_single_instance::init" in lib
-    assert "windows::show_main_window(app)" in lib
+    assert "app_state::show_application_window(app)" in lib
+    assert "app_state::show_application_window" in tray
 
 
 def test_brain_host_emits_plugin_events_and_closes_runtime_services(tmp_path: Path) -> None:

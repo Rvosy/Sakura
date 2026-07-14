@@ -14,17 +14,20 @@ pub fn run() {
         .register_uri_scheme_protocol("sakura-asset", app_state::character_asset_protocol)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            windows::show_main_window(app);
+            app_state::show_application_window(app);
         }))
         .setup(|app| {
             tray::build_tray(app)?;
             let state = app_state::DesktopAppState::start(app.handle().clone())
                 .map_err(std::io::Error::other)?;
             app.manage(state);
+            app.state::<app_state::DesktopAppState>()
+                .begin_startup_routing(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_state::brain_status,
+            app_state::bootstrap_status,
             app_state::pet_bootstrap,
             app_state::chat_send,
             app_state::chat_cancel,
