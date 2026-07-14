@@ -114,13 +114,6 @@ pub fn set_click_through(window: WebviewWindow, enabled: bool) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn set_always_on_top(window: WebviewWindow, enabled: bool) -> Result<(), String> {
-    window
-        .set_always_on_top(enabled)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub fn apply_pet_window_layout(
     window: WebviewWindow,
     width: f64,
@@ -387,4 +380,13 @@ mod tests {
         assert_eq!(RUNTIME_REPAIR_WINDOW.label, "runtime-repair");
         assert_eq!(RUNTIME_REPAIR_WINDOW.path, "/runtime-repair/index.html");
     }
+}
+
+pub fn set_main_always_on_top(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "桌宠主窗口不存在".to_string())?;
+    window
+        .set_always_on_top(enabled)
+        .map_err(|error| error.to_string())
 }

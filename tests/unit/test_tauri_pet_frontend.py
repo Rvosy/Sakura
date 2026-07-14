@@ -23,6 +23,7 @@ def test_tauri_pet_frontend_has_single_store_and_feature_modules() -> None:
         FRONTEND / "pet" / "portrait_controller.js",
         FRONTEND / "pet" / "subtitle_controller.js",
         FRONTEND / "pet" / "pet_controller.js",
+        FRONTEND / "pet" / "context_menu.js",
     )
 
     assert all(path.is_file() for path in required)
@@ -371,3 +372,84 @@ def test_pet_markup_has_portrait_subtitle_input_cancel_and_screenshot_controls()
     assert "sakura-asset" in rust_state
     assert "canonicalize" in rust_state
     assert "strip_prefix" in rust_state or "starts_with" in rust_state
+
+
+def test_pet_bubble_drag_region_and_custom_context_menu_contract() -> None:
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    app_source = (FRONTEND / "app.js").read_text(encoding="utf-8")
+    menu_source = (FRONTEND / "pet" / "context_menu.js").read_text(encoding="utf-8")
+    styles = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+    rust_state = (ROOT / "desktop" / "src-tauri" / "src" / "app_state.rs").read_text(
+        encoding="utf-8"
+    )
+    rust_actions = (
+        ROOT / "desktop" / "src-tauri" / "src" / "menu_actions.rs"
+    ).read_text(encoding="utf-8")
+
+    speech_markup = html[html.index('id="speech-bubble"') : html.index('id="tool-confirmation"')]
+    assert "data-drag-region" in speech_markup
+    assert "data-tauri-drag-region" in speech_markup
+    assert 'id="character-name"' in speech_markup
+    assert 'id="subtitle-text"' in speech_markup
+
+    assert 'id="pet-context-menu"' in html
+    assert 'role="menu"' in html
+    assert html.count('role="menuitemcheckbox"') == 3
+    assert 'aria-checked="false"' in html
+    for action in (
+        "hide",
+        "subtitle",
+        "free-access",
+        "always-on-top",
+        "history",
+        "diagnostics",
+        "settings",
+        "quit",
+    ):
+        assert f'data-menu-action="{action}"' in html
+
+    assert 'from "./pet/context_menu.js"' in app_source
+    assert 'invoke("set_pet_subtitle_language"' in menu_source
+    assert 'invoke("set_pet_free_access"' in menu_source
+    assert 'invoke("set_pet_always_on_top"' in menu_source
+    assert 'invoke("pet_menu_action"' in menu_source
+    assert "event.clientX" in menu_source and "event.clientY" in menu_source
+    assert 'event.key !== "Escape"' in menu_source
+    assert 'this.window.addEventListener("blur"' in menu_source
+    for excluded in ("button", "input", "details", "#input-card", "#tool-confirmation"):
+        assert f'"{excluded}"' in menu_source
+    assert "set_pet_always_on_top" in rust_state
+    assert "apply_reversible_always_on_top" in rust_state
+    assert "request_application_exit" in rust_actions
+
+    for token in (
+        "border-radius: 14px",
+        "padding: 6px",
+        "padding: 5px 20px 5px 24px",
+        "border-radius: 8px",
+        "var(--sakura-input)",
+        "var(--sakura-border)",
+        "var(--sakura-panel)",
+        "backdrop-filter",
+        ".pet-context-menu__separator",
+        '[aria-checked="true"]',
+        'button[aria-disabled="true"]',
+    ):
+        assert token in styles
+
+
+def test_context_menu_position_is_clamped_to_webview_viewport(node_module_runner) -> None:  # type: ignore[no-untyped-def]
+    payload = node_module_runner(
+        f"""
+import {{ clampMenuPosition }} from {json.dumps(_module_url('desktop/frontend/pet/context_menu.js'))};
+console.log(JSON.stringify({{
+  bottomRight: clampMenuPosition(735, 639, 226, 300, {{ width: 736, height: 640 }}),
+  topLeft: clampMenuPosition(-10, -20, 226, 300, {{ width: 736, height: 640 }}),
+}}));
+"""
+    )
+
+    assert payload == {
+        "bottomRight": {"x": 502, "y": 332},
+        "topLeft": {"x": 8, "y": 8},
+    }

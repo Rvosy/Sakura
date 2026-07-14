@@ -15,6 +15,7 @@ from typing import Any
 from app.brain_host.dto import (
     agent_progress_dto,
     chat_reply_dto,
+    menu_preferences_dto,
     pending_action_dto,
     startup_state_dto,
 )
@@ -191,6 +192,14 @@ class BrainHostApplication:
                 raise BrainHostError("BACKEND_UNAVAILABLE", "Brain Host 尚未就绪。", retryable=True)
             self.startup = self._current_startup_state()
             return self.startup
+        if method == "pet.menu_state":
+            return self._menu_state()
+        if method == "pet.set_subtitle_language":
+            return self._set_subtitle_language(payload)
+        if method == "pet.set_free_access":
+            return self._set_free_access(payload)
+        if method == "pet.set_always_on_top":
+            return self._set_always_on_top(payload)
         if method == "chat.send":
             return self._chat_send(payload, request_id=request_id)
         if method == "chat.cancel":
@@ -239,6 +248,90 @@ class BrainHostApplication:
         if method == "tts.cancel":
             return self._tts_cancel(payload)
         raise BrainHostError("METHOD_NOT_FOUND", f"Unknown Brain Host method: {method}")
+
+    def _menu_state(self) -> dict[str, Any]:
+        context = self._require_menu_context()
+        return menu_preferences_dto(context)
+
+    def _set_subtitle_language(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        language = payload.get("language")
+        if not isinstance(language, str) or language.strip().lower() not in {"zh", "ja"}:
+            raise BrainHostError("INVALID_REQUEST", "language 必须是 zh 或 ja。")
+        context = self._require_menu_context()
+        self._save_menu_values(context, {"subtitle_language": language.strip().lower()})
+        return self._refresh_menu_state(context)
+
+    def _set_free_access(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        enabled = _required_bool(payload, "enabled")
+        context = self._require_menu_context()
+        previous = bool(menu_preferences_dto(context)["freeAccessEnabled"])
+        registry = getattr(context, "tool_registry", None)
+        setter = getattr(registry, "set_free_access_enabled", None)
+        if not callable(setter):
+            raise BrainHostError(
+                "BACKEND_UNAVAILABLE",
+                "Brain Host 工具权限策略尚未就绪。",
+                retryable=True,
+            )
+        self._save_menu_values(context, {"free_access_enabled": enabled})
+        try:
+            setter(enabled)
+        except Exception as exc:  # noqa: BLE001
+            rollback_error = None
+            try:
+                self._save_menu_values(context, {"free_access_enabled": previous})
+            except BrainHostError as rollback_exc:
+                rollback_error = rollback_exc
+            try:
+                setter(previous)
+            except Exception:  # noqa: BLE001
+                pass
+            details = {"errorType": type(exc).__name__}
+            if rollback_error is not None:
+                details["rollbackError"] = rollback_error.code
+            raise BrainHostError(
+                "PREFERENCE_UPDATE_FAILED",
+                "完整访问权限更新失败，已恢复原设置。",
+                details=details,
+            ) from exc
+        return self._refresh_menu_state(context)
+
+    def _set_always_on_top(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        enabled = _required_bool(payload, "enabled")
+        context = self._require_menu_context()
+        self._save_menu_values(context, {"always_on_top_enabled": enabled})
+        return self._refresh_menu_state(context)
+
+    def _require_menu_context(self) -> Any:
+        if self.context is None or self.state != "ready":
+            raise BrainHostError("BACKEND_UNAVAILABLE", "Brain Host 尚未就绪。", retryable=True)
+        return self.context
+
+    def _save_menu_values(self, context: Any, values: dict[str, object]) -> None:
+        service = getattr(context, "settings_service", None)
+        save = getattr(service, "save_system_values", None)
+        if not callable(save):
+            raise BrainHostError(
+                "BACKEND_UNAVAILABLE",
+                "Brain Host 配置服务尚未就绪。",
+                retryable=True,
+            )
+        try:
+            save("ui", values)
+        except Exception as exc:  # noqa: BLE001
+            raise BrainHostError(
+                "PREFERENCE_UPDATE_FAILED",
+                "桌宠设置保存失败。",
+                details={"errorType": type(exc).__name__},
+            ) from exc
+
+    def _refresh_menu_state(self, context: Any) -> dict[str, Any]:
+        preferences = menu_preferences_dto(context)
+        if self.startup is not None:
+            self.startup["preferences"] = dict(preferences)
+            subtitle = self.startup.setdefault("subtitle", {})
+            subtitle["language"] = preferences["subtitleLanguage"]
+        return preferences
 
     def refresh_character(self, character_id: str) -> None:
         context = self.context
@@ -1842,3 +1935,10 @@ def _required_id(payload: Mapping[str, Any], snake_case: str, camel_case: str) -
     if not isinstance(value, str) or not value.strip():
         raise BrainHostError("INVALID_REQUEST", f"{camel_case} is required")
     return value.strip()
+
+
+def _required_bool(payload: Mapping[str, Any], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise BrainHostError("INVALID_REQUEST", f"{name} 必须是布尔值。")
+    return value

@@ -37,6 +37,7 @@ def test_build_initial_app_context_skips_deferred_runtime_services(
 
     assert context.startup_initializing
     assert context.character_profile.id == "demo"
+    assert context.tool_registry.free_access_enabled is False
     assert isinstance(context.tts_provider, NullTTSProvider)
     assert context.mcp_tool_provider is None
     assert calls == []
@@ -203,6 +204,7 @@ tts:
         """
 ui:
   portrait_scale_percent: 125
+  free_access_enabled: false
 mcp:
   windows_enabled: true
 """.strip(),

@@ -7,6 +7,7 @@ import { ConfirmationView } from "./chat/confirmation_view.js";
 import { AudioController } from "./audio/audio_controller.js";
 import { CaptureController } from "./capture/capture_controller.js";
 import { createSessionBootstrapLoader } from "./core/bootstrap_loader.js";
+import { PetContextMenu } from "./pet/context_menu.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -38,6 +39,7 @@ const elements = {
   confirmationArguments: document.querySelector("#tool-confirmation-arguments"),
   confirmAction: document.querySelector("#confirm-tool-action"),
   rejectAction: document.querySelector("#reject-tool-action"),
+  contextMenu: document.querySelector("#pet-context-menu"),
 };
 
 let dragging = false;
@@ -73,6 +75,14 @@ const petController = new PetController({
   elements,
 });
 
+const contextMenu = new PetContextMenu({
+  root: elements.stage,
+  menu: elements.contextMenu,
+  invoke: callDesktop,
+  setStatus: setResult,
+  onSubtitleLanguageChange: (language) => subtitleController.configure({ language }),
+});
+
 let chatController;
 const audioController = new AudioController({
   store: petStore,
@@ -106,7 +116,10 @@ chatController = new ChatController({
 
 const bootstrapLoader = createSessionBootstrapLoader({
   fetchBootstrap: () => callDesktop("pet_bootstrap"),
-  applyBootstrap: (bootstrap) => petController.applyBootstrap(bootstrap),
+  applyBootstrap: (bootstrap) => {
+    petController.applyBootstrap(bootstrap);
+    contextMenu.applyBootstrap(bootstrap);
+  },
 });
 
 async function loadPetBootstrap(brain, { force = false } = {}) {
@@ -130,6 +143,7 @@ function renderBrainStatus(brain) {
     return;
   }
   if (phase === "restarting") {
+    contextMenu.setBackendAvailable(false);
     bootstrapLoader.reset();
     petStore.resetSession();
     chatController.reset();
@@ -137,6 +151,7 @@ function renderBrainStatus(brain) {
     return;
   }
   if (phase === "diagnostic") {
+    contextMenu.setBackendAvailable(false);
     bootstrapLoader.reset();
     petStore.resetSession();
     chatController.reset();
@@ -148,6 +163,7 @@ function renderBrainStatus(brain) {
     return;
   }
   if (phase === "stopping" || phase === "stopped") {
+    contextMenu.setBackendAvailable(false);
     elements.status.textContent = "Brain Host 已停止";
     return;
   }
@@ -155,9 +171,17 @@ function renderBrainStatus(brain) {
 }
 
 elements.stage.addEventListener("pointerdown", async (event) => {
-  if (event.button !== 0 || event.target.closest("button, input, details")) return;
+  if (
+    event.button !== 0 ||
+    event.target.closest(
+      "button, input, textarea, select, details, summary, a, [contenteditable], #input-card, #tool-confirmation, .pet-context-menu",
+    )
+  ) {
+    return;
+  }
   const dragRegion = event.target.closest("[data-drag-region]");
   if (!dragRegion || dragging) return;
+  contextMenu.close();
   dragging = true;
   try {
     await callDesktop("start_dragging");

@@ -33,7 +33,13 @@
         </div>
       </section>
 
-      <section id="speech-bubble" class="speech-card" aria-live="polite">
+      <section
+        id="speech-bubble"
+        class="speech-card"
+        data-drag-region
+        data-tauri-drag-region
+        aria-live="polite"
+      >
         <span id="character-name" class="character-name">Sakura</span>
         <p id="subtitle-text" class="subtitle-text">正在连接角色服务……</p>
       </section>
@@ -80,6 +86,55 @@
         </div>
         <span id="prototype-result" aria-live="polite">桌面能力已就绪。</span>
       </details>
+
+      <div id="pet-context-menu" class="pet-context-menu" role="menu" aria-label="桌宠菜单" hidden>
+        <button type="button" role="menuitem" data-menu-action="hide">隐藏至托盘</button>
+
+        <div class="pet-context-menu__separator" role="separator"></div>
+
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked="false"
+          data-menu-action="subtitle"
+          data-requires-preferences
+        >
+          <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+          <span>显示中文字幕</span>
+        </button>
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked="false"
+          data-menu-action="free-access"
+          data-requires-preferences
+        >
+          <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+          <span>完整访问权限</span>
+        </button>
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked="false"
+          data-menu-action="always-on-top"
+          data-requires-preferences
+        >
+          <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+          <span>保持置顶</span>
+        </button>
+
+        <div class="pet-context-menu__separator" role="separator"></div>
+
+        <button type="button" role="menuitem" data-menu-action="history">历史记录</button>
+        <button type="button" role="menuitem" data-menu-action="diagnostics">
+          运行日志 / 诊断
+        </button>
+        <button type="button" role="menuitem" data-menu-action="settings">设置</button>
+
+        <div class="pet-context-menu__separator" role="separator"></div>
+
+        <button type="button" role="menuitem" data-menu-action="quit">退出</button>
+      </div>
     </main>
   </body>
 </html>

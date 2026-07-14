@@ -3,6 +3,7 @@ mod audio;
 pub mod brain_host;
 mod capture;
 pub mod ipc;
+mod menu_actions;
 mod tray;
 mod windows;
 
@@ -29,6 +30,9 @@ pub fn run() {
             app_state::brain_status,
             app_state::bootstrap_status,
             app_state::pet_bootstrap,
+            app_state::set_pet_subtitle_language,
+            app_state::set_pet_free_access,
+            app_state::set_pet_always_on_top,
             app_state::chat_send,
             app_state::chat_cancel,
             app_state::chat_confirm_action,
@@ -49,7 +53,6 @@ pub fn run() {
             windows::start_dragging,
             windows::set_pet_visible,
             windows::set_click_through,
-            windows::set_always_on_top,
             windows::apply_pet_window_layout,
             windows::open_settings_window,
             windows::open_studio_window,
@@ -61,6 +64,7 @@ pub fn run() {
             capture::capture_selected_region,
             capture::cancel_capture_overlay,
             capture::capture_screen_prototype,
+            menu_actions::pet_menu_action,
         ])
         .on_window_event(|window, event| {
             let close_event = match window.label() {

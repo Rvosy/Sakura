@@ -44,6 +44,7 @@ pub struct DesktopAppState {
     capture: Arc<CaptureManager>,
     audio: Option<AudioManager>,
     audio_error: Option<String>,
+    preference_update: Mutex<()>,
 }
 
 impl DesktopAppState {
@@ -147,6 +148,7 @@ impl DesktopAppState {
             capture,
             audio,
             audio_error,
+            preference_update: Mutex::new(()),
         })
     }
 
@@ -222,6 +224,17 @@ impl DesktopAppState {
 
     fn store_startup(&self, startup: Value) {
         *self.startup.lock().expect("startup state lock poisoned") = Some(startup);
+    }
+
+    fn store_menu_preferences(&self, preferences: Value) {
+        if let Some(startup) = self
+            .startup
+            .lock()
+            .expect("startup state lock poisoned")
+            .as_mut()
+        {
+            startup["preferences"] = preferences;
+        }
     }
 
     fn refresh_startup(&self) -> Result<Value, String> {
@@ -357,7 +370,15 @@ fn startup_routing_decision(
 fn present_startup_route(app: &AppHandle, route: StartupRoute) {
     match route {
         StartupRoute::Pending => {}
-        StartupRoute::Ready => windows::show_ready_route(app),
+        StartupRoute::Ready => {
+            let always_on_top = app
+                .try_state::<DesktopAppState>()
+                .and_then(|state| state.cached_startup())
+                .map(|startup| always_on_top_from_startup(&startup))
+                .unwrap_or(false);
+            let _ = windows::set_main_always_on_top(app, always_on_top);
+            windows::show_ready_route(app);
+        }
         StartupRoute::OnboardingRequired => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -371,6 +392,13 @@ fn present_startup_route(app: &AppHandle, route: StartupRoute) {
             });
         }
     }
+}
+
+fn always_on_top_from_startup(startup: &Value) -> bool {
+    startup
+        .pointer("/preferences/alwaysOnTopEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub fn show_application_window(app: &AppHandle) {
@@ -392,6 +420,82 @@ pub fn bootstrap_status(state: State<'_, DesktopAppState>) -> Result<Value, Stri
 #[tauri::command]
 pub fn pet_bootstrap(state: State<'_, DesktopAppState>) -> Result<Value, String> {
     state.pet_bootstrap()
+}
+
+#[tauri::command]
+pub fn set_pet_subtitle_language(
+    state: State<'_, DesktopAppState>,
+    language: String,
+) -> Result<Value, String> {
+    let _guard = state
+        .preference_update
+        .lock()
+        .map_err(|_| "桌宠设置更新锁不可用".to_string())?;
+    let preferences = state
+        .request("pet.set_subtitle_language", json!({"language": language}))
+        .map_err(|error| error.to_string())?;
+    state.store_menu_preferences(preferences.clone());
+    Ok(preferences)
+}
+
+#[tauri::command]
+pub fn set_pet_free_access(
+    state: State<'_, DesktopAppState>,
+    enabled: bool,
+) -> Result<Value, String> {
+    let _guard = state
+        .preference_update
+        .lock()
+        .map_err(|_| "桌宠设置更新锁不可用".to_string())?;
+    let preferences = state
+        .request("pet.set_free_access", json!({"enabled": enabled}))
+        .map_err(|error| error.to_string())?;
+    state.store_menu_preferences(preferences.clone());
+    Ok(preferences)
+}
+
+#[tauri::command]
+pub fn set_pet_always_on_top(
+    window: tauri::WebviewWindow,
+    state: State<'_, DesktopAppState>,
+    enabled: bool,
+) -> Result<Value, String> {
+    let _guard = state
+        .preference_update
+        .lock()
+        .map_err(|_| "桌宠设置更新锁不可用".to_string())?;
+    let current = state
+        .request("pet.menu_state", json!({}))
+        .map_err(|error| error.to_string())?;
+    let previous = menu_always_on_top(&current)?;
+    let native = window
+        .is_always_on_top()
+        .map_err(|error| error.to_string())?;
+    if native != previous {
+        window
+            .set_always_on_top(previous)
+            .map_err(|error| error.to_string())?;
+    }
+    if previous == enabled {
+        state.store_menu_preferences(current.clone());
+        return Ok(current);
+    }
+    let preferences = apply_reversible_always_on_top(
+        previous,
+        enabled,
+        |value| {
+            window
+                .set_always_on_top(value)
+                .map_err(|error| error.to_string())
+        },
+        |value| {
+            state
+                .request("pet.set_always_on_top", json!({"enabled": value}))
+                .map_err(|error| error.to_string())
+        },
+    )?;
+    state.store_menu_preferences(preferences.clone());
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -627,6 +731,31 @@ fn secondary_call_timeout(method: &str) -> Duration {
     }
 }
 
+fn menu_always_on_top(preferences: &Value) -> Result<bool, String> {
+    preferences
+        .get("alwaysOnTopEnabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "Brain Host 返回的置顶状态无效".to_string())
+}
+
+fn apply_reversible_always_on_top<T>(
+    previous: bool,
+    enabled: bool,
+    mut apply_native: impl FnMut(bool) -> Result<(), String>,
+    persist: impl FnOnce(bool) -> Result<T, String>,
+) -> Result<T, String> {
+    apply_native(enabled)?;
+    match persist(enabled) {
+        Ok(value) => Ok(value),
+        Err(error) => match apply_native(previous) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}；恢复原生窗口置顶状态失败：{rollback_error}"
+            )),
+        },
+    }
+}
+
 pub fn character_asset_protocol<R: Runtime>(
     context: UriSchemeContext<'_, R>,
     request: Request<Vec<u8>>,
@@ -700,6 +829,7 @@ fn build_pet_bootstrap(startup: &Value, session_generation: u64) -> Result<Value
         "theme": startup.get("theme").cloned().unwrap_or_else(|| json!({})),
         "layout": startup.get("layout").cloned().unwrap_or_else(|| json!({})),
         "subtitle": startup.get("subtitle").cloned().unwrap_or_else(|| json!({})),
+        "preferences": startup.get("preferences").cloned().unwrap_or_else(|| json!({})),
     }))
 }
 
@@ -821,6 +951,8 @@ fn required_text<'a>(value: Option<&'a Value>, field: &str) -> Result<&'a str, S
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -847,6 +979,12 @@ mod tests {
             "theme": {"primary_color": "#123456"},
             "layout": {"portrait_scale_percent": 100},
             "subtitle": {"language": "zh"},
+            "preferences": {
+                "subtitleLanguage": "zh",
+                "chineseSubtitles": true,
+                "freeAccessEnabled": false,
+                "alwaysOnTopEnabled": true,
+            },
         })
     }
 
@@ -873,6 +1011,8 @@ mod tests {
         let dto = build_pet_bootstrap(&startup_fixture(&temp), 4).unwrap();
 
         assert_eq!(dto["sessionGeneration"], 4);
+        assert_eq!(dto["preferences"]["freeAccessEnabled"], false);
+        assert_eq!(dto["preferences"]["alwaysOnTopEnabled"], true);
         assert_eq!(
             dto.pointer("/character/portraits/default").unwrap(),
             "http://sakura-asset.localhost/portrait/default"
@@ -954,6 +1094,62 @@ mod tests {
             startup_routing_decision(StartupRoute::RuntimeRepair, Some(1), &diagnostic, None,),
             StartupRoutingDecision::Wait
         );
+    }
+
+    #[test]
+    fn startup_preferences_restore_native_always_on_top_state() {
+        assert!(always_on_top_from_startup(&json!({
+            "preferences": {"alwaysOnTopEnabled": true}
+        })));
+        assert!(!always_on_top_from_startup(&json!({})));
+        assert_eq!(
+            menu_always_on_top(&json!({"alwaysOnTopEnabled": false})).unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn always_on_top_transition_rolls_back_native_state_when_persistence_fails() {
+        let operations = RefCell::new(Vec::new());
+        let result = apply_reversible_always_on_top(
+            false,
+            true,
+            |enabled| {
+                operations.borrow_mut().push(format!("native:{enabled}"));
+                Ok(())
+            },
+            |enabled| {
+                operations.borrow_mut().push(format!("persist:{enabled}"));
+                Err::<Value, _>("配置保存失败".to_string())
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "配置保存失败");
+        assert_eq!(
+            operations.into_inner(),
+            ["native:true", "persist:true", "native:false"]
+        );
+    }
+
+    #[test]
+    fn always_on_top_transition_keeps_new_state_after_success() {
+        let operations = RefCell::new(Vec::new());
+        let result = apply_reversible_always_on_top(
+            false,
+            true,
+            |enabled| {
+                operations.borrow_mut().push(format!("native:{enabled}"));
+                Ok(())
+            },
+            |enabled| {
+                operations.borrow_mut().push(format!("persist:{enabled}"));
+                Ok(json!({"alwaysOnTopEnabled": enabled}))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result["alwaysOnTopEnabled"], true);
+        assert_eq!(operations.into_inner(), ["native:true", "persist:true"]);
     }
 
     #[test]

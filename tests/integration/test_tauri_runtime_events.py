@@ -88,14 +88,26 @@ def _application(tmp_path: Path) -> tuple[BrainHostApplication, _PluginManager, 
 def test_tray_single_instance_and_secondary_window_contract() -> None:
     tray = (ROOT / "desktop" / "src-tauri" / "src" / "tray.rs").read_text(encoding="utf-8")
     lib = (ROOT / "desktop" / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+    menu_actions = (ROOT / "desktop" / "src-tauri" / "src" / "menu_actions.rs").read_text(
+        encoding="utf-8"
+    )
 
-    for item in ("显示 Sakura", "隐藏 Sakura", "设置", "对话历史", "角色工作室", "退出"):
+    for item in (
+        "显示 Sakura",
+        "隐藏 Sakura",
+        "设置",
+        "对话历史",
+        "运行日志 / 诊断",
+        "角色工作室",
+        "退出",
+    ):
         assert item in tray
     for function in ("open_settings_window", "open_history_window", "open_studio_window"):
-        assert function in tray
+        assert function in menu_actions
     assert "tauri_plugin_single_instance::init" in lib
     assert "app_state::show_application_window(app)" in lib
-    assert "app_state::show_application_window" in tray
+    assert "menu_actions::dispatch" in tray
+    assert "app_state::show_application_window" in menu_actions
 
 
 def test_brain_host_emits_plugin_events_and_closes_runtime_services(tmp_path: Path) -> None:

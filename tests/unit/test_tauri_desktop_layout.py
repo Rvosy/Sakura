@@ -19,6 +19,7 @@ def test_desktop_crate_and_vanilla_frontend_exist() -> None:
         FRONTEND / "index.html",
         FRONTEND / "app.js",
         FRONTEND / "styles.css",
+        FRONTEND / "pet" / "context_menu.js",
         TAURI / "Cargo.toml",
         TAURI / "build.rs",
         TAURI / "tauri.conf.json",
@@ -31,6 +32,7 @@ def test_desktop_crate_and_vanilla_frontend_exist() -> None:
         TAURI / "src" / "tray.rs",
         TAURI / "src" / "audio.rs",
         TAURI / "src" / "capture.rs",
+        TAURI / "src" / "menu_actions.rs",
     )
 
     assert all(path.is_file() for path in required)
@@ -92,6 +94,29 @@ def test_frontend_has_drag_visibility_click_through_ime_and_prototype_controls()
     assert ".portrait-fallback[hidden]" in styles
 
 
+def test_main_pet_uses_custom_context_menu_while_secondary_frontends_disable_browser_menu() -> None:
+    main_script = _read("desktop/frontend/app.js")
+    context_menu = _read("desktop/frontend/pet/context_menu.js")
+
+    assert 'from "./pet/context_menu.js"' in main_script
+    assert 'this.document.addEventListener("contextmenu"' in context_menu
+    assert "event.preventDefault()" in context_menu
+    assert "openAt(event.clientX, event.clientY)" in context_menu
+
+    secondary_entrypoints = (
+        "desktop/frontend/capture/capture_selection.js",
+        "desktop/frontend/diagnostics/diagnostics.js",
+        "desktop/frontend/history/history.js",
+        "desktop/frontend/runtime-repair/runtime_repair.js",
+        "desktop/frontend/settings/settings.js",
+        "desktop/frontend/studio/studio.js",
+    )
+
+    for entrypoint in secondary_entrypoints:
+        script = _read(entrypoint)
+        assert 'document.addEventListener("contextmenu", (event) => event.preventDefault());' in script
+
+
 def test_tauri_has_onboarding_gate_and_distinct_runtime_repair_surface() -> None:
     rust_state = _read("desktop/src-tauri/src/app_state.rs")
     rust_windows = _read("desktop/src-tauri/src/windows.rs")
@@ -105,7 +130,8 @@ def test_tauri_has_onboarding_gate_and_distinct_runtime_repair_surface() -> None
     assert "runtime_repair" in rust_state
     assert "bootstrap_status" in rust_entry
     assert "show_application_window" in rust_entry
-    assert "show_application_window" in tray
+    assert "menu_actions::dispatch" in tray
+    assert "PetMenuAction::Show" in tray
     assert "/settings/index.html" in rust_windows
     assert "/runtime-repair/index.html" in rust_windows
     assert "runtime-repair" in capability["windows"]

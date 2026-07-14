@@ -7,6 +7,7 @@ const HIDE_ID: &str = "hide";
 const INTERACT_ID: &str = "interact";
 const SETTINGS_ID: &str = "settings";
 const HISTORY_ID: &str = "history";
+const DIAGNOSTICS_ID: &str = "diagnostics";
 const STUDIO_ID: &str = "studio";
 const QUIT_ID: &str = "quit";
 
@@ -16,11 +17,22 @@ pub fn build_tray(app: &mut App) -> tauri::Result<()> {
     let interact = MenuItem::with_id(app, INTERACT_ID, "恢复鼠标交互", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, SETTINGS_ID, "设置", true, None::<&str>)?;
     let history = MenuItem::with_id(app, HISTORY_ID, "对话历史", true, None::<&str>)?;
+    let diagnostics =
+        MenuItem::with_id(app, DIAGNOSTICS_ID, "运行日志 / 诊断", true, None::<&str>)?;
     let studio = MenuItem::with_id(app, STUDIO_ID, "角色工作室", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT_ID, "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&show, &hide, &interact, &settings, &history, &studio, &quit],
+        &[
+            &show,
+            &hide,
+            &interact,
+            &settings,
+            &history,
+            &diagnostics,
+            &studio,
+            &quit,
+        ],
     )?;
 
     TrayIconBuilder::with_id("sakura-main-tray")
@@ -29,31 +41,23 @@ pub fn build_tray(app: &mut App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if matches!(event, tauri::tray::TrayIconEvent::DoubleClick { .. }) {
-                crate::app_state::show_application_window(tray.app_handle());
+                spawn_menu_action(crate::menu_actions::PetMenuAction::Show, tray.app_handle());
             }
         })
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            SHOW_ID | INTERACT_ID => crate::app_state::show_application_window(app),
-            HIDE_ID => crate::windows::hide_main_window(app),
-            SETTINGS_ID => spawn_secondary_window(crate::windows::open_settings_window, app),
-            HISTORY_ID => spawn_secondary_window(crate::windows::open_history_window, app),
-            STUDIO_ID => spawn_secondary_window(crate::windows::open_studio_window, app),
-            QUIT_ID => app.exit(0),
-            _ => {}
+        .on_menu_event(|app, event| {
+            if let Some(action) = crate::menu_actions::PetMenuAction::from_id(event.id().as_ref()) {
+                spawn_menu_action(action, app);
+            }
         })
         .build(app)?;
 
     Ok(())
 }
 
-fn spawn_secondary_window<F, Fut>(open: F, app: &tauri::AppHandle)
-where
-    F: FnOnce(tauri::AppHandle) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
-{
+fn spawn_menu_action(action: crate::menu_actions::PetMenuAction, app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = open(app).await;
+        let _ = crate::menu_actions::dispatch(app, action).await;
     });
 }
 
@@ -69,6 +73,7 @@ mod tests {
             INTERACT_ID,
             SETTINGS_ID,
             HISTORY_ID,
+            DIAGNOSTICS_ID,
             STUDIO_ID,
             QUIT_ID,
         ];

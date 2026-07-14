@@ -150,6 +150,12 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         memory_store,
         reminder_store,
     )
+    tool_registry.set_free_access_enabled(
+        _bool_setting(
+            settings_service.load_system_values("ui").get("free_access_enabled"),
+            True,
+        )
+    )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
     plugin_manager = PluginManager(base_dir=base_dir, resource_registry=resource_registry)
@@ -376,6 +382,19 @@ def _normalize_portrait_scale_percent(value: object) -> int:
     except (TypeError, ValueError):
         return PORTRAIT_SCALE_DEFAULT_PERCENT
     return max(PORTRAIT_SCALE_MIN_PERCENT, min(PORTRAIT_SCALE_MAX_PERCENT, percent))
+
+
+def _bool_setting(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
 
 
 def create_history_store(base_dir: Path, profile: CharacterProfile) -> ChatHistoryStore:

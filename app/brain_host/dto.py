@@ -106,6 +106,7 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
     plugin_results = getattr(plugin_manager, "results", ()) if plugin_manager is not None else ()
     settings_service = getattr(context, "settings_service", None)
     ui_values = _load_ui_values(settings_service)
+    preferences = menu_preferences_dto(context, ui_values=ui_values)
     model_settings = _chat_model_settings(context, settings_service)
     model_ready = all(
         str(getattr(model_settings, field, "")).strip()
@@ -169,9 +170,7 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
             ),
         },
         "subtitle": {
-            "language": "ja"
-            if str(ui_values.get("subtitle_language", "")).strip().lower() == "ja"
-            else "zh",
+            "language": preferences["subtitleLanguage"],
             "typing_interval_ms": _clamp_int(
                 ui_values.get("subtitle_typing_interval_ms"), 5, 200, 35
             ),
@@ -179,6 +178,7 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
                 ui_values.get("reply_segment_pause_ms"), 0, 3000, 100
             ),
         },
+        "preferences": preferences,
         "model": {
             "base_url": str(getattr(model_settings, "base_url", "")),
             "model": str(getattr(model_settings, "model", "")),
@@ -191,6 +191,28 @@ def startup_state_dto(context: Any) -> dict[str, Any]:
             "tts_ready": bool(getattr(getattr(context, "tts_provider", None), "service_ready", False)),
             "startup_initializing": bool(getattr(context, "startup_initializing", False)),
         },
+    }
+
+
+def menu_preferences_dto(
+    context: Any,
+    *,
+    ui_values: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    values = ui_values
+    if values is None:
+        values = _load_ui_values(getattr(context, "settings_service", None))
+    subtitle_language = (
+        "ja"
+        if str(values.get("subtitle_language", "")).strip().lower() == "ja"
+        else "zh"
+    )
+    return {
+        "version": 1,
+        "subtitleLanguage": subtitle_language,
+        "chineseSubtitles": subtitle_language == "zh",
+        "freeAccessEnabled": _bool_setting(values.get("free_access_enabled"), True),
+        "alwaysOnTopEnabled": _bool_setting(values.get("always_on_top_enabled"), False),
     }
 
 
@@ -273,3 +295,16 @@ def _clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _bool_setting(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default

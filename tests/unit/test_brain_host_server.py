@@ -43,10 +43,36 @@ class _Closable:
         self.close_timeouts.append(timeout_ms)
 
 
+class _SettingsService:
+    def __init__(self, ui: dict[str, object] | None = None) -> None:
+        self.ui = dict(ui or {})
+
+    def load_system_values(self, section: str) -> dict[str, object]:
+        return dict(self.ui) if section == "ui" else {}
+
+    def save_system_values(self, section: str, values: dict[str, object]) -> None:
+        assert section == "ui"
+        self.ui.update(values)
+
+
+class _ToolRegistry:
+    def __init__(self) -> None:
+        self.free_access_enabled = True
+
+    def all(self) -> list[object]:
+        return [object(), object()]
+
+    def set_free_access_enabled(self, enabled: bool) -> None:
+        self.free_access_enabled = enabled
+
+
 def _fake_context(base_dir: Path) -> SimpleNamespace:
     registry = _Registry()
+    settings_service = _SettingsService()
+    tool_registry = _ToolRegistry()
     return SimpleNamespace(
         base_dir=base_dir,
+        settings_service=settings_service,
         character_profile=SimpleNamespace(
             id="demo",
             display_name="Demo",
@@ -65,7 +91,7 @@ def _fake_context(base_dir: Path) -> SimpleNamespace:
             timeout_seconds=30,
         ),
         startup_initializing=True,
-        tool_registry=SimpleNamespace(all=lambda: [object(), object()]),
+        tool_registry=tool_registry,
         mcp_tool_provider=None,
         plugin_manager=SimpleNamespace(results=[]),
         tts_provider=SimpleNamespace(service_ready=False, close=lambda: None),
@@ -120,8 +146,52 @@ def test_application_initializes_context_and_returns_json_startup_dto(tmp_path: 
     assert startup["theme"]["primary_color"].startswith("#")
     assert startup["layout"]["portrait_scale_percent"] == 100
     assert startup["subtitle"]["language"] == "zh"
+    assert startup["preferences"] == {
+        "version": 1,
+        "subtitleLanguage": "zh",
+        "chineseSubtitles": True,
+        "freeAccessEnabled": True,
+        "alwaysOnTopEnabled": False,
+    }
     assert startup["runtime"]["tool_count"] == 2
     json.dumps(startup, ensure_ascii=False)
+
+
+def test_pet_menu_preferences_are_persisted_and_update_tool_policy(tmp_path: Path) -> None:
+    from app.brain_host.application import BrainHostApplication, BrainHostConfig
+
+    context = _fake_context(tmp_path)
+    context.settings_service.ui.update(
+        {
+            "subtitle_language": "ja",
+            "free_access_enabled": False,
+            "always_on_top_enabled": True,
+        }
+    )
+    context.tool_registry.set_free_access_enabled(False)
+    app = BrainHostApplication(
+        BrainHostConfig(tmp_path, "session-menu", "credential-menu", 1),
+        context_builder=lambda _base_dir: context,
+    )
+    app.initialize()
+
+    initial = app.handle_request("pet.menu_state", {})
+    subtitle = app.handle_request("pet.set_subtitle_language", {"language": "zh"})
+    free_access = app.handle_request("pet.set_free_access", {"enabled": True})
+    always_on_top = app.handle_request("pet.set_always_on_top", {"enabled": False})
+
+    assert initial["subtitleLanguage"] == "ja"
+    assert initial["freeAccessEnabled"] is False
+    assert initial["alwaysOnTopEnabled"] is True
+    assert subtitle["chineseSubtitles"] is True
+    assert free_access["freeAccessEnabled"] is True
+    assert context.tool_registry.free_access_enabled is True
+    assert always_on_top["alwaysOnTopEnabled"] is False
+    assert context.settings_service.ui == {
+        "subtitle_language": "zh",
+        "free_access_enabled": True,
+        "always_on_top_enabled": False,
+    }
 
 
 def test_missing_chat_model_uses_onboarding_state_without_failing_health(tmp_path: Path) -> None:
