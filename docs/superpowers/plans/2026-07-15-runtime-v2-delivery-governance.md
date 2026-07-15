@@ -19,6 +19,12 @@ Work Package 是 Runtime v2 最小的、可独立验证和回退的实施单元�
 
 推荐编号格式：`WP-1A-01`、`WP-1B-02`。
 
+Runtime v2 Phase 0–3 的 Work Package 顺序、状态和范围统一登记在：
+
+- `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
+
+主计划不重复维护 Work Package 状态。提交正文只记录当前 Work Package 和实际验证结果，避免形成多个互相冲突的状态源。
+
 ## G-001：单 Work Package 开发限制
 
 同一时间只允许一个 Runtime v2 Work Package 处于功能开发或稳定化状态。
@@ -208,7 +214,7 @@ Runtime v2 首轮迁移中，现有 Python Assistant 领域代码默认只读。
 - 对应测试。
 - 失败时的替代方案。
 
-没有经过准入审查的 #140 代码不得进入 Runtime v2。`stash@{0}` 只作为取证和选择性复用来源，不整体恢复到当前工作区。
+没有经过准入审查的 #140 代码不得进入 Runtime v2。旧迁移固定以 `feat/tauri-assistant-migration` 的 `190dfafd24f5c5226bff8b4347837b6e45d9a331` commit 作为只读取证和选择性复用来源，不整体 cherry-pick、恢复或复制到当前工作区。
 
 ## G-008：证据优先的退出门禁
 

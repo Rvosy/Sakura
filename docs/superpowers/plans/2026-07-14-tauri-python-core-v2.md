@@ -335,11 +335,16 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 
 所有阶段都在当前 v2 分支上小步完成。Qt 代码始终保留为显式回退，直到后续单独决定删除。
 
-实施过程同时受 `docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md` 约束。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
+实施过程同时受以下文件约束：
+
+- `docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
+- `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
+
+Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
 
 ### Phase 0：冻结与基线
 
-- [x] 保存 #140 未提交工作区。
+- [x] 固定旧迁移取证源为 `feat/tauri-assistant-migration` / `190dfafd24f5c5226bff8b4347837b6e45d9a331`，不依赖本地 stash。
 - [x] 从最新 `dev` 创建 `refactor/tauri-runtime-v2`。
 - [ ] 记录 Qt 当前功能、已知问题和启动基线。
 - [ ] 建立 Qt 与 v2 共用的真实冒烟场景清单。
@@ -347,7 +352,7 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 - [ ] 定义 Qt/Tauri 共用应用锁和 Qt → Tauri → Qt 数据兼容门禁。
 - [ ] 完成 #140 候选复用文件清单。
 
-退出条件：主计划通过最终审查；三份 ADR 经审查认可为 `Proposed` 技术基线；Qt 基线、共享数据基线、真实冒烟清单和选择性复用清单均已记录。未满足前不开始 Phase 1A 实现。
+退出条件：`WP-0-01` 至 `WP-0-04` 全部 `accepted`；主计划通过最终审查；三份 ADR 经审查认可为 `Proposed` 技术基线；Qt 基线、共享数据基线、真实冒烟清单和选择性复用清单均已记录。未满足前不开始 Phase 1A 实现。
 
 ### Phase 1A：空 Shell 与透明窗口技术门
 
@@ -514,8 +519,9 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 强制交付治理：
 
 - `docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
+- `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
 
-治理文件约束 Work Package、允许列表、提交粒度、证据门禁、Bug Budget 和停止条件。即使实现技术方向正确，违反治理边界也不得进入下一 Work Package。
+治理文件约束 Work Package、允许列表、提交粒度、证据门禁、Bug Budget 和停止条件；执行清单记录 Phase 0–3 的 Work Package 顺序、状态、范围、证据和回退。即使实现技术方向正确，违反治理边界也不得进入下一 Work Package。
 
 技术 ADR：
 
