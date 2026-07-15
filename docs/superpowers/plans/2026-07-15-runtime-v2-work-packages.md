@@ -50,7 +50,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 |---|---|---|---|
 | WP-0-01 | legacy Qt、工具链和验收环境基线 | 无 | accepted |
 | WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | accepted |
-| WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | planned |
+| WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | accepted |
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | planned |
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | planned |
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | planned |
@@ -187,6 +187,21 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 
 ```text
 状态：accepted
+自动测试：R01–R67 共 67 项连续且唯一；准入 6、有条件准入 34、拒绝 17、延后 7、无归属删除 3；40 个复用项全部绑定唯一具体 Work Package；WP-1A-01 至 WP-3-06 共 27 项无悬空；96 个引用路径在固定 commit 中全部存在；151 个迁移差异路径完整覆盖
+故障测试：被拒绝实现中的进程泄漏、同步阻塞、shutdown/retry 竞态、旧 generation、late watcher、IPC 损坏、裸路径资源、设置回滚和数据兼容风险已单独保留为文档或测试输入；没有复制被拒绝生产结构
+真实应用验收：本 WP 为只读取证和文档准入，不启动 Qt/Tauri、不创建或编译 Tauri；所有真实窗口、进程、IPC、聊天与 Qt→Tauri→Qt 验收均绑定具体未来 WP
+范围门禁：只修改本 Work Package 基线文档和本文状态记录；没有修改 main.py、app/、desktop/、plugins/、data/、runtime/、characters/、third_party/ 或 tools/mcp/
+数据门禁：没有读取或提交真实 API Key、Token、聊天、Memory、notes 或插件私有数据；没有真实 data/ 变化
+P0/P1：未确认；没有数据污染或范围扩张
+已知限制：准入项仍需在归属 WP 逐文件重新读取和技术验证；旧迁移没有可准入的 Job Object、并发 Router、revisioned Snapshot、shared named mutex 或真实双向数据门禁实现
+回退步骤：整体 revert 本 WP 提交；不得恢复旧迁移目录、stash 或生产实现，不触碰真实 data/
+关联提交：本 WP accepted 提交
+```
+
+验收记录：
+
+```text
+状态：accepted
 自动测试：.\docs\runtime-v2\baselines\run_wp_0_02_baseline.ps1 连续三次退出码 0；每轮 4 passed；Python 辅助脚本 py_compile 通过
 故障测试：7/7 场景通过；fixture 30 个文件，tree SHA-256 6c7b34e2f6af7dfce4d0a69a756499e552fea87943902782d383ef6df78ea8ff，执行前后完全一致
 真实应用验收：本 WP 按范围不启动 Qt/Tauri；Phase 1A named mutex 与 Phase 3 真实 Qt→Tauri→Qt 步骤、提示、失败和只读结果已成为 ADR-0003 可执行输入
@@ -229,6 +244,32 @@ P0/P1：未确认；没有数据污染或范围扩张
 回退：删除新增文档和脱敏夹具，不触碰真实用户数据。
 
 ### WP-0-03：旧迁移逐文件复用准入清单
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-15
+允许目录：docs/runtime-v2/baselines/；仅允许在本文更新 WP-0-03 状态与验收记录
+明确禁止目录：main.py；app/；desktop/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；旧迁移分支代码；WP-0-04、Phase 1A 及后续生产实现
+验收环境：当前 Windows 开发机；只使用 git cat-file、ls-tree、diff-tree、show 等命令读取固定 commit 190dfafd24f5c5226bff8b4347837b6e45d9a331；不安装依赖、不创建或编译 Tauri、不启动 legacy Qt/Tauri、不调用外部服务、不读取真实用户私有内容
+关联 ADR：ADR-0001（进程监管与故障矩阵）；ADR-0002（IPC、Envelope、generation、Snapshot）；ADR-0003（应用锁与数据兼容）；治理 G-007
+计划提交：docs(runtime): 建立旧迁移逐文件复用准入清单
+回退命令：git revert <WP-0-03-commit>；只回退审查文档和状态记录，不触碰旧迁移来源、生产代码或真实 data/
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+自动测试：固定 commit 对象、local/remote 固定分支引用和共同基线均已确认；R01–R67 连续且唯一；分类计数 6/34/17/7/3；40 个准入/条件准入项均绑定唯一具体 WP；WP-1A-01 至 WP-3-06 共 27 项全部登记；96 个引用路径经 git cat-file -e 全部存在
+故障测试：151 个迁移差异路径按 app 45、desktop 53、tests 28、docs 7、.github 4、plugins 2、根文件 12 完整覆盖；同步 Supervisor、根进程 kill、stdout 污染、旧 generation、late watcher、源码字符串门禁和数据回滚风险已转为文档/测试输入
+真实应用验收：本 WP 按范围不启动 legacy Qt/Tauri、不创建或编译 Tauri、不运行旧生产实现；窗口、进程、IPC、聊天和数据真实验收绑定各未来 Work Package
+数据门禁：未读取真实 API Key、Token、聊天、Memory、notes 或插件私有内容；未修改生产目录或真实 data/
+已知问题：准入不等于技术门通过；旧迁移没有可准入的 Windows Job Object、并发 Router、revisioned Snapshot、真实 shared named mutex 或 Qt→Tauri→Qt 门禁实现
+回退步骤：整体 revert 本 WP 提交；不得 checkout、restore、merge、cherry-pick 或修改旧迁移分支及真实 data/
+关联提交：待提交
+```
 
 主要结果：把旧迁移从“可整体恢复的实现”转换为固定来源、逐文件审查的证据库。
 
@@ -1003,6 +1044,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前不激活任何生产实现 Work Package。`WP-0-01`、`WP-0-02` 已 accepted；下一项是 `WP-0-03` 旧迁移逐文件复用准入清单，但尚未激活。WP-0-04、WP-1A-01 及后续继续保持 `planned`。
+当前不激活任何生产实现 Work Package。`WP-0-01`、`WP-0-02`、`WP-0-03` 已 accepted；下一项是 `WP-0-04` 架构审查收口，但仍保持 `planned`。WP-1A-01 及后续继续保持 `planned`。
 
 只有 WP-0-01 至 WP-0-04 全部 `accepted`，主计划完成最终审查，才允许将 WP-1A-01 更新为 `active`。
