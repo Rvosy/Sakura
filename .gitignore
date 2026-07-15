@@ -24,6 +24,8 @@ tools/studio-tauri/src-tauri/gen/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 characters/
+!tests/fixtures/runtime_v2/wp_0_02/dataset/characters/
+!tests/fixtures/runtime_v2/wp_0_02/dataset/characters/**
 
 .pytest_cache/
 .pytest-basetemp/

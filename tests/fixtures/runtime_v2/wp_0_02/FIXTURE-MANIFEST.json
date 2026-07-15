@@ -1,0 +1,104 @@
+{
+  "contract_version": 1,
+  "synthetic": true,
+  "supported_config_version": 4,
+  "dataset_root": "dataset",
+  "categories": [
+    {
+      "id": "characters",
+      "representative_paths": [
+        "characters/fixture/character.json",
+        "characters/fixture/card.md",
+        "characters/fixture/portraits/placeholder.txt",
+        "data/config/characters.yaml"
+      ],
+      "missing_samples": [
+        "真实 PNG、音频和模型二进制不提交；包内相对路径契约由无隐私文本占位资源代表。"
+      ]
+    },
+    {
+      "id": "api_core_config",
+      "representative_paths": [
+        "data/config/api.yaml"
+      ],
+      "missing_samples": []
+    },
+    {
+      "id": "system_mcp_plugin_config",
+      "representative_paths": [
+        "data/config/system_config.yaml",
+        "data/config/mcp.yaml",
+        "data/config/plugins.yaml"
+      ],
+      "missing_samples": []
+    },
+    {
+      "id": "chat_history",
+      "representative_paths": [
+        "data/chat_history/fixture.jsonl"
+      ],
+      "missing_samples": []
+    },
+    {
+      "id": "memory_and_curation",
+      "representative_paths": [
+        "data/memory.json",
+        "data/memory/core_profiles.json",
+        "data/memory_curation_state.json",
+        "data/screen_awareness_state.json",
+        "data/memory/EXTERNAL-STORES.txt"
+      ],
+      "missing_samples": [
+        "mem0_history.db 和 Qdrant 存储不提交代表二进制：它们包含 Memory 内容并由外部库管理，夹具只记录所有权和缺失原因。"
+      ]
+    },
+    {
+      "id": "reminders_tasks_notes",
+      "representative_paths": [
+        "data/reminders.json",
+        "data/tasks.json",
+        "data/notes/fixture-note.txt"
+      ],
+      "missing_samples": []
+    },
+    {
+      "id": "runtime_events_visual_observations",
+      "representative_paths": [
+        "data/runtime_events/fixture.jsonl",
+        "data/visual_observations/fixture.jsonl"
+      ],
+      "missing_samples": []
+    },
+    {
+      "id": "plugin_data_user_resources",
+      "representative_paths": [
+        "data/plugins/fixture_plugin/config.json",
+        "data/character_studio/drafts/fixture/draft.json",
+        "data/tts_bundles/EXTERNAL-RESOURCES.txt"
+      ],
+      "missing_samples": [
+        "TTS bundle、模型、缓存和插件任意私有二进制不提交；格式由各所有者在后续 Work Package 单独验证。"
+      ]
+    },
+    {
+      "id": "migration_backup_compatibility",
+      "representative_paths": [
+        "data/migration_backup/20000101-000000_v3_to_v4/data/config/system_config.yaml",
+        "data/chat_history.jsonl.migrated",
+        "data/migration_backup/SECRETS-NOT-INCLUDED.txt"
+      ],
+      "missing_samples": [
+        ".env、API Key、Token 和真实迁移备份内容禁止进入 Git；只保留无凭据的结构样本和缺失原因。"
+      ]
+    },
+    {
+      "id": "runtime_v2_private_config",
+      "representative_paths": [
+        "data/runtime_v2/config/desktop.json",
+        "data/runtime_v2/config/ui.json",
+        "data/runtime_v2/state/shell.json"
+      ],
+      "missing_samples": []
+    }
+  ]
+}

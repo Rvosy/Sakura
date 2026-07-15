@@ -49,7 +49,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | Work Package | 主要结果 | 依赖 | 当前状态 |
 |---|---|---|---|
 | WP-0-01 | legacy Qt、工具链和验收环境基线 | 无 | accepted |
-| WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | planned |
+| WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | accepted |
 | WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | planned |
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | planned |
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | planned |
@@ -156,6 +156,47 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 回退：整体 revert 本 WP 的文档、测试辅助、回归测试和三处窄修复；不得改写真实用户数据。
 
 ### WP-0-02：用户数据与共享应用锁契约基线
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-15
+允许目录：docs/runtime-v2/baselines/；tests/fixtures/runtime_v2/wp_0_02/；tests/unit/test_wp_0_02_data_contract.py；docs/adr/0003-runtime-v2-data-compatibility.md；.gitignore 中仅限跟踪该脱敏角色夹具的精确反向规则；仅允许在本文更新 WP-0-02 状态与验收记录
+明确禁止目录：main.py；app/；desktop/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；现有用户数据 schema；旧迁移分支代码；WP-0-03、WP-0-04 及后续 Work Package 生产实现
+验收环境：当前 Windows 开发机；项目 .\runtime\python.exe；只读盘点真实仓库与 data/；所有写入/故障注入仅在 temp/runtime-v2-wp-0-02/ 的脱敏夹具副本执行；不安装依赖、不启动 legacy Qt/Tauri、不调用外部服务
+关联 ADR：ADR-0003（Phase 1A 共享应用锁输入；Phase 3 双向数据兼容门禁输入）
+计划提交：docs(runtime): 建立用户数据与共享应用锁契约
+回退命令：git revert <WP-0-02-commit>；不得删除、恢复或改写真实 data/ 和用户资源
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+自动测试：docs/runtime-v2/baselines/run_wp_0_02_baseline.ps1 连续三次通过；每轮定向 pytest 4 passed；最终轮 1.27s
+故障测试：7/7 passed：正常 Qt-parser→Tauri-compatible append→Qt-parser、强制备份失败、临时写入失败、原子替换失败、异常中断、损坏文件和未来 schema
+真实应用验收：本 WP 不启动 legacy Qt/Tauri；真实双入口锁与 Qt→Tauri→Qt 留作 WP-1A-04 / WP-3-06，步骤与结果契约已冻结
+数据门禁：真实 data/ 121 个文件；最终 canonical manifest SHA-256 before/after 均为 63d79065372c9943e9de12065dcf6df14eef14447fe2bc56fd43587e533ee6cf；path/length/UTC mtime/SHA-256 零变化
+已知问题：当前 Qt QLockFile 前仍有 data/ 动作；多数 legacy 格式无独立 version；best-effort .bak 不等价于 mandatory migration backup；插件/notes/部分角色写回非原子
+回退步骤：整体 revert 本 WP 提交；不得触碰真实 data/、characters/、Memory/Qdrant、插件数据、migration backup 或既有 lock artifact
+关联提交：待提交
+```
+
+验收记录：
+
+```text
+状态：accepted
+自动测试：.\docs\runtime-v2\baselines\run_wp_0_02_baseline.ps1 连续三次退出码 0；每轮 4 passed；Python 辅助脚本 py_compile 通过
+故障测试：7/7 场景通过；fixture 30 个文件，tree SHA-256 6c7b34e2f6af7dfce4d0a69a756499e552fea87943902782d383ef6df78ea8ff，执行前后完全一致
+真实应用验收：本 WP 按范围不启动 Qt/Tauri；Phase 1A named mutex 与 Phase 3 真实 Qt→Tauri→Qt 步骤、提示、失败和只读结果已成为 ADR-0003 可执行输入
+数据门禁：真实 data/ 121 个文件；三次完整脚本均证明 path/length/UTC mtime/SHA-256 完全一致，最终摘要 63d79065372c9943e9de12065dcf6df14eef14447fe2bc56fd43587e533ee6cf
+核心契约：共享数据只在 config_version=4 且结构有效时允许批准的兼容写；Phase 3 当前只批准 history JSONL；v2 私有配置位于 data/runtime_v2/；Qt/Tauri 共用 Local\SakuraDesktop.SharedUserData.v1
+已知限制：真实双入口锁尚未实现/验证；installed/legacy 多数格式无独立 version；Qdrant、插件私有数据、TTS 和 logs/diagnostics 仍需后续领域门禁；best-effort .bak 不可作为 mandatory migration backup
+P0/P1：未确认；没有数据污染或范围扩张
+回退步骤：整体 revert 本 WP 提交；不删除、恢复或改写真实 data/、characters/、Memory/Qdrant、插件数据、migration backup 或锁文件
+关联提交：本 WP accepted 提交
+```
 
 主要结果：明确 Runtime v2 可以读取、可以兼容写入和禁止修改的数据边界，并冻结双入口互斥的结果契约。
 
@@ -962,6 +1003,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前不激活任何生产实现 Work Package。`WP-0-01` 已 accepted；下一项是 `WP-0-02` 用户数据与共享应用锁契约基线，WP-1A-01 及后续继续保持 `planned`。
+当前不激活任何生产实现 Work Package。`WP-0-01`、`WP-0-02` 已 accepted；下一项是 `WP-0-03` 旧迁移逐文件复用准入清单，但尚未激活。WP-0-04、WP-1A-01 及后续继续保持 `planned`。
 
 只有 WP-0-01 至 WP-0-04 全部 `accepted`，主计划完成最终审查，才允许将 WP-1A-01 更新为 `active`。

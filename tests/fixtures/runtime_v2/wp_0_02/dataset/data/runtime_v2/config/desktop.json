@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "domain": "desktop",
+  "settings": {
+    "always_on_top": true,
+    "launch_at_login": false,
+    "window_anchor": {
+      "monitor_id": "fixture-monitor",
+      "x": 0,
+      "y": 0
+    }
+  }
+}

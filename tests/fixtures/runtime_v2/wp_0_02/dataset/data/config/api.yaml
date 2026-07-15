@@ -1,0 +1,19 @@
+llm:
+  base_url: https://fixture.invalid/v1
+  api_key: REDACTED_FIXTURE_VALUE
+  model: fixture-model
+  timeout_seconds: 60
+api_profiles:
+  - id: fixture
+    alias: Fixture Provider
+    base_url: https://fixture.invalid/v1
+    api_key: REDACTED_FIXTURE_VALUE
+    models:
+      - name: fixture-model
+model_slots:
+  chat:
+    profile_id: fixture
+    model: fixture-model
+tts:
+  enabled: false
+  provider: none

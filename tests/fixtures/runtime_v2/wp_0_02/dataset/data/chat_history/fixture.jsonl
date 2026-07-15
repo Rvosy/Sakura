@@ -1,0 +1,2 @@
+{"created_at":"2000-01-01T00:00:00+00:00","role":"user","content":"[REDACTED_FIXTURE_USER_MESSAGE]"}
+{"created_at":"2000-01-01T00:00:01+00:00","role":"assistant","content":"[REDACTED_FIXTURE_ASSISTANT_MESSAGE]","translation":"[REDACTED_FIXTURE_TRANSLATION]","tone":"neutral","portrait":"neutral"}
