@@ -21,6 +21,8 @@ tools/settings-tauri/src-tauri/target/
 tools/settings-tauri/src-tauri/gen/
 tools/studio-tauri/src-tauri/target/
 tools/studio-tauri/src-tauri/gen/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
 characters/
 
 .pytest_cache/

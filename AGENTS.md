@@ -36,9 +36,11 @@ python -m pytest tests/unit
 - 若无法运行测试，应在最终回复中说明原因和未验证风险。
 
 ## Git 与文件安全
-- Commit 使用fix: feat: style: docs: refactor: perf: test: chore: 等常规类型，并且使用中文 ,保持简洁明了。
-- 开发新功能或者进行新修复时, 要从最新的dev分支新建一个feat/xxx, fix/xxx refactor/xxx 格式的分支,进行开发, 最后在用中文提出pr向dev合并
-- 提pr前必须要运行完整测试
+- Commit 使用 `fix:`、`feat:`、`style:`、`docs:`、`refactor:`、`perf:`、`test:`、`chore:` 等常规类型，并使用中文。
+- Commit 标题保持简洁明确；正文应按改动风险详细记录背景、主要变更、明确非目标、验证结果、已知风险和回退方式，方便个人开发时回溯与 Review。
+- 开发新功能或修复时，通常从最新 `dev` 新建 `feat/xxx`、`fix/xxx`、`refactor/xxx` 格式的分支，并直接在该功能分支提交。
+- 本项目采用个人开发流程，不要求创建 PR。当前 Runtime v2 工作直接提交到 `refactor/tauri-runtime-v2`，不得直接提交到 `dev`。
+- 合并到 `dev` 前必须运行完整测试，并由项目负责人完成最终审查；具体合并时间和方式由项目负责人决定。
 - 不要还原用户已有改动，除非用户明确要求。
 - 不使用 `git reset --hard`、`git checkout --` 等破坏性命令，除非用户明确要求。
 - 可读写范围内只修改完成任务必需的文件。
