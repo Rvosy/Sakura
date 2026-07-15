@@ -75,6 +75,8 @@ Python 进程启动
 
 hello 前不得导入或初始化 Assistant、Memory、MCP、插件和 TTS 重型模块。
 
+初始 lifecycle deadline 统一采用 ADR-0001 的建议值：`system.hello` 3,000 ms、`core.initialize` 接受响应 5,000 ms、readiness watchdog 30,000 ms、`system.shutdown` 协议优雅期 3,000 ms，完整进程树停止从 shutdown 意图起不超过 5,000 ms。这些是待 Phase 1B/1C 验证的初值，不是已验证性能承诺。`core.initialize` 必须先快速返回接受/拒绝结果，不能把 30 秒 readiness watchdog 当成同步 request deadline。
+
 ### 协议版本与能力协商
 
 `system.hello` 至少交换：
@@ -90,6 +92,7 @@ capabilities
 - `protocolMajor` 不兼容：拒绝初始化，进入 diagnostics，不对同一个不兼容 Core 自动重复重启。
 - `protocolMinor` 不同：通过 capabilities 协商可用功能。
 - 缺少启动所需 capability：返回明确不兼容错误，不进入业务初始化。
+- `setup_required`、确定性配置/数据错误、bundled Runtime 缺失或不兼容、generation credential 失败均按 ADR-0001 的不可自动重试分类进入 diagnostics；Provider 网络错误仍是普通领域请求错误。
 - Runtime Repair/diagnostics 必须显示 Desktop、Core 和 Protocol 版本。
 
 ### 受控 Gateway

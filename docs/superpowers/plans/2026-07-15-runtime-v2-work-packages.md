@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Draft / 等待最终审查
+> 状态：Phase 0 架构审查已收口 / WP-1A-01 可激活但仍为 planned
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -51,7 +51,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-0-01 | legacy Qt、工具链和验收环境基线 | 无 | accepted |
 | WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | accepted |
 | WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | accepted |
-| WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | planned |
+| WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | accepted |
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | planned |
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | planned |
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | planned |
@@ -120,7 +120,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 稳定化修复：关闭后等待 lingering QThread；asyncio loop 幂等 stop 与 pending task 清理；Memory preload 在启动后台线程前完成 anyio 首次导入
 已知限制：Tauri CLI 缺失；单屏/100% DPI；多 DPI、IME、音频、干净机和真实业务交互仍受限；p95 高于 1 秒目标
 回退步骤：整体 revert 本 WP 提交；不自动改写或删除真实 data/ 中既有日志、配置或运行事件
-关联提交：本 WP accepted 提交
+关联提交：c555e1b95（test(runtime): 收口 legacy Qt 基线验收）
 ```
 
 主要结果：形成可以重复执行的迁移前基线，后续任何“等价”“改善”或“没有回归”都有可比较证据。
@@ -187,14 +187,15 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 
 ```text
 状态：accepted
-自动测试：R01–R67 共 67 项连续且唯一；准入 6、有条件准入 34、拒绝 17、延后 7、无归属删除 3；40 个复用项全部绑定唯一具体 Work Package；WP-1A-01 至 WP-3-06 共 27 项无悬空；96 个引用路径在固定 commit 中全部存在；151 个迁移差异路径完整覆盖
-故障测试：被拒绝实现中的进程泄漏、同步阻塞、shutdown/retry 竞态、旧 generation、late watcher、IPC 损坏、裸路径资源、设置回滚和数据兼容风险已单独保留为文档或测试输入；没有复制被拒绝生产结构
-真实应用验收：本 WP 为只读取证和文档准入，不启动 Qt/Tauri、不创建或编译 Tauri；所有真实窗口、进程、IPC、聊天与 Qt→Tauri→Qt 验收均绑定具体未来 WP
-范围门禁：只修改本 Work Package 基线文档和本文状态记录；没有修改 main.py、app/、desktop/、plugins/、data/、runtime/、characters/、third_party/ 或 tools/mcp/
-数据门禁：没有读取或提交真实 API Key、Token、聊天、Memory、notes 或插件私有数据；没有真实 data/ 变化
-P0/P1：未确认；没有数据污染或范围扩张
-已知限制：准入项仍需在归属 WP 逐文件重新读取和技术验证；旧迁移没有可准入的 Job Object、并发 Router、revisioned Snapshot、shared named mutex 或真实双向数据门禁实现
-回退步骤：整体 revert 本 WP 提交；不得恢复旧迁移目录、stash 或生产实现，不触碰真实 data/
+自动测试：主审查文件 10/10 存在；当前 docs/*.md 引用全部存在；一致性矩阵 12/12 项有结论；三份 ADR 状态均为 Proposed；WP-0-01/02/03 状态和实际提交已核对；git diff --check 退出码 0
+故障测试：单窗口失败判定、停止/替代/批准流程，hello/initialize/shutdown deadline，不可自动重试分类，Runtime 缺失、shared mutex、未来/损坏 schema 和 legacy Qt 回退责任均已绑定具体未来 WP
+真实应用验收：本 WP 仅修改 Markdown，按范围不启动 legacy Qt/Tauri、不创建或编译 Tauri；WP-1A-01 的 debug/release、Python 缺失、startup 可见和退出步骤已准备但仍未执行
+ADR 状态：ADR-0001、ADR-0002、ADR-0003 仅认可为 Proposed 技术基线，没有标记为 Technically Validated 或 Accepted
+工具链与平台：Windows 11 23H2 build 22631.4890 x64；Rust/Cargo 1.96.0；Tauri 2.11.3；tauri-build 2.6.3；WebView2 150.0.4078.65；bundled Python 来源为官方 CPython 3.12.8 Windows embeddable amd64 release workflow
+范围门禁：只修改 7 个 Markdown；没有 main.py、app/、desktop/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/ 或 tests/ 变化；没有真实 data/ 变化
+P0/P1：未确认；没有数据污染、凭据泄露、范围扩张、悬空引用或架构根冲突
+已知限制：所有技术方案仍需在归属 WP 真实验证；WP-1A-01 只是准备完整，状态继续为 planned；Tauri CLI 当前未安装且不是 WP-1A-01 前置
+回退步骤：整体 revert 本 WP 提交；只回退审查文档和状态记录，不触碰生产代码、旧迁移分支或真实 data/
 关联提交：本 WP accepted 提交
 ```
 
@@ -210,7 +211,7 @@ P0/P1：未确认；没有数据污染或范围扩张
 已知限制：真实双入口锁尚未实现/验证；installed/legacy 多数格式无独立 version；Qdrant、插件私有数据、TTS 和 logs/diagnostics 仍需后续领域门禁；best-effort .bak 不可作为 mandatory migration backup
 P0/P1：未确认；没有数据污染或范围扩张
 回退步骤：整体 revert 本 WP 提交；不删除、恢复或改写真实 data/、characters/、Memory/Qdrant、插件数据、migration backup 或锁文件
-关联提交：本 WP accepted 提交
+关联提交：5e6cf364e（docs(runtime): 建立用户数据与共享应用锁契约）
 ```
 
 主要结果：明确 Runtime v2 可以读取、可以兼容写入和禁止修改的数据边界，并冻结双入口互斥的结果契约。
@@ -271,6 +272,21 @@ P0/P1：未确认；没有数据污染或范围扩张
 关联提交：待提交
 ```
 
+验收记录：
+
+```text
+状态：accepted
+自动测试：R01–R67 共 67 项连续且唯一；准入 6、有条件准入 34、拒绝 17、延后 7、无归属删除 3；40 个复用项全部绑定唯一具体 Work Package；WP-1A-01 至 WP-3-06 共 27 项无悬空；96 个引用路径在固定 commit 中全部存在；151 个迁移差异路径完整覆盖
+故障测试：被拒绝实现中的进程泄漏、同步阻塞、shutdown/retry 竞态、旧 generation、late watcher、IPC 损坏、裸路径资源、设置回滚和数据兼容风险已单独保留为文档或测试输入；没有复制被拒绝生产结构
+真实应用验收：本 WP 为只读取证和文档准入，不启动 Qt/Tauri、不创建或编译 Tauri；所有真实窗口、进程、IPC、聊天与 Qt→Tauri→Qt 验收均绑定具体未来 WP
+范围门禁：只修改本 Work Package 基线文档和本文状态记录；没有修改 main.py、app/、desktop/、plugins/、data/、runtime/、characters/、third_party/ 或 tools/mcp/
+数据门禁：没有读取或提交真实 API Key、Token、聊天、Memory、notes 或插件私有数据；没有真实 data/ 变化
+P0/P1：未确认；没有数据污染或范围扩张
+已知限制：准入项仍需在归属 WP 逐文件重新读取和技术验证；旧迁移没有可准入的 Job Object、并发 Router、revisioned Snapshot、shared named mutex 或真实双向数据门禁实现
+回退步骤：整体 revert 本 WP 提交；不得恢复旧迁移目录、stash 或生产实现，不触碰真实 data/
+关联提交：239f495ad4c0b324c6b6e340bc155ab23997f7e9（docs(runtime): 建立旧迁移逐文件复用准入清单）
+```
+
 主要结果：把旧迁移从“可整体恢复的实现”转换为固定来源、逐文件审查的证据库。
 
 固定取证源：
@@ -317,6 +333,32 @@ commit: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 
 ### WP-0-04：架构审查收口并批准首个实现 WP
 
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-16
+允许目录：docs/runtime-v2/baselines/WP-0-04-architecture-review.md；docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md；仅在关闭实际冲突时窄改 docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md、docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md 和 docs/adr/0001-runtime-v2-process-supervision.md、0002-runtime-v2-ipc.md、0003-runtime-v2-data-compatibility.md
+明确禁止目录：main.py；app/；desktop/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；tests/；旧迁移分支代码；WP-1A-01 或任何后续生产实现
+验收环境：当前 Windows 开发机；只读检查 Git 提交、引用和 Markdown；不安装依赖、不创建/编译/运行 Tauri、不启动 legacy Qt、不调用外部服务、不读取真实用户私有内容
+关联 ADR：ADR-0001、ADR-0002、ADR-0003；三份 ADR 在本 WP 只能认可为 Proposed 技术基线
+计划提交：docs(runtime): 完成 Runtime v2 架构审查收口
+回退命令：git revert <WP-0-04-commit>；只回退审查文档和状态记录，不触碰生产代码或真实 data/
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+自动测试：三份 ADR 状态均为 Proposed；WP-0-01/02/03 accepted 与提交 c555e1b95、5e6cf364e、239f495ad4c0b324c6b6e340bc155ab23997f7e9 已核对；当前文档引用路径检查全部存在
+故障测试：单窗口失败停止/替代/批准路径、lifecycle deadline、不可自动重试分类、legacy Qt 回退和数据责任均已形成可执行审查输入；一致性矩阵 12/12 项有结论和后续 WP
+真实应用验收：本 WP 只做架构审查，不启动 legacy Qt/Tauri，不创建、编译或运行 Tauri；WP-1A-01 真实 Shell 验收步骤已准备但未执行
+范围门禁：仅修改 WP-0-04 审查文档、主计划、治理、三份 ADR 和 Work Package 清单；没有生产目录、tests/ 或真实 data/ 变化
+已知问题：工具链、窗口、进程树、IPC 和数据兼容仍需各归属 WP 真实技术验证；这不改变三份 ADR 的 Proposed 状态
+回退步骤：整体 revert 本 WP 提交；不触碰生产代码、旧迁移分支或真实 data/
+关联提交：待提交
+```
+
 主要结果：关闭进入 Phase 1A 前的决策缺口，并把 WP-1A-01 从 `planned` 更新为可激活状态。
 
 必须确认：
@@ -346,7 +388,29 @@ commit: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 
 ### WP-1A-01：不启动 Python 的最小 Tauri Shell
 
+未来激活准备记录（不构成激活）：
+
+```text
+状态：planned
+允许目录：新建 desktop/ 下的最小 Tauri crate、静态 startup 页面、Shell 自身测试与 desktop/rust-toolchain.toml；.gitignore 仅限新增 desktop 构建产物规则；本文仅在实际激活时更新 WP-1A-01 状态和验收记录
+明确禁止目录：main.py；app/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；现有 tools/settings-tauri/ 与 tools/studio-tauri/；legacy Qt 入口和默认入口脚本；WP-1A-02 及后续实现
+验收环境：Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3、tauri-build 2.6.3；WebView2 150.0.4078.65；Visual Studio 18.4.1 C++ 工具链与 Windows SDK 10.0.26100.0；Node/npm 非必需；Tauri CLI 非本 WP 前置
+关联 ADR：ADR-0001（Tauri 生命周期根和退出所有权）；ADR-0002（本 WP 不建立 transport）；ADR-0003（不得写共享 data/）；三份 ADR 均继续为 Proposed
+自动测试要求：cargo fmt --check；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked；cargo build --manifest-path desktop/src-tauri/Cargo.toml --locked；cargo build --manifest-path desktop/src-tauri/Cargo.toml --release --locked；可执行冒烟必须断言 startup 页面可见和退出后无 Shell 残留
+真实 Shell 验收步骤：分别启动 debug 与 release Shell；确认 startup 页面立即可见；关闭窗口并确认进程退出；在隔离工作目录中不提供 runtime/、Python、用户 data/ 或 Sakura 环境变量，重复启动、显示和退出
+故障测试：Python 路径缺失、runtime/ 缺失、无关环境变量缺失、工作目录无 data/、startup 静态资源缺失的构建期失败；运行期不得出现空白窗口、Python spawn、共享 data/ 写入或后台任务残留
+独立回退方式：整体 revert WP-1A-01 提交，删除新增 desktop/ 最小 Shell 与专用工具链文件；Qt main.py、start.bat 和当前产品入口保持不变
+计划提交：feat(runtime): 建立不启动 Python 的最小 Tauri Shell
+```
+
 主要结果：Runtime v2 拥有一个不依赖 Python、可以立即显示、诊断启动失败并正常退出的最小桌面根。
+
+最小结果上限：
+
+- 不启动 Python 的最小 Tauri Shell。
+- startup 页面可见。
+- Python 缺失时仍可显示并退出。
+- 不包含 Supervisor、IPC、聊天、设置、托盘、角色加载或默认入口切换。
 
 允许能力：
 
@@ -1044,6 +1108,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前不激活任何生产实现 Work Package。`WP-0-01`、`WP-0-02`、`WP-0-03` 已 accepted；下一项是 `WP-0-04` 架构审查收口，但仍保持 `planned`。WP-1A-01 及后续继续保持 `planned`。
+当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-0-04` 均已 accepted；WP-1A-01 的未来激活准备完整但状态仍为 `planned`，本次没有开始生产实现。
 
-只有 WP-0-01 至 WP-0-04 全部 `accepted`，主计划完成最终审查，才允许将 WP-1A-01 更新为 `active`。
+下一步可以单独将 WP-1A-01 更新为 `active`，但激活必须作为新的工作开始，并继续遵守其允许目录、验收和回退记录。

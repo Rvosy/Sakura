@@ -1,6 +1,6 @@
 # Sakura Runtime v2 交付治理与防扩张约束
 
-> 状态：Draft / 等待最终审查
+> 状态：Phase 0 最终审查通过 / Runtime v2 强制治理基线
 > 工作分支：`refactor/tauri-runtime-v2`
 > 开发模式：个人开发，直接在当前分支提交，不创建 Work Package PR
 > 适用范围：Runtime v2 Phase 0–7 的计划、实现、验证、提交和稳定化
@@ -55,6 +55,8 @@ Phase 1A：
 允许空 Shell、透明窗口、锚点、命中区域、DPI、IME、焦点、
 v2 开发入口、legacy Qt 启动脚本和 Qt/Tauri 共享应用锁。
 禁止接入 Python Core、聊天、设置和真实 Assistant。
+一个原生透明窗口是首选技术方案；真实命中/IME/focus 门失败时停止，
+不得以未批准的多窗口兼容层继续入口切换。
 
 Phase 1B：
 允许进程监管、Windows 受控进程树、最小测试 transport、Fake Core、
@@ -82,6 +84,8 @@ legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁。
 ```
 
 Phase 4–7 在开始前必须按同样格式拆分，不得只依赖主计划中的宽泛描述直接编码。
+
+进入首个实现 Work Package 前还必须固定实际 Rust/Tauri 版本、Windows x64 参考环境、WebView2、构建工具和 bundled Python 来源。可漂移的 `stable`、未锁定依赖或“使用本机已有版本”不能作为可重复验收基线；某工具当前不属于 Work Package 前置时，应明确写为非前置，而不是隐式安装或扩大范围。
 
 ## G-003：可选范围变更 one-in, one-out
 
@@ -298,6 +302,7 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 - 一个 Work Package 需要修改允许列表外的领域模块。
 - 为修复当前实现，需要提前实现下一阶段产品能力。
 - Fake Core 无法稳定复现故障。
+- Phase 1A 首选单透明窗口在真实 WebView、物理输入、DPI 或中文 IME 门禁中失败，或只能依赖隐藏 Qt、第二生命周期根、管理员权限和范围外兼容层才能通过。
 - 真实应用行为与契约测试持续不一致。
 - 同一个接口连续发生结构性重写。
 - 当前阶段 bug 数量继续增加而不是下降。

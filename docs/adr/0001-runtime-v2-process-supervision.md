@@ -86,6 +86,20 @@ SupervisorState = stopping
 
 shutdown、health 和 cancel 不得排在普通长任务之后。
 
+### 初始 lifecycle deadline 建议
+
+以下数值是 Phase 1B/1C 的首轮故障测试输入，不代表已经 `Technically Validated`；技术门可以基于分布数据调整，但必须同时更新 ADR、测试 fixture 和诊断文案：
+
+| 生命周期动作 | 初始 deadline | 超时后的动作 |
+|---|---:|---|
+| `system.hello` | 3,000 ms | 当前 generation 启动失败；在 restart budget 内可按暂时性启动失败重试 |
+| `core.initialize` 响应/接受 | 5,000 ms | 当前 generation 初始化协议失败；清理旧树后可在 budget 内重试 |
+| readiness watchdog | 30,000 ms | 与 initialize 请求 deadline 分离；进入 diagnostics/restarting，不阻塞 health/shutdown |
+| `system.shutdown` 协议优雅期 | 3,000 ms | 到期立即 `terminate_tree`，不继续等待领域任务 |
+| 完整停止并验证进程树退出 | 从 shutdown 意图起 5,000 ms | 超过即为 P1；Shell 记录强杀/残留证据并禁止新 generation |
+
+deadline 从 Rust 侧发出对应意图并成功写入当前 generation transport 时计时；WebView 不能覆盖这些 lifecycle 值。调试器附加、首轮依赖下载或人工断点不能改变正式验收 deadline。
+
 ## 竞态与幂等规则
 
 - `shutdown during spawn`：取消 spawn 流程；若进程已创建则立即进入同一 stop 流程，不发布 running。
@@ -113,9 +127,19 @@ shutdown、health 和 cancel 不得排在普通长任务之后。
 
 自动重启必须使用有限 budget/backoff，并按结构化失败原因决定：
 
-- 意外退出、暂时性启动失败可以在 budget 内重试。
-- 协议 major 不兼容、缺失必要 capability、配置 `setup_required` 和明确不可重试错误不得自动循环重启。
+- 意外退出、暂时性 OS spawn/pipe 失败、hello/initialize timeout 和连接意外关闭可以在 budget 内重试；同一确定性原因重复出现仍受 budget 限制。
+- 以下启动结果明确不得自动重试：
+  - `protocol_major_incompatible`。
+  - `missing_required_capability`。
+  - `setup_required`；它是等待用户配置的稳定 readiness，不是崩溃。
+  - 必需配置缺失、字段类型无效、未知 Provider 类型、未来/不支持 schema、损坏必要数据等确定性配置或数据错误。
+  - bundled Python 缺失、架构/版本不兼容、Core 入口缺失、import guard 发现 Qt/禁止模块等确定性 Runtime/打包错误。
+  - generation credential 不匹配、握手认证失败或其他安全边界错误。
+  - 共享应用锁 `already_running` 或 mutex API fatal failure；它们属于桌面入口结果，不应创建 Core restart loop。
+- Provider 网络不可达、模型认证失败和普通聊天请求错误属于领域请求结果，不改变 Core 启动 readiness，也不触发 Supervisor 重启。
 - 用户手动重试仍经过同一个串行状态机和旧 generation 清理门禁。
+
+不可自动重试不等于永远禁止用户重试。diagnostics 必须先展示可执行修复动作；外部状态发生变化后，用户手动 retry 才能通过同一 Supervisor 状态机创建新 generation。
 
 ## Fake Core 验证矩阵
 

@@ -13,6 +13,8 @@ Runtime v2 在开发分支中提前切换默认 Tauri 入口，同时保留 lega
 
 Phase 0 取证确认：当前数据集的全局版本锚点是 `data/config/system_config.yaml.config_version`，当前值为 `4`；installed character、API、MCP、plugins、history、Memory state、reminders/tasks/notes、runtime events 和 visual observations 多数没有独立 schema version。详细路径、读写者、原子写入方式、脱敏夹具和缺失样本原因以 WP-0-02 基线为准。
 
+WP-1A-04 完成后，legacy Qt 的权威显式回退命令规划为 `.\runtime\python.exe .\legacy_qt_main.py`，并可提供 `start-legacy-qt.bat` 作为便利入口；在 WP-1A-04 实现和验收前，该命令只表示已批准的未来接口，不表示当前文件已经存在。回退前必须先退出 Tauri；用户不负责删除锁文件、判断 stale PID 或合并共享数据。能否启动和写入由两个入口共同实现的 named mutex、schema 安全状态和当前桌面生命周期根负责。
+
 ## 不可妥协的约束
 
 - Phase 1–3 不执行破坏性用户数据迁移，也不由 v2 静默运行 legacy `MigrationRunner`。

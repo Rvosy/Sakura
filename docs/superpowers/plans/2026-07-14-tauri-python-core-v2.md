@@ -1,6 +1,6 @@
 # Sakura Tauri + Python Core Runtime v2 计划
 
-> 状态：Draft / 已按评审修正，等待最终审查
+> 状态：Phase 0 最终架构审查通过；Phase 1A–3 按 Work Package 逐项批准
 > 工作分支：`refactor/tauri-runtime-v2`
 > 基线：`dev` / `4e8dc7f0a6afbc391149046febeb0c796dd641b8`
 > 目标：用 Tauri 替代 Qt 桌面运行时和 UI，同时尽量复用现有 Python Assistant 能力。
@@ -76,9 +76,11 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 - 现有对话、角色、模型、Memory、Tools、MCP、插件、TTS 合成和调度逻辑优先复用。
 - Python 不负责原生窗口、托盘、WebView DOM、桌面截图或应用生命周期根。
 
-### 3.3 一个透明桌宠窗口
+### 3.3 单一桌宠组合体验与首选单窗口方案
 
-主桌宠使用一个透明窗口承载：
+产品硬约束是：主桌宠在用户感知上必须是一个连续的组合体验，立绘锚点、气泡、输入和状态提示不能成为互相独立、可漂移或拥有不同生命周期的桌面根；所有表面仍归同一个 Tauri App 管理。
+
+Phase 1A 的首选技术方案是使用一个原生透明窗口承载：
 
 ```text
 透明桌宠窗口
@@ -90,6 +92,15 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 ```
 
 设置、工作室、历史和诊断使用独立普通窗口。
+
+“一个原生透明窗口”不是不可变产品约束。WP-1A-02/03 必须在参考 Windows 环境真实验证透明命中、拖动、焦点、中文 IME、Alt+Tab、显示隐藏和 DPI。出现以下任一情况时，单窗口方案判定失败，WP-1A-03 不得 accepted，也不得进入 WP-1A-04：
+
+- 透明区域点击穿透与输入区域命中无法同时稳定成立。
+- 中文 IME 候选框、焦点恢复或拖动/穿透切换存在可重复的 P1。
+- 只有引入隐藏 Qt、第二生命周期根、管理员权限或范围外兼容层才能通过。
+- 真实 WebView 与物理输入持续不符合自动测试中的契约。
+
+失败后只允许整理证据、删除失败实现、缩小范围和提出替代架构。候选替代可以是同一 Tauri App 内受控的多原生窗口组合、最小 Windows 命中测试平台层或收窄交互模型，但必须先更新主计划、Work Package 和专门的窗口架构决策记录，由项目负责人批准后重新拆分；不得在 WP-1A-03 内自动降级或把兼容层带入 WP-1A-04。
 
 ### 3.4 状态所有权分离
 
@@ -122,9 +133,27 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 
 ### 3.7 首轮目标平台
 
-- Phase 1A–3 的正式目标平台是 Windows。
+- Phase 1A–3 的正式目标平台仅为 Windows x64（`x86_64-pc-windows-msvc`）。Windows ARM64、32 位、Wine、Windows Server、Linux 和 macOS 不属于首轮正式验收范围。
 - 进程树和原生能力保留跨平台抽象边界，但 Linux/macOS 仅保留设计占位和必要编译边界，不作为首轮验收门禁。
 - Linux 或 macOS 进入交付范围前，分别建立平台 ADR、透明窗口验证和真实进程树测试。
+- Runtime v2 的 Phase 1A–3 参考验收环境是 Windows 11 23H2 build `22631.4890` x64、WebView2 `150.0.4078.65`。WP-0-01 记录的旧 Windows/Qt 环境继续作为 legacy 对比证据，不替代 Tauri 参考环境。
+
+### 3.8 Runtime v2 初始工具链与 bundled Python 来源
+
+Phase 1A 首个实现 Work Package 使用以下可重复基线：
+
+| 项目 | 初始基线 | 约束 |
+|---|---|---|
+| Rust / Cargo | `1.96.0`，`x86_64-pc-windows-msvc` | WP-1A-01 在 `desktop/` 内固定 toolchain，不依赖可漂移的 `stable` 别名 |
+| Rust edition | `2021` | 与现有 Settings/Studio Tauri crate 一致 |
+| Tauri | `2.11.3` | 初始值来自现有两个 Tauri 工具的锁文件；新 Shell 使用自己的 `Cargo.lock`，不复制其生产组合根 |
+| `tauri-build` | `2.6.3` | 与 Tauri 版本一并锁定 |
+| Tauri CLI | 当前未安装 | WP-1A-01 使用 `cargo build/run/test --locked`，CLI 不是前置；以后若用于 bundle，必须先固定精确版本 |
+| Visual C++ / SDK | Visual Studio `18.4.1` C++ 工具链；Windows SDK `10.0.26100.0` | 参考环境；WP-1A-01 记录实际编译器和 SDK |
+| Node / npm | `v22.14.0` / `11.18.0` | 静态 startup 页面不要求 Node；引入前端构建链时再固定 lockfile |
+| WebView2 | `150.0.4078.65` | 真实 Shell 验收必须记录实际 Runtime 版本 |
+
+Runtime v2 的 Windows bundled Python 继续使用仓库发布流程生成的 `runtime/python.exe`：CPython `3.12.8` 64 位官方 Windows embeddable 包，来源为 `.github/workflows/release.yml` 中固定的 `https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip`，通过 release 的 `runtime-windows-x64.zip` 或完整包进入应用根目录。Phase 1A 不启动或要求 Python；WP-1C-04 必须使用同一来源完成真实 end-to-end，并在进入发布链前补齐下载工件完整性校验，不得静默回退到系统 Python。
 
 ## 4. Python Adapter / Facade 迁移原则
 
@@ -342,15 +371,25 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 
 Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
 
+开发分支 dogfooding 与 legacy Qt 回退：
+
+- v2 分支默认入口只允许在 WP-1A-04 完成共享应用锁后切换到 Tauri；WP-1A-01 至 WP-1A-03 不改变当前默认入口。
+- WP-1A-04 后、Phase 3 前，默认 Tauri 只用于 Runtime v2 Shell/窗口/恢复链 dogfooding；需要当前完整聊天、设置、Studio、TTS 或插件能力时，显式退出 Tauri 后运行 `.\runtime\python.exe .\legacy_qt_main.py`。可增加 `start-legacy-qt.bat` 作为同一命令的便利入口，但权威回退语义不依赖脚本。
+- 这项切换成本只在 `refactor/tauri-runtime-v2` 开发分支内接受：开发者需要显式选择 legacy Qt，两个入口不能并行；`dev`、现有正式安装包和发布入口在 Phase 3 门禁前不改变。
+- 数据安全责任由当前持锁的桌面生命周期根承担。任一入口未获得 `Local\\SakuraDesktop.SharedUserData.v1` 时，必须在所有 `data/`、日志、配置、migration 和 Core 启动前退出；用户不承担删锁、合并数据或判断 stale PID 的责任。
+- legacy Qt 回退适用于 v2 Shell、窗口、Core 启动或基础聊天尚未满足门禁时恢复当前产品能力，不用于并发运行或绕过未来 schema/损坏数据的 diagnostics/read-only 状态。
+- WP-1A-04 的独立代码回退是整体 revert 默认入口和双方 named mutex 接入，恢复当前 Qt 入口；WP-3-06 负责证明切到 v2、退出并回到 legacy Qt 后共享数据仍兼容。
+
 ### Phase 0：冻结与基线
 
 - [x] 固定旧迁移取证源为 `feat/tauri-assistant-migration` / `190dfafd24f5c5226bff8b4347837b6e45d9a331`，不依赖本地 stash。
 - [x] 从最新 `dev` 创建 `refactor/tauri-runtime-v2`。
 - [x] 记录 Qt 当前功能、已知问题和启动基线。
 - [x] 建立 Qt 与 v2 共用的真实冒烟场景清单。
-- [ ] 记录现有角色、配置、历史、Memory 和用户目录 schema/路径基线。
-- [ ] 定义 Qt/Tauri 共用应用锁和 Qt → Tauri → Qt 数据兼容门禁。
-- [ ] 完成 #140 候选复用文件清单。
+- [x] 记录现有角色、配置、历史、Memory 和用户目录 schema/路径基线。
+- [x] 定义 Qt/Tauri 共用应用锁和 Qt → Tauri → Qt 数据兼容门禁。
+- [x] 完成 #140 候选复用文件清单。
+- [x] 完成架构交叉审查、决策缺口收口和 WP-1A-01 激活准备。
 
 退出条件：`WP-0-01` 至 `WP-0-04` 全部 `accepted`；主计划通过最终审查；三份 ADR 经审查认可为 `Proposed` 技术基线；Qt 基线、共享数据基线、真实冒烟清单和选择性复用清单均已记录。未满足前不开始 Phase 1A 实现。
 
@@ -364,9 +403,9 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - [ ] 验证中文 IME、焦点恢复、Alt+Tab、显示/隐藏和窗口展开不闪烁。
 - [ ] 保存 Qt 入口为 `legacy_qt_main.py`，增加显式 Qt 启动脚本。
 - [ ] 文档明确 legacy Qt 回退命令，并让 Qt/Tauri 入口竞争同一应用锁。
-- [ ] 按已确认的 dogfooding 策略，只将当前 v2 开发分支的默认启动入口切到 Tauri，不改变现有正式安装包入口。
+- [ ] 仅在 WP-1A-04 共享锁和 legacy Qt 回退门禁通过后，按已确认的 dogfooding 策略把当前 v2 开发分支默认启动入口切到 Tauri；不改变现有正式安装包入口。
 
-退出条件：单透明窗口方案在目标 Windows 环境可行；即使没有 Python，Shell 仍可见、可诊断、可退出。
+退出条件：首选单透明窗口方案在目标 Windows 环境通过技术门；若失败则按 3.3 停止并更新架构，不得继续入口切换。即使没有 Python，Shell 仍可见、可诊断、可退出。
 
 ### Phase 1B：进程监管与 Fake Core
 
@@ -499,8 +538,8 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 1. Tauri 是唯一桌面生命周期根，Python 是无 Qt Assistant Core。
 2. Runtime v2 首轮只实现 Assistant；Agent 延后为可选插件。
 3. Python 通过 Adapter/Facade 复用现有领域服务，不重写 Assistant。
-4. 主桌宠采用单透明窗口和简单立绘表现。
-5. v2 分支在 Phase 1A 后默认启动 Tauri，Qt 保留显式回退。
+4. 主桌宠维持单一组合体验；一个原生透明窗口是 Phase 1A 首选技术方案，失败时按 3.3 停止并重新批准替代架构。
+5. v2 分支只在 WP-1A-04 accepted 后默认启动 Tauri，Qt 保留 `.\runtime\python.exe .\legacy_qt_main.py` 显式回退。
 6. Core 崩溃不能带走 UI，Tauri 拥有进程树最终回收权。
 7. 第一版 IPC 使用 stdin/stdout framed transport，具体协议实现由 ADR 约束并允许技术验证后调整。
 8. Phase 1 不绑定前端框架重构。
@@ -538,9 +577,9 @@ Proposed
 -> Superseded
 ```
 
-- ADR-0001 在 Phase 1B 的 Windows 进程树与 Fake Core 门禁通过后进入 Accepted。
-- ADR-0002 在 Phase 1C/2 的协议、并发、阻塞隔离和背压门禁通过后进入 Accepted。
-- ADR-0003 在 Phase 3 的 Qt → Tauri → Qt 数据兼容门禁通过后进入 Accepted。
+- ADR-0001 在 Phase 1B 的 Windows 进程树与 Fake Core 门禁通过后进入 `Technically Validated`，经实现审查后才进入 `Accepted`。
+- ADR-0002 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后进入 `Technically Validated`，在 Phase 2 并发、阻塞隔离、取消和背压门禁通过后进入 `Accepted`。
+- ADR-0003 在 Phase 1A 共用 named mutex 双入口/崩溃门禁通过后进入 `Technically Validated`，在 Phase 3 Qt → Tauri → Qt 数据兼容门禁通过后进入 `Accepted`。
 - 技术验证失败时更新或替代 ADR，不为了符合文档而强行保留失败方案。
 
 ## 14. 最终审查重点
