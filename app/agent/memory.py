@@ -33,6 +33,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _prepare_memory_background_imports() -> None:
+    """在线程启动前完成 mem0/OpenAI 共享的 anyio 导入。
+
+    Memory preload 与 MCP deferred startup 会并行触发 OpenAI/anyio 依赖；让
+    首次 anyio 初始化发生在 UI 主线程，避免两个后台线程观察到 partially
+    initialized module 并把启动链卡在 import lock 上。
+    """
+    import anyio  # noqa: F401
+
+
 MEM0_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "mem0"
 DEFAULT_MEMORY_SCOPE = "sakura"
 DEFAULT_COLLECTION_NAME = "sakura_memories"
@@ -370,6 +381,7 @@ class MemoryStore:
                 return
             if self._load_error:
                 self._load_error = ""
+            _prepare_memory_background_imports()
             status_event = self._start_loading_locked()
         self._notify_status_event(status_event)
 
@@ -432,6 +444,7 @@ class MemoryStore:
                 "reloading",
                 "长期记忆系统正在根据新的 API 设置重载。",
             )
+        _prepare_memory_background_imports()
         self._notify_status_event(status_event)
 
         def reload() -> None:

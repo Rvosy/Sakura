@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import threading
 import time
@@ -202,6 +203,25 @@ def test_resource_stop_timeout_lingers_and_unregisters() -> None:
     assert thread.deleted is True
 
 
+def test_wait_for_lingering_qthreads_drains_after_event_loop_exit() -> None:
+    _qt_app_or_skip()
+    mgr = ResourceManager()
+    thread = _ThreadStub(running=True, wait_result=False)
+    worker = _WorkerStub()
+    resource = QtWorkerResource(mgr, thread, worker, label="deferred_startup_thread")
+    mgr._register(resource)
+
+    assert resource.stop(timeout_ms=1) is False
+    thread._wait_result = True
+
+    assert mgr.wait_for_lingering_qthreads(timeout_ms=15_000) is True
+    assert thread.waits[0] == 1
+    assert 0 < thread.waits[1] <= 15_000
+    assert mgr._lingering == []
+    assert thread.deleted is True
+    assert worker.deleted is True
+
+
 def test_null_owner_attrs_skips_reassigned_worker() -> None:
     _qt_app_or_skip()
     mgr = ResourceManager()
@@ -294,6 +314,39 @@ def test_async_loop_resource_submit_stop_and_restart() -> None:
     assert isinstance(res, AsyncLoopResource)
     res.start(name="mcp-test-loop")
     assert res.submit(asyncio.sleep(0, result="ok"), timeout=1) == "ok"
+
+    assert res.stop(timeout_ms=1000) is True
+
+
+def test_async_loop_resource_rejects_and_closes_coroutine_while_stopping() -> None:
+    registry = ResourceRegistry()
+    res = registry.track_async_loop(label="stopping-test")
+    res.state = ResourceState.STOPPING
+    coro = asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="尚未运行"):
+        res.submit(coro, timeout=1)
+
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+
+
+def test_async_loop_cleanup_tolerates_repeated_stop_callback() -> None:
+    registry = ResourceRegistry()
+    res = registry.track_async_loop(label="repeated-stop-test")
+    res.start(name="repeated-stop-loop")
+
+    async def create_pending_task() -> None:
+        loop = asyncio.get_running_loop()
+
+        async def pending() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                loop.stop()
+
+        asyncio.create_task(pending())
+
+    res.submit(create_pending_task(), timeout=1)
 
     assert res.stop(timeout_ms=1000) is True
 

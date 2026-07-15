@@ -48,7 +48,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 
 | Work Package | 主要结果 | 依赖 | 当前状态 |
 |---|---|---|---|
-| WP-0-01 | legacy Qt、工具链和验收环境基线 | 无 | stabilizing |
+| WP-0-01 | legacy Qt、工具链和验收环境基线 | 无 | accepted |
 | WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | planned |
 | WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | planned |
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | planned |
@@ -89,11 +89,12 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 ```text
 状态：active
 开始日期：2026-07-15
-允许目录：docs/runtime-v2/baselines/；仅允许在本文更新 WP-0-01 状态与验收记录
-明确禁止目录：main.py；app/；desktop/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；用户数据 schema；启动入口；旧迁移分支代码
+初始允许目录：docs/runtime-v2/baselines/；仅允许在本文更新 WP-0-01 状态与验收记录
+稳定化例外：门禁确认 legacy Qt 退出/启动 P1 后，允许窄改 main.py、app/core/resource_manager.py、app/agent/memory.py、tests/unit/test_resource_manager.py、tests/unit/test_memory_store_resources.py；不得改变 Assistant 业务语义
+明确禁止目录：除上述例外外的 app/；desktop/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；用户数据 schema；旧迁移分支代码
 验收环境：当前 Windows 开发机；项目 .\runtime\python.exe；本机已存在的 Rust/Cargo、Node/npm、Tauri CLI、WebView2；不安装新依赖；物理 UI 能力以实际可用项为准
 关联 ADR：ADR-0001（进程退出与残留基线输入）；ADR-0003（legacy Qt 回退与数据安全边界输入）
-计划提交：docs(runtime): 记录 legacy Qt 与工具链基线
+计划提交：test(runtime): 收口 legacy Qt 基线验收
 ```
 
 稳定化记录：
@@ -108,6 +109,20 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 关联提交：未提交；数据隔离与重复执行门禁未满足
 ```
 
+验收记录：
+
+```text
+状态：accepted
+自动测试：提交态隔离源码树完整 pytest；1463 collected，1460 passed，3 skipped，52.93s，退出码 0
+真实应用验收：10/10 PetWindow visible；request_quit=True；main/进程退出码 0；stderr 为空；无记录后代进程残留
+启动代理：min 1066.849ms；median 1099.539ms；mean 1145.304ms；p95/max 1537.577ms
+数据门禁：accepted 批次前后真实 data/ 全文件相对路径、长度、UTC mtime、SHA-256 清单完全一致
+稳定化修复：关闭后等待 lingering QThread；asyncio loop 幂等 stop 与 pending task 清理；Memory preload 在启动后台线程前完成 anyio 首次导入
+已知限制：Tauri CLI 缺失；单屏/100% DPI；多 DPI、IME、音频、干净机和真实业务交互仍受限；p95 高于 1 秒目标
+回退步骤：整体 revert 本 WP 提交；不自动改写或删除真实 data/ 中既有日志、配置或运行事件
+关联提交：本 WP accepted 提交
+```
+
 主要结果：形成可以重复执行的迁移前基线，后续任何“等价”“改善”或“没有回归”都有可比较证据。
 
 允许范围：
@@ -115,6 +130,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 - Runtime v2 基线文档。
 - 只读诊断脚本和测试辅助代码。
 - 不改变生产行为的基线测量工具。
+- 仅在稳定化门禁确认 P1 后，为满足本 WP 退出条件所需的最小 legacy Qt 启动/退出修复和回归测试。
 
 必须记录：
 
@@ -128,7 +144,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 明确非目标：
 
 - 不创建 Runtime v2 Tauri 工程。
-- 不修改当前 Qt 启动行为。
+- 不改变当前 Qt 产品功能、Assistant 业务语义或用户数据格式。
 - 不修复与基线记录无关的既有缺陷。
 
 退出证据：
@@ -137,7 +153,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 - 自动测试与人工验收分别标记为通过、失败或受限，不以自动测试替代真实 UI 结论。
 - 启动性能指标拥有明确测量方法，不只记录单次观察值。
 
-回退：只包含文档和测试辅助产物，可独立 revert。
+回退：整体 revert 本 WP 的文档、测试辅助、回归测试和三处窄修复；不得改写真实用户数据。
 
 ### WP-0-02：用户数据与共享应用锁契约基线
 
@@ -946,6 +962,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前不激活任何生产实现 Work Package。首先执行 `WP-0-01`，并保持 WP-1A-01 及后续全部为 `planned`。
+当前不激活任何生产实现 Work Package。`WP-0-01` 已 accepted；下一项是 `WP-0-02` 用户数据与共享应用锁契约基线，WP-1A-01 及后续继续保持 `planned`。
 
 只有 WP-0-01 至 WP-0-04 全部 `accepted`，主计划完成最终审查，才允许将 WP-1A-01 更新为 `active`。

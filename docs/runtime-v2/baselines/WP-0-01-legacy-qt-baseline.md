@@ -8,25 +8,29 @@
 >
 > 取证起点：`f31d60b38691496900c6d5c53198f0274a384d54`
 >
-> 最终状态：`stabilizing`
+> 最终状态：`accepted`
 >
 > 关联 ADR：ADR-0001、ADR-0003
 >
-> 计划提交：`docs(runtime): 记录 legacy Qt 与工具链基线`
+> 计划提交：`test(runtime): 收口 legacy Qt 基线验收`
 
 ## 1. 范围、非目标和证据边界
 
-本 Work Package 只记录迁移前的 legacy Qt、工具链和本机验收能力，不创建 Runtime v2 Tauri 工程，不修改当前启动入口，不修复既有问题。
+本 Work Package 记录迁移前的 legacy Qt、工具链和本机验收能力，不创建 Runtime v2 Tauri 工程。稳定化门禁确认了三处与退出条件直接相关的 P1，因此按 Bug Budget 只修复 legacy Qt 的 QThread、asyncio loop 和 Memory 首次导入竞态，不改变 Assistant 业务语义。
 
 允许写入：
 
 - `docs/runtime-v2/baselines/WP-0-01-legacy-qt-baseline.md`
+- `docs/runtime-v2/baselines/run_wp_0_01_baseline.ps1`
+- `docs/runtime-v2/baselines/wp_0_01_qt_smoke.py`
 - `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 中 WP-0-01 的状态和验收记录
+- `main.py`、`app/core/resource_manager.py`、`app/agent/memory.py` 中仅与门禁确认 P1 直接相关的关闭/启动稳定化
+- `tests/unit/test_resource_manager.py`、`tests/unit/test_memory_store_resources.py` 中对应回归测试
 
 明确禁止修改：
 
-- `main.py`
-- `app/`、`desktop/`、`plugins/` 生产代码
+- 除上述窄修复外的 `main.py`、`app/` 生产代码
+- `desktop/`、`plugins/` 生产代码
 - `data/` schema、启动入口、角色资源
 - `third_party/`、`tools/mcp/` 和旧迁移分支代码
 
@@ -76,7 +80,7 @@
    - 通过 `ResourceManager.stop_all()` 停止已登记资源；
    - 关闭 TTS Provider、MCP Provider、插件和渲染器等外部服务。
 5. `QApplication.aboutToQuit` 再次触发幂等的 `close_external_tools()`，并释放 `SingleInstanceGuard`。
-6. `app.exec()` 返回，`main()` 将退出码交还启动进程。
+6. `app.exec()` 返回后，`main()` 最多等待 15 秒让已转入 lingering 的 QThread 自然结束，再将退出码交还启动进程；UI 关闭槽仍只做原有 1 秒有限等待。
 
 关键代码入口：
 
@@ -125,7 +129,7 @@
 | 项目 | 版本或状态 | 取证方式 |
 |---|---|---|
 | Windows | Windows 10 Pro 20H2，build `19042.928`，64 位 | Windows 注册表 `CurrentVersion` |
-| Python | CPython `3.12.8`，64 位，`F:\Projects\Sakura\runtime\python.exe` | `runtime/python.exe -c ...` |
+| Python | CPython `3.12.8`，64 位，`D:\Project\sakura\runtime\python.exe` | `runtime/python.exe -c ...` |
 | PySide6 | `6.11.1` | Python import |
 | Qt runtime / compiled | `6.11.1` / `6.11.1` | `qVersion()` 与 pytest-qt 会话头 |
 | pytest | `9.1.1` | 完整测试会话头 |
@@ -151,7 +155,7 @@
 | CPU | AMD Ryzen 7 5700G，8 核 16 线程 |
 | 内存 | 34,142,007,296 bytes，约 31.8 GiB |
 | GPU | NVIDIA GeForce GT 730；同时存在 OrayIddDriver Device |
-| 仓库磁盘 | ZHITAI Ti600 1TB，NVMe，GPT；仓库位于 `F:` |
+| 仓库磁盘 | ZHITAI Ti600 1TB，NVMe，GPT；accepted 批次仓库位于 `D:` |
 | 会话 | Windows console session |
 | 显示器 | 1 块 `PHL 275E1`，2560×1440，可用区 2560×1400，约 59.951 Hz |
 | DPI | device pixel ratio 1.0，logical DPI 96×96，即 100% |
@@ -167,37 +171,34 @@
 | 中文 IME | 系统文化为 `zh-CN`，键盘布局 `00000804` | 环境存在；候选框位置、组合输入和焦点恢复未物理验收，受限 |
 | 音频设备 | `PHL 275E1 (NVIDIA High Definition Audio)` 和 `Realtek Digital Output` 状态 OK | 设备存在；未做可听播放、切换或断开故障验收，受限 |
 | 干净机 | 当前机器包含源码、Runtime、构建产物、开发配置和缓存 | 不具备，受限 |
-| 多角色切换 | 当前验收数据只发现 1 个角色 | 受限 |
+| 多角色切换 | 当前存在 Sakura、N.A.V.I 两个角色包 | 具备资源条件；本轮未物理操作切换 UI，受限 |
 | 真实 Provider | 已配置聊天 Provider | 为避免外部请求、费用和用户历史写入，本轮未调用，受限 |
-| TTS | 当前配置为 disabled/provider none | 合成和播放受限 |
+| TTS | 当前真实配置启用 GPT-SoVITS；隔离副本不复制约 16 GiB 的外部 TTS runtime，因此启动时安全降级为 Null Provider | 未启动真实 TTS 服务，合成和播放受限 |
 | WebView2 Settings/Studio | WebView2 和已有二进制存在 | 未做物理交互，受限 |
 
 ## 6. 自动测试基线
 
 ### 6.1 要求的完整测试
 
-命令：
+accepted 门禁命令：
 
 ```powershell
-.\runtime\python.exe -m pytest
+.\docs\runtime-v2\baselines\run_wp_0_01_baseline.ps1
 ```
 
-结果：
+脚本在 `temp/runtime-v2-wp-0-01/<run-id>/workspace` 创建完整独立源码树，显式把该源码树放在 `runtime/python.exe` 的固定 `python312._pth` 项之前，并使用全新 `.pytest-basetemp`。最终结果：
 
 ```text
-collected 1459 items
-1438 passed
-6 failed
+collected 1463 items
+1460 passed
 3 skipped
-12 errors
-pytest reported: 49.60s
-process wall time: 51.5s
-exit code: 1
+pytest reported: 52.93s
+exit code: 0
 ```
 
 三个 skipped 均为 `tests/unit/test_tts_bundle.py` 中只适用于 macOS/bash 路径的 source installer 测试。
 
-### 6.2 已知失败和错误
+### 6.2 初始失败的归因与关闭
 
 | 分组 | 数量 | 事实与复现 |
 |---|---:|---|
@@ -221,17 +222,19 @@ backchannel 隔离诊断：
 
 结果：`6 passed in 0.32s`。
 
-本轮只执行一次完整测试和一次失败集合复跑，不能据此声称不存在不稳定测试。
+最终门禁在正常 Windows 权限下、全新隔离 basetemp 中执行，以上 18 项全部通过；没有删除或修改仓库原有 `.pytest-basetemp`。因此它们被归因为旧固定 basetemp 工件和受限执行环境，不再是 accepted 门禁失败。
 
 ### 6.3 测试数据副作用
 
-完整 pytest 后观察到真实 `data/config/` 中 `api.yaml`、`characters.yaml`、`mcp.yaml`、`plugins.yaml`、`system_config.yaml` 的修改时间统一刷新到测试运行时刻。对有既有 `.bak` 的三份文件做 SHA-256 比较：
+初始完整 pytest 后观察到真实 `data/config/` 中 `api.yaml`、`characters.yaml`、`mcp.yaml`、`plugins.yaml`、`system_config.yaml` 的修改时间统一刷新到测试运行时刻。对有既有 `.bak` 的三份文件做 SHA-256 比较：
 
 - `api.yaml` 与 `api.yaml.bak` 相同。
 - `characters.yaml` 与 `characters.yaml.bak` 相同。
 - `system_config.yaml` 与 `system_config.yaml.bak` 相同。
 
-这能证明当前三份内容与既有备份一致，不能证明 `mcp.yaml`、`plugins.yaml` 或测试前所有用户状态完全未变。该真实数据未隔离写入风险是 WP-0-01 保持 `stabilizing` 的原因之一。
+稳定化期间第一次“独立工作目录”诊断仍被 `runtime/python312._pth` 中固定的仓库父目录穿透，向真实 `data/logs/sakura-runtime.log` 追加了测试日志；该历史追加没有自动回写或删除。
+
+最终脚本同时记录真实 `data/` 所有文件的相对路径、长度、UTC 修改时间和 SHA-256。accepted 批次前后清单逐项相同，配置、日志、运行事件、历史、Memory、插件数据和 TTS 数据均未变化。
 
 ## 7. 冷启动可见时间基线
 
@@ -250,16 +253,18 @@ visible_ms = t_visible - t0
 
 ### 7.2 数据隔离和有界执行方法
 
-为避免直接迁移或改写真实用户配置，测量过程最初采用：
+accepted 测量使用：
 
-1. 在系统临时目录复制 `main.py`、`VERSION` 和当前 `data/`。
-2. 对 `app/`、`assets/`、`characters/`、`plugins/`、`tools/` 建立指向仓库的目录联接，角色和生产代码按只读用途使用。
-3. 每个样本重新复制同一份预运行 `data/`，创建全新的 Python 进程。
-4. 只在进程内临时包裹 `QApplication.exec`：轮询真实 `PetWindow` 可见状态，可见后 1 秒调用 `request_quit()`。
-5. 子进程可见等待上限 15 秒，父进程总等待上限 20 秒；超时则只强制回收该次临时进程树。
-6. 每次退出后按临时目录命令行和进程名检查 Python、Node、浏览器、Settings、Studio 残留。
+1. 用 `git archive HEAD` 创建独立源码树，并覆盖当前工作区内待验收的已跟踪改动。
+2. 复制当前角色包和必要的 `data/` 快照；不复制日志、诊断、缓存和 TTS 整合包大文件。
+3. pytest 启动器在导入 pytest 前把隔离源码树插入 `sys.path[0]`，覆盖 bundled Python `python312._pth` 中固定的真实仓库路径。
+4. 每个 GUI 样本在同一隔离源码树中创建全新的 Python 进程。
+5. 只在进程内临时包裹 `PetWindow.show`：轮询真实顶层窗口可见状态，可见后 1 秒调用 `request_quit()`。
+6. 子进程可见等待上限 15 秒，父进程总等待上限 20 秒；超时只终止该次根进程及已记录后代 PID。
+7. 每次退出后用 `psutil` 持续记录该样本的后代进程，并核查是否仍有存活 PID；不使用按进程名全局清理。
+8. 整批执行前后对真实 `data/` 建立内容和修改时间清单，任何差异都使脚本失败。
 
-重要限制：`app/core/runtime_log.py` 在导入时使用源码真实路径固定日志目录，目录联接会解析回仓库；同时本轮 10 次退出向真实角色运行事件文件追加了 10 条 `app.closed`。因此该方法没有实现完整数据隔离，不能继续作为 accepted 基线工具；后续重复执行前必须在独立复制的源码树或等价的完整根目录隔离中进行。本 WP 不修复该问题。
+脚本路径为 `docs/runtime-v2/baselines/run_wp_0_01_baseline.ps1`；GUI 子进程驱动位于 `docs/runtime-v2/baselines/wp_0_01_qt_smoke.py`。最终 accepted 批次的真实 `data/` 前后清单相同。
 
 ### 7.3 采样和统计
 
@@ -271,29 +276,29 @@ visible_ms = t_visible - t0
 原始样本，单位 ms：
 
 ```text
-1214.842
-1225.943
-1200.438
-1186.895
-1167.793
-1166.904
-1159.447
-1236.437
-1170.235
-1235.003
+1537.577
+1102.601
+1164.903
+1066.849
+1069.251
+1073.402
+1117.099
+1094.203
+1130.674
+1096.477
 ```
 
 统计：
 
 | 指标 | 数值 |
 |---|---:|
-| min | 1159.447 ms |
-| median | 1193.667 ms |
-| mean | 1196.394 ms |
-| p95，nearest-rank | 1236.437 ms |
-| max | 1236.437 ms |
+| min | 1066.849 ms |
+| median | 1099.539 ms |
+| mean | 1145.304 ms |
+| p95，nearest-rank | 1537.577 ms |
+| max | 1537.577 ms |
 
-主计划参考机器 p95 目标为不高于 1 秒；当前新进程代理 p95 为 1.236 秒，存在约 236 ms 的基线差距。本 WP 只记录，不优化。
+主计划参考机器 p95 目标为不高于 1 秒；当前独立源码树新进程代理 p95 为 1.538 秒，存在约 538 ms 的基线差距。本 WP 不把性能差距误判为功能 P1，留作后续性能工作。
 
 ## 8. Qt 真实冒烟清单
 
@@ -311,13 +316,13 @@ visible_ms = t_visible - t0
 | 首次设置完整流程 | 受限 | 当前数据已配置；物理表单输入、保存和取消未执行 |
 | 真实聊天 | 受限 | 未调用真实 Provider，避免外部请求、费用和用户历史写入 |
 | 聊天取消 | 受限 | 没有启动真实聊天请求 |
-| 角色切换 | 受限 | 当前只有 1 个角色，无法做真实 A/B 切换 |
+| 角色切换 | 受限 | 隔离副本包含两个真实角色包，但未做物理 A/B 切换 |
 | 历史窗口查看/清空 | 受限 | 未进行物理点击；清空会改变用户数据 |
 | Memory 读写/整理 | 受限 | 未进行真实对话和 Memory 后端验收 |
 | Tools 确认和执行 | 受限 | 未选择可证明无副作用的真实工具动作 |
 | MCP 工具调用 | 受限 | 只验证服务器生命周期，没有执行真实 MCP tool call |
 | 插件功能交互 | 受限 | 只观察加载/关闭，没有操作移动端或浏览器插件 |
-| TTS 合成/播放/取消 | 受限 | 当前 TTS disabled/provider none；未做可听验收 |
+| TTS 合成/播放/取消 | 受限 | 隔离副本不复制外部 TTS runtime，Provider 安全降级；未启动服务或做可听验收 |
 | 手动截图 | 受限 | 为避免采集真实桌面内容，未打开选区和保存链路 |
 | 主动互动/提醒/自动观察 | 受限 | 没有等待触发窗口，也没有授权桌面观察 |
 | 设置窗口 | 受限 | 已有 Tauri Settings 二进制和 WebView2，但未做物理交互 |
@@ -331,29 +336,27 @@ visible_ms = t_visible - t0
 
 ## 9. 已知问题、风险和阻塞
 
-1. 完整 pytest 非绿：`6 failed, 12 errors`，退出码 1。
-2. 仓库固定 pytest basetemp 中存在悬空符号链接，阻断 6 个 backchannel 测试；改变 basetemp 后用例本身通过。
-3. 当前账号无法访问 `D:\` 根目录，两个测试文件把 `Path("D:/").exists()` 当作无异常布尔探测，导致 12 项在 setup/helper 阶段失败。
-4. Tauri CLI 缺失，无法在本机直接执行 `cargo tauri`；本 WP 按要求不安装依赖。
-5. 当前只有单屏、100% DPI、单角色；多屏、目标 DPI 和角色切换均无法验收。
-6. TTS 当前关闭；音频设备存在不等于播放链已通过。
-7. 新进程启动代理 p95 约 1.236 秒，高于主计划 1 秒目标。
-8. 测试和 GUI 取证不能可靠隔离真实运行日志/事件数据：
-   - 完整 pytest 刷新了真实配置文件修改时间；
-   - 10 次 GUI 冒烟向真实运行事件文件追加了 10 条 `app.closed`；
-   - 全局 runtime log 的路径在模块导入时按源码路径固定，目录联接隔离无效。
-9. 没有确认 legacy Qt 产品链路的 P0/P1 崩溃、死锁或残留进程；但第 8 项是真实数据污染风险，依据 WP 门禁必须保持 `stabilizing`。
+1. Tauri CLI 缺失，无法在本机直接执行 `cargo tauri`；本 WP 按要求不安装依赖。
+2. 当前只有单屏、100% DPI；多屏、目标 DPI、中文 IME 物理输入和干净 Windows 无法验收。
+3. accepted 隔离门禁没有启动真实 TTS runtime；音频设备存在不等于合成和播放链已通过。
+4. 独立源码树新进程启动代理 p95 为 1.538 秒，高于主计划 1 秒目标。
+5. 初始取证和一次稳定化诊断曾写入真实配置修改时间、runtime log 和运行事件；由于无法证明安全回退边界，这些历史追加没有自动删除。最终 accepted 脚本已证明当前重复执行不再产生真实数据变化。
+6. 稳定化门禁曾确认三处 P1，均已添加回归覆盖并在最终 10 次真实冒烟中未复现：
+   - 延迟启动 QThread 超过 1 秒关闭等待后，解释器销毁运行中 wrapper 导致 `0xC0000409`。
+   - MCP loop 重复 stop 导致 pending task 清理中断和未等待协程警告。
+   - Memory preload 与 MCP 并发首次导入 anyio，导致 partially initialized module 和启动超时。
+7. accepted 批次没有确认新的 P0/P1、死锁或残留进程；以上人工受限项继续作为后续阶段验收输入，不阻塞 WP-0-01。
 
 ## 10. 重复执行方式
 
 ### 10.1 自动测试
 
 ```powershell
-cd F:\Projects\Sakura
-.\runtime\python.exe -m pytest
+cd D:\Project\sakura
+.\docs\runtime-v2\baselines\run_wp_0_01_baseline.ps1
 ```
 
-重复执行前先只读检查 `.pytest-basetemp`。不要为了得到绿色结果而删除既有工件；若需要判断 backchannel 用例本身，另用全新的系统临时 `--basetemp`，并把结果明确标为诊断结果而非完整门禁结果。
+脚本会创建唯一隔离目录，不删除或复用仓库原有 `.pytest-basetemp`，并在完成后删除包含配置快照和角色资源的工作副本，仅保留忽略目录中的结果日志。任一 pytest、GUI、残留进程、数据清单或清理步骤失败都会返回非零退出码。
 
 ### 10.2 工具链
 
@@ -371,22 +374,17 @@ WebView2 版本从 Windows Uninstall 注册表中的 `Microsoft Edge WebView2 Ru
 
 ### 10.3 GUI/启动
 
-当前目录联接方法已经证明不能隔离日志和运行事件，禁止原样重复。安全重复必须满足以下之一：
-
-- 在独立完整源码副本中运行，确保 `app/core/runtime_log.py` 的 `__file__` 也位于副本内；或
-- 先有专门的、已审查的数据根覆盖机制，并证明日志、运行事件、配置、历史、Memory、MCP、插件和 TTS 都写向隔离根。
-
-重复时仍需保留：新进程计时、15 秒可见超时、20 秒父级硬上限、可见后 `request_quit()`、退出后按 PID/命令行核查 Sakura/Python/MCP/TTS/浏览器残留。不得用 `taskkill /IM python.exe` 一类全局清理方式影响其他进程。
+GUI/启动与完整 pytest 由同一脚本执行。重复时保留：新进程计时、15 秒可见超时、20 秒父级硬上限、可见后 `request_quit()`、后代 PID 跟踪、stderr 检查和真实 `data/` 前后清单。不得恢复旧目录联接方法，也不得用 `taskkill /IM python.exe` 一类全局清理方式影响其他进程。
 
 ## 11. 独立回退
 
-本 Work Package 没有生产代码或 schema 变更。若形成提交，独立回退方式是：
+本 Work Package 没有 schema、角色资源或 Runtime v2 实现变更；包含 legacy Qt 启动/退出 P1 的窄修复。独立回退方式是：
 
 ```powershell
 git revert <WP-0-01-commit>
 ```
 
-回退只应删除本基线文档并恢复 Work Package 状态记录，不触碰 `main.py`、`app/`、`desktop/`、角色资源或用户数据。
+回退应整体撤销基线脚本、状态记录、对应测试以及 `main.py`、`app/core/resource_manager.py`、`app/agent/memory.py` 的窄修复；不得触碰 `data/`、角色资源、`desktop/` 或其他生产模块。
 
 本轮观察到的真实日志、配置时间戳和 `app.closed` 追加没有在 WP-0-01 中自动回写或删除，因为缺少可证明不会覆盖用户同期数据的安全回退边界。该残留必须作为已知风险保留事实记录。
 
@@ -396,10 +394,10 @@ git revert <WP-0-01-commit>
 |---|---|
 | 代码和测试入口已记录 | 满足 |
 | 工具链和验收环境已记录 | 满足；Tauri CLI 明确为缺失 |
-| 完整 pytest 已执行并记录数量/耗时 | 满足；结果非绿 |
+| 完整 pytest 已执行并记录数量/耗时 | 满足；1460 passed，3 skipped，退出码 0 |
 | Qt 启动、可见、正常退出和残留进程有真实证据 | 满足 |
 | 人工受限项明确 | 满足 |
 | 冷启动定义、参考机器、样本和统计明确 | 满足 |
-| 重复执行方法安全 | 不满足；已使用的联接隔离方法会写真实日志/运行事件 |
-| 数据损坏/污染风险为零 | 不满足 |
-| 可标记 accepted | 否；保持 `stabilizing` |
+| 重复执行方法安全 | 满足；完整独立源码树、唯一 basetemp、后代 PID 跟踪和有界清理 |
+| 数据损坏/污染风险为零 | 满足；accepted 批次真实 `data/` 前后清单完全一致 |
+| 可标记 accepted | 是；WP-0-01 更新为 `accepted` |

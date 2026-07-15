@@ -11,6 +11,7 @@ lingering 线程与 Shiboken wrapper 保留这两个 native 安全机制。
 from __future__ import annotations
 
 import asyncio
+import inspect
 import subprocess
 import threading
 import time
@@ -705,8 +706,13 @@ class AsyncLoopResource:
     def submit(self, coro: Any, *, timeout: float) -> Any:
         loop = self.loop
         if loop is None or self.state in (ResourceState.STOPPING, ResourceState.STOPPED):
+            _close_awaitable_quietly(coro)
             raise RuntimeError("asyncio 事件循环尚未运行。")
-        future: Future[Any] = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            future: Future[Any] = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            _close_awaitable_quietly(coro)
+            raise
         try:
             return future.result(timeout=timeout)
         except TimeoutError as exc:
@@ -747,17 +753,19 @@ class AsyncLoopResource:
         with self._lock:
             if self.state is ResourceState.STOPPED:
                 return True
+            already_stopping = self.state is ResourceState.STOPPING
             self.state = ResourceState.STOPPING
             loop = self._loop
             thread = self._thread
         if loop is None or thread is None:
             self._finalize_stop()
             return True
-        try:
-            loop.call_soon_threadsafe(loop.stop)
-        except RuntimeError:
-            self._finalize_stop()
-            return True
+        if not already_stopping:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                self._finalize_stop()
+                return True
         if thread is threading.current_thread():
             self._manager._keep_lingering_thread(thread, self.label or thread.name)
             self._manager._unregister(self)
@@ -788,7 +796,10 @@ class AsyncLoopResource:
             for task in pending:
                 task.cancel()
             if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                cleanup = asyncio.gather(*pending, return_exceptions=True)
+                cleanup.add_done_callback(lambda _future: loop.stop())
+                while not cleanup.done():
+                    loop.run_forever()
             loop.close()
             with self._lock:
                 self._loop = None
@@ -801,6 +812,15 @@ class AsyncLoopResource:
             self._loop = None
             self.state = ResourceState.STOPPED
         self._manager._unregister(self)
+
+
+def _close_awaitable_quietly(value: Any) -> None:
+    if not inspect.iscoroutine(value):
+        return
+    try:
+        value.close()
+    except RuntimeError:
+        pass
 
 
 class ResourceRegistry:
@@ -1115,6 +1135,30 @@ class ResourceManager(QObject):
     def stop_all(self, timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS) -> None:
         """停止所有受管资源；按 shutdown_order 从高到低执行。"""
         self._registry.stop_all(timeout_ms)
+
+    def wait_for_lingering_qthreads(self, timeout_ms: int) -> bool:
+        """在应用事件循环退出后等待超时 QThread 自然结束。
+
+        ``stop_all`` 仍只做有限等待，避免关闭槽长时间阻塞 UI；调用方可在
+        ``QApplication.exec`` 返回后使用本方法保活 manager/thread wrapper，
+        防止解释器清理运行中 QThread 时触发 native abort。
+        """
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        while self._lingering:
+            thread, _worker = self._lingering[0]
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            try:
+                if thread.isRunning() and (remaining_ms <= 0 or not thread.wait(remaining_ms)):
+                    log_event(
+                        "ResourceManager",
+                        "应用退出前仍有后台线程未结束",
+                        {"remaining": len(self._lingering), "wait_ms": timeout_ms},
+                    )
+                    return False
+            except RuntimeError:
+                pass
+            self._release_lingering(thread)
+        return True
 
     def _register(
         self,

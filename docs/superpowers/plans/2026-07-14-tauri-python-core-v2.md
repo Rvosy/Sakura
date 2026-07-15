@@ -346,8 +346,8 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 
 - [x] 固定旧迁移取证源为 `feat/tauri-assistant-migration` / `190dfafd24f5c5226bff8b4347837b6e45d9a331`，不依赖本地 stash。
 - [x] 从最新 `dev` 创建 `refactor/tauri-runtime-v2`。
-- [ ] 记录 Qt 当前功能、已知问题和启动基线。
-- [ ] 建立 Qt 与 v2 共用的真实冒烟场景清单。
+- [x] 记录 Qt 当前功能、已知问题和启动基线。
+- [x] 建立 Qt 与 v2 共用的真实冒烟场景清单。
 - [ ] 记录现有角色、配置、历史、Memory 和用户目录 schema/路径基线。
 - [ ] 定义 Qt/Tauri 共用应用锁和 Qt → Tauri → Qt 数据兼容门禁。
 - [ ] 完成 #140 候选复用文件清单。

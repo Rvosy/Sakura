@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import app.agent.memory as memory_module
 from app.agent.memory import MemoryStore
 from app.core.resource_manager import ResourceRegistry
 
@@ -44,6 +45,28 @@ def test_memory_preload_thread_group_tracks_loader(tmp_path: Path) -> None:
     assert store._thread_group in registry._resources
     assert store._thread_group.is_running() is True
 
+    store.allow_return.set()
+    assert _wait_until(lambda: not store._thread_group.is_running())
+    store.close()
+
+
+@pytest.mark.allow_memory_preload
+def test_memory_preload_prepares_shared_imports_before_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = threading.Event()
+    monkeypatch.setattr(
+        memory_module,
+        "_prepare_memory_background_imports",
+        prepared.set,
+    )
+    store = _BlockingMemoryStore(base_dir=tmp_path, resource_registry=ResourceRegistry())
+
+    store.preload(wait=False)
+
+    assert prepared.is_set()
+    assert store.create_started.wait(1)
     store.allow_return.set()
     assert _wait_until(lambda: not store._thread_group.is_running())
     store.close()

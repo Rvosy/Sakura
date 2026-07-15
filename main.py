@@ -80,6 +80,7 @@ from app.voice.tts_bundle import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+LINGERING_QTHREAD_EXIT_WAIT_MS = 15_000
 
 # 保活 faulthandler 的写入句柄,避免被 GC 关闭后崩溃时写向失效 fd。
 _CRASH_LOG_HANDLE = None
@@ -495,7 +496,11 @@ def main() -> int:
     pet_window.show()
     QTimer.singleShot(0, lambda: _start_tts_migration_or_deferred(BASE_DIR, pet_window))
 
-    return app.exec()
+    exit_code = app.exec()
+    pet_window.resource_manager.wait_for_lingering_qthreads(
+        LINGERING_QTHREAD_EXIT_WAIT_MS
+    )
+    return exit_code
 
 
 def _write_startup_error(category: str, message: str) -> None:
