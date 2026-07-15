@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

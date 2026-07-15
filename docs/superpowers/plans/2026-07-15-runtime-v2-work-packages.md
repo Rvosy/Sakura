@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Phase 0 架构审查已收口 / WP-1A-01 可激活但仍为 planned
+> 状态：Phase 0 架构审查已收口 / WP-1A-01 accepted
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -52,7 +52,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-0-02 | 用户数据与共享应用锁契约基线 | WP-0-01 | accepted |
 | WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | accepted |
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | accepted |
-| WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | planned |
+| WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | accepted |
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | planned |
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | planned |
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | planned |
@@ -388,10 +388,11 @@ commit: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 
 ### WP-1A-01：不启动 Python 的最小 Tauri Shell
 
-未来激活准备记录（不构成激活）：
+激活记录：
 
 ```text
-状态：planned
+状态：active
+开始日期：2026-07-16
 允许目录：新建 desktop/ 下的最小 Tauri crate、静态 startup 页面、Shell 自身测试与 desktop/rust-toolchain.toml；.gitignore 仅限新增 desktop 构建产物规则；本文仅在实际激活时更新 WP-1A-01 状态和验收记录
 明确禁止目录：main.py；app/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；现有 tools/settings-tauri/ 与 tools/studio-tauri/；legacy Qt 入口和默认入口脚本；WP-1A-02 及后续实现
 验收环境：Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3、tauri-build 2.6.3；WebView2 150.0.4078.65；Visual Studio 18.4.1 C++ 工具链与 Windows SDK 10.0.26100.0；Node/npm 非必需；Tauri CLI 非本 WP 前置
@@ -401,6 +402,38 @@ commit: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 故障测试：Python 路径缺失、runtime/ 缺失、无关环境变量缺失、工作目录无 data/、startup 静态资源缺失的构建期失败；运行期不得出现空白窗口、Python spawn、共享 data/ 写入或后台任务残留
 独立回退方式：整体 revert WP-1A-01 提交，删除新增 desktop/ 最小 Shell 与专用工具链文件；Qt main.py、start.bat 和当前产品入口保持不变
 计划提交：feat(runtime): 建立不启动 Python 的最小 Tauri Shell
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+自动测试：固定 Rust/Cargo 1.96.0 下 cargo fmt --check 通过；cargo test --locked 为 2 passed；debug/release cargo build --locked 均成功；移除 frontend 的隔离构建以 include_str! 和 frontendDist 明确错误退出 101
+故障测试：在系统临时目录创建仅含 debug/release EXE 的隔离布局，确认不存在 runtime/ 和 data/；清除已有 Conda/Python/Sakura 相关变量并把 PYTHONHOME、PYTHONPATH、SAKURA_PYTHON、SAKURA_RUNTIME_DIR、SAKURA_DATA_DIR 指向不存在路径后，两种构建仍显示并正常退出
+真实应用验收：debug、release 及两种隔离副本均出现 656x459 普通 Tauri/WebView2 窗口；startup 页面文字和样式真实可见；关闭返回退出码 0；运行期后代仅有 WebView2，关闭后约 0.2 秒内清空
+数据与进程门禁：四次最终真实验收均无 Python 后代；真实 data/ 121 个文件的 path/length/UTC mtime/SHA-256 canonical manifest 前后均为 a1317eb594ef3eabd485bd9638126d11a14a09b62c27878bb557e0a5de1917ff，零变化
+范围门禁：只新增 desktop/ 最小 crate、静态页面、Windows 强制构建图标和专用工具链，并更新本文；未修改默认入口、legacy Qt、生产 Python、共享 data/ 或 WP-1A-02+；直接依赖只有 tauri 2.11.3 和 tauri-build 2.6.3，无 Tauri plugin
+稳定化修复：首次 debug 验收后把 Windows 二进制固定为 GUI subsystem，移除调试构建的控制台宿主；验收脚本对 WebView UI Automation 控件类型的过窄筛选已按真实树修正，不属于应用缺陷
+已知问题：本 WP 不生成安装包、不安装 Tauri CLI、不验证透明窗口/DPI/IME/托盘/IPC/Supervisor；运行仍依赖目标 Windows 已安装 WebView2 Runtime；当前未确认 P0/P1
+回退步骤：整体 revert WP-1A-01 提交，删除新增 desktop/ 最小 Shell；main.py、start.bat、legacy Qt、Python Runtime 和真实 data/ 保持不变
+关联提交：待提交
+```
+
+验收记录：
+
+```text
+状态：accepted
+自动测试：stabilizing 中重复 cargo fmt --manifest-path src-tauri/Cargo.toml --check、cargo test --manifest-path src-tauri/Cargo.toml --locked、debug/release cargo build --locked，全部退出码 0；Rust 单元测试 2 passed；两轮缺失 frontend 探针均退出 101 并同时给出 include_str! 与 frontendDist 明确错误
+故障测试：两轮系统临时隔离布局均只含 debug/release EXE，不含 runtime/、Python 或 data/；清除已存在的 Conda/Python/Sakura 相关变量并覆盖不存在的 PYTHONHOME、PYTHONPATH、SAKURA_PYTHON、SAKURA_RUNTIME_DIR、SAKURA_DATA_DIR 后，debug/release 均显示并正常退出，隔离布局未新增文件
+真实应用验收：最终有效 debug/release 正常与隔离验收共 8 次；均出现 656x459 普通 Tauri/WebView2 窗口，Sakura Runtime v2 / Startup、WebView 已加载和无 Python/用户数据说明真实可见；关闭窗口后根进程退出码 0
+数据与进程门禁：运行期后代仅有 WebView2，未启动 Python；关闭后 WebView2 后代约 0.2 秒内清空，最终无 Shell/后代残留；真实 data/ 121 个文件的 path/length/UTC mtime/SHA-256 canonical manifest 在两轮门禁前后均为 a1317eb594ef3eabd485bd9638126d11a14a09b62c27878bb557e0a5de1917ff，零变化
+工具链与平台：Windows 11 23H2 build 22631.4890 x64；Rust/Cargo 1.96.0；target x86_64-pc-windows-msvc；Tauri 2.11.3；tauri-build 2.6.3；WebView2 150.0.4078.65；MSVC tools 14.50.35717；Windows SDK 10.0.26100.0；Tauri CLI 和 Node/npm 均未使用
+权限与范围：单个普通非透明窗口；空 capability permissions；CSP 仅允许同源 CSS，其余脚本、连接、图片、字体、媒体、frame、worker 和表单默认拒绝；直接依赖只有 tauri/tauri-build，无激活的 tray 或 Tauri plugin；Windows 强制要求的 32x32 ICO 仅作为构建资源
+范围门禁：只新增 desktop/ 最小 Shell 和更新本文；没有 main.py、start.bat、app/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、Settings/Studio、默认入口或 legacy Qt 变化；没有 Supervisor、IPC、聊天、设置、托盘、角色加载、共享锁或 WP-1A-02 实现
+P0/P1：未确认；没有数据污染、凭据泄露、崩溃、无法退出、进程泄漏、范围扩张或不可独立回退改动
+已知限制：本 WP 不生成安装包、不验证干净 Windows 安装，不包含透明窗口、DPI、多屏、IME、焦点、托盘、应用锁、Core 或产品功能；运行需要目标 Windows 已安装 WebView2 Runtime
+回退步骤：整体 revert 本 WP accepted 提交，删除新增 desktop/ 最小 Shell 和专用工具链；当前 main.py、start.bat、legacy Qt、Python Runtime、角色、插件和真实 data/ 行为保持不变
+关联提交：本 WP accepted 提交（feat(runtime): 建立不启动 Python 的最小 Tauri Shell）
 ```
 
 主要结果：Runtime v2 拥有一个不依赖 Python、可以立即显示、诊断启动失败并正常退出的最小桌面根。
@@ -1108,6 +1141,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-0-04` 均已 accepted；WP-1A-01 的未来激活准备完整但状态仍为 `planned`，本次没有开始生产实现。
+当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-01` 均已 accepted；`WP-1A-02` 及后续 Work Package 继续为 `planned`。
 
-下一步可以单独将 WP-1A-01 更新为 `active`，但激活必须作为新的工作开始，并继续遵守其允许目录、验收和回退记录。
+下一步可以单独激活 WP-1A-02，但必须作为新的工作开始，并继续遵守透明窗口几何技术门的允许目录、真实验收和独立回退约束。

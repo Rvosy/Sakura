@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default-deny capability for the startup-only validation window.",
+  "windows": ["main"],
+  "permissions": []
+}
