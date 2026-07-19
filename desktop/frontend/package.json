@@ -1,0 +1,8 @@
+{
+  "name": "sakura-runtime-v2-pet-geometry",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

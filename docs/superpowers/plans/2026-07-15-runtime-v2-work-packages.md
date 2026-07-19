@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Phase 0 架构审查已收口 / WP-1A-01 accepted
+> 状态：Phase 0 架构审查已收口 / WP-1A-02 accepted
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -53,7 +53,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-0-03 | 旧迁移逐文件复用准入清单 | WP-0-01 | accepted |
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | accepted |
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | accepted |
-| WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | planned |
+| WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | accepted |
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | planned |
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | planned |
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | planned |
@@ -466,6 +466,53 @@ P0/P1：未确认；没有数据污染、凭据泄露、崩溃、无法退出、
 独立回退：删除或 revert 最小 `desktop/` Shell，不影响 Qt 入口。
 
 ### WP-1A-02：透明窗口几何、锚点和表现状态
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-20
+允许目录：desktop/frontend/ 下的四状态纯布局、最小透明表现层和 Node 可执行测试；desktop/src-tauri/ 下的单窗口几何、物理/逻辑坐标换算、显示器工作区选择、原子窗口布局应用、Rust 测试和构建配置；desktop/tests/ 下仅限 WP-1A-02 Windows 真实窗口验收脚本；本文仅更新 WP-1A-02 状态与验收记录
+明确禁止目录：main.py；start.bat；app/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；现有 tools/settings-tauri/ 与 tools/studio-tauri/；legacy Qt 和默认入口；WP-1A-03 及后续生产实现；data/runtime_v2/
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64 开发机；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3、tauri-build 2.6.3；WebView2 150.0.4078.65；Visual Studio 18.4.1 C++ 工具链与 Windows SDK 10.0.26100.0；Node v22.14.0；本机真实显示器/DPI 能力按执行时取证，缺失物理组合以确定性自动测试补足并明确记录
+关联 ADR：ADR-0001（Tauri 生命周期根与退出门禁）；ADR-0002（本 WP 不建立 IPC）；ADR-0003（不得读写共享 data/ 或 data/runtime_v2/）；三份 ADR 均继续为 Proposed
+自动测试要求：cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked；node --test desktop/frontend/tests/*.test.js；debug/release cargo build --locked；覆盖四状态、固定锚点、单/多屏、负坐标、100%/125%/150% DPI、边缘/超大工作区、长文本、极端尺寸、快速切换/晚到结果和 Rust/前端共享契约
+真实窗口验收：分别启动 debug/release 透明 Tauri/WebView 窗口；切换 idle/bubble/composer/expanded 并核对物理立绘锚点；验证显示/隐藏/展开/收起无明显白闪或布局抖动；记录本机真实显示器坐标与 DPI；关闭后核对 Shell/WebView 后代清空、无 Python 后代；真实 data/ canonical manifest 前后零变化
+故障测试：目标工作区负坐标；窗口贴近各边缘；期望尺寸大于工作区；零/极端/长文本输入；快速连续状态切换；旧 revision 晚到；目标显示器变化；共享布局契约损坏时安全失败
+独立回退方式：整体 revert WP-1A-02 accepted 提交，恢复 WP-1A-01 的普通 startup Shell；不修改或清理 legacy Qt、Python Runtime、真实 data/ 或用户资源
+计划提交：feat(runtime): 建立透明桌宠窗口几何与锚点模型
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+自动测试：固定 Rust/Cargo 1.96.0 下 cargo fmt --check 通过；cargo test --locked 为 10 passed；Node 内置测试为 7 passed；debug cargo build --locked 成功；release locked build 与最终重复门禁待执行
+故障测试：四状态尺寸/矩形/共享契约、固定物理锚点、单/多屏、负坐标、100%/125%/150% DPI、工作区四边、超小工作区统一缩放、非法/超大契约、长/极端文本、快速切换、晚到/重复 revision 均已有可执行测试并通过
+真实应用验收：debug 透明 Tauri/WebView 窗口真实显示；idle/bubble/composer/expanded 为 320x420、736x500、736x592、816x680；四态物理立绘锚点均为 (2224,1380)；隐藏后 220ms 内重新显示；截图确认气泡和输入区居中覆盖占位立绘且无右下角缺口；release 待验收
+DPI/多屏：本机只有 DISPLAY1 单屏 2560x1440、工作区 2560x1392、96 DPI/100%；125%/150%、多屏和负坐标缺少真实物理环境，当前由确定性 Rust 测试补足，不虚报真实通过
+数据与进程门禁：debug 运行期后代只有 6 个 msedgewebview2.exe；无 Python 后代；关闭后 0.5 秒复查无本次 Shell/WebView 后代；真实 data/ canonical manifest 前后均为 7d877f22c2dc579ed1ecd924728e26d7a6395f2607a5355be00b6added74266d
+已知问题：release 与最终重复验收尚未执行；本机缺少真实多屏、负坐标和 125%/150% DPI；当前按钮只是 WP-1A-02 技术门，不代表 WP-1A-03 的点击穿透、拖动、焦点或 IME 通过
+回退步骤：整体 revert WP-1A-02 accepted 提交，恢复 WP-1A-01 普通 startup Shell；不触碰 main.py、legacy Qt、Python Runtime、真实 data/ 或用户资源
+关联提交：待 accepted 后提交
+```
+
+验收记录：
+
+```text
+状态：accepted
+自动测试：cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check 退出码 0；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked 为 10 passed；node --test desktop/frontend/tests/*.test.js 为 7 passed；debug/release cargo build --locked 均退出码 0；git diff --check 和 Windows 验收脚本 PowerShell 语法解析均通过
+故障测试：共享 JSON 契约由 Rust 与前端共同执行；覆盖四状态尺寸和矩形边界、逻辑/物理坐标、固定锚点、单/多屏选择、副屏负坐标、100%/125%/150% DPI、工作区四边、期望窗口大于工作区时统一缩放、空工作区/非法 DPI、损坏/超大契约、10 万字符与极端文本、快速连续切换、旧/重复 revision 和晚到布局结果；全部通过
+真实应用验收：debug 与 release 均实际显示单个透明 Tauri/WebView 窗口；idle/bubble/composer/expanded 原生物理尺寸依次为 320x420、736x500、736x592、816x680；四态物理立绘锚点均为 (2224,1380)；气泡居中覆盖占位立绘，输入区与气泡同中心线，右下角无缺口；状态展开/收起、隐藏 220ms 后显示均无明显白闪或布局抖动；窗口关闭后根进程退出码 0
+DPI/多屏证据：真实环境仅 DISPLAY1 单屏 2560x1440、工作区 2560x1392、96 DPI/100%；本机没有可用的真实多屏、负坐标或 125%/150% DPI 环境，因此这些物理证据明确缺失，以确定性 Rust 测试补足，不记录为真实通过
+工具链与平台：Windows 11 23H2 build 22631.4890 x64；rustc/cargo 1.96.0；Tauri 2.11.3；tauri-build 2.6.3；WebView2 150.0.4078.65；Node v22.14.0
+数据与进程门禁：debug/release 每轮运行期后代仅为 6 个 msedgewebview2.exe，Python 后代为 0；关闭后 0.5 秒复查本轮 Shell/WebView 后代为 0；真实 data/ 的 path/length/UTC mtime/SHA-256 canonical manifest 每轮前后均为 7d877f22c2dc579ed1ecd924728e26d7a6395f2607a5355be00b6added74266d，零变化；未创建或写入 data/runtime_v2/
+范围门禁：只修改 desktop/frontend/、desktop/src-tauri/、desktop/tests/ 和本文；没有修改 main.py、start.bat、app/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、legacy Qt、默认入口或 WP-1A-03+；没有 Python Core、Supervisor、Fake Core、IPC、聊天、真实角色业务、点击穿透、拖动、焦点或 IME 平台实现
+P0/P1：零；退出条件相关缺陷为零；用户指出的控制面板错位和气泡右下角缺口已在 stabilizing 中按参考图修复并经 debug/release 截图复核
+已知限制：立绘是本 WP 明确范围内的 CSS 占位图，不读取真实角色资源；真实多屏、负坐标、125%/150% DPI 和干净机证据仍缺失；状态按钮与 220ms visibility probe 仅用于技术门，不代表 WP-1A-03 输入、焦点、点击穿透或 IME 验收
+回退步骤：整体 revert 本 WP accepted 提交，恢复 WP-1A-01 的 656x459 普通 startup Shell；不触碰 main.py、legacy Qt、Python Runtime、真实 data/ 或用户资源
+关联提交：本 WP accepted 提交（feat(runtime): 建立透明桌宠窗口几何与锚点模型）
+```
 
 主要结果：验证单透明桌宠窗口在不接入真实交互和 Python 的情况下，可以稳定表达基础窗口状态并保持立绘桌面锚点。
 
@@ -1141,6 +1188,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-01` 均已 accepted；`WP-1A-02` 及后续 Work Package 继续为 `planned`。
+当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-02` 均已 accepted；`WP-1A-03` 及后续 Work Package 继续为 `planned`。
 
-下一步可以单独激活 WP-1A-02，但必须作为新的工作开始，并继续遵守透明窗口几何技术门的允许目录、真实验收和独立回退约束。
+下一步可以单独激活 WP-1A-03，但本次工作没有开始其点击穿透、拖动、焦点或中文 IME 平台实现。

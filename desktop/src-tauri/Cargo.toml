@@ -9,7 +9,12 @@ build = "build.rs"
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
 tauri = { version = "=2.11.3", features = [] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]

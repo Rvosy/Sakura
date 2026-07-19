@@ -10,23 +10,22 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sakura Runtime v2 · Startup",
-        "width": 640,
+        "title": "Sakura Runtime v2 · Pet geometry gate",
+        "width": 320,
         "height": 420,
-        "minWidth": 520,
-        "minHeight": 360,
-        "resizable": true,
+        "resizable": false,
         "maximizable": false,
-        "minimizable": true,
+        "minimizable": false,
         "closable": true,
-        "decorations": true,
-        "transparent": false,
-        "center": true,
-        "visible": true
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false
       }
     ],
+    "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'none'; style-src 'self'; script-src 'none'; connect-src 'none'; img-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "csp": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "capabilities": ["default"]
     }
   },

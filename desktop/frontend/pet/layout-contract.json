@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "states": {
+    "idle": {
+      "windowSize": [320, 420],
+      "portraitRect": [56, 72, 240, 336],
+      "bubbleRect": null,
+      "inputRect": null,
+      "portraitAnchor": [176, 408]
+    },
+    "bubble": {
+      "windowSize": [736, 500],
+      "portraitRect": [320, 152, 240, 336],
+      "bubbleRect": [144, 270, 592, 164],
+      "inputRect": null,
+      "portraitAnchor": [440, 488]
+    },
+    "composer": {
+      "windowSize": [736, 592],
+      "portraitRect": [320, 244, 240, 336],
+      "bubbleRect": [144, 270, 592, 176],
+      "inputRect": [144, 458, 592, 52],
+      "portraitAnchor": [440, 580]
+    },
+    "expanded": {
+      "windowSize": [816, 680],
+      "portraitRect": [360, 332, 240, 336],
+      "bubbleRect": [144, 300, 672, 236],
+      "inputRect": [144, 548, 672, 52],
+      "portraitAnchor": [480, 668]
+    }
+  }
+}

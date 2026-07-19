@@ -4,15 +4,43 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>Sakura Runtime v2 · Startup</title>
+    <title>Sakura Runtime v2 · Pet geometry gate</title>
     <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
   </head>
-  <body>
-    <main class="startup-card" data-shell-state="startup-loaded">
-      <p class="eyebrow">Sakura Runtime v2</p>
-      <h1>Startup</h1>
-      <p class="status">Tauri WebView 已加载最小 Shell。</p>
-      <p class="scope">此验证页面不启动 Python，也不读取或创建用户数据。</p>
+  <body data-shell-state="pet-geometry-loading">
+    <main id="pet-stage" class="pet-stage" aria-label="透明桌宠窗口几何技术门">
+      <section class="bubble" aria-live="polite">
+        <span class="bubble-kicker">Geometry gate</span>
+        <p id="bubble-copy">
+          这是一段只用于边界验证的占位内容。无论文字多长，原生窗口都由布局契约限定。
+        </p>
+      </section>
+
+      <div class="composer" aria-label="输入区域占位">
+        <span>在这里输入…</span>
+        <i aria-hidden="true"></i>
+      </div>
+
+      <figure class="portrait" aria-label="占位立绘">
+        <div class="portrait-paper">
+          <span class="sakura-mark" aria-hidden="true">✦</span>
+          <div class="portrait-face" aria-hidden="true"></div>
+          <div class="portrait-collar" aria-hidden="true"></div>
+          <figcaption>SAKURA / PLACEHOLDER</figcaption>
+        </div>
+      </figure>
+
+      <nav class="state-rail" aria-label="表现状态技术门">
+        <button type="button" data-state="idle" aria-label="切换 idle 状态">I</button>
+        <button type="button" data-state="bubble" aria-label="切换 bubble 状态">B</button>
+        <button type="button" data-state="composer" aria-label="切换 composer 状态">C</button>
+        <button type="button" data-state="expanded" aria-label="切换 expanded 状态">E</button>
+        <button type="button" id="visibility-probe" aria-label="验证隐藏和显示">V</button>
+        <button type="button" id="close-window" aria-label="关闭技术门窗口">×</button>
+      </nav>
+
+      <output id="geometry-readout" class="geometry-readout" aria-live="polite">initializing</output>
     </main>
   </body>
 </html>

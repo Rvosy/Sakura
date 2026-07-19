@@ -1,8 +1,17 @@
 :root {
-  color: #2f2631;
-  background: #f5eef3;
+  color: #34262f;
+  background: transparent;
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
   font-synthesis: none;
+  --ink: #34262f;
+  --muted: #75626f;
+  --sakura: #b85f85;
+  --sakura-deep: #7e3f60;
+  --petal: #f6dbe8;
+  --paper: #fffafc;
+  --line: #d8b6c8;
+  --shadow: #4c263a2b;
+  --content-scale: 1;
 }
 
 * {
@@ -14,50 +23,251 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
 }
 
 body {
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+
+body[data-shell-state="pet-geometry-ready"] {
+  opacity: 1;
+}
+
+.pet-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--stage-width);
+  height: var(--stage-height);
+  overflow: hidden;
+  transform: scale(var(--content-scale));
+  transform-origin: top left;
+}
+
+.portrait,
+.bubble,
+.composer {
+  position: absolute;
+  margin: 0;
+}
+
+.portrait {
+  z-index: 1;
+  left: var(--portrait-x);
+  top: var(--portrait-y);
+  width: var(--portrait-width);
+  height: var(--portrait-height);
+  filter: drop-shadow(0 14px 16px var(--shadow));
+}
+
+.portrait-paper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid #ffffffb8;
+  border-radius: 48% 48% 20% 20% / 30% 30% 13% 13%;
+  background:
+    radial-gradient(circle at 68% 18%, #ffffff 0 5%, transparent 5.5%),
+    linear-gradient(154deg, #fdf8fb 0 44%, #efd1e0 44.3% 100%);
+  box-shadow: inset 11px 0 #ffffff52, inset -12px -18px #9f55781a;
+}
+
+.portrait-paper::before,
+.portrait-paper::after {
+  position: absolute;
+  content: "";
+}
+
+.portrait-paper::before {
+  top: 45px;
+  left: 52px;
+  width: 136px;
+  height: 168px;
+  border-radius: 48% 52% 44% 46%;
+  background: #f8e8ee;
+  box-shadow: 0 -34px 0 12px #6f405b;
+}
+
+.portrait-paper::after {
+  right: 16px;
+  bottom: 38px;
+  width: 208px;
+  height: 112px;
+  border-radius: 58% 42% 0 0;
+  background: linear-gradient(108deg, #7e3f60 0 49%, #b85f85 49.5% 100%);
+  transform: rotate(-5deg);
+}
+
+.sakura-mark {
+  position: absolute;
+  z-index: 3;
+  top: 24px;
+  right: 25px;
   display: grid;
+  width: 42px;
+  height: 42px;
   place-items: center;
-  padding: 32px;
-  background: linear-gradient(145deg, #faf6f9 0%, #f0e4ed 100%);
+  border-radius: 50%;
+  color: var(--paper);
+  background: var(--sakura);
+  font: 700 22px/1 "Microsoft YaHei UI", sans-serif;
+  transform: rotate(12deg);
 }
 
-.startup-card {
-  width: min(100%, 520px);
-  padding: 44px 48px;
-  border: 1px solid #d9c5d2;
-  border-radius: 20px;
-  background: #fffdfef2;
-  box-shadow: 0 18px 48px #76536b1f;
+.portrait-face {
+  position: absolute;
+  z-index: 2;
+  top: 119px;
+  left: 84px;
+  width: 78px;
+  height: 18px;
+  border-top: 3px solid var(--sakura-deep);
+  border-radius: 50%;
 }
 
-.eyebrow {
-  margin: 0 0 10px;
-  color: #8a526f;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+.portrait-collar {
+  position: absolute;
+  z-index: 3;
+  left: 94px;
+  bottom: 91px;
+  width: 55px;
+  height: 41px;
+  border-right: 8px solid var(--paper);
+  border-bottom: 8px solid var(--paper);
+  transform: rotate(45deg);
+}
+
+figcaption {
+  position: absolute;
+  z-index: 4;
+  right: 18px;
+  bottom: 15px;
+  color: #fff8fc;
+  font: 700 9px/1 "Segoe UI", sans-serif;
+  letter-spacing: 0.12em;
+}
+
+.bubble {
+  z-index: 3;
+  left: var(--bubble-x);
+  top: var(--bubble-y);
+  width: var(--bubble-width);
+  height: var(--bubble-height);
+  padding: 24px 29px;
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  background: #fffafcf2;
+  box-shadow: 0 16px 34px var(--shadow);
+}
+
+.bubble-kicker {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--sakura-deep);
+  font: 700 10px/1 "Segoe UI", sans-serif;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
-h1 {
+.bubble p {
+  display: -webkit-box;
+  max-height: calc(100% - 24px);
   margin: 0;
-  color: #513549;
-  font-size: 42px;
-  font-weight: 650;
-  line-height: 1.1;
-}
-
-.status {
-  margin: 26px 0 0;
-  font-size: 18px;
-  line-height: 1.6;
-}
-
-.scope {
-  margin: 12px 0 0;
-  color: #6f626b;
-  font-size: 14px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}
+
+.composer {
+  z-index: 4;
+  left: var(--input-x);
+  top: var(--input-y);
+  display: flex;
+  width: var(--input-width);
+  height: var(--input-height);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px 0 22px;
+  border: 1px solid #cba7ba;
+  border-radius: 18px;
+  color: var(--muted);
+  background: #fffafcf5;
+  box-shadow: 0 12px 28px #4c263a1f;
+  font-size: 14px;
+}
+
+.composer i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sakura);
+  box-shadow: 0 0 0 5px var(--petal);
+}
+
+.state-rail {
+  position: absolute;
+  z-index: 10;
+  left: 8px;
+  bottom: 12px;
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid #d5b5c5;
+  border-radius: 999px;
+  background: #fffafce8;
+  box-shadow: 0 8px 20px #4c263a20;
+}
+
+.state-rail button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--sakura-deep);
+  background: transparent;
+  font: 700 10px/1 "Segoe UI", sans-serif;
+}
+
+.state-rail button:hover,
+.state-rail button[aria-pressed="true"] {
+  color: white;
+  background: var(--sakura);
+}
+
+.geometry-readout {
+  position: absolute;
+  z-index: 9;
+  right: 10px;
+  bottom: 9px;
+  max-width: 130px;
+  overflow: hidden;
+  color: #735368;
+  font: 600 9px/1.25 "Segoe UI", sans-serif;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-presentation-state="idle"] .bubble,
+[data-presentation-state="idle"] .composer,
+[data-presentation-state="bubble"] .composer {
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body {
+    transition: none;
+  }
 }
