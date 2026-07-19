@@ -138,6 +138,30 @@ function Save-WindowScreenshot {
     }
 }
 
+function Get-ScreenPixel {
+    param([int]$X, [int]$Y)
+
+    $bitmap = [System.Drawing.Bitmap]::new(1, 1)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($X, $Y, 0, 0, $bitmap.Size)
+        return $bitmap.GetPixel(0, 0)
+    }
+    finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function Get-ColorDistanceSquared {
+    param([System.Drawing.Color]$Left, [System.Drawing.Color]$Right)
+
+    $red = [int]$Left.R - [int]$Right.R
+    $green = [int]$Left.G - [int]$Right.G
+    $blue = [int]$Left.B - [int]$Right.B
+    return $red * $red + $green * $green + $blue * $blue
+}
+
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 $resolvedEvidenceDirectory = [System.IO.Path]::GetFullPath($EvidenceDirectory)
 [System.IO.Directory]::CreateDirectory($resolvedEvidenceDirectory) | Out-Null
@@ -218,11 +242,30 @@ try {
     Click-Point -X $visibilityX -Y $visibilityY
     $sawHidden = $false
     $sawVisibleAfterHidden = $false
+    $probeCandidates = @(
+        [pscustomobject]@{ X = $fixedAnchor.X - 80; Y = $fixedAnchor.Y - 220 },
+        [pscustomobject]@{ X = $fixedAnchor.X; Y = $fixedAnchor.Y - 220 },
+        [pscustomobject]@{ X = $fixedAnchor.X + 70; Y = $fixedAnchor.Y - 220 },
+        [pscustomobject]@{ X = $fixedAnchor.X - 80; Y = $fixedAnchor.Y - 100 },
+        [pscustomobject]@{ X = $fixedAnchor.X; Y = $fixedAnchor.Y - 100 },
+        [pscustomobject]@{ X = $fixedAnchor.X + 70; Y = $fixedAnchor.Y - 100 },
+        [pscustomobject]@{ X = $fixedAnchor.X; Y = $fixedAnchor.Y - 20 }
+    )
+    $backgroundSamples = $null
     $visibilityDeadline = [DateTime]::UtcNow.AddSeconds(2)
     do {
         $visible = [SakuraGeometryGateNative]::IsWindowVisible($windowHandle)
         if (-not $visible) {
             $sawHidden = $true
+            if ($null -eq $backgroundSamples) {
+                $backgroundSamples = @($probeCandidates | ForEach-Object {
+                    [pscustomobject]@{
+                        X = $_.X
+                        Y = $_.Y
+                        Color = Get-ScreenPixel -X $_.X -Y $_.Y
+                    }
+                })
+            }
         }
         elseif ($sawHidden) {
             $sawVisibleAfterHidden = $true
@@ -232,6 +275,38 @@ try {
     } while ([DateTime]::UtcNow -lt $visibilityDeadline)
     if (-not $sawHidden -or -not $sawVisibleAfterHidden) {
         throw "The visibility probe did not produce a bounded hide/show cycle."
+    }
+    Start-Sleep -Milliseconds 120
+    $selectedProbe = @($backgroundSamples | ForEach-Object {
+        $visibleColor = Get-ScreenPixel -X $_.X -Y $_.Y
+        [pscustomobject]@{
+            X = $_.X
+            Y = $_.Y
+            BackgroundColor = $_.Color
+            VisibleDistance = Get-ColorDistanceSquared -Left $visibleColor -Right $_.Color
+        }
+    } | Sort-Object VisibleDistance -Descending)[0]
+    $visibleDistance = $selectedProbe.VisibleDistance
+    if ($visibleDistance -lt 900) {
+        throw "The portrait pixel is not distinguishable from the hidden-window background."
+    }
+
+    $minimumTransitionDistance = [int]::MaxValue
+    for ($stateIndex = 0; $stateIndex -lt $stateNames.Count; $stateIndex++) {
+        $probeBounds = Get-WindowBounds -WindowHandle $windowHandle
+        $buttonX = $probeBounds.X + [int][Math]::Round((26 + 31 * $stateIndex) * $dpi / 96.0)
+        $buttonY = $probeBounds.Y + $probeBounds.Height - [int][Math]::Round(30 * $dpi / 96.0)
+        Click-Point -X $buttonX -Y $buttonY
+        $sampleDeadline = [DateTime]::UtcNow.AddMilliseconds(140)
+        do {
+            $pixel = Get-ScreenPixel -X $selectedProbe.X -Y $selectedProbe.Y
+            $distance = Get-ColorDistanceSquared -Left $pixel -Right $selectedProbe.BackgroundColor
+            $minimumTransitionDistance = [Math]::Min($minimumTransitionDistance, $distance)
+            if ($distance * 4 -lt $visibleDistance) {
+                throw "A transparent/blank frame was observed while switching to $($stateNames[$stateIndex])."
+            }
+            Start-Sleep -Milliseconds 5
+        } while ([DateTime]::UtcNow -lt $sampleDeadline)
     }
 
     $descendants = @(Get-DescendantProcesses -RootPid $process.Id)
@@ -275,6 +350,12 @@ try {
         States = @($states)
         PortraitAnchor = $fixedAnchor
         VisibilityProbe = "hidden_then_visible"
+        TransitionPixelProbe = [pscustomobject]@{
+            SampleX = $selectedProbe.X
+            SampleY = $selectedProbe.Y
+            VisibleDistanceFromBackground = $visibleDistance
+            MinimumTransitionDistanceFromBackground = $minimumTransitionDistance
+        }
         RuntimeDescendants = @($descendants | ForEach-Object { $_.Name })
         PythonDescendants = @($pythonDescendants | ForEach-Object { $_.Name })
         LingeringDescendantPids = $lingering

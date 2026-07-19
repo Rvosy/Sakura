@@ -1,4 +1,8 @@
-export function createLayoutController({ computeLayout, applyNativeLayout, commitLayout }) {
+export function createLayoutController({
+  computeLayout,
+  applyNativeLayout,
+  commitLayout,
+}) {
   let requestedRevision = 0;
   let currentState = null;
 
@@ -7,6 +11,7 @@ export function createLayoutController({ computeLayout, applyNativeLayout, commi
       const revision = ++requestedRevision;
       currentState = state;
       const layout = computeLayout(state, placeholderText);
+
       const nativeResult = await applyNativeLayout({ state, revision });
 
       if (revision !== requestedRevision || state !== currentState || !nativeResult.applied) {

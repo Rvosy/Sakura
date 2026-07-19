@@ -514,6 +514,33 @@ P0/P1：零；退出条件相关缺陷为零；用户指出的控制面板错位
 关联提交：本 WP accepted 提交（feat(runtime): 建立透明桌宠窗口几何与锚点模型）
 ```
 
+重新稳定化记录：
+
+```text
+状态：stabilizing
+重新开始日期：2026-07-20
+触发原因：用户真实验收确认 idle/bubble/composer/expanded 每一档切换都会闪一下；前端把只应覆盖首帧加载的整窗 opacity=0 错误应用到每次状态切换，属于“展开和收起无明显白闪”退出条件缺陷
+允许修复范围：仅调整 desktop/frontend/ 的布局提交时序、首帧可见性样式和对应可执行测试；desktop/tests/ 验收脚本可增加连续帧/切换可见性证据；本文更新重新稳定化与最终验收记录
+明确禁止：不得借修复进入 WP-1A-03；不实现点击穿透、拖动、焦点、输入命中或 IME；不修改 Rust 几何契约、Python、legacy Qt、默认入口或用户数据
+修复门禁：状态切换期间 body/stage 必须持续可见；Win32 原生窗口 bounds 一次更新后立即提交 DOM 布局；旧/晚到结果不得回滚新布局；debug/release 真实连续切换无可见灭帧、白闪或锚点漂移
+回退步骤：revert 本次闪烁修复提交可回到 7065859084c9e630d34e173c09af9948786337e1；若修复无法通过真实门禁，则 WP 保持 stabilizing，不开始 WP-1A-03
+```
+
+重新验收记录：
+
+```text
+状态：accepted
+根因与修复：每次状态切换都把 body 从 opacity=1 切到 opacity=0 并执行 90ms 过渡，造成稳定可见的整窗闪烁；现仅在首次 pet-geometry-loading 阶段保持透明，四态切换不再修改 body/stage 可见性；舍弃会在旧原生边界中提前绘制新 DOM 的方案，最终使用 Win32 一次更新原生 bounds 后立即提交 DOM 布局
+自动测试：cargo fmt --check 通过；Rust 10 passed；前端 8 passed，新增“原生 bounds 先于 DOM commit”时序测试；debug/release cargo build --locked 均通过；PowerShell 验收脚本语法解析通过
+真实闪烁门禁：验收脚本先在窗口隐藏期间采集桌面背景，再从立绘候选点选择与背景差异最大的固定物理像素，连续切换四态并以约 5ms 间隔采样 140ms；若采样接近背景则按透明/空白帧失败
+debug 结果：正常可见像素距背景 101277；四态切换期间最小距离 96644；没有透明/空白帧；四态锚点均为 (2224,1380)
+release 结果：正常可见像素距背景 103906；四态切换期间最小距离 99213；没有透明/空白帧；四态锚点均为 (2224,1380)
+数据与进程门禁：debug/release 真实 data/ canonical manifest 前后均为 eb5f789b502eb2275fddcf9655caa5685803a785c14586540ddc10dd0fae4c9a；Python 后代为 0；关闭后本轮 Shell/WebView 后代为 0；根进程退出码 0
+P0/P1：零；重新稳定化触发的状态切换闪烁缺陷已清零；本次没有开始 WP-1A-03
+回退步骤：revert 本次闪烁修复提交会回到 7065859084c9e630d34e173c09af9948786337e1，并使 WP-1A-02 重新处于存在已知退出条件缺陷的 stabilizing 状态；不得在该状态开始 WP-1A-03
+关联提交：本次闪烁修复提交（fix(runtime): 消除桌宠状态切换闪烁）
+```
+
 主要结果：验证单透明桌宠窗口在不接入真实交互和 Python 的情况下，可以稳定表达基础窗口状态并保持立绘桌面锚点。
 
 允许能力：
@@ -1190,4 +1217,4 @@ legacy Qt 创建/修改数据并退出
 
 当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-02` 均已 accepted；`WP-1A-03` 及后续 Work Package 继续为 `planned`。
 
-下一步可以单独激活 WP-1A-03，但本次工作没有开始其点击穿透、拖动、焦点或中文 IME 平台实现。
+下一步可以单独激活 WP-1A-03，但本次闪烁修复没有开始其点击穿透、拖动、焦点或中文 IME 平台实现。

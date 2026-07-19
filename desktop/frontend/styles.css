@@ -29,12 +29,11 @@ body {
 }
 
 body {
-  opacity: 0;
-  transition: opacity 90ms linear;
+  opacity: 1;
 }
 
-body[data-shell-state="pet-geometry-ready"] {
-  opacity: 1;
+body[data-shell-state="pet-geometry-loading"] {
+  opacity: 0;
 }
 
 .pet-stage {
@@ -264,10 +263,4 @@ figcaption {
 [data-presentation-state="idle"] .composer,
 [data-presentation-state="bubble"] .composer {
   visibility: hidden;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body {
-    transition: none;
-  }
 }

@@ -5,6 +5,7 @@ const invoke = window.__TAURI__.core.invoke;
 const stage = document.querySelector("#pet-stage");
 const readout = document.querySelector("#geometry-readout");
 const stateButtons = [...document.querySelectorAll("[data-state]")];
+let contentScale = 1;
 
 const contractResponse = await fetch("./pet/layout-contract.json", { cache: "no-store" });
 if (!contractResponse.ok) throw new Error("failed to load pet layout contract");
@@ -15,7 +16,8 @@ const controller = createLayoutController({
   applyNativeLayout: ({ state, revision }) =>
     invoke("apply_pet_layout", { state, revision }),
   commitLayout: (layout, result) => {
-    applyPetLayout(stage, layout, result.contentScale);
+    contentScale = result.contentScale;
+    applyPetLayout(stage, layout, contentScale);
     readout.value = `${layout.state} · ${result.physicalPlacement.width}×${result.physicalPlacement.height} · ${Math.round(result.scaleFactor * 100)}%`;
     for (const button of stateButtons) {
       button.setAttribute("aria-pressed", String(button.dataset.state === layout.state));
@@ -25,12 +27,10 @@ const controller = createLayoutController({
 });
 
 async function transition(state) {
-  document.body.dataset.shellState = "pet-geometry-transitioning";
   try {
     await controller.transition(state, document.querySelector("#bubble-copy").textContent);
   } catch (error) {
     readout.value = `layout error: ${String(error)}`;
-    document.body.dataset.shellState = "pet-geometry-ready";
   }
 }
 
