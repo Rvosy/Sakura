@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Phase 0 架构审查已收口 / WP-1A-02 accepted
+> 状态：Phase 0 架构审查已收口 / WP-1A-03 accepted
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -54,7 +54,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-0-04 | 架构审查收口并批准首个实现 WP | WP-0-02、WP-0-03 | accepted |
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | accepted |
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | accepted |
-| WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | planned |
+| WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | accepted |
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | planned |
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | planned |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | planned |
@@ -594,6 +594,57 @@ P0/P1：零；用户报告的状态切换闪烁和整幅立绘中间帧位移均
 独立回退：回退窗口状态和布局模块，保留 WP-1A-01 Shell。
 
 ### WP-1A-03：点击穿透、拖动、焦点和 IME 技术门
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-20
+允许目录：desktop/frontend/ 下的共享命中区域纯逻辑、真实输入控件、IME/focus 状态机和 Node 可执行测试；desktop/src-tauri/ 下的共享命中几何、Win32 HWND 区域、拖动后锚点/DPI/工作区修正、Rust 测试和构建配置；desktop/tests/ 下仅限 WP-1A-03 Windows 真实交互验收脚本；docs/superpowers/plans/2026-07-20-wp-1a-03-hit-drag-focus.md；本文仅更新 WP-1A-03 状态与验收记录
+明确禁止目录：main.py；start.bat；app/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；现有 tools/settings-tauri/ 与 tools/studio-tauri/；legacy Qt 和默认入口；data/runtime_v2/；WP-1A-04 及后续生产实现
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64 开发机；单屏 2560x1440、工作区 2560x1392、100% DPI；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3、tauri-build 2.6.3；WebView2 150.0.4078.65；Visual Studio 18.4.1 C++ 工具链与 Windows SDK 10.0.26100.0；Node v22.14.0；真实多屏、负坐标、125% 和 150% DPI 如本机不可用则以确定性自动测试补足并明确记录为缺失物理证据
+关联 ADR：ADR-0001（Tauri 生命周期根与退出门禁）；ADR-0002（本 WP 不建立 Core IPC，Tauri command 仅承载窗口技术门）；ADR-0003（不得读写共享 data/ 或 data/runtime_v2/）；三份 ADR 均继续为 Proposed
+自动测试要求：cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked；node --test desktop/frontend/tests/*.test.js；debug/release cargo build --locked；覆盖四状态命中模型、边界/优先级、拖动锚点、单/多屏、负坐标、100%/125%/150% DPI、边缘/极端工作区、快速切换/晚到结果、IME/focus 状态机、共享 Rust/前端契约和平台失败安全恢复
+真实窗口验收：分别启动 debug/release 单透明 Tauri/WebView 窗口；验证透明空白点击穿透、立绘/气泡/状态控件/input/button 不穿透、立绘与气泡正文拖动、拖动后四态锚点固定、英文和中文 IME、候选窗位置、Alt+Tab、hide/show、状态往返恢复输入、无白闪/布局抖动/立绘漂移；关闭后核对 Shell/WebView 后代清空、无 Python 后代；真实 data/ canonical manifest 前后零变化
+故障测试：命中边界与重叠；interactive 优先于 drag；输入/按钮/状态控件禁止拖动；旧 revision 晚到；命中平台设置失败后恢复整窗交互；拖动跨屏/DPI/工作区边缘；窗口包络大于工作区；极端坐标；composition 中焦点/状态变化和提交抑制
+独立回退方式：整体 revert WP-1A-03 accepted 提交，移除命中/拖动/输入焦点平台代码、真实输入控件和验收脚本，恢复 WP-1A-02 的固定透明包络与四状态静态布局；不得触碰默认入口、legacy Qt、Python Runtime 或真实 data/
+计划提交：feat(runtime): 建立透明窗口命中、拖动与输入焦点技术门
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-20
+生产实现：固定 816x680 逻辑包络保持不变；共享 layout contract 新增四态 controlsRect；前端纯模型按 interactive > drag > neutral > transparent 分类；Rust 使用相同 contract 转换到窗口物理坐标并以 Win32 HWND region 实现空白区穿透，平台设置失败时清除 region 恢复整窗交互；立绘与气泡正文使用等待鼠标释放的 Win32 move loop，完成后按目标工作区/DPI重新计算并保存物理锚点；composer 使用真实 textarea、中文 composition 状态机和本地技术反馈
+自动测试：前端 18 passed；Rust 17 passed；已覆盖四态命中输出、半开边界、interactive 优先、输入/控件不拖动、100%/125%/150% DPI、单/多屏、负坐标、极端坐标/工作区、拖动后四态锚点、快速状态结果、IME composition、Alt+Tab/hide-show/状态往返焦点恢复和平台失败安全恢复纯逻辑
+旧迁移取证：只读固定 commit 190dfafd24f5c5226bff8b4347837b6e45d9a331 的 windows.rs 和 pet_controller.js；采用 start_dragging 调用经验、物理/逻辑换算思路、composition guard 和 revision 场景；拒绝 secondary windows、强制 always-on-top、整窗 set_ignore_cursor_events、旧 DesktopAppState/组合根、聊天/capture/settings 耦合
+真实应用验收：待执行 debug/release Windows/WebView 物理门禁；完成前不得 accepted
+已知问题：真实点击穿透、拖动、中文 IME 候选窗、Alt+Tab、hide/show、闪烁、进程和 data 门禁仍待 stabilizing 验证
+回退步骤：整体 revert WP-1A-03 accepted 提交，恢复 WP-1A-02 固定透明包络和静态四状态布局；不得触碰默认入口、legacy Qt、Python Runtime 或真实 data/
+关联提交：待 accepted 后提交
+```
+
+验收记录：
+
+```text
+状态：accepted
+自动测试：cargo fmt --check 通过；Rust 17 passed；前端 Node 18 passed；PowerShell WP-1A-02/WP-1A-03 验收脚本语法解析通过；debug/release cargo build --locked 均成功；git diff --check 退出码 0
+命中区域契约：四态由同一 layout-contract.json 输出 viewport 逻辑矩形；interactive=input/button/state controls，drag=portrait/visible bubble，neutral 当前为空，transparent 为固定 816x680 包络中三者并集的补集；Rust 以 scaleFactor*contentScale 向外取整成窗口物理坐标；Win32 SetWindowRgn 失败时清除 region 恢复整窗可交互/可关闭
+拖动与锚点：用户报告的两项 stabilizing 缺陷均已清零；气泡正文和立绘均可拖动；根因取证证明 Tauri start_dragging 仅异步 PostMessage，旧实现过早保存拖前位置；最终改为等待 Win32 move loop 鼠标释放后捕获位置、选择目标显示器、修正工作区并更新物理锚点；debug/release 中气泡从 (1744,712) 移到 (1654,662)，立即切 composer 不回跳；立绘再移到 (1474,562)，四态锚点均为 (1954,1230)
+真实点击穿透：debug/release 均以 WindowFromPoint/GetAncestor 证明固定包络透明点不属于 Sakura HWND，并以真实鼠标点击证明后方窗口被激活；portrait、bubble、controls、textarea 和 send 均由 Sakura HWND 接收；输入框、发送和状态控件模拟拖动后原生 bounds 零变化
+真实输入/IME/focus：debug/release 均真实输入英文 focus；Alt+Tab 确认离开窗口后返回并追加 A；hide/show 后追加 H；idle→composer 后追加 S；截图依次证明 focus、focusA、focusAH、focusAHS；Microsoft Pinyin composition 候选“樱花”显示在真实输入光标下方且处于当前窗口/显示器内，空格后提交为 focusAHS樱花；composition 状态机测试证明 composition 中 Enter/button/失焦/切态不会产生本地提交，更不接入真实聊天
+闪烁与布局回归：debug/release 四态原生 bounds 均固定 816x680；切换前后初始物理锚点均为 (2224,1380)；像素探针正常距离 80602、切态最小距离 76475，无透明/空白帧；拖动后四态锚点继续固定为 (1954,1230)，没有整幅立绘位移、白闪或布局抖动
+真实平台范围：当前真实物理环境仅 1 个 2560x1440 显示器、工作区 2560x1392、100% DPI；没有真实多屏、负坐标、125% 或 150% DPI 证据，不把自动测试描述为物理验收
+自动补足范围：Rust 确定性测试覆盖多屏选择、副屏负坐标、显示器间隙、100%/125%/150% DPI、工作区四边、窗口包络大于工作区、极端坐标、跨屏后锚点和拖动后四态；前端/Rust共同覆盖四态命中、半开边界、interactive 优先、快速状态结果和共享契约
+数据与进程门禁：debug/release 真实 data/ canonical manifest 前后均为 eb5f789b502eb2275fddcf9655caa5685803a785c14586540ddc10dd0fae4c9a；运行期 Python 后代为 0；关闭后 Shell/WebView 后代为 0；根进程退出码 0
+旧迁移取证：只读固定 commit 190dfafd24f5c5226bff8b4347837b6e45d9a331 的 desktop/src-tauri/src/windows.rs 与 desktop/frontend/pet/pet_controller.js；采用物理/逻辑换算、composition guard、revision 场景和平台调用经验；拒绝 secondary-window、强制 always-on-top、整窗 set_ignore_cursor_events、旧 DesktopAppState/组合根以及 chat/capture/settings 耦合；未 cherry-pick 或恢复旧迁移分支
+明确非目标：没有 Python Core/Supervisor/Fake Core/IPC/聊天/Provider/角色业务；没有位置/草稿/焦点持久化；没有多窗口、托盘、设置、TTS、Tools、截图、吸边、磁吸或动画；没有修改默认入口、legacy Qt、main.py、start.bat、app/、plugins/、data/、runtime/ 或 characters/
+已知限制：真实物理多屏、负坐标、125% 和 150% DPI 仍缺失；当前命中使用小型矩形语义区域，气泡圆角透明像素仍归气泡拖动区；首轮正式目标仍仅 Windows x64/WebView2
+P0/P1：零；退出条件相关缺陷为零；单窗口方案在当前真实 Windows/WebView 环境成立
+回退步骤：整体 revert 本 WP accepted 提交，移除命中/拖动/输入焦点平台代码、真实输入控件和验收脚本，恢复 WP-1A-02 固定透明包络和静态四状态布局；不触碰默认入口、legacy Qt、Python Runtime 或真实 data/
+关联提交：本 WP accepted 提交（feat(runtime): 建立透明窗口命中、拖动与输入焦点技术门）
+```
 
 主要结果：证明透明桌宠窗口的鼠标命中、输入和焦点模型在目标 Windows 环境真实可用。
 
@@ -1244,6 +1295,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 11. 当前启动点
 
-当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-02` 均已 accepted；`WP-1A-03` 及后续 Work Package 继续为 `planned`。
+当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-03` 均已 accepted；`WP-1A-04` 及后续 Work Package 继续为 `planned`。
 
-下一步可以单独激活 WP-1A-03；固定透明包络的空白区穿透、交互区命中、拖动、焦点和 IME 必须在该 WP 真实验证，本次没有提前实现。
+下一步可以单独激活 WP-1A-04；本次没有开始 WP-1A-04。

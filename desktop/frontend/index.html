@@ -4,25 +4,31 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>Sakura Runtime v2 · Pet geometry gate</title>
+    <title>Sakura Runtime v2 · Pet interaction gate</title>
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="./app.js"></script>
   </head>
   <body data-shell-state="pet-geometry-loading">
-    <main id="pet-stage" class="pet-stage" aria-label="透明桌宠窗口几何技术门">
-      <section class="bubble" aria-live="polite">
-        <span class="bubble-kicker">Geometry gate</span>
+    <main id="pet-stage" class="pet-stage" aria-label="透明桌宠窗口交互技术门">
+      <section class="bubble" data-drag-region="true" aria-live="polite" aria-label="气泡正文，可拖动窗口">
+        <span class="bubble-kicker">Interaction gate</span>
         <p id="bubble-copy">
           这是一段只用于边界验证的占位内容。无论文字多长，原生窗口都由布局契约限定。
         </p>
       </section>
 
-      <div class="composer" aria-label="输入区域占位">
-        <span>在这里输入…</span>
-        <i aria-hidden="true"></i>
+      <div class="composer" data-interactive="true" aria-label="输入与中文输入法技术门">
+        <textarea
+          id="composer-input"
+          rows="1"
+          maxlength="4096"
+          aria-label="技术门文本输入"
+          placeholder="输入英文或中文…"
+        ></textarea>
+        <button type="button" id="composer-send" aria-label="本地发送技术反馈">发送</button>
       </div>
 
-      <figure class="portrait" aria-label="占位立绘">
+      <figure class="portrait" data-drag-region="true" aria-label="占位立绘，可拖动窗口">
         <div class="portrait-paper">
           <span class="sakura-mark" aria-hidden="true">✦</span>
           <div class="portrait-face" aria-hidden="true"></div>
@@ -31,7 +37,7 @@
         </div>
       </figure>
 
-      <nav class="state-rail" aria-label="表现状态技术门">
+      <nav class="state-rail" data-interactive="true" aria-label="表现状态技术门">
         <button type="button" data-state="idle" aria-label="切换 idle 状态">I</button>
         <button type="button" data-state="bubble" aria-label="切换 bubble 状态">B</button>
         <button type="button" data-state="composer" aria-label="切换 composer 状态">C</button>

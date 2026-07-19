@@ -61,6 +61,21 @@ body[data-shell-state="pet-geometry-loading"] {
   width: var(--portrait-width);
   height: var(--portrait-height);
   filter: drop-shadow(0 14px 16px var(--shadow));
+  cursor: grab;
+  touch-action: none;
+}
+
+.portrait:active {
+  cursor: grabbing;
+}
+
+.bubble {
+  cursor: grab;
+  touch-action: none;
+}
+
+.bubble:active {
+  cursor: grabbing;
 }
 
 .portrait-paper {
@@ -190,12 +205,13 @@ figcaption {
   z-index: 4;
   left: var(--input-x);
   top: var(--input-y);
-  display: flex;
+  display: grid;
   width: var(--input-width);
   height: var(--input-height);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 18px 0 22px;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
   border: 1px solid #cba7ba;
   border-radius: 18px;
   color: var(--muted);
@@ -204,19 +220,48 @@ figcaption {
   font-size: 14px;
 }
 
-.composer i {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+.composer textarea {
+  width: 100%;
+  height: 38px;
+  min-height: 0;
+  padding: 8px 0;
+  overflow: hidden;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: var(--ink);
+  background: transparent;
+  font: inherit;
+  line-height: 22px;
+  user-select: text;
+}
+
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+.composer button {
+  height: 34px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 12px;
+  color: white;
   background: var(--sakura);
-  box-shadow: 0 0 0 5px var(--petal);
+  font: 700 12px/1 "Microsoft YaHei UI", sans-serif;
+}
+
+.composer button:hover,
+.composer button:focus-visible {
+  background: var(--sakura-deep);
 }
 
 .state-rail {
   position: absolute;
   z-index: 10;
-  left: var(--rail-x, 8px);
-  bottom: 12px;
+  left: var(--controls-x, 8px);
+  top: var(--controls-y, 630px);
+  width: var(--controls-width, 193px);
+  height: var(--controls-height, 38px);
   display: flex;
   gap: 5px;
   padding: 5px;

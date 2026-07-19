@@ -1,9 +1,11 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod window_geometry;
+mod window_interaction;
 
 use std::sync::Mutex;
 
+use serde::Serialize;
 use tauri::WebviewWindow;
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
@@ -15,12 +17,24 @@ const STARTUP_STYLES: &str = include_str!("../../frontend/styles.css");
 const APP_SCRIPT: &str = include_str!("../../frontend/app.js");
 const LAYOUT_SCRIPT: &str = include_str!("../../frontend/pet/layout.js");
 const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-controller.js");
+const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
+const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 
 #[derive(Default)]
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
+    state: Option<PresentationState>,
+    applied_revision: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetLayoutApplication {
+    #[serde(flatten)]
+    layout: LayoutApplication,
+    hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
 fn layout_contract() -> Result<LayoutContract, String> {
@@ -83,18 +97,17 @@ fn apply_pet_layout(
     state: PresentationState,
     revision: u64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<LayoutApplication, String> {
+) -> Result<PetLayoutApplication, String> {
     let contract = layout_contract()?;
     let mut session = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
 
     if !session.revision.accept(revision) {
-        return Ok(LayoutApplication::rejected(
-            revision,
-            state,
-            contract.schema_version,
-        ));
+        return Ok(PetLayoutApplication {
+            layout: LayoutApplication::rejected(revision, state, contract.schema_version),
+            hit_regions: None,
+        });
     }
 
     let monitor = target_monitor(&window, session.portrait_anchor)?;
@@ -107,11 +120,82 @@ fn apply_pet_layout(
     )?;
 
     apply_native_bounds(&window, &application.physical_placement)?;
+    let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
     session.portrait_anchor = Some(application.portrait_anchor);
+    session.state = Some(state);
+    session.applied_revision = revision;
     window
         .show()
         .map_err(|error| format!("failed to show pet window: {error}"))?;
-    Ok(application)
+    Ok(PetLayoutApplication {
+        layout: application,
+        hit_regions: Some(hit_regions),
+    })
+}
+
+fn apply_native_interaction_region(
+    window: &WebviewWindow,
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let logical = window_interaction::logical_hit_regions(contract, application.state)?;
+    let physical = window_interaction::scale_hit_regions(
+        &logical,
+        application.scale_factor * application.content_scale,
+    )?;
+    if let Err(error) = window_interaction::apply_native_hit_regions(window, &physical) {
+        return match window_interaction::restore_full_native_hit_region(window) {
+            Ok(()) => Err(format!(
+                "failed to apply native hit regions; restored full-window interaction: {error}"
+            )),
+            Err(recovery_error) => Err(format!(
+                "failed to apply native hit regions ({error}) and recovery failed ({recovery_error})"
+            )),
+        };
+    }
+    Ok(physical)
+}
+
+#[tauri::command]
+fn start_pet_drag(
+    window: WebviewWindow,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<PetLayoutApplication, String> {
+    window_interaction::start_native_drag_and_wait(&window)?;
+
+    let contract = layout_contract()?;
+    let mut session = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let state = session
+        .state
+        .ok_or_else(|| "pet layout is not ready for dragging".to_string())?;
+    let position = window
+        .outer_position()
+        .map_err(|error| format!("failed to read dragged window position: {error}"))?;
+    let monitor = target_monitor(&window, None)?;
+    let requested_anchor = window_geometry::anchor_from_window_position(
+        &contract,
+        &monitor,
+        window_geometry::PhysicalPoint {
+            x: position.x,
+            y: position.y,
+        },
+    )?;
+    let application = apply_window_layout(
+        &contract,
+        state,
+        session.applied_revision,
+        &monitor,
+        Some(requested_anchor),
+    )?;
+    apply_native_bounds(&window, &application.physical_placement)?;
+    let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
+    session.portrait_anchor = Some(application.portrait_anchor);
+    Ok(PetLayoutApplication {
+        layout: application,
+        hit_regions: Some(hit_regions),
+    })
 }
 
 #[cfg(windows)]
@@ -163,7 +247,8 @@ fn apply_native_bounds(
 #[tauri::command]
 fn set_pet_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
     if visible {
-        window.show().map_err(|error| error.to_string())
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())
     } else {
         window.hide().map_err(|error| error.to_string())
     }
@@ -181,6 +266,8 @@ fn main() {
         APP_SCRIPT.len(),
         LAYOUT_SCRIPT.len(),
         LAYOUT_CONTROLLER_SCRIPT.len(),
+        HIT_REGIONS_SCRIPT.len(),
+        INPUT_FOCUS_SCRIPT.len(),
         LAYOUT_CONTRACT_JSON.len(),
     );
 
@@ -188,6 +275,7 @@ fn main() {
         .manage(Mutex::new(WindowGeometrySession::default()))
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
+            start_pet_drag,
             set_pet_visible,
             close_pet_window
         ])
@@ -206,6 +294,8 @@ mod tests {
         assert!(!APP_SCRIPT.is_empty());
         assert!(!LAYOUT_SCRIPT.is_empty());
         assert!(!LAYOUT_CONTROLLER_SCRIPT.is_empty());
+        assert!(!HIT_REGIONS_SCRIPT.is_empty());
+        assert!(!INPUT_FOCUS_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract
             .validate()

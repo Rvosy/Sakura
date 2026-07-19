@@ -14,7 +14,7 @@ serde_json = "=1.0.150"
 tauri = { version = "=2.11.3", features = [] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.61.3", features = ["Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]

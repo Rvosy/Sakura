@@ -12,7 +12,7 @@ pub enum PresentationState {
 }
 
 impl PresentationState {
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Bubble => "bubble",
@@ -49,6 +49,7 @@ pub struct StateLayout {
     pub portrait_rect: [u32; 4],
     pub bubble_rect: Option<[u32; 4]>,
     pub input_rect: Option<[u32; 4]>,
+    pub controls_rect: [u32; 4],
     pub portrait_anchor: [u32; 2],
 }
 
@@ -94,6 +95,7 @@ impl LayoutContract {
             for (name, rect) in [
                 ("bubbleRect", layout.bubble_rect),
                 ("inputRect", layout.input_rect),
+                ("controlsRect", Some(layout.controls_rect)),
             ] {
                 if let Some([rect_x, rect_y, rect_width, rect_height]) = rect {
                     if rect_width == 0
@@ -348,6 +350,28 @@ pub fn apply_window_layout(
         portrait_anchor: anchor,
         work_area: monitor.work_area,
         monitor_name: monitor.name.clone(),
+    })
+}
+
+pub fn anchor_from_window_position(
+    contract: &LayoutContract,
+    monitor: &MonitorDescriptor,
+    window_position: PhysicalPoint,
+) -> Result<PhysicalPoint, String> {
+    contract.validate()?;
+    if !monitor.scale_factor.is_finite() || monitor.scale_factor <= 0.0 {
+        return Err("monitor scale factor must be positive and finite".to_string());
+    }
+    if monitor.work_area.width == 0 || monitor.work_area.height == 0 {
+        return Err("monitor work area must be non-empty".to_string());
+    }
+    let (content_scale, _) = fit_contract_to_work_area(contract, monitor)?;
+    let scaled = scale_viewport(&contract.viewport, monitor.scale_factor, content_scale);
+    let x = i64::from(window_position.x) + i64::from(scaled.anchor[0]);
+    let y = i64::from(window_position.y) + i64::from(scaled.anchor[1]);
+    Ok(PhysicalPoint {
+        x: x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
     })
 }
 
@@ -677,6 +701,7 @@ mod tests {
             portrait_rect: [56, 72, 240, 336],
             bubble_rect: None,
             input_rect: None,
+            controls_rect: [8, 370, 193, 38],
             portrait_anchor: [176, 408],
         };
         assert_eq!(scale_layout(&layout, 1.0, 1.0).size, [320, 420]);
@@ -727,5 +752,71 @@ mod tests {
         assert!(!guard.accept(2));
         assert!(!guard.accept(4));
         assert!(guard.accept(5));
+    }
+
+    #[test]
+    fn dragged_window_position_becomes_a_physical_anchor_at_each_target_dpi() {
+        let contract = contract();
+        for scale_factor in [1.0, 1.25, 1.5] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: -2560,
+                    y: -200,
+                    width: 2560,
+                    height: 1800,
+                },
+                scale_factor,
+            );
+            let position = PhysicalPoint { x: -2300, y: -100 };
+            let anchor = anchor_from_window_position(&contract, &monitor, position).unwrap();
+            let result = apply_window_layout(
+                &contract,
+                PresentationState::Composer,
+                1,
+                &monitor,
+                Some(anchor),
+            )
+            .unwrap();
+            assert_eq!(result.portrait_anchor, anchor);
+            for state in PresentationState::all() {
+                let transitioned =
+                    apply_window_layout(&contract, state, 2, &monitor, Some(anchor)).unwrap();
+                assert_eq!(transitioned.portrait_anchor, anchor);
+                assert_eq!(transitioned.physical_placement, result.physical_placement);
+            }
+        }
+    }
+
+    #[test]
+    fn dragged_anchor_is_corrected_for_edges_and_a_smaller_work_area() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: 200,
+                y: 40,
+                width: 360,
+                height: 240,
+            },
+            1.5,
+        );
+        let requested = anchor_from_window_position(
+            &contract,
+            &monitor,
+            PhysicalPoint {
+                x: i32::MIN + 1,
+                y: i32::MAX - 1,
+            },
+        )
+        .unwrap();
+        let result = apply_window_layout(
+            &contract,
+            PresentationState::Expanded,
+            1,
+            &monitor,
+            Some(requested),
+        )
+        .unwrap();
+        assert_inside(&result);
+        assert_ne!(result.portrait_anchor, requested);
     }
 }

@@ -65,9 +65,9 @@ export function validateLayoutContract(contract) {
     ) {
       throw new Error(`portrait anchor mismatch for ${state}`);
     }
-    for (const key of ["bubbleRect", "inputRect"]) {
+    for (const key of ["bubbleRect", "inputRect", "controlsRect"]) {
       const rect = layout[key];
-      if (rect === null) continue;
+      if (rect === null && key !== "controlsRect") continue;
       if (!Array.isArray(rect) || rect.length !== 4 || rect.some((value) => !Number.isFinite(value))) {
         throw new Error(`invalid ${state}.${key}`);
       }
@@ -98,6 +98,7 @@ export function computePetLayout(contract, state, placeholderText = "") {
     portraitRect: translateRect(source.portraitRect, activeOffset),
     bubbleRect: translateRect(source.bubbleRect, activeOffset),
     inputRect: translateRect(source.inputRect, activeOffset),
+    controlsRect: translateRect(source.controlsRect, activeOffset),
     portraitAnchor: copyRect(contract.viewport.portraitAnchor),
     placeholderText: String(placeholderText).slice(0, MAX_PLACEHOLDER_TEXT),
   });
@@ -121,5 +122,6 @@ export function applyPetLayout(root, layout, contentScale) {
   setRect(root, "portrait", layout.portraitRect);
   setRect(root, "bubble", layout.bubbleRect);
   setRect(root, "input", layout.inputRect);
+  setRect(root, "controls", layout.controlsRect);
   root.dataset.presentationState = layout.state;
 }
