@@ -31,7 +31,15 @@ impl PresentationState {
 #[serde(rename_all = "camelCase")]
 pub struct LayoutContract {
     pub schema_version: u32,
+    pub viewport: ViewportLayout,
     pub states: BTreeMap<String, StateLayout>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportLayout {
+    pub window_size: [u32; 2],
+    pub portrait_anchor: [u32; 2],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -51,6 +59,17 @@ impl LayoutContract {
                 "unsupported layout contract version: {}",
                 self.schema_version
             ));
+        }
+        let [viewport_width, viewport_height] = self.viewport.window_size;
+        let [viewport_anchor_x, viewport_anchor_y] = self.viewport.portrait_anchor;
+        if viewport_width == 0
+            || viewport_height == 0
+            || viewport_width > 1200
+            || viewport_height > 1200
+            || viewport_anchor_x > viewport_width
+            || viewport_anchor_y > viewport_height
+        {
+            return Err("invalid native viewport envelope".to_string());
         }
         for state in PresentationState::all_values() {
             let layout = self
@@ -90,10 +109,25 @@ impl LayoutContract {
                     }
                 }
             }
+            let offset_x = viewport_anchor_x
+                .checked_sub(layout.portrait_anchor[0])
+                .ok_or_else(|| format!("{} expands right of viewport anchor", state.key()))?;
+            let offset_y = viewport_anchor_y
+                .checked_sub(layout.portrait_anchor[1])
+                .ok_or_else(|| format!("{} expands below viewport anchor", state.key()))?;
+            if offset_x.saturating_add(width) > viewport_width
+                || offset_y.saturating_add(height) > viewport_height
+            {
+                return Err(format!(
+                    "{} active layout escapes viewport envelope",
+                    state.key()
+                ));
+            }
         }
         Ok(())
     }
 
+    #[cfg(test)]
     fn layout(&self, state: PresentationState) -> Result<&StateLayout, String> {
         self.states
             .get(state.key())
@@ -292,7 +326,7 @@ pub fn apply_window_layout(
 
     let (content_scale, envelope) = fit_contract_to_work_area(contract, monitor)?;
     let anchor = normalize_anchor(monitor.work_area, envelope, existing_anchor)?;
-    let scaled = scale_layout(contract.layout(state)?, monitor.scale_factor, content_scale);
+    let scaled = scale_viewport(&contract.viewport, monitor.scale_factor, content_scale);
     let x = i64::from(anchor.x) - i64::from(scaled.anchor[0]);
     let y = i64::from(anchor.y) - i64::from(scaled.anchor[1]);
     let placement = PhysicalPlacement {
@@ -321,15 +355,9 @@ fn content_scale_for_work_area(
     contract: &LayoutContract,
     monitor: &MonitorDescriptor,
 ) -> Result<f64, String> {
-    let mut maximum_width = 0;
-    let mut maximum_height = 0;
-    for state in LayoutContract::all_values() {
-        let [width, height] = contract.layout(state)?.window_size;
-        maximum_width = maximum_width.max(width);
-        maximum_height = maximum_height.max(height);
-    }
-    let physical_width = f64::from(maximum_width) * monitor.scale_factor;
-    let physical_height = f64::from(maximum_height) * monitor.scale_factor;
+    let [viewport_width, viewport_height] = contract.viewport.window_size;
+    let physical_width = f64::from(viewport_width) * monitor.scale_factor;
+    let physical_height = f64::from(viewport_height) * monitor.scale_factor;
     Ok((f64::from(monitor.work_area.width) / physical_width)
         .min(f64::from(monitor.work_area.height) / physical_height)
         .min(1.0))
@@ -352,6 +380,7 @@ fn fit_contract_to_work_area(
     Err("layout envelope cannot fit inside target work area".to_string())
 }
 
+#[cfg(test)]
 fn scale_layout(layout: &StateLayout, scale_factor: f64, content_scale: f64) -> ScaledLayout {
     let scale = scale_factor * content_scale;
     ScaledLayout {
@@ -362,6 +391,24 @@ fn scale_layout(layout: &StateLayout, scale_factor: f64, content_scale: f64) -> 
         anchor: [
             round_nonnegative(f64::from(layout.portrait_anchor[0]) * scale),
             round_nonnegative(f64::from(layout.portrait_anchor[1]) * scale),
+        ],
+    }
+}
+
+fn scale_viewport(
+    viewport: &ViewportLayout,
+    scale_factor: f64,
+    content_scale: f64,
+) -> ScaledLayout {
+    let scale = scale_factor * content_scale;
+    ScaledLayout {
+        size: [
+            round_positive(f64::from(viewport.window_size[0]) * scale),
+            round_positive(f64::from(viewport.window_size[1]) * scale),
+        ],
+        anchor: [
+            round_nonnegative(f64::from(viewport.portrait_anchor[0]) * scale),
+            round_nonnegative(f64::from(viewport.portrait_anchor[1]) * scale),
         ],
     }
 }
@@ -379,24 +426,13 @@ fn anchor_envelope(
     scale_factor: f64,
     content_scale: f64,
 ) -> Result<AnchorEnvelope, String> {
-    let mut envelope = AnchorEnvelope {
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-    };
-    for state in LayoutContract::all_values() {
-        let scaled = scale_layout(contract.layout(state)?, scale_factor, content_scale);
-        envelope.left = envelope.left.max(scaled.anchor[0]);
-        envelope.right = envelope
-            .right
-            .max(scaled.size[0].saturating_sub(scaled.anchor[0]));
-        envelope.top = envelope.top.max(scaled.anchor[1]);
-        envelope.bottom = envelope
-            .bottom
-            .max(scaled.size[1].saturating_sub(scaled.anchor[1]));
-    }
-    Ok(envelope)
+    let scaled = scale_viewport(&contract.viewport, scale_factor, content_scale);
+    Ok(AnchorEnvelope {
+        left: scaled.anchor[0],
+        right: scaled.size[0].saturating_sub(scaled.anchor[0]),
+        top: scaled.anchor[1],
+        bottom: scaled.size[1].saturating_sub(scaled.anchor[1]),
+    })
 }
 
 fn normalize_anchor(
@@ -490,6 +526,7 @@ mod tests {
                 scale_factor,
             );
             let mut anchor = None;
+            let mut placement = None;
             for (revision, state) in PresentationState::all().into_iter().enumerate() {
                 let result =
                     apply_window_layout(&contract, state, revision as u64 + 1, &monitor, anchor)
@@ -497,8 +534,12 @@ mod tests {
                 if let Some(previous) = anchor {
                     assert_eq!(result.portrait_anchor, previous);
                 }
+                if let Some(previous) = placement {
+                    assert_eq!(result.physical_placement, previous);
+                }
                 assert_inside(&result);
                 anchor = Some(result.portrait_anchor);
+                placement = Some(result.physical_placement);
             }
         }
     }

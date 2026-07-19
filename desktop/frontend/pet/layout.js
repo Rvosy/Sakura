@@ -11,9 +11,34 @@ function copyRect(rect) {
   return rect === null ? null : rect.map((value) => Number(value));
 }
 
+function translateRect(rect, offset) {
+  if (rect === null) return null;
+  return [rect[0] + offset[0], rect[1] + offset[1], rect[2], rect[3]];
+}
+
 export function validateLayoutContract(contract) {
-  if (contract?.schemaVersion !== 1 || typeof contract.states !== "object") {
+  if (
+    contract?.schemaVersion !== 1 ||
+    typeof contract.states !== "object" ||
+    !Array.isArray(contract.viewport?.windowSize) ||
+    !Array.isArray(contract.viewport?.portraitAnchor)
+  ) {
     throw new Error("unsupported pet layout contract");
+  }
+  const [viewportWidth, viewportHeight] = contract.viewport.windowSize;
+  const [viewportAnchorX, viewportAnchorY] = contract.viewport.portraitAnchor;
+  if (
+    ![viewportWidth, viewportHeight, viewportAnchorX, viewportAnchorY].every(Number.isFinite) ||
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    viewportWidth > 1200 ||
+    viewportHeight > 1200 ||
+    viewportAnchorX < 0 ||
+    viewportAnchorX > viewportWidth ||
+    viewportAnchorY < 0 ||
+    viewportAnchorY > viewportHeight
+  ) {
+    throw new Error("invalid native viewport envelope");
   }
 
   for (const state of PRESENTATION_STATES) {
@@ -60,14 +85,20 @@ export function computePetLayout(contract, state, placeholderText = "") {
   if (!PRESENTATION_STATES.includes(state)) throw new Error(`unknown pet state: ${state}`);
 
   const source = contract.states[state];
+  const activeOffset = [
+    contract.viewport.portraitAnchor[0] - source.portraitAnchor[0],
+    contract.viewport.portraitAnchor[1] - source.portraitAnchor[1],
+  ];
   return Object.freeze({
     contractVersion: contract.schemaVersion,
     state,
-    windowSize: copyRect(source.windowSize),
-    portraitRect: copyRect(source.portraitRect),
-    bubbleRect: copyRect(source.bubbleRect),
-    inputRect: copyRect(source.inputRect),
-    portraitAnchor: copyRect(source.portraitAnchor),
+    windowSize: copyRect(contract.viewport.windowSize),
+    activeWindowSize: copyRect(source.windowSize),
+    activeOffset,
+    portraitRect: translateRect(source.portraitRect, activeOffset),
+    bubbleRect: translateRect(source.bubbleRect, activeOffset),
+    inputRect: translateRect(source.inputRect, activeOffset),
+    portraitAnchor: copyRect(contract.viewport.portraitAnchor),
     placeholderText: String(placeholderText).slice(0, MAX_PLACEHOLDER_TEXT),
   });
 }
@@ -86,6 +117,7 @@ export function applyPetLayout(root, layout, contentScale) {
   root.style.setProperty("--stage-width", `${windowWidth}px`);
   root.style.setProperty("--stage-height", `${windowHeight}px`);
   root.style.setProperty("--content-scale", String(contentScale));
+  root.style.setProperty("--rail-x", `${layout.activeOffset[0] + 8}px`);
   setRect(root, "portrait", layout.portraitRect);
   setRect(root, "bubble", layout.bubbleRect);
   setRect(root, "input", layout.inputRect);

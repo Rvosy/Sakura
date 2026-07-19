@@ -215,7 +215,7 @@ figcaption {
 .state-rail {
   position: absolute;
   z-index: 10;
-  left: 8px;
+  left: var(--rail-x, 8px);
   bottom: 12px;
   display: flex;
   gap: 5px;

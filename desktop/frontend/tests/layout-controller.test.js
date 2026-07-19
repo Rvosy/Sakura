@@ -62,7 +62,7 @@ test("a Rust/WebView contract mismatch is rejected", async () => {
   await assert.rejects(controller.transition("idle"), /contracts do not match/);
 });
 
-test("native bounds are applied before the DOM layout is committed", async () => {
+test("native bounds are confirmed before the DOM state is committed", async () => {
   const order = [];
   const controller = createLayoutController({
     computeLayout: (state) => ({ state, contractVersion: 1 }),

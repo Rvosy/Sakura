@@ -1,5 +1,9 @@
 {
   "schemaVersion": 1,
+  "viewport": {
+    "windowSize": [816, 680],
+    "portraitAnchor": [480, 668]
+  },
   "states": {
     "idle": {
       "windowSize": [320, 420],

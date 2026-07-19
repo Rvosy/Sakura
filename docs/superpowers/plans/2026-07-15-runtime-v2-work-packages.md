@@ -541,6 +541,35 @@ P0/P1：零；重新稳定化触发的状态切换闪烁缺陷已清零；本次
 关联提交：本次闪烁修复提交（fix(runtime): 消除桌宠状态切换闪烁）
 ```
 
+第二次重新稳定化记录：
+
+```text
+状态：stabilizing
+重新开始日期：2026-07-20
+触发证据：用户提供三组三帧慢放截图，明确显示状态切换期间先更新原生窗口 bounds、WebView 仍绘制旧布局，随后 DOM 才更新；立绘在中间帧发生明显水平/垂直位移后归位
+前次门禁缺口：固定立绘像素探针只采样单个底部点，旧布局在新窗口中的裁切仍可能覆盖该点，因此 debug/release 的单点距离证据不能证明整幅立绘未移动；2834a16a99bf8b3ae11a416203f698d84fb3c837 不再视为退出条件最终证据
+修复方向：状态切换前只登记待布局，不立即绘制；原生窗口引发 WebView viewport resize 时，由 ResizeObserver 在下一帧绘制前提交待布局；Tauri Promise 返回只确认 revision/结果和最终状态，不再承担首次 DOM 几何更新
+修复门禁：必须复现并消除用户截图中的“新原生边界 + 旧 DOM”中间帧；真实 debug/release 连续切换需使用多个立绘采样点或整块截图差分，不能再以单点通过作为无位移结论
+明确禁止：WP 继续 stabilizing；不得开始 WP-1A-03；不引入第二原生窗口、隐藏 Qt、焦点/命中/IME 平台能力或用户数据写入
+```
+
+最终重新验收记录：
+
+```text
+状态：accepted
+最终根因：用户三组三帧慢放证明动态移动/缩放 HWND 与 WebView DOM 布局无法在同一个合成帧原子提交；原生窗口先到新 bounds 时，DWM 会短暂展示新位置中的旧 WebView 表面，造成整幅立绘位移；单点像素门禁没有覆盖该空间位移
+失败方案结论：整窗 opacity 过渡会产生明显灭帧；DOM 提前提交会在旧 HWND 位置绘制新布局；原生 bounds 先提交会在新 HWND 位置绘制旧布局；ResizeObserver 仍无法阻止 DWM 先合成旧表面；以上方案均不作为最终实现
+最终实现：单透明 HWND 使用固定 816x680 逻辑包络和固定 viewport portraitAnchor=(480,668)；四态继续输出 320x420、736x500、736x592、816x680 的逻辑活动尺寸和向上/向左 activeOffset，但原生窗口 placement、WebView viewport 和立绘本地矩形在四态间完全不变；状态切换只改变包络内气泡、输入区和技术门布局
+自动测试：cargo fmt --check 通过；Rust 10 passed，并断言三档 DPI 下四态 physicalPlacement 完全一致；前端 8 passed，并断言四态逻辑尺寸保留、native viewport 恒定、portraitRect/portraitAnchor 恒定、activeOffset 向上/向左展开；debug/release cargo build --locked 均通过；PowerShell 验收脚本语法解析通过
+真实应用验收：用户按原慢放方式手工复测确认没有问题；debug/release 四态原生窗口均为 (1744,712,816x680)，逻辑活动尺寸依次为 320x420、736x500、736x592、816x680，四态物理锚点均为 (2224,1380)
+闪烁探针：debug/release 正常可见像素距隐藏背景均为 121509，连续四态切换期间最小距离均为 116430，没有透明/空白帧；逐态截图与用户慢放结论一致
+数据与进程门禁：debug/release 真实 data/ canonical manifest 前后均为 eb5f789b502eb2275fddcf9655caa5685803a785c14586540ddc10dd0fae4c9a；Python 后代为 0；关闭后本轮 Shell/WebView 后代为 0；根进程退出码 0
+已知限制与风险：固定透明包络大于 idle 逻辑活动区，透明空白区的点击穿透与交互区命中必须由 WP-1A-03 真实验证；本 WP 不提前实现命中、拖动、焦点或 IME；真实物理环境仍只有单屏 100% DPI
+P0/P1：零；用户报告的状态切换闪烁和整幅立绘中间帧位移均已清零；本次没有开始 WP-1A-03
+回退步骤：revert 最终固定包络修复提交会回到 2834a16a99bf8b3ae11a416203f698d84fb3c837，但会重新引入用户慢放确认的立绘位移；回退后 WP 必须重新标记 stabilizing，且不得开始 WP-1A-03
+关联提交：最终固定包络修复提交（fix(runtime): 固定透明窗口包络消除立绘位移）
+```
+
 主要结果：验证单透明桌宠窗口在不接入真实交互和 Python 的情况下，可以稳定表达基础窗口状态并保持立绘桌面锚点。
 
 允许能力：
@@ -1217,4 +1246,4 @@ legacy Qt 创建/修改数据并退出
 
 当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-02` 均已 accepted；`WP-1A-03` 及后续 Work Package 继续为 `planned`。
 
-下一步可以单独激活 WP-1A-03，但本次闪烁修复没有开始其点击穿透、拖动、焦点或中文 IME 平台实现。
+下一步可以单独激活 WP-1A-03；固定透明包络的空白区穿透、交互区命中、拖动、焦点和 IME 必须在该 WP 真实验证，本次没有提前实现。

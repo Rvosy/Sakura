@@ -179,21 +179,24 @@ try {
     $dpi = [SakuraGeometryGateNative]::GetDpiForWindow($windowHandle)
     $states = [System.Collections.Generic.List[object]]::new()
     $fixedAnchor = $null
+    $currentStateName = "idle"
 
     $activationBounds = Get-WindowBounds -WindowHandle $windowHandle
     [void][SakuraGeometryGateNative]::SetForegroundWindow($windowHandle)
     Click-Point `
-        -X ($activationBounds.X + [int][Math]::Round(176 * $dpi / 96.0)) `
-        -Y ($activationBounds.Y + [int][Math]::Round(180 * $dpi / 96.0))
+        -X ($activationBounds.X + [int][Math]::Round([double]$contract.viewport.portraitAnchor[0] * $dpi / 96.0)) `
+        -Y ($activationBounds.Y + [int][Math]::Round(([double]$contract.viewport.portraitAnchor[1] - 200) * $dpi / 96.0))
     Start-Sleep -Milliseconds 250
 
     $stateNames = @("idle", "bubble", "composer", "expanded")
     for ($stateIndex = 0; $stateIndex -lt $stateNames.Count; $stateIndex++) {
         $stateName = $stateNames[$stateIndex]
         $beforeClickBounds = Get-WindowBounds -WindowHandle $windowHandle
+        $currentLayout = $contract.states.$currentStateName
+        $currentOffsetX = [int]$contract.viewport.portraitAnchor[0] - [int]$currentLayout.portraitAnchor[0]
         [void][SakuraGeometryGateNative]::SetForegroundWindow($windowHandle)
         Start-Sleep -Milliseconds 80
-        $buttonX = $beforeClickBounds.X + [int][Math]::Round((26 + 31 * $stateIndex) * $dpi / 96.0)
+        $buttonX = $beforeClickBounds.X + [int][Math]::Round(($currentOffsetX + 26 + 31 * $stateIndex) * $dpi / 96.0)
         $buttonY = $beforeClickBounds.Y + $beforeClickBounds.Height - [int][Math]::Round(30 * $dpi / 96.0)
         for ($clickAttempt = 0; $clickAttempt -lt 3; $clickAttempt++) {
             Click-Point -X $buttonX -Y $buttonY
@@ -204,16 +207,16 @@ try {
         $windowHandle = $process.MainWindowHandle
         $bounds = Get-WindowBounds -WindowHandle $windowHandle
         $layout = $contract.states.$stateName
-        $expectedWidth = [int][Math]::Round([double]$layout.windowSize[0] * $dpi / 96.0)
-        $expectedHeight = [int][Math]::Round([double]$layout.windowSize[1] * $dpi / 96.0)
+        $expectedWidth = [int][Math]::Round([double]$contract.viewport.windowSize[0] * $dpi / 96.0)
+        $expectedHeight = [int][Math]::Round([double]$contract.viewport.windowSize[1] * $dpi / 96.0)
         if ($bounds.Width -ne $expectedWidth -or $bounds.Height -ne $expectedHeight) {
             $diagnosticScreenshot = Join-Path $resolvedEvidenceDirectory "$($process.Id)-$stateName-mismatch.png"
             Save-WindowScreenshot -WindowHandle $windowHandle -Path $diagnosticScreenshot
             throw "$stateName native bounds mismatch: $($bounds.Width)x$($bounds.Height), expected ${expectedWidth}x${expectedHeight}."
         }
         $anchor = [pscustomobject]@{
-            X = $bounds.X + [int][Math]::Round([double]$layout.portraitAnchor[0] * $dpi / 96.0)
-            Y = $bounds.Y + [int][Math]::Round([double]$layout.portraitAnchor[1] * $dpi / 96.0)
+            X = $bounds.X + [int][Math]::Round([double]$contract.viewport.portraitAnchor[0] * $dpi / 96.0)
+            Y = $bounds.Y + [int][Math]::Round([double]$contract.viewport.portraitAnchor[1] * $dpi / 96.0)
         }
         if ($null -eq $fixedAnchor) {
             $fixedAnchor = $anchor
@@ -229,11 +232,14 @@ try {
             Y = $bounds.Y
             Width = $bounds.Width
             Height = $bounds.Height
+            ActiveWidth = [int]$layout.windowSize[0]
+            ActiveHeight = [int]$layout.windowSize[1]
             AnchorX = $anchor.X
             AnchorY = $anchor.Y
             Visible = [SakuraGeometryGateNative]::IsWindowVisible($windowHandle)
             Screenshot = $screenshot
         })
+        $currentStateName = $stateName
     }
 
     $visibilityBounds = Get-WindowBounds -WindowHandle $windowHandle
@@ -294,7 +300,9 @@ try {
     $minimumTransitionDistance = [int]::MaxValue
     for ($stateIndex = 0; $stateIndex -lt $stateNames.Count; $stateIndex++) {
         $probeBounds = Get-WindowBounds -WindowHandle $windowHandle
-        $buttonX = $probeBounds.X + [int][Math]::Round((26 + 31 * $stateIndex) * $dpi / 96.0)
+        $currentLayout = $contract.states.$currentStateName
+        $currentOffsetX = [int]$contract.viewport.portraitAnchor[0] - [int]$currentLayout.portraitAnchor[0]
+        $buttonX = $probeBounds.X + [int][Math]::Round(($currentOffsetX + 26 + 31 * $stateIndex) * $dpi / 96.0)
         $buttonY = $probeBounds.Y + $probeBounds.Height - [int][Math]::Round(30 * $dpi / 96.0)
         Click-Point -X $buttonX -Y $buttonY
         $sampleDeadline = [DateTime]::UtcNow.AddMilliseconds(140)
@@ -307,6 +315,7 @@ try {
             }
             Start-Sleep -Milliseconds 5
         } while ([DateTime]::UtcNow -lt $sampleDeadline)
+        $currentStateName = $stateNames[$stateIndex]
     }
 
     $descendants = @(Get-DescendantProcesses -RootPid $process.Id)
