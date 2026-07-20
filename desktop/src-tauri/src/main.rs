@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
+mod core_supervisor;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod shared_instance;

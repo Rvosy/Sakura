@@ -57,7 +57,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | accepted |
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | accepted |
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | accepted |
-| WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | planned |
+| WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | accepted |
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | planned |
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | planned |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | planned |
@@ -841,6 +841,62 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 独立回退：回退 Windows 进程树模块和对应测试，不影响 Shell。
 
 ### WP-1B-02：串行 Supervisor 与 generation 生命周期
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-21
+允许目录：desktop/src-tauri/src/main.rs 中仅限声明 Supervisor 模块；desktop/src-tauri/src/core_supervisor.rs 及其同文件 Rust 单元/真实测试进程测试；desktop/tests/ 中仅限 WP-1B-02 Windows 串行 Supervisor 真实验收脚本；本文仅更新 WP-1B-02 状态与验收记录
+明确禁止目录：Cargo.toml/Cargo.lock 与依赖；managed_process_tree.rs 和 WP-1B-01 既有原语；main.py、legacy_qt_main.py、start*.bat、app/、desktop/frontend/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、共享 schema；真实 transport/stdio/IPC/hello/initialize、Fake Core、自动恢复 budget/backoff、Python Core/Assistant、聊天及 WP-1B-03 或后续生产能力
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；不安装或升级依赖；纯状态机测试与现有 ManagedProcessTree 测试进程均使用隔离临时目录和 deadline，重复执行后核对根/后代/句柄/计时器零残留
+关联 ADR：ADR-0001（所有 lifecycle intent 串行化、每 generation 独立 cancellation、旧 generation 回调隔离、stop/finalize/app shutdown 幂等、app shutdown 永久禁止新 generation）；不提前实现 WP-1B-04 自动恢复策略，不提升 ADR 状态
+计划提交：feat(runtime): 建立串行 Supervisor generation 生命周期
+回退方式：整体 git revert 本 WP accepted 提交，移除 core_supervisor 模块与 WP-1B-02 验收脚本；保留 WP-1B-01 ManagedProcessTree，不触碰 Shell、共享应用锁、data/ 或用户进程
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-21
+生产实现：新增同步串行 CoreSupervisor；所有 Start/Stop/Restart/AppShutdown intent 先进入内部 FIFO 再由同一可变状态所有者归约；每代使用独立 GenerationId、generation number 和 cancellation 状态；只发出 SpawnGeneration/StopGeneration lifecycle action，不直接操作 transport；restart 必须等待旧 generation stopped barrier 后才能发出下一代 spawn；AppShutdown 一经提交永久禁止新 generation；只有当前 Running 且未取消的 generation callback 可被接受
+RED/GREEN：首个 restart-during-spawn 测试因全部 Supervisor 类型缺失编译失败后转绿；app shutdown、spawn failure 和幂等 stop 测试先因 observe_spawn_failed 缺失编译失败后转绿；旧 generation callback 测试先因 accepts_generation_callback 缺失编译失败后转绿；随后新增 spawn failure during stop barrier 测试，首次真实失败为错误地提前发出 replacement spawn，最小修复后保持 Stopping 直到 observe_generation_stopped，再转绿
+首轮自动测试（历史证据，已由下方复审后门禁取代）：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 40 passed、7 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 通过
+故障测试：restart during spawn；app shutdown during spawn；spawn failure；spawn failure during stop；重复 stop/finalize/app shutdown；显式 stop 覆盖 pending restart；旧 generation 晚到 spawn/callback；start/restart after app shutdown；manual restart only after old cleanup
+首轮真实 Windows 验收（历史证据，已由下方复审后验收取代）：temp/runtime-v2-wp-1b-02/repeat-a-20260721/summary.json 与 repeat-b-20260721/summary.json；同一 PowerShell 会话连续两轮各 8/8，通过 30 秒 deadline；真实 ManagedProcessTree 完成 generation 1 restart 清理后才创建 generation 2，并由 app shutdown 回收；测试 exe SHA-256 a2bbb9701bda8dc45adfff6aeca81d7bda92a5db5fd647fc32e3fac84f17f91c；最终精确路径根/后代残留 0
+数据门禁：本 WP 与验收不访问仓库 data/，不修改共享 schema，不迁移、清理或恢复真实用户数据
+旧迁移复用：不复用旧迁移 Supervisor；没有 cherry-pick、restore 或复制旧迁移实现
+已知限制：尚未实现 Fake Core、transport/stdio/hello/initialize、协议优雅关闭、自动恢复 budget/backoff 或 Tauri app 事件接线；Restarting 枚举只冻结状态词，不在本 WP 提前实现 WP-1B-04 backoff；真实进程由既有 WP-1B-01 原语承载，Supervisor 本身只产出串行 lifecycle action
+P0/P1：自动门禁当前为零；等待独立规格/代码复审后才能 accepted
+回退步骤：整体 revert 本 WP accepted 提交；移除 core_supervisor.rs、main.rs 模块声明和 windows_core_supervisor_acceptance.ps1；保留 WP-1B-01 进程树原语，不触碰 Shell、data/ 或用户进程
+关联提交：待 accepted 后提交
+独立复审修复记录（2026-07-21）：复审期间补出三个 lifecycle 缺口。其一，spawn failure during stop 曾绕过旧代 cleanup barrier 提前 spawn，RED 后改为等待 generation_stopped；其二，非 Stopping 的当前代退出曾误报 Stopped，RED 后区分为 Exited；其三，初版 cancellation 只是快照布尔值，无法唤醒异步 generation worker，新增每代独立 Arc<AtomicBool> token 并由 SpawnGeneration action 携带，随后复审又发现 spawn failed/意外退出清空 current 前未 cancel，终态 token 测试先 RED 后统一修复。验收工作目录同时从仓库根改为隔离 Evidence 目录。
+复审后自动门禁：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 43 passed、7 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 与 git diff --check 通过。
+复审后真实 Windows 验收：temp/runtime-v2-wp-1b-02/final-repeat-a-20260721/summary.json 与 final-repeat-b-20260721/summary.json；同一 PowerShell 会话连续两轮各 11/11，30 秒 deadline；test exe SHA-256 817f253215c75abc956f552a7e5bce74fa974916dcb86a4c256d43a17e04e684；core_supervisor.rs SHA-256 66f62d7eb3216e230defcadab4963dc67291f8eb82cc9006b9977bb38b0f00ec；两轮最终精确路径根/后代残留 0。
+最终验收脚本绑定（2026-07-21）：为防止 harness-after-evidence 漂移，摘要 sourceManifest 新增验收脚本自身。当前最终双轮为 temp/runtime-v2-wp-1b-02/final-current-a-20260721/summary.json 与 final-current-b-20260721/summary.json，均为 11/11、残留 0；验收脚本 SHA-256 826871a8df0318b5bd48ebfcef28dba6cf6e17cd1bbd71aa321092f69b2d2b89，test exe 和 core_supervisor.rs SHA-256 与上一记录相同。
+当前门禁：P0/P1 为零；等待独立复审最终结论后方可 accepted。
+最终复审：Critical、Important、Minor 均为 0；spec compliance 与 code quality 均通过；复审者独立复跑 43 passed、7 ignored 并核对最终双轮 11/11、脚本/源码/测试 exe SHA-256 和进程残留 0；退出条件相关缺陷为零。
+```
+
+验收记录：
+
+```text
+状态：accepted
+验收日期：2026-07-21
+修改范围：desktop/src-tauri/src/core_supervisor.rs 及同文件测试；main.rs 的模块声明；desktop/tests/windows_core_supervisor_acceptance.ps1；本文 WP-1B-02 状态和证据记录
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 43 passed、7 ignored、0 failed；debug/release cargo build --locked 均通过；PowerShell parser、git diff --check 和最终测试进程残留扫描通过；独立复审重复运行同样通过
+故障测试：restart/stop/app shutdown during spawn；spawn failure 与 stopping barrier；意外退出 Exited 语义；每个终态 cancellation；重复 stop/finalize/app shutdown；显式 stop 覆盖 pending restart；旧 generation 晚到 spawn/stop/callback；shutdown 后 Start/Restart 永久禁止
+真实应用验收：当前脚本绑定的 final-current-a/b 同会话连续两轮各 11/11；真实 generation 1 Windows Job 完整回收后才创建 generation 2，app shutdown 再回收第二代；30 秒 deadline；最终根/后代残留 0
+数据门禁：测试 cwd 为隔离 Evidence 目录；本 WP 与验收不访问仓库 data/，不修改共享 schema，不迁移、清理或恢复真实用户数据
+进程门禁：真实测试根有 deadline；按 PID/StartTime/path 登记，finally 精确路径补获、停止并二次复扫；所有 terminal event 取消 generation token；最终测试 exe 根/后代残留 0
+关联 ADR：ADR-0001；本 WP 验证串行 intent/generation 生命周期，ADR 保持 Proposed，待 WP-1B-04 完整故障矩阵后统一评估 Technically Validated
+明确非目标：未实现 Fake Core、transport/stdio/IPC、hello/initialize、协议优雅关闭、自动恢复 budget/backoff、Tauri app 事件接线、Python Core/Assistant、聊天或 WP-1B-03 及后续能力
+P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Important/Minor 均为零
+已知限制：Restarting 状态词已冻结但 restart backoff 留待 WP-1B-04；当前 Supervisor 只产出 lifecycle action，WP-1B-03 才接最小测试 transport/Fake Core；generation number 极限溢出不属于可达运行规模
+独立回退方式：整体 git revert 本 WP accepted 提交，移除 core_supervisor.rs、main.rs 模块声明与 windows_core_supervisor_acceptance.ps1；保留 WP-1B-01 ManagedProcessTree，不触碰 Shell、共享应用锁、data/ 或用户进程
+关联提交：本 WP accepted 提交（feat(runtime): 建立串行 Supervisor generation 生命周期）
+```
 
 主要结果：所有 spawn、stop、restart 和 app shutdown 意图通过一个串行状态机处理，并以 generation 隔离旧回调。
 
