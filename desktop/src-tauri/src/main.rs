@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
+mod managed_process_tree;
 mod shared_instance;
 mod window_geometry;
 mod window_interaction;

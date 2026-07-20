@@ -56,7 +56,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | accepted |
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | accepted |
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | accepted |
-| WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | planned |
+| WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | accepted |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | planned |
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | planned |
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | planned |
@@ -760,6 +760,63 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审无 Critical/Im
 ## 5. Phase 1B：进程监管与 Fake Core
 
 ### WP-1B-01：Windows 受控进程树原语
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-20
+允许目录：desktop/src-tauri/Cargo.toml 中仅限现有 windows crate 的 Job Object/CreateProcess 所需 Win32 feature；desktop/src-tauri/src/main.rs 中仅限声明进程树模块；desktop/src-tauri/src/managed_process_tree.rs 及其同文件 Rust 测试；desktop/tests/ 中仅限 WP-1B-01 Windows 真实进程树验收脚本；本文仅更新 WP-1B-01 状态与验收记录
+明确禁止目录：main.py、legacy_qt_main.py、start*.bat、app/、desktop/frontend/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、共享用户数据 schema；shared instance/window 既有语义；Supervisor/generation 状态机、Fake Core transport、协议握手、自动重启、Python Core/Assistant、聊天及 WP-1B-02 或后续生产能力
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；现有 windows crate 0.61.3；不安装或升级依赖；所有测试进程使用测试可执行文件与隔离临时目录，设置 deadline，并核对根/一层/多层后代、Job/Process/Thread 句柄和计时器无残留
+关联 ADR：ADR-0001（每 generation 独立 Windows Job Object、JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE、suspended spawn、安全失败、正常/强制/Drop 分离语义）；本 WP 不单独提升 ADR 状态，待 WP-1B-04 完整故障矩阵后统一评估 Technically Validated
+计划提交：feat(runtime): 建立 Windows 受控进程树原语
+回退方式：整体 git revert 本 WP accepted 提交，移除 managed_process_tree 模块、对应 Win32 feature 和 WP-1B-01 验收脚本；保留 WP-1A-04 Shell 与共享应用锁，不触碰真实 data/ 或用户进程
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-21
+生产实现：新增 ManagedProcessTree Windows 原语；每棵树先创建匿名 Job 并启用 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE，再以 CreateProcessW(CREATE_SUSPENDED) 创建根、AssignProcessToJobObject 成功后才 ResumeThread；正常 wait/release_exited_handles、强制 terminate_tree 和 Drop 保险为分离语义；verify_tree_exited 查询 Job ActiveProcesses，不把根退出误当整树退出；非 Windows 安全返回 UnsupportedPlatform
+RED/GREEN：首个正常路径测试因 ManagedProcessSpec/ManagedProcessTree/WaitOutcome 缺失按预期编译失败；terminate_tree、Assign 失败回滚、Resume 失败回滚和 embedded NUL 拒绝均先取得缺失 API/行为 RED 后最小实现转绿；句柄门禁首轮从冷路径 77→93 失败，逐轮计数证明成功路径首次稳定到 90、失败路径首次稳定到 93 且其后各 12 轮恒定，修正为分别预热后测线性泄漏并通过
+首轮自动测试（历史证据，已由下方复审后门禁取代）：cargo fmt --check 退出码 0；cargo test --locked 为 31 passed、7 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 与 git diff --check 通过
+故障测试：有界 wait timeout；忽略退出后的 TerminateJobObject；根退出但后代继续存活；一层/多层后代；suspended 根 Assign 失败；已入 Job 后 Resume 失败；embedded NUL；不存在程序；重复 terminate/release；Drop 时活动多层树；成功/失败路径各 12 次句柄泄漏检查
+首轮真实 Windows 验收（历史证据，已由下方复审后验收取代）：temp/runtime-v2-wp-1b-01/acceptance-20260721-001602/summary.json；直接运行真实 Rust 测试可执行文件，11/11 必需场景通过，45 秒 deadline，调用者已在 Windows Job 的嵌套验证通过，结束匹配测试根/后代为 0
+首轮数据声明（历史证据）：本 WP 进程夹具只使用系统隔离临时目录，不读取或写入仓库 data/；首轮摘要曾写入 dataTouched=false，该无测量支撑字段已在复审修复中移除，不再作为最终门禁证据
+旧迁移复用：按 WP-0-03 R26/WP-1B-01 结论不复用旧 ManagedProcess；没有 cherry-pick、restore 或复制旧迁移实现
+已知限制：尚未接入 Supervisor/generation、stdio 管道、协议握手、Fake Core 或 UI；正式目标仅 Windows，非 Windows 只有安全失败；真实验收的外层脚本通常只来得及观察测试根，后代回收证据由 Job ActiveProcesses、隔离 PID marker 和退出后全路径零残留共同提供
+P0/P1：自动门禁当前为零；等待独立规格/代码复审和负责人实机复验后才能 accepted
+回退步骤：整体 revert 本 WP accepted 提交；移除 managed_process_tree.rs、main.rs 模块声明、JobObjects feature 和 Windows 验收脚本；不影响 WP-1A-04 Shell/共享应用锁，不触碰真实 data/ 或用户进程
+关联提交：待 accepted 后提交
+独立复审修复记录（2026-07-21）：首轮复审发现 3 个 Important：Job ActiveProcesses 轮询可能在 deadline 后观察到空树并 false-pass；验收脚本异常传播时可能跳过 finally 后的全路径残留扫描；验收可能选择旧测试产物、硬编码 dataTouched=false 且句柄计数默认与其他测试并行。按 TDD 保持本 WP stabilizing，未进入 WP-1B-02。
+复审 RED/GREEN：新增 deadline 边界测试先因 classify_job_poll/JobPollDecision 缺失编译失败；新增 PowerShell 清场契约先因缺少 --test-threads=1 失败；真实验收更新后首轮又因新增场景仍断言 11/11 按预期失败。最小修复将 verify_tree_exited 与 Assign 后回滚统一到严格 deadline 判定和按剩余时间睡眠；验收 finally 在异常传播前按精确可执行路径发现、登记、停止并复扫根与未观测后代；校验测试产物不早于本 WP 源码并记录双方 SHA-256；移除硬编码 dataTouched，改为明确不访问 data/ 的作用域声明；直接 Rust 验收固定 --test-threads=1。三组 RED 均转绿。
+复审后自动门禁：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 32 passed、7 ignored fixture、0 failed；debug/release cargo build --locked 均通过；两个 PowerShell 脚本 parser、验收清场契约、git diff --check 和测试可执行文件残留扫描均通过。
+复审后故障注入：FailureCleanupProbe 单独启动 root-exits-with-descendant-holding 真实夹具并得到预期 exit 44；主验收 finally 回收退出根留下的同路径后代；外层再次扫描精确测试可执行路径为零残留。
+复审后真实 Windows 验收：temp/runtime-v2-wp-1b-01/acceptance-review-fixes-green-20260721/summary.json；12/12 必需场景通过，45 秒 deadline，登记 6 个精确进程身份，最终残留 0；测试 exe SHA-256 为 67d7a8b8f0937a4e9d4d4bf38aca38153b6c24a6f24cc149f5cb74811d16a678，摘要同时记录 Cargo.toml、main.rs、managed_process_tree.rs 的路径、长度、mtime 和 SHA-256。
+负责人实机证据：负责人报告“针对性复验通过”；复审修复没有扩展 UI、Supervisor、Fake Core、IPC 或 data/ 范围，且随后重新执行的真实 Windows 进程树成功/失败验收均通过。
+最终复审：Critical 0、Important 0；spec compliance 与 code quality 均通过；退出条件相关缺陷为零。
+```
+
+验收记录：
+
+```text
+状态：accepted
+验收日期：2026-07-21
+修改范围：desktop/src-tauri/Cargo.toml 的 Win32 JobObjects feature；main.rs 的 managed_process_tree 模块声明；managed_process_tree.rs 及同文件测试；desktop/tests/ 的 WP-1B-01 Windows 验收与清场契约脚本；本文状态和证据记录
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 32 passed、7 ignored、0 failed；debug/release cargo build --locked 均通过；PowerShell parser、验收清场契约、git diff --check 和最终测试进程残留扫描通过
+故障测试：wait timeout；严格 deadline 边界；根退出后代存活；一层/多层后代；Assign/Resume 回滚；不存在程序与 embedded NUL；重复 terminate/release；Drop 活动多层树；成功/失败各 12 轮句柄检查；异常验收时未观测后代精确清场
+真实应用验收：自动真实 Windows 进程树矩阵 acceptance-review-fixes-green-20260721 为 12/12，FailureCleanupProbe 按预期 exit 44 后残留 0；负责人报告针对性复验通过
+数据门禁：本 WP 及验收不访问仓库 data/，不修改共享用户数据 schema，不迁移、清理或恢复真实用户数据；不再以硬编码 dataTouched 字段充当测量证据
+进程门禁：测试根均有 deadline；按 PID/StartTime/path 登记并以精确测试 exe 路径补获未观测后代；最终根/一层/多层后代残留 0；句柄线性泄漏检查在单测试线程通过
+关联 ADR：ADR-0001；本 WP 只验证 Windows Job Object 原语，ADR 保持 Proposed，待 WP-1B-04 完整 Supervisor/Fake Core 故障矩阵后统一评估 Technically Validated
+明确非目标：未实现 Supervisor/generation、stdio/IPC、Fake Core、自动重启、Python Core/Assistant、聊天、设置、TTS、Tools、MCP、Memory、插件、截图、主动互动或 WP-1B-02 及后续能力
+P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Important 均为零
+已知限制：正式目标仅 Windows，非 Windows 安全返回 UnsupportedPlatform；release_exited_handles 的约定是完成 wait/树退出验证后的最终释放，释放后再次 wait/terminate 返回 InvalidState；测试辅助 OpenProcess 对同用户隔离夹具的访问失败按进程已退出处理，后续可收紧 oracle，但不影响当前成功、回滚与零残留多重证据
+独立回退方式：整体 git revert 本 WP accepted 提交，移除 managed_process_tree.rs、main.rs 模块声明、JobObjects feature 与两个 Windows 验收脚本；保留 WP-1A-04 Shell/共享应用锁，不触碰 data/ 或用户进程
+关联提交：本 WP accepted 提交（feat(runtime): 建立 Windows 受控进程树原语）
+```
 
 主要结果：建立每个 generation 独立、可验证回收后代进程的 `ManagedProcessTree` Windows 实现。
 
