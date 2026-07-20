@@ -1,6 +1,6 @@
 # ADR-0003：Runtime v2 用户数据兼容与 legacy Qt 回退
 
-> 状态：Proposed
+> 状态：Technically Validated
 > 日期：2026-07-15
 > 适用范围：Runtime v2 与 legacy Qt 入口共享的角色、配置、历史、Memory、工具数据、插件数据和用户资源
 > Phase 0 基线：`docs/runtime-v2/baselines/WP-0-02-data-lock-baseline.md`
@@ -13,7 +13,7 @@ Runtime v2 在开发分支中提前切换默认 Tauri 入口，同时保留 lega
 
 Phase 0 取证确认：当前数据集的全局版本锚点是 `data/config/system_config.yaml.config_version`，当前值为 `4`；installed character、API、MCP、plugins、history、Memory state、reminders/tasks/notes、runtime events 和 visual observations 多数没有独立 schema version。详细路径、读写者、原子写入方式、脱敏夹具和缺失样本原因以 WP-0-02 基线为准。
 
-WP-1A-04 完成后，legacy Qt 的权威显式回退命令规划为 `.\runtime\python.exe .\legacy_qt_main.py`，并可提供 `start-legacy-qt.bat` 作为便利入口；在 WP-1A-04 实现和验收前，该命令只表示已批准的未来接口，不表示当前文件已经存在。回退前必须先退出 Tauri；用户不负责删除锁文件、判断 stale PID 或合并共享数据。能否启动和写入由两个入口共同实现的 named mutex、schema 安全状态和当前桌面生命周期根负责。
+WP-1A-04 已将 legacy Qt 的权威显式回退命令冻结为 `.\runtime\python.exe .\legacy_qt_main.py`，并提供 `start-legacy-qt.bat` 作为便利入口。回退前必须先退出 Tauri；用户不负责删除锁文件、判断 stale PID 或合并共享数据。能否启动和写入由两个入口共同实现的 named mutex、schema 安全状态和当前桌面生命周期根负责。
 
 ## 不可妥协的约束
 
@@ -123,10 +123,10 @@ identity 不按 executable、安装路径、版本、Qt/Tauri、PID、角色或 
 - Core 子进程不竞争桌面锁；其写权限来自当前持锁桌面根。
 - 正常退出最后关闭 mutex handle。
 - 崩溃/强杀后由 Windows 自动释放；不依赖普通标志文件和 PID stale 猜测。
-- `data/sakura.lock` 是当前 QLockFile 工件；WP-1A-04 切换后不再是权威，不自动删除。
+- `data/sakura.lock` 是历史 QLockFile 工件；WP-1A-04 切换后不再是权威，不自动删除。
 - `data/memory/qdrant/.lock` 是 Qdrant 内部锁，不得用作桌面互斥或手工删除。
 
-当前 legacy Qt 在 QLockFile 前会准备 crash log、运行 selfcheck 写探针等。WP-1A-04 必须把共用锁前移并关闭这项实现差距；本 ADR 不把当前实现误标为已经满足。
+WP-1A-04 已把共用 mutex 前移到 crash log、selfcheck probe、默认配置、版本记录、migration 与服务构建之前，并以源码顺序测试和真实双入口门禁关闭该实现差距。
 
 ### 冲突与错误结果
 
@@ -173,6 +173,16 @@ WP-1A-04 必须自动化或真实验证：
 7. 冲突失败发生在任何 `data/` 写入前，包括日志和 selfcheck probe。
 
 以上全部通过后，本 ADR 才具备从 `Proposed` 更新为 `Technically Validated` 的 Phase 1A 锁证据；仅编译、mock 或单边实现不够。
+
+### Phase 1A 技术验证结果（2026-07-20）
+
+- Python legacy Qt 与 Rust/Tauri 使用 exact `Local\SakuraDesktop.SharedUserData.v1`；同名非 mutex 内核对象按 fatal 处理，不误判为普通冲突。
+- `acceptance-drain-fail-closed-green-20260720-235133` 在真实 Windows Qt/Tauri 上通过 13/13 场景：debug/release 成功与重复执行、双向冲突、API fatal、正常/强杀释放、stale 文件锁、默认入口、显式回退脚本、QThread drain 期间持锁及 drain 超时 fail-closed。
+- 正常退出在 external tools 清理和 lingering QThread drain 后释放；drain 超时以进程强制终止让 Windows 原子回收 mutex，不在仍有线程时通过 Python unwind 提前释放。
+- 最终真实 `data/` 清单为 121 文件、1,045,977,101 bytes；before/after path、length、UTC mtime、SHA-256 canonical digest 均为 `1cd1602645b63308e74e2cd831d25870614ae26ff3bb993996a681071f0bd84c`。
+- 负责人完成默认 Tauri、显式 Qt 回退、双向冲突、正常/强杀释放与退出清理后立即重获的实机验收；最终独立复审无 Critical/Important，P0/P1 与退出条件相关缺陷为零。
+
+据此本 ADR 更新为 `Technically Validated`。Phase 3 的 Qt → Tauri v2 → Qt 共享数据兼容门禁仍未开始，因此不得标记为 `Accepted`。
 
 ## Phase 3 Qt → Tauri v2 → Qt 兼容门禁输入
 
@@ -243,4 +253,4 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 
 ## ADR 状态门禁
 
-本 ADR 保持 `Proposed`。在 Phase 1A 的共用 named mutex 双入口/崩溃门禁通过后可更新为 `Technically Validated`；在 Phase 3 的 Qt → Tauri → Qt 真实兼容门禁通过后更新为 `Accepted`。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。
+本 ADR 当前为 `Technically Validated`：Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过。只有 Phase 3 的 Qt → Tauri → Qt 真实兼容门禁通过后才能更新为 `Accepted`。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。

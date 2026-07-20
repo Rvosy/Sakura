@@ -1,73 +1,75 @@
-"""app/core/instance.py — 单实例锁。
-
-多个 Sakura 实例并发运行会同时写聊天历史 JSONL、配置 YAML，并争抢
-qdrant 记忆库的内部锁，造成数据损坏或记忆库不可用，因此启动时强制单实例。
-
-基于 QLockFile：
-- 锁文件内记录 PID/主机/应用名；持有进程已不存在（崩溃残留）时
-  QLockFile 自动判定为 stale 并允许接管，无需用户手动删锁
-- 锁对象存活期间持有锁，进程退出（含异常退出后的 stale 判定）即释放
-"""
+"""Windows named mutex shared by the legacy Qt and Tauri desktop roots."""
 
 from __future__ import annotations
 
+import ctypes
+from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile
 
-from app.core.runtime_log import log_event
-from app.storage.paths import StoragePaths
+SHARED_MUTEX_NAME = r"Local\SakuraDesktop.SharedUserData.v1"
 
-# tryLock 等待时长：拿不到锁说明确有活动实例，无需久等
-_LOCK_TRY_TIMEOUT_MS = 100
+_ERROR_ALREADY_EXISTS = 183
+
+
+class InstanceAcquireStatus(str, Enum):
+    ACQUIRED = "acquired"
+    ALREADY_RUNNING = "already_running"
+    FATAL = "fatal"
 
 
 class SingleInstanceGuard:
-    """进程级单实例锁；acquire 成功后需保持对象存活到进程结束。"""
+    """Own the shared Win32 mutex for the complete desktop lifetime.
 
-    def __init__(self, base_dir: Path) -> None:
-        lock_path = StoragePaths(base_dir).instance_lock()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock_path = lock_path
-        self._lock = QLockFile(str(lock_path))
+    ``base_dir`` is retained for source compatibility with the legacy entry, but
+    mutex construction and acquisition intentionally perform no filesystem I/O.
+    """
 
-    def acquire(self) -> bool:
-        """尝试获取锁；失败返回 False（通常表示已有实例在运行）。"""
-        acquired = self._lock.tryLock(_LOCK_TRY_TIMEOUT_MS)
-        if acquired:
-            log_event("Instance", "单实例锁已获取", {"path": str(self._lock_path)})
-            return True
-        error = self._lock.error()
-        holder = self._holder_info()
-        log_event(
-            "Instance",
-            "单实例锁获取失败",
-            {"path": str(self._lock_path), "error": str(error), "holder": holder},
-        )
-        return False
+    def __init__(self, base_dir: Path | None = None) -> None:
+        del base_dir
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateMutexW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_bool,
+            ctypes.c_wchar_p,
+        ]
+        self._kernel32.CreateMutexW.restype = ctypes.c_void_p
+        self._kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        self._kernel32.ReleaseMutex.restype = ctypes.c_bool
+        self._kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self._kernel32.CloseHandle.restype = ctypes.c_bool
+        self._handle: int | None = None
+        self.last_error = 0
+
+    def acquire(self) -> InstanceAcquireStatus:
+        if self._handle is not None:
+            return InstanceAcquireStatus.ACQUIRED
+
+        ctypes.set_last_error(0)
+        handle = self._kernel32.CreateMutexW(None, True, SHARED_MUTEX_NAME)
+        error = ctypes.get_last_error()
+        if not handle:
+            self.last_error = int(error)
+            return InstanceAcquireStatus.FATAL
+        if error == _ERROR_ALREADY_EXISTS:
+            self._kernel32.CloseHandle(handle)
+            self.last_error = int(error)
+            return InstanceAcquireStatus.ALREADY_RUNNING
+
+        self._handle = int(handle)
+        self.last_error = 0
+        return InstanceAcquireStatus.ACQUIRED
 
     def release(self) -> None:
-        if self._lock.isLocked():
-            self._lock.unlock()
-            log_event("Instance", "单实例锁已释放", {"path": str(self._lock_path)})
+        handle = self._handle
+        if handle is None:
+            return
+        self._handle = None
+        self._kernel32.ReleaseMutex(handle)
+        self._kernel32.CloseHandle(handle)
 
-    def _holder_info(self) -> dict:
-        """读取当前持锁方信息，用于日志与用户提示。
-
-        PySide6 的 getLockInfo() 返回 (pid, hostname, appname) 三元组，
-        读取失败时抛异常或返回空值，这里统一兜底为空字典。
-        """
+    def __del__(self) -> None:
         try:
-            pid, hostname, appname = self._lock.getLockInfo()
-        except (TypeError, ValueError):
-            return {}
-        if not pid:
-            return {}
-        return {"pid": int(pid), "hostname": hostname, "appname": appname}
-
-    def holder_description(self) -> str:
-        """生成用户可读的持锁方描述。"""
-        info = self._holder_info()
-        if not info:
-            return "另一个 Sakura 实例"
-        return f"另一个 Sakura 实例（进程 {info.get('pid', '?')}）"
+            self.release()
+        except Exception:  # noqa: BLE001
+            pass

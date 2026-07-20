@@ -1,11 +1,13 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod shared_instance;
 mod window_geometry;
 mod window_interaction;
 
 use std::sync::Mutex;
 
 use serde::Serialize;
+use shared_instance::{AcquireOutcome, SharedInstanceGuard};
 use tauri::WebviewWindow;
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
@@ -20,6 +22,9 @@ const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-c
 const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
 const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
+const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
+const ALREADY_RUNNING_BODY: &str =
+    "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
 
 #[derive(Default)]
 struct WindowGeometrySession {
@@ -259,7 +264,59 @@ fn close_pet_window(window: WebviewWindow) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
 
+#[cfg(windows)]
+fn show_startup_message(title: &str, body: &str, fatal: bool) {
+    use windows::{
+        core::PCWSTR,
+        Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK},
+    };
+
+    let wide_title = title
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let wide_body = body
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let style = MB_OK
+        | if fatal {
+            MB_ICONERROR
+        } else {
+            MB_ICONINFORMATION
+        };
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(wide_body.as_ptr()),
+            PCWSTR(wide_title.as_ptr()),
+            style,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_startup_message(title: &str, body: &str, _fatal: bool) {
+    eprintln!("{title}: {body}");
+}
+
 fn main() {
+    let _instance_guard = match SharedInstanceGuard::acquire() {
+        AcquireOutcome::Acquired(guard) => guard,
+        AcquireOutcome::AlreadyRunning => {
+            show_startup_message(ALREADY_RUNNING_TITLE, ALREADY_RUNNING_BODY, false);
+            return;
+        }
+        AcquireOutcome::Fatal(error) => {
+            show_startup_message(
+                "Sakura 启动失败",
+                &format!("无法创建共享应用锁（Win32 错误 {error}）。Sakura 未继续启动。"),
+                true,
+            );
+            std::process::exit(1);
+        }
+    };
+
     let _embedded_assets = (
         STARTUP_HTML.len(),
         STARTUP_STYLES.len(),

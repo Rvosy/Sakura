@@ -55,7 +55,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1A-01 | 不启动 Python 的最小 Tauri Shell | WP-0-04 | accepted |
 | WP-1A-02 | 透明窗口几何、锚点和表现状态 | WP-1A-01 | accepted |
 | WP-1A-03 | 点击穿透、拖动、焦点和 IME 技术门 | WP-1A-02 | accepted |
-| WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | planned |
+| WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | accepted |
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | planned |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | planned |
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | planned |
@@ -671,6 +671,67 @@ P0/P1：零；退出条件相关缺陷为零；单窗口方案在当前真实 Wi
 独立回退：回退命中和焦点平台代码，保留静态透明窗口与布局验证结果。
 
 ### WP-1A-04：共享应用锁、legacy Qt 入口和 v2 开发入口
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-20
+允许目录：main.py、legacy_qt_main.py、start.bat、start-legacy-qt.bat；.gitattributes 中仅限上述两个 Windows batch 入口的精确 CRLF 规则；app/core/instance.py；与本 WP 直接相关的 tests/unit/、tests/integration/、tests/fixtures/runtime_v2/wp_1a_04/；desktop/src-tauri/ 中 shared mutex、入口冲突和 Shell 启动所需最小 Rust 代码/测试；desktop/tests/ 中 WP-1A-04 Windows 真实验收脚本；docs/adr/0003-runtime-v2-data-compatibility.md；本文仅更新 WP-1A-04 状态与验收记录
+明确禁止目录：除 app/core/instance.py 外的 app/；plugins/；data/；runtime/；characters/；third_party/；tools/mcp/；Settings/Studio；共享 schema；Python Core/Supervisor/Fake Core/IPC/聊天/TTS/Tools/MCP/Memory/插件/截图/主动互动；WP-1B 及后续生产实现
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64 开发机；单屏 2560x1440、工作区 2560x1392、100% DPI；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3、tauri-build 2.6.3；WebView2 150.0.4078.65；Visual Studio 18.4.1 C++ 工具链与 Windows SDK 10.0.26100.0；Node v22.14.0；项目 bundled runtime/python.exe；真实验收全部有 deadline，并核对根/后代/句柄/计时器无残留
+关联 ADR：ADR-0003（共享用户数据、exact named mutex、legacy Qt 回退与 data 零变化门禁；完成后仅更新为 Technically Validated，不得 Accepted）；ADR-0001（Tauri 为唯一桌面生命周期根，默认入口不得由 Python 常驻托管）
+自动测试要求：先观察 WP-1A-04 定向测试预期失败，再执行最小生产实现；cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked；node --test desktop/frontend/tests/*.test.js；相关 runtime/python.exe -m pytest；debug/release cargo build --locked；脚本语法/静态检查；git diff --check
+真实验收要求：真实 Qt、真实 debug/release Tauri、默认入口和显式 legacy Qt 入口均有界运行；覆盖成功、双向冲突、mutex API fatal、正常释放、强杀释放、stale data/sakura.lock、重复执行和回退路径；每次涉及真实 data/ 前后记录 path/length/UTC mtime/SHA-256 全清单并证明零变化，且不得删除真实 lock/Qdrant lock
+独立回退方式：整体 revert WP-1A-04 accepted 提交，恢复原 main.py 和 start.bat 的 legacy Qt 默认入口，移除 legacy_qt_main.py、start-legacy-qt.bat 及双方 named mutex 接入；不得删除或改写真实 data/、历史 data/sakura.lock 或 Qdrant lock
+计划提交：feat(runtime): 建立共享应用锁与双入口回退
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-20
+生产实现：app/core/instance.py 使用 CreateMutexW(initialOwner=TRUE) 获取 exact Local\SakuraDesktop.SharedUserData.v1，无任何文件系统/log I/O；legacy_qt_main.py 从激活时 main.py 演化并把锁前移到 crash log/selfcheck/default/version/migration/Assistant 前；Rust SharedInstanceGuard 在 Builder/WebView 前获取同一 mutex，冲突与 fatal 走原生提示；main.py 仅以 os.execv 替换为已构建 Tauri，start.bat 直接执行 Tauri，start-legacy-qt.bat 显式保留完整 Qt 回退
+RED/GREEN：Python 首轮 1 failed（冻结 identity 缺失）后 3 passed；入口契约首轮 3 failed 后 7 passed；Rust shared mutex 首轮 1 passed/1 failed、扩展 fatal 后 1 passed/2 failed，最终全套 Rust 20 passed；并发运行 Python/Rust exact-name 测试曾真实触发 Win32 ERROR_INVALID_HANDLE，根因是 fatal 测试的同名 Event 跨进程重叠，已将 Rust 内同名内核对象测试串行并规定跨语言门禁顺序执行
+待验收：cargo fmt/test、Node 当前测试、相关 Python pytest、debug/release locked build、脚本语法/静态检查、双入口成功/冲突/API fatal/正常释放/强杀释放/stale lock/重复执行/默认与回退入口，以及真实 data/ 全清单零变化
+已知问题：真实 debug/release Tauri、隔离数据完整 Qt smoke、默认/回退脚本、进程/句柄残留与 data manifest 尚未完成，不得 accepted
+回退步骤：整体 revert WP-1A-04 accepted 提交，恢复 WP-1A-03 时 main.py/start.bat 的 legacy Qt 默认入口，移除双端 shared mutex、legacy_qt_main.py 和 start-legacy-qt.bat；不得删除或改写真实 data/、历史 data/sakura.lock 或 Qdrant lock
+关联提交：待 accepted 后提交
+```
+
+稳定化停止记录（2026-07-20）：真实验收 harness 按 systematic-debugging 已完成三次独立根因修复（StrictMode 空数组属性、受限环境拒绝 CIM、已退出 PID 空对象）；其后新的真实 Tauri `WM_CLOSE` 退出超时仍未满足有界退出门。按实施者门禁停止，不做第 4 次 harness 修复。WP 保持 stabilizing，不更新 ADR 状态、不写 accepted、不提交；失败轮安全审计确认真实 `data/` 121 文件、1,045,949,482 bytes、canonical SHA-256 `a6e1699dbf693c587d481f57e1956b420a2bf64262973908238ff8160aba42f2` 前后相同，Sakura Shell 与项目 runtime Python 残留均为 0；后续恢复、修复和验收记录继续按时间顺序追加于本文。
+
+恢复执行停止记录（2026-07-20）：继续系统诊断后确认先前 `WM_CLOSE` 超时源于 harness 选中了 `Tao Thread Event Target` 而非真实 `Tauri Window`；后续还修正了进程级冲突对话框定位、Qt hold/deadline 边界、WebView 后代条件等待、Windows `os.execv` 新 PID 交接和仅凭 parent PID 产生的旧进程误判。最新真实轮 `acceptance-resumed-20260720-223519` 暴露不可接受的数据写入：隔离 Qt smoke 仍向真实 `data/logs/sakura-runtime.log` 写入启动/关闭日志，文件从 8,130,010 bytes、mtime `2026-07-20T14:33:54.7038291Z`、SHA-256 `d815f9587c24d740853d89b3360e11ee0ae309686212152c8b7bcf3baf59bb0` 变为 8,130,975 bytes、mtime `2026-07-20T14:35:32.3884607Z`、SHA-256 `9af00440d823f0034113f2ac59cac04340beda9b0668a03f1923e61952df9207`；全清单 121 文件不变、总长度增加 965 bytes、canonical SHA-256 从 `91a0497dcc01cbfce2f87679e25d7e466c29d5b6584d202d03dc944ce313f9e5` 变为 `929ae6111cf0f7100184127f6fa691c6ff60c706e6c4c1f417a4bf8ee4abcdb4`。命中数据污染强制停止条件；不恢复或清理真实日志，WP 保持 stabilizing，不更新 ADR、不提交、不启动 WP-1B-01。
+
+批准隔离修复后的环境停止记录（2026-07-20）：TDD 源顺序测试先以缺少隔离重定向按预期失败，fixture 最小改为在导入 `legacy_qt_main` 前把 `_FILE_LOG_PATH` 指向临时根并禁止读取真实 debug 配置，定向入口测试 `5 passed`。首轮真实隔离 smoke `isolation-smoke-20260720-225400` 未进入 ready，20 秒后回收测试 Python；只读检查发现 debug Tauri PID 35580 已于 22:48:21 启动，早于本轮 smoke，且不是本轮测试进程，导致共享锁环境不满足独占验收前提。未擅自关闭该既有进程；真实 `data/` before/after 均为 121 文件、1,045,960,564 bytes、canonical SHA-256 `929ae6111cf0f7100184127f6fa691c6ff60c706e6c4c1f417a4bf8ee4abcdb4`，零变化；项目 runtime Python 残留 0。按物理环境/既有进程使真实验收证据不可靠的门禁，WP 保持 stabilizing 并停止，不提交、不进入 WP-1B-01。
+
+获授权恢复后的最终停止记录（2026-07-20）：PID 35580 在受控关闭前已自行退出，核对环境为 Shell/Python 0 后，`isolation-smoke-20260720-225738` 真实通过：隔离日志 965 bytes，真实 `data/` 121 文件、1,045,960,564 bytes、canonical SHA-256 `929ae6111cf0f7100184127f6fa691c6ff60c706e6c4c1f417a4bf8ee4abcdb4` 前后相同，残留 0。自动门禁 fresh 结果为 cargo fmt 通过、Rust 20/20、Node 18/18、Python 8/8（后续 harness regression 后入口文件 6/6）、PowerShell/parser/py_compile 通过、debug/release locked build 通过。第一次完整矩阵 `acceptance-final-20260720-225853` 在默认入口发现到的 Tauri 退出后读取 `$null` ExitCode；最小 PowerShell 复现证明 `Get-Process` 对象没有 ExitCode，而 `Start-Process -PassThru` 对象为 0，安全 RED/GREEN 后仅对另有 launcher/batch 退出证据的发现进程跳过该字段。第二次完整矩阵 `acceptance-final-20260720-230141` 又在不同点失败：`start.bat` 外层 cmd PID 7336 在直接子 Tauri 被观察前退出。两轮均确认真实 data canonical SHA-256 零变化、Shell/Python 残留 0，但完整成功/故障/回退矩阵仍未通过；命中“自动测试或真实应用行为持续与契约不一致”停止条件，不再做第三次 harness 修复。WP 保持 stabilizing，不 accepted、不更新 ADR、不提交、不进入 WP-1B-01。
+
+负责人调整门禁后的实机验收就绪记录（2026-07-20）：负责人明确授权 Agent 自主诊断并解决自动门禁问题，改为每个阶段代码与自动门禁完成后停在 stabilizing，由负责人执行真实实机验收。系统调试确认 `start.bat`/`start-legacy-qt.bat` 的裸 LF/混合换行会破坏 Windows cmd 解析；字节级 RED 后将两个入口固定为 CRLF，并在 `.gitattributes` 仅为这两个路径冻结 `text eol=crlf`。发现进程统一由 launcher/batch 验证返回码，窗口根验证退出与后代清理。最终自动矩阵 `acceptance-owner-ready-20260720-231244` 11/11 场景通过；真实 `data/` before/after 均为 121 文件、1,045,960,564 bytes、canonical SHA-256 `929ae6111cf0f7100184127f6fa691c6ff60c706e6c4c1f417a4bf8ee4abcdb4`；根进程残留 0。fresh 最终门禁：cargo fmt 通过、Rust 20/20、Node 18/18、Python 11/11、PowerShell parser/py_compile、debug/release locked build、git diff --check 全部通过；P0/P1 与退出条件相关自动缺陷为 0。当前只等待负责人按 Phase 1A 实机清单确认可见性、双向冲突、正常退出、强杀释放和显式 Qt 回退；确认前保持 stabilizing，不更新 ADR、不 accepted、不提交、不开始 WP-1B-01。
+
+负责人首轮实机验收记录（2026-07-20）：负责人按 Phase 1A 清单完成默认 Tauri 可见/退出、显式 legacy Qt 回退、Qt→Tauri 与 Tauri→Qt 双向冲突、正常退出后重获、强杀后重获六项检查并报告“全部通过”。提交前独立代码审查随后发现锁在 `aboutToQuit` 阶段释放、早于 `app.exec()` 返回后的 lingering QThread drain，故该轮人工结果保留但不据此 accepted，WP 重新进入 stabilizing 修复。
+
+退出清理锁复核就绪记录（2026-07-20）：新增静态生命周期 RED 与真实 QThread-drain barrier。修复前 `acceptance-qthread-red-20260720-233832` 在 drain marker 已出现且旧 Qt 仍存活时，第二个 Tauri 未得到 `already_running`，精确证明锁过早释放；失败轮 finally 清理后 Shell/Python 均为 0，真实 `data/` before/after canonical SHA-256 均为 `1cd1602645b63308e74e2cd831d25870614ae26ff3bb993996a681071f0bd84c`。最小修复移除 `aboutToQuit` 锁释放，在 acquiring 主线程以 `try/finally` 覆盖完整 acquired 生命周期，直到外部工具清理和 lingering QThread drain 返回后才释放；若 drain 超时返回 `False`，则以 `os._exit(1)` fail-closed，让 Windows 随进程终止原子回收 mutex，不经 Python 栈展开提前释放。验收脚本登记每个本轮根进程的 PID、StartTime、路径及运行期间观察到的后代身份，finally 只对精确匹配身份回收并核对零残留，不按全局进程名清扫。正常 drain 修复轮 `acceptance-qthread-green-20260720-234011` 为 12/12；加入超时故障注入后的最终轮 `acceptance-drain-fail-closed-green-20260720-235133` 为 13/13，证明 drain 期间冲突、drain 完成后可重获，以及 drain 超时必须先终止旧 Qt 才可重获。最终轮真实 `data/` 121 文件、1,045,977,101 bytes，before/after canonical SHA-256 均为 `1cd1602645b63308e74e2cd831d25870614ae26ff3bb993996a681071f0bd84c`，精确登记进程残留 0。fresh 回归为 Rust 20/20、Node 18/18、Python 13/13、PowerShell parser、隔离 py_compile、debug/release locked build、cargo fmt 与 git diff --check 全部通过；等待独立复审及负责人针对 QThread-drain 生命周期完成一次简短实机复验，完成前保持 stabilizing。
+
+验收记录：
+
+```text
+状态：accepted
+验收日期：2026-07-20
+修改范围：main.py、legacy_qt_main.py、start.bat、start-legacy-qt.bat、.gitattributes 的两个精确 CRLF 规则、app/core/instance.py、desktop/src-tauri 的 shared mutex/入口代码、WP-1A-04 测试与验收脚本、ADR-0003 和本文记录
+自动测试：cargo fmt 退出码 0；Rust 20/20；Node 18/18；Python 13/13；PowerShell parser、隔离 py_compile、debug/release cargo build --locked、git diff --check 全部通过
+故障测试：双向应用锁冲突；同名 Event API fatal；正常/强杀释放；stale data/sakura.lock；重复执行；默认/显式回退入口；QThread drain 期间持锁；drain 超时 os._exit fail-closed；验收失败精确 PID/StartTime/path/后代清场
+真实应用验收：自动矩阵 acceptance-drain-fail-closed-green-20260720-235133 为 13/13；负责人两轮实机确认默认 Tauri、显式 Qt 回退、双向冲突、正常/强杀释放及 Qt 正常退出后立即启动 Tauri，全部通过
+数据门禁：最终真实 data/ 121 文件、1,045,977,101 bytes；before/after path/length/UTC mtime/SHA-256 canonical digest 均为 1cd1602645b63308e74e2cd831d25870614ae26ff3bb993996a681071f0bd84c；未迁移、清理或恢复真实用户数据
+进程门禁：每个测试根设置 deadline；精确登记 PID/StartTime/path 与观察后代；最终根、后代、项目 runtime Python 和 Sakura Shell 残留为 0
+关联 ADR：ADR-0003 更新为 Technically Validated；Phase 3 兼容门禁未开始，ADR 不得 Accepted
+明确非目标：没有 Python Core、Supervisor、Fake Core、IPC、Assistant、聊天、设置、TTS、Tools、MCP、Memory、插件、截图、主动互动或 WP-1B 生产能力；没有改变 legacy Qt 业务语义或共享 schema
+P0/P1：零；退出条件相关缺陷为零；最终独立复审无 Critical/Important
+已知限制：目标仍仅当前 Windows x64/WebView2 环境；legacy batch 自动场景只声明冲突传播，成功回退由隔离 Qt smoke 与负责人实机覆盖；QThread drain 超时采用进程级 fail-closed，退出码 1
+独立回退方式：整体 git revert 本 WP accepted 提交，恢复 WP-1A-03 的 main.py/start.bat legacy Qt 默认入口，移除 legacy_qt_main.py、start-legacy-qt.bat 与双方 named mutex 接入；不删除、不恢复、不改写真实 data/、历史 data/sakura.lock、Qdrant lock 或同期日志
+关联提交：本 WP accepted 提交（feat(runtime): 建立共享应用锁与双入口回退）
+```
 
 主要结果：两个桌面入口竞争同一个应用锁，legacy Qt 成为明确回退入口，当前 v2 分支默认入口安全切到 Tauri。
 
