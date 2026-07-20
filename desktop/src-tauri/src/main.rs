@@ -2,6 +2,8 @@
 
 #[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
+#[cfg(test)]
+mod fake_core_runtime;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod shared_instance;

@@ -99,6 +99,12 @@ pub enum LifecycleAction {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalizeOutcome {
+    pub applied: bool,
+    pub actions: Vec<LifecycleAction>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenerationSnapshot {
     pub id: GenerationId,
@@ -208,8 +214,15 @@ impl CoreSupervisor {
         &mut self,
         generation_id: GenerationId,
     ) -> Vec<LifecycleAction> {
+        self.finalize_generation(generation_id).actions
+    }
+
+    pub fn finalize_generation(&mut self, generation_id: GenerationId) -> FinalizeOutcome {
         if self.current.as_ref().map(|generation| generation.id) != Some(generation_id) {
-            return Vec::new();
+            return FinalizeOutcome {
+                applied: false,
+                actions: Vec::new(),
+            };
         }
         let completed_stop_workflow = self.state == SupervisorState::Stopping;
         if let Some(generation) = self.current.as_ref() {
@@ -223,9 +236,15 @@ impl CoreSupervisor {
         };
         if completed_stop_workflow && self.restart_pending && !self.app_shutdown {
             self.restart_pending = false;
-            return self.begin_spawn();
+            return FinalizeOutcome {
+                applied: true,
+                actions: self.begin_spawn(),
+            };
         }
-        Vec::new()
+        FinalizeOutcome {
+            applied: true,
+            actions: Vec::new(),
+        }
     }
 
     fn apply_intent(&mut self, intent: LifecycleIntent) -> Vec<LifecycleAction> {
@@ -580,6 +599,25 @@ mod tests {
         assert!(supervisor
             .observe_generation_stopped(generation_id)
             .is_empty());
+        assert_eq!(supervisor.snapshot().state, SupervisorState::Stopped);
+    }
+
+    #[test]
+    fn duplicate_finalize_reports_exactly_one_applied_transition() {
+        let mut supervisor = CoreSupervisor::new(0xabcd_abcd_abcd_abcd);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        supervisor.observe_spawn_succeeded(generation_id);
+        supervisor.submit(LifecycleIntent::Stop);
+
+        let first = supervisor.finalize_generation(generation_id);
+        assert!(first.applied);
+        assert!(first.actions.is_empty());
+        let duplicate = supervisor.finalize_generation(generation_id);
+        assert!(!duplicate.applied);
+        assert!(duplicate.actions.is_empty());
         assert_eq!(supervisor.snapshot().state, SupervisorState::Stopped);
     }
 

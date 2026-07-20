@@ -58,7 +58,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1A-04 | 共享应用锁、legacy Qt 入口和 v2 开发入口 | WP-1A-03 | accepted |
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | accepted |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | accepted |
-| WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | planned |
+| WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | accepted |
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | planned |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | planned |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | planned |
@@ -922,6 +922,73 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 
 ### WP-1B-03：Fake Core 正常启动和关闭链
 
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-21
+允许目录：desktop/src-tauri/src/main.rs 中仅限声明 cfg(test) Fake Core 模块；desktop/src-tauri/src/fake_core_runtime.rs 中仅限测试专用 Fake Core、隔离临时目录 marker transport、Supervisor/ManagedProcessTree 正常启动关闭集成测试；仅在 TDD 证明本 WP 正常链缺口时窄改 core_supervisor.rs 及同文件测试；desktop/tests/ 中仅限 WP-1B-03 Windows Fake Core 真实验收脚本；本文仅更新 WP-1B-03 状态与验收记录
+明确禁止目录：Cargo.toml/Cargo.lock 与依赖；managed_process_tree.rs 和 WP-1B-01 既有原语；main.py、legacy_qt_main.py、start*.bat、app/、desktop/frontend/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、共享 schema；真实业务 IPC Envelope、真实 app.core_host、initialize/Snapshot、自动重启 budget/backoff、旧代恢复策略、Python Core/Assistant、聊天及 WP-1B-04 或后续生产能力
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；不安装或升级依赖；Fake Core 使用当前 Rust 测试可执行文件和按 PID 唯一的系统临时目录；hello 3 秒、协议 shutdown 3 秒、完整树停止 5 秒 deadline；每轮 finally 精确回收并核对根/后代/句柄/计时器和临时 marker 零残留
+关联 ADR：ADR-0001（spawn、最小 hello、running、system.shutdown、超时强杀、幂等 finalize、窗口/主线程可退出）；ADR-0002 仅引用 hello-before-heavy-init 和 lifecycle deadline，不冻结业务 envelope、不提升 ADR 状态
+计划提交：feat(runtime): 建立 Fake Core 正常启动关闭链
+回退方式：整体 git revert 本 WP accepted 提交，移除测试专用 Fake Core 模块、验收脚本及任何经 TDD 证明的最小 Supervisor 正常链适配；保留 WP-1B-01 进程树和 WP-1B-02 串行状态机，不触碰 Shell、data/ 或用户进程
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-21
+生产实现：新增仅在 cfg(test) 编译的 Fake Core runtime；以当前 Rust 测试可执行文件作为真实子进程，用父测试 PID+单调序号生成系统临时目录，并通过继承环境传递唯一目录；marker transport 只包含 transport.ready、hello.request/response、shutdown.request/ack，不定义业务 IPC envelope；Supervisor 只在 hello 完成后进入 Running，Stop action 先尝试 3 秒协议关闭，超时则 TerminateJobObject，并在总计 5 秒内验证整树退出/释放句柄/幂等 finalize
+Supervisor 最小适配：新增 FinalizeOutcome，使协议 ack 与进程退出同时到达、重复 finalize 时可以验证只有第一次 applied；保留原 observe_generation_stopped 兼容入口，不改变 WP-1B-02 intent/generation 语义
+RED/GREEN：首个正常 Fake Core 测试因 run_fake_core_scenario/FakeCoreMode 缺失编译失败后转绿；忽略 shutdown 测试先因 IgnoreShutdown variant 缺失编译失败后转绿；延迟 hello shutdown 测试先因后台场景 helper 缺失编译失败后转绿；延迟 hello 正常完成测试首次在 3 秒 hello deadline 真实失败，最小增加 250ms 延迟后响应且 shutdown 可抢占，再转绿；重复 finalize 测试先因 finalize_generation 缺失编译失败后转绿
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 48 passed、10 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 与 git diff --check 通过
+故障测试：250ms 延迟 hello 正常完成；hello 等待在 worker 且 AppShutdown 主线程归约少于 100ms；hello 未完成时 shutdown 控制请求可抢占；Fake Core 忽略 shutdown 后 3 秒强杀；协议 ack/根退出汇合到只 applied 一次的 finalize；所有路径总停止 5 秒 deadline
+真实 Windows 验收：temp/runtime-v2-wp-1b-03/repeat-a-20260721/summary.json 与 repeat-b-20260721/summary.json；同一 PowerShell 会话连续两轮各 4/4，30 秒外层 deadline；单轮登记 4/5 个精确测试根/后代身份；hello 3 秒、shutdown 3 秒、全树 5 秒门禁通过；test exe SHA-256 0d3d9939c6e043e66fe6e51e7167802287150bd0b05f611b3d2043118fa767f9；最终精确路径进程和本轮 Fake Core 临时目录残留均为 0
+数据门禁：测试 cwd 为隔离 Evidence 目录，transport 使用系统唯一临时目录；本 WP 与验收不访问仓库 data/，不修改共享 schema，不迁移、清理或恢复真实用户数据
+旧迁移复用：不复用旧迁移 Fake Core/transport；没有 cherry-pick、restore 或复制旧迁移实现
+已知限制：Fake Core 和 marker transport 仅测试编译，不是 app.core_host 或业务 IPC；不含 initialize/Snapshot/自动恢复/旧代故障矩阵；当前以后台 hello worker + 同线程快速 AppShutdown 归约证明不阻塞 lifecycle，尚未把 Fake Core 接入真实 Tauri Shell UI，该真实窗口/退出组合门禁在 Phase 1B 完成时统一实机验收
+P0/P1：自动门禁当前为零；等待独立规格/代码复审确认本 WP 的 test-only 集成满足退出证据后才能 accepted
+回退步骤：整体 revert 本 WP accepted 提交；移除 fake_core_runtime.rs、main.rs cfg(test) 声明、windows_fake_core_lifecycle_acceptance.ps1 和 FinalizeOutcome 最小适配；保留 WP-1B-01/02，不触碰 Shell、data/ 或用户进程
+关联提交：待 accepted 后提交
+```
+
+稳定化追加记录（2026-07-21，保留上文历史证据）：
+
+```text
+状态：stabilizing
+审查修复：独立复审发现 marker 等待先查文件再查 deadline 会接受迟到响应；新增 deadline 已过但 marker 已存在的边界测试，先稳定复现失败，再改为先判绝对 deadline 后转绿。延迟 hello 夹具新增 hello.pending/hello.release 确定性同步；正常路径从 hello.request 起使用同一 3 秒绝对 deadline 覆盖 pending 与 response，shutdown 路径不 release，并明确断言提交 AppShutdown 时 hello 尚 pending、shutdown ack 后仍无 hello.response
+验收脚本 RED/GREEN：新增 deadline 边界场景后，旧脚本因仍要求 4/4 真实失败；最小更新为 5 个必需场景及 5 passed、0 failed、3 ignored 后转绿。失败路径 finally 后 Fake Core 临时目录残留为 0
+最新自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 49 passed、10 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 与 git diff --check 通过
+最新真实 Windows Fake Core 验收：temp/runtime-v2-wp-1b-03/final-fixed-a-20260721/summary.json 与 final-fixed-b-20260721/summary.json；两轮各 5/5，单轮登记 5 个精确测试根/后代身份；进程与 fixture 目录残留均为 0；test exe SHA-256 8a84d1460cb9a836b742ebf7b40ffc31ab5b33a77fa34230b2f686e6c58f3340；fake_core_runtime.rs SHA-256 c145155bc1b35aece6ff5b0ea078e1bf381fd5fb89a5151ce330a8a58d4a3e05；验收脚本 SHA-256 8a2ed2ca838e1ea9f3c451b835631a88d37f36f6a15675ad6ab24da628836c7a
+代码审查：marker transport 保持 cfg(test)/Windows；正常、强杀、延迟 hello 抢占、严格 deadline、进程树回收与幂等 finalize 的代码级退出证据成立；未发现 WP-1B-04 越界
+待决退出条件：冻结退出证据要求“延迟 hello 不阻塞 Tauri 主线程和窗口退出”，但本 WP 允许范围又把 main.rs 限为 cfg(test) 模块声明并禁止真实生产接线。当前测试证明 lifecycle 归约和后台 hello worker 不阻塞，但没有启动真实 Tauri event loop/WebView/window。未经项目负责人明确批准调整/延期该退出条件或扩展允许范围，不将本 WP 标记 accepted，也不开始 WP-1B-04
+已知限制：spawn_fake_core 使用的环境变量为本 WP 私有且由全局 mutex 串行保护，但当前清场会删除而非恢复调用前同名环境值；验收环境未预置该私有变量，不影响本轮结果，后续 accepted 前可用 RAII 收紧
+关联提交：待 accepted 后提交
+```
+
+计划门禁裁定（2026-07-21）：项目负责人已明确将需要真实实机判断的验收统一放在每个 Phase 完成时执行，并要求 Agent 在 Phase 结束时停下给出步骤。本裁定解决了上文记录的范围矛盾：WP-1B-03 只要求证明 pending hello 不阻塞 Supervisor lifecycle caller，保持 test-only Fake Core 和不接生产入口的允许范围；真实 Tauri event loop/WebView/window 与 pending hello 共存时的关闭、可见性和进程树零残留，明确移入 Phase 1B 最终包 WP-1B-04，作为 Phase 1B accepted 前不得延期或省略的真实应用/实机门禁。该裁定只调整证据落点，不删除门禁、不授权真实 Python Core 或 WP-1C 能力。
+
+验收记录：
+
+```text
+状态：accepted
+验收日期：2026-07-21
+修改范围：desktop/src-tauri/src/fake_core_runtime.rs；core_supervisor.rs 的 FinalizeOutcome 最小适配及测试；main.rs 的 cfg(test) 模块声明；desktop/tests/windows_fake_core_lifecycle_acceptance.ps1；本文 WP-1B-03 状态、证据与负责人门禁裁定
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 49 passed、10 ignored fixture、0 failed；debug/release cargo build --locked 均通过；PowerShell parser 和 git diff --check 通过
+故障测试：deadline 已过但 marker 已存在时严格拒绝；250ms delayed hello 只在显式 release 后响应；pending hello 时 AppShutdown lifecycle 归约少于 100ms且取消 worker；shutdown ack 后无迟到 hello；忽略 shutdown 后 3 秒以精确原因码 92 强杀；5 秒内整树退出；重复 finalize 仅第一次 applied
+真实 Windows 进程验收：final-fixed-a/b 两轮各 5/5；真实 Rust Fake Core 子进程由独立 Windows Job 承载；每轮登记 5 个精确根/后代身份；根、后代、Job 句柄、hello worker、计时器和 marker 目录残留均为 0；外层 30 秒、hello/shutdown 各 3 秒、全树停止 5 秒 deadline
+真实应用验收裁定：本 WP 不把 test-only Fake Core 接入生产 Tauri；负责人已批准将真实 Tauri event loop/WebView/window 与 pending hello/AppShutdown 共存验收移入 Phase 1B 最终包 WP-1B-04，门禁已同时写入该包允许能力和退出证据，不得省略
+数据门禁：验收 cwd 为隔离 Evidence 目录，marker 位于唯一系统临时目录；不访问仓库 data/，不修改 schema，不迁移、清理或恢复真实用户数据
+关联 ADR：ADR-0001 正常启动/关闭与强制回收链获得技术证据，ADR 状态仍待 WP-1B-04 完整故障矩阵统一评估；ADR-0002 仅引用 hello-before-heavy-init 与 lifecycle deadline，不冻结业务 Envelope
+明确非目标：未创建真实 app.core_host 或业务 IPC；未实现 initialize/Snapshot、自动恢复 budget/backoff、Python Core/Assistant、聊天、Tauri 生产接线或 WP-1B-04 后续能力
+P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Important 均为零
+已知限制：测试私有环境变量由全局 mutex 串行保护，验收环境未预置该变量，但清场删除而不恢复潜在旧值；真实 Tauri + pending hello 组合证据按负责人裁定由 WP-1B-04 承担
+独立回退方式：整体 git revert 本 WP accepted 提交，移除 fake_core_runtime.rs、main.rs cfg(test) 声明、验收脚本和 FinalizeOutcome 最小适配；保留 WP-1B-01/02，不触碰 Shell、data/ 或用户进程
+关联提交：本 WP accepted 提交（feat(runtime): 建立 Fake Core 正常启动关闭链）
+```
+
 主要结果：用最小测试 transport 验证 Supervisor 可以完成 Fake Core 的 spawn、最小 hello、运行、协议关闭和最终回收。
 
 允许能力：
@@ -939,7 +1006,7 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 退出证据：
 
 - 正常路径和强制回收路径均无后代残留。
-- 延迟 hello 不阻塞 Tauri 主线程和窗口退出。
+- 延迟 hello 不阻塞 Supervisor lifecycle caller；真实 Tauri 主线程和窗口退出组合在 Phase 1B 最终包 WP-1B-04 验收。
 - 协议关闭与进程退出同时发生时汇合到同一幂等 finalize。
 
 独立回退：回退 Fake Core transport 集成，保留 Supervisor 和进程树。
@@ -953,6 +1020,7 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 - restart budget/backoff、不可重试分类占位和手动 retry。
 - spawn、hello、运行、停止和 backoff 各阶段的 shutdown/retry 竞态。
 - Fake Core 崩溃、卡死、旧 generation 事件和后代忽略退出。
+- 真实 Tauri event loop/WebView/window 与 pending hello、重启 backoff、AppShutdown 共存时的窗口退出和进程树零残留；该组合是 Phase 1B 最终实机门禁。
 
 明确禁止：
 
@@ -963,6 +1031,7 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 
 - ADR-0001 Fake Core 验证矩阵全部自动化或明确记录受限项。
 - 重复启停、连续失败和手动 retry 后无进程、句柄和计时器泄漏。
+- 自动证据通过后由项目负责人按阶段验收步骤验证真实 Tauri 窗口在 pending hello 与恢复流程中仍可见、可关闭，且关闭后完整 Core 进程树零残留。
 - ADR-0001 可以从 `Proposed` 更新为 `Technically Validated`，但仍需实现审查后才进入 `Accepted`。
 
 独立回退：回退恢复策略，保留确定的单次启动和关闭链。
