@@ -1,5 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
+mod core_host_protocol;
+#[allow(dead_code)] // Exercised by WP-1C tests and debug acceptance before release wiring.
+mod core_host_runtime;
 #[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
 #[cfg(test)]
@@ -8,6 +12,8 @@ mod fake_core_runtime;
 mod managed_process_tree;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1b_runtime_acceptance;
+#[cfg(all(windows, debug_assertions))]
+mod phase_1c_core_host_acceptance;
 mod shared_instance;
 mod window_geometry;
 mod window_interaction;
@@ -353,6 +359,16 @@ fn main() {
         .expect("failed to build Sakura Runtime v2 pet geometry gate");
 
     #[cfg(all(windows, debug_assertions))]
+    let mut phase_1c_acceptance =
+        match phase_1c_core_host_acceptance::AcceptanceSession::start_if_requested() {
+            Ok(session) => session,
+            Err(error) => {
+                show_startup_message("Sakura Phase 1C 验收启动失败", &error, true);
+                std::process::exit(2);
+            }
+        };
+
+    #[cfg(all(windows, debug_assertions))]
     let mut phase_1b_acceptance =
         match phase_1b_runtime_acceptance::AcceptanceSession::start_if_requested() {
             Ok(session) => session,
@@ -377,6 +393,27 @@ fn main() {
         session
             .shutdown_and_join()
             .expect("Phase 1B acceptance worker should stop without residuals");
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return;
+    }
+
+    #[cfg(all(windows, debug_assertions))]
+    if let Some(session) = phase_1c_acceptance.take() {
+        let shutdown = session.shutdown_signal();
+        let exit_code = app.run_return(move |_app_handle, event| match event {
+            tauri::RunEvent::Exit
+            | tauri::RunEvent::ExitRequested { .. }
+            | tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. },
+                ..
+            } => shutdown.request(),
+            _ => {}
+        });
+        session
+            .shutdown_and_join()
+            .expect("Phase 1C acceptance worker should stop without residuals");
         if exit_code != 0 {
             std::process::exit(exit_code);
         }

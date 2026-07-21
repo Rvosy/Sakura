@@ -309,3 +309,15 @@ details
 ## ADR 状态门禁
 
 本 ADR 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后更新为 `Technically Validated`，在 Phase 2 的并发、阻塞隔离、取消与背压门禁通过后更新为 `Accepted`。验证失败时应更新或 Supersede 本 ADR，不得用静态契约测试替代真实阻塞与故障测试。
+
+## WP-1C-01 基础 transport 验证记录（2026-07-22）
+
+本记录只验证 Phase 1C 的最小无 Qt Core Host 和基础握手子集，不提前满足版本/capability、generation credential、持续 stderr 排水、并发 Router、initialize、Snapshot 或业务请求门禁，因此 ADR 状态保持 `Proposed`。
+
+- Python 与 Rust 已实现并互验 4-byte big-endian 长度前缀 UTF-8 JSON 帧、8 MiB 上限、基础 Envelope、稳定错误 DTO 和 generation identity；覆盖任意 header/payload 分片、合并帧、非法 UTF-8/JSON、零长/超大/半帧和 stdout 污染。
+- Python 最小 Host 在捕获二进制 stdout 后安装文本写入 guard，只提供 `system.hello`、`system.health`、`system.shutdown`；import guard 证明 hello 前未导入 PySide6、`app.ui`、Assistant、Memory、MCP、插件或 TTS。
+- Rust 使用显式 Python 路径、匿名 stdin/stdout/stderr 管道和 Windows kill-on-close Job 启动真实 Host；所有 control response 均有 deadline，超时、stdin EOF、损坏 stdout 和忽略 shutdown 均有界结束或强制回收完整 Job。
+- 自动门禁结果：Python 19 passed；Rust 72 passed、13 ignored fixture、0 failed；`cargo fmt --check`、Debug/Release `cargo build --locked`、PowerShell parser、Python `py_compile` 和 `git diff --check` 通过。
+- 两轮真实 Debug Tauri + `runtime/python.exe` 验收均观察到可见窗口、hello、两次 health、协议 shutdown 和根退出码 0；每轮登记 9 个进程身份，最终进程和系统临时目录残留均为 0。
+- 两轮验收前后真实 `data/` 完整路径/长度/mtime/SHA-256 清单均为 121 文件、1,045,983,998 bytes，canonical SHA-256 均为 `300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b`，证明零变化。
+- 当前已知限制：`CreateProcessW` 的受控 stdio 继承依赖父进程其他句柄保持默认不可继承；显式 handle allowlist、generation credential、持续 stderr 排水和协议协商留待 WP-1C-03 门禁验证。

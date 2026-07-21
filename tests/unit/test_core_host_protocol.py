@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import io
+import json
+import struct
+
+import pytest
+
+from app.core_host.protocol import (
+    MAX_FRAME_SIZE,
+    FrameDecoder,
+    ProtocolError,
+    decode_frame,
+    encode_frame,
+    read_frame,
+)
+from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError
+
+
+GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
+
+
+def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
+    return {
+        "protocolMajor": 2,
+        "protocolMinor": 0,
+        "kind": "request",
+        "generationId": GENERATION_ID,
+        "id": request_id,
+        "name": name,
+        "payload": {},
+        "deadlineMs": 3000,
+        "priority": "control",
+    }
+
+
+def test_codec_accepts_every_split_and_multiple_merged_frames() -> None:
+    first = encode_frame(request("one"))
+    second = encode_frame(request("two", "system.health"))
+    for split in range(len(first) + 1):
+        decoder = FrameDecoder()
+        before = decoder.feed(first[:split])
+        after = decoder.feed(first[split:])
+        assert before + after == [request("one")]
+        decoder.finish()
+
+    decoder = FrameDecoder()
+    assert decoder.feed(first + second) == [
+        request("one"),
+        request("two", "system.health"),
+    ]
+    decoder.finish()
+
+
+@pytest.mark.parametrize(
+    ("frame", "code"),
+    [
+        (struct.pack(">I", 1) + b"\xff", "INVALID_UTF8"),
+        (struct.pack(">I", 1) + b"{", "INVALID_JSON"),
+        (struct.pack(">I", 0), "INVALID_JSON"),
+        (struct.pack(">I", MAX_FRAME_SIZE + 1), "FRAME_TOO_LARGE"),
+        (b"pollution", "FRAME_TOO_LARGE"),
+    ],
+)
+def test_malformed_and_polluted_frames_fail_with_stable_codes(
+    frame: bytes, code: str
+) -> None:
+    with pytest.raises(ProtocolError) as raised:
+        decode_frame(frame)
+    assert raised.value.code == code
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [b"\x00", b"\x00\x00\x00", struct.pack(">I", 10) + b"{}"],
+)
+def test_incomplete_header_or_payload_fails_at_eof(partial: bytes) -> None:
+    decoder = FrameDecoder()
+    assert decoder.feed(partial) == []
+    with pytest.raises(ProtocolError) as raised:
+        decoder.finish()
+    assert raised.value.code == "INCOMPLETE_FRAME"
+
+
+def test_read_frame_distinguishes_clean_eof_from_partial_eof() -> None:
+    assert read_frame(io.BytesIO()) is None
+    with pytest.raises(ProtocolError) as raised:
+        read_frame(io.BytesIO(b"\x00\x00"))
+    assert raised.value.code == "INCOMPLETE_FRAME"
+
+
+def test_envelope_and_error_shape_are_strict_and_json_safe() -> None:
+    missing_payload = request("missing-payload")
+    del missing_payload["payload"]
+    with pytest.raises(ProtocolError) as raised:
+        encode_frame(missing_payload)
+    assert raised.value.code == "INVALID_ENVELOPE"
+
+    invalid = request("bad")
+    invalid["deadlineMs"] = True
+    with pytest.raises(ProtocolError) as raised:
+        encode_frame(invalid)
+    assert raised.value.code == "INVALID_ENVELOPE"
+
+    oversized = request("large")
+    oversized["payload"] = {"value": "x" * MAX_FRAME_SIZE}
+    with pytest.raises(ProtocolError) as raised:
+        encode_frame(oversized)
+    assert raised.value.code == "FRAME_TOO_LARGE"
+
+    encoded = encode_frame(request("unicode"))
+    payload_length = struct.unpack(">I", encoded[:4])[0]
+    decoded_json = json.loads(encoded[4 : 4 + payload_length].decode("utf-8"))
+    assert decoded_json == request("unicode")
+
+
+def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:
+    output = io.BytesIO()
+    writer = ResponseWriter(output)
+    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID))
+    first, first_stop = dispatcher.dispatch(request("shutdown-1", "system.shutdown"))
+    second, second_stop = dispatcher.dispatch(request("shutdown-2", "system.shutdown"))
+    assert first_stop is True
+    assert second_stop is True
+    writer.send(first)
+    writer.send(second)
+    writer.close()
+    writer.close()
+
+    decoder = FrameDecoder()
+    assert decoder.feed(output.getvalue()) == [first, second]
+    decoder.finish()
+    with pytest.raises(WriterError):
+        writer.send(first)

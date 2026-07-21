@@ -59,8 +59,8 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | accepted |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | accepted |
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | accepted |
-| WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | stabilizing |
-| WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | planned |
+| WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | accepted |
+| WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | planned |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1C-02 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
@@ -1101,6 +1101,53 @@ TDD RED/GREEN：既有 final-real-a 首次真实 RED 为 pending hello 已建立
 ## 6. Phase 1C：最小真实 Core Host
 
 ### WP-1C-01：最小无 Qt Python Core Host 与基础握手
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-22
+允许目录：新增 app/core_host/，仅限 stdlib 长度前缀帧、基础 Envelope/错误 DTO、单 writer queue、control dispatcher 与 system.hello/system.health/system.shutdown；新增 tests/unit/test_core_host_protocol.py、tests/unit/test_core_host_import_guard.py、tests/integration/test_core_host_lifecycle.py 及 tests/fixtures/runtime_v2/wp_1c_01/ 隔离故障夹具；desktop/src-tauri/src/core_host_protocol.rs 仅限 Rust 对等 frame codec；desktop/src-tauri/src/core_host_runtime.rs 仅限显式 Python 路径下受控真实 Host 启停与基础握手；desktop/src-tauri/src/managed_process_tree.rs 仅限在既有 suspended spawn + Job Object 原语上增加 stdin/stdout/stderr 匿名管道所有权和显式隔离 current directory；desktop/src-tauri/src/main.rs 仅限模块声明和 debug-only WP-1C-01 真实 Tauri 验收接线；desktop/src-tauri/src/phase_1c_core_host_acceptance.rs 与 desktop/tests/windows_core_host_acceptance.ps1 仅限真实 Tauri + 最小 Core Host 验收；Cargo.toml/Cargo.lock 仅在现有 windows crate 确需启用匿名管道 API feature 时窄改，不增加或升级依赖；ADR-0002 仅追加 WP-1C-01 基础握手证据且保持 Proposed；本文仅更新 WP-1C-01 状态、设计裁定和验收记录
+明确禁止目录：main.py、legacy_qt_main.py、start*.bat、app/agent/、app/brain_host/、app/core/、app/plugins/、app/voice/、plugins/、data/、runtime/ 内容、characters/、third_party/、tools/mcp/、desktop/frontend/、共享 schema；不得整体复制旧迁移 R36/R37 或修改旧 BrainHost；不得实现 core.initialize、CoreReadiness/Snapshot、协议兼容诊断、generation credential、stderr 限流/脱敏、并发 pending Router、Operation/cancel、聊天、Assistant、Memory、MCP、插件、Tools、TTS、截图、主动互动、资源描述符或 WP-1C-02 及后续能力
+验收环境：当前 Windows 11 23H2 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3；仓库 runtime/python.exe Python 3.12.8 只作为现有测试解释器，不在本 WP 冻结 release/bundled Python 定位规则；不安装或升级依赖；所有真实子进程由独立 Windows Job 管理并使用隔离临时 cwd，hello/shutdown 各 3 秒、完整树停止 5 秒、外层 60 秒 deadline
+关联 ADR：ADR-0001（沿用进程树最终停止权和 deadline）；ADR-0002（仅实现基础 framing/control 子集，版本/capability/credential 与 stderr 门禁留在 WP-1C-03，ADR 保持 Proposed）；ADR-0003（不读取或修改共享 data/schema）
+计划提交：feat(runtime): 建立最小无 Qt Python Core Host
+退出条件：Python/Rust 对等 codec 覆盖分片、合并、非法 UTF-8/JSON、零长/超大/半帧和 EOF；真实 Python Host 在 hello 前 import guard 证明无 PySide6/app.ui/Assistant/Memory/MCP/插件/TTS；stdout 仅有协议帧且污染安全失败；hello、重复 health、未知 control 错误和 shutdown 均在 deadline 内响应；stdin 关闭与 Tauri 主动退出均有界回收完整 Job，无根、后代、pipe、writer/thread、句柄或临时目录残留
+故障测试：header/payload 任意分片与多帧合并；非法 JSON/UTF-8、超大长度、半 header/payload、stdout 前缀污染；未知 kind/name、错误 generation、错误 payload；writer queue 关闭/重复 shutdown；stdin EOF；Python 忽略 shutdown 时 Job 强制回收；真实窗口关闭发生在 hello/health 后且不等待人工点击
+人工验收步骤：运行有界 debug Tauri + 真实 Core Host 验收脚本，确认真实窗口可见、hello/health marker 已建立、自动 WM_CLOSE 后根退出码 0，并复核 summary 中 Python 根/后代、Tauri/WebView、Job、pipe、writer/thread 和临时目录残留均为 0；自动证据通过后由项目负责人按同一步骤进行独立复验
+回退方式：整体 git revert 本 WP accepted 提交，移除 app/core_host、双端 codec、managed process pipe 窄扩展、真实 Host runtime、debug-only 验收桥和脚本，并把 ADR-0002 恢复至本 WP 前记录；保留 WP-1B-01 至 WP-1B-04 的 ManagedProcessTree、Supervisor、Fake Core 与恢复门禁，不触碰 legacy Qt、data/ 或用户进程
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-22
+生产实现：新增无 Qt app.core_host，使用 4-byte big-endian + UTF-8 JSON 帧、8 MiB 上限、严格基础 Envelope、稳定错误 DTO、32 项有界单 writer queue 和仅含 system.hello/system.health/system.shutdown 的同步 control dispatcher；Host 捕获二进制 stdout 后安装文本写入 guard，成功路径 stdout 仅产生协议帧
+Rust 接入：新增对等 codec 与 CoreHostRuntime；ManagedProcessTree 在保持 CREATE_SUSPENDED、先加入独立 kill-on-close Job 再 ResumeThread 的前提下增加三条匿名管道和显式 current directory，父端句柄禁止继承；Rust 为每个 control response 建立有 deadline 的临时 reader，超时后终止完整 Job并 join reader；正常 shutdown/EOF 后验证 Job 为空、stdout 无尾随污染、读取小型 stderr并显式释放 pipe/进程/Job句柄
+Tauri 验收桥：新增仅 Windows debug_assertions 且显式环境门控的 Phase 1C session；普通 debug/release 不自动启动 Python。真实窗口存在期间由 worker 完成 hello 和两次 health，窗口 CloseRequested/ExitRequested/Exit 触发 system.shutdown、完整 Job 验证和 worker join
+TDD RED/GREEN：Python 测试先因 app.core_host 不存在而收集失败，最小 Host 后 18 项转绿并修正一个 split==frame length 的测试 oracle；Rust codec 测试先因符号不存在编译失败，最小对等 codec 后 4 项转绿；CoreHostRuntime 测试先因类型不存在编译失败，suspended Job + pipes 接入后真实 Python lifecycle 转绿；随后新增真实 stdout 污染与忽略 shutdown 夹具，分别证明 framing 拒绝和原因码 93/97 完整 Job 强制回收
+当前定向结果：Python 19 passed；Rust core_host 9 passed；真实受控 Python 根与故障夹具均按 deadline 退出，定向测试结束后未发现失败
+待稳定化门禁：Python import guard 独立复扫、相关 Python 扩展测试、完整 Rust 串行测试、Debug/Release locked build、PowerShell parser、两轮真实 Tauri + Core Host 验收、data/ 完整清单零变化、精确进程/临时目录/句柄复扫、实现审查、ADR-0002 基础证据和独立回退复核
+P0/P1：当前定向实现未发现；完整门禁前不得 accepted、不得提交、不得开始 WP-1C-02
+```
+
+Accepted 记录：
+
+```text
+状态：accepted
+验收日期：2026-07-22
+修改范围：新增 app/core_host 的 stdlib framing、基础 Envelope/错误 DTO、单 writer queue 和三个 system control；新增 Rust 对等 codec、CoreHostRuntime 和 debug-only 显式环境门控验收桥；managed_process_tree.rs 仅增加匿名 stdio 管道所有权与显式 current directory；Cargo.toml 仅为既有 windows 依赖启用 Win32_System_Pipes feature；新增隔离测试/故障夹具/Windows 真实验收脚本；ADR-0002 仅追加基础 transport 技术证据并保持 Proposed；本文更新 WP-1B-04 表格遗漏和 WP-1C-01 状态/证据
+自动测试：Python 19 passed；Rust 完整串行门禁 72 passed、13 ignored fixture、0 failed；cargo fmt --check、Debug/Release cargo build --locked、PowerShell parser、Python py_compile 和 git diff --check 全部通过，构建无警告
+故障测试：覆盖任意 header/payload 分片、合并帧、非法 UTF-8/JSON、零长/超大/半帧、stdout 污染、缺失 payload、bool deadline、generation mismatch、未知 control、重复 health、writer queue 重复关闭/迟到写、stdin EOF；忽略 shutdown 夹具在 250ms control deadline 后以原因码 93 强制回收，stdout 污染夹具以原因码 97 强制回收
+真实应用验收：首次 final-a-20260722 在 20 秒内未建立 ready marker，脚本 finally 清场后确认 Tauri/Python 进程 0、系统临时目录 0、data 清单不变；增加失败诊断后该超时未再复现，不计入通过证据。最终源码的 final-accepted-a-20260722 和 final-accepted-b-20260722 两轮均 status=passed，真实窗口可见，Tauri 根退出码 0，hello、两次 health、protocol shutdown 成功；每轮登记 9 个进程身份，最终根/后代身份残留 0、系统临时目录残留 0
+数据安全：真实 data/ 两轮均为 121 文件、1,045,983,998 bytes；before/after canonical SHA-256 均为 300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b；路径、长度、mtime 和逐文件 SHA-256 完整清单证明零变化
+退出条件：无 Qt 最小 Host、双端 framing、基础 hello/health/shutdown、deadline、stdout 安全失败、stdin EOF、完整 Job 回收、真实窗口和数据零变化证据均满足；最终精确复扫 Tauri/runtime Python 匹配进程 0、sakura-runtime-v2-wp-1c-01-* 系统临时目录 0；P0/P1=0，退出条件相关缺陷=0
+明确非目标：未实现 core.initialize、CoreReadiness/Snapshot、协议版本/capability 协商、generation credential、持续 stderr 排水/脱敏、并发 pending Router、Operation/cancel、Assistant、聊天、Memory、MCP、插件、Tools、TTS、截图、主动互动、资源描述符、bundled/release Python 定位或 WP-1C-02 及后续能力
+已知限制：CreateProcessW 的 stdio 继承依赖父进程其他句柄保持默认不可继承；STARTUPINFOEX handle allowlist、credential 和持续 stderr 排水属于 WP-1C-03。首次 ready 超时未稳定复现，验收脚本已保留 failure-diagnostic.json 以便再次发生时获取 marker、窗口和精确进程身份；最终连续两轮无同类失败
+独立回退方式：git revert 本 WP accepted 提交，移除 app/core_host、双端 codec、CoreHostRuntime、managed process pipe 窄扩展、debug-only Phase 1C 验收桥、脚本/夹具和 ADR-0002 本节，并把本文 WP-1C-01 恢复为 planned；保留 WP-1B-01 至 WP-1B-04 的 ManagedProcessTree、Supervisor、Fake Core 与恢复门禁，不触碰 legacy Qt、data/ 或用户进程
+负责人门禁：自动真实验收已通过；按项目负责人要求，本 WP accepted 后停止并提供同一脚本的独立实机复验步骤；不得在复验前开始 WP-1C-02
+```
 
 主要结果：真实 Python 子进程先建立 transport，并在不导入 Qt 或重型领域模块的情况下响应 hello、health 和 shutdown。
 

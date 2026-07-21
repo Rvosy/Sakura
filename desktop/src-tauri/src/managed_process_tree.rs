@@ -1,6 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fmt,
+    fs::File,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -11,13 +12,21 @@ static LAST_ROLLED_BACK_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::A
 static PROCESS_TREE_FAILURE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(windows)]
-use std::{mem::size_of, os::windows::ffi::OsStrExt, thread};
+use std::{
+    mem::size_of,
+    os::windows::{ffi::OsStrExt, io::FromRawHandle},
+    thread,
+};
 
 #[cfg(windows)]
 use windows::{
     core::{Error as WindowsError, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{
+            CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
+        Security::SECURITY_ATTRIBUTES,
         System::{
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
@@ -26,9 +35,11 @@ use windows::{
                 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
+            Pipes::CreatePipe,
             Threading::{
                 CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess,
-                WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+                WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+                STARTUPINFOW,
             },
         },
     },
@@ -38,6 +49,7 @@ use windows::{
 pub struct ManagedProcessSpec {
     program: PathBuf,
     args: Vec<OsString>,
+    current_directory: Option<PathBuf>,
 }
 
 impl ManagedProcessSpec {
@@ -45,11 +57,17 @@ impl ManagedProcessSpec {
         Self {
             program: program.into(),
             args: Vec::new(),
+            current_directory: None,
         }
     }
 
     pub fn arg(&mut self, arg: impl Into<OsString>) -> &mut Self {
         self.args.push(arg.into());
+        self
+    }
+
+    pub fn current_dir(&mut self, directory: impl Into<PathBuf>) -> &mut Self {
+        self.current_directory = Some(directory.into());
         self
     }
 }
@@ -139,6 +157,65 @@ impl OwnedHandle {
     fn raw(&self) -> HANDLE {
         self.0
     }
+
+    fn into_file(self) -> File {
+        let raw = self.0 .0;
+        std::mem::forget(self);
+        unsafe { File::from_raw_handle(raw) }
+    }
+}
+
+#[derive(Debug)]
+pub struct ManagedProcessPipes {
+    pub stdin: File,
+    pub stdout: File,
+    pub stderr: File,
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct ChildPipeSetup {
+    parent_stdin: OwnedHandle,
+    parent_stdout: OwnedHandle,
+    parent_stderr: OwnedHandle,
+    child_stdin: OwnedHandle,
+    child_stdout: OwnedHandle,
+    child_stderr: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl ChildPipeSetup {
+    fn create() -> ManagedProcessResult<Self> {
+        let (child_stdin, parent_stdin) = create_inherited_pipe(false)?;
+        let (parent_stdout, child_stdout) = create_inherited_pipe(true)?;
+        let (parent_stderr, child_stderr) = create_inherited_pipe(true)?;
+        Ok(Self {
+            parent_stdin,
+            parent_stdout,
+            parent_stderr,
+            child_stdin,
+            child_stdout,
+            child_stderr,
+        })
+    }
+
+    fn configure_startup(&self, startup: &mut STARTUPINFOW) {
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+        startup.hStdInput = self.child_stdin.raw();
+        startup.hStdOutput = self.child_stdout.raw();
+        startup.hStdError = self.child_stderr.raw();
+    }
+
+    fn into_parent_pipes(self) -> ManagedProcessPipes {
+        drop(self.child_stdin);
+        drop(self.child_stdout);
+        drop(self.child_stderr);
+        ManagedProcessPipes {
+            stdin: self.parent_stdin.into_file(),
+            stdout: self.parent_stdout.into_file(),
+            stderr: self.parent_stderr.into_file(),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -183,6 +260,18 @@ impl ManagedProcessTree {
         Self::spawn_internal(spec, SpawnFailureInjection::None)
     }
 
+    #[cfg(windows)]
+    pub fn spawn_piped(
+        spec: &ManagedProcessSpec,
+    ) -> ManagedProcessResult<(Self, ManagedProcessPipes)> {
+        let (tree, pipes) = Self::spawn_internal_configured(
+            spec,
+            SpawnFailureInjection::None,
+            Some(ChildPipeSetup::create()?),
+        )?;
+        Ok((tree, pipes.expect("piped spawn returns parent pipes")))
+    }
+
     #[cfg(all(test, windows))]
     fn spawn_with_assignment_failure_for_test(
         spec: &ManagedProcessSpec,
@@ -200,6 +289,15 @@ impl ManagedProcessTree {
         spec: &ManagedProcessSpec,
         failure_injection: SpawnFailureInjection,
     ) -> ManagedProcessResult<Self> {
+        Self::spawn_internal_configured(spec, failure_injection, None).map(|(tree, _)| tree)
+    }
+
+    #[cfg(windows)]
+    fn spawn_internal_configured(
+        spec: &ManagedProcessSpec,
+        failure_injection: SpawnFailureInjection,
+        pipe_setup: Option<ChildPipeSetup>,
+    ) -> ManagedProcessResult<(Self, Option<ManagedProcessPipes>)> {
         validate_spec(spec)?;
 
         let job = OwnedHandle::new(
@@ -214,6 +312,13 @@ impl ManagedProcessTree {
             cb: size_of::<STARTUPINFOW>() as u32,
             ..Default::default()
         };
+        if let Some(pipe_setup) = &pipe_setup {
+            pipe_setup.configure_startup(&mut startup);
+        }
+        let current_directory = spec
+            .current_directory
+            .as_ref()
+            .map(|directory| wide_null(directory.as_os_str()));
         let mut process_info = PROCESS_INFORMATION::default();
         unsafe {
             CreateProcessW(
@@ -221,10 +326,12 @@ impl ManagedProcessTree {
                 Some(PWSTR(command_line.as_mut_ptr())),
                 None,
                 None,
-                false,
+                pipe_setup.is_some(),
                 CREATE_SUSPENDED,
                 None,
-                PCWSTR::null(),
+                current_directory
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |directory| PCWSTR(directory.as_ptr())),
                 &mut startup,
                 &mut process_info,
             )
@@ -268,16 +375,27 @@ impl ManagedProcessTree {
         }
         drop(thread_handle);
 
-        Ok(Self {
-            pid: process_info.dwProcessId,
-            exit_code: None,
-            job: Some(job),
-            process: Some(process),
-        })
+        let pipes = pipe_setup.map(ChildPipeSetup::into_parent_pipes);
+        Ok((
+            Self {
+                pid: process_info.dwProcessId,
+                exit_code: None,
+                job: Some(job),
+                process: Some(process),
+            },
+            pipes,
+        ))
     }
 
     #[cfg(not(windows))]
     pub fn spawn(_spec: &ManagedProcessSpec) -> ManagedProcessResult<Self> {
+        Err(ManagedProcessError::UnsupportedPlatform)
+    }
+
+    #[cfg(not(windows))]
+    pub fn spawn_piped(
+        _spec: &ManagedProcessSpec,
+    ) -> ManagedProcessResult<(Self, ManagedProcessPipes)> {
         Err(ManagedProcessError::UnsupportedPlatform)
     }
 
@@ -445,7 +563,35 @@ fn validate_spec(spec: &ManagedProcessSpec) -> ManagedProcessResult<()> {
             "argument contains an embedded NUL",
         ));
     }
+    if spec
+        .current_directory
+        .as_ref()
+        .is_some_and(|directory| directory.as_os_str().encode_wide().any(|unit| unit == 0))
+    {
+        return Err(ManagedProcessError::InvalidSpec(
+            "current directory contains an embedded NUL",
+        ));
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn create_inherited_pipe(parent_reads: bool) -> ManagedProcessResult<(OwnedHandle, OwnedHandle)> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: true.into(),
+    };
+    let mut read = HANDLE::default();
+    let mut write = HANDLE::default();
+    unsafe { CreatePipe(&mut read, &mut write, Some(&attributes), 0) }
+        .map_err(|error| windows_error("CreatePipe", error))?;
+    let read = OwnedHandle::new(read);
+    let write = OwnedHandle::new(write);
+    let parent = if parent_reads { &read } else { &write };
+    unsafe { SetHandleInformation(parent.raw(), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+        .map_err(|error| windows_error("SetHandleInformation", error))?;
+    Ok((read, write))
 }
 
 #[cfg(windows)]
