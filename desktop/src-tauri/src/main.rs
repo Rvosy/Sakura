@@ -14,6 +14,8 @@ mod managed_process_tree;
 mod phase_1b_runtime_acceptance;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1c_core_host_acceptance;
+#[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
+mod platform;
 mod shared_instance;
 mod window_geometry;
 mod window_interaction;

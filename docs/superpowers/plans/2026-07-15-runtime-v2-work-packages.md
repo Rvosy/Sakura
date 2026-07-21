@@ -65,7 +65,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | accepted |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
-| WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | planned |
+| WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | planned |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | planned |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
@@ -1282,6 +1282,40 @@ Phase 1P 是 2026-07-22 架构审查后的强制纠偏阶段。它保留 WP-1A�
 
 ### WP-1P-01：跨平台 target、接口与错误分类冻结
 
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-22
+前置提交：a06e1dada66b02474f3d65d4124f31094cda5e9e（WP-1C-02 accepted）；920eb8188（跨平台规范与产品功能等价门禁）
+允许目录：desktop/rust-toolchain.toml 仅限增加三个正式 target；desktop/src-tauri/src/platform/ 仅限无行为 target、trait、错误 DTO 和 contract tests；desktop/src-tauri/src/main.rs 仅限声明 compile-only platform module；docs/runtime-v2/WP-1P-01-platform-contract.md；本文仅更新 WP-1P-01 状态与证据
+明确禁止目录：main.py、legacy_qt_main.py、start*.bat；app/、plugins/、data/、runtime/ 内容、characters/、third_party/、tools/mcp/；desktop/frontend/；Cargo.toml/Cargo.lock 与新增依赖；shared_instance.rs、managed_process_tree.rs、window_interaction.rs、window_geometry.rs、core_supervisor.rs、core_host_protocol.rs、core_host_runtime.rs、Fake/真实 Core 验收与现有调用路径；.github/workflows/；WP-1P-02 及后续 backend、locator、CI 或产品能力实现
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64；Rust/Cargo 1.96.0；当前 native target x86_64-pc-windows-msvc；Tauri 2.11.3；WebView2 实际 150.0.4078.83；不安装或升级依赖，不以当前 Windows 编译冒充 macOS/Linux 证据；本 WP 只要求当前平台 compile/test、三平台 target/环境冻结和可审查契约
+关联 ADR：ADR-0001（跨平台受控进程树不改变 Supervisor）；ADR-0003（共享锁语义和数据前置）；ADR-0004（正式矩阵、平台 backend 和跨平台先行）
+计划提交：feat(runtime): 冻结跨平台服务契约与错误分类
+退出条件：三平台最低环境、Rust target、WebView、包格式与 Python source ID 明确；五类 trait object-safe 且 compile-only contract tests 通过；公共/平台依赖图、稳定错误表、CI/实机责任和逐文件迁移清单完成；当前 Windows 生产路径、Supervisor、IPC、Snapshot、Assistant 和用户数据语义零变化
+故障测试：未知 Rust triple 不被误识别为正式 target；native error number 不改变稳定错误码；category code 唯一；共享锁 identity 固定；development Runtime 不允许隐式选择；五类 trait 同时完成 object-safety 编译证明
+已知风险：macOS/Linux 尚无 concrete backend 或实机证据；Python 工件 SHA-256、golden install tree 和 locator 属于 WP-1P-02；现有非 Windows Unsupported 分支要到对应后续 WP 才能删除
+独立回退方式：整体 git revert WP-1P-01 accepted 提交，删除 compile-only platform 契约和本规范，恢复 WP-1C-02 accepted 后的生产实现；不回退 a06e1dada/920eb818，不触碰 runtime/、data/ 或用户进程
+```
+
+Accepted 记录：
+
+```text
+状态：accepted
+验收日期：2026-07-22
+修改范围：desktop/rust-toolchain.toml 登记 Windows x64、macOS arm64、Linux x64 三个正式 target；新增 compile-only platform facade、五类 object-safe backend trait、公共 target/runtime/process/diagnostics DTO、12 类稳定错误与四类 retry advice；main.rs 只声明未接线模块；新增 WP-1P-01 target/环境/Python source/依赖方向/错误/证据责任/迁移规范。未移动或修改任何 Windows backend、Supervisor、IPC、Snapshot、Python Core 或产品调用路径
+契约测试：新增 8 项 Rust 可执行测试，覆盖三个稳定 target ID/triple、当前正式 target 识别、五类 trait object safety、共享锁 identity、显式 development Runtime、错误 category 唯一、native code 与稳定码隔离及诊断序列化；定向测试 8 passed
+自动测试：cargo fmt --check 通过；完整 cargo test --locked 为 83 passed、13 ignored fixture、0 failed；Debug cargo build --locked 与 Release cargo build --release --locked 均成功且无 warning；git diff --check 通过
+平台证据边界：当前仅在 Windows 11 23H2 build 22631.4890 x64、Rust/Cargo 1.96.0、Tauri 2.11.3、WebView2 150.0.4078.83 上完成 native compile/test；macOS/Linux 本 WP 只冻结 target、最低环境和后续证据责任，没有 concrete backend、native compile 或实机结果，未以 Windows 或 compile-only 冒充
+依赖与范围：Cargo.toml/Cargo.lock 和依赖零变化；只修改激活记录允许的 toolchain、compile-only platform module、main.rs module declaration 和两份规范；没有修改 .github workflow、发布流程、legacy Qt、app/、plugins/、desktop/frontend/、runtime/、data/、characters/、third_party/ 或 tools/mcp/
+业务与数据：没有启动 Shell、legacy Qt 或真实 Assistant；没有改变 Supervisor/generation/restart budget、framing、CoreReadiness、Snapshot、产品功能或用户数据 schema；工作区没有 data/ 或 runtime/ 版本控制变化
+退出条件：三平台最低环境、Rust target、WebView、首个包格式与精确 Python source ID 已冻结；五类契约、调用方向、稳定错误表、CI/实机责任和 Windows 逐文件迁移清单完整；P0/P1=0，退出条件相关缺陷=0
+已知限制：macOS/Linux backend 和 CI 尚未实现；Python archive SHA-256、golden install tree 与唯一定位属于 WP-1P-02；共享锁、进程树、窗口/IME/diagnostics 和三平台总门依次属于 WP-1P-03 至 06；现有非 Windows Unsupported 分支在对应 WP accepted 前仍存在
+独立回退方式：整体 git revert WP-1P-01 accepted 提交，删除 compile-only platform 契约和本规范并恢复单 target toolchain 声明；保留 WP-1C-02 及跨平台治理文档，不触碰 runtime/、data/ 或用户进程
+关联提交：本 WP accepted 提交（feat(runtime): 冻结跨平台服务契约与错误分类）
+```
+
 主要结果：冻结 Windows x64、macOS arm64、Linux x64 的最低环境、Rust target、平台服务接口、稳定错误类别和证据责任。
 
 允许能力：
@@ -1871,6 +1905,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 已登记 accepted；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 已登记 accepted；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-下一项且唯一允许激活的生产 Work Package 是 `WP-1P-01`。`WP-1C-03` 及全部后续 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
+下一项且唯一允许激活的生产 Work Package 是 `WP-1P-02`。`WP-1C-03` 及全部后续 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。

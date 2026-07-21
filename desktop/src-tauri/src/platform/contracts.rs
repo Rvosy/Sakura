@@ -1,0 +1,314 @@
+use std::{collections::BTreeMap, ffi::OsString, fs::File, path::PathBuf, time::Duration};
+
+use serde::Serialize;
+
+use super::{
+    PlatformError, PlatformErrorCategory, PlatformResult, PlatformService, PlatformTarget,
+    RetryAdvice,
+};
+use crate::{window_geometry::PhysicalPlacement, window_interaction::PhysicalHitRegions};
+
+pub const SHARED_INSTANCE_ID: &str = "sakura.desktop.shared-user-data.v1";
+
+pub trait InstanceLockLease: Send {}
+
+pub enum InstanceLockAcquire {
+    Acquired(Box<dyn InstanceLockLease>),
+    AlreadyRunning,
+}
+
+pub trait InstanceLockBackend: Send + Sync {
+    fn acquire(&self, application_id: &str) -> PlatformResult<InstanceLockAcquire>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessStdio {
+    Null,
+    Piped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedProcessRequest {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub current_directory: Option<PathBuf>,
+    pub environment_overrides: Vec<(OsString, OsString)>,
+    pub stdio: ProcessStdio,
+}
+
+#[derive(Debug)]
+pub struct ManagedProcessPipes {
+    pub stdin: File,
+    pub stdout: File,
+    pub stderr: File,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ProcessExitStatus {
+    Code(i64),
+    Signal(i32),
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessWaitOutcome {
+    Exited(ProcessExitStatus),
+    TimedOut,
+}
+
+pub trait ManagedProcessTree: Send {
+    fn root_pid(&self) -> u32;
+    fn wait_root(&mut self, timeout: Duration) -> PlatformResult<ProcessWaitOutcome>;
+    fn terminate_tree(&mut self, reason_code: u32) -> PlatformResult<()>;
+    fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool>;
+    fn release_exited(self: Box<Self>) -> PlatformResult<()>;
+}
+
+pub struct SpawnedProcessTree {
+    pub tree: Box<dyn ManagedProcessTree>,
+    pub pipes: Option<ManagedProcessPipes>,
+}
+
+pub trait ManagedProcessTreeBackend: Send + Sync {
+    fn spawn(&self, request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree>;
+}
+
+pub trait WindowInteractionBackend: Send + Sync {
+    fn apply_bounds(
+        &self,
+        window: &tauri::WebviewWindow,
+        placement: &PhysicalPlacement,
+    ) -> PlatformResult<()>;
+
+    fn apply_hit_regions(
+        &self,
+        window: &tauri::WebviewWindow,
+        regions: &PhysicalHitRegions,
+    ) -> PlatformResult<()>;
+
+    fn restore_full_hit_region(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+    fn start_drag_and_wait(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+    fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()>;
+    fn focus_text_input(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    ExplicitDevelopment,
+    Packaged,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeLocationRequest {
+    pub mode: RuntimeMode,
+    pub target: PlatformTarget,
+    pub executable_directory: PathBuf,
+    pub resource_directory: PathBuf,
+    pub explicit_development_root: Option<PathBuf>,
+}
+
+impl RuntimeLocationRequest {
+    pub fn validate(&self) -> PlatformResult<()> {
+        if self.mode == RuntimeMode::ExplicitDevelopment && self.explicit_development_root.is_none()
+        {
+            return Err(PlatformError::new(
+                PlatformService::RuntimeLocator,
+                PlatformErrorCategory::InvalidInput,
+                "validate_location_request",
+                RetryAdvice::Never,
+                "development mode requires an explicit runtime root",
+            ));
+        }
+        if self.mode == RuntimeMode::Packaged && self.explicit_development_root.is_some() {
+            return Err(PlatformError::new(
+                PlatformService::RuntimeLocator,
+                PlatformErrorCategory::InvalidInput,
+                "validate_location_request",
+                RetryAdvice::Never,
+                "packaged mode cannot use a development runtime root",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLayout {
+    pub target: PlatformTarget,
+    pub mode: RuntimeMode,
+    pub runtime_root: PathBuf,
+    pub python_executable: PathBuf,
+    pub application_root: PathBuf,
+    pub core_module: String,
+    pub source_id: String,
+}
+
+pub trait RuntimeLocator: Send + Sync {
+    fn locate(&self, request: &RuntimeLocationRequest) -> PlatformResult<RuntimeLayout>;
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeDiagnosticsRequest {
+    pub window_label: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDiagnosticsSnapshot {
+    pub target: PlatformTarget,
+    pub window_backend: String,
+    pub display_server: Option<String>,
+    pub webview_version: Option<String>,
+    pub facts: BTreeMap<String, String>,
+}
+
+pub trait NativeDiagnosticsBackend: Send + Sync {
+    fn collect(
+        &self,
+        request: &NativeDiagnosticsRequest,
+    ) -> PlatformResult<NativeDiagnosticsSnapshot>;
+}
+
+pub trait PlatformRuntime: Send + Sync {
+    fn target(&self) -> PlatformTarget;
+    fn instance_lock(&self) -> &dyn InstanceLockBackend;
+    fn managed_process_tree(&self) -> &dyn ManagedProcessTreeBackend;
+    fn window_interaction(&self) -> &dyn WindowInteractionBackend;
+    fn runtime_locator(&self) -> &dyn RuntimeLocator;
+    fn native_diagnostics(&self) -> &dyn NativeDiagnosticsBackend;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::{PlatformError, PlatformErrorCategory, PlatformService, RetryAdvice};
+
+    struct ContractOnlyBackend;
+
+    fn contract_only(service: PlatformService, operation: &'static str) -> PlatformError {
+        PlatformError::new(
+            service,
+            PlatformErrorCategory::UnsupportedEnvironment,
+            operation,
+            RetryAdvice::Never,
+            "WP-1P-01 freezes contracts without a concrete backend",
+        )
+    }
+
+    impl InstanceLockBackend for ContractOnlyBackend {
+        fn acquire(&self, _application_id: &str) -> PlatformResult<InstanceLockAcquire> {
+            Err(contract_only(PlatformService::InstanceLock, "acquire"))
+        }
+    }
+
+    impl ManagedProcessTreeBackend for ContractOnlyBackend {
+        fn spawn(&self, _request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+            Err(contract_only(PlatformService::ManagedProcessTree, "spawn"))
+        }
+    }
+
+    impl WindowInteractionBackend for ContractOnlyBackend {
+        fn apply_bounds(
+            &self,
+            _window: &tauri::WebviewWindow,
+            _placement: &PhysicalPlacement,
+        ) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "apply_bounds",
+            ))
+        }
+
+        fn apply_hit_regions(
+            &self,
+            _window: &tauri::WebviewWindow,
+            _regions: &PhysicalHitRegions,
+        ) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "apply_hit_regions",
+            ))
+        }
+
+        fn restore_full_hit_region(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "restore_full_hit_region",
+            ))
+        }
+
+        fn start_drag_and_wait(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "start_drag_and_wait",
+            ))
+        }
+
+        fn set_visible(
+            &self,
+            _window: &tauri::WebviewWindow,
+            _visible: bool,
+        ) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "set_visible",
+            ))
+        }
+
+        fn focus_text_input(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "focus_text_input",
+            ))
+        }
+    }
+
+    impl RuntimeLocator for ContractOnlyBackend {
+        fn locate(&self, _request: &RuntimeLocationRequest) -> PlatformResult<RuntimeLayout> {
+            Err(contract_only(PlatformService::RuntimeLocator, "locate"))
+        }
+    }
+
+    impl NativeDiagnosticsBackend for ContractOnlyBackend {
+        fn collect(
+            &self,
+            _request: &NativeDiagnosticsRequest,
+        ) -> PlatformResult<NativeDiagnosticsSnapshot> {
+            Err(contract_only(PlatformService::NativeDiagnostics, "collect"))
+        }
+    }
+
+    #[test]
+    fn all_five_backend_contracts_are_object_safe() {
+        let backend = ContractOnlyBackend;
+        let _: &dyn InstanceLockBackend = &backend;
+        let _: &dyn ManagedProcessTreeBackend = &backend;
+        let _: &dyn WindowInteractionBackend = &backend;
+        let _: &dyn RuntimeLocator = &backend;
+        let _: &dyn NativeDiagnosticsBackend = &backend;
+    }
+
+    #[test]
+    fn shared_lock_identity_matches_the_data_compatibility_contract() {
+        assert_eq!(SHARED_INSTANCE_ID, "sakura.desktop.shared-user-data.v1");
+    }
+
+    #[test]
+    fn development_runtime_selection_must_be_explicit() {
+        let request = RuntimeLocationRequest {
+            mode: RuntimeMode::ExplicitDevelopment,
+            target: PlatformTarget::WindowsX64,
+            executable_directory: PathBuf::from("bin"),
+            resource_directory: PathBuf::from("resources"),
+            explicit_development_root: None,
+        };
+        let error = request
+            .validate()
+            .expect_err("implicit development runtime selection must fail closed");
+        assert_eq!(error.category, PlatformErrorCategory::InvalidInput);
+        assert_eq!(error.retry, RetryAdvice::Never);
+    }
+}
