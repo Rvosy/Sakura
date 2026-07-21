@@ -61,7 +61,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | accepted |
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | accepted |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
-| WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | planned |
+| WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1C-02 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
 | WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
@@ -1171,6 +1171,43 @@ Accepted 记录：
 独立回退：回退 `app.core_host` 与真实 Host 接入，保留 Fake Core Supervisor。
 
 ### WP-1C-02：initialize、readiness 和最小 Snapshot
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-22
+前置提交：eb302748614b785cfdf32f84037b729b9403d1b8（WP-1C-01 accepted）
+允许目录：app/core_host/server.py 与 __main__.py 中仅限假组件后台 initialize/readiness/Snapshot 生命周期；tests/unit/test_core_host_readiness.py、tests/integration/test_core_host_lifecycle.py 与 tests/fixtures/runtime_v2/wp_1c_02/ 中仅限本 WP 故障夹具；desktop/src-tauri/src/core_host_runtime.rs 中仅限带 payload 的 lifecycle request、Python Snapshot 只读缓存与 generation 失效；desktop/src-tauri/src/phase_1c_core_host_acceptance.rs、main.rs 和 desktop/tests/windows_core_host_acceptance.ps1 中仅限正常/卡死 initialize 的真实 Tauri 验收；本文仅更新 WP-1C-02 状态和证据
+明确禁止目录：Cargo.toml/Cargo.lock 与依赖；core_host_protocol.rs 基础 Envelope/framing；managed_process_tree.rs；main.py、legacy_qt_main.py、start*.bat；app/agent/、app/brain_host/、app/core/、app/plugins/、app/voice/、plugins/、data/、runtime/ 内容、characters/、third_party/、tools/mcp/、desktop/frontend/、共享 schema；协议 major/minor/capability 协商、generation credential、stderr 限流/脱敏、并发 Router、Operation/cancel、Gateway、Assistant、聊天、Memory、MCP、插件、Tools、TTS、截图、主动互动及 WP-1C-03 或后续能力
+验收环境：当前 Windows 11 23H2 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3；仓库 runtime/python.exe；不安装或升级依赖；所有测试使用隔离临时目录和明确 deadline；initialize 接受不超过 5 秒，readiness watchdog 30 秒，shutdown 3 秒，完整树停止 5 秒，外层真实验收 60 秒
+关联 ADR：ADR-0001（initialize/shutdown deadline 与旧树清理）；ADR-0002（先 transport 后后台 initialize、Python 构造 Snapshot、Rust 只读缓存和 generation 隔离）；ADR-0003（不读取或修改共享 data/schema）
+计划提交：feat(runtime): 建立 Core 初始化就绪与最小快照
+退出条件：hello 不等待 initialize；initialize 快速接受或确定性拒绝；后台初始化不阻塞 health/shutdown；卡死初始化时真实 Tauri 窗口可见且可有界关闭；Snapshot 仅由 Python 构造并带 schemaVersion/generationId/generationNumber/revision/readiness/components/capabilities；Rust 不推导或改写业务字段；新 generation 建立时旧 Snapshot 立即清空；两轮真实验收证明 data/ 零变化且进程、Job、pipe、writer/init thread、计时器和临时目录零残留
+故障测试：重复 initialize；非法 initialize payload；ready/setup_required/degraded/failed/hang 假模式；initialize 与 shutdown 竞态；卡死时重复 health；旧 generation Snapshot 拒绝；revision 单调；新 generation 缓存清空；stdin EOF；重复关闭和多轮执行
+已知风险：本 WP 只冻结最小 lifecycle Snapshot，Phase 2 revision gap/事件/资源 token 尚未实现；真实 readiness 仍是假组件，不代表 Assistant 可用
+独立回退方式：整体 git revert 本 WP accepted 提交，恢复 WP-1C-01 的 hello/health/shutdown Host、Rust runtime 和真实验收；保留基础 framing、受控进程树、Supervisor 与 Fake Core，不触碰 legacy Qt、data/ 或用户进程
+```
+
+Accepted 记录：
+
+```text
+状态：accepted
+验收日期：2026-07-22
+修改范围：Python Host 新增 generation number、假组件后台 initialize、六态 CoreReadiness、revisioned 最小 Snapshot、重复 initialize 合并和可取消 initialize worker；Rust 新增带 payload lifecycle request、Python Snapshot 严格只读缓存和 begin_generation 立即清空；真实验收桥增加 ready/hang 模式、Snapshot 证据和 Win32 窗口诊断；Windows 验收把 WebView2 user data folder 放入每轮受控临时目录，并区分运行时读取的 Python 源码与决定 EXE 新旧的 Rust 编译源码。未修改 main.rs 产品窗口路径，未导入或接入 Assistant、Memory、MCP、插件、Tools、TTS 或其他领域模块
+根因与修复：旧验收只隔离 Core runtime，WebView2 仍复用真实用户 LocalAppData 下的共享 EBWebView profile。连续启动和失败清场后，下一轮 WebView2 环境可能停在仅有 Tao Thread Event Target 与浏览器子进程、尚未建立 Tauri Window 的状态，使 Core 已 ready 或保持 initializing 的正确结果被误判为 Shell 失败。脚本现为每轮设置 WEBVIEW2_USER_DATA_FOLDER=<受控 runtime>/webview2-user-data，硬断言该目录已由 WebView2 创建，并在完整进程树退出后由既有安全边界一并删除；不再依赖或修改共享 WebView2 profile。源码新旧检查只用 Rust 编译输入判断 EXE，Python 实时源码仍进入证据清单，避免 cargo 正确 no-op 后被 Python mtime 误报为旧 EXE
+TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落在 generation number、core.initialize/core.snapshot、readiness、非法 payload 拒绝和 worker 清理；Rust 新测试首次编译失败 5 项，缺失 CoreSnapshotCache、request_with_payload、refresh_snapshot 和 cached_snapshot；最终 Python Core Host 定向 30 passed，Rust 完整串行门禁 75 passed、13 ignored fixture、0 failed
+自动测试：cargo fmt --check、Debug/Release cargo build --locked、PowerShell parser 和 git diff --check 全部通过，构建无警告。仓库全量 Python 扩展门禁为 1492 passed、3 skipped、15 failed；15 项均属于本 WP 禁止修改且当前 diff 未触碰的 legacy main.py/Qt 单实例旧测试，未发现 Runtime v2 定向回归
+故障与竞态：ready/setup_required/degraded/failed/hang、非法/未知 initialize payload、重复 initialize、hung initialize 下重复 health、initialize/shutdown、stdin EOF、Snapshot generation mismatch、新 generation cache 清空和旧 Snapshot 拒绝均由 Python/Rust 可执行测试通过；hung initialize 可在 3 秒协议期和 5 秒完整树门内正常退出且不强杀
+历史失败证据：round-a-hang、round-a-hang-retry、hang-diagnostic、ready-after-failures、hang-window-class、final-a-ready、explicit-show-diagnostic、ready-event-hang 中 Core 多次已建立 hello/initialize/snapshot，失败轮只观察到 Tao 内部事件窗口。对 main.rs 的两项强制显示诊断实验无效并已撤回，证明不应修改产品窗口生命周期掩盖验收环境泄漏
+真实应用验收：带隔离创建硬断言的 final-isolated-round-1-ready、final-isolated-round-1-hang、final-isolated-round-2-ready、final-isolated-round-2-hang 使用同一 debug EXE SHA-256 c2f219eaad8877a74fce61f723441cbe82dc4f8a6dfb63fc4bb6c506dbe3e6ee，连续两组均 status=passed 且 webViewUserDataCreated=true；四轮真实 Tauri Window 可见、根退出码 0、hello/initialize/两次 health/protocol shutdown 成功，ready Snapshot 为 ready，hang Snapshot 保持 initializing
+数据与资源安全：最终四轮真实 data/ 均为 121 文件、1,046,428,570 bytes，before/after canonical SHA-256 均为 e4982a382a9668de39276ce1d3203d9f47c18b69e9b1aef8787ffbd1eb0fe1ca，路径、长度、mtime 和逐文件 SHA-256 零变化；每轮登记 9 个进程身份且最终残留 0，受控 runtime 与隔离 WebView2 user data 目录残留 0
+退出条件：hello 不等待 initialize；后台初始化不阻塞 health/shutdown；卡死初始化时真实窗口可见且可有界关闭；Python 独占构造 Snapshot，Rust 只读缓存并在新 generation 立即清空；P0/P1=0，退出条件相关缺陷=0
+已知限制：本 WP 的组件初始化仍是假模式，Phase 2 revision gap/事件/资源 token 和真实 Assistant readiness 尚未实现；协议协商、generation credential 与持续 stderr 排水属于 WP-1C-03
+独立回退方式：git revert 本 WP accepted 提交，恢复 WP-1C-01 的 hello/health/shutdown Host、Rust runtime 和真实验收；保留基础 framing、受控进程树、Supervisor 与 Fake Core，不触碰 legacy Qt、data/ 或用户进程
+负责人门禁：自动真实验收已通过；本 WP accepted 后停止并提供同一脚本的独立实机复验步骤，不在本次继续 WP-1C-03
+关联提交：本 WP accepted 提交（feat(runtime): 建立 Core 初始化就绪与最小快照）
+```
 
 主要结果：Core 在握手后后台初始化假组件，并通过 CoreReadiness 和最小 Snapshot 表达状态。
 

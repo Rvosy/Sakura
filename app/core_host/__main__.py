@@ -24,6 +24,7 @@ class GuardedStdout(io.TextIOBase):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--generation-id", required=True)
+    parser.add_argument("--generation-number", type=int, default=1)
     return parser.parse_args(argv)
 
 
@@ -33,7 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     output_stream = sys.stdout.buffer
     sys.stdout = GuardedStdout()
     try:
-        run_host(input_stream, output_stream, HostConfig(args.generation_id))
+        run_host(
+            input_stream,
+            output_stream,
+            HostConfig(args.generation_id, generation_number=args.generation_number),
+        )
     except ProtocolError as error:
         sys.stderr.write(f"CORE_HOST_PROTOCOL_ERROR {error.code}\n")
         sys.stderr.flush()

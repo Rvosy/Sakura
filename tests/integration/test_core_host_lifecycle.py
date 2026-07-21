@@ -5,6 +5,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import BinaryIO
 
@@ -106,7 +107,13 @@ def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
         hello = exchange(process, request("hello", "system.hello"))
         assert hello["ok"] is True
         assert hello["payload"] == {
-            "capabilities": ["system.hello", "system.health", "system.shutdown"],
+            "capabilities": [
+                "system.hello",
+                "system.health",
+                "system.shutdown",
+                "core.initialize",
+                "core.snapshot",
+            ],
             "coreVersion": "0.1.0",
             "hostState": "transport_ready",
         }
@@ -184,5 +191,52 @@ def test_clean_stdin_eof_exits_without_output_or_residual_thread() -> None:
         assert process.wait(timeout=5) == 0
         assert process.stdout is not None
         assert process.stdout.read() == b""
+    finally:
+        stop_host(process)
+
+
+def test_real_host_initializes_in_background_and_returns_python_snapshot() -> None:
+    process = start_host()
+    try:
+        assert exchange(process, request("hello", "system.hello"))["ok"] is True
+        started = time.monotonic()
+        initialize = exchange(
+            process,
+            request("initialize", "core.initialize", {"mode": "ready", "delayMs": 50}),
+        )
+        assert time.monotonic() - started < 0.5
+        assert initialize["payload"]["readiness"] == "initializing"
+
+        deadline = time.monotonic() + 2
+        while True:
+            snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
+            if snapshot["readiness"] == "ready":
+                break
+            assert time.monotonic() < deadline
+        assert snapshot["generationId"] == GENERATION_ID
+        assert snapshot["revision"] == 2
+        assert snapshot["components"] == {"fixture": {"state": "ready"}}
+        assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
+        assert process.wait(timeout=5) == 0
+    finally:
+        stop_host(process)
+
+
+def test_real_host_health_and_shutdown_remain_responsive_when_initialize_hangs() -> None:
+    process = start_host()
+    try:
+        initialize = exchange(
+            process,
+            request("initialize", "core.initialize", {"mode": "hang"}),
+        )
+        assert initialize["payload"]["readiness"] == "initializing"
+        for index in range(3):
+            health = exchange(process, request(f"health-hang-{index}", "system.health"))
+            assert health["payload"] == {
+                "hostState": "initializing",
+                "status": "healthy",
+            }
+        assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
+        assert process.wait(timeout=5) == 0
     finally:
         stop_host(process)

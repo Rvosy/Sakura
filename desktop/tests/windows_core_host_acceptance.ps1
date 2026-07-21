@@ -1,7 +1,9 @@
 param(
     [string]$DebugExecutable = "",
     [string]$EvidenceDirectory = "",
-    [string]$DataRoot = ""
+    [string]$DataRoot = "",
+    [ValidateSet("ready", "hang")]
+    [string]$InitializationMode = "ready"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +41,8 @@ public static class SakuraPhase1CCoreHostNative {
     private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr window, StringBuilder text, int capacity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder text, int capacity);
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -56,6 +60,12 @@ public static class SakuraPhase1CCoreHostNative {
         return text.ToString();
     }
 
+    private static string ReadWindowClass(IntPtr window) {
+        var text = new StringBuilder(512);
+        GetClassName(window, text, text.Capacity);
+        return text.ToString();
+    }
+
     public static IntPtr FindVisibleWindow(int processId, string expectedTitle) {
         IntPtr result = IntPtr.Zero;
         EnumWindows((window, parameter) => {
@@ -69,6 +79,25 @@ public static class SakuraPhase1CCoreHostNative {
             return true;
         }, IntPtr.Zero);
         return result;
+    }
+
+    public static string[] DescribeWindows(int processId) {
+        var windows = new List<string>();
+        EnumWindows((window, parameter) => {
+            uint ownerProcessId;
+            GetWindowThreadProcessId(window, out ownerProcessId);
+            if (ownerProcessId == (uint)processId) {
+                windows.Add(String.Format(
+                    "0x{0:x};visible={1};class={2};title={3}",
+                    window.ToInt64(),
+                    IsWindowVisible(window),
+                    ReadWindowClass(window),
+                    ReadWindowText(window)
+                ));
+            }
+            return true;
+        }, IntPtr.Zero);
+        return windows.ToArray();
     }
 
     public static int[] GetDescendantProcessIds(int rootPid) {
@@ -109,7 +138,7 @@ if (-not $DataRoot) { $DataRoot = Join-Path $RepoRoot "data" }
 $Data = (Resolve-Path -LiteralPath $DataRoot).Path
 if (-not $EvidenceDirectory) {
     $EvidenceDirectory = Join-Path $RepoRoot (
-        "temp\runtime-v2-wp-1c-01\acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+        "temp\runtime-v2-wp-1c-02\acceptance-$InitializationMode-" + (Get-Date -Format "yyyyMMdd-HHmmss")
     )
 }
 $Evidence = [System.IO.Path]::GetFullPath($EvidenceDirectory)
@@ -120,8 +149,9 @@ $tracked = [System.Collections.Generic.Dictionary[string, object]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
 $runtime = Join-Path $TempRoot (
-    "sakura-runtime-v2-wp-1c-01-$PID-" + [Guid]::NewGuid().ToString("N")
+    "sakura-runtime-v2-wp-1c-02-$PID-" + [Guid]::NewGuid().ToString("N")
 )
+$webViewUserData = Join-Path $runtime "webview2-user-data"
 
 function Get-DataManifest {
     param([string]$Root)
@@ -201,7 +231,7 @@ function Stop-TrackedProcesses {
         }
     }
     $living = @(Wait-TrackedExit -DeadlineMilliseconds 5000)
-    if ($living.Count -ne 0) { throw "WP-1C-01 retained tracked processes after cleanup." }
+    if ($living.Count -ne 0) { throw "WP-1C-02 retained tracked processes after cleanup." }
 }
 
 function Get-ExactDebugProcesses {
@@ -213,23 +243,27 @@ function Get-ExactDebugProcesses {
     })
 }
 
-$sourceFiles = @(
+$pythonSourceFiles = @(
     Get-Item -LiteralPath (Join-Path $RepoRoot "app\core_host\__main__.py")
     Get-Item -LiteralPath (Join-Path $RepoRoot "app\core_host\protocol.py")
     Get-Item -LiteralPath (Join-Path $RepoRoot "app\core_host\server.py")
+)
+$compiledSourceFiles = @(
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\core_host_protocol.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\core_host_runtime.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\managed_process_tree.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\main.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\phase_1c_core_host_acceptance.rs")
+)
+$sourceFiles = @($pythonSourceFiles) + @($compiledSourceFiles) + @(
     Get-Item -LiteralPath $PSCommandPath
 )
 $debugItem = Get-Item -LiteralPath $Debug
-if (($sourceFiles | Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum -gt $debugItem.LastWriteTimeUtc) {
-    throw "The debug Tauri executable is older than WP-1C-01 acceptance source."
+if (($compiledSourceFiles | Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum -gt $debugItem.LastWriteTimeUtc) {
+    throw "The debug Tauri executable is older than WP-1C-02 acceptance source."
 }
 if (@(Get-ExactDebugProcesses).Count -ne 0) {
-    throw "The debug Tauri executable is already running before WP-1C-01 acceptance."
+    throw "The debug Tauri executable is already running before WP-1C-02 acceptance."
 }
 
 [System.IO.Directory]::CreateDirectory($runtime) | Out-Null
@@ -240,6 +274,8 @@ $before | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (
 $process = $null
 $failure = $null
 $windowVisible = $false
+$snapshotReadiness = $null
+$windowDescriptions = @()
 try {
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $Debug
@@ -248,9 +284,14 @@ try {
     $startInfo.Environment["SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY"] = $runtime
     $startInfo.Environment["SAKURA_PHASE_1C_PYTHON"] = $Python
     $startInfo.Environment["SAKURA_PHASE_1C_REPO_ROOT"] = $RepoRoot
+    $startInfo.Environment["SAKURA_PHASE_1C_INITIALIZE_MODE"] = $InitializationMode
+    # A shared WebView2 profile can retain browser-process/profile state between
+    # rapid acceptance rounds and stall native Tauri window creation. Keep the
+    # browser profile inside this round's already-guarded temporary directory.
+    $startInfo.Environment["WEBVIEW2_USER_DATA_FOLDER"] = $webViewUserData
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
-    if (-not $process.Start()) { throw "Failed to start WP-1C-01 Tauri acceptance." }
+    if (-not $process.Start()) { throw "Failed to start WP-1C-02 Tauri acceptance." }
     Register-Identity -Process $process
 
     $readyDeadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -259,7 +300,7 @@ try {
         $process.Refresh()
         Update-ProcessTree -Root $process
         if ($process.HasExited) {
-            throw "WP-1C-01 Tauri exited before readiness (code $($process.ExitCode))."
+            throw "WP-1C-02 Tauri exited before readiness (code $($process.ExitCode))."
         }
         $window = [SakuraPhase1CCoreHostNative]::FindVisibleWindow(
             $process.Id, $ExpectedWindowTitle
@@ -273,9 +314,20 @@ try {
     if (-not $windowVisible -or -not (Test-Path -LiteralPath (Join-Path $runtime "acceptance.ready"))) {
         throw "Tauri window and real Core Host were not ready before deadline."
     }
+    if (-not (Test-Path -LiteralPath $webViewUserData -PathType Container)) {
+        throw "WebView2 did not create its isolated user data directory."
+    }
     Update-ProcessTree -Root $process
+    $windowDescriptions = @([SakuraPhase1CCoreHostNative]::DescribeWindows($process.Id))
     $corePid = [int](Get-Content -LiteralPath (Join-Path $runtime "core.pid") -Raw)
     Register-Identity -Process (Get-Process -Id $corePid -ErrorAction Stop)
+    $snapshotPath = Join-Path $runtime "snapshot.json"
+    $snapshotEvidencePath = Join-Path $Evidence "snapshot-evidence.json"
+    Copy-Item -LiteralPath $snapshotPath -Destination $snapshotEvidencePath
+    $snapshotReadiness = (Get-Content -LiteralPath $snapshotEvidencePath -Raw | ConvertFrom-Json).readiness
+    if ($snapshotReadiness -ne $(if ($InitializationMode -eq "ready") { "ready" } else { "initializing" })) {
+        throw "Core Snapshot readiness did not match the requested initialization mode."
+    }
 
     if (-not [SakuraPhase1CCoreHostNative]::PostMessage(
         $window, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero
@@ -287,8 +339,8 @@ try {
         if ($process.HasExited) { break }
         Start-Sleep -Milliseconds 25
     } while ([DateTime]::UtcNow -lt $exitDeadline)
-    if (-not $process.HasExited) { throw "WP-1C-01 Tauri root did not exit before deadline." }
-    if ($process.ExitCode -ne 0) { throw "WP-1C-01 Tauri exited with code $($process.ExitCode)." }
+    if (-not $process.HasExited) { throw "WP-1C-02 Tauri root did not exit before deadline." }
+    if ($process.ExitCode -ne 0) { throw "WP-1C-02 Tauri exited with code $($process.ExitCode)." }
     if (-not (Test-Path -LiteralPath (Join-Path $runtime "acceptance.cleaned"))) {
         throw "Real Core Host worker did not publish its cleanup marker."
     }
@@ -300,7 +352,7 @@ try {
         $living | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
             Join-Path $Evidence "residual-processes.json"
         ) -Encoding utf8
-        throw "WP-1C-01 retained tracked processes after the exit deadline."
+        throw "WP-1C-02 retained tracked processes after the exit deadline."
     }
 }
 catch {
@@ -322,6 +374,11 @@ catch {
             } | Sort-Object)
         } else { @() }
         trackedIdentities = @($tracked.Values)
+        webViewUserDataIsolated = $true
+        webViewUserDataCreated = Test-Path -LiteralPath $webViewUserData
+        windows = if ($null -ne $process -and -not $process.HasExited) {
+            @([SakuraPhase1CCoreHostNative]::DescribeWindows($process.Id))
+        } else { @() }
     }
     $diagnostic | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
         Join-Path $Evidence "failure-diagnostic.json"
@@ -336,8 +393,8 @@ finally {
     Stop-TrackedProcesses
     $resolvedRuntime = [System.IO.Path]::GetFullPath($runtime)
     if (-not $resolvedRuntime.StartsWith($TempRoot + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
-        [System.IO.Path]::GetFileName($resolvedRuntime) -notmatch '^sakura-runtime-v2-wp-1c-01-[0-9]+-[0-9a-f]{32}$') {
-        throw "Refusing unsafe WP-1C-01 acceptance cleanup: $resolvedRuntime"
+        [System.IO.Path]::GetFileName($resolvedRuntime) -notmatch '^sakura-runtime-v2-wp-1c-02-[0-9]+-[0-9a-f]{32}$') {
+        throw "Refusing unsafe WP-1C-02 acceptance cleanup: $resolvedRuntime"
     }
     if (Test-Path -LiteralPath $resolvedRuntime) {
         Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force
@@ -349,13 +406,13 @@ $after | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (
     Join-Path $Evidence "data-after.json"
 ) -Encoding utf8
 if ($before.canonicalSha256 -ne $after.canonicalSha256) {
-    throw "The real data/ path/length/mtime/SHA-256 manifest changed during WP-1C-01 acceptance."
+    throw "The real data/ path/length/mtime/SHA-256 manifest changed during WP-1C-02 acceptance."
 }
 if ($null -ne $failure) { throw $failure }
 if (@(Get-ExactDebugProcesses).Count -ne 0) {
-    throw "WP-1C-01 left an exact-path Tauri process."
+    throw "WP-1C-02 left an exact-path Tauri process."
 }
-if (Test-Path -LiteralPath $runtime) { throw "WP-1C-01 runtime directory remained." }
+if (Test-Path -LiteralPath $runtime) { throw "WP-1C-02 runtime directory remained." }
 
 $sourceManifest = @($sourceFiles | ForEach-Object {
     [pscustomobject]@{
@@ -367,7 +424,10 @@ $sourceManifest = @($sourceFiles | ForEach-Object {
 })
 $summary = [pscustomobject]@{
     status = "passed"
+    initializationMode = $InitializationMode
+    snapshotReadiness = $snapshotReadiness
     windowVisible = $windowVisible
+    windows = $windowDescriptions
     rootExitCode = $process.ExitCode
     hello = $true
     repeatedHealth = 2
@@ -384,6 +444,8 @@ $summary = [pscustomobject]@{
     trackedProcessIdentities = $tracked.Count
     processIdentitiesRemaining = 0
     runtimeDirectoriesRemaining = 0
+    webViewUserDataIsolated = $true
+    webViewUserDataCreated = $true
     dataCount = $before.count
     dataBytes = $before.bytes
     dataBeforeSha256 = $before.canonicalSha256

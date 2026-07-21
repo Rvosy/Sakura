@@ -9,13 +9,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde_json::json;
+
 use crate::core_host_runtime::CoreHostRuntime;
 
 const ACCEPTANCE_DIRECTORY_ENV: &str = "SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY";
 const PYTHON_ENV: &str = "SAKURA_PHASE_1C_PYTHON";
 const REPO_ROOT_ENV: &str = "SAKURA_PHASE_1C_REPO_ROOT";
+const INITIALIZE_MODE_ENV: &str = "SAKURA_PHASE_1C_INITIALIZE_MODE";
 const PHASE_1B_DIRECTORY_ENV: &str = "SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY";
-const ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-1c-01-";
+const ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-1c-02-";
 const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 
 pub struct AcceptanceSession {
@@ -54,6 +57,11 @@ impl AcceptanceSession {
             return Err("Phase 1C acceptance repo root does not contain app.core_host".to_string());
         }
         let python = required_canonical_path(PYTHON_ENV)?;
+        let initialize_mode = std::env::var(INITIALIZE_MODE_ENV)
+            .map_err(|_| format!("{INITIALIZE_MODE_ENV} is required"))?;
+        if !matches!(initialize_mode.as_str(), "ready" | "hang") {
+            return Err("Phase 1C initialize mode must be ready or hang".to_string());
+        }
         let expected_python = repo_root.join("runtime/python.exe");
         if python
             != fs::canonicalize(&expected_python).map_err(|error| {
@@ -69,7 +77,13 @@ impl AcceptanceSession {
         let worker_cancellation = cancellation.clone();
         let worker_directory = directory.clone();
         let worker = thread::spawn(move || {
-            let result = run_scenario(&worker_directory, &python, &repo_root, &worker_cancellation);
+            let result = run_scenario(
+                &worker_directory,
+                &python,
+                &repo_root,
+                &initialize_mode,
+                &worker_cancellation,
+            );
             if let Err(error) = &result {
                 let _ = fs::write(worker_directory.join("acceptance.error"), error.as_bytes());
             }
@@ -101,6 +115,7 @@ fn run_scenario(
     directory: &Path,
     python: &Path,
     repo_root: &Path,
+    initialize_mode: &str,
     cancellation: &AtomicBool,
 ) -> Result<(), String> {
     fs::write(directory.join("acceptance.worker.started"), b"started")
@@ -121,6 +136,55 @@ fn run_scenario(
     fs::write(directory.join("acceptance.hello"), b"hello")
         .map_err(|error| format!("failed to write hello marker: {error}"))?;
 
+    let initialize = host.request_with_payload(
+        "initialize",
+        "core.initialize",
+        if initialize_mode == "ready" {
+            json!({"mode": "ready", "delayMs": 50})
+        } else {
+            json!({"mode": "hang"})
+        },
+        Duration::from_secs(5),
+    )?;
+    if initialize
+        .pointer("/payload/accepted")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        || initialize
+            .pointer("/payload/readiness")
+            .and_then(serde_json::Value::as_str)
+            != Some("initializing")
+    {
+        return Err("real Core Host returned an invalid initialize response".to_string());
+    }
+    fs::write(directory.join("acceptance.initialize"), b"accepted")
+        .map_err(|error| format!("failed to write initialize marker: {error}"))?;
+
+    let readiness_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let snapshot = host.refresh_snapshot("snapshot", Duration::from_secs(3))?;
+        let readiness = snapshot
+            .get("readiness")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "real Core Host Snapshot omitted readiness".to_string())?;
+        if initialize_mode == "hang" || readiness == "ready" {
+            if initialize_mode == "hang" && readiness != "initializing" {
+                return Err("hung initialize left initializing unexpectedly".to_string());
+            }
+            fs::write(
+                directory.join("snapshot.json"),
+                serde_json::to_vec_pretty(&snapshot)
+                    .map_err(|error| format!("failed to encode snapshot evidence: {error}"))?,
+            )
+            .map_err(|error| format!("failed to write snapshot evidence: {error}"))?;
+            break;
+        }
+        if Instant::now() >= readiness_deadline {
+            return Err("real Core Host did not become ready before watchdog".to_string());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
     for index in 0..2 {
         let health = host.request(
             &format!("health-{index}"),
@@ -135,8 +199,11 @@ fn run_scenario(
             return Err("real Core Host returned an invalid health response".to_string());
         }
     }
-    fs::write(directory.join("acceptance.ready"), b"ready")
-        .map_err(|error| format!("failed to write ready marker: {error}"))?;
+    fs::write(
+        directory.join("acceptance.ready"),
+        initialize_mode.as_bytes(),
+    )
+    .map_err(|error| format!("failed to write ready marker: {error}"))?;
     wait_for_cancellation(cancellation, Instant::now() + Duration::from_secs(30))?;
 
     let exit = host.shutdown(Duration::from_secs(3), Duration::from_secs(5))?;

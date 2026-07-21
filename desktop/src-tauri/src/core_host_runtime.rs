@@ -16,6 +16,99 @@ use crate::{
 
 const CONTROL_PRIORITY: &str = "control";
 const DEADLINE_EXIT_CODE: u32 = 93;
+const SNAPSHOT_READINESS: [&str; 6] = [
+    "transport_ready",
+    "initializing",
+    "setup_required",
+    "ready",
+    "degraded",
+    "failed",
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreSnapshotCache {
+    generation_id: String,
+    snapshot: Option<Value>,
+}
+
+impl CoreSnapshotCache {
+    pub fn new(generation_id: &str) -> Result<Self, String> {
+        if generation_id.trim().is_empty() {
+            return Err("Snapshot generation ID must not be empty".to_string());
+        }
+        Ok(Self {
+            generation_id: generation_id.to_string(),
+            snapshot: None,
+        })
+    }
+
+    pub fn begin_generation(&mut self, generation_id: &str) -> Result<(), String> {
+        if generation_id.trim().is_empty() {
+            return Err("Snapshot generation ID must not be empty".to_string());
+        }
+        self.generation_id.clear();
+        self.generation_id.push_str(generation_id);
+        self.snapshot = None;
+        Ok(())
+    }
+
+    pub fn store_python_snapshot(&mut self, snapshot: &Value) -> Result<(), String> {
+        let object = snapshot
+            .as_object()
+            .ok_or_else(|| "Core Snapshot must be an object".to_string())?;
+        if object.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+            return Err("Core Snapshot schemaVersion is unsupported".to_string());
+        }
+        if object.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str()) {
+            return Err("Core Snapshot belongs to another generation".to_string());
+        }
+        if object
+            .get("generationNumber")
+            .and_then(Value::as_u64)
+            .is_none_or(|number| number == 0)
+            || object.get("revision").and_then(Value::as_u64).is_none()
+            || object
+                .get("coreConfigRevision")
+                .and_then(Value::as_u64)
+                .is_none()
+            || !object.get("components").is_some_and(Value::is_object)
+        {
+            return Err("Core Snapshot counters or components are invalid".to_string());
+        }
+        let readiness = object
+            .get("readiness")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Core Snapshot readiness is invalid".to_string())?;
+        if !SNAPSHOT_READINESS.contains(&readiness) {
+            return Err("Core Snapshot readiness is unsupported".to_string());
+        }
+        let capabilities = object
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Core Snapshot capabilities are invalid".to_string())?;
+        if capabilities.iter().any(|value| {
+            value
+                .as_str()
+                .is_none_or(|capability| capability.trim().is_empty())
+        }) {
+            return Err("Core Snapshot capability is invalid".to_string());
+        }
+        for key in ["currentCharacterSummary", "activeInteractionSummary"] {
+            if object
+                .get(key)
+                .is_none_or(|value| !(value.is_null() || value.is_object()))
+            {
+                return Err(format!("Core Snapshot {key} is invalid"));
+            }
+        }
+        self.snapshot = Some(snapshot.clone());
+        Ok(())
+    }
+
+    pub fn current(&self) -> Option<&Value> {
+        self.snapshot.as_ref()
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CoreHostExit {
@@ -33,6 +126,7 @@ pub struct CoreHostRuntime {
     stderr: Option<File>,
     generation_id: String,
     deadline_forced: bool,
+    snapshot_cache: CoreSnapshotCache,
 }
 
 impl CoreHostRuntime {
@@ -45,6 +139,8 @@ impl CoreHostRuntime {
             .arg("app.core_host")
             .arg("--generation-id")
             .arg(generation_id)
+            .arg("--generation-number")
+            .arg("1")
             .current_dir(repo_root);
         let (tree, pipes) = ManagedProcessTree::spawn_piped(&spec)
             .map_err(|error| format!("Core Host managed spawn failed: {error}"))?;
@@ -55,6 +151,7 @@ impl CoreHostRuntime {
             stderr: Some(pipes.stderr),
             generation_id: generation_id.to_string(),
             deadline_forced: false,
+            snapshot_cache: CoreSnapshotCache::new(generation_id)?,
         })
     }
 
@@ -76,6 +173,7 @@ impl CoreHostRuntime {
             stderr: Some(pipes.stderr),
             generation_id: generation_id.to_string(),
             deadline_forced: false,
+            snapshot_cache: CoreSnapshotCache::new(generation_id)?,
         })
     }
 
@@ -89,8 +187,21 @@ impl CoreHostRuntime {
         name: &str,
         deadline: Duration,
     ) -> Result<Value, String> {
+        self.request_with_payload(request_id, name, json!({}), deadline)
+    }
+
+    pub fn request_with_payload(
+        &mut self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<Value, String> {
         if request_id.trim().is_empty() || name.trim().is_empty() || deadline.is_zero() {
             return Err("Core Host control request is invalid".to_string());
+        }
+        if !payload.is_object() {
+            return Err("Core Host control payload must be an object".to_string());
         }
         let request = json!({
             "protocolMajor": PROTOCOL_MAJOR,
@@ -99,7 +210,7 @@ impl CoreHostRuntime {
             "generationId": self.generation_id,
             "id": request_id,
             "name": name,
-            "payload": {},
+            "payload": payload,
             "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
             "priority": CONTROL_PRIORITY,
         });
@@ -120,6 +231,27 @@ impl CoreHostRuntime {
             return Err("Core Host response identity did not match its request".to_string());
         }
         Ok(response)
+    }
+
+    pub fn refresh_snapshot(
+        &mut self,
+        request_id: &str,
+        deadline: Duration,
+    ) -> Result<Value, String> {
+        let response = self.request(request_id, "core.snapshot", deadline)?;
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err("Core Host rejected core.snapshot".to_string());
+        }
+        let snapshot = response
+            .get("payload")
+            .ok_or_else(|| "Core Host snapshot response has no payload".to_string())?
+            .clone();
+        self.snapshot_cache.store_python_snapshot(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub fn cached_snapshot(&self) -> Option<&Value> {
+        self.snapshot_cache.current()
     }
 
     pub fn shutdown(
@@ -259,12 +391,14 @@ impl CoreHostRuntime {
 mod tests {
     use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
 
+    use serde_json::json;
+
     use crate::{
         core_host_protocol::read_frame,
         managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
     };
 
-    use super::CoreHostRuntime;
+    use super::{CoreHostRuntime, CoreSnapshotCache};
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 
@@ -378,5 +512,98 @@ mod tests {
         assert_eq!(exit.root_exit_code, 93);
         assert!(exit.tree_empty);
         assert!(exit.forced);
+    }
+
+    #[test]
+    fn python_snapshot_cache_is_read_only_and_clears_on_new_generation() {
+        let first_generation = "00000000-0000-4000-8000-000000001c02";
+        let second_generation = "00000000-0000-4000-8000-000000002c02";
+        let snapshot = json!({
+            "schemaVersion": 1,
+            "generationId": first_generation,
+            "generationNumber": 1,
+            "revision": 2,
+            "readiness": "ready",
+            "components": {"fixture": {"state": "ready", "pythonOwned": [1, 2, 3]}},
+            "capabilities": ["core.snapshot"],
+            "currentCharacterSummary": null,
+            "activeInteractionSummary": null,
+            "coreConfigRevision": 0
+        });
+        let mut cache = CoreSnapshotCache::new(first_generation).expect("generation cache");
+        cache
+            .store_python_snapshot(&snapshot)
+            .expect("Python snapshot should cache");
+        assert_eq!(cache.current(), Some(&snapshot));
+
+        cache
+            .begin_generation(second_generation)
+            .expect("new generation should start");
+        assert_eq!(cache.current(), None);
+        assert!(cache.store_python_snapshot(&snapshot).is_err());
+    }
+
+    #[test]
+    fn managed_real_python_host_initializes_and_caches_its_snapshot() {
+        let root = repo_root();
+        let mut host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
+            .expect("real Core Host should launch");
+        let initialize = host
+            .request_with_payload(
+                "initialize",
+                "core.initialize",
+                json!({"mode": "ready", "delayMs": 20}),
+                Duration::from_secs(3),
+            )
+            .expect("initialize should be accepted");
+        assert_eq!(initialize["payload"]["readiness"], "initializing");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = host
+                .refresh_snapshot("snapshot", Duration::from_secs(3))
+                .expect("snapshot should respond");
+            if snapshot["readiness"] == "ready" {
+                assert_eq!(host.cached_snapshot(), Some(&snapshot));
+                assert_eq!(snapshot["generationId"], GENERATION_ID);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+        }
+
+        let exit = host
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect("initialized Host should stop cleanly");
+        assert_eq!(exit.root_exit_code, 0);
+        assert!(!exit.forced);
+    }
+
+    #[test]
+    fn hung_python_initialize_keeps_health_and_shutdown_responsive() {
+        let root = repo_root();
+        let mut host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
+            .expect("real Core Host should launch");
+        host.request_with_payload(
+            "initialize",
+            "core.initialize",
+            json!({"mode": "hang"}),
+            Duration::from_secs(3),
+        )
+        .expect("hung initialize should still be accepted quickly");
+        for index in 0..3 {
+            let health = host
+                .request(
+                    &format!("health-hang-{index}"),
+                    "system.health",
+                    Duration::from_secs(3),
+                )
+                .expect("health should remain responsive");
+            assert_eq!(health["payload"]["hostState"], "initializing");
+        }
+        let exit = host
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect("shutdown should cancel hung initialize");
+        assert_eq!(exit.root_exit_code, 0);
+        assert!(!exit.forced);
     }
 }
