@@ -66,7 +66,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
-| WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | planned |
+| WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | stabilizing |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | planned |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
@@ -1336,6 +1336,40 @@ Accepted 记录：
 
 ### WP-1P-02：三平台 RuntimeLocator 与 bundled Python 布局
 
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-22
+前置提交：21c2aaf9（WP-1P-01 accepted）
+允许目录：desktop/src-tauri/src/platform/runtime_locator.rs、mod.rs、target.rs 和 contracts.rs 中仅限 locator 实现所需的 manifest/target/runtime DTO；desktop/src-tauri/runtime-layouts/ 三平台精确 source/golden manifest；core_host_runtime.rs 与 phase_1c_core_host_acceptance.rs 仅限改为消费 RuntimeLayout；desktop/tests/windows_core_host_acceptance.ps1 仅限删除显式 Python 注入；shared_instance.rs 仅限把 Windows-only test module 收窄到 Windows 以允许 POSIX native test build；scripts/runtime_v2_archive.py 与 tests/unit/test_runtime_v2_archive.py 仅限 CI/build archive 下载校验；.github/workflows/runtime-v2-platform-foundation.yml 仅限三平台 locator/native compile 门；docs/runtime-v2/WP-1P-01-platform-contract.md、WP-1P-02-runtime-layout.md 与本文状态/证据
+明确禁止目录：main.py、legacy_qt_main.py、start*.bat；app/ Python Core/Assistant 实现；plugins/、data/、runtime/ 内容、characters/、third_party/、tools/mcp/、desktop/frontend/；Cargo.toml/Cargo.lock 与新增依赖；shared instance 生产锁行为；managed_process_tree.rs/Job/进程组；core_supervisor.rs、core_host_protocol.rs、Snapshot/IPC 语义；window_geometry.rs、window_interaction.rs；legacy package/release workflow；WP-1P-03 及后续 backend 或产品能力
+验收环境：本机 Windows 11 23H2 x64、Rust/Cargo 1.96.0、Tauri 2.11.3、仓库 CPython 3.12.8；上游三个固定归档只下载到系统临时目录计算/核对 size+SHA-256 后删除；本机 WSL 为 Ubuntu 24.04.4 x64 但没有 Rust/Cargo，不能登记为 Linux native Rust 证据；macOS arm64 证据必须来自 workflow 的真实 Apple Silicon runner
+关联 ADR：ADR-0004（RuntimeLocator、正式 target、无 PATH fallback、三平台证据）；ADR-0001（只替换 Core spawn 的路径来源，不改 Supervisor/进程树）；ADR-0003（不读写共享 data）
+计划提交：feat(runtime): 实现三平台 RuntimeLocator 与固定布局
+退出条件：三个精确 archive source/size/SHA-256 和 development/packaged layout 冻结；locator 对三 target 选择唯一 Python/Core 并验证 manifest、canonical containment、permission 和 PE/Mach-O/ELF architecture；Core Host 启动消费 RuntimeLayout；Windows/macOS/Linux native workflow 同提交全绿；普通公共调用无 .exe、PATH、target/debug 或隐式 cwd 回退
+故障测试：mode/root 混用、相对 root、target/build 不匹配、Runtime/manifest/Python/Core 缺失、manifest 非法或 identity 被改、资源根移动、Python 无执行权限、损坏 header、错误 CPU/格式、canonical path 逃逸、归档 size/hash 不匹配、模糊 asset/source 漂移
+已知风险：native workflow 在当前未推送分支尚未执行；macOS arm64 runner 配额/可用性是外部前置；POSIX 锁、进程树和窗口 backend 分别属于 WP-1P-03 至 05，不能在本 WP 补写
+独立回退方式：整体 git revert WP-1P-02 实现提交，恢复 compile-only RuntimeLocator trait 和 Phase 1C 显式 Windows Python 参数；保留 WP-1P-01、现有 Windows backend、Core Host lifecycle 和用户数据，不删除 runtime/ 或 data/
+```
+
+稳定化记录：
+
+```text
+状态：stabilizing
+本地 TDD：首轮 locator 定向测试 4 passed、4 failed；失败精确暴露 MacOs serde 会生成错误的 mac-os-arm64 ID，以及 Windows canonical \\?\ 前缀不能与未 canonical resource root 直接比较。修正为三个显式 serde platform ID，并只比较 canonical root 后，8/8 locator 定向测试通过
+source 完整性：从 Python.org 3.12.8 和 Astral python-build-standalone 20250106 的固定 HTTPS asset 读取元数据并完整下载到系统临时目录；三个 byte length/SHA-256 与 runtime-layout manifest 一致；新 archive verifier 又分别完成三工件真实下载校验。macOS/Linux 的 python/bin/python3 均指向 python3.12，canonical 目标真实 header 分别为 Mach-O cffaedfe + CPU 0c000001 和 ELF64 little-endian + machine 3e00，与 locator 判定一致；临时下载均已删除，工作区没有归档或 Runtime 内容变化
+本地自动测试：cargo fmt --check 通过；platform contract/golden 为 16 passed、1 ignored staged integration、0 failed；显式执行真实 Windows staged Runtime locator 为 1 passed；完整 cargo test --locked 为 91 passed、14 ignored fixture、0 failed；Python archive verifier 为 2 passed；Debug/Release cargo build --locked 均成功且无 warning；PowerShell、三份 JSON manifest、三 job workflow YAML 和 git diff --check 全部通过
+接线边界：CoreHostRuntime::launch 只消费 RuntimeLayout；Phase 1C 验收删除 SAKURA_PHASE_1C_PYTHON；framing、initialize、Snapshot、deadline、Job、Supervisor 和用户数据语义未改；shared_instance 只有 test cfg 收窄，无生产锁修改
+真实 Windows 验收：首次复跑在业务链已成功关闭后暴露验收 summary 仍读取已删除的 $Python 变量，脚本因此退出 1；修正为由 Rust 写出 runtime-layout evidence 并把 locator/manifest 文件纳入 stale-EXE 清单。最终 windows-locator-ready-final 为 status=passed：真实 Tauri Window 可见，runtimeTarget=windows-x64、runtimeMode=explicit_development、sourceId=cpython.org/3.12.8/windows-embed-amd64，Core hello/ready/两次 health/protocol shutdown 成功，根退出码 0；登记 9 个进程身份、最终残留 0，临时 Runtime/WebView 目录残留 0；真实 data/ 121 文件、1,046,428,570 bytes，before/after SHA-256 均为 e4982a382a9668de39276ce1d3203d9f47c18b69e9b1aef8787ffbd1eb0fe1ca
+原生平台证据：Windows 本地 native locator/Core 回归已通过；新增 workflow 固定 windows-2025 AMD64、macos-14-xlarge arm64、ubuntu-24.04 x86_64，并会从精确 archive 重建 runtime 后执行 native tests/build。该 workflow 尚未在远端运行，因此 macOS/Linux 证据缺失，WP 不得 accepted
+范围与数据：没有修改 Cargo 依赖、legacy Qt、Assistant、插件、前端、生产 data/runtime 内容、锁/进程树/窗口 backend 或 legacy release workflow；没有启动真实 Assistant 或执行 schema migration
+P0/P1：本地为 0；退出条件相关本地缺陷已关闭，外部 native CI 门仍未满足
+下一步：完成本地 fmt/full Rust/Python/build/parser/diff 稳定化并提交；推送后等待三个 native job 对该提交全绿，再补 accepted 记录。此前 WP-1P-03 保持 planned
+独立回退方式：git revert WP-1P-02 实现提交；不回退 21c2aaf9，不触碰用户 runtime/data
+关联提交：待提交（feat(runtime): 实现三平台 RuntimeLocator 与固定布局）
+```
+
 主要结果：公共启动链不再依赖 `.exe`、仓库 `target/debug` 或硬编码 `runtime/python.exe`，三平台开发/测试/发布布局可重复定位。
 
 允许能力：
@@ -1905,6 +1939,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 已登记 accepted；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 已登记 accepted；`WP-1P-02` 正处于 stabilizing，等待同一提交的三平台 native CI；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-下一项且唯一允许激活的生产 Work Package 是 `WP-1P-02`。`WP-1C-03` 及全部后续 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
+当前唯一允许继续的生产 Work Package 是 `WP-1P-02` 稳定化。`WP-1P-03` 及后续 WP 在本项 accepted 前保持 `planned`；`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。

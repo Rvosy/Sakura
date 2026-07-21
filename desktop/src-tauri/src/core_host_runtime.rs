@@ -1,17 +1,20 @@
 use std::{
     fs::File,
     io::{Read, Write},
-    path::Path,
     sync::mpsc,
     thread,
     time::Duration,
 };
+
+#[cfg(test)]
+use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::{
     core_host_protocol::{read_frame, write_frame, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
+    platform::RuntimeLayout,
 };
 
 const CONTROL_PRIORITY: &str = "control";
@@ -130,18 +133,18 @@ pub struct CoreHostRuntime {
 }
 
 impl CoreHostRuntime {
-    pub fn launch(python: &Path, repo_root: &Path, generation_id: &str) -> Result<Self, String> {
+    pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
         if generation_id.trim().is_empty() {
             return Err("Core Host generation ID must not be empty".to_string());
         }
-        let mut spec = ManagedProcessSpec::new(python);
+        let mut spec = ManagedProcessSpec::new(&layout.python_executable);
         spec.arg("-m")
-            .arg("app.core_host")
+            .arg(&layout.core_module)
             .arg("--generation-id")
             .arg(generation_id)
             .arg("--generation-number")
             .arg("1")
-            .current_dir(repo_root);
+            .current_dir(&layout.application_root);
         let (tree, pipes) = ManagedProcessTree::spawn_piped(&spec)
             .map_err(|error| format!("Core Host managed spawn failed: {error}"))?;
         Ok(Self {
@@ -396,6 +399,10 @@ mod tests {
     use crate::{
         core_host_protocol::read_frame,
         managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
+        platform::{
+            FilesystemRuntimeLocator, PlatformTarget, RuntimeLocationRequest, RuntimeLocator,
+            RuntimeMode,
+        },
     };
 
     use super::{CoreHostRuntime, CoreSnapshotCache};
@@ -409,14 +416,27 @@ mod tests {
             .unwrap()
     }
 
-    fn python() -> PathBuf {
-        repo_root().join("runtime/python.exe")
+    fn development_layout() -> crate::platform::RuntimeLayout {
+        let root = repo_root();
+        FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::ExplicitDevelopment,
+                target: PlatformTarget::WindowsX64,
+                executable_directory: std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf(),
+                resource_directory: root.clone(),
+                explicit_development_root: Some(root),
+            })
+            .expect("repository Runtime should resolve explicitly")
     }
 
     #[test]
     fn managed_real_python_host_answers_control_and_releases_its_job_and_pipes() {
-        let root = repo_root();
-        let mut host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
+        let layout = development_layout();
+        let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real Core Host should launch in a managed Job");
         assert!(host.pid() > 0);
 
@@ -453,8 +473,8 @@ mod tests {
 
     #[test]
     fn managed_real_python_host_treats_clean_stdin_eof_as_orderly_exit() {
-        let root = repo_root();
-        let host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
+        let layout = development_layout();
+        let host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real Core Host should launch in a managed Job");
         let exit = host
             .close_stdin_and_wait(Duration::from_secs(5))
@@ -467,8 +487,9 @@ mod tests {
     #[test]
     fn polluted_real_stdout_fails_framing_and_the_job_is_force_reclaimed() {
         let root = repo_root();
+        let python = development_layout().python_executable;
         let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_01/polluting_host.py");
-        let mut spec = ManagedProcessSpec::new(python());
+        let mut spec = ManagedProcessSpec::new(python);
         spec.arg(fixture.as_os_str()).current_dir(&root);
         let (mut tree, pipes) =
             ManagedProcessTree::spawn_piped(&spec).expect("polluting fixture should launch");
@@ -502,10 +523,10 @@ mod tests {
     #[test]
     fn ignored_control_deadline_force_reclaims_the_managed_python_job() {
         let root = repo_root();
+        let python = development_layout().python_executable;
         let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_01/ignoring_shutdown_host.py");
-        let host =
-            CoreHostRuntime::launch_script_for_test(&python(), &root, &fixture, GENERATION_ID)
-                .expect("ignoring fixture should launch");
+        let host = CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+            .expect("ignoring fixture should launch");
         let exit = host
             .shutdown(Duration::from_millis(250), Duration::from_secs(5))
             .expect("ignored shutdown should force and finalize its Job");
@@ -545,9 +566,9 @@ mod tests {
 
     #[test]
     fn managed_real_python_host_initializes_and_caches_its_snapshot() {
-        let root = repo_root();
-        let mut host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
-            .expect("real Core Host should launch");
+        let layout = development_layout();
+        let mut host =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         let initialize = host
             .request_with_payload(
                 "initialize",
@@ -580,9 +601,9 @@ mod tests {
 
     #[test]
     fn hung_python_initialize_keeps_health_and_shutdown_responsive() {
-        let root = repo_root();
-        let mut host = CoreHostRuntime::launch(&python(), &root, GENERATION_ID)
-            .expect("real Core Host should launch");
+        let layout = development_layout();
+        let mut host =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
         host.request_with_payload(
             "initialize",
             "core.initialize",

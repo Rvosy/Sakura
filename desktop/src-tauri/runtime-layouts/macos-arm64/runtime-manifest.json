@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "target": "macos-arm64",
+  "pythonVersion": "3.12.8",
+  "sourceId": "python-build-standalone/20250106/cpython-3.12.8+aarch64-apple-darwin-install_only",
+  "archive": {
+    "fileName": "cpython-3.12.8+20250106-aarch64-apple-darwin-install_only.tar.gz",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250106/cpython-3.12.8%2B20250106-aarch64-apple-darwin-install_only.tar.gz",
+    "size": 15676873,
+    "sha256": "5dfd4d81ad8ea0407e6153ed998a5fba332275c60ece81c6db2b58e443de60b9",
+    "archiveRoot": "python",
+    "stripComponents": 1
+  },
+  "packagedPythonRelativePath": "python/bin/python3",
+  "packagedApplicationRootRelativePath": "core",
+  "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+  "developmentPythonRelativePath": "runtime/bin/python3",
+  "developmentApplicationRootRelativePath": ".",
+  "developmentCoreEntryRelativePath": "app/core_host/__main__.py",
+  "coreModule": "app.core_host"
+}

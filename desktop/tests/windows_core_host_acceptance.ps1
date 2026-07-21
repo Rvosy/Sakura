@@ -133,7 +133,6 @@ if (-not $DebugExecutable) {
     $DebugExecutable = Join-Path $RepoRoot "desktop\src-tauri\target\debug\sakura-runtime-v2-shell.exe"
 }
 $Debug = (Resolve-Path -LiteralPath $DebugExecutable).Path
-$Python = (Resolve-Path -LiteralPath (Join-Path $RepoRoot "runtime\python.exe")).Path
 if (-not $DataRoot) { $DataRoot = Join-Path $RepoRoot "data" }
 $Data = (Resolve-Path -LiteralPath $DataRoot).Path
 if (-not $EvidenceDirectory) {
@@ -254,6 +253,12 @@ $compiledSourceFiles = @(
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\managed_process_tree.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\main.rs")
     Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\phase_1c_core_host_acceptance.rs")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\platform\contracts.rs")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\platform\runtime_locator.rs")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\src\platform\target.rs")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\runtime-layouts\windows-x64\runtime-manifest.json")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\runtime-layouts\macos-arm64\runtime-manifest.json")
+    Get-Item -LiteralPath (Join-Path $RepoRoot "desktop\src-tauri\runtime-layouts\linux-x64\runtime-manifest.json")
 )
 $sourceFiles = @($pythonSourceFiles) + @($compiledSourceFiles) + @(
     Get-Item -LiteralPath $PSCommandPath
@@ -282,7 +287,6 @@ try {
     $startInfo.WorkingDirectory = $Evidence
     $startInfo.UseShellExecute = $false
     $startInfo.Environment["SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY"] = $runtime
-    $startInfo.Environment["SAKURA_PHASE_1C_PYTHON"] = $Python
     $startInfo.Environment["SAKURA_PHASE_1C_REPO_ROOT"] = $RepoRoot
     $startInfo.Environment["SAKURA_PHASE_1C_INITIALIZE_MODE"] = $InitializationMode
     # A shared WebView2 profile can retain browser-process/profile state between
@@ -324,6 +328,10 @@ try {
     $snapshotPath = Join-Path $runtime "snapshot.json"
     $snapshotEvidencePath = Join-Path $Evidence "snapshot-evidence.json"
     Copy-Item -LiteralPath $snapshotPath -Destination $snapshotEvidencePath
+    $runtimeLayoutPath = Join-Path $runtime "runtime-layout.json"
+    $runtimeLayoutEvidencePath = Join-Path $Evidence "runtime-layout-evidence.json"
+    Copy-Item -LiteralPath $runtimeLayoutPath -Destination $runtimeLayoutEvidencePath
+    $runtimeLayout = Get-Content -LiteralPath $runtimeLayoutEvidencePath -Raw | ConvertFrom-Json
     $snapshotReadiness = (Get-Content -LiteralPath $snapshotEvidencePath -Raw | ConvertFrom-Json).readiness
     if ($snapshotReadiness -ne $(if ($InitializationMode -eq "ready") { "ready" } else { "initializing" })) {
         throw "Core Snapshot readiness did not match the requested initialization mode."
@@ -434,8 +442,11 @@ $summary = [pscustomobject]@{
     protocolShutdown = $true
     debugExecutable = $Debug
     debugExecutableSha256 = (Get-FileHash -LiteralPath $Debug -Algorithm SHA256).Hash.ToLowerInvariant()
-    pythonExecutable = $Python
-    pythonExecutableSha256 = (Get-FileHash -LiteralPath $Python -Algorithm SHA256).Hash.ToLowerInvariant()
+    runtimeTarget = $runtimeLayout.target
+    runtimeMode = $runtimeLayout.mode
+    runtimeSourceId = $runtimeLayout.sourceId
+    pythonExecutable = $runtimeLayout.pythonExecutable
+    pythonExecutableSha256 = (Get-FileHash -LiteralPath $runtimeLayout.pythonExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
     sourceManifest = $sourceManifest
     deadlineSeconds = 60
     helloDeadlineSeconds = 3

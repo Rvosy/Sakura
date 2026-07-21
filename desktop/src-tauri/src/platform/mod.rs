@@ -5,6 +5,7 @@
 
 mod contracts;
 mod error;
+mod runtime_locator;
 mod target;
 
 // These re-exports are the stable facade consumed once concrete backends are
@@ -13,5 +14,7 @@ mod target;
 pub use contracts::*;
 #[allow(unused_imports)]
 pub use error::*;
+#[allow(unused_imports)]
+pub use runtime_locator::*;
 #[allow(unused_imports)]
 pub use target::*;

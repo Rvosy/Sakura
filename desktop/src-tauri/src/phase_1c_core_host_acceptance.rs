@@ -11,10 +11,15 @@ use std::{
 
 use serde_json::json;
 
-use crate::core_host_runtime::CoreHostRuntime;
+use crate::{
+    core_host_runtime::CoreHostRuntime,
+    platform::{
+        current_platform_target, FilesystemRuntimeLocator, RuntimeLayout, RuntimeLocationRequest,
+        RuntimeLocator, RuntimeMode,
+    },
+};
 
 const ACCEPTANCE_DIRECTORY_ENV: &str = "SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY";
-const PYTHON_ENV: &str = "SAKURA_PHASE_1C_PYTHON";
 const REPO_ROOT_ENV: &str = "SAKURA_PHASE_1C_REPO_ROOT";
 const INITIALIZE_MODE_ENV: &str = "SAKURA_PHASE_1C_INITIALIZE_MODE";
 const PHASE_1B_DIRECTORY_ENV: &str = "SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY";
@@ -56,22 +61,27 @@ impl AcceptanceSession {
         if !repo_root.join("app/core_host/__main__.py").is_file() {
             return Err("Phase 1C acceptance repo root does not contain app.core_host".to_string());
         }
-        let python = required_canonical_path(PYTHON_ENV)?;
         let initialize_mode = std::env::var(INITIALIZE_MODE_ENV)
             .map_err(|_| format!("{INITIALIZE_MODE_ENV} is required"))?;
         if !matches!(initialize_mode.as_str(), "ready" | "hang") {
             return Err("Phase 1C initialize mode must be ready or hang".to_string());
         }
-        let expected_python = repo_root.join("runtime/python.exe");
-        if python
-            != fs::canonicalize(&expected_python).map_err(|error| {
-                format!("failed to resolve acceptance runtime/python.exe: {error}")
-            })?
-        {
-            return Err(
-                "Phase 1C acceptance Python must be this repo's runtime/python.exe".to_string(),
-            );
-        }
+        let executable_directory = std::env::current_exe()
+            .map_err(|error| format!("failed to resolve acceptance executable: {error}"))?
+            .parent()
+            .ok_or_else(|| "acceptance executable has no parent directory".to_string())?
+            .to_path_buf();
+        let target = current_platform_target()
+            .ok_or_else(|| "Phase 1C acceptance requires a formal platform target".to_string())?;
+        let layout = FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::ExplicitDevelopment,
+                target,
+                executable_directory,
+                resource_directory: repo_root.clone(),
+                explicit_development_root: Some(repo_root),
+            })
+            .map_err(|error| format!("Phase 1C RuntimeLocator failed: {error}"))?;
 
         let cancellation = Arc::new(AtomicBool::new(false));
         let worker_cancellation = cancellation.clone();
@@ -79,8 +89,7 @@ impl AcceptanceSession {
         let worker = thread::spawn(move || {
             let result = run_scenario(
                 &worker_directory,
-                &python,
-                &repo_root,
+                &layout,
                 &initialize_mode,
                 &worker_cancellation,
             );
@@ -113,14 +122,26 @@ impl AcceptanceSession {
 
 fn run_scenario(
     directory: &Path,
-    python: &Path,
-    repo_root: &Path,
+    layout: &RuntimeLayout,
     initialize_mode: &str,
     cancellation: &AtomicBool,
 ) -> Result<(), String> {
     fs::write(directory.join("acceptance.worker.started"), b"started")
         .map_err(|error| format!("failed to write worker marker: {error}"))?;
-    let mut host = CoreHostRuntime::launch(python, repo_root, GENERATION_ID)?;
+    fs::write(
+        directory.join("runtime-layout.json"),
+        serde_json::to_vec_pretty(&json!({
+            "target": layout.target,
+            "mode": layout.mode,
+            "sourceId": layout.source_id,
+            "pythonExecutable": layout.python_executable,
+            "applicationRoot": layout.application_root,
+            "coreModule": layout.core_module,
+        }))
+        .map_err(|error| format!("failed to encode Runtime layout evidence: {error}"))?,
+    )
+    .map_err(|error| format!("failed to write Runtime layout evidence: {error}"))?;
+    let mut host = CoreHostRuntime::launch(layout, GENERATION_ID)?;
     fs::write(directory.join("core.pid"), host.pid().to_string())
         .map_err(|error| format!("failed to write Core PID marker: {error}"))?;
 

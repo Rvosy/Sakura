@@ -1,10 +1,12 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, Serialize)]
 pub enum PlatformTarget {
+    #[serde(rename = "windows-x64")]
     WindowsX64,
+    #[serde(rename = "macos-arm64")]
     MacOsArm64,
+    #[serde(rename = "linux-x64")]
     LinuxX64,
 }
 

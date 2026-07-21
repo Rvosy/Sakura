@@ -43,7 +43,7 @@ WebView 是受安全更新影响的系统组件，表中的版本是兼容下限
 | `macos-arm64` | `python-build-standalone/20250106/cpython-3.12.8+aarch64-apple-darwin-install_only` | Astral `python-build-standalone` release `20250106` 的 arm64 Apple Darwin install-only 工件 |
 | `linux-x64` | `python-build-standalone/20250106/cpython-3.12.8+x86_64-unknown-linux-gnu-install_only` | Astral `python-build-standalone` release `20250106` 的 x86_64 GNU/Linux install-only 工件 |
 
-WP-1P-02 必须为上述精确工件建立受版本控制的 SHA-256 manifest、归档顶层结构和 golden install tree；source ID、版本或 target 不匹配必须报 `integrity_mismatch` 或 `incompatible_architecture`，不能选择同一 release 中另一个模糊匹配的 asset。macOS 现有 workflow 以字符串包含关系选择 asset，只能作为历史输入，不能直接成为 Runtime v2 的可重复 locator。
+WP-1P-02 已在 `desktop/src-tauri/runtime-layouts/` 为上述精确工件建立受版本控制的 SHA-256 manifest、归档顶层结构和 golden install tree；source ID、版本或 target 不匹配必须报 `integrity_mismatch` 或 `incompatible_architecture`，不能选择同一 release 中另一个模糊匹配的 asset。macOS 现有 legacy workflow 以字符串包含关系选择 asset，只能作为历史输入，不能直接成为 Runtime v2 的可重复 locator。
 
 ## 4. 公共层与平台层依赖方向
 
