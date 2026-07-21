@@ -1,6 +1,6 @@
 # ADR-0003：Runtime v2 用户数据兼容与 legacy Qt 回退
 
-> 状态：Technically Validated
+> 状态：Technically Validated（Windows shared lock）；POSIX backends 与跨平台兼容门禁待 Phase 1P/Phase 3 验证
 > 日期：2026-07-15
 > 适用范围：Runtime v2 与 legacy Qt 入口共享的角色、配置、历史、Memory、工具数据、插件数据和用户资源
 > Phase 0 基线：`docs/runtime-v2/baselines/WP-0-02-data-lock-baseline.md`
@@ -106,23 +106,30 @@ data/runtime_v2/
 
 ### 稳定 identity 与位置
 
-Windows 首轮使用同一个命名 mutex：
+所有平台共享同一个语义 identity：
 
 ```text
 semantic identity: sakura.desktop.shared-user-data.v1
-Windows object name: Local\SakuraDesktop.SharedUserData.v1
-scope: 当前 Windows 登录会话
+scope: 当前登录用户/桌面会话
 ```
 
-identity 不按 executable、安装路径、版本、Qt/Tauri、PID、角色或 Core generation 区分。Qt 和 Tauri 必须使用完全相同的 object name。
+平台 object：
+
+| 平台 | 权威锁 |
+|---|---|
+| Windows | `Local\SakuraDesktop.SharedUserData.v1` named mutex |
+| macOS | Rust/Python 共用的 POSIX advisory lock 文件，路径由 WP-1P-03 冻结 |
+| Linux | Rust/Python 共用的 POSIX advisory lock 文件，路径由 WP-1P-03 冻结 |
+
+identity 不按 executable、安装路径、版本、Qt/Tauri、PID、角色或 Core generation 区分。Windows 双方必须使用完全相同的 object name；macOS/Linux 双方必须使用完全相同的路径解析、打开模式和 advisory lock 语义。POSIX 普通文件存在或 PID 文本不能代表锁仍被持有，锁文件不得位于共享 `data/` 内。
 
 ### 生命周期
 
 - 桌面入口必须在任何 `data/` 创建、探针、日志、配置、migration、Core spawn 或外部服务启动之前获取锁。
 - 锁由桌面生命周期根持有，直到窗口、Python Core、MCP/插件/TTS/浏览器后代和全部写入任务退出并 flush/close。
 - Core 子进程不竞争桌面锁；其写权限来自当前持锁桌面根。
-- 正常退出最后关闭 mutex handle。
-- 崩溃/强杀后由 Windows 自动释放；不依赖普通标志文件和 PID stale 猜测。
+- 正常退出最后释放对应平台的 OS lock/handle。
+- 崩溃/强杀后由 OS 自动释放 held lock；不依赖普通标志文件和 PID stale 猜测。
 - `data/sakura.lock` 是历史 QLockFile 工件；WP-1A-04 切换后不再是权威，不自动删除。
 - `data/memory/qdrant/.lock` 是 Qdrant 内部锁，不得用作桌面互斥或手工删除。
 
@@ -138,7 +145,7 @@ WP-1A-04 已把共用 mutex 前移到 crash log、selfcheck probe、默认配置
 - 不提供强制接管、删锁或并发只读启动。
 - 返回结构化结果 `already_running`，交互式进程退出码为 0。
 
-mutex 创建/打开本身失败且无法确认 holder 时，进入 fatal diagnostics 并返回非零；不能继续为第二写入者。
+平台锁创建/打开本身失败且无法确认 holder 时，进入 fatal diagnostics 并返回非零；不能继续为第二写入者。
 
 ## 共享写入协议
 
@@ -183,6 +190,22 @@ WP-1A-04 必须自动化或真实验证：
 - 负责人完成默认 Tauri、显式 Qt 回退、双向冲突、正常/强杀释放与退出清理后立即重获的实机验收；最终独立复审无 Critical/Important，P0/P1 与退出条件相关缺陷为零。
 
 据此本 ADR 更新为 `Technically Validated`。Phase 3 的 Qt → Tauri v2 → Qt 共享数据兼容门禁仍未开始，因此不得标记为 `Accepted`。
+
+以上仅是 Windows backend 的技术验证。macOS/Linux 不能复用本段作为通过证据。
+
+## Phase 1P POSIX 应用锁技术门
+
+WP-1P-03/06 必须在 macOS 与 Linux 分别验证：
+
+1. legacy Python/Qt 持锁时 Tauri 返回 `already_running`，反向冲突同样成立。
+2. 冲突和锁 API/权限失败发生在日志、配置、migration、Core spawn 和共享 `data/` 写入之前。
+3. 正常退出必须等待 Core、插件、MCP、TTS、浏览器和写入任务完成后才释放。
+4. 强杀任一入口后由 OS 释放 advisory lock，另一入口无需删除文件或判断 stale PID 即可获取。
+5. 锁文件仍存在但无人持锁时可以正常获取；不得以文件存在误判冲突。
+6. Rust/Python 对路径、符号链接、权限、用户 scope 和错误分类使用共享 golden fixture。
+7. 真实数据清单前后保持不变；每个平台失败清场只处理本轮精确登记的进程和临时资源。
+
+上述门禁通过前，本 ADR 的 `Technically Validated` 只能表述为 Windows shared lock 状态。
 
 ## Phase 3 Qt → Tauri v2 → Qt 兼容门禁输入
 
@@ -241,9 +264,9 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 
 ## 允许调整的范围
 
-可以调整 Win32/Rust/Python 的具体 mutex wrapper、private config 内部字段、备份命名和测试驱动，只要以下结果不变：
+可以调整 Win32/POSIX/Rust/Python 的具体 lock wrapper、private config 内部字段、备份命名和测试驱动，只要以下结果不变：
 
-- exact shared lock identity 的语义稳定，Qt/Tauri 竞争同一内核对象。
+- exact shared lock identity 的语义稳定，Qt/Tauri 在同一平台竞争同一个 OS 锁。
 - 同一用户会话只有一个桌面生命周期根和共享数据写入者。
 - 锁在任何共享 data mutation 前获取，在全部写入者/后代退出后释放。
 - Phase 1–3 无破坏性 migration，只有批准的 Qt-compatible write。
@@ -253,4 +276,4 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 
 ## ADR 状态门禁
 
-本 ADR 当前为 `Technically Validated`：Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过。只有 Phase 3 的 Qt → Tauri → Qt 真实兼容门禁通过后才能更新为 `Accepted`。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。
+本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过。更新为 `Accepted` 前必须同时完成 Phase 1P 的 macOS/Linux 共享锁、全部正式平台的 Qt → Tauri → Qt 真实兼容门禁和产品功能等价台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。

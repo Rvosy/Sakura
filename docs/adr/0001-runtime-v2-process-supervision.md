@@ -1,6 +1,6 @@
 # ADR-0001：Runtime v2 进程监管
 
-> 状态：Accepted
+> 状态：Accepted（Supervisor 语义与 Windows backend）；跨平台 backend 受 ADR-0004 / Phase 1P 约束
 > 日期：2026-07-15
 > 验证日期：2026-07-22
 > 适用范围：Tauri Runtime 对 Python Core 及其后代进程的生命周期管理
@@ -27,7 +27,7 @@ Runtime v2 要求 Tauri 成为唯一桌面生命周期根。Python Core 可以�
 
 ## 当前推荐方案
 
-实现统一 Rust 接口：
+实现统一 Rust 接口；具体资源所有权由平台 backend 承担：
 
 ```text
 ManagedProcessTree
@@ -62,12 +62,15 @@ CoreSupervisor
 
 suspended spawn 是当前推荐实现，不是产品层不可变要求。如果技术验证证明“立即 spawn 后可靠加入 Job”在目标环境中同样不会产生逃逸进程，可以更新本 ADR 采用更简单方案。
 
-### 非 Windows 平台边界
+### macOS 与 Linux
 
-- Phase 1A–3 只以 Windows 为正式目标平台。
-- `ManagedProcessTree` 保留跨平台 trait 和安全失败边界。
-- Linux/macOS 具体 process group、parent-death signal 和透明窗口行为不作为首轮门禁。
-- 对应平台进入交付范围前，单独建立 ADR 和真实故障注入测试。
+ADR-0004 已把 macOS arm64 和 Linux x64 纳入基础正式矩阵。`ManagedProcessTree` 公共语义保持不变，平台实现必须移入 backend：
+
+- macOS 在 spawn/exec 边界建立独立 session/process group，使用组级 signal 和 `waitpid`/等价机制完成优雅期后的整树终止与退出验证。
+- Linux 同样建立独立 session/process group；parent-death signal 可以作为保险，但不能代替 Tauri 持有的组级最终停止权。
+- spawn 与加入监管边界之间不得存在允许 Core 提前创建逃逸后代的未验证窗口。
+- 无法建立进程组、无法确认目标 identity 或无法验证整组退出时安全失败，不启动未监管 Core。
+- `cfg(not(windows)) => UnsupportedPlatform` 只允许在 Phase 1P 实现前作为历史占位，不能进入 WP-1P-06 accepted 结果。
 
 ## 关闭流程
 
@@ -164,6 +167,9 @@ deadline 从 Rust 侧发出对应意图并成功写入当前 generation transpor
 - 重复 shutdown。
 - Tauri 主动退出。
 - Job Object 建立失败。
+- macOS/Linux session/process group 建立失败。
+- macOS/Linux 根进程退出但后代继续存活。
+- 向旧 PID/进程组 identity 发信号前发生 PID/PGID 复用或 identity 不匹配。
 
 ## 可观测性
 
@@ -188,8 +194,9 @@ deadline 从 Rust 侧发出对应意图并成功写入当前 generation transpor
 
 代价：
 
-- Windows Job Object 需要平台代码和故障注入测试。
+- Windows Job Object 与 POSIX process group 都需要平台代码和故障注入测试。
 - suspended spawn 可能增加 Windows 实现复杂度，因此必须通过技术验证确认是否必要。
+- macOS/Linux 必须处理 signal、wait、PID/PGID identity 和父进程异常退出差异。
 
 ## 允许调整的范围
 
@@ -211,8 +218,10 @@ WP-1B-01 至 WP-1B-04 已在 Windows 11 23H2、x86_64-pc-windows-msvc、Rust/Car
 - 最终 debug Tauri 真实验收连续两轮覆盖可见窗口、pending hello 时主动退出和第三次 restart backoff 时主动退出；每轮根退出码为 0，计时器按合同取消，登记的 15/16 个根与后代身份、Job、worker、句柄、timer 和隔离临时目录均为零残留。
 - 两轮验收前后均对真实 `data/` 的 path、length、mtime 和 SHA-256 生成完整清单；121 个文件、1,045,983,998 bytes 的 canonical SHA-256 均保持 `300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b`。
 
-本结论验证进程监管机制和 Fake Core 边界，不代表真实 Python Core、业务 IPC、initialize/Snapshot 或任何领域能力已经接入；这些仍由后续工作包独立交付和回退。
+本结论验证 Windows 进程监管 backend、Supervisor 机制和 Fake Core 边界，不代表 macOS/Linux backend 已验证，也不代表真实 Python Core、业务 IPC、initialize/Snapshot 或任何领域能力已经接入；这些仍由后续工作包独立交付和回退。
 
 ## ADR 状态门禁
 
-本 ADR 已在 Phase 1B 的 Windows Job Object、后代回收、竞态、Fake Core 测试和真实 Tauri 主动退出门禁通过并完成实现审查后更新为 `Accepted`。后续若真实 Core 接线推翻上述边界，应修改或 Supersede 本 ADR，不得为迁就当前实现降低产品门禁。
+本 ADR 的 Supervisor 状态机、最终停止权、generation 隔离和 Windows backend 已在 Phase 1B 完成实现审查，因此保持 `Accepted`，不抹去现有 Windows 证据。
+
+跨平台总体交付必须同时满足 ADR-0004：WP-1P-04/06 在 macOS/Linux 完成真实后代回收、竞态和 Tauri 主动退出门禁前，任何后续 Work Package 不得把本 ADR 的 `Accepted` 描述为“三平台进程监管已完成”。后续若真实 Core 接线或 POSIX backend 推翻公共边界，应修改或 Supersede 本 ADR，不得为迁就当前实现降低产品门禁。

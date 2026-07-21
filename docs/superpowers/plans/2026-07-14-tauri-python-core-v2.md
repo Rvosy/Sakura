@@ -1,9 +1,9 @@
 # Sakura Tauri + Python Core Runtime v2 计划
 
-> 状态：Phase 0 最终架构审查通过；Phase 1A–3 按 Work Package 逐项批准
+> 状态：WP-1C-02 accepted（`a06e1dada`）；下一生产阶段为跨平台 Phase 1P
 > 工作分支：`refactor/tauri-runtime-v2`
 > 基线：`dev` / `4e8dc7f0a6afbc391149046febeb0c796dd641b8`
-> 目标：用 Tauri 替代 Qt 桌面运行时和 UI，同时尽量复用现有 Python Assistant 能力。
+> 目标：用 Tauri 替代 Qt 桌面运行时和 UI，复用现有 Python Assistant 能力，保持发布时全部现有用户能力，并从基础阶段持续支持 Windows、macOS 和 Linux。
 
 ## 1. 总体定义
 
@@ -29,12 +29,12 @@ WebView
 
 ## 2. Assistant / Agent 产品边界
 
-Runtime v2 当前只实现 Assistant 运行模式。
+Runtime v2 当前迁移 Sakura 已有的 Assistant 运行模式。现有实现即使位于 `app/agent/` 命名空间，也不因此变成可选功能。
 
 - Assistant 是默认且始终存在的核心产品能力。
-- Tools、MCP、Memory、插件、TTS 和主动互动是 Assistant 的辅助能力，不等同于 Agent Runtime。
-- Agent 不属于 Phase 1–7 的基础 Runtime 必备能力。
-- Agent 将来通过默认关闭的可选插件或 Capability 扩展接入。
+- 现有 Tools、MCP、Memory、插件、TTS、截图、主动互动、提醒和桥接能力属于发布前必须恢复的 Sakura 能力，受产品功能等价台账约束。
+- 本轮不建设的是新的通用自治任务平台、多 Agent Runtime 和任务图编排器，而不是删除现有 `AgentRuntime`/Assistant 能力。
+- 未来新增的通用 Agent 平台可以通过默认关闭的可选插件或 Capability 扩展接入。
 - Agent 插件不得拥有独立桌面生命周期根。
 - Agent 插件不得绕过 Runtime v2 的 IPC、权限和进程监管。
 - Agent 插件需要子进程时，必须属于当前受控进程树。
@@ -80,7 +80,7 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 
 产品硬约束是：主桌宠在用户感知上必须是一个连续的组合体验，立绘锚点、气泡、输入和状态提示不能成为互相独立、可漂移或拥有不同生命周期的桌面根；所有表面仍归同一个 Tauri App 管理。
 
-Phase 1A 的首选技术方案是使用一个原生透明窗口承载：
+各平台的首选技术方案是使用一个原生透明窗口承载：
 
 ```text
 透明桌宠窗口
@@ -93,14 +93,14 @@ Phase 1A 的首选技术方案是使用一个原生透明窗口承载：
 
 设置、工作室、历史和诊断使用独立普通窗口。
 
-“一个原生透明窗口”不是不可变产品约束。WP-1A-02/03 必须在参考 Windows 环境真实验证透明命中、拖动、焦点、中文 IME、Alt+Tab、显示隐藏和 DPI。出现以下任一情况时，单窗口方案判定失败，WP-1A-03 不得 accepted，也不得进入 WP-1A-04：
+“一个原生透明窗口”不是不可变产品约束。WP-1A-02/03 已形成 Windows backend 证据；WP-1P-05 必须在 macOS、Linux X11/Wayland 回补透明命中、拖动、焦点、IME、显示隐藏和 scale 门禁。出现以下任一情况时，该平台的单窗口方案判定失败，平台窗口 WP 不得 accepted：
 
 - 透明区域点击穿透与输入区域命中无法同时稳定成立。
 - 中文 IME 候选框、焦点恢复或拖动/穿透切换存在可重复的 P1。
 - 只有引入隐藏 Qt、第二生命周期根、管理员权限或范围外兼容层才能通过。
 - 真实 WebView 与物理输入持续不符合自动测试中的契约。
 
-失败后只允许整理证据、删除失败实现、缩小范围和提出替代架构。候选替代可以是同一 Tauri App 内受控的多原生窗口组合、最小 Windows 命中测试平台层或收窄交互模型，但必须先更新主计划、Work Package 和专门的窗口架构决策记录，由项目负责人批准后重新拆分；不得在 WP-1A-03 内自动降级或把兼容层带入 WP-1A-04。
+失败后只允许整理证据、删除失败平台实现、缩小实现范围和提出不削减产品能力的替代架构。候选替代可以是同一 Tauri App 内受控的多原生窗口组合或平台原生命中层；必须先更新 ADR-0004、Work Package 和窗口架构记录，由项目负责人批准后重新拆分。不得静默关闭点击穿透、拖动或 IME，也不得引入第二生命周期根。
 
 ### 3.4 状态所有权分离
 
@@ -131,16 +131,17 @@ Phase 1A 的首选技术方案是使用一个原生透明窗口承载：
 
 具体数据边界、迁移协议和兼容门禁见 ADR-0003。
 
-### 3.7 首轮目标平台
+### 3.7 跨平台目标矩阵
 
-- Phase 1A–3 的正式目标平台仅为 Windows x64（`x86_64-pc-windows-msvc`）。Windows ARM64、32 位、Wine、Windows Server、Linux 和 macOS 不属于首轮正式验收范围。
-- 进程树和原生能力保留跨平台抽象边界，但 Linux/macOS 仅保留设计占位和必要编译边界，不作为首轮验收门禁。
-- Linux 或 macOS 进入交付范围前，分别建立平台 ADR、透明窗口验证和真实进程树测试。
-- Runtime v2 的 Phase 1A–3 参考验收环境是 Windows 11 23H2 build `22631.4890` x64、WebView2 `150.0.4078.65`。WP-0-01 记录的旧 Windows/Qt 环境继续作为 legacy 对比证据，不替代 Tauri 参考环境。
+- Runtime v2 从 Phase 1P 起的正式基础矩阵是 Windows x64、macOS arm64 和 Linux x64；三者必须持续参与编译、共享契约和最小生命周期门禁。
+- Windows 已完成的 WP-1A、WP-1B 和 WP-1C-01/02 证据保留为 Windows backend 历史证据，不自动代表 macOS/Linux 已接受。
+- Linux 窗口验收必须区分 X11 与 Wayland；不能用 X11 结果替代 Wayland，也不能在发布时静默削减命中、拖动、IME 或截图能力。
+- macOS x64、Windows ARM64、32 位、Wine 和 Windows Server 当前不是首个正式 target，但公共协议、数据和资源布局不得写死 CPU 架构。
+- 平台 backend、Runtime 定位、CI 与真实验收的规范见 ADR-0004。WP-1C-03 及后续工作必须依赖 WP-1P-06。
 
-### 3.8 Runtime v2 初始工具链与 bundled Python 来源
+### 3.8 Runtime v2 工具链与 bundled Python 来源
 
-Phase 1A 首个实现 Work Package 使用以下可重复基线：
+Windows Phase 1A 已使用以下可重复基线，继续作为 Windows backend 历史证据：
 
 | 项目 | 初始基线 | 约束 |
 |---|---|---|
@@ -153,7 +154,7 @@ Phase 1A 首个实现 Work Package 使用以下可重复基线：
 | Node / npm | `v22.14.0` / `11.18.0` | 静态 startup 页面不要求 Node；引入前端构建链时再固定 lockfile |
 | WebView2 | `150.0.4078.65` | 真实 Shell 验收必须记录实际 Runtime 版本 |
 
-Runtime v2 的 Windows bundled Python 继续使用仓库发布流程生成的 `runtime/python.exe`：CPython `3.12.8` 64 位官方 Windows embeddable 包，来源为 `.github/workflows/release.yml` 中固定的 `https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip`，通过 release 的 `runtime-windows-x64.zip` 或完整包进入应用根目录。Phase 1A 不启动或要求 Python；WP-1C-04 必须使用同一来源完成真实 end-to-end，并在进入发布链前补齐下载工件完整性校验，不得静默回退到系统 Python。
+Runtime v2 的 Windows bundled Python 继续使用仓库发布流程生成的 `runtime/python.exe`：CPython `3.12.8` 64 位官方 Windows embeddable 包。WP-1P-01/02 必须同时冻结 macOS arm64 与 Linux x64 的 Python 来源、包内布局、完整性校验和开发/发布定位规则。公共代码不得依赖 `.exe` 或仓库 `target/debug` 目录；发布布局不得静默回退系统 Python。
 
 ## 4. Python Adapter / Facade 迁移原则
 
@@ -368,15 +369,17 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 
 - `docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
 - `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
+- `docs/adr/0004-runtime-v2-cross-platform-foundation.md`
+- `docs/runtime-v2/product-capability-parity.md`
 
-Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
+Work Package 执行清单是 Phase 0–7 的顺序、状态和范围真相源；功能等价规范是发布能力范围真相源。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
 
 开发分支 dogfooding 与 legacy Qt 回退：
 
 - v2 分支默认入口只允许在 WP-1A-04 完成共享应用锁后切换到 Tauri；WP-1A-01 至 WP-1A-03 不改变当前默认入口。
-- WP-1A-04 后、Phase 3 前，默认 Tauri 只用于 Runtime v2 Shell/窗口/恢复链 dogfooding；需要当前完整聊天、设置、Studio、TTS 或插件能力时，显式退出 Tauri 后运行 `.\runtime\python.exe .\legacy_qt_main.py`。可增加 `start-legacy-qt.bat` 作为同一命令的便利入口，但权威回退语义不依赖脚本。
+- WP-1A-04 后、产品等价完成前，默认 Tauri 只用于 Runtime v2 已完成链路的 dogfooding；需要当前完整能力时，显式退出 Tauri 后使用当前平台冻结的 legacy Qt 回退入口。Windows 权威命令仍为 `.\runtime\python.exe .\legacy_qt_main.py`；macOS/Linux 的权威命令和 Runtime 路径由 WP-1P-02 冻结，不能复用 Windows `.exe` 规则。
 - 这项切换成本只在 `refactor/tauri-runtime-v2` 开发分支内接受：开发者需要显式选择 legacy Qt，两个入口不能并行；`dev`、现有正式安装包和发布入口在 Phase 3 门禁前不改变。
-- 数据安全责任由当前持锁的桌面生命周期根承担。任一入口未获得 `Local\\SakuraDesktop.SharedUserData.v1` 时，必须在所有 `data/`、日志、配置、migration 和 Core 启动前退出；用户不承担删锁、合并数据或判断 stale PID 的责任。
+- 数据安全责任由当前持锁的桌面生命周期根承担。Windows 使用已验证 named mutex；macOS/Linux 使用 ADR-0004 冻结的同语义 advisory lock。任一入口未获得平台共享锁时，必须在所有 `data/`、日志、配置、migration 和 Core 启动前退出；用户不承担删锁、合并数据或判断 stale PID 的责任。
 - legacy Qt 回退适用于 v2 Shell、窗口、Core 启动或基础聊天尚未满足门禁时恢复当前产品能力，不用于并发运行或绕过未来 schema/损坏数据的 diagnostics/read-only 状态。
 - WP-1A-04 的独立代码回退是整体 revert 默认入口和双方 named mutex 接入，恢复当前 Qt 入口；WP-3-06 负责证明切到 v2、退出并回到 legacy Qt 后共享数据仍兼容。
 
@@ -405,7 +408,7 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - [ ] 文档明确 legacy Qt 回退命令，并让 Qt/Tauri 入口竞争同一应用锁。
 - [ ] 仅在 WP-1A-04 共享锁和 legacy Qt 回退门禁通过后，按已确认的 dogfooding 策略把当前 v2 开发分支默认启动入口切到 Tauri；不改变现有正式安装包入口。
 
-退出条件：首选单透明窗口方案在目标 Windows 环境通过技术门；若失败则按 3.3 停止并更新架构，不得继续入口切换。即使没有 Python，Shell 仍可见、可诊断、可退出。
+历史退出条件：首选单透明窗口方案已在 Windows 环境通过技术门。该结果只接受 Windows backend；macOS/Linux 的窗口技术门由 WP-1P-05 回补。即使没有 Python，所有正式平台的 Shell 仍必须可见、可诊断、可退出。
 
 ### Phase 1B：进程监管与 Fake Core
 
@@ -416,7 +419,7 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - [ ] 验证 Tauri 退出和 Core 重启后无遗留 Core 后代进程。
 - [ ] 验证有限自动重启和手动重试。
 
-退出条件：Supervisor 故障矩阵通过，Core 的任何失败都不会带走 Shell 或留下未受控子进程。
+历史退出条件：Supervisor 状态机和 Windows Job backend 故障矩阵已通过。跨平台总体退出条件由 WP-1P-04/06 回补：任何正式平台上的 Core 失败都不能带走 Shell 或留下未受控子进程。
 
 ### Phase 1C：最小真实 Core Host
 
@@ -430,7 +433,20 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - [ ] 覆盖 initialize 期间 shutdown，且协议不兼容不会触发无限自动重启。
 - [ ] 使用 bundled Python 完成 hello、initialize、snapshot 和 shutdown 冒烟测试。
 
-退出条件：真实 Python Core 可以在不加载 Qt UI 和重型领域模块的情况下建立通信、上报状态并可靠关闭。
+WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initialize/readiness/Snapshot。现在暂停本 Phase，先执行 Phase 1P；WP-1C-03/04 不得提前开始。
+
+退出条件：真实 Python Core 可以在不加载 Qt UI 和重型领域模块的情况下建立通信、上报状态并可靠关闭；WP-1C-04 还必须使用 WP-1P-02/04 冻结的三平台 Runtime 与进程树 backend 完成同语义端到端。
+
+### Phase 1P：跨平台基础回补
+
+- [ ] 冻结 Windows x64、macOS arm64、Linux x64 target matrix、最低系统环境、平台接口和错误分类。
+- [ ] 建立开发/测试/发布 `RuntimeLocator`，冻结三平台包内 Python 和 Core 布局。
+- [ ] 建立 Rust/Tauri 与 legacy Python 共用的 Windows/POSIX 应用锁 backends。
+- [ ] 把现有 Windows Job Object 实现降为 backend，补齐 macOS/Linux process group backends。
+- [ ] 把透明命中、拖动、焦点、IME 和原生诊断降为平台 backends；分别验证 macOS、X11 与 Wayland。
+- [ ] 建立三平台 CI 和真实 `Shell -> Core hello/health -> shutdown -> 零残留` 总门禁。
+
+退出条件：WP-1P-01 至 WP-1P-06 全部 accepted；ADR-0004 至少更新为 `Technically Validated`；后续 Work Package 不再依赖 `.exe`、WinDLL、Win32 region 或 Windows Job 的公共语义。
 
 ### Phase 1D：恢复、诊断和修复入口
 
@@ -481,49 +497,51 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 
 ### Phase 4：TTS、工具确认、截图和主动事件
 
-- [ ] Python TTS 合成与无 Qt 播放层接通。
-- [ ] 播放失败不拖垮基础聊天，资源和子进程可回收。
-- [ ] 优先评估 Rust 原生播放；最终实现由 Phase 4 设计和真实设备验证决定。
-- [ ] 建立音频 ADR，确认 `audio.*` 最终所有者；Rust 播放归 Rust，Python 无 Qt 播放归 Python。
-- [ ] Action ID 工具确认。
-- [ ] 手动截图、自动观察和主动事件。
-- [ ] 长任务使用 Operation，不阻塞控制通道。
+- [ ] WP-4-01：Memory 检索、写入、整理和外部存储等价。
+- [ ] WP-4-02：内置 Tools、Operation 与 Action ID 工具确认。
+- [ ] WP-4-03：MCP 配置、启动、工具调用、故障恢复与进程树清理。
+- [ ] WP-4-04：现有 Python 插件、context/event/tool 扩展等价。
+- [ ] WP-4-05：TTS 合成、播放、设备错误、audio ADR 和本地服务回收。
+- [ ] WP-4-06：手动截图、受控资源、权限和多屏/DPI/Wayland portal。
+- [ ] WP-4-07：自动观察、主动互动、提醒、任务和休眠/时区恢复。
+- [ ] WP-4-08：Phase 4 组合稳定化、背压和完整资源回收。
 
 ### Phase 5：设置、历史和诊断
 
-- [ ] 按 `core.*`、`desktop.*`、`ui.*` 和已确认的 `audio.*` 所有权拆分设置读写。
-- [ ] 每个配置域独立 validate、原子保存和返回结果。
-- [ ] Core 配置 change plan 和受控重启。
-- [ ] 第一版角色切换允许重启 Core，并为原子 Session 切换保留接口。
-- [ ] 历史分页和诊断快照。
-- [ ] 首次设置流程。
+- [ ] WP-5-01：`core.*`、`desktop.*`、`ui.*`、`audio.*` 配置仓库、validate、change plan 和原子保存。
+- [ ] WP-5-02：设置窗口、逐域保存结果和首次设置流程。
+- [ ] WP-5-03：角色切换、受控 Core 重启、历史分页和 Session 等价。
+- [ ] WP-5-04：托盘、置顶、全局快捷键、显示隐藏和开机启动。
+- [ ] WP-5-05：浏览器自动化与移动/本地桥接插件的受控生命周期。
+- [ ] WP-5-06：扩展诊断、手动 Repair、安全重试和更新前置检查。
 
 ### Phase 6：角色工作室
 
-- [ ] Workspace/Draft 独立模型。
-- [ ] 导入、预览、保存、发布和回滚。
-- [ ] 大文件操作使用 Operation。
-- [ ] 工作室写入不直接修改运行中 Assistant 对象。
+- [ ] WP-6-01：Workspace/Draft 独立模型。
+- [ ] WP-6-02：角色导入、资源和 schema 校验。
+- [ ] WP-6-03：预览与运行中 Assistant/generation 隔离。
+- [ ] WP-6-04：原子保存、发布和回滚。
+- [ ] WP-6-05：大文件 Operation、取消和故障恢复。
 
 ### Phase 7：发布验收
 
-- [ ] 完整 Python 和 Rust 测试。
-- [ ] 真实 Tauri WebView E2E。
-- [ ] Windows 多 DPI、多屏、托盘、IME、音频和截图人工验收。
-- [ ] Core、MCP、TTS 和浏览器子进程故障注入。
-- [ ] 长时间运行、重复启停和更新包验收。
-- [ ] 干净 Windows 安装验收。
+- [ ] WP-7-01：完整 Python、Rust、前端、协议和三平台 CI 矩阵。
+- [ ] WP-7-02：Windows、macOS、Linux 真实 Tauri WebView E2E 与平台 UX 验收。
+- [ ] WP-7-03：逐行关闭产品功能等价台账和 Qt -> Tauri -> Qt 数据门禁。
+- [ ] WP-7-04：三平台打包、签名/notarization、更新、完整性和干净安装。
+- [ ] WP-7-05：长时间运行、休眠恢复、重复启停及 Core/MCP/TTS/browser 故障注入。
+- [ ] WP-7-06：最终发布审查、回退演练和进入 `dev` 决策。
 
-退出条件：全部门禁通过后，才允许合并到 `dev` 并进入正式发布链。Qt 仍保留为显式回退，删除时间另行决策。
+退出条件：三平台、全部产品等价行和数据门禁通过后，才允许合并到 `dev` 并进入正式发布链。Qt 仍保留为显式回退，删除时间另行决策。
 
 ## 11. 核心验收指标
 
 - Shell 不出现等待 Core 的空白期。
-- 参考机器冷启动可见时间 p95 目标不高于 1 秒；500 ms 是优化目标。
+- 每个正式平台的参考机器冷启动可见时间 p95 目标不高于 1 秒；500 ms 是优化目标。
 - 同一用户会话只能有一个 Sakura Desktop 实例和一个受监管 Python Core 根进程。
 - Tauri 与 legacy Qt 不能同时持有应用锁或写入共享用户数据。
 - Core 领域子进程属于同一受控进程树。
-- Tauri 退出后 5 秒内无 Core、MCP、TTS 或浏览器后代进程残留。
+- 任一正式平台的 Tauri 退出后 5 秒内无 Core、MCP、TTS 或浏览器后代进程残留。
 - Python 初始化卡死时可以取消或强杀，不阻塞 Tauri 主线程。
 - 长操作期间 health、cancel、shutdown、诊断和 UI 保持响应。
 - 有资源冲突的业务请求明确 queued 或 busy，不能无响应。
@@ -532,11 +550,13 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - Qt 创建的数据可被 Tauri v2 读取；退出 v2 后 legacy Qt 仍可启动并读取兼容数据。
 - Provider 网络不可达不阻塞 Shell 和 Core 启动，只影响对应业务请求。
 - 真实应用验收失败时，不得以静态契约或单元测试通过为由切发布入口。
+- 平台敏感 Work Package 不得以 Windows 单平台证据标记为全局 accepted。
+- `docs/runtime-v2/product-capability-parity.md` 的发布必备行全部达到 `parity-accepted` 或获批替代。
 
 ## 12. 已确认决策摘要
 
 1. Tauri 是唯一桌面生命周期根，Python 是无 Qt Assistant Core。
-2. Runtime v2 首轮只实现 Assistant；Agent 延后为可选插件。
+2. Runtime v2 迁移现有 Assistant 及其 Memory、Tools、MCP、插件、TTS、主动互动等全部能力；仅未来通用自治/多 Agent 平台可延期为可选插件。
 3. Python 通过 Adapter/Facade 复用现有领域服务，不重写 Assistant。
 4. 主桌宠维持单一组合体验；一个原生透明窗口是 Phase 1A 首选技术方案，失败时按 3.3 停止并重新批准替代架构。
 5. v2 分支只在 WP-1A-04 accepted 后默认启动 Tauri，Qt 保留 `.\runtime\python.exe .\legacy_qt_main.py` 显式回退。
@@ -549,7 +569,9 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 12. 局部模糊延期为可选增强，不属于基础聊天门禁。
 13. Runtime Repair 早期只提供诊断和安全操作入口。
 14. Phase 1–3 不做破坏性用户数据迁移，Qt/Tauri 使用同一应用锁并通过双向回退门禁。
-15. Phase 1A–3 正式目标平台是 Windows，其他平台延后单独验证。
+15. WP-1C-02 完成后先执行 Phase 1P；Windows x64、macOS arm64、Linux x64 从基础生命周期开始持续参与门禁，不能在产品功能接近完成时再适配。
+16. 已完成的 Windows WP 保留为 Windows backend 证据，不代表跨平台总体 accepted；ADR-0004/WP-1P 负责回补。
+17. 发布功能范围以产品功能等价台账为准，不能以代码仍存在或 legacy Qt 可回退代替迁移完成。
 
 ## 13. 交付治理与技术 ADR
 
@@ -560,13 +582,14 @@ Work Package 执行清单是 Phase 0–3 的顺序、状态和范围真相源。
 - `docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
 - `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
 
-治理文件约束 Work Package、允许列表、提交粒度、证据门禁、Bug Budget 和停止条件；执行清单记录 Phase 0–3 的 Work Package 顺序、状态、范围、证据和回退。即使实现技术方向正确，违反治理边界也不得进入下一 Work Package。
+治理文件约束 Work Package、允许列表、提交粒度、证据门禁、Bug Budget 和停止条件；执行清单记录 Phase 0–7 的 Work Package 顺序、状态、范围、证据和回退。即使实现技术方向正确，违反治理边界也不得进入下一 Work Package。
 
 技术 ADR：
 
 - `docs/adr/0001-runtime-v2-process-supervision.md`
 - `docs/adr/0002-runtime-v2-ipc.md`
 - `docs/adr/0003-runtime-v2-data-compatibility.md`
+- `docs/adr/0004-runtime-v2-cross-platform-foundation.md`
 
 ADR 状态按以下流程演进：
 
@@ -577,9 +600,10 @@ Proposed
 -> Superseded
 ```
 
-- ADR-0001 在 Phase 1B 的 Windows 进程树与 Fake Core 门禁通过后进入 `Technically Validated`，经实现审查后才进入 `Accepted`。
+- ADR-0001 的 Supervisor 与 Windows backend 已 accepted；macOS/Linux backend 和跨平台总体门禁由 ADR-0004/WP-1P 承担。
 - ADR-0002 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后进入 `Technically Validated`，在 Phase 2 并发、阻塞隔离、取消和背压门禁通过后进入 `Accepted`。
-- ADR-0003 在 Phase 1A 共用 named mutex 双入口/崩溃门禁通过后进入 `Technically Validated`，在 Phase 3 Qt → Tauri → Qt 数据兼容门禁通过后进入 `Accepted`。
+- ADR-0003 的 Windows named mutex 已 `Technically Validated`；POSIX 共享锁和三平台 Qt/Tauri 双向门禁必须在 accepted 前补齐。
+- ADR-0004 在 WP-1P-01 至 WP-1P-06 通过后进入 `Technically Validated`，在首个三平台真实产品垂直链通过后进入 `Accepted`。
 - 技术验证失败时更新或替代 ADR，不为了符合文档而强行保留失败方案。
 
 ## 14. 最终审查重点
@@ -588,9 +612,12 @@ Proposed
 
 - 是否仍然以“替换 Qt 桌面层、复用 Python Assistant”为中心。
 - 是否明确排除了 Agent 平台和 Python Assistant 重写。
+- 是否没有把现有 `app/agent/` 能力误当成可删除的未来 Agent 平台。
 - Phase 1A–1D 是否足够小且可独立验收。
 - Phase 3 是否同时具备真实聊天和明确视觉收益。
 - 可靠性基础设施是否只建设到支撑当前产品所需的程度。
 - 技术 ADR 是否保留了根据验证结果简化实现的空间。
 - 旧用户数据、legacy Qt 回退和双入口互斥是否拥有可执行门禁。
 - WebView、Rust 控制面和 Python 领域执行面是否保持明确权限边界。
+- Windows、macOS、Linux 是否从平台底座起使用同一公共生命周期和产品语义。
+- 产品功能等价台账是否逐项拥有目标 WP 和发布证据。

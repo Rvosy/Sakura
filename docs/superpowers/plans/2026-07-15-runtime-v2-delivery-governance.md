@@ -19,7 +19,7 @@ Work Package 是 Runtime v2 最小的、可独立验证和回退的实施单元�
 
 推荐编号格式：`WP-1A-01`、`WP-1B-02`。
 
-Runtime v2 Phase 0–3 的 Work Package 顺序、状态和范围统一登记在：
+Runtime v2 Phase 0–7 的 Work Package 顺序、状态和范围统一登记在：
 
 - `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
 
@@ -68,6 +68,12 @@ Phase 1C：
 generation 隔离、协议版本/capability 协商和 stderr 排水。
 禁止接入聊天、Memory、插件、MCP、Tools 和 TTS。
 
+Phase 1P：
+允许平台接口、RuntimeLocator、三平台 bundled Python 布局、共享应用锁、
+受控进程树、透明窗口/命中/拖动/IME backend、原生诊断和三平台 CI。
+禁止接入 WP-1C-03 协议扩展、聊天或任何产品领域能力；
+现有 Windows 实现保留为 backend，不借平台化重写 Supervisor/IPC 语义。
+
 Phase 1D：
 允许启动状态、诊断、重试、日志入口和 Runtime Repair 页面。
 禁止自动下载、在线替换、Runtime 更新和回滚平台。
@@ -83,9 +89,9 @@ legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁。
 禁止 TTS、截图、主动观察、设置和工作室。
 ```
 
-Phase 4–7 在开始前必须按同样格式拆分，不得只依赖主计划中的宽泛描述直接编码。
+Phase 4–7 必须按 Work Package 清单和产品功能等价台账逐项激活，不得把多个既有产品能力合并成一次“大迁移”。
 
-进入首个实现 Work Package 前还必须固定实际 Rust/Tauri 版本、Windows x64 参考环境、WebView2、构建工具和 bundled Python 来源。可漂移的 `stable`、未锁定依赖或“使用本机已有版本”不能作为可重复验收基线；某工具当前不属于 Work Package 前置时，应明确写为非前置，而不是隐式安装或扩大范围。
+进入 WP-1P-02 前必须固定 Windows x64、macOS arm64、Linux x64 的 Rust target、WebView、构建工具、包格式和 bundled Python 来源。可漂移的 `stable`、未锁定依赖或“使用本机已有版本”不能作为可重复验收基线；某工具当前不属于 Work Package 前置时，应明确写为非前置，而不是隐式安装或扩大范围。
 
 ## G-003：可选范围变更 one-in, one-out
 
@@ -167,7 +173,7 @@ Phase / Work Package:
 
 - Agent Runtime。
 - Named Pipe 或 Unix Domain Socket。
-- macOS/Linux 完整支持。
+- 已批准 target matrix 之外的新 CPU 架构或额外打包格式。
 - 自动 Runtime 修复。
 - 完整 schema 代码生成平台。
 - Capability Broker。
@@ -234,13 +240,14 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 
 再根据改动类型追加证据：
 
-- 窗口/UI：真实 Tauri WebView、目标 DPI、多屏和中文 IME 验收。
-- 进程监管：Fake Core、真实后代进程、重复启停和强制回收。
+- 窗口/UI：对应正式平台的真实 Tauri WebView、DPI/scale、多屏和 IME 验收；Linux 必须区分 X11/Wayland。
+- 进程监管：对应正式平台的 Fake Core、真实后代进程、重复启停和强制回收。
 - IPC：阻塞、取消、乱序、慢 writer、背压、关闭和协议损坏。
-- 用户数据：备份恢复、异常中断和 Qt → Tauri → Qt 兼容门禁。
+- 用户数据：对应正式平台的共享锁、备份恢复、异常中断和 Qt → Tauri → Qt 兼容门禁。
 - 用户体验：真实主题、输入、焦点和错误恢复路径。
+- Runtime/打包：开发与发布 locator、包内 Python、CPU 架构、签名/权限和干净环境。
 
-不涉及某类能力的 Work Package 不强制重复无关验收，但不得跳过受影响层级的证据。
+不涉及某类能力的 Work Package 不强制重复无关验收，但不得跳过受影响层级的证据。平台敏感 Work Package 在单个平台通过时只能记录该 backend 的证据，不能据此标记为全局 `accepted`。
 
 ## G-009：阶段 Bug Budget
 
@@ -274,8 +281,8 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 按影响范围追加：
 
 - 生命周期/进程：重复启动退出、连续失败恢复、句柄和后代进程。
-- 窗口/UI：多 DPI、多屏、IME、焦点和显示隐藏。
-- 数据：应用锁、备份、原子写入和 legacy Qt 回退。
+- 窗口/UI：正式平台矩阵的多 DPI/scale、多屏、IME、焦点和显示隐藏。
+- 数据：正式平台矩阵的应用锁、备份、原子写入和 legacy Qt 回退。
 - IPC：阻塞、取消、乱序、背压、连接关闭和旧 generation。
 
 临时 feature flag 必须删除，或明确记录用途、所有者和最晚移除阶段；仍用于安全 dogfooding 或回退的 flag 不得机械删除。
@@ -284,7 +291,8 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 
 接口冻结表示进入变更控制，不表示永远不能修改：
 
-- Phase 1C 完成后冻结最小 lifecycle 接口。
+- WP-1C-02 完成后只冻结 Python/Rust 的最小 lifecycle 语义草案；Phase 1P 可以把平台实现移入 backend，但不得改变业务所有权。
+- Phase 1P 与 WP-1C-04 完成后冻结跨平台 lifecycle 接口、RuntimeLocator 和平台错误分类。
 - Phase 2 完成后冻结基础 request/response/event envelope。
 - Phase 3 开始后，不得为 UI 便利随意修改生命周期协议。
 - 需要破坏性修改时，暂停功能开发、更新 ADR、兼容门禁和测试 fixture。
@@ -303,6 +311,9 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 - 为修复当前实现，需要提前实现下一阶段产品能力。
 - Fake Core 无法稳定复现故障。
 - Phase 1A 首选单透明窗口在真实 WebView、物理输入、DPI 或中文 IME 门禁中失败，或只能依赖隐藏 Qt、第二生命周期根、管理员权限和范围外兼容层才能通过。
+- macOS、X11 或 Wayland 只能通过静默削减点击穿透、拖动、IME、截图或生命周期能力才能继续。
+- 公共 Runtime 继续依赖 `.exe`、WinDLL、Win32 window region、Windows Job 或仓库固定目录，无法抽成受测 backend。
+- 同一平台问题在三平台中被不同临时兼容层重复实现，而没有更新 ADR-0004。
 - 真实应用行为与契约测试持续不一致。
 - 同一个接口连续发生结构性重写。
 - 当前阶段 bug 数量继续增加而不是下降。
@@ -343,8 +354,10 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 - 协议 fixtures。
 - Fake Core 故障测试。
 - 修改范围和禁止目录检查。
+- Windows、macOS、Linux 平台矩阵；Linux GUI 能力额外登记 X11/Wayland。
+- RuntimeLocator、共享锁和受控进程树的对应平台真实测试。
 
-Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python、Rust、WebView E2E 和发布验收，并由项目负责人做最终审查。
+Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python、Rust、三平台 WebView E2E、产品功能等价台账和发布验收，并由项目负责人做最终审查。
 
 ## G-014：提交审查必须回答的问题
 
@@ -360,8 +373,24 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 8. 是否修改 legacy Qt 可读取的数据？
 9. 是否引入新的持久化格式？
 10. 提交后获得了什么可验证结果？
+11. 是否影响平台 backend、Runtime 路径、窗口、进程、锁、权限或打包？哪些正式平台已经验证？
+12. 对应产品功能等价台账中的哪一项？状态为什么可以前进？
 
 任何问题无法清晰回答时，不应提交该生产改动。
+
+## G-015：跨平台先行与产品功能等价
+
+跨平台和功能等价不是 Phase 7 的清理任务：
+
+- WP-1C-02 已以 `a06e1dada` 完成提交闭环；下一生产阶段固定为 Phase 1P，WP-1C-03 及后续 Work Package 必须依赖 WP-1P-06。
+- 正式基础矩阵固定为 Windows x64、macOS arm64、Linux x64；调整 target 必须更新 ADR-0004、Work Package、CI 和发布台账。
+- Windows 已 accepted 的历史 WP 保留为 Windows backend 证据，不撤销其实现价值，也不代表 macOS/Linux 已通过。
+- 共享 Supervisor、IPC、Snapshot、数据 schema 和产品语义不得按平台 fork；原生差异只能位于批准的平台 backend。
+- 任何已有用户能力都必须登记在 `docs/runtime-v2/product-capability-parity.md`，并分配到具体 Work Package。
+- 内部开发分支可以暂时缺功能，但不得把“尚未迁移”改写为“可选”或从台账删除。
+- 发布前，台账中的发布必备项必须达到 `parity-accepted` 或存在项目负责人批准的替代设计。
+
+如果某个平台无法保持原交互，必须在实现对应产品能力前完成替代架构评审；不得等到 Phase 7 再以平台限制为由降级。
 
 ## 执行原则摘要
 
@@ -374,6 +403,16 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 -> 记录已知问题与回退方式
 -> 标记 accepted
 -> 才能开始下一个 Work Package
+```
+
+平台敏感工作还必须经过：
+
+```text
+共享契约
+-> Windows/macOS/Linux backend 实现与自动门禁
+-> 对应平台真实应用验收
+-> 产品功能等价台账更新
+-> 才能全局 accepted
 ```
 
 个人开发不降低证据标准，只移除不适用的 PR 和独立审查流程。详细 commit 历史承担变更说明、回溯和阶段 Review 的职责。

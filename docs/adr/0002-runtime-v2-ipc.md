@@ -32,6 +32,8 @@ Runtime v2 第一版保留 stdin/stdout framed transport，避免本地端口、
 - Python 常驻 reader 和 control dispatcher，只做帧处理、协议校验、控制命令和任务投递。
 - Python 只有一个 writer queue，业务任务不能直接写 stdout。
 - transport 抽象保留未来替换 Named Pipe/Unix Domain Socket 的可能，但当前没有迁移承诺。
+- stdin/stdout/stderr 的创建、继承、关闭和强制回收由 ADR-0004/ADR-0001 的平台进程树 backend 承担；IPC 公共层不得调用 shell，也不得依赖 `.exe`、Win32 handle 或 POSIX fd 的具体表示。
+- Windows、macOS、Linux 必须共享字节级 framing、Envelope、generation、deadline 和错误语义；平台不能各自扩展业务字段。
 
 Python 内部明确拆分：
 
@@ -292,6 +294,7 @@ details
 - protocol major/minor 不兼容和缺失 capability。
 - Rust 主动关闭 stdin 后 Python 能有界退出。
 - Rust/Python golden fixtures。
+- Windows、macOS、Linux 使用同一 golden fixtures；对应平台的真实 Python Host 都完成 hello、health、shutdown 和损坏 transport 回收。
 
 ## 允许调整的范围
 
@@ -308,7 +311,7 @@ details
 
 ## ADR 状态门禁
 
-本 ADR 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后更新为 `Technically Validated`，在 Phase 2 的并发、阻塞隔离、取消与背压门禁通过后更新为 `Accepted`。验证失败时应更新或 Supersede 本 ADR，不得用静态契约测试替代真实阻塞与故障测试。
+本 ADR 在 Phase 1P 已提供三平台 transport/process backend、Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后更新为 `Technically Validated`，在 Phase 2 的并发、阻塞隔离、取消与背压门禁通过后更新为 `Accepted`。单平台结果只能作为该 backend 证据。验证失败时应更新或 Supersede 本 ADR，不得用静态契约测试替代真实阻塞与故障测试。
 
 ## WP-1C-01 基础 transport 验证记录（2026-07-22）
 
@@ -316,7 +319,7 @@ details
 
 - Python 与 Rust 已实现并互验 4-byte big-endian 长度前缀 UTF-8 JSON 帧、8 MiB 上限、基础 Envelope、稳定错误 DTO 和 generation identity；覆盖任意 header/payload 分片、合并帧、非法 UTF-8/JSON、零长/超大/半帧和 stdout 污染。
 - Python 最小 Host 在捕获二进制 stdout 后安装文本写入 guard，只提供 `system.hello`、`system.health`、`system.shutdown`；import guard 证明 hello 前未导入 PySide6、`app.ui`、Assistant、Memory、MCP、插件或 TTS。
-- Rust 使用显式 Python 路径、匿名 stdin/stdout/stderr 管道和 Windows kill-on-close Job 启动真实 Host；所有 control response 均有 deadline，超时、stdin EOF、损坏 stdout 和忽略 shutdown 均有界结束或强制回收完整 Job。
+- Rust 使用显式 Python 路径、匿名 stdin/stdout/stderr 管道和 Windows kill-on-close Job 启动真实 Host；所有 control response 均有 deadline，超时、stdin EOF、损坏 stdout 和忽略 shutdown 均有界结束或强制回收完整 Job。本项是 Windows backend 证据，macOS/Linux 由 WP-1P-04/06 回补。
 - 自动门禁结果：Python 19 passed；Rust 72 passed、13 ignored fixture、0 failed；`cargo fmt --check`、Debug/Release `cargo build --locked`、PowerShell parser、Python `py_compile` 和 `git diff --check` 通过。
 - 两轮真实 Debug Tauri + `runtime/python.exe` 验收均观察到可见窗口、hello、两次 health、协议 shutdown 和根退出码 0；每轮登记 9 个进程身份，最终进程和系统临时目录残留均为 0。
 - 两轮验收前后真实 `data/` 完整路径/长度/mtime/SHA-256 清单均为 121 文件、1,045,983,998 bytes，canonical SHA-256 均为 `300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b`，证明零变化。

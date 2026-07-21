@@ -1,14 +1,14 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Phase 0 架构审查已收口 / WP-1A-03 accepted
+> 状态：WP-1C-02 accepted（`a06e1dada`）；下一生产阶段为跨平台 Phase 1P
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
 > 旧迁移取证源：`feat/tauri-assistant-migration` / `190dfafd24f5c5226bff8b4347837b6e45d9a331`
 
-本文把 Runtime v2 Phase 0–3 拆成可独立验证、稳定化和回退的 Work Package。主计划继续描述产品目标、架构边界和阶段结果；本文是 Work Package 顺序、状态和范围的执行真相源；技术选择及其状态仍以 ADR 为准。
+本文把 Runtime v2 Phase 0–7 拆成可独立验证、稳定化和回退的 Work Package。主计划继续描述产品目标、架构边界和阶段结果；本文是 Work Package 顺序、状态和范围的执行真相源；产品发布能力范围以 `docs/runtime-v2/product-capability-parity.md` 为准；技术选择及其状态仍以 ADR 为准。
 
-Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段冻结具体接口或提前实现。
+Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `active` 前补齐实际允许目录、验收环境、故障矩阵和回退命令，不得仅凭总表提前编码。
 
 ## 1. 执行规则
 
@@ -19,6 +19,9 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 - 每个 Work Package 完成生产实现后必须进入 `stabilizing`，清零 P0、P1 和退出条件相关缺陷后才能标记 `accepted`。
 - 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
 - Work Package 状态只在本文登记，避免在主计划、提交正文和多个清单中维护互相冲突的状态。
+- WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
+- WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证、accepted 记录和生产提交闭环；下一项允许激活的生产 WP 是 WP-1P-01。
+- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06，不得用已有 Windows 证据绕过跨平台阶段。
 
 每个 Work Package 的激活记录至少包含：
 
@@ -62,7 +65,13 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | accepted |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
-| WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1C-02 | planned |
+| WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | planned |
+| WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | planned |
+| WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | planned |
+| WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
+| WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
+| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
+| WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
 | WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
 | WP-1D-02 | diagnostics 与最小 Runtime Repair 页面 | WP-1D-01 | planned |
@@ -79,6 +88,31 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
+| WP-4-01 | Memory 能力等价 | WP-3-06 | planned |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
+| WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
+| WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
+| WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
+| WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
+| WP-4-08 | Phase 4 组合稳定化与资源回收 | WP-4-07 | planned |
+| WP-5-01 | 配置仓库、校验、change plan 与原子保存 | WP-4-08 | planned |
+| WP-5-02 | 设置窗口与首次设置流程 | WP-5-01 | planned |
+| WP-5-03 | 角色切换、Session 与历史分页 | WP-5-02 | planned |
+| WP-5-04 | 托盘、置顶、快捷键与开机启动 | WP-5-03 | planned |
+| WP-5-05 | 浏览器与移动/本地桥接生命周期 | WP-5-04 | planned |
+| WP-5-06 | 扩展诊断、Repair 与更新前置检查 | WP-5-05 | planned |
+| WP-6-01 | Workspace/Draft 数据模型 | WP-5-06 | planned |
+| WP-6-02 | 角色导入、资源与 schema 校验 | WP-6-01 | planned |
+| WP-6-03 | 预览与运行中 Assistant 隔离 | WP-6-02 | planned |
+| WP-6-04 | 原子保存、发布与回滚 | WP-6-03 | planned |
+| WP-6-05 | 大文件 Operation 与故障恢复 | WP-6-04 | planned |
+| WP-7-01 | 完整自动化与三平台 CI 矩阵 | WP-6-05 | planned |
+| WP-7-02 | 三平台真实 Tauri WebView E2E | WP-7-01 | planned |
+| WP-7-03 | 产品功能等价与数据兼容总审查 | WP-7-02 | planned |
+| WP-7-04 | 三平台打包、签名、更新与干净安装 | WP-7-03 | planned |
+| WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
+| WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
 ## 3. Phase 0：冻结与基线
 
@@ -357,6 +391,17 @@ commit: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 已知问题：工具链、窗口、进程树、IPC 和数据兼容仍需各归属 WP 真实技术验证；这不改变三份 ADR 的 Proposed 状态
 回退步骤：整体 revert 本 WP 提交；不触碰生产代码、旧迁移分支或真实 data/
 关联提交：待提交
+```
+
+Accepted 记录（补录历史真相源）：
+
+```text
+状态：accepted
+验收日期：2026-07-16
+关联提交：9f1e71f61（docs(runtime): 完成 Runtime v2 架构审查收口）
+结果：三份 ADR 作为 Proposed 技术基线通过审查，WP-1A-01 获准激活；提交未包含生产代码或真实 data/ 变化
+历史范围说明：本记录只证明当时 Windows-first 计划完成内部一致性审查。2026-07-22 新增 ADR-0004/Phase 1P 修正正式目标平台，不撤销本提交，也不把本记录当成跨平台技术证据
+回退步骤：git revert 9f1e71f61；只回退当时的架构审查文档，不回退后续已验证实现
 ```
 
 主要结果：关闭进入 Phase 1A 前的决策缺口，并把 WP-1A-01 从 `planned` 更新为可激活状态。
@@ -1206,7 +1251,7 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 已知限制：本 WP 的组件初始化仍是假模式，Phase 2 revision gap/事件/资源 token 和真实 Assistant readiness 尚未实现；协议协商、generation credential 与持续 stderr 排水属于 WP-1C-03
 独立回退方式：git revert 本 WP accepted 提交，恢复 WP-1C-01 的 hello/health/shutdown Host、Rust runtime 和真实验收；保留基础 framing、受控进程树、Supervisor 与 Fake Core，不触碰 legacy Qt、data/ 或用户进程
 负责人门禁：自动真实验收已通过；本 WP accepted 后停止并提供同一脚本的独立实机复验步骤，不在本次继续 WP-1C-03
-关联提交：本 WP accepted 提交（feat(runtime): 建立 Core 初始化就绪与最小快照）
+关联提交：a06e1dada66b02474f3d65d4124f31094cda5e9e（feat(runtime): 建立 Core 初始化就绪与最小快照）
 ```
 
 主要结果：Core 在握手后后台初始化假组件，并通过 CoreReadiness 和最小 Snapshot 表达状态。
@@ -1231,9 +1276,140 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 
 独立回退：回退 initialize/readiness 层，保留基础 Host 握手。
 
+## 7. Phase 1P：跨平台基础回补
+
+Phase 1P 是 2026-07-22 架构审查后的强制纠偏阶段。它保留 WP-1A、WP-1B、WP-1C-01/02 的 Windows 证据，把现有 Win32 实现变成 Windows backend，并在任何后续 Runtime 或产品能力前补齐 macOS/Linux。规范来源为 ADR-0004。
+
+### WP-1P-01：跨平台 target、接口与错误分类冻结
+
+主要结果：冻结 Windows x64、macOS arm64、Linux x64 的最低环境、Rust target、平台服务接口、稳定错误类别和证据责任。
+
+允许能力：
+
+- 新增平台矩阵、接口和错误分类 ADR/spec；建立 compile-only skeleton 和测试 contract。
+- 定义 `InstanceLockBackend`、`ManagedProcessTreeBackend`、`WindowInteractionBackend`、`RuntimeLocator`、`NativeDiagnosticsBackend` 的所有权与调用方向。
+- 盘点现有 Windows 实现如何无语义变化地成为 backend。
+
+明确禁止：
+
+- 不实现具体 macOS/Linux backend，不接入 WP-1C-03 或产品领域能力。
+- 不重写 Supervisor、generation、framing、CoreReadiness 或 Snapshot。
+- 不把平台差异加入 IPC 业务字段。
+
+退出证据：三平台 target 和最低环境明确；公共层/平台层依赖图、稳定错误表、CI/真实验收责任和逐文件迁移清单完成审查；所有引用存在；Windows backend 迁移不改变现有产品语义。
+
+独立回退：回退接口冻结文档和无行为 skeleton，恢复 WP-1C-02 accepted 提交态，不触碰其实现。
+
+### WP-1P-02：三平台 RuntimeLocator 与 bundled Python 布局
+
+主要结果：公共启动链不再依赖 `.exe`、仓库 `target/debug` 或硬编码 `runtime/python.exe`，三平台开发/测试/发布布局可重复定位。
+
+允许能力：
+
+- 实现 `RuntimeLocator`、平台资源根、Python/Core 路径、架构检查和结构化错误。
+- 冻结 Windows、macOS app bundle/sidecar、Linux 发布包的 Python 来源、布局、完整性和 golden fixtures。
+- 更新默认入口与验收 harness 使用 locator；开发模式只能显式选择仓库 Runtime。
+
+明确禁止：
+
+- 不静默回退 PATH/system Python，不在线下载或自动修复 Runtime。
+- 不启动真实 Assistant，不改 IPC、Snapshot 或共享数据 schema。
+
+故障测试：Runtime 缺失、无执行权限、错误 CPU 架构、损坏入口、资源根移动、开发/发布模式混淆、macOS bundle 与 Linux 包路径异常。
+
+退出证据：三平台 compile/test 通过；每个平台从 golden 发布布局定位唯一受控 Python/Core；普通公共代码没有 `.exe` 或 Windows 仓库路径假设；错误可进入 diagnostics。
+
+独立回退：回退 locator 与布局 fixture，保留 WP-1P-01 接口和既有 Windows 显式路径测试。
+
+### WP-1P-03：Windows/POSIX 共享应用锁 backends
+
+主要结果：Windows named mutex 与 macOS/Linux advisory lock 实现同一 `sakura.desktop.shared-user-data.v1` 语义，Rust/Tauri 与 legacy Python 双向互斥。
+
+允许能力：
+
+- 保留现有 Win32 mutex 为 Windows backend。
+- 为 macOS/Linux 实现同路径、同打开模式、同 advisory lock 语义的 Rust/Python backends。
+- 增加平台锁路径 golden fixture、冲突/权限/fatal 错误和正常/强杀释放测试。
+
+明确禁止：
+
+- 不用普通文件存在、PID 文本或 stale 猜测代替 OS lock。
+- 锁文件不得位于共享 `data/`；冲突入口不得先写日志、配置或 migration。
+
+退出证据：三个平台分别通过 Qt 持锁/Tauri 冲突、Tauri 持锁/Qt 冲突、正常释放、强杀释放、API/权限失败、无人持锁但文件存在和获取前数据零变化；ADR-0003 更新平台证据但保持数据兼容总门未完成。
+
+独立回退：回退 POSIX backends 和公共适配，恢复 Windows backend；不得删除真实锁文件或用户数据。
+
+### WP-1P-04：Windows/macOS/Linux 受控进程树 backends
+
+主要结果：保留 Windows Job Object，补齐 macOS/Linux session/process group、整树终止、wait 验证和身份安全边界。
+
+允许能力：
+
+- 把现有 `ManagedProcessTree` 的 Win32 资源移入 Windows backend，公共 API 保持 Supervisor 所需语义。
+- 实现 macOS/Linux spawn、piped spawn、terminate tree、wait、verify exited 和 release。
+- Linux 可增加 parent-death signal 保险，但组级最终停止权仍属于 Tauri。
+
+明确禁止：
+
+- 不改 Supervisor 状态机、restart budget、generation 语义和 IPC Envelope。
+- 不以 `cfg(not(windows)) => UnsupportedPlatform` 作为正式 backend。
+
+故障测试：spawn/组建立失败、根提前退出、一个/多个后代忽略 shutdown、旧组停止中 retry、PID/PGID identity 变化、重复 terminate/wait/release、Tauri 强杀和父进程异常退出。
+
+退出证据：三平台 Fake Core 与真实 Python 根均证明旧树清理后才能新建 generation；Tauri 退出后根、后代、pipe、handle/fd 和临时目录零残留；ADR-0001 增补跨平台证据。
+
+独立回退：回退 POSIX backends 和公共适配，保留 Windows Job、Supervisor 与 Fake Core 历史实现。
+
+### WP-1P-05：三平台窗口交互、IME 与原生诊断 backends
+
+主要结果：共享布局/命中模型继续复用，Windows、macOS、X11/Wayland 使用明确 backend 完成透明窗口、拖动、焦点、IME、scale 和窗口身份诊断。
+
+允许能力：
+
+- 保留 Win32 region/move loop 为 Windows backend。
+- 实现或技术验证 macOS 原生命中与拖动、Retina、多屏、Spaces 和 IME。
+- 分别实现/验证 Linux X11 与 Wayland；补齐能识别真实 Sakura 主窗口的原生诊断。
+- 若单窗口在某平台失败，只能在同一 Tauri App 内提出受控多窗口替代并先更新 ADR。
+
+明确禁止：
+
+- 不静默关闭点击穿透、拖动、IME、焦点恢复或显示隐藏。
+- 不引入隐藏 Qt、第二桌面生命周期根或管理员权限依赖。
+- 不接入聊天和最终视觉重做。
+
+退出证据：三平台真实 Shell 可见且可关闭；目标 scale/DPI、多屏、负坐标、拖动、IME、Alt+Tab/Spaces/desktop、显示隐藏和失败安全恢复通过；Linux 证据明确 X11/Wayland，不把 compositor/Tao 内部窗口当主窗口。
+
+独立回退：按 backend 独立回退平台实现，保留共享纯布局模型和已经验证的 Windows backend。
+
+### WP-1P-06：三平台最小 Shell + Core lifecycle 和 CI 总门禁
+
+主要结果：把 WP-1P-02 至 05 组合为持续门禁，三个平台都能从正式 locator 启动 Shell 与最小 Core 并完成有界关闭。
+
+允许能力：
+
+- 建立 Windows/macOS/Linux CI、平台测试脚本、golden fixtures 和有界真实验收入口。
+- 组合共享锁、RuntimeLocator、窗口 backend、受控进程树和 WP-1C-02 的 hello/initialize/health/Snapshot/shutdown。
+- 记录平台工具链、WebView、Python、CPU、session/compositor 和包布局。
+
+明确禁止：
+
+- 不接入 WP-1C-03 协议扩展、真实 Assistant、聊天或 Phase 2+ 能力。
+- 不以 compile-only、mock、单元测试或 Windows 结果替代另一个平台的真实生命周期证据。
+
+故障测试：Runtime 缺失、锁冲突、spawn/pipe 失败、hello/initialize 卡死、损坏 stdout、忽略 shutdown、根崩溃并遗留后代、窗口关闭、重复两轮和失败后恢复。
+
+退出证据：三个平台连续两轮完成 `Shell visible -> lock held -> Core hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> lock reacquirable`；无根、后代、pipe、fd/handle、timer、WebView profile 和临时目录残留；真实用户数据零变化；ADR-0004 更新为 `Technically Validated`。
+
+独立回退：回退组合门禁和 CI 接线，保留每个平台已独立验证的 backend；WP-1C-03 继续保持 planned。
+
+## 8. Phase 1C 续：协议与 bundled Runtime 冻结
+
 ### WP-1C-03：协议协商、stderr 排水和故障 transport
 
 主要结果：建立 Desktop/Core/Protocol 版本协商、日志排水和真实 transport 故障边界。
+
+强制前置：WP-1P-06 accepted。三平台必须使用相同 framing、Envelope、generation credential、capability 和错误语义；平台差异只允许位于已验证 transport/process backend。
 
 允许能力：
 
@@ -1259,6 +1435,8 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 
 主要结果：使用目标 bundled Python 完成真实进程树、握手、initialize、Snapshot 和 shutdown，并冻结最小 lifecycle 接口。
 
+强制前置：WP-1C-03 accepted；必须通过 WP-1P-02 的三平台 `RuntimeLocator` 和 WP-1P-04 的进程树 backend，不得恢复硬编码 `runtime/python.exe`。
+
 允许能力：
 
 - bundled Python 定位、环境构造和 release 资源路径。
@@ -1277,9 +1455,9 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 - ADR-0002 完成 Phase 1C 的 `Technically Validated` 前置证据。
 - 后续破坏性 lifecycle 修改必须暂停功能开发并更新 ADR/fixtures。
 
-独立回退：恢复到 Fake Core 或开发 Python 路径，不影响 legacy Qt。
+独立回退：恢复到 WP-1P 已验证的开发 RuntimeLocator/Fake Core 路径，不影响 legacy Qt；不得回退为 Windows-only 硬编码路径。
 
-## 7. Phase 1D：恢复、诊断和修复入口
+## 9. Phase 1D：恢复、诊断和修复入口
 
 ### WP-1D-01：Shell 启动、初始化和失败状态路由
 
@@ -1348,7 +1526,7 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 
 独立回退：移除 UI retry 入口，保留自动恢复和诊断能力。
 
-## 8. Phase 2：并发 IPC 与只读快照
+## 10. Phase 2：并发 IPC 与只读快照
 
 ### WP-2-01：并发 request/response/event Router
 
@@ -1490,7 +1668,7 @@ TDD RED/GREEN：Python 新测试首次为 11 failed、6 passed，缺口精确落
 
 独立回退：回退背压优化参数，保留已冻结 Envelope 和安全断开边界。
 
-## 9. Phase 3：基础聊天垂直链
+## 11. Phase 3：基础聊天垂直链
 
 ### WP-3-01：无 Qt Assistant Adapter 与真实 readiness
 
@@ -1642,48 +1820,57 @@ legacy Qt 创建/修改数据并退出
 
 独立回退：停止 v2 共享数据写入并退回只读使用，不删除 legacy Qt 数据或入口。
 
-## 10. Phase 4–7 开始前的强制拆分主题
+## 12. Phase 4–7 强制 Work Package
 
-以下不是已批准 Work Package，不得提前编码。对应 Phase 开始前必须按本文模板建立编号、依赖、允许目录、故障矩阵和独立回退。
+以下编号、顺序、主要结果和等价范围已经冻结，但仍是 `planned`。每个 WP 进入 `active` 前必须补充逐文件允许目录、平台环境、协议字段、故障矩阵、人工步骤和独立回退；不得把表中相邻行合并成一次“大迁移”。每行对应的详细现有能力与发布状态见产品功能等价台账。
 
-### Phase 4 候选拆分
+### Phase 4：Assistant 辅助能力等价
 
-- TTS 合成接口与 audio ADR。
-- 无 Qt/Rust 播放技术门和设备故障验证。
-- Action ID 工具确认。
-- 手动截图与受控资源。
-- 自动观察与主动事件调度。
-- Phase 4 组合稳定化和资源回收门禁。
+| WP | 对应能力 | 主要结果 | 强制退出证据 |
+|---|---|---|---|
+| WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级 | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；三平台数据兼容 |
+| WP-4-02 | CAP-009/010 | 内置 Tools、Operation、Action ID 确认 | WebView 不能伪造执行参数；取消/超时唯一终态；副作用有确认证据 |
+| WP-4-03 | CAP-011 | MCP 配置、启动、工具调用与恢复 | MCP 进程属于当前 generation；崩溃/超时/退出零残留；凭据不泄漏 |
+| WP-4-04 | CAP-012 | 现有插件 context/event/tool 和私有数据等价 | 插件加载/卸载、错误隔离、反向清理和数据兼容通过 |
+| WP-4-05 | CAP-013/014 | TTS、播放、设备错误与 audio ADR | 三平台真实音频设备；服务/模型子进程回收；播放失败不拖垮聊天 |
+| WP-4-06 | CAP-015 | 手动截图、资源 token 与平台权限 | 多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
+| WP-4-07 | CAP-016/017 | 自动观察、主动互动、提醒、任务调度 | 时区/休眠恢复、重复事件、取消、数据持久化和截图权限通过 |
+| WP-4-08 | CAP-008–017 | Phase 4 组合稳定化 | 长任务不阻塞 control；Memory/MCP/plugin/TTS/screenshot 全资源零残留 |
 
-### Phase 5 候选拆分
+### Phase 5：配置、平台桌面能力与桥接等价
 
-- `core.*` 配置读取、validate、change plan 和原子保存。
-- `desktop.*`、`ui.*` 和已确定的 `audio.*` 配置仓库。
-- 设置窗口和逐域保存结果。
-- 第一版角色切换与受控 Core 重启。
-- 历史分页。
-- 扩展诊断 Snapshot。
-- 首次设置流程。
+| WP | 对应能力 | 主要结果 | 强制退出证据 |
+|---|---|---|---|
+| WP-5-01 | CAP-018/019 | `core.*`/`desktop.*`/`ui.*`/`audio.*` 仓库、validate、change plan、原子保存 | 失败不产生半更新；Qt 可读数据不破坏；三平台路径/权限通过 |
+| WP-5-02 | CAP-020 | 设置窗口、逐域结果和首次设置 | 键盘/IME/焦点、密钥输入、失败恢复和重新打开状态一致 |
+| WP-5-03 | CAP-006/007/021 | 角色切换、Session、历史分页与受控重启 | 旧 generation/资源失效；角色、历史、Memory/TTS scope 不串线 |
+| WP-5-04 | CAP-022 | 托盘、置顶、快捷键、显示隐藏、开机启动 | Windows/macOS/Linux 原生行为、权限和重复注册/卸载通过 |
+| WP-5-05 | CAP-023/024 | 浏览器自动化与移动/本地桥接 | 浏览器树受控；端口/防火墙/鉴权安全；插件不拥有第二生命周期根 |
+| WP-5-06 | CAP-025 | 扩展诊断、Repair、安全重试、更新前置检查 | 三平台路径/日志/权限诊断；无自动下载；失败后仍可退出/回退 |
 
-### Phase 6 候选拆分
+### Phase 6：角色 Studio 等价
 
-- Workspace/Draft 数据模型。
-- 角色导入和校验。
-- 预览与运行中 Assistant 隔离。
-- 原子保存、发布和回滚。
-- 大文件 Operation 和故障恢复。
+| WP | 对应能力 | 主要结果 | 强制退出证据 |
+|---|---|---|---|
+| WP-6-01 | CAP-026 | Workspace/Draft 独立模型 | 草稿与运行数据隔离；schema/崩溃恢复通过 |
+| WP-6-02 | CAP-026/027 | 角色导入、资源和 schema 校验 | ZIP 路径安全、超大资源、错误编码和跨平台路径通过 |
+| WP-6-03 | CAP-026 | 预览与运行中 Assistant 隔离 | 预览不污染当前 generation、Memory、历史、插件和 TTS |
+| WP-6-04 | CAP-027 | 原子保存、发布和回滚 | 中断/磁盘失败/校验失败保留旧版本；Qt/Tauri 都可读取 |
+| WP-6-05 | CAP-027 | 大文件 Operation、取消和故障恢复 | progress 背压、取消、重启、临时文件和资源回收通过 |
 
-### Phase 7 候选拆分
+### Phase 7：三平台发布与功能等价总门禁
 
-- 完整 Python、Rust 和协议测试。
-- 真实 Tauri WebView E2E。
-- Windows DPI、多屏、IME、托盘、音频和截图验收。
-- Core、MCP、TTS、浏览器和更新链故障注入。
-- 长时间运行与重复启停。
-- 干净 Windows 安装和最终发布入口审查。
+| WP | 对应能力 | 主要结果 | 强制退出证据 |
+|---|---|---|---|
+| WP-7-01 | 全部 | 完整 Python/Rust/前端/协议和三平台 CI | required checks 全绿；无绕过或把 GUI crash 误判通过 |
+| WP-7-02 | CAP-001–029 | 三平台真实 Tauri WebView E2E | 平台 UI、IME、scale、多屏、托盘、音频、截图真实验收 |
+| WP-7-03 | CAP-001–030 | 产品功能等价与数据兼容总审查 | 台账逐行 parity-accepted/获批替代；Qt -> Tauri -> Qt 通过 |
+| WP-7-04 | CAP-028 | 打包、签名/notarization、更新、完整性、干净安装 | 三平台正式工件从零安装/更新/回退，包内 Python 唯一且受控 |
+| WP-7-05 | CAP-029 | soak、休眠恢复、重复启停和故障注入 | Core/MCP/TTS/browser/更新链无泄漏、死锁、数据损坏 |
+| WP-7-06 | 全部 | 最终发布审查与进入 `dev` 决策 | P0/P1=0；回退演练完成；项目负责人明确批准合并/发布 |
 
-## 11. 当前启动点
+## 13. 当前启动点
 
-当前没有 `active` 或 `stabilizing` Work Package。`WP-0-01` 至 `WP-1A-03` 均已 accepted；`WP-1A-04` 及后续 Work Package 继续为 `planned`。
+`WP-0-01` 至 `WP-1C-02` 已登记 accepted；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-下一步可以单独激活 WP-1A-04；本次没有开始 WP-1A-04。
+下一项且唯一允许激活的生产 Work Package 是 `WP-1P-01`。`WP-1C-03` 及全部后续 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
