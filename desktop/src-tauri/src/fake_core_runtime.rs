@@ -20,7 +20,9 @@ static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(all(test, windows))]
 use crate::{
-    core_supervisor::{CoreSupervisor, LifecycleAction, LifecycleIntent, SupervisorState},
+    core_supervisor::{
+        CoreSupervisor, FailureReason, LifecycleAction, LifecycleIntent, SupervisorState,
+    },
     managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
 };
 
@@ -30,6 +32,8 @@ enum FakeCoreMode {
     Normal,
     IgnoreShutdown,
     DelayedHello,
+    CrashWithDescendant,
+    InitializationHang,
 }
 
 #[cfg(all(test, windows))]
@@ -54,6 +58,28 @@ struct DelayedHelloShutdownOutcome {
     forced_tree_termination: bool,
     final_state: SupervisorState,
     tree_exited: bool,
+    fixture_directory_removed: bool,
+}
+
+#[cfg(all(test, windows))]
+#[derive(Debug)]
+struct RecoveryScenarioOutcome {
+    crashed_exit_code: u32,
+    restart_delay: Duration,
+    replacement_generation_number: u64,
+    old_generation_callback_accepted: bool,
+    old_tree_reclaimed: bool,
+    replacement_tree_reclaimed: bool,
+    fixture_directories_removed: bool,
+}
+
+#[cfg(all(test, windows))]
+#[derive(Debug)]
+struct InitializationHangOutcome {
+    initialization_was_pending: bool,
+    shutdown_acknowledged: bool,
+    root_exit_code: u32,
+    tree_reclaimed: bool,
     fixture_directory_removed: bool,
 }
 
@@ -113,9 +139,14 @@ fn spawn_fake_core(mode: FakeCoreMode) -> (ManagedProcessTree, FixtureDirectory)
     if directory.exists() {
         fs::remove_dir_all(&directory).expect("unique stale Fake Core directory should remove");
     }
+    let previous_directory = std::env::var_os(FIXTURE_DIRECTORY_ENV);
     std::env::set_var(FIXTURE_DIRECTORY_ENV, &directory);
     let spawn_result = ManagedProcessTree::spawn(&fake_core_spec(mode));
-    std::env::remove_var(FIXTURE_DIRECTORY_ENV);
+    if let Some(previous_directory) = previous_directory {
+        std::env::set_var(FIXTURE_DIRECTORY_ENV, previous_directory);
+    } else {
+        std::env::remove_var(FIXTURE_DIRECTORY_ENV);
+    }
     let tree = spawn_result.expect("Fake Core should spawn inside a managed Windows Job");
     (tree, FixtureDirectory::new(directory))
 }
@@ -126,6 +157,8 @@ fn fake_core_spec(mode: FakeCoreMode) -> ManagedProcessSpec {
         FakeCoreMode::Normal => "fixture_fake_core_normal",
         FakeCoreMode::IgnoreShutdown => "fixture_fake_core_ignores_shutdown",
         FakeCoreMode::DelayedHello => "fixture_fake_core_delays_hello",
+        FakeCoreMode::CrashWithDescendant => "fixture_fake_core_crashes_with_descendant",
+        FakeCoreMode::InitializationHang => "fixture_fake_core_initialization_hangs",
     };
     let mut spec = ManagedProcessSpec::new(
         std::env::current_exe().expect("current Rust test executable should resolve"),
@@ -377,6 +410,217 @@ fn run_delayed_hello_shutdown_scenario() -> DelayedHelloShutdownOutcome {
 }
 
 #[cfg(all(test, windows))]
+fn run_recovery_after_crash_scenario() -> RecoveryScenarioOutcome {
+    let mut supervisor = CoreSupervisor::new(0x1b04_c2a5_0000_0001);
+    let first_generation = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+        [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+        actions => panic!("crash recovery should start once: {actions:?}"),
+    };
+    let (mut crashed_tree, crashed_directory) = spawn_fake_core(FakeCoreMode::CrashWithDescendant);
+    assert!(wait_for_marker(
+        crashed_directory.path(),
+        "transport.ready",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    fs::write(crashed_directory.path().join("hello.request"), b"hello")
+        .expect("crashing Fake Core hello request should write");
+    assert!(wait_for_marker(
+        crashed_directory.path(),
+        "hello.response",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    assert!(wait_for_marker(
+        crashed_directory.path(),
+        "descendant.ready",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    assert_eq!(
+        supervisor.observe_spawn_succeeded(first_generation),
+        Some(SupervisorState::Running)
+    );
+    let crashed_exit_code = match crashed_tree
+        .wait(Duration::from_secs(3))
+        .expect("crashing Fake Core root wait should succeed")
+    {
+        WaitOutcome::Exited(code) => code,
+        WaitOutcome::TimedOut => panic!("crashing Fake Core root should exit before deadline"),
+    };
+    assert_eq!(crashed_exit_code, 37);
+    assert_eq!(
+        supervisor.observe_generation_failed(first_generation, FailureReason::UnexpectedExit),
+        vec![LifecycleAction::StopGeneration {
+            generation_id: first_generation,
+            reason: crate::core_supervisor::StopReason::Recovery,
+        }]
+    );
+    crashed_tree
+        .terminate_tree(94)
+        .expect("crashed Fake Core descendant should be force reclaimed");
+    let old_tree_reclaimed = crashed_tree
+        .verify_tree_exited(Duration::from_secs(5))
+        .expect("crashed Fake Core Job should query");
+    assert!(old_tree_reclaimed);
+    crashed_tree
+        .release_exited_handles()
+        .expect("crashed Fake Core handles should release");
+    let (restart_token, restart_delay) = match supervisor
+        .finalize_generation(first_generation)
+        .actions
+        .as_slice()
+    {
+        [LifecycleAction::ScheduleRestart { token, delay }] => (*token, *delay),
+        actions => panic!("crash cleanup should schedule one restart: {actions:?}"),
+    };
+    thread::sleep(restart_delay);
+    let (replacement_generation, replacement_generation_number) =
+        match supervisor.observe_restart_timer(restart_token).as_slice() {
+            [LifecycleAction::SpawnGeneration {
+                generation_id,
+                generation_number,
+                ..
+            }] => (*generation_id, *generation_number),
+            actions => panic!("restart timer should spawn replacement: {actions:?}"),
+        };
+    let old_generation_callback_accepted = supervisor.accepts_generation_callback(first_generation);
+
+    let (mut replacement_tree, replacement_directory) = spawn_fake_core(FakeCoreMode::Normal);
+    assert!(wait_for_marker(
+        replacement_directory.path(),
+        "transport.ready",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    fs::write(replacement_directory.path().join("hello.request"), b"hello")
+        .expect("replacement hello request should write");
+    assert!(wait_for_marker(
+        replacement_directory.path(),
+        "hello.response",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    assert_eq!(
+        supervisor.observe_spawn_succeeded(replacement_generation),
+        Some(SupervisorState::Running)
+    );
+    assert!(matches!(
+        supervisor.submit(LifecycleIntent::AppShutdown).as_slice(),
+        [LifecycleAction::StopGeneration { generation_id, .. }]
+            if *generation_id == replacement_generation
+    ));
+    fs::write(
+        replacement_directory.path().join("shutdown.request"),
+        b"shutdown",
+    )
+    .expect("replacement shutdown request should write");
+    assert!(wait_for_marker(
+        replacement_directory.path(),
+        "shutdown.ack",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    assert!(matches!(
+        replacement_tree
+            .wait(Duration::from_secs(5))
+            .expect("replacement root wait should succeed"),
+        WaitOutcome::Exited(0)
+    ));
+    let replacement_tree_reclaimed = replacement_tree
+        .verify_tree_exited(Duration::from_secs(5))
+        .expect("replacement Job should query");
+    assert!(replacement_tree_reclaimed);
+    replacement_tree
+        .release_exited_handles()
+        .expect("replacement handles should release");
+    assert!(supervisor
+        .finalize_generation(replacement_generation)
+        .actions
+        .is_empty());
+    let fixture_directories_removed = crashed_directory.remove() && replacement_directory.remove();
+
+    RecoveryScenarioOutcome {
+        crashed_exit_code,
+        restart_delay,
+        replacement_generation_number,
+        old_generation_callback_accepted,
+        old_tree_reclaimed,
+        replacement_tree_reclaimed,
+        fixture_directories_removed,
+    }
+}
+
+#[cfg(all(test, windows))]
+fn run_initialization_hang_shutdown_scenario() -> InitializationHangOutcome {
+    let mut supervisor = CoreSupervisor::new(0x1b04_1a17_0000_0001);
+    let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+        [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+        actions => panic!("initialization hang should start once: {actions:?}"),
+    };
+    let (mut tree, fixture_directory) = spawn_fake_core(FakeCoreMode::InitializationHang);
+    assert!(wait_for_marker(
+        fixture_directory.path(),
+        "transport.ready",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    fs::write(fixture_directory.path().join("hello.request"), b"hello")
+        .expect("initialization hang hello request should write");
+    assert!(wait_for_marker(
+        fixture_directory.path(),
+        "hello.response",
+        Instant::now() + Duration::from_secs(3),
+    ));
+    assert_eq!(
+        supervisor.observe_spawn_succeeded(generation_id),
+        Some(SupervisorState::Running)
+    );
+    let initialization_was_pending = wait_for_marker(
+        fixture_directory.path(),
+        "initialization.pending",
+        Instant::now() + Duration::from_secs(3),
+    );
+    assert!(initialization_was_pending);
+    assert!(matches!(
+        supervisor.submit(LifecycleIntent::AppShutdown).as_slice(),
+        [LifecycleAction::StopGeneration {
+            generation_id: stopped_id,
+            ..
+        }] if *stopped_id == generation_id
+    ));
+    fs::write(
+        fixture_directory.path().join("shutdown.request"),
+        b"shutdown",
+    )
+    .expect("initialization hang shutdown request should write");
+    let shutdown_acknowledged = wait_for_marker(
+        fixture_directory.path(),
+        "shutdown.ack",
+        Instant::now() + Duration::from_secs(3),
+    );
+    let root_exit_code = match tree
+        .wait(Duration::from_secs(5))
+        .expect("initialization hang root wait should succeed")
+    {
+        WaitOutcome::Exited(code) => code,
+        WaitOutcome::TimedOut => panic!("initialization hang root should exit before deadline"),
+    };
+    let tree_reclaimed = tree
+        .verify_tree_exited(Duration::from_secs(5))
+        .expect("initialization hang Job should query");
+    assert!(tree_reclaimed);
+    tree.release_exited_handles()
+        .expect("initialization hang handles should release");
+    assert!(supervisor
+        .finalize_generation(generation_id)
+        .actions
+        .is_empty());
+    let fixture_directory_removed = fixture_directory.remove();
+
+    InitializationHangOutcome {
+        initialization_was_pending,
+        shutdown_acknowledged,
+        root_exit_code,
+        tree_reclaimed,
+        fixture_directory_removed,
+    }
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use std::{
         fs, thread,
@@ -385,6 +629,7 @@ mod tests {
 
     use super::{
         next_fake_core_directory, run_delayed_hello_shutdown_scenario, run_fake_core_scenario,
+        run_initialization_hang_shutdown_scenario, run_recovery_after_crash_scenario,
         wait_for_marker, FakeCoreMode, FixtureDirectory,
     };
     use crate::core_supervisor::SupervisorState;
@@ -458,6 +703,30 @@ mod tests {
             Instant::now(),
         ));
         assert!(fixture_directory.remove());
+    }
+
+    #[test]
+    fn crashed_fake_core_with_descendant_restarts_without_old_tree_or_callback() {
+        let outcome = run_recovery_after_crash_scenario();
+
+        assert_eq!(outcome.crashed_exit_code, 37);
+        assert_eq!(outcome.restart_delay, Duration::from_millis(250));
+        assert_eq!(outcome.replacement_generation_number, 2);
+        assert!(!outcome.old_generation_callback_accepted);
+        assert!(outcome.old_tree_reclaimed);
+        assert!(outcome.replacement_tree_reclaimed);
+        assert!(outcome.fixture_directories_removed);
+    }
+
+    #[test]
+    fn initialization_hang_does_not_block_shutdown_or_tree_reclamation() {
+        let outcome = run_initialization_hang_shutdown_scenario();
+
+        assert!(outcome.initialization_was_pending);
+        assert!(outcome.shutdown_acknowledged);
+        assert_eq!(outcome.root_exit_code, 0);
+        assert!(outcome.tree_reclaimed);
+        assert!(outcome.fixture_directory_removed);
     }
 
     #[test]
@@ -561,5 +830,94 @@ mod tests {
         }
         fs::write(directory.join("shutdown.ack"), b"ack")
             .expect("shutdown ack should write after delayed hello");
+    }
+
+    #[test]
+    #[ignore = "test-process fixture; launched by WP-1B-04 crash recovery tests"]
+    fn fixture_fake_core_crashes_with_descendant() {
+        let directory = super::fixture_directory_from_environment();
+        if directory.exists() {
+            fs::remove_dir_all(&directory).expect("stale crash fixture directory should remove");
+        }
+        fs::create_dir_all(&directory).expect("crash fixture directory should create");
+        fs::write(directory.join("transport.ready"), b"ready")
+            .expect("crash fixture transport marker should write");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !directory.join("hello.request").exists() {
+            assert!(Instant::now() < deadline, "crash fixture hello deadline");
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(directory.join("hello.response"), b"hello")
+            .expect("crash fixture hello response should write");
+        let descendant = std::process::Command::new(
+            std::env::current_exe().expect("crash fixture executable should resolve"),
+        )
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("fake_core_runtime::tests::fixture_fake_core_descendant_holds")
+        .arg("--nocapture")
+        .spawn()
+        .expect("crash fixture descendant should spawn");
+        fs::write(
+            directory.join("descendant.pid"),
+            descendant.id().to_string(),
+        )
+        .expect("crash fixture descendant PID should write");
+        while !directory.join("descendant.ready").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "crash fixture descendant readiness deadline"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        std::mem::forget(descendant);
+        std::process::exit(37);
+    }
+
+    #[test]
+    #[ignore = "test-process fixture; descendant held for Job reclamation"]
+    fn fixture_fake_core_descendant_holds() {
+        let directory = super::fixture_directory_from_environment();
+        fs::write(directory.join("descendant.ready"), b"ready")
+            .expect("descendant ready marker should write");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("descendant fixture reached its independent deadline");
+    }
+
+    #[test]
+    #[ignore = "test-process fixture; launched by WP-1B-04 initialization hang tests"]
+    fn fixture_fake_core_initialization_hangs() {
+        let directory = super::fixture_directory_from_environment();
+        if directory.exists() {
+            fs::remove_dir_all(&directory)
+                .expect("stale initialization fixture directory should remove");
+        }
+        fs::create_dir_all(&directory).expect("initialization fixture directory should create");
+        fs::write(directory.join("transport.ready"), b"ready")
+            .expect("initialization fixture transport marker should write");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !directory.join("hello.request").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "initialization fixture hello deadline"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(directory.join("hello.response"), b"hello")
+            .expect("initialization fixture hello response should write");
+        fs::write(directory.join("initialization.pending"), b"pending")
+            .expect("initialization pending marker should write");
+        while !directory.join("shutdown.request").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "initialization fixture shutdown deadline"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(directory.join("shutdown.ack"), b"ack")
+            .expect("initialization fixture shutdown ack should write");
     }
 }

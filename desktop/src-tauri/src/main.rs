@@ -6,6 +6,8 @@ mod core_supervisor;
 mod fake_core_runtime;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
+#[cfg(all(windows, debug_assertions))]
+mod phase_1b_runtime_acceptance;
 mod shared_instance;
 mod window_geometry;
 mod window_interaction;
@@ -307,6 +309,11 @@ fn show_startup_message(title: &str, body: &str, _fatal: bool) {
 }
 
 fn main() {
+    #[cfg(all(windows, debug_assertions))]
+    if phase_1b_runtime_acceptance::run_fake_core_child_if_requested() {
+        return;
+    }
+
     let _instance_guard = match SharedInstanceGuard::acquire() {
         AcquireOutcome::Acquired(guard) => guard,
         AcquireOutcome::AlreadyRunning => {
@@ -334,7 +341,7 @@ fn main() {
         LAYOUT_CONTRACT_JSON.len(),
     );
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(Mutex::new(WindowGeometrySession::default()))
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
@@ -342,8 +349,41 @@ fn main() {
             set_pet_visible,
             close_pet_window
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Sakura Runtime v2 pet geometry gate");
+        .build(tauri::generate_context!())
+        .expect("failed to build Sakura Runtime v2 pet geometry gate");
+
+    #[cfg(all(windows, debug_assertions))]
+    let mut phase_1b_acceptance =
+        match phase_1b_runtime_acceptance::AcceptanceSession::start_if_requested() {
+            Ok(session) => session,
+            Err(error) => {
+                show_startup_message("Sakura Phase 1B 验收启动失败", &error, true);
+                std::process::exit(2);
+            }
+        };
+
+    #[cfg(all(windows, debug_assertions))]
+    if let Some(session) = phase_1b_acceptance.take() {
+        let shutdown = session.shutdown_signal();
+        let exit_code = app.run_return(move |_app_handle, event| match event {
+            tauri::RunEvent::Exit
+            | tauri::RunEvent::ExitRequested { .. }
+            | tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. },
+                ..
+            } => shutdown.request(),
+            _ => {}
+        });
+        session
+            .shutdown_and_join()
+            .expect("Phase 1B acceptance worker should stop without residuals");
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return;
+    }
+
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]

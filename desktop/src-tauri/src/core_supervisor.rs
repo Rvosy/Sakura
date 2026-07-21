@@ -5,7 +5,14 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Duration,
 };
+
+const AUTOMATIC_RESTART_BACKOFFS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenerationId(u128);
@@ -24,6 +31,7 @@ pub enum SupervisorState {
     Stopping,
     Exited,
     Restarting,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +39,7 @@ pub enum LifecycleIntent {
     Start,
     Stop,
     Restart,
+    Retry,
     AppShutdown,
 }
 
@@ -38,7 +47,45 @@ pub enum LifecycleIntent {
 pub enum StopReason {
     User,
     Restart,
+    Recovery,
     AppShutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RestartToken(u64);
+
+impl RestartToken {
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureReason {
+    UnexpectedExit,
+    TemporarySpawnFailure,
+    HelloTimeout,
+    InitializeTimeout,
+    ConnectionLost,
+    ProtocolMajorIncompatible,
+    MissingRequiredCapability,
+    SetupRequired,
+    DeterministicConfiguration,
+    DeterministicRuntime,
+    SecurityBoundary,
+}
+
+impl FailureReason {
+    pub fn is_automatically_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::UnexpectedExit
+                | Self::TemporarySpawnFailure
+                | Self::HelloTimeout
+                | Self::InitializeTimeout
+                | Self::ConnectionLost
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -97,6 +144,13 @@ pub enum LifecycleAction {
         generation_id: GenerationId,
         reason: StopReason,
     },
+    ScheduleRestart {
+        token: RestartToken,
+        delay: Duration,
+    },
+    CancelRestart {
+        token: RestartToken,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +172,9 @@ pub struct SupervisorSnapshot {
     pub current: Option<GenerationSnapshot>,
     pub app_shutdown: bool,
     pub restart_pending: bool,
+    pub automatic_restart_attempts: u8,
+    pub scheduled_restart: Option<RestartToken>,
+    pub last_failure: Option<FailureReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +191,11 @@ pub struct CoreSupervisor {
     current: Option<Generation>,
     app_shutdown: bool,
     restart_pending: bool,
+    automatic_restart_attempts: u8,
+    next_restart_token: u64,
+    scheduled_restart: Option<RestartToken>,
+    pending_failure: Option<FailureReason>,
+    last_failure: Option<FailureReason>,
     intents: VecDeque<LifecycleIntent>,
 }
 
@@ -146,6 +208,11 @@ impl CoreSupervisor {
             current: None,
             app_shutdown: false,
             restart_pending: false,
+            automatic_restart_attempts: 0,
+            next_restart_token: 0,
+            scheduled_restart: None,
+            pending_failure: None,
+            last_failure: None,
             intents: VecDeque::new(),
         }
     }
@@ -160,6 +227,9 @@ impl CoreSupervisor {
             }),
             app_shutdown: self.app_shutdown,
             restart_pending: self.restart_pending,
+            automatic_restart_attempts: self.automatic_restart_attempts,
+            scheduled_restart: self.scheduled_restart,
+            last_failure: self.last_failure,
         }
     }
 
@@ -217,6 +287,36 @@ impl CoreSupervisor {
         self.finalize_generation(generation_id).actions
     }
 
+    pub fn observe_generation_failed(
+        &mut self,
+        generation_id: GenerationId,
+        reason: FailureReason,
+    ) -> Vec<LifecycleAction> {
+        if self.app_shutdown
+            || self.current.as_ref().map(|generation| generation.id) != Some(generation_id)
+            || !matches!(
+                self.state,
+                SupervisorState::Spawning | SupervisorState::Running
+            )
+        {
+            return Vec::new();
+        }
+        self.pending_failure = Some(reason);
+        self.last_failure = Some(reason);
+        self.begin_stop(StopReason::Recovery)
+    }
+
+    pub fn observe_restart_timer(&mut self, token: RestartToken) -> Vec<LifecycleAction> {
+        if self.app_shutdown
+            || self.state != SupervisorState::Restarting
+            || self.scheduled_restart != Some(token)
+        {
+            return Vec::new();
+        }
+        self.scheduled_restart = None;
+        self.begin_spawn()
+    }
+
     pub fn finalize_generation(&mut self, generation_id: GenerationId) -> FinalizeOutcome {
         if self.current.as_ref().map(|generation| generation.id) != Some(generation_id) {
             return FinalizeOutcome {
@@ -229,17 +329,50 @@ impl CoreSupervisor {
             generation.cancellation.cancel();
         }
         self.current = None;
-        self.state = if completed_stop_workflow {
-            SupervisorState::Stopped
-        } else {
-            SupervisorState::Exited
-        };
-        if completed_stop_workflow && self.restart_pending && !self.app_shutdown {
+        if self.app_shutdown {
             self.restart_pending = false;
+            self.pending_failure = None;
+            self.state = SupervisorState::Stopped;
+            return FinalizeOutcome {
+                applied: true,
+                actions: Vec::new(),
+            };
+        }
+        if completed_stop_workflow && self.restart_pending {
+            self.restart_pending = false;
+            self.pending_failure = None;
             return FinalizeOutcome {
                 applied: true,
                 actions: self.begin_spawn(),
             };
+        }
+        if completed_stop_workflow {
+            if let Some(reason) = self.pending_failure.take() {
+                if reason.is_automatically_retryable()
+                    && usize::from(self.automatic_restart_attempts)
+                        < AUTOMATIC_RESTART_BACKOFFS.len()
+                {
+                    let delay =
+                        AUTOMATIC_RESTART_BACKOFFS[usize::from(self.automatic_restart_attempts)];
+                    self.automatic_restart_attempts += 1;
+                    self.next_restart_token += 1;
+                    let token = RestartToken(self.next_restart_token);
+                    self.scheduled_restart = Some(token);
+                    self.state = SupervisorState::Restarting;
+                    return FinalizeOutcome {
+                        applied: true,
+                        actions: vec![LifecycleAction::ScheduleRestart { token, delay }],
+                    };
+                }
+                self.state = SupervisorState::Failed;
+                return FinalizeOutcome {
+                    applied: true,
+                    actions: Vec::new(),
+                };
+            }
+            self.state = SupervisorState::Stopped;
+        } else {
+            self.state = SupervisorState::Exited;
         }
         FinalizeOutcome {
             applied: true,
@@ -250,7 +383,7 @@ impl CoreSupervisor {
     fn apply_intent(&mut self, intent: LifecycleIntent) -> Vec<LifecycleAction> {
         match intent {
             LifecycleIntent::Start => {
-                if self.app_shutdown || self.current.is_some() {
+                if self.app_shutdown || self.current.is_some() || self.scheduled_restart.is_some() {
                     Vec::new()
                 } else {
                     self.begin_spawn()
@@ -258,7 +391,10 @@ impl CoreSupervisor {
             }
             LifecycleIntent::Stop => {
                 self.restart_pending = false;
-                self.begin_stop(StopReason::User)
+                self.pending_failure = None;
+                let mut actions = self.cancel_scheduled_restart();
+                actions.extend(self.begin_stop(StopReason::User));
+                actions
             }
             LifecycleIntent::Restart => {
                 if self.app_shutdown {
@@ -267,15 +403,49 @@ impl CoreSupervisor {
                     self.restart_pending = true;
                     self.begin_stop(StopReason::Restart)
                 } else {
-                    self.begin_spawn()
+                    let mut actions = self.cancel_scheduled_restart();
+                    actions.extend(self.begin_spawn());
+                    actions
                 }
             }
+            LifecycleIntent::Retry => self.manual_retry(),
             LifecycleIntent::AppShutdown => {
                 self.app_shutdown = true;
                 self.restart_pending = false;
-                self.begin_stop(StopReason::AppShutdown)
+                self.pending_failure = None;
+                let mut actions = self.cancel_scheduled_restart();
+                actions.extend(self.begin_stop(StopReason::AppShutdown));
+                actions
             }
         }
+    }
+
+    fn manual_retry(&mut self) -> Vec<LifecycleAction> {
+        if self.app_shutdown {
+            return Vec::new();
+        }
+        if self.current.is_some() {
+            if self.state == SupervisorState::Stopping {
+                self.restart_pending = true;
+                self.pending_failure = None;
+                self.automatic_restart_attempts = 0;
+            }
+            return Vec::new();
+        }
+        self.pending_failure = None;
+        self.restart_pending = false;
+        self.automatic_restart_attempts = 0;
+        let mut actions = self.cancel_scheduled_restart();
+        actions.extend(self.begin_spawn());
+        actions
+    }
+
+    fn cancel_scheduled_restart(&mut self) -> Vec<LifecycleAction> {
+        let Some(token) = self.scheduled_restart.take() else {
+            return Vec::new();
+        };
+        self.state = SupervisorState::Stopped;
+        vec![LifecycleAction::CancelRestart { token }]
     }
 
     fn begin_spawn(&mut self) -> Vec<LifecycleAction> {
@@ -315,10 +485,12 @@ impl CoreSupervisor {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
     use std::time::Duration;
 
-    use super::{CoreSupervisor, LifecycleAction, LifecycleIntent, StopReason, SupervisorState};
+    use super::{
+        CoreSupervisor, FailureReason, LifecycleAction, LifecycleIntent, StopReason,
+        SupervisorState,
+    };
     #[cfg(windows)]
     use crate::managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome};
 
@@ -697,6 +869,255 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn retryable_failures_use_bounded_backoff_and_stop_after_three_attempts() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0001);
+        let mut generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        supervisor.observe_spawn_succeeded(generation_id);
+
+        for (attempt, expected_delay) in [
+            Duration::from_millis(250),
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                supervisor.observe_generation_failed(generation_id, FailureReason::UnexpectedExit,),
+                vec![LifecycleAction::StopGeneration {
+                    generation_id,
+                    reason: StopReason::Recovery,
+                }]
+            );
+            let scheduled = supervisor.finalize_generation(generation_id);
+            let token = match scheduled.actions.as_slice() {
+                [LifecycleAction::ScheduleRestart { token, delay }] if *delay == expected_delay => {
+                    *token
+                }
+                actions => panic!("attempt {attempt} should schedule bounded backoff: {actions:?}"),
+            };
+            assert_eq!(
+                supervisor.snapshot().automatic_restart_attempts,
+                (attempt + 1) as u8
+            );
+            generation_id = match supervisor.observe_restart_timer(token).as_slice() {
+                [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+                actions => panic!("current restart token should spawn once: {actions:?}"),
+            };
+            supervisor.observe_spawn_succeeded(generation_id);
+        }
+
+        assert_eq!(
+            supervisor.observe_generation_failed(generation_id, FailureReason::UnexpectedExit),
+            vec![LifecycleAction::StopGeneration {
+                generation_id,
+                reason: StopReason::Recovery,
+            }]
+        );
+        assert!(supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .is_empty());
+        assert_eq!(supervisor.snapshot().state, SupervisorState::Failed);
+        assert_eq!(supervisor.snapshot().automatic_restart_attempts, 3);
+    }
+
+    #[test]
+    fn app_shutdown_cancels_backoff_and_stale_timer_cannot_spawn() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0002);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor.observe_spawn_succeeded(generation_id);
+        let _ = supervisor.observe_generation_failed(generation_id, FailureReason::HelloTimeout);
+        let token = match supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .as_slice()
+        {
+            [LifecycleAction::ScheduleRestart { token, .. }] => *token,
+            actions => panic!("retryable hello timeout should schedule restart: {actions:?}"),
+        };
+
+        assert_eq!(
+            supervisor.submit(LifecycleIntent::AppShutdown),
+            vec![LifecycleAction::CancelRestart { token }]
+        );
+        assert!(supervisor.observe_restart_timer(token).is_empty());
+        assert_eq!(supervisor.snapshot().state, SupervisorState::Stopped);
+        assert!(supervisor.snapshot().app_shutdown);
+    }
+
+    #[test]
+    fn repeated_manual_retry_while_stopping_coalesces_and_resets_budget() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0003);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor.observe_spawn_succeeded(generation_id);
+        let _ = supervisor.observe_generation_failed(generation_id, FailureReason::UnexpectedExit);
+
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
+        let actions = supervisor.finalize_generation(generation_id).actions;
+        assert!(matches!(
+            actions.as_slice(),
+            [LifecycleAction::SpawnGeneration {
+                generation_number: 2,
+                ..
+            }]
+        ));
+        assert_eq!(supervisor.snapshot().automatic_restart_attempts, 0);
+    }
+
+    #[test]
+    fn deterministic_failure_never_auto_retries_but_manual_retry_can_start_once() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0004);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor.observe_spawn_succeeded(generation_id);
+        let _ = supervisor
+            .observe_generation_failed(generation_id, FailureReason::ProtocolMajorIncompatible);
+        assert!(supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .is_empty());
+        assert_eq!(supervisor.snapshot().state, SupervisorState::Failed);
+
+        let retry = supervisor.submit(LifecycleIntent::Retry);
+        assert!(matches!(
+            retry.as_slice(),
+            [LifecycleAction::SpawnGeneration {
+                generation_number: 2,
+                ..
+            }]
+        ));
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
+    }
+
+    #[test]
+    fn manual_retry_during_backoff_cancels_old_timer_before_spawning() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0005);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor.observe_spawn_succeeded(generation_id);
+        let _ = supervisor.observe_generation_failed(generation_id, FailureReason::ConnectionLost);
+        let token = match supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .as_slice()
+        {
+            [LifecycleAction::ScheduleRestart { token, .. }] => *token,
+            actions => panic!("connection loss should schedule restart: {actions:?}"),
+        };
+
+        let retry = supervisor.submit(LifecycleIntent::Retry);
+        assert!(matches!(
+            retry.as_slice(),
+            [
+                LifecycleAction::CancelRestart {
+                    token: cancelled_token
+                },
+                LifecycleAction::SpawnGeneration {
+                    generation_number: 2,
+                    ..
+                }
+            ] if *cancelled_token == token
+        ));
+        assert!(supervisor.observe_restart_timer(token).is_empty());
+        assert_eq!(supervisor.snapshot().automatic_restart_attempts, 0);
+    }
+
+    #[test]
+    fn explicit_restart_during_backoff_cancels_old_timer_without_resetting_budget() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0007);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor.observe_generation_failed(generation_id, FailureReason::HelloTimeout);
+        let token = match supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .as_slice()
+        {
+            [LifecycleAction::ScheduleRestart { token, .. }] => *token,
+            actions => panic!("hello timeout should schedule restart: {actions:?}"),
+        };
+
+        let restart = supervisor.submit(LifecycleIntent::Restart);
+        assert!(matches!(
+            restart.as_slice(),
+            [
+                LifecycleAction::CancelRestart {
+                    token: cancelled_token
+                },
+                LifecycleAction::SpawnGeneration {
+                    generation_number: 2,
+                    ..
+                }
+            ] if *cancelled_token == token
+        ));
+        assert!(supervisor.observe_restart_timer(token).is_empty());
+        assert_eq!(supervisor.snapshot().automatic_restart_attempts, 1);
+        assert!(supervisor.snapshot().scheduled_restart.is_none());
+    }
+
+    #[test]
+    fn failure_classification_matches_the_frozen_adr_boundary() {
+        for reason in [
+            FailureReason::UnexpectedExit,
+            FailureReason::TemporarySpawnFailure,
+            FailureReason::HelloTimeout,
+            FailureReason::InitializeTimeout,
+            FailureReason::ConnectionLost,
+        ] {
+            assert!(reason.is_automatically_retryable(), "{reason:?}");
+        }
+        for reason in [
+            FailureReason::ProtocolMajorIncompatible,
+            FailureReason::MissingRequiredCapability,
+            FailureReason::SetupRequired,
+            FailureReason::DeterministicConfiguration,
+            FailureReason::DeterministicRuntime,
+            FailureReason::SecurityBoundary,
+        ] {
+            assert!(!reason.is_automatically_retryable(), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn app_shutdown_during_recovery_stop_discards_a_queued_manual_retry() {
+        let mut supervisor = CoreSupervisor::new(0x1b04_0000_0000_0006);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        let _ = supervisor
+            .observe_generation_failed(generation_id, FailureReason::TemporarySpawnFailure);
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
+        assert!(supervisor.snapshot().restart_pending);
+
+        assert!(supervisor.submit(LifecycleIntent::AppShutdown).is_empty());
+        assert!(supervisor
+            .finalize_generation(generation_id)
+            .actions
+            .is_empty());
+        assert_eq!(supervisor.snapshot().state, SupervisorState::Stopped);
+        assert!(!supervisor.snapshot().restart_pending);
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
     }
 
     #[cfg(windows)]

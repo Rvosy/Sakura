@@ -1,7 +1,8 @@
 # ADR-0001：Runtime v2 进程监管
 
-> 状态：Proposed
+> 状态：Accepted
 > 日期：2026-07-15
+> 验证日期：2026-07-22
 > 适用范围：Tauri Runtime 对 Python Core 及其后代进程的生命周期管理
 
 ## 背景
@@ -200,6 +201,18 @@ deadline 从 Rust 侧发出对应意图并成功写入当前 generation transpor
 - 关闭和恢复具有确定 deadline。
 - Fake Core 故障矩阵通过。
 
+## Phase 1B 验证结论
+
+WP-1B-01 至 WP-1B-04 已在 Windows 11 23H2、x86_64-pc-windows-msvc、Rust/Cargo 1.96.0 和 Tauri 2.11.3 上完成实现审查与技术验证：
+
+- `ManagedProcessTree` 使用 suspended spawn，在恢复主线程前把每个 generation 加入独立 Windows Job Object；Job 建立或分配失败时安全终止尚未受监管的进程。
+- `CoreSupervisor` 是串行 generation 状态的唯一所有者；有限自动恢复最多 3 次，backoff 固定为 250ms、1s、3s，旧 generation 和旧 restart token 均不能改变当前状态。
+- Fake Core 自动矩阵覆盖正常关闭、spawn/hello/初始化占位阶段关闭、忽略关闭、崩溃并遗留后代、旧回调、手动 retry、重复意图、backoff 关闭和 Job 失败；最终自动结果为 63 passed、13 ignored fixture、0 failed。
+- 最终 debug Tauri 真实验收连续两轮覆盖可见窗口、pending hello 时主动退出和第三次 restart backoff 时主动退出；每轮根退出码为 0，计时器按合同取消，登记的 15/16 个根与后代身份、Job、worker、句柄、timer 和隔离临时目录均为零残留。
+- 两轮验收前后均对真实 `data/` 的 path、length、mtime 和 SHA-256 生成完整清单；121 个文件、1,045,983,998 bytes 的 canonical SHA-256 均保持 `300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b`。
+
+本结论验证进程监管机制和 Fake Core 边界，不代表真实 Python Core、业务 IPC、initialize/Snapshot 或任何领域能力已经接入；这些仍由后续工作包独立交付和回退。
+
 ## ADR 状态门禁
 
-本 ADR 在 Phase 1B 的 Windows Job Object、后代回收、竞态和 Fake Core 测试通过后，从 `Proposed` 更新为 `Technically Validated`，经实现审查后更新为 `Accepted`。验证失败时应修改或 Supersede 本 ADR，不得为迁就当前方案降低产品门禁。
+本 ADR 已在 Phase 1B 的 Windows Job Object、后代回收、竞态、Fake Core 测试和真实 Tauri 主动退出门禁通过并完成实现审查后更新为 `Accepted`。后续若真实 Core 接线推翻上述边界，应修改或 Supersede 本 ADR，不得为迁就当前实现降低产品门禁。

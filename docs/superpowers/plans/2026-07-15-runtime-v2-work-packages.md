@@ -59,7 +59,7 @@ Phase 4–7 只记录开始前必须采用的拆分主题，不在当前阶段�
 | WP-1B-01 | Windows 受控进程树原语 | WP-1A-04 | accepted |
 | WP-1B-02 | 串行 Supervisor 与 generation 生命周期 | WP-1B-01 | accepted |
 | WP-1B-03 | Fake Core 正常启动和关闭链 | WP-1B-02 | accepted |
-| WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | planned |
+| WP-1B-04 | Supervisor 恢复、竞态和进程泄漏门禁 | WP-1B-03 | stabilizing |
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | planned |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | planned |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1C-02 | planned |
@@ -1012,6 +1012,68 @@ P0/P1：零；退出条件相关缺陷为零；最终独立复审 Critical/Impor
 独立回退：回退 Fake Core transport 集成，保留 Supervisor 和进程树。
 
 ### WP-1B-04：Supervisor 恢复、竞态和进程泄漏门禁
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-21
+允许目录：desktop/src-tauri/src/core_supervisor.rs 中仅限有限自动恢复 budget/backoff、可重试/不可重试失败分类占位、手动 retry、定时器 token 与竞态归约及同文件测试；desktop/src-tauri/src/fake_core_runtime.rs 中仅限扩展 WP-1B-04 Fake Core 崩溃/卡死/后代/旧 generation/重复恢复集成夹具；desktop/src-tauri/src/main.rs 中仅限声明并接入 debug-only Phase 1B 验收模式及 Tauri 退出事件清场；desktop/src-tauri/src/phase_1b_runtime_acceptance.rs 中仅限 debug-only 真实 Tauri + Fake Core 验收桥；desktop/tests/ 中仅限 WP-1B-04 Windows 恢复与真实 Tauri 验收脚本；docs/adr/0001-runtime-v2-process-supervision.md 仅更新技术验证证据和状态；本文仅更新 WP-1B-04 状态、设计裁定与验收记录
+明确禁止目录：Cargo.toml/Cargo.lock 与依赖；managed_process_tree.rs 和 WP-1B-01 既有原语；shared_instance.rs、window_geometry.rs、window_interaction.rs、desktop/frontend/；main.py、legacy_qt_main.py、start*.bat、app/、plugins/、data/、runtime/、characters/、third_party/、tools/mcp/、共享 schema；真实 Python Core、app.core_host、业务 IPC Envelope/stdio/Router、initialize/Snapshot、Assistant、聊天、设置、TTS、Tools、MCP、Memory、插件、截图、主动互动或 WP-1C 及后续能力
+验收环境：当前 Windows 11 23H2 build 22631.4890 x64；x86_64-pc-windows-msvc；Rust/Cargo 1.96.0；Tauri 2.11.3；不安装或升级依赖；恢复状态机使用确定性逻辑时间验证 250ms/1s/3s 有限 backoff 和最多 3 次自动重启；真实进程/窗口验收使用 debug Tauri 与隔离系统临时目录，外层 deadline 60 秒，单次 shutdown 3 秒、整树停止 5 秒；每轮 finally 核对 Tauri 根、WebView、Fake Core 根/后代、Job 句柄、worker、timer 和临时目录零残留；真实 data/ 如被真实 Tauri 入口触及则执行前后完整 path/length/mtime/SHA-256 清单并证明零变化
+关联 ADR：ADR-0001（有限 budget/backoff、失败分类、manual retry、spawn/hello/running/stopping/backoff shutdown/retry 竞态、旧 generation 隔离、真实 Tauri 主动退出和完整故障矩阵）；ADR-0002 仅沿用 test-only hello marker 和 lifecycle deadline，不冻结业务协议或提升其状态
+计划提交：feat(runtime): 完成 Supervisor 恢复与进程泄漏门禁
+回退方式：整体 git revert 本 WP accepted 提交，移除恢复策略、扩展 Fake Core 夹具、debug-only Phase 1B Tauri 验收桥和验收脚本，并把 ADR-0001 恢复至 Proposed；保留 WP-1B-01/02/03 的受控进程树、串行 generation 状态机和单次 Fake Core 启停链，不触碰真实 Python、Shell 既有业务语义、data/ 或用户进程
+```
+
+实现设计裁定：Supervisor 保持唯一同步可变状态所有者，不在线程内自行 sleep。可重试失败在旧 generation 完整回收后发出带唯一 token 的 ScheduleRestart action；外部有界 timer 到期后把同一 token 回送，旧 token 永远无效。自动恢复每个 episode 最多 3 次，backoff 固定为 250ms、1s、3s；成功进入 Running 不立即补满 budget，避免“启动成功后立刻崩溃”形成无限循环；只有显式 manual retry 开启新 episode。不可自动重试分类进入 Failed，但仍允许外部状态修复后的 manual retry。AppShutdown 永久取消 backoff 并禁止新 generation；stopping 期间的连续 retry 合并为一个；旧 generation/timer/callback 只完成自身清理。真实 Tauri 组合证据通过 debug-only、显式环境门控的验收桥接入，不改变 release 正常入口，不创建真实 Core Host，也不让 WebView 直接持有或操作 ManagedProcessTree。
+
+稳定化记录：
+
+```text
+状态：stabilizing
+进入日期：2026-07-21
+生产实现：CoreSupervisor 新增结构化 FailureReason、Failed 状态、最多 3 次自动恢复 budget、250ms/1s/3s ScheduleRestart、唯一 RestartToken、CancelRestart、manual Retry 与停止/回退竞态归约；timer 由外部 worker 驱动，Supervisor 内部不 sleep；成功进入 Running 不重置 budget，显式 manual retry 才开启新 episode
+Fake Core 实现：扩展 test-only 崩溃并遗留后代、初始化占位卡住、旧 generation 回调和恢复后正常退出场景；崩溃根以 37 退出，旧 Job 后代以原因码 94 强制回收，250ms 后创建 generation 2，最后通过 AppShutdown 正常回收
+真实 Tauri 验收桥：新增仅 Windows debug_assertions 编译、显式系统临时目录与 mode 环境门控的 phase_1b_runtime_acceptance；Fake Core child 在共享应用锁前分流；父 worker 覆盖 pending hello 关闭和连续三次崩溃后的 3 秒 backoff 关闭；Tauri event loop 退出后取消 worker、协议关闭/Job 清场、join 后根进程才结束；release 正常入口不包含该模块
+TDD RED/GREEN：恢复测试先因 FailureReason/Retry/ScheduleRestart/CancelRestart/Failed 缺失编译失败后转绿；显式 Restart during backoff 首次真实失败为旧 timer 未取消，最小修复为先 CancelRestart 再 spawn 后转绿；崩溃后代与初始化卡死测试先因场景 helper 缺失编译失败后转绿；真实 Tauri 入口先因 phase_1b_runtime_acceptance 模块缺失编译失败，最小桥接后 cargo check 转绿
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 当前为 63 passed、13 ignored fixture、0 failed；debug cargo check/build 与 release cargo build --locked 通过；PowerShell 验收脚本 parser 通过；本 WP Fake Core 定向验收后测试 exe 和 WP-1B-03/04 系统临时 marker 目录残留均为 0；广域复扫另发现早期 WP-1B-01 孤立目录 sakura-runtime-v2-wp-1b-01-46064，仅含 descendant-pids.txt 且无关联进程，精确删除请求同样被当前权限审查用量额度拒绝而未执行
+故障矩阵：覆盖 retryable/non-retryable 分类、budget 耗尽、Running 后立即再崩溃不补 budget、manual retry 重置 episode、连续 retry 合并、stopping/backoff 中 shutdown、旧 timer、显式 restart 取消旧 timer、旧 generation 回调、spawn/hello/初始化占位阶段 shutdown、运行中崩溃、忽略 shutdown、根退出且后代存活、Job 建立/恢复失败与重复 release（含累计 WP-1B-01/02/03 证据）
+真实应用验收：debug Tauri 自动验收脚本已实现 source freshness、真实可见窗口、WM_CLOSE、pending hello、第三次 restart backoff、根/后代/精确路径进程清场、隔离临时目录清场和真实 data/ 前后完整清单；首次执行请求被桌面权限审查器因当前用量额度拒绝，命令未启动、data/ 未被该请求触及，不能宣称通过
+P0/P1：当前自动门禁未发现 P0/P1；真实 Tauri/实机退出条件证据缺失，因此保持 stabilizing，不更新 ADR-0001 状态、不提交、不开始 WP-1C-01
+已知限制：真实 Tauri 验收脚本仍需在获得显式 GUI 执行权限后实际运行并接受审查；早期 WP-1B-01 孤立系统临时目录需在获得删除权限后精确清理并复扫；debug-only 环境门控桥将在 Phase 1C 真实 Core 接线后移除，当前只服务 Phase 1B 可回退门禁
+回退步骤：整体 revert 本 WP accepted 提交；当前尚未提交时可仅移除 recovery 增量、phase_1b_runtime_acceptance.rs、main.rs debug 接线、WP-1B-04 Fake Core 增量与验收脚本；保留 WP-1B-01/02/03，不触碰真实 Python、release 正常入口或 data/
+关联提交：待 accepted 后提交
+```
+
+真实验收停止记录（2026-07-22，追加且不覆盖上文历史）：
+
+```text
+状态：stabilizing
+恢复前清场：经项目负责人再次要求继续并明确授权后，已精确删除早期 WP-1B-01 孤立系统临时目录 sakura-runtime-v2-wp-1b-01-46064；删除前再次验证其只含 descendant-pids.txt，删除后 Runtime v2 系统临时目录广域复扫为 0
+真实执行：desktop/tests/windows_supervisor_recovery_acceptance.ps1 已实际启动首个 pending-hello debug Tauri 场景；真实窗口出现并达到 acceptance.pending_hello 后，脚本发送 WM_CLOSE，但 Tauri 根进程在 10 秒 deadline 内未退出，验收于脚本第 257 行以 “Tauri root did not exit before deadline” 失败；restart-backoff 场景未开始
+安全清场：失败路径 finally 已停止并复扫精确 debug Tauri/Fake Core 路径和登记身份；最终 debug 根/后代进程为 0，WP-1B-04 系统临时目录为 0
+数据门禁：temp/runtime-v2-wp-1b-04/final-real-a-20260722/data-before.json 与 data-after.json 各含 121 个文件、1,045,983,998 bytes；canonical SHA-256 前后均为 300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b，证明真实 data/ 零变化
+停止原因：命中真实 Tauri 无法有界退出的 P1/强制停止条件；不继续重试、不把脚本 finally 强杀当作通过、不标记 accepted、不更新 ADR-0001、不提交 WP-1B-04，也不开始 WP-1C-01
+关联提交：无，WP-1B-04 保持未提交 stabilizing 工作区
+```
+
+修复与接受记录（2026-07-22，追加且保留以上失败证据）：
+
+```text
+状态：accepted
+根因：失败包含两层独立原因。其一，Tauri 2.11.3 的 App::run 在事件循环结束时直接 process::exit，原设计放在 Builder::run 返回后的 acceptance worker cancellation/join 永远不可达；其二，真实验收脚本按 PID 选择第一个可见顶层窗口，在 WebView2 多窗口实现下可能把 WM_CLOSE 发给非 Tauri 主窗口，因此 CloseRequested 根本没有到达 event loop。根退出后立即检查后代还暴露了一个观测竞态：WebView2 后代需要短暂自然收敛，但原脚本没有使用既定的 5 秒进程树 deadline
+最小修复：仅在 Windows debug_assertions 且显式 Phase 1B acceptance 环境门控生效时使用 App::run_return；CloseRequested、ExitRequested 和 Exit 立即发出可克隆 cancellation signal，event loop 返回后有界 join worker并保留真实退出码；普通 debug/release 入口继续 App::run。acceptance worker 只在 Tauri build 成功后启动，构建失败不会留下未 join 线程。脚本按 tauri.conf 中精确窗口标题选择主窗口，超时保留同 PID 可见窗口和 marker 诊断，并在根退出后按 5 秒 deadline 等待登记后代自然收敛，超时仍失败且记录精确身份，不以 finally 强杀冒充通过
+TDD RED/GREEN：既有 final-real-a 首次真实 RED 为 pending hello 已建立且窗口可见，但 WM_CLOSE 后根进程 10 秒不退出；加入 run_return 后诊断 RED 证明 acceptance.shutdown_requested/cleaned 均不存在，从而定位错误窗口句柄；按精确标题选择后根退出码转为 0，随后即时后代检查 RED 暴露观测竞态；加入有界自然收敛等待后同一脚本完整转绿。所有失败轮均由 finally 精确清场，保留日志并证明 data/ 零变化
+自动测试：cargo fmt --check 通过；cargo test --locked -- --test-threads=1 为 63 passed、13 ignored fixture、0 failed；cargo build --locked 与 cargo build --locked --release 均通过；PowerShell parser 通过；git diff --check 通过
+故障测试：retryable/non-retryable、最多 3 次自动恢复、250ms/1s/3s backoff、Running 后立即崩溃不补 budget、manual retry、新旧 timer/token/generation 隔离、spawn/hello/初始化占位/backoff shutdown、忽略 shutdown、崩溃后代、Job 建立/恢复失败、重复 stop/finalize/release 全部通过；pending hello 关闭优先于迟到 hello，第三次 backoff 关闭确认 CancelRestart 且旧 timer 不产生 generation
+真实应用验收：最终源码与 debug 可执行文件 source freshness 一致；final-accepted-a-20260722 与 final-accepted-b-20260722 两轮各 2/2 场景通过。每轮真实 Tauri 主窗口均可见并由 WM_CLOSE 关闭，pending-hello 与 restart-backoff 根退出码均为 0，后者 timerCancelled=true；两轮分别登记 15/16 个根与后代身份，最终 Tauri/Fake Core 根、WebView/后代、Job、worker、句柄、timer 和系统临时运行目录均为 0
+数据门禁：两轮 data-before.json/data-after.json 各为 121 个文件、1,045,983,998 bytes；path/length/mtime/SHA-256 canonical hash 前后均为 300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b，真实 data/ 零变化
+实现审查：允许目录与明确禁止目录复核通过；release 不编译 acceptance 模块；未修改依赖、managed_process_tree.rs、legacy Qt、共享 schema 或领域模块；未接入真实 Python Core、业务 IPC 或后续阶段能力；P0/P1 为零，退出条件相关缺陷为零，Critical/Important 审查问题为零
+已知限制：debug-only acceptance 桥只验证 Phase 1B 监管和 Tauri 共存边界，将在真实 Core 接线后移除；精确窗口标题由验收脚本与当前 tauri.conf 同步维护，漂移时 source/readiness 门禁会安全失败；真实 Python Core、initialize/Snapshot 和业务 Envelope 仍未实现
+独立回退方式：整体 git revert 本 WP accepted 提交，移除恢复策略、扩展 Fake Core 夹具、debug-only acceptance 桥和真实验收脚本，并把 ADR-0001 恢复为 Proposed；保留 WP-1B-01/02/03 的受控进程树、串行 generation 和单次 Fake Core 启停链，不触碰真实 Python、legacy Qt、data/ 或用户进程
+关联提交：本 WP accepted 提交（feat(runtime): 完成 Supervisor 恢复与进程泄漏门禁）
+```
 
 主要结果：完成 ADR-0001 所需的有限重启、手动重试、竞态和完整故障矩阵。
 
