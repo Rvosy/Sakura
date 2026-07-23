@@ -318,6 +318,11 @@ fn show_startup_message(title: &str, body: &str, _fatal: bool) {
 }
 
 fn main() {
+    #[cfg(unix)]
+    if platform::run_guardian_if_requested() {
+        return;
+    }
+
     #[cfg(all(windows, debug_assertions))]
     if phase_1b_runtime_acceptance::run_fake_core_child_if_requested() {
         return;

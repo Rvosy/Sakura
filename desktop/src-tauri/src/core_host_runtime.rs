@@ -13,8 +13,11 @@ use serde_json::{json, Value};
 
 use crate::{
     core_host_protocol::{read_frame, write_frame, PROTOCOL_MAJOR, PROTOCOL_MINOR},
-    managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
-    platform::RuntimeLayout,
+    platform::{
+        ManagedProcessRequest, ManagedProcessTree, ManagedProcessTreeBackend,
+        NativeManagedProcessTreeBackend, ProcessExitStatus, ProcessStdio, ProcessWaitOutcome,
+        RuntimeLayout,
+    },
 };
 
 const CONTROL_PRIORITY: &str = "control";
@@ -121,9 +124,8 @@ pub struct CoreHostExit {
     pub stderr: String,
 }
 
-#[derive(Debug)]
 pub struct CoreHostRuntime {
-    tree: ManagedProcessTree,
+    tree: Box<dyn ManagedProcessTree>,
     stdin: Option<File>,
     stdout: Option<File>,
     stderr: Option<File>,
@@ -132,23 +134,56 @@ pub struct CoreHostRuntime {
     snapshot_cache: CoreSnapshotCache,
 }
 
+impl std::fmt::Debug for CoreHostRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CoreHostRuntime")
+            .field("root_pid", &self.tree.root_pid())
+            .field("generation_id", &self.generation_id)
+            .field("deadline_forced", &self.deadline_forced)
+            .field("snapshot_cache", &self.snapshot_cache)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CoreHostRuntime {
     pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
+        Self::launch_with_backend(
+            &NativeManagedProcessTreeBackend,
+            ManagedProcessRequest {
+                program: layout.python_executable.clone(),
+                args: vec![
+                    "-m".into(),
+                    layout.core_module.clone().into(),
+                    "--generation-id".into(),
+                    generation_id.into(),
+                    "--generation-number".into(),
+                    "1".into(),
+                ],
+                current_directory: Some(layout.application_root.clone()),
+                environment_overrides: Vec::new(),
+                stdio: ProcessStdio::Piped,
+            },
+            generation_id,
+        )
+    }
+
+    fn launch_with_backend(
+        backend: &dyn ManagedProcessTreeBackend,
+        request: ManagedProcessRequest,
+        generation_id: &str,
+    ) -> Result<Self, String> {
         if generation_id.trim().is_empty() {
             return Err("Core Host generation ID must not be empty".to_string());
         }
-        let mut spec = ManagedProcessSpec::new(&layout.python_executable);
-        spec.arg("-m")
-            .arg(&layout.core_module)
-            .arg("--generation-id")
-            .arg(generation_id)
-            .arg("--generation-number")
-            .arg("1")
-            .current_dir(&layout.application_root);
-        let (tree, pipes) = ManagedProcessTree::spawn_piped(&spec)
+        let spawned = backend
+            .spawn(&request)
             .map_err(|error| format!("Core Host managed spawn failed: {error}"))?;
+        let pipes = spawned
+            .pipes
+            .ok_or_else(|| "Core Host managed spawn returned no pipes".to_string())?;
         Ok(Self {
-            tree,
+            tree: spawned.tree,
             stdin: Some(pipes.stdin),
             stdout: Some(pipes.stdout),
             stderr: Some(pipes.stderr),
@@ -165,23 +200,21 @@ impl CoreHostRuntime {
         script: &Path,
         generation_id: &str,
     ) -> Result<Self, String> {
-        let mut spec = ManagedProcessSpec::new(python);
-        spec.arg(script).current_dir(repo_root);
-        let (tree, pipes) = ManagedProcessTree::spawn_piped(&spec)
-            .map_err(|error| format!("Core Host fixture spawn failed: {error}"))?;
-        Ok(Self {
-            tree,
-            stdin: Some(pipes.stdin),
-            stdout: Some(pipes.stdout),
-            stderr: Some(pipes.stderr),
-            generation_id: generation_id.to_string(),
-            deadline_forced: false,
-            snapshot_cache: CoreSnapshotCache::new(generation_id)?,
-        })
+        Self::launch_with_backend(
+            &NativeManagedProcessTreeBackend,
+            ManagedProcessRequest {
+                program: python.to_path_buf(),
+                args: vec![script.as_os_str().to_owned()],
+                current_directory: Some(repo_root.to_path_buf()),
+                environment_overrides: Vec::new(),
+                stdio: ProcessStdio::Piped,
+            },
+            generation_id,
+        )
     }
 
     pub fn pid(&self) -> u32 {
-        self.tree.pid()
+        self.tree.root_pid()
     }
 
     pub fn request(
@@ -337,22 +370,22 @@ impl CoreHostRuntime {
         let mut forced = self.deadline_forced;
         let root_exit_code = match self
             .tree
-            .wait(stop_deadline)
+            .wait_root(stop_deadline)
             .map_err(|error| format!("Core Host root wait failed: {error}"))?
         {
-            WaitOutcome::Exited(code) => code,
-            WaitOutcome::TimedOut => {
+            ProcessWaitOutcome::Exited(status) => process_exit_code(status),
+            ProcessWaitOutcome::TimedOut => {
                 forced = true;
                 self.tree
                     .terminate_tree(DEADLINE_EXIT_CODE)
                     .map_err(|error| format!("Core Host forced cleanup failed: {error}"))?;
                 match self
                     .tree
-                    .wait(Duration::from_secs(5))
+                    .wait_root(Duration::from_secs(5))
                     .map_err(|error| format!("Core Host forced root wait failed: {error}"))?
                 {
-                    WaitOutcome::Exited(code) => code,
-                    WaitOutcome::TimedOut => {
+                    ProcessWaitOutcome::Exited(status) => process_exit_code(status),
+                    ProcessWaitOutcome::TimedOut => {
                         return Err("Core Host root survived forced cleanup".to_string())
                     }
                 }
@@ -360,7 +393,7 @@ impl CoreHostRuntime {
         };
         let tree_empty = self
             .tree
-            .verify_tree_exited(Duration::from_secs(5))
+            .wait_tree_exited(Duration::from_secs(5))
             .map_err(|error| format!("Core Host Job verification failed: {error}"))?;
         if !tree_empty {
             return Err("Core Host Job retained active processes".to_string());
@@ -376,7 +409,7 @@ impl CoreHostRuntime {
                 .map_err(|error| format!("Core Host stderr read failed: {error}"))?;
         }
         self.tree
-            .release_exited_handles()
+            .release_exited()
             .map_err(|error| format!("Core Host handle release failed: {error}"))?;
         if !trailing_stdout.is_empty() {
             return Err("Core Host wrote unexpected trailing stdout bytes".to_string());
@@ -387,6 +420,16 @@ impl CoreHostRuntime {
             forced,
             stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
         })
+    }
+}
+
+fn process_exit_code(status: ProcessExitStatus) -> u32 {
+    match status {
+        ProcessExitStatus::Code(code) => u32::try_from(code).unwrap_or(u32::MAX),
+        ProcessExitStatus::Signal(signal) => {
+            128_u32.saturating_add(u32::try_from(signal).unwrap_or_default())
+        }
+        ProcessExitStatus::Unknown => u32::MAX,
     }
 }
 

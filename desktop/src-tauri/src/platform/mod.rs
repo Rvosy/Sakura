@@ -5,6 +5,7 @@
 
 mod contracts;
 mod error;
+mod process_tree_backend;
 mod runtime_locator;
 mod target;
 
@@ -14,6 +15,8 @@ mod target;
 pub use contracts::*;
 #[allow(unused_imports)]
 pub use error::*;
+#[allow(unused_imports)]
+pub use process_tree_backend::*;
 #[allow(unused_imports)]
 pub use runtime_locator::*;
 #[allow(unused_imports)]

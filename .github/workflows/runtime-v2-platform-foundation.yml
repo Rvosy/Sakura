@@ -115,6 +115,10 @@ jobs:
           python --version
           uname -a || true
 
+      - name: Build the native Tauri Shell before guardian tests
+        working-directory: desktop
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
       - name: Download and verify the pinned Python archive
         shell: bash
         run: |
@@ -161,13 +165,20 @@ jobs:
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked shared_instance::
 
+      - name: Run native managed process tree backend tests
+        if: runner.os != 'Windows'
+        working-directory: desktop
+        shell: bash
+        env:
+          SAKURA_RUNTIME_V2_TEST_PYTHON: ${{ github.workspace }}/runtime/bin/python3
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          platform::process_tree_backend::tests::posix_
+          -- --nocapture
+
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked
           platform::runtime_locator::tests::staged_repository_runtime_is_an_explicit_development_layout
           -- --ignored --exact
-
-      - name: Compile the native Tauri Shell
-        working-directory: desktop
-        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
