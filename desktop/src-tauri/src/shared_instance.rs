@@ -429,6 +429,7 @@ mod unix_tests {
             .arg("tests/fixtures/runtime_v2/wp_1p_03/python_lock_probe.py")
             .arg(mode)
             .current_dir(repository_root())
+            .env("PYTHONPATH", repository_root())
             .env("HOME", root);
         if cfg!(target_os = "macos") {
             command.env("TMPDIR", root);
@@ -480,23 +481,26 @@ mod unix_tests {
             .stdout(Stdio::piped())
             .spawn()
             .expect("Rust lock probe should start");
-        let stdout = child.stdout.take().expect("probe stdout should be piped");
-        let mut reader = BufReader::new(stdout);
-        let mut acquired = false;
-        for _ in 0..16 {
-            let mut line = String::new();
-            if reader
-                .read_line(&mut line)
-                .expect("probe output should be readable")
-                == 0
-            {
-                break;
+        let acquired = {
+            let stdout = child.stdout.as_mut().expect("probe stdout should be piped");
+            let mut reader = BufReader::new(stdout);
+            let mut acquired = false;
+            for _ in 0..16 {
+                let mut line = String::new();
+                if reader
+                    .read_line(&mut line)
+                    .expect("probe output should be readable")
+                    == 0
+                {
+                    break;
+                }
+                if line.trim() == "sakura-rust-lock-acquired" {
+                    acquired = true;
+                    break;
+                }
             }
-            if line.trim() == "sakura-rust-lock-acquired" {
-                acquired = true;
-                break;
-            }
-        }
+            acquired
+        };
         assert!(acquired, "Rust probe should report acquisition");
         child
     }
