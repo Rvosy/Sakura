@@ -67,7 +67,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
-| WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | planned |
+| WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | active |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
@@ -1393,6 +1393,20 @@ P0/P1：WP-1P-02 范围内为 0，全部退出条件已关闭。Draft PR 的普�
 ### WP-1P-03：Windows/POSIX 共享应用锁 backends
 
 主要结果：Windows named mutex 与 macOS/Linux advisory lock 实现同一 `sakura.desktop.shared-user-data.v1` 语义，Rust/Tauri 与 legacy Python 双向互斥。
+
+激活记录：
+
+```text
+状态：active
+开始日期：2026-07-23
+前置提交：d7248da3（WP-1P-02 accepted）
+允许目录：app/core/instance.py 仅限 legacy Python Windows/POSIX 共享锁适配；legacy_qt_main.py 仅限平台中性锁错误提示；desktop/src-tauri/src/shared_instance.rs、platform/contracts.rs 和 main.rs 仅限 InstanceLockBackend、Windows named mutex、POSIX advisory lock 与启动前锁接线；Cargo.toml/Cargo.lock 仅限 Unix 原生锁所需的已锁定 libc 直接依赖；tests/unit/test_selfcheck.py、test_wp_1a_04_shared_mutex.py、test_migration_runner.py、tests/integration/test_wp_1a_04_entries.py 与 tests/ui/test_pet_window.py 仅限跨平台锁契约和 legacy_qt_main 测试入口修正；新增 POSIX 双入口 fixture/acceptance；.github/workflows/runtime-v2-platform-foundation.yml 仅限共享锁变更触发路径、Linux 依赖安装有界化和同分支旧 run 取消；ADR-0003、WP-1P-03 规范和本文状态/证据
+明确禁止目录：data/、runtime/、characters/、plugins/、Assistant/Core/IPC/Snapshot/Supervisor/进程树/窗口交互实现、desktop/frontend/、legacy package/release workflow；不得把 legacy Qt 生命周期塞回 main.py；不得用 skip/xfail、普通文件存在、PID 文本或 stale 猜测替代真实 OS lock
+验收环境：本机 Windows 11 x64 保留已 accepted named mutex 回归；GitHub windows-2025 x64、macos-15 arm64、ubuntu-24.04 x64 原生 job；POSIX 路径与打开/权限/冲突语义由 Rust/Python golden tests 固定，真实双入口证据分别在 macOS/Linux native runner 产生
+关联 ADR：ADR-0003 Phase 1P POSIX 应用锁技术门；ADR-0004 共享应用锁平台基础
+计划提交：feat(runtime): 实现 Windows POSIX 共享应用锁后端
+退出条件：普通 Unit/UI 恢复全绿；Windows named mutex 无回归；macOS/Linux Rust/Python 使用同一 canonical lock path、0600 regular file 和非阻塞 exclusive advisory lock；双向冲突、普通文件残留、正常/强杀释放、路径/权限/API fatal 与锁前 data 零变化通过；Linux prerequisite 安装有分钟级 timeout/retry 且旧 run 可取消
+```
 
 允许能力：
 

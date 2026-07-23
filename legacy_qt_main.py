@@ -405,7 +405,7 @@ def _format_data_migration_failure(report: MigrationReport) -> str:
 
 
 def main() -> int:
-    # The shared Win32 kernel lock is the first runtime action.  In particular,
+    # The platform shared lock is the first runtime action.  In particular,
     # it precedes crash logs, self-check probes, defaults, versioning, migration,
     # and every Assistant/external-service object.
     instance_guard = SingleInstanceGuard(BASE_DIR)
@@ -425,7 +425,7 @@ def main() -> int:
             QMessageBox.critical(
                 None,
                 "Sakura 启动失败",
-                f"无法创建共享应用锁（Win32 错误 {instance_guard.last_error}）。Sakura 未继续启动。",
+                f"无法创建共享应用锁（平台错误 {instance_guard.last_error}）。Sakura 未继续启动。",
             )
             return 1
         raise RuntimeError(f"未知共享应用锁状态：{instance_status}")

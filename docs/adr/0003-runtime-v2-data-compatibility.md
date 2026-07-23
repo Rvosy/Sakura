@@ -118,10 +118,12 @@ scope: 当前登录用户/桌面会话
 | 平台 | 权威锁 |
 |---|---|
 | Windows | `Local\SakuraDesktop.SharedUserData.v1` named mutex |
-| macOS | Rust/Python 共用的 POSIX advisory lock 文件，路径由 WP-1P-03 冻结 |
-| Linux | Rust/Python 共用的 POSIX advisory lock 文件，路径由 WP-1P-03 冻结 |
+| macOS | `$TMPDIR/sakura/sakura.desktop.shared-user-data.v1.lock`；`TMPDIR` 不可用时为 `$HOME/Library/Caches/sakura/sakura.desktop.shared-user-data.v1.lock` |
+| Linux | `$XDG_RUNTIME_DIR/sakura/sakura.desktop.shared-user-data.v1.lock`；依次 fallback 到 `$XDG_STATE_HOME/sakura/...`、`$HOME/.local/state/sakura/...` |
 
 identity 不按 executable、安装路径、版本、Qt/Tauri、PID、角色或 Core generation 区分。Windows 双方必须使用完全相同的 object name；macOS/Linux 双方必须使用完全相同的路径解析、打开模式和 advisory lock 语义。POSIX 普通文件存在或 PID 文本不能代表锁仍被持有，锁文件不得位于共享 `data/` 内。
+
+WP-1P-03 冻结的 POSIX 细则为：候选环境根必须是绝对路径；canonical `sakura` 目录必须由当前 effective UID 所有并收紧为 `0700`；锁以 read/write、create、`O_CLOEXEC | O_NOFOLLOW`、`0600` 打开；已打开 fd 必须是当前用户所有、单硬链接 regular file，再执行 `flock(LOCK_EX | LOCK_NB)`。只有 `flock` 的 `EACCES/EAGAIN/EWOULDBLOCK` 表示 `already_running`；路径、打开、owner/type/link 或权限失败全部 fatal。完整可执行契约见 `docs/runtime-v2/WP-1P-03-shared-instance-lock.md`。
 
 ### 生命周期
 

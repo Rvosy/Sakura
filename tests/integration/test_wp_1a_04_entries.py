@@ -86,12 +86,12 @@ def test_windows_batch_entries_only_use_crlf_line_endings() -> None:
 
 def test_tauri_acquires_shared_mutex_before_building_the_webview_shell() -> None:
     source = _source("desktop/src-tauri/src/main.rs")
-    acquire = source.index("SharedInstanceGuard::acquire()")
+    acquire = source.index("instance_lock_backend.acquire(SHARED_INSTANCE_ID)")
     builder = source.index("tauri::Builder::default()")
 
     assert acquire < builder
-    assert "AcquireOutcome::AlreadyRunning" in source
-    assert "AcquireOutcome::Fatal" in source
+    assert "InstanceLockAcquire::AlreadyRunning" in source
+    assert "Err(error)" in source
     assert "Sakura 已在运行" in source
     assert "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。" in source
 

@@ -22,8 +22,9 @@ mod window_interaction;
 
 use std::sync::Mutex;
 
+use platform::{InstanceLockAcquire, InstanceLockBackend, SHARED_INSTANCE_ID};
 use serde::Serialize;
-use shared_instance::{AcquireOutcome, SharedInstanceGuard};
+use shared_instance::NativeInstanceLockBackend;
 use tauri::WebviewWindow;
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
@@ -322,16 +323,17 @@ fn main() {
         return;
     }
 
-    let _instance_guard = match SharedInstanceGuard::acquire() {
-        AcquireOutcome::Acquired(guard) => guard,
-        AcquireOutcome::AlreadyRunning => {
+    let instance_lock_backend = NativeInstanceLockBackend;
+    let _instance_guard = match instance_lock_backend.acquire(SHARED_INSTANCE_ID) {
+        Ok(InstanceLockAcquire::Acquired(guard)) => guard,
+        Ok(InstanceLockAcquire::AlreadyRunning) => {
             show_startup_message(ALREADY_RUNNING_TITLE, ALREADY_RUNNING_BODY, false);
             return;
         }
-        AcquireOutcome::Fatal(error) => {
+        Err(error) => {
             show_startup_message(
                 "Sakura 启动失败",
-                &format!("无法创建共享应用锁（Win32 错误 {error}）。Sakura 未继续启动。"),
+                &format!("无法创建共享应用锁（{error}）。Sakura 未继续启动。"),
                 true,
             );
             std::process::exit(1);

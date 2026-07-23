@@ -14,12 +14,13 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
-from app.core.instance import SingleInstanceGuard
+from app.core.instance import InstanceAcquireStatus, SingleInstanceGuard
 from app.core.selfcheck import (
     SEVERITY_FATAL,
     SEVERITY_WARNING,
@@ -97,29 +98,42 @@ class TestRunStartupSelfCheck:
 
 
 class TestSingleInstanceGuard:
+    @pytest.fixture(autouse=True)
+    def _private_posix_lock_root(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        if os.name == "nt":
+            return
+        if sys.platform == "darwin":
+            monkeypatch.setenv("TMPDIR", str(tmp_path))
+        else:
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
     def test_acquire_and_mutual_exclusion(self) -> None:
         base = _make_test_dir("lock")
         first = SingleInstanceGuard(base)
-        assert first.acquire()
+        assert first.acquire() is InstanceAcquireStatus.ACQUIRED
         second = SingleInstanceGuard(base)
-        # 同一锁文件（即使同进程的另一个 QLockFile 对象）必须互斥
-        assert not second.acquire()
+        assert second.acquire() is InstanceAcquireStatus.ALREADY_RUNNING
         assert "Sakura" in second.holder_description() or "进程" in second.holder_description()
         first.release()
         third = SingleInstanceGuard(base)
-        assert third.acquire()
+        assert third.acquire() is InstanceAcquireStatus.ACQUIRED
         third.release()
 
     def test_release_is_idempotent(self) -> None:
         base = _make_test_dir("lock_idem")
         guard = SingleInstanceGuard(base)
-        assert guard.acquire()
+        assert guard.acquire() is InstanceAcquireStatus.ACQUIRED
         guard.release()
         guard.release()
 
-    def test_lock_file_lives_under_data(self) -> None:
+    def test_authoritative_lock_does_not_live_under_data(self) -> None:
         base = _make_test_dir("lock_path")
         guard = SingleInstanceGuard(base)
-        assert guard.acquire()
-        assert StoragePaths(base).instance_lock().exists()
+        assert guard.acquire() is InstanceAcquireStatus.ACQUIRED
+        assert guard.lock_path != StoragePaths(base).instance_lock()
+        assert not StoragePaths(base).instance_lock().exists()
         guard.release()

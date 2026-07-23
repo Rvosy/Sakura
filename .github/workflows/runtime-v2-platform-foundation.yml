@@ -9,18 +9,30 @@ on:
       - ".github/workflows/runtime-v2-platform-foundation.yml"
       - "desktop/rust-toolchain.toml"
       - "desktop/src-tauri/**"
+      - "app/core/instance.py"
+      - "legacy_qt_main.py"
       - "scripts/runtime_v2_archive.py"
+      - "tests/fixtures/runtime_v2/wp_1p_03/**"
+      - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "tests/unit/test_runtime_v2_archive.py"
   pull_request:
     paths:
       - ".github/workflows/runtime-v2-platform-foundation.yml"
       - "desktop/rust-toolchain.toml"
       - "desktop/src-tauri/**"
+      - "app/core/instance.py"
+      - "legacy_qt_main.py"
       - "scripts/runtime_v2_archive.py"
+      - "tests/fixtures/runtime_v2/wp_1p_03/**"
+      - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "tests/unit/test_runtime_v2_archive.py"
 
 permissions:
   contents: read
+
+concurrency:
+  group: runtime-v2-platform-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   runtime-locator:
@@ -69,13 +81,28 @@ jobs:
 
       - name: Install Linux WebKit build prerequisites
         if: runner.os == 'Linux'
+        timeout-minutes: 8
         shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential file libssl-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 45s \
+                apt-get update -o Acquire::Retries=3 && \
+              sudo timeout --signal=TERM --kill-after=10s 75s \
+                apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+                  build-essential file libssl-dev libwebkit2gtk-4.1-dev \
+                  libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Linux prerequisite installation attempt $attempt failed; retrying." >&2
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "Linux prerequisite installation failed after 3 bounded attempts." >&2
+          exit 1
 
       - name: Record fixed toolchain and native environment
         working-directory: desktop
@@ -128,6 +155,11 @@ jobs:
         working-directory: desktop
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked platform::
+
+      - name: Run native shared instance lock tests
+        working-directory: desktop
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked shared_instance::
 
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop
