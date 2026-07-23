@@ -247,7 +247,7 @@ fn resolve_posix_lock_path() -> Result<PathBuf, u32> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     return Err(libc::ENOTSUP as u32);
 
-    resolve_posix_lock_path_with(target, env::var_os)
+    resolve_posix_lock_path_with(target, |name| env::var_os(name))
 }
 
 #[cfg(unix)]
