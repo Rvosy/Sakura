@@ -1,6 +1,6 @@
 # WP-1P-03：Windows/POSIX 共享应用锁 backends
 
-> 状态：Active（本地实现完成，等待三平台原生 CI）
+> 状态：Accepted
 > 日期：2026-07-23
 > 前置：WP-1P-02 accepted，提交 `d7248da3`
 > 规范来源：ADR-0003、ADR-0004、`WP-1P-01-platform-contract.md`
@@ -89,7 +89,7 @@ Tauri 必须在 `tauri::Builder`、Core、日志、配置、migration 和任何�
 
 错误分类只决定诊断语义，不授权自动重试、提权、删锁或绕过互斥。
 
-## 7. 验证责任与当前证据
+## 7. 验证责任与 Accepted 证据
 
 本地 Windows 回归已经证明：
 
@@ -97,14 +97,16 @@ Tauri 必须在 `tauri::Builder`、Core、日志、配置、migration 和任何�
 - Windows shared lock Rust tests 4 passed，shared identity 1 passed，Debug Shell build 成功。
 - legacy 测试改为导入 `legacy_qt_main.py`；新的 Tauri `main.py` 未恢复 Qt 生命周期。
 
-同一提交的三平台原生 CI 仍必须证明：
+提交 `71c3039c` 的三平台原生 CI run `30025831299` 已证明：
 
 - Windows named mutex 回归无变化。
 - macOS arm64 与 Linux x64 的 Rust/Python 路径 golden、双向冲突、正常释放、强杀释放和普通文件残留均通过。
 - 锁目录/文件的 type、owner、mode、单硬链接和 no-follow 约束通过；权限/API 错误 fatal。
-- 普通 Unit 与 legacy UI workflow 全绿，平台 foundation workflow 三个 job 全绿。
+- 平台 foundation workflow 三个 job 全绿；macOS arm64 用时 1m57s、Linux x64 2m38s、Windows x64 3m23s。
 
-在上述 CI 证据齐全，且 diff 审查确认没有 `data/`、`runtime/`、产品能力或用户资源变化之前，本 WP 保持 `Active`，不得登记 `accepted`。WP-1P-06 继续负责三平台真实 Shell + Core 完整排水后才释放锁的产品级生命周期总证据。
+同一 SHA 的 Test run `30025831268` 也已全绿：Unit 2m12s、UI 4m08s。push event 的三平台 run `30025828101` 独立重复成功。实现过程先后暴露并修正 Unix 泛型函数项生命周期推断以及测试探针 `PYTHONPATH`/stdout pipe 问题；没有用 skip/xfail 绕过失败。
+
+diff 审查确认没有 `data/`、`runtime/`、产品能力或用户资源变化，P0/P1 为 0，故 WP-1P-03 登记 `Accepted`。这里接受的是生产 Rust/Python backend、Tauri composition-root 接线和原生子进程互斥契约；WP-1P-06 继续负责三平台真实 Shell + Core、legacy Qt 回退入口和全部后代/写入任务完整排水后才释放锁的产品级生命周期总证据。
 
 ## 8. 独立回退
 

@@ -209,6 +209,15 @@ WP-1P-03/06 必须在 macOS 与 Linux 分别验证：
 
 上述门禁通过前，本 ADR 的 `Technically Validated` 只能表述为 Windows shared lock 状态。
 
+### WP-1P-03 backend 技术验证结果（2026-07-23）
+
+- production Rust/Tauri 与 legacy Python backend 已冻结 macOS/Linux 路径优先级、canonical parent、owner/type/link、`0700/0600`、`O_CLOEXEC | O_NOFOLLOW` 和非阻塞 exclusive `flock` 语义。
+- GitHub Actions run `30025831299` 在 `macos-15` arm64、`ubuntu-24.04` x64 和 `windows-2025` x64 同一提交 `71c3039c` 上全绿；push run `30025828101` 独立重复全绿。
+- macOS/Linux 均真实通过 Rust 持锁/Python 冲突、Python 持锁/Rust 冲突、正常释放、普通文件残留、双方 holder 强杀后 OS 自动释放以及路径/权限安全测试；Windows named mutex 回归无变化。
+- Test run `30025831268` 的 Unit/UI 全绿，迁移后仍导入 Tauri `main.py` 的 legacy 测试已改回 `legacy_qt_main.py`，没有恢复旧生命周期代码。
+
+据此 WP-1P-03 的共享锁 backend 技术门已接受。真实三平台 Tauri Shell + Core、legacy Qt 回退入口、全部后代/写入任务排水完成后才释放，以及隔离数据清单前后零变化，仍由 WP-1P-06 验收；本段不能替代该产品级生命周期总门或 Phase 3 数据兼容门。
+
 ## Phase 3 Qt → Tauri v2 → Qt 兼容门禁输入
 
 真实流程：
@@ -278,4 +287,4 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 
 ## ADR 状态门禁
 
-本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过。更新为 `Accepted` 前必须同时完成 Phase 1P 的 macOS/Linux 共享锁、全部正式平台的 Qt → Tauri → Qt 真实兼容门禁和产品功能等价台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。
+本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过，且 WP-1P-03 的 macOS/Linux Rust/Python shared-lock backend 已在原生平台通过双向冲突、正常/强杀释放和安全属性测试。更新为 `Accepted` 前仍必须完成 WP-1P-06 的真实三平台应用生命周期/数据零变化总门、全部正式平台的 Qt → Tauri → Qt 真实兼容门禁和产品功能等价台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。

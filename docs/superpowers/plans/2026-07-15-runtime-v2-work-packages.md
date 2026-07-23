@@ -67,7 +67,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
-| WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | active |
+| WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
@@ -1419,9 +1419,26 @@ P0/P1：WP-1P-02 范围内为 0，全部退出条件已关闭。Draft PR 的普�
 - 不用普通文件存在、PID 文本或 stale 猜测代替 OS lock。
 - 锁文件不得位于共享 `data/`；冲突入口不得先写日志、配置或 migration。
 
-退出证据：三个平台分别通过 Qt 持锁/Tauri 冲突、Tauri 持锁/Qt 冲突、正常释放、强杀释放、API/权限失败、无人持锁但文件存在和获取前数据零变化；ADR-0003 更新平台证据但保持数据兼容总门未完成。
+退出证据：三个平台的 production Rust/Python backend 分别通过双向冲突、正常释放、双方强杀释放、API/权限 fatal、无人持锁但普通文件存在和锁前入口顺序测试；真实 Tauri Shell + Core、legacy Qt 回退入口与全部后代排水后的最终释放仍由 WP-1P-06 验收，不以本 WP 的 backend 子进程测试冒充。
 
 独立回退：回退 POSIX backends 和公共适配，恢复 Windows backend；不得删除真实锁文件或用户数据。
+
+Accepted 记录：
+
+```text
+状态：accepted
+验收日期：2026-07-23
+实现提交：ef5539a6（Windows/POSIX backend、legacy 测试入口、规范和 CI）；6800f72e（Unix 环境读取器生命周期推断）；71c3039c（跨语言探针 PYTHONPATH/stdout pipe）
+本地 Windows：tests/unit 965 passed、6 skipped；tests/ui 379 passed；影响面定向 320 passed、3 skipped；cargo test --locked 92 passed、14 ignored fixture；shared_instance Windows 4 passed；cargo fmt、py_compile、Debug/Release build、git diff --check 全部通过
+普通 CI：Test run 30025831268 对 71c3039c 全绿，Unit tests 2m12s、UI tests 4m08s；前两轮最新实现 SHA 的普通 Test 同样成功，原 7 个 Unit 与 12 个 legacy UI 失败已关闭
+原生平台 CI：pull_request run 30025831299 对 71c3039c 全绿；macos-15 arm64 1m57s、ubuntu-24.04 x64 2m38s、windows-2025 x64 3m23s，三边均通过 architecture、固定 Runtime、format、platform contracts、native shared_instance tests、staged RuntimeLocator 和 Tauri Shell build；push run 30025828101 独立重复全绿
+POSIX 锁证据：macOS/Linux 均真实执行 Rust/Python 同路径 golden、双向冲突、正常释放、普通文件残留、Python holder 强杀后 Rust 重获、Rust holder 强杀后 Python 重获、0700/0600 与单硬链接检查；未用 skip/xfail 替代
+CI 故障收敛：旧卡死 run 30019843652 已由 concurrency 自动取消；新 Linux apt step 19 秒成功且受 8 分钟 step、三次外层重试和每次 timeout/kill-after 约束；首次原生 run 暴露 Unix Fn 生命周期编译错误，第二次暴露探针 import/broken-pipe，均修正后由第三次同矩阵全绿验证
+范围与数据：没有修改 data/、runtime/、characters/、plugins/、Assistant/Core/Supervisor/IPC/Snapshot、进程树、窗口交互、frontend 或 legacy package/release workflow；legacy Qt 生命周期未回填 main.py；用户未跟踪 .superpowers/ 未暂存
+边界：本 WP 接受 backend 与 composition-root 获取顺序，不声称完成真实三平台 Shell + Core/legacy Qt 全生命周期排水；后者仍是 WP-1P-06 的强制退出条件，ADR-0003 的 Phase 3 数据兼容总门也未开始
+P0/P1：WP-1P-03 范围内为 0，退出条件相关缺陷为 0
+独立回退方式：依次 git revert 71c3039c、6800f72e、ef5539a6；不删除普通 POSIX lock file、data/sakura.lock、Qdrant lock 或任何用户数据，不回退 WP-1P-01/02
+```
 
 ### WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
@@ -1954,6 +1971,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01`、`WP-1P-02` 已登记 accepted；WP-1P-02 的同一提交三平台 native CI 证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-03` 已登记 accepted；WP-1P-03 的三平台 native CI 证据为 `71c3039c` / run `30025831299`，普通 Unit/UI 为 run `30025831268`；WP-1P-02 的三平台证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-当前唯一允许继续的生产 Work Package 是 `WP-1P-03`；必须先建立独立激活记录，后续 WP 继续保持 `planned`。`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
+下一候选生产 Work Package 是 `WP-1P-04`，但当前仍为 `planned`；开始实现前必须建立独立激活记录、冻结允许目录和三平台进程树故障矩阵。`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
