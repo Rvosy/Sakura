@@ -1442,6 +1442,15 @@ P0/P1：WP-1P-03 范围内为 0，退出条件相关缺陷为 0
 
 ### WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
+状态：`active`（2026-07-24）
+
+前置提交：`9d079a4d`（WP-1P-03 accepted）
+
+独立规范：`docs/runtime-v2/WP-1P-04-managed-process-tree.md`
+
+允许目录、明确非目标、公共生命周期顺序、guardian containment、故障矩阵、三平台证据责任、
+退出条件和回退方式以独立规范为准。本 WP active 期间 WP-1P-05/06 保持 planned。
+
 主要结果：保留 Windows Job Object，补齐 macOS/Linux session/process group、整树终止、wait 验证和身份安全边界。
 
 允许能力：
@@ -1971,6 +1980,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-03` 已登记 accepted；WP-1P-03 的三平台 native CI 证据为 `71c3039c` / run `30025831299`，普通 Unit/UI 为 run `30025831268`；WP-1P-02 的三平台证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-03` 已登记 accepted；WP-1P-04 已于 2026-07-24 独立激活，当前唯一状态为 `active`。WP-1P-03 的三平台 native CI 证据为 `71c3039c` / run `30025831299`，普通 Unit/UI 为 run `30025831268`；WP-1P-02 的三平台证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-下一候选生产 Work Package 是 `WP-1P-04`，但当前仍为 `planned`；开始实现前必须建立独立激活记录、冻结允许目录和三平台进程树故障矩阵。`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
+当前只执行 `WP-1P-04`；其最新 HEAD 原生三平台 CI 全绿并登记 accepted 前，`WP-1P-05`、`WP-1P-06`、`WP-1C-03` 及全部后续产品 WP 保持 `planned`，不得并行激活或继续 Windows-only 扩张。
