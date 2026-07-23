@@ -108,7 +108,7 @@ locator 不执行 Python 来决定是否可信，不解析用户 PATH，不联�
 | Platform | Runner | 硬断言 |
 |---|---|---|
 | Windows x64 | `windows-2025` | `PROCESSOR_ARCHITECTURE=AMD64` |
-| macOS arm64 | `macos-14-xlarge` | `uname -m=arm64`，不接受 Intel cross-compile |
+| macOS arm64 | `macos-15` | `uname -m=arm64`，使用标准 Apple Silicon runner，不接受 Intel cross-compile |
 | Linux x64 | `ubuntu-24.04` | `uname -m=x86_64`，安装 WebKitGTK 4.1 build prerequisites |
 
 每个 job 从 target manifest 的精确 URL 下载并验证归档，在 runner 的临时 checkout 中替换开发 `runtime/`，然后执行：
@@ -119,7 +119,7 @@ locator 不执行 Python 来决定是否可信，不解析用户 PATH，不联�
 - 被显式标为 staged-runtime integration 的真实归档 locator test。
 - native Tauri debug build。
 
-workflow 不启动 Assistant、不读取真实用户 data、不生成发布工件。macOS runner 必须实际可用且为 arm64；若仓库计划无法分配 `macos-14-xlarge`，需要项目负责人提供等价 Apple Silicon runner，不能改用 Intel 结果接受。
+workflow 不启动 Assistant、不读取真实用户 data、不生成发布工件。macOS runner 必须实际可用且为 arm64；`macos-15` 由 workflow 内的 `uname -m=arm64` 断言约束，不能改用 Intel 或 cross-compile 结果接受。
 
 ## 8. 当前证据与 accepted 条件
 

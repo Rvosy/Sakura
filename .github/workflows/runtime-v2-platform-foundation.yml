@@ -34,7 +34,7 @@ jobs:
             manifest: windows-x64
             archive: python-runtime.zip
           - platform: macos-arm64
-            runner: macos-14-xlarge
+            runner: macos-15
             manifest: macos-arm64
             archive: python-runtime.tar.gz
           - platform: linux-x64

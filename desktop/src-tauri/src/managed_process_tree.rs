@@ -1,10 +1,4 @@
-use std::{
-    ffi::{OsStr, OsString},
-    fmt,
-    fs::File,
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
-};
+use std::{ffi::OsString, fmt, fs::File, path::PathBuf, time::Duration};
 
 #[cfg(all(test, windows))]
 static LAST_ROLLED_BACK_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -13,9 +7,12 @@ static PROCESS_TREE_FAILURE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new((
 
 #[cfg(windows)]
 use std::{
+    ffi::OsStr,
     mem::size_of,
     os::windows::{ffi::OsStrExt, io::FromRawHandle},
+    path::Path,
     thread,
+    time::Instant,
 };
 
 #[cfg(windows)]
