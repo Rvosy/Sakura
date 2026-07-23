@@ -123,12 +123,10 @@ workflow 不启动 Assistant、不读取真实用户 data、不生成发布工�
 
 ## 8. 当前证据与 accepted 条件
 
-当前 Windows 本机已完成：三个归档上游元数据核对和 SHA-256、8 项 locator 定向测试、真实仓库 Runtime 显式定位、完整 Rust 回归、Python archive verifier 测试、Debug/Release build、PowerShell/YAML 语法和 diff 门禁。精确数量以 Work Package `stabilizing` 记录为准。
+Windows 本机已完成：三个归档上游元数据核对和 SHA-256、8 项 locator 定向测试、真实仓库 Runtime 显式定位、完整 Rust 回归、Python archive verifier 测试、Debug/Release build、PowerShell/YAML 语法和 diff 门禁。精确数量以 Work Package accepted 记录为准。
 
-WP-1P-02 只有在新增 workflow 的 Windows x64、macOS arm64、Linux x64 三个 native job 对同一提交全部通过后才可更新为 `accepted`。在此之前：
+WP-1P-02 已由提交 `5c0ef64b6c25f5554ceb4dc4072ab98a8e29f369` 的 GitHub Actions run [`30018844932`](https://github.com/Rvosy/Sakura/actions/runs/30018844932) 验收。Windows x64、macOS arm64、Linux x64 三个 native job 对同一提交全部通过，并分别完成真实架构断言、精确归档下载与校验、staged RuntimeLocator 集成测试和 native Tauri Shell 编译。
 
-- `WP-1P-03` 保持 `planned`，不得开始 POSIX 锁实现。
-- Windows 本地结果只能登记为 Windows backend/layout 证据。
-- 不得删除 non-Windows 测试、降低 runner architecture 断言或把 fake binary header 当作真实归档证据。
+因此本 WP 状态为 `accepted`，`WP-1P-03` 可以按独立激活记录开始；后续仍不得删除 non-Windows 测试、降低 runner architecture 断言或把 fake binary header 当作真实归档证据。
 
 独立回退：整体 revert WP-1P-02 实现提交，恢复 WP-1P-01 的 compile-only `RuntimeLocator` trait 和 WP-1C-02 的显式 Windows Python 参数；不回退平台契约、Supervisor/Core Host 能力或用户 Runtime/data。

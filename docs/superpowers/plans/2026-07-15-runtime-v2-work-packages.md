@@ -66,7 +66,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1C-01 | 最小无 Qt Python Core Host 与基础握手 | WP-1B-04 | accepted |
 | WP-1C-02 | initialize、readiness 和最小 Snapshot | WP-1C-01 | accepted |
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
-| WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | stabilizing |
+| WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | planned |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
@@ -1353,21 +1353,22 @@ Accepted 记录：
 独立回退方式：整体 git revert WP-1P-02 实现提交，恢复 compile-only RuntimeLocator trait 和 Phase 1C 显式 Windows Python 参数；保留 WP-1P-01、现有 Windows backend、Core Host lifecycle 和用户数据，不删除 runtime/ 或 data/
 ```
 
-稳定化记录：
+Accepted 记录：
 
 ```text
-状态：stabilizing
+状态：accepted
 本地 TDD：首轮 locator 定向测试 4 passed、4 failed；失败精确暴露 MacOs serde 会生成错误的 mac-os-arm64 ID，以及 Windows canonical \\?\ 前缀不能与未 canonical resource root 直接比较。修正为三个显式 serde platform ID，并只比较 canonical root 后，8/8 locator 定向测试通过
 source 完整性：从 Python.org 3.12.8 和 Astral python-build-standalone 20250106 的固定 HTTPS asset 读取元数据并完整下载到系统临时目录；三个 byte length/SHA-256 与 runtime-layout manifest 一致；新 archive verifier 又分别完成三工件真实下载校验。macOS/Linux 的 python/bin/python3 均指向 python3.12，canonical 目标真实 header 分别为 Mach-O cffaedfe + CPU 0c000001 和 ELF64 little-endian + machine 3e00，与 locator 判定一致；临时下载均已删除，工作区没有归档或 Runtime 内容变化
 本地自动测试：cargo fmt --check 通过；platform contract/golden 为 16 passed、1 ignored staged integration、0 failed；显式执行真实 Windows staged Runtime locator 为 1 passed；完整 cargo test --locked 为 91 passed、14 ignored fixture、0 failed；Python archive verifier 为 2 passed；Debug/Release cargo build --locked 均成功且无 warning；PowerShell、三份 JSON manifest、三 job workflow YAML 和 git diff --check 全部通过
 接线边界：CoreHostRuntime::launch 只消费 RuntimeLayout；Phase 1C 验收删除 SAKURA_PHASE_1C_PYTHON；framing、initialize、Snapshot、deadline、Job、Supervisor 和用户数据语义未改；shared_instance 只有 test cfg 收窄，无生产锁修改
 真实 Windows 验收：首次复跑在业务链已成功关闭后暴露验收 summary 仍读取已删除的 $Python 变量，脚本因此退出 1；修正为由 Rust 写出 runtime-layout evidence 并把 locator/manifest 文件纳入 stale-EXE 清单。最终 windows-locator-ready-final 为 status=passed：真实 Tauri Window 可见，runtimeTarget=windows-x64、runtimeMode=explicit_development、sourceId=cpython.org/3.12.8/windows-embed-amd64，Core hello/ready/两次 health/protocol shutdown 成功，根退出码 0；登记 9 个进程身份、最终残留 0，临时 Runtime/WebView 目录残留 0；真实 data/ 121 文件、1,046,428,570 bytes，before/after SHA-256 均为 e4982a382a9668de39276ce1d3203d9f47c18b69e9b1aef8787ffbd1eb0fe1ca
-原生平台证据：Windows 本地 native locator/Core 回归已通过；新增 workflow 固定 windows-2025 AMD64、macos-15 arm64、ubuntu-24.04 x86_64，并会从精确 archive 重建 runtime 后执行 native tests/build。首次远端运行已暴露并正在修正跨平台 CI 基础问题；三平台同一提交的成功证据仍缺失，WP 不得 accepted
+原生平台证据：GitHub Actions run 30018844932 对提交 5c0ef64b6c25f5554ceb4dc4072ab98a8e29f369 完整成功；RuntimeLocator (windows-x64)、RuntimeLocator (macos-arm64)、RuntimeLocator (linux-x64) 三个 job 在同一 run 全绿。每个 job 均通过真实 runner architecture 断言、精确 Python 归档 size/SHA-256 校验、正式 layout/platform tests、staged repository RuntimeLocator ignored integration 的显式执行和 native Tauri Shell 编译
+首次 CI 修正：初始提交 889a48d1 的 macos-14-xlarge 因账户计费限制无法分配，Linux 则在 generate_context! 读取缺失 icons/icon.png 时失败；修正提交 5c0ef64b 改用 GitHub 标准 macos-15 Apple Silicon runner、从既有 icon.ico 等价生成 icon.png，并收窄 Windows-only import。稳定化范围据此补充 icon.png 和 managed_process_tree.rs 的纯 cfg/import 整理，均不改变产品行为、进程树语义或视觉设计
 范围与数据：没有修改 Cargo 依赖、legacy Qt、Assistant、插件、前端、生产 data/runtime 内容、锁/进程树/窗口 backend 或 legacy release workflow；没有启动真实 Assistant 或执行 schema migration
-P0/P1：本地为 0；退出条件相关本地缺陷已关闭，外部 native CI 门仍未满足
-下一步：完成本地 fmt/full Rust/Python/build/parser/diff 稳定化并提交；推送后等待三个 native job 对该提交全绿，再补 accepted 记录。此前 WP-1P-03 保持 planned
+P0/P1：WP-1P-02 范围内为 0，全部退出条件已关闭。Draft PR 的普通 Test workflow 仍有 7 个 Unit 和 12 个 legacy UI 测试失败，分别源于 Linux 执行 Windows ctypes.WinDLL 路径，以及测试仍从已瘦身的 main.py 导入 legacy Qt 符号；这些不是 RuntimeLocator native workflow 的 accepted 条件，但属于分支级未关闭门禁，不得误报为全量测试通过或在最终合并前忽略
+下一步：WP-1P-03 现可独立激活，开始 Windows named mutex 与 POSIX advisory lock backend；普通 Test workflow 红灯需在对应锁 backend/legacy parity 测试接线中关闭
 独立回退方式：git revert WP-1P-02 实现提交；不回退 21c2aaf9，不触碰用户 runtime/data
-关联提交：待提交（feat(runtime): 实现三平台 RuntimeLocator 与固定布局）
+关联提交：889a48d1（实现）；5c0ef64b（首次 native CI 修正）；本 WP accepted 记录提交
 ```
 
 主要结果：公共启动链不再依赖 `.exe`、仓库 `target/debug` 或硬编码 `runtime/python.exe`，三平台开发/测试/发布布局可重复定位。
@@ -1939,6 +1940,6 @@ legacy Qt 创建/修改数据并退出
 
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 已登记 accepted；`WP-1P-02` 正处于 stabilizing，等待同一提交的三平台 native CI；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01`、`WP-1P-02` 已登记 accepted；WP-1P-02 的同一提交三平台 native CI 证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
 
-当前唯一允许继续的生产 Work Package 是 `WP-1P-02` 稳定化。`WP-1P-03` 及后续 WP 在本项 accepted 前保持 `planned`；`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
+当前唯一允许继续的生产 Work Package 是 `WP-1P-03`；必须先建立独立激活记录，后续 WP 继续保持 `planned`。`WP-1C-03` 及全部后续产品 WP 在 `WP-1P-06` accepted 前保持 `planned`，不得继续 Windows-only 扩张。
