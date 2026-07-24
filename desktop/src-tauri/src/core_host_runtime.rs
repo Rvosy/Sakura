@@ -148,13 +148,23 @@ impl std::fmt::Debug for CoreHostRuntime {
 
 impl CoreHostRuntime {
     pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
+        let application_root_text = layout.application_root.to_string_lossy().replace('\\', "/");
+        let application_root = serde_json::to_string(&application_root_text)
+            .map_err(|error| format!("Core Host application root encoding failed: {error}"))?;
+        // Official Windows embeddable Python runs with `isolated=1` and its
+        // `_pth` file intentionally ignores PYTHONPATH/current-directory
+        // discovery. Insert the RuntimeLocator-approved application root
+        // explicitly before importing the Qt-free Core Host module.
+        let bootstrap = format!(
+            "import runpy,sys;sys.path.insert(0,{application_root});sys.argv[0]='app.core_host';runpy.run_module('app.core_host.__main__',run_name='__main__')"
+        );
         Self::launch_with_backend(
             &NativeManagedProcessTreeBackend,
             ManagedProcessRequest {
                 program: layout.python_executable.clone(),
                 args: vec![
-                    "-m".into(),
-                    layout.core_module.clone().into(),
+                    "-c".into(),
+                    bootstrap.into(),
                     "--generation-id".into(),
                     generation_id.into(),
                     "--generation-number".into(),
