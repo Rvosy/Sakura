@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import queue
+import hmac
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
-from .protocol import error_payload, read_frame, response, write_frame
+from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
 
 CORE_VERSION = "0.1.0"
@@ -19,6 +20,8 @@ CAPABILITIES = (
     "core.initialize",
     "core.snapshot",
 )
+MIN_PROTOCOL_MINOR = 0
+REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
 _INITIALIZE_MODES = frozenset({"ready", "setup_required", "degraded", "failed", "hang"})
 
@@ -26,11 +29,16 @@ _INITIALIZE_MODES = frozenset({"ready", "setup_required", "degraded", "failed", 
 @dataclass(frozen=True)
 class HostConfig:
     generation_id: str
+    generation_credential: str
     generation_number: int = 1
 
     def __post_init__(self) -> None:
         if not self.generation_id.strip():
             raise ValueError("generation_id must not be empty")
+        if len(self.generation_credential) != 32 or any(
+            character not in "0123456789abcdef" for character in self.generation_credential
+        ):
+            raise ValueError("generation_credential must be a 128-bit lowercase hex value")
         if (
             isinstance(self.generation_number, bool)
             or not isinstance(self.generation_number, int)
@@ -40,11 +48,27 @@ class HostConfig:
 
 
 class WriterError(RuntimeError):
-    pass
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
 
 
 class InitializeError(ValueError):
     pass
+
+
+class TransportFailure(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+class NegotiationError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ReadinessController:
@@ -116,7 +140,10 @@ class ReadinessController:
         if worker is not None:
             worker.join(timeout=1)
             if worker.is_alive():
-                raise WriterError("initialize worker did not stop before deadline")
+                raise WriterError(
+                    "SHUTDOWN_DURING_INITIALIZE",
+                    "initialize worker did not stop before shutdown deadline",
+                )
 
     @staticmethod
     def _validate_initialize_payload(payload: Mapping[str, Any]) -> tuple[str, int]:
@@ -160,20 +187,26 @@ class ResponseWriter:
 
     def send(self, message: dict[str, Any]) -> None:
         if self._closed:
-            raise WriterError("writer is closed")
+            raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is closed")
         if self._error is not None:
-            raise WriterError("writer failed") from self._error
-        self._queue.put(message, timeout=3)
+            raise WriterError("TRANSPORT_WRITE_FAILED", "writer failed") from self._error
+        try:
+            self._queue.put(message, timeout=3)
+        except queue.Full as error:
+            raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is unavailable") from error
 
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._queue.put(_WRITER_STOP, timeout=3)
+            try:
+                self._queue.put(_WRITER_STOP, timeout=3)
+            except queue.Full as error:
+                raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is unavailable") from error
         self._thread.join(timeout=3)
         if self._thread.is_alive():
-            raise WriterError("writer did not stop before deadline")
+            raise WriterError("TRANSPORT_WRITE_FAILED", "writer did not stop before deadline")
         if self._error is not None:
-            raise WriterError("writer failed") from self._error
+            raise WriterError("TRANSPORT_WRITE_FAILED", "writer failed") from self._error
 
     def _run(self) -> None:
         try:
@@ -194,16 +227,29 @@ class ControlDispatcher:
     def __init__(self, config: HostConfig) -> None:
         self._config = config
         self._readiness = ReadinessController(config)
+        self._handshake = "pending"
+        self._protocol_minor = PROTOCOL_MINOR
+        self._negotiated_capabilities: tuple[str, ...] = ()
 
     def close(self) -> None:
         self._readiness.close()
 
     def dispatch(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        supplied_credential = request.get("generationCredential")
+        if not isinstance(supplied_credential, str) or not hmac.compare_digest(
+            supplied_credential, self._config.generation_credential
+        ):
+            raise TransportFailure(
+                "GENERATION_CREDENTIAL_MISMATCH",
+                "request credential does not match the active generation",
+            )
         if request["generationId"] != self._config.generation_id:
             return (
                 response(
                     request,
                     generation_id=self._config.generation_id,
+                    generation_credential=self._config.generation_credential,
+                    protocol_minor=self._protocol_minor,
                     error=error_payload("GENERATION_MISMATCH", "request belongs to another generation"),
                 ),
                 False,
@@ -213,18 +259,33 @@ class ControlDispatcher:
                 response(
                     request,
                     generation_id=self._config.generation_id,
+                    generation_credential=self._config.generation_credential,
+                    protocol_minor=self._protocol_minor,
                     error=error_payload("INVALID_CONTROL", "control plane accepts requests only"),
                 ),
                 False,
             )
 
         name = request["name"]
+        if self._handshake == "failed":
+            return self._error_response(
+                request, "HANDSHAKE_FAILED", "protocol negotiation already failed"
+            ), False
+        if self._handshake == "pending" and name != "system.hello":
+            return self._error_response(
+                request, "HANDSHAKE_REQUIRED", "system.hello must be the first request"
+            ), False
+        if self._handshake == "complete" and name == "system.hello":
+            return self._error_response(
+                request, "HANDSHAKE_ALREADY_COMPLETE", "system.hello cannot be repeated"
+            ), False
+
         if name == "system.hello":
-            payload = {
-                "capabilities": list(CAPABILITIES),
-                "coreVersion": CORE_VERSION,
-                "hostState": self._readiness.readiness(),
-            }
+            try:
+                payload = self._negotiate(request)
+            except NegotiationError as error:
+                self._handshake = "failed"
+                return self._error_response(request, error.code, str(error)), False
         elif name == "system.health":
             payload = {"hostState": self._readiness.readiness(), "status": "healthy"}
         elif name == "core.initialize":
@@ -235,6 +296,8 @@ class ControlDispatcher:
                     response(
                         request,
                         generation_id=self._config.generation_id,
+                        generation_credential=self._config.generation_credential,
+                        protocol_minor=self._protocol_minor,
                         error=error_payload("INVALID_INITIALIZE", str(error)),
                     ),
                     False,
@@ -245,17 +308,107 @@ class ControlDispatcher:
             payload = {"accepted": True}
         else:
             return (
-                response(
-                    request,
-                    generation_id=self._config.generation_id,
+                    response(
+                        request,
+                        generation_id=self._config.generation_id,
+                        generation_credential=self._config.generation_credential,
+                        protocol_minor=self._protocol_minor,
                     error=error_payload("UNKNOWN_CONTROL", "unsupported control request"),
                 ),
                 False,
             )
         return (
-            response(request, generation_id=self._config.generation_id, payload=payload),
+            response(
+                request,
+                generation_id=self._config.generation_id,
+                generation_credential=self._config.generation_credential,
+                protocol_minor=self._protocol_minor,
+                payload=payload,
+            ),
             name == "system.shutdown",
         )
+
+    def _error_response(
+        self, request: dict[str, Any], code: str, message: str
+    ) -> dict[str, Any]:
+        return response(
+            request,
+            generation_id=self._config.generation_id,
+            generation_credential=self._config.generation_credential,
+            protocol_minor=self._protocol_minor,
+            error=error_payload(code, message),
+        )
+
+    def _negotiate(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = request["payload"]
+        if set(payload) != {"protocol", "requiredCapabilities", "optionalCapabilities"}:
+            raise NegotiationError("INVALID_NEGOTIATION", "hello payload fields are invalid")
+        protocol = payload.get("protocol")
+        if not isinstance(protocol, Mapping) or set(protocol) != {"major", "minMinor", "maxMinor"}:
+            raise NegotiationError("INVALID_NEGOTIATION", "protocol range is invalid")
+        major = _negotiation_integer(protocol, "major")
+        minimum = _negotiation_integer(protocol, "minMinor")
+        maximum = _negotiation_integer(protocol, "maxMinor")
+        if minimum > maximum:
+            raise NegotiationError("INVALID_NEGOTIATION", "protocol minor range is invalid")
+        required = _capability_list(payload, "requiredCapabilities")
+        optional = _capability_list(payload, "optionalCapabilities")
+        if set(required) & set(optional):
+            raise NegotiationError("INVALID_NEGOTIATION", "capability lists overlap")
+        if major != PROTOCOL_MAJOR or request["protocolMajor"] != major:
+            raise NegotiationError("PROTOCOL_MAJOR_MISMATCH", "protocol major is incompatible")
+        selected_minimum = max(minimum, MIN_PROTOCOL_MINOR)
+        selected_maximum = min(maximum, PROTOCOL_MINOR)
+        if selected_minimum > selected_maximum:
+            raise NegotiationError(
+                "CAPABILITY_NEGOTIATION_FAILED", "protocol minor ranges do not overlap"
+            )
+        missing = [capability for capability in required if capability not in REQUIRED_CAPABILITIES]
+        if missing:
+            raise NegotiationError(
+                "CAPABILITY_NEGOTIATION_FAILED", "a required capability is unavailable"
+            )
+        requested = set(required) | set(optional)
+        selected = tuple(capability for capability in CAPABILITIES if capability in requested)
+        self._protocol_minor = selected_maximum
+        self._negotiated_capabilities = selected
+        self._handshake = "complete"
+        return {
+            "capabilities": list(selected),
+            "coreVersion": CORE_VERSION,
+            "hostState": self._readiness.readiness(),
+            "protocol": {
+                "major": PROTOCOL_MAJOR,
+                "minMinor": MIN_PROTOCOL_MINOR,
+                "maxMinor": PROTOCOL_MINOR,
+            },
+            "negotiated": {
+                "major": PROTOCOL_MAJOR,
+                "minor": selected_maximum,
+                "capabilities": list(selected),
+            },
+        }
+
+
+def _negotiation_integer(mapping: Mapping[str, Any], key: str) -> int:
+    value = mapping.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise NegotiationError("INVALID_NEGOTIATION", f"{key} must be a non-negative integer")
+    return value
+
+
+def _capability_list(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = mapping.get(key)
+    if not isinstance(value, list):
+        raise NegotiationError("INVALID_NEGOTIATION", f"{key} must be an array")
+    capabilities: list[str] = []
+    for capability in value:
+        if not isinstance(capability, str) or not capability or capability != capability.strip():
+            raise NegotiationError("INVALID_NEGOTIATION", f"{key} contains an invalid capability")
+        if capability in capabilities:
+            raise NegotiationError("INVALID_NEGOTIATION", f"{key} contains a duplicate capability")
+        capabilities.append(capability)
+    return tuple(capabilities)
 
 
 def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig) -> None:

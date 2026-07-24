@@ -30,8 +30,8 @@ PATH 扫描或硬编码 `runtime/python.exe`；不把 Win32 handle、POSIX fd/si
 ```json
 {
   "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
-  "requiredCapabilities": ["core.initialize", "core.snapshot"],
-  "optionalCapabilities": ["system.health", "system.shutdown"]
+  "requiredCapabilities": ["system.hello", "system.health", "system.shutdown", "core.initialize", "core.snapshot"],
+  "optionalCapabilities": []
 }
 ```
 
@@ -49,9 +49,10 @@ hello 前除 `system.hello` 外的消息返回 `HANDSHAKE_REQUIRED`；成功后�
 ## 3. Generation credential
 
 Rust 在每次 `CoreHostRuntime::launch` 内从 OS 随机源生成独立 128-bit credential，使用 32 个小写
-十六进制字符表示。credential 只通过受控启动环境 `SAKURA_CORE_GENERATION_CREDENTIAL` 传递，
-不进入 argv、Snapshot、diagnostics、日志、Debug 或用户错误。Core 启动时读取并立即从自身环境
-删除该变量；缺失或非法值拒绝启动。
+十六进制字符表示。spawn 建立独占 stdin pipe 后，Rust 在任何公共 frame 前先写入原始 16-byte
+credential bootstrap；Core 必须精确读满后才进入 framing loop。credential 不进入 argv、环境、
+Snapshot、diagnostics、日志、Debug 或用户错误；bootstrap 缺失/半写立即拒绝启动。该私有启动前缀
+不是公共协议消息，第一条公共消息仍必须是 `system.hello`。
 
 每个 request/response Envelope 必须含 `generationCredential`。Core 在任何 dispatch 前使用常量
 时间比较验证当前 credential；缺失、错误、旧 generation 和重放均返回或触发

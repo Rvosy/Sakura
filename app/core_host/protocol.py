@@ -9,7 +9,7 @@ from typing import Any, BinaryIO
 
 
 PROTOCOL_MAJOR = 2
-PROTOCOL_MINOR = 0
+PROTOCOL_MINOR = 1
 HEADER_SIZE = 4
 MAX_FRAME_SIZE = 8 * 1024 * 1024
 MESSAGE_KINDS = frozenset({"request", "response"})
@@ -55,6 +55,8 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
     if kind not in MESSAGE_KINDS:
         raise ProtocolError("INVALID_ENVELOPE", "unknown message kind")
     _require_string(message, "generationId")
+    if kind == "response" or "generationCredential" in message:
+        _require_string(message, "generationCredential")
     _require_string(message, "id")
     _require_string(message, "name")
     if not isinstance(message.get("payload"), Mapping):
@@ -134,10 +136,18 @@ class FrameDecoder:
                     break
                 length = struct.unpack(">I", self._buffer[:HEADER_SIZE])[0]
                 del self._buffer[:HEADER_SIZE]
+                if length == 0:
+                    self._buffer.clear()
+                    raise ProtocolError("INVALID_FRAME", "frame payload must not be empty")
                 if length > self.max_frame_size:
                     self._buffer.clear()
+                    code = (
+                        "STDOUT_FRAMING_POLLUTION"
+                        if all(0x21 <= byte <= 0x7E for byte in struct.pack(">I", length))
+                        else "FRAME_TOO_LARGE"
+                    )
                     raise ProtocolError(
-                        "FRAME_TOO_LARGE",
+                        code,
                         f"frame payload exceeds {self.max_frame_size} bytes",
                         details={"length": length, "limit": self.max_frame_size},
                     )
@@ -169,7 +179,10 @@ def decode_frame(frame: bytes) -> dict[str, Any]:
 def _read_exact(stream: BinaryIO, length: int, *, clean_eof: bool = False) -> bytes | None:
     chunks = bytearray()
     while len(chunks) < length:
-        chunk = stream.read(length - len(chunks))
+        try:
+            chunk = stream.read(length - len(chunks))
+        except OSError as error:
+            raise ProtocolError("TRANSPORT_READ_FAILED", "pipe read failed") from error
         if not chunk:
             if clean_eof and not chunks:
                 return None
@@ -183,9 +196,16 @@ def read_frame(stream: BinaryIO) -> dict[str, Any] | None:
     if header is None:
         return None
     length = struct.unpack(">I", header)[0]
+    if length == 0:
+        raise ProtocolError("INVALID_FRAME", "frame payload must not be empty")
     if length > MAX_FRAME_SIZE:
+        code = (
+            "STDOUT_FRAMING_POLLUTION"
+            if all(0x21 <= byte <= 0x7E for byte in header)
+            else "FRAME_TOO_LARGE"
+        )
         raise ProtocolError(
-            "FRAME_TOO_LARGE",
+            code,
             f"frame payload exceeds {MAX_FRAME_SIZE} bytes",
             details={"length": length, "limit": MAX_FRAME_SIZE},
         )
@@ -195,23 +215,29 @@ def read_frame(stream: BinaryIO) -> dict[str, Any] | None:
 
 
 def write_frame(stream: BinaryIO, message: Mapping[str, Any]) -> None:
-    stream.write(encode_frame(message))
-    stream.flush()
+    try:
+        stream.write(encode_frame(message))
+        stream.flush()
+    except OSError as error:
+        raise ProtocolError("TRANSPORT_WRITE_FAILED", "pipe write failed") from error
 
 
 def response(
     request: Mapping[str, Any],
     *,
     generation_id: str,
+    generation_credential: str,
+    protocol_minor: int = PROTOCOL_MINOR,
     payload: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     succeeded = error is None
     message: dict[str, Any] = {
         "protocolMajor": PROTOCOL_MAJOR,
-        "protocolMinor": PROTOCOL_MINOR,
+        "protocolMinor": protocol_minor,
         "kind": "response",
         "generationId": generation_id,
+        "generationCredential": generation_credential,
         "id": str(request.get("id", "unknown")),
         "name": str(request.get("name", "unknown")),
         "payload": dict(payload or {}),

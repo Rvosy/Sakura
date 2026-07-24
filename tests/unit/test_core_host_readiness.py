@@ -8,6 +8,14 @@ from app.core_host.server import ControlDispatcher, HostConfig
 
 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c02"
+GENERATION_CREDENTIAL = "22" * 16
+CAPABILITIES = [
+    "system.hello",
+    "system.health",
+    "system.shutdown",
+    "core.initialize",
+    "core.snapshot",
+]
 
 
 def request(
@@ -17,12 +25,21 @@ def request(
 ) -> dict[str, object]:
     return {
         "protocolMajor": 2,
-        "protocolMinor": 0,
+        "protocolMinor": 1,
         "kind": "request",
         "generationId": GENERATION_ID,
+        "generationCredential": GENERATION_CREDENTIAL,
         "id": request_id,
         "name": name,
-        "payload": payload or {},
+        "payload": payload if payload is not None else (
+            {
+                "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+                "requiredCapabilities": CAPABILITIES,
+                "optionalCapabilities": [],
+            }
+            if name == "system.hello"
+            else {}
+        ),
         "deadlineMs": 3000,
         "priority": "control",
     }
@@ -43,12 +60,18 @@ def wait_for_readiness(
     raise AssertionError(f"readiness did not become {expected}")
 
 
-def test_hello_precedes_initialize_and_python_builds_the_minimal_snapshot() -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, generation_number=7))
-    try:
-        hello, _ = dispatcher.dispatch(request("hello", "system.hello"))
-        assert hello["payload"]["hostState"] == "transport_ready"
+def negotiated_dispatcher(generation_number: int = 1) -> ControlDispatcher:
+    dispatcher = ControlDispatcher(
+        HostConfig(GENERATION_ID, GENERATION_CREDENTIAL, generation_number=generation_number)
+    )
+    hello, _ = dispatcher.dispatch(request("hello", "system.hello"))
+    assert hello["ok"] is True
+    return dispatcher
 
+
+def test_hello_precedes_initialize_and_python_builds_the_minimal_snapshot() -> None:
+    dispatcher = negotiated_dispatcher(generation_number=7)
+    try:
         started = time.monotonic()
         initialize, _ = dispatcher.dispatch(
             request("initialize", "core.initialize", {"mode": "ready", "delayMs": 20})
@@ -86,7 +109,7 @@ def test_hello_precedes_initialize_and_python_builds_the_minimal_snapshot() -> N
 
 @pytest.mark.parametrize("mode", ["setup_required", "degraded", "failed"])
 def test_fake_initialization_reports_each_stable_readiness(mode: str) -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID))
+    dispatcher = negotiated_dispatcher()
     try:
         response, _ = dispatcher.dispatch(
             request("initialize", "core.initialize", {"mode": mode})
@@ -100,7 +123,7 @@ def test_fake_initialization_reports_each_stable_readiness(mode: str) -> None:
 
 
 def test_hung_initialization_does_not_block_health_or_shutdown() -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID))
+    dispatcher = negotiated_dispatcher()
     try:
         initialize, _ = dispatcher.dispatch(
             request("initialize", "core.initialize", {"mode": "hang"})
@@ -143,7 +166,7 @@ def test_hung_initialization_does_not_block_health_or_shutdown() -> None:
     ],
 )
 def test_invalid_initialize_payload_is_rejected_without_starting(payload: dict[str, object]) -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID))
+    dispatcher = negotiated_dispatcher()
     try:
         rejected, _ = dispatcher.dispatch(
             request("initialize", "core.initialize", payload)

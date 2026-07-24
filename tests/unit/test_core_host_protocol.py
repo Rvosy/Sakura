@@ -18,14 +18,16 @@ from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, 
 
 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
+GENERATION_CREDENTIAL = "11" * 16
 
 
 def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
     return {
         "protocolMajor": 2,
-        "protocolMinor": 0,
+        "protocolMinor": 1,
         "kind": "request",
         "generationId": GENERATION_ID,
+        "generationCredential": GENERATION_CREDENTIAL,
         "id": request_id,
         "name": name,
         "payload": {},
@@ -57,9 +59,9 @@ def test_codec_accepts_every_split_and_multiple_merged_frames() -> None:
     [
         (struct.pack(">I", 1) + b"\xff", "INVALID_UTF8"),
         (struct.pack(">I", 1) + b"{", "INVALID_JSON"),
-        (struct.pack(">I", 0), "INVALID_JSON"),
+        (struct.pack(">I", 0), "INVALID_FRAME"),
         (struct.pack(">I", MAX_FRAME_SIZE + 1), "FRAME_TOO_LARGE"),
-        (b"pollution", "FRAME_TOO_LARGE"),
+        (b"pollution", "STDOUT_FRAMING_POLLUTION"),
     ],
 )
 def test_malformed_and_polluted_frames_fail_with_stable_codes(
@@ -117,7 +119,20 @@ def test_envelope_and_error_shape_are_strict_and_json_safe() -> None:
 def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:
     output = io.BytesIO()
     writer = ResponseWriter(output)
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID))
+    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, GENERATION_CREDENTIAL))
+    hello_request = request("hello", "system.hello")
+    hello_request["payload"] = {
+        "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+        "requiredCapabilities": [
+            "system.hello",
+            "system.health",
+            "system.shutdown",
+            "core.initialize",
+            "core.snapshot",
+        ],
+        "optionalCapabilities": [],
+    }
+    assert dispatcher.dispatch(hello_request)[0]["ok"] is True
     first, first_stop = dispatcher.dispatch(request("shutdown-1", "system.shutdown"))
     second, second_stop = dispatcher.dispatch(request("shutdown-2", "system.shutdown"))
     assert first_stop is True

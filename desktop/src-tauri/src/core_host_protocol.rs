@@ -6,7 +6,7 @@ use std::{
 use serde_json::{Map, Value};
 
 pub const PROTOCOL_MAJOR: u64 = 2;
-pub const PROTOCOL_MINOR: u64 = 0;
+pub const PROTOCOL_MINOR: u64 = 1;
 pub const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 const HEADER_SIZE: usize = 4;
 const MESSAGE_KINDS: [&str; 2] = ["request", "response"];
@@ -71,6 +71,9 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
         return Err(IpcError::new("INVALID_ENVELOPE", "unknown message kind"));
     }
     non_empty_string(message, "generationId")?;
+    if kind == "response" || message.contains_key("generationCredential") {
+        non_empty_string(message, "generationCredential")?;
+    }
     non_empty_string(message, "id")?;
     non_empty_string(message, "name")?;
     if !message.get("payload").is_some_and(Value::is_object) {
@@ -178,10 +181,22 @@ impl FrameDecoder {
                     .expect("header has fixed size");
                 self.buffer.drain(..HEADER_SIZE);
                 let length = u32::from_be_bytes(header) as usize;
-                if length > self.max_frame_size {
+                if length == 0 {
                     self.buffer.clear();
                     return Err(IpcError::new(
-                        "FRAME_TOO_LARGE",
+                        "INVALID_FRAME",
+                        "frame payload must not be empty",
+                    ));
+                }
+                if length > self.max_frame_size {
+                    self.buffer.clear();
+                    let code = if header.iter().all(u8::is_ascii_graphic) {
+                        "STDOUT_FRAMING_POLLUTION"
+                    } else {
+                        "FRAME_TOO_LARGE"
+                    };
+                    return Err(IpcError::new(
+                        code,
                         format!("frame payload exceeds {} bytes", self.max_frame_size),
                     ));
                 }
@@ -242,16 +257,31 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<Value>, IpcError> {
         }
     }
     let length = u32::from_be_bytes(header) as usize;
-    if length > MAX_FRAME_SIZE {
+    if length == 0 {
         return Err(IpcError::new(
-            "FRAME_TOO_LARGE",
+            "INVALID_FRAME",
+            "frame payload must not be empty",
+        ));
+    }
+    if length > MAX_FRAME_SIZE {
+        let code = if header.iter().all(u8::is_ascii_graphic) {
+            "STDOUT_FRAMING_POLLUTION"
+        } else {
+            "FRAME_TOO_LARGE"
+        };
+        return Err(IpcError::new(
+            code,
             format!("frame payload exceeds {MAX_FRAME_SIZE} bytes"),
         ));
     }
     let mut payload = vec![0_u8; length];
-    reader
-        .read_exact(&mut payload)
-        .map_err(|_| IpcError::new("INCOMPLETE_FRAME", "missing frame payload"))?;
+    reader.read_exact(&mut payload).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            IpcError::new("INCOMPLETE_FRAME", "missing frame payload")
+        } else {
+            IpcError::new("TRANSPORT_READ_FAILED", "pipe read failed")
+        }
+    })?;
     decode_payload(&payload).map(Some)
 }
 
@@ -278,6 +308,7 @@ mod tests {
             "protocolMinor": 0,
             "kind": "request",
             "generationId": GENERATION_ID,
+            "generationCredential": "11111111111111111111111111111111",
             "id": id,
             "name": name,
             "payload": {},
@@ -315,12 +346,12 @@ mod tests {
         let cases = [
             ([vec![0, 0, 0, 1], vec![0xff]].concat(), "INVALID_UTF8"),
             ([vec![0, 0, 0, 1], vec![b'{']].concat(), "INVALID_JSON"),
-            (vec![0, 0, 0, 0], "INVALID_JSON"),
+            (vec![0, 0, 0, 0], "INVALID_FRAME"),
             (
                 ((MAX_FRAME_SIZE as u32) + 1).to_be_bytes().to_vec(),
                 "FRAME_TOO_LARGE",
             ),
-            (b"stdout pollution".to_vec(), "FRAME_TOO_LARGE"),
+            (b"stdout pollution".to_vec(), "STDOUT_FRAMING_POLLUTION"),
         ];
         for (frame, expected_code) in cases {
             let error = decode_frame(&frame).expect_err("malformed frame must fail");

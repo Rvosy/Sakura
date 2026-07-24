@@ -1,7 +1,8 @@
 use std::{
+    collections::VecDeque,
     fs::File,
     io::{Read, Write},
-    sync::mpsc,
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -22,6 +23,18 @@ use crate::{
 
 const CONTROL_PRIORITY: &str = "control";
 const DEADLINE_EXIT_CODE: u32 = 93;
+const MIN_PROTOCOL_MINOR: u64 = 0;
+const GENERATION_CREDENTIAL_BYTES: usize = 16;
+const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
+const STDERR_RECORD_LIMIT: usize = 4 * 1024;
+const STDERR_CACHE_LIMIT: usize = 64 * 1024;
+const REQUIRED_CAPABILITIES: [&str; 5] = [
+    "system.hello",
+    "system.health",
+    "system.shutdown",
+    "core.initialize",
+    "core.snapshot",
+];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
     "initializing",
@@ -122,16 +135,335 @@ pub struct CoreHostExit {
     pub tree_empty: bool,
     pub forced: bool,
     pub stderr: String,
+    pub stderr_stats: StderrDrainStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StderrDrainStats {
+    pub generation_id: String,
+    pub core_pid: u32,
+    pub bytes_read: u64,
+    pub dropped_bytes: u64,
+    pub dropped_records: u64,
+    pub truncated_records: u64,
+    pub eof: bool,
+    pub read_failed: bool,
+}
+
+#[derive(Debug)]
+struct StderrDrainState {
+    records: VecDeque<String>,
+    buffered_bytes: usize,
+    stats: StderrDrainStats,
+}
+
+struct StderrDrainer {
+    state: Arc<Mutex<StderrDrainState>>,
+    reader: Option<thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for StderrDrainer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StderrDrainer")
+            .field("reader_active", &self.reader.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl StderrDrainer {
+    fn start(pipe: File, generation_id: &str, core_pid: u32, generation_credential: &str) -> Self {
+        let state = Arc::new(Mutex::new(StderrDrainState {
+            records: VecDeque::new(),
+            buffered_bytes: 0,
+            stats: StderrDrainStats {
+                generation_id: generation_id.to_string(),
+                core_pid,
+                bytes_read: 0,
+                dropped_bytes: 0,
+                dropped_records: 0,
+                truncated_records: 0,
+                eof: false,
+                read_failed: false,
+            },
+        }));
+        let reader_state = Arc::clone(&state);
+        let redactor = StderrRedactor::new(generation_credential);
+        let reader = thread::Builder::new()
+            .name(format!("sakura-core-stderr-{core_pid}"))
+            .spawn(move || drain_stderr(pipe, &reader_state, &redactor))
+            .expect("stderr reader thread creation must succeed");
+        Self {
+            state,
+            reader: Some(reader),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(String, StderrDrainStats), String> {
+        if let Some(reader) = self.reader.take() {
+            reader
+                .join()
+                .map_err(|_| "STDERR_READ_FAILED: stderr reader panicked".to_string())?;
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "STDERR_READ_FAILED: stderr state lock was poisoned".to_string())?;
+        Ok((
+            state.records.iter().cloned().collect::<String>(),
+            state.stats.clone(),
+        ))
+    }
+}
+
+impl Drop for StderrDrainer {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+struct StderrRedactor {
+    secrets: Vec<String>,
+}
+
+impl StderrRedactor {
+    fn new(generation_credential: &str) -> Self {
+        let mut secrets = vec![generation_credential.to_string()];
+        for value in std::env::vars_os().map(|(_, value)| value) {
+            let value = value.to_string_lossy();
+            if (4..=4096).contains(&value.len())
+                && !secrets.iter().any(|secret| secret == value.as_ref())
+            {
+                secrets.push(value.into_owned());
+            }
+        }
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        Self { secrets }
+    }
+
+    fn redact(&self, text: &str) -> String {
+        let mut redacted = text.to_string();
+        for secret in &self.secrets {
+            redacted = redacted.replace(secret, "[REDACTED]");
+        }
+        for key in [
+            "authorization",
+            "cookie",
+            "credential",
+            "api_key",
+            "apikey",
+            "token",
+            "secret",
+            "password",
+            "prompt",
+            "message",
+            "content",
+        ] {
+            redacted = redact_key_values(&redacted, key);
+        }
+        redacted
+    }
+}
+
+fn drain_stderr<R: Read>(
+    mut reader: R,
+    state: &Arc<Mutex<StderrDrainState>>,
+    redactor: &StderrRedactor,
+) {
+    let mut buffer = [0_u8; STDERR_READ_CHUNK_SIZE];
+    let mut utf8_pending = Vec::with_capacity(4);
+    let mut unterminated_bytes = 0_usize;
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                if !utf8_pending.is_empty() {
+                    push_stderr_text(state, redactor, &String::from_utf8_lossy(&utf8_pending));
+                }
+                if let Ok(mut state) = state.lock() {
+                    state.stats.eof = true;
+                }
+                return;
+            }
+            Ok(count) => {
+                if let Ok(mut state) = state.lock() {
+                    state.stats.bytes_read = state.stats.bytes_read.saturating_add(count as u64);
+                    for byte in &buffer[..count] {
+                        if *byte == b'\n' {
+                            unterminated_bytes = 0;
+                        } else {
+                            unterminated_bytes = unterminated_bytes.saturating_add(1);
+                            if unterminated_bytes > STDERR_RECORD_LIMIT {
+                                state.stats.truncated_records =
+                                    state.stats.truncated_records.saturating_add(1);
+                                unterminated_bytes = 1;
+                            }
+                        }
+                    }
+                }
+                utf8_pending.extend_from_slice(&buffer[..count]);
+                drain_valid_utf8(&mut utf8_pending, |text| {
+                    push_stderr_text(state, redactor, text)
+                });
+            }
+            Err(_) => {
+                if let Ok(mut state) = state.lock() {
+                    state.stats.read_failed = true;
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn drain_valid_utf8(pending: &mut Vec<u8>, mut consume: impl FnMut(&str)) {
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                if !text.is_empty() {
+                    consume(text);
+                }
+                pending.clear();
+                return;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                if valid > 0 {
+                    let text = std::str::from_utf8(&pending[..valid])
+                        .expect("UTF-8 validator supplied a valid prefix")
+                        .to_string();
+                    consume(&text);
+                    pending.drain(..valid);
+                    continue;
+                }
+                if let Some(invalid_length) = error.error_len() {
+                    consume("\u{fffd}");
+                    pending.drain(..invalid_length);
+                    continue;
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn push_stderr_text(state: &Arc<Mutex<StderrDrainState>>, redactor: &StderrRedactor, text: &str) {
+    let redacted = redactor.redact(text);
+    let mut remaining = redacted.as_str();
+    while !remaining.is_empty() {
+        let mut end = remaining.len().min(STDERR_RECORD_LIMIT);
+        while !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        let record = remaining[..end].to_string();
+        remaining = &remaining[end..];
+        let Ok(mut state) = state.lock() else {
+            return;
+        };
+        while state.buffered_bytes.saturating_add(record.len()) > STDERR_CACHE_LIMIT {
+            let Some(dropped) = state.records.pop_front() else {
+                break;
+            };
+            state.buffered_bytes = state.buffered_bytes.saturating_sub(dropped.len());
+            state.stats.dropped_bytes = state
+                .stats
+                .dropped_bytes
+                .saturating_add(dropped.len() as u64);
+            state.stats.dropped_records = state.stats.dropped_records.saturating_add(1);
+        }
+        state.buffered_bytes = state.buffered_bytes.saturating_add(record.len());
+        state.records.push_back(record);
+    }
+}
+
+fn redact_key_values(text: &str, key: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let lower = text.to_ascii_lowercase();
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find(key) {
+        let key_start = cursor + relative;
+        let key_end = key_start + key.len();
+        output.push_str(&text[cursor..key_end]);
+        let bytes = text.as_bytes();
+        let mut separator = key_end;
+        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
+            separator += 1;
+        }
+        if separator >= bytes.len() || !matches!(bytes[separator], b'=' | b':') {
+            cursor = key_end;
+            continue;
+        }
+        separator += 1;
+        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
+            separator += 1;
+        }
+        output.push_str(&text[key_end..separator]);
+        let quote = bytes
+            .get(separator)
+            .copied()
+            .filter(|byte| matches!(byte, b'\'' | b'"'));
+        if quote.is_some() {
+            output.push(char::from(quote.expect("quote exists")));
+            separator += 1;
+        }
+        output.push_str("[REDACTED]");
+        let mut value_end = separator;
+        let redact_to_line_end = matches!(
+            key,
+            "authorization" | "cookie" | "prompt" | "message" | "content"
+        );
+        while value_end < bytes.len() {
+            if quote.is_some_and(|quote| bytes[value_end] == quote) {
+                break;
+            }
+            if quote.is_none()
+                && !redact_to_line_end
+                && (bytes[value_end].is_ascii_whitespace()
+                    || matches!(bytes[value_end], b',' | b';'))
+            {
+                break;
+            }
+            if quote.is_none() && matches!(bytes[value_end], b'\r' | b'\n') {
+                break;
+            }
+            value_end += 1;
+        }
+        if quote.is_some() && value_end < bytes.len() {
+            output.push(char::from(bytes[value_end]));
+            value_end += 1;
+        }
+        cursor = value_end;
+    }
+    output.push_str(&text[cursor..]);
+    output
 }
 
 pub struct CoreHostRuntime {
     tree: Box<dyn ManagedProcessTree>,
     stdin: Option<File>,
     stdout: Option<File>,
-    stderr: Option<File>,
+    stderr_drain: Option<StderrDrainer>,
     generation_id: String,
+    generation_credential: String,
+    handshake: HandshakeState,
+    negotiation: Option<ProtocolNegotiation>,
     deadline_forced: bool,
     snapshot_cache: CoreSnapshotCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakeState {
+    Pending,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolNegotiation {
+    pub major: u64,
+    pub minor: u64,
+    pub capabilities: Vec<String>,
 }
 
 impl std::fmt::Debug for CoreHostRuntime {
@@ -140,6 +472,8 @@ impl std::fmt::Debug for CoreHostRuntime {
             .debug_struct("CoreHostRuntime")
             .field("root_pid", &self.tree.root_pid())
             .field("generation_id", &self.generation_id)
+            .field("handshake", &self.handshake)
+            .field("negotiation", &self.negotiation)
             .field("deadline_forced", &self.deadline_forced)
             .field("snapshot_cache", &self.snapshot_cache)
             .finish_non_exhaustive()
@@ -186,18 +520,45 @@ impl CoreHostRuntime {
         if generation_id.trim().is_empty() {
             return Err("Core Host generation ID must not be empty".to_string());
         }
+        let (credential_bytes, generation_credential) = create_generation_credential()?;
         let spawned = backend
             .spawn(&request)
             .map_err(|error| format!("Core Host managed spawn failed: {error}"))?;
         let pipes = spawned
             .pipes
             .ok_or_else(|| "Core Host managed spawn returned no pipes".to_string())?;
+        let core_pid = spawned.tree.root_pid();
+        let mut stderr_drain = StderrDrainer::start(
+            pipes.stderr,
+            generation_id,
+            core_pid,
+            &generation_credential,
+        );
+        let mut stdin = pipes.stdin;
+        if stdin
+            .write_all(&credential_bytes)
+            .and_then(|_| stdin.flush())
+            .is_err()
+        {
+            let mut tree = spawned.tree;
+            let _ = tree.terminate_tree(DEADLINE_EXIT_CODE);
+            let _ = tree.wait_root(Duration::from_secs(5));
+            let _ = tree.wait_tree_exited(Duration::from_secs(5));
+            let _ = stderr_drain.finish();
+            let _ = tree.release_exited();
+            return Err(
+                "TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed".to_string(),
+            );
+        }
         Ok(Self {
             tree: spawned.tree,
-            stdin: Some(pipes.stdin),
+            stdin: Some(stdin),
             stdout: Some(pipes.stdout),
-            stderr: Some(pipes.stderr),
+            stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
+            generation_credential,
+            handshake: HandshakeState::Pending,
+            negotiation: None,
             deadline_forced: false,
             snapshot_cache: CoreSnapshotCache::new(generation_id)?,
         })
@@ -249,11 +610,31 @@ impl CoreHostRuntime {
         if !payload.is_object() {
             return Err("Core Host control payload must be an object".to_string());
         }
+        if self.handshake == HandshakeState::Failed && name != "system.shutdown" {
+            return Err("HANDSHAKE_FAILED: protocol negotiation already failed".to_string());
+        }
+        if self.handshake == HandshakeState::Pending
+            && name != "system.hello"
+            && name != "system.shutdown"
+        {
+            return Err("HANDSHAKE_REQUIRED: system.hello must complete first".to_string());
+        }
+        let is_hello = name == "system.hello";
+        let payload = if is_hello && payload.as_object().is_some_and(|value| value.is_empty()) {
+            hello_payload()
+        } else {
+            payload
+        };
+        let protocol_minor = self
+            .negotiation
+            .as_ref()
+            .map_or(PROTOCOL_MINOR, |negotiation| negotiation.minor);
         let request = json!({
             "protocolMajor": PROTOCOL_MAJOR,
-            "protocolMinor": PROTOCOL_MINOR,
+            "protocolMinor": protocol_minor,
             "kind": "request",
             "generationId": self.generation_id,
+            "generationCredential": self.generation_credential,
             "id": request_id,
             "name": name,
             "payload": payload,
@@ -263,20 +644,53 @@ impl CoreHostRuntime {
         let stdin = self
             .stdin
             .as_mut()
-            .ok_or_else(|| "Core Host stdin is closed".to_string())?;
+            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
         write_frame(stdin, &request).map_err(|error| error.to_string())?;
         stdin
             .flush()
-            .map_err(|error| format!("Core Host stdin flush failed: {error}"))?;
+            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
 
         let response = self.read_response(deadline)?;
         if response.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str())
+            || response.get("generationCredential").and_then(Value::as_str)
+                != Some(self.generation_credential.as_str())
             || response.get("id").and_then(Value::as_str) != Some(request_id)
             || response.get("name").and_then(Value::as_str) != Some(name)
         {
-            return Err("Core Host response identity did not match its request".to_string());
+            let _ = self.tree.terminate_tree(DEADLINE_EXIT_CODE);
+            self.deadline_forced = true;
+            return Err(
+                "GENERATION_CREDENTIAL_MISMATCH: Core Host response identity was stale or invalid"
+                    .to_string(),
+            );
+        }
+        if response.get("protocolMajor").and_then(Value::as_u64) != Some(PROTOCOL_MAJOR) {
+            self.handshake = HandshakeState::Failed;
+            return Err("PROTOCOL_MAJOR_MISMATCH: response major is incompatible".to_string());
+        }
+        if is_hello {
+            if response.get("ok").and_then(Value::as_bool) == Some(true) {
+                match parse_negotiation(&response) {
+                    Ok(negotiation) => {
+                        self.handshake = HandshakeState::Complete;
+                        self.negotiation = Some(negotiation);
+                    }
+                    Err(error) => {
+                        self.handshake = HandshakeState::Failed;
+                        return Err(error);
+                    }
+                }
+            } else {
+                self.handshake = HandshakeState::Failed;
+            }
+        } else if response.get("protocolMinor").and_then(Value::as_u64) != Some(protocol_minor) {
+            return Err("INVALID_NEGOTIATION: response minor changed after handshake".to_string());
         }
         Ok(response)
+    }
+
+    pub fn negotiation(&self) -> Option<&ProtocolNegotiation> {
+        self.negotiation.as_ref()
     }
 
     pub fn refresh_snapshot(
@@ -319,7 +733,8 @@ impl CoreHostRuntime {
             }
         };
         if response.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err("Core Host rejected system.shutdown".to_string());
+            self.stdin.take();
+            return self.finish_exit(stop_deadline);
         }
         self.stdin.take();
         self.finish_exit(stop_deadline)
@@ -334,7 +749,7 @@ impl CoreHostRuntime {
         let mut stdout = self
             .stdout
             .take()
-            .ok_or_else(|| "Core Host stdout is unavailable".to_string())?;
+            .ok_or_else(|| "TRANSPORT_READ_FAILED: Core Host stdout is unavailable".to_string())?;
         let (sender, receiver) = mpsc::sync_channel(1);
         let reader = thread::spawn(move || {
             let result = read_frame(&mut stdout);
@@ -357,13 +772,16 @@ impl CoreHostRuntime {
                     .join()
                     .map_err(|_| "Core Host stdout reader panicked".to_string())?;
                 self.stdout = Some(received.0);
-                return Err("Core Host response exceeded its deadline".to_string());
+                return Err(
+                    "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
+                        .to_string(),
+                );
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 reader
                     .join()
                     .map_err(|_| "Core Host stdout reader panicked".to_string())?;
-                return Err("Core Host stdout reader disconnected".to_string());
+                return Err("TRANSPORT_READ_FAILED: stdout reader disconnected".to_string());
             }
         };
         reader
@@ -373,7 +791,12 @@ impl CoreHostRuntime {
         received
             .1
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Core Host stdout reached EOF before its response".to_string())
+            .ok_or_else(|| match self.tree.wait_root(Duration::ZERO) {
+                Ok(ProcessWaitOutcome::Exited(_)) => {
+                    "CORE_CRASHED: Core Host exited before its response".to_string()
+                }
+                _ => "STDOUT_EOF: Core Host stdout reached EOF before its response".to_string(),
+            })
     }
 
     fn finish_exit(mut self, stop_deadline: Duration) -> Result<CoreHostExit, String> {
@@ -413,23 +836,128 @@ impl CoreHostRuntime {
             pipe.read_to_end(&mut trailing_stdout)
                 .map_err(|error| format!("Core Host stdout drain failed: {error}"))?;
         }
-        let mut stderr_bytes = Vec::new();
-        if let Some(mut pipe) = self.stderr.take() {
-            pipe.read_to_end(&mut stderr_bytes)
-                .map_err(|error| format!("Core Host stderr read failed: {error}"))?;
-        }
+        let (stderr, stderr_stats) = self
+            .stderr_drain
+            .as_mut()
+            .ok_or_else(|| "STDERR_READ_FAILED: stderr reader is unavailable".to_string())?
+            .finish()?;
         self.tree
             .release_exited()
             .map_err(|error| format!("Core Host handle release failed: {error}"))?;
         if !trailing_stdout.is_empty() {
-            return Err("Core Host wrote unexpected trailing stdout bytes".to_string());
+            return Err(
+                "STDOUT_FRAMING_POLLUTION: Core Host wrote trailing stdout bytes".to_string(),
+            );
         }
         Ok(CoreHostExit {
             root_exit_code,
             tree_empty,
             forced,
-            stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+            stderr,
+            stderr_stats,
         })
+    }
+}
+
+fn hello_payload() -> Value {
+    json!({
+        "protocol": {
+            "major": PROTOCOL_MAJOR,
+            "minMinor": MIN_PROTOCOL_MINOR,
+            "maxMinor": PROTOCOL_MINOR,
+        },
+        "requiredCapabilities": REQUIRED_CAPABILITIES,
+        "optionalCapabilities": [],
+    })
+}
+
+fn parse_negotiation(response: &Value) -> Result<ProtocolNegotiation, String> {
+    let negotiated = response
+        .get("payload")
+        .and_then(|payload| payload.get("negotiated"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "INVALID_NEGOTIATION: hello response omitted negotiated result".to_string()
+        })?;
+    let major = negotiated
+        .get("major")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "INVALID_NEGOTIATION: negotiated major is invalid".to_string())?;
+    let minor = negotiated
+        .get("minor")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "INVALID_NEGOTIATION: negotiated minor is invalid".to_string())?;
+    if major != PROTOCOL_MAJOR || !(MIN_PROTOCOL_MINOR..=PROTOCOL_MINOR).contains(&minor) {
+        return Err("INVALID_NEGOTIATION: negotiated version is unsupported".to_string());
+    }
+    if response.get("protocolMinor").and_then(Value::as_u64) != Some(minor) {
+        return Err("INVALID_NEGOTIATION: response envelope minor is inconsistent".to_string());
+    }
+    let capability_values = negotiated
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "INVALID_NEGOTIATION: negotiated capabilities are invalid".to_string())?;
+    let mut capabilities = Vec::with_capacity(capability_values.len());
+    for value in capability_values {
+        let capability = value
+            .as_str()
+            .filter(|capability| !capability.is_empty() && *capability == capability.trim())
+            .ok_or_else(|| "INVALID_NEGOTIATION: negotiated capability is invalid".to_string())?;
+        if capabilities.iter().any(|existing| existing == capability) {
+            return Err("INVALID_NEGOTIATION: negotiated capability is duplicated".to_string());
+        }
+        capabilities.push(capability.to_string());
+    }
+    if REQUIRED_CAPABILITIES
+        .iter()
+        .any(|required| !capabilities.iter().any(|capability| capability == required))
+    {
+        return Err(
+            "CAPABILITY_NEGOTIATION_FAILED: Core Host omitted a required capability".to_string(),
+        );
+    }
+    Ok(ProtocolNegotiation {
+        major,
+        minor,
+        capabilities,
+    })
+}
+
+fn create_generation_credential() -> Result<([u8; GENERATION_CREDENTIAL_BYTES], String), String> {
+    let mut bytes = [0_u8; GENERATION_CREDENTIAL_BYTES];
+    fill_os_random(&mut bytes)?;
+    let mut encoded = String::with_capacity(GENERATION_CREDENTIAL_BYTES * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok((bytes, encoded))
+}
+
+#[cfg(unix)]
+fn fill_os_random(bytes: &mut [u8]) -> Result<(), String> {
+    File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(bytes))
+        .map_err(|_| "GENERATION_CREDENTIAL_UNAVAILABLE: OS random source failed".to_string())
+}
+
+#[cfg(windows)]
+fn fill_os_random(bytes: &mut [u8]) -> Result<(), String> {
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        #[link_name = "SystemFunction036"]
+        fn rtl_gen_random(buffer: *mut std::ffi::c_void, length: u32) -> u8;
+    }
+    let generated = unsafe {
+        rtl_gen_random(
+            bytes.as_mut_ptr().cast(),
+            u32::try_from(bytes.len()).expect("credential length fits u32"),
+        )
+    };
+    if generated == 0 {
+        Err("GENERATION_CREDENTIAL_UNAVAILABLE: OS random source failed".to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -548,6 +1076,123 @@ mod tests {
     }
 
     #[test]
+    fn protocol_minor_capabilities_and_major_failure_are_negotiated_before_initialize() {
+        let _test_lock = lifecycle_test_lock();
+        let layout = development_layout();
+        let mut compatible =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("compatible Host launches");
+        let hello = compatible
+            .request_with_payload(
+                "hello-minor-zero",
+                "system.hello",
+                json!({
+                    "protocol": {"major": 2, "minMinor": 0, "maxMinor": 0},
+                    "requiredCapabilities": [
+                        "system.hello", "system.health", "system.shutdown",
+                        "core.initialize", "core.snapshot"
+                    ],
+                    "optionalCapabilities": ["future.optional"]
+                }),
+                Duration::from_secs(3),
+            )
+            .expect("minor zero should negotiate");
+        assert_eq!(hello["protocolMinor"], 0);
+        assert_eq!(compatible.negotiation().expect("negotiation").minor, 0);
+        assert_eq!(
+            compatible
+                .negotiation()
+                .expect("negotiation")
+                .capabilities
+                .len(),
+            5
+        );
+        compatible
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect("compatible Host stops");
+
+        let mut incompatible =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("incompatible Host launches");
+        let hello = incompatible
+            .request_with_payload(
+                "hello-major-three",
+                "system.hello",
+                json!({
+                    "protocol": {"major": 3, "minMinor": 0, "maxMinor": 1},
+                    "requiredCapabilities": ["core.initialize"],
+                    "optionalCapabilities": []
+                }),
+                Duration::from_secs(3),
+            )
+            .expect("Core returns a framed incompatibility");
+        assert_eq!(hello["error"]["code"], "PROTOCOL_MAJOR_MISMATCH");
+        let error = incompatible
+            .request_with_payload(
+                "initialize-after-failure",
+                "core.initialize",
+                json!({"mode": "ready"}),
+                Duration::from_secs(3),
+            )
+            .expect_err("initialize must not continue after failed hello");
+        assert!(error.starts_with("HANDSHAKE_FAILED:"));
+        incompatible
+            .close_stdin_and_wait(Duration::from_secs(5))
+            .expect("failed handshake Host stops on stdin EOF");
+    }
+
+    #[test]
+    fn generation_credentials_are_unique_and_never_enter_debug_or_snapshot() {
+        let _test_lock = lifecycle_test_lock();
+        let layout = development_layout();
+        let mut first =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("first Host launches");
+        let first_credential = first.generation_credential.clone();
+        assert!(!format!("{first:?}").contains(&first_credential));
+        first
+            .request("hello-first", "system.hello", Duration::from_secs(3))
+            .expect("first hello");
+        let snapshot = first
+            .refresh_snapshot("snapshot-first", Duration::from_secs(3))
+            .expect("first snapshot");
+        assert!(!snapshot.to_string().contains(&first_credential));
+        first
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect("first Host stops");
+
+        let second = CoreHostRuntime::launch(&layout, GENERATION_ID).expect("second Host launches");
+        let second_credential = second.generation_credential.clone();
+        assert!(
+            first_credential != second_credential,
+            "each generation must receive a unique credential"
+        );
+        assert!(!format!("{second:?}").contains(&second_credential));
+        second
+            .close_stdin_and_wait(Duration::from_secs(5))
+            .expect("second Host stops");
+    }
+
+    #[test]
+    fn stale_generation_response_is_rejected_and_force_reclaimed_without_secret_echo() {
+        let _test_lock = lifecycle_test_lock();
+        let root = repo_root();
+        let python = development_layout().python_executable;
+        let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/stale_credential_host.py");
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("stale response fixture launches");
+        let credential = host.generation_credential.clone();
+        let error = host
+            .request("hello-stale", "system.hello", Duration::from_secs(3))
+            .expect_err("stale credential response must fail");
+        assert!(error.starts_with("GENERATION_CREDENTIAL_MISMATCH:"));
+        assert!(!error.contains(&credential));
+        let exit = host
+            .close_stdin_and_wait(Duration::from_secs(5))
+            .expect("stale generation tree is reclaimed");
+        assert!(exit.tree_empty);
+        assert!(exit.forced);
+    }
+
+    #[test]
     fn managed_real_python_host_treats_clean_stdin_eof_as_orderly_exit() {
         let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
@@ -583,7 +1228,7 @@ mod tests {
             .expect("pollution should be observed before deadline");
         assert_eq!(
             result.expect_err("pollution must not decode").code,
-            "FRAME_TOO_LARGE"
+            "STDOUT_FRAMING_POLLUTION"
         );
         tree.terminate_tree(97)
             .expect("polluting fixture Job should terminate");
@@ -653,6 +1298,8 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
+        host.request("hello", "system.hello", Duration::from_secs(3))
+            .expect("hello should negotiate");
         let initialize = host
             .request_with_payload(
                 "initialize",
@@ -689,6 +1336,8 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
+        host.request("hello", "system.hello", Duration::from_secs(3))
+            .expect("hello should negotiate");
         host.request_with_payload(
             "initialize",
             "core.initialize",

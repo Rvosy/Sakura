@@ -16,17 +16,34 @@ from app.core_host.protocol import decode_frame, encode_frame, read_frame
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
+GENERATION_CREDENTIAL = "33" * 16
+CAPABILITIES = [
+    "system.hello",
+    "system.health",
+    "system.shutdown",
+    "core.initialize",
+    "core.snapshot",
+]
 
 
 def request(request_id: str, name: str, payload: dict[str, object] | None = None) -> dict[str, object]:
     return {
         "protocolMajor": 2,
-        "protocolMinor": 0,
+        "protocolMinor": 1,
         "kind": "request",
         "generationId": GENERATION_ID,
+        "generationCredential": GENERATION_CREDENTIAL,
         "id": request_id,
         "name": name,
-        "payload": payload or {},
+        "payload": payload if payload is not None else (
+            {
+                "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+                "requiredCapabilities": CAPABILITIES,
+                "optionalCapabilities": [],
+            }
+            if name == "system.hello"
+            else {}
+        ),
         "deadlineMs": 3000,
         "priority": "control",
     }
@@ -34,7 +51,7 @@ def request(request_id: str, name: str, payload: dict[str, object] | None = None
 
 def start_host(generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [
             sys.executable,
             "-m",
@@ -48,6 +65,10 @@ def start_host(generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
         stderr=subprocess.PIPE,
         creationflags=flags,
     )
+    assert process.stdin is not None
+    process.stdin.write(bytes.fromhex(GENERATION_CREDENTIAL))
+    process.stdin.flush()
+    return process
 
 
 def read_with_deadline(
@@ -107,15 +128,15 @@ def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
         hello = exchange(process, request("hello", "system.hello"))
         assert hello["ok"] is True
         assert hello["payload"] == {
-            "capabilities": [
-                "system.hello",
-                "system.health",
-                "system.shutdown",
-                "core.initialize",
-                "core.snapshot",
-            ],
+            "capabilities": CAPABILITIES,
             "coreVersion": "0.1.0",
             "hostState": "transport_ready",
+            "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+            "negotiated": {
+                "major": 2,
+                "minor": 1,
+                "capabilities": CAPABILITIES,
+            },
         }
         for index in range(2):
             health = exchange(process, request(f"health-{index}", "system.health"))
@@ -145,6 +166,7 @@ def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
 def test_generation_mismatch_is_rejected_but_shutdown_remains_available() -> None:
     process = start_host()
     try:
+        assert exchange(process, request("hello", "system.hello"))["ok"] is True
         mismatch = request("wrong-generation", "system.health")
         mismatch["generationId"] = "00000000-0000-4000-8000-00000000ffff"
         response = exchange(process, mismatch)
@@ -195,6 +217,55 @@ def test_clean_stdin_eof_exits_without_output_or_residual_thread() -> None:
         stop_host(process)
 
 
+@pytest.mark.parametrize("credential", [None, "77" * 16])
+def test_real_host_rejects_missing_or_wrong_message_credential_without_echo(
+    credential: str | None,
+) -> None:
+    process = start_host()
+    try:
+        message = request("bad-credential", "system.hello")
+        if credential is None:
+            del message["generationCredential"]
+        else:
+            message["generationCredential"] = credential
+        assert process.stdin is not None
+        process.stdin.write(encode_frame(message))
+        process.stdin.flush()
+        assert process.wait(timeout=5) == 74
+        assert process.stdout is not None
+        assert process.stdout.read() == b""
+        assert process.stderr is not None
+        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        assert "CORE_HOST_TRANSPORT_ERROR TransportFailure" in stderr
+        assert GENERATION_CREDENTIAL not in stderr
+        if credential:
+            assert credential not in stderr
+    finally:
+        stop_host(process)
+
+
+def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output() -> None:
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    process = subprocess.Popen(
+        [sys.executable, "-m", "app.core_host", "--generation-id", GENERATION_ID],
+        cwd=REPO_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=flags,
+    )
+    assert process.stdin is not None
+    process.stdin.close()
+    try:
+        assert process.wait(timeout=5) == 74
+        assert process.stdout is not None
+        assert process.stdout.read() == b""
+        assert process.stderr is not None
+        assert "TransportFailure" in process.stderr.read().decode(errors="replace")
+    finally:
+        stop_host(process)
+
+
 def test_real_host_initializes_in_background_and_returns_python_snapshot() -> None:
     process = start_host()
     try:
@@ -225,6 +296,7 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot() -> No
 def test_real_host_health_and_shutdown_remain_responsive_when_initialize_hangs() -> None:
     process = start_host()
     try:
+        assert exchange(process, request("hello", "system.hello"))["ok"] is True
         initialize = exchange(
             process,
             request("initialize", "core.initialize", {"mode": "hang"}),
