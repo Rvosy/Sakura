@@ -188,6 +188,27 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked
           platform::window_backend:: -- --nocapture
 
+      - name: Run minimum Shell + Python Core lifecycle
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: '1'
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          core_host_runtime::tests:: -- --nocapture
+
+      - name: Run minimum Shell + Python Core lifecycle (POSIX)
+        if: runner.os != 'Windows'
+        working-directory: desktop
+        shell: bash
+        env:
+          RUST_BACKTRACE: '1'
+        run: >-
+          timeout --signal=TERM --kill-after=15s 180s
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          core_host_runtime::tests:: -- --nocapture
+
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop
         run: >-
