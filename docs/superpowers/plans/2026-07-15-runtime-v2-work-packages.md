@@ -71,7 +71,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted（CI platform foundation） |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted（CI platform foundation） |
-| WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
+| WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | active |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
 | WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
 | WP-1D-02 | diagnostics 与最小 Runtime Repair 页面 | WP-1D-01 | planned |
@@ -1541,6 +1541,12 @@ hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> loc
 ## 8. Phase 1C 续：协议与 bundled Runtime 冻结
 
 ### WP-1C-03：协议协商、stderr 排水和故障 transport
+
+激活记录（2026-07-24）：状态为 `active`。独立规范见
+`docs/runtime-v2/WP-1C-03-protocol-transport.md`；允许目录、非目标、协议版本与 capability 结构、
+generation credential 生命周期、stderr 有界排水/脱敏、故障矩阵、三平台证据责任、timeout、
+资源上限、退出条件和独立回退均以该规范为准。前置 WP-1P-06 已 accepted；同一时间没有其他
+`active`/`stabilizing` WP，WP-1C-04 保持 `planned`。
 
 主要结果：建立 Desktop/Core/Protocol 版本协商、日志排水和真实 transport 故障边界。
 
