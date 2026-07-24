@@ -69,7 +69,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
-| WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | active |
+| WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted（CI platform foundation） |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
@@ -1476,9 +1476,14 @@ P0/P1：WP-1P-03 范围内为 0，退出条件相关缺陷为 0
 
 ### WP-1P-05：三平台窗口交互、IME 与原生诊断 backends
 
-状态：`active`（2026-07-24；WP-1P-04 accepted 后单独激活）
+状态：`accepted`（CI platform foundation，2026-07-24）
 
 独立规范：`docs/runtime-v2/WP-1P-05-window-diagnostics.md`
+
+实现提交：`3e23285`；accepted 记录随本计划更新提交。最新 Draft PR HEAD 为
+`3e23285f90c40cd45d6817918d9a4fdf8aebb127`，原生 platform foundation push/pull runs 为
+`30066486490` / `30066488599`，Unit/UI run 为 `30066488685`，均全绿。Linux run 包含
+Xvfb window backend 合同测试；macOS/X11/Wayland 真实设备体验保持 deferred。
 
 主要结果：共享布局/命中模型继续复用，Windows、macOS、X11/Wayland 使用明确 backend 完成透明窗口、拖动、焦点、IME、scale 和窗口身份诊断。
 

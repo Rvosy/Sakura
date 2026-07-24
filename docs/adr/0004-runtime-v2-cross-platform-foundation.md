@@ -119,6 +119,19 @@ Phase 1P 建立后，所有平台敏感 Work Package 至少需要：
 
 每个 WP 的允许目录、故障矩阵、真实环境和独立回退以 Work Package 真相源为准。
 
+## WP-1P-05 CI platform foundation 记录（2026-07-24）
+
+WP-1P-05 已在 Draft PR #147 最新 HEAD `3e23285f90c40cd45d6817918d9a4fdf8aebb127` 完成
+三平台窗口交互与原生诊断 backend 的 CI platform foundation：Windows x64、macOS arm64、
+Linux x64 push run `30066486490` 与 pull_request run `30066488599` 全绿，Unit/UI run
+`30066488685` 全绿。Linux run 包含有界 Xvfb window backend 合同测试；共享布局、命中、scale、
+revision 和失败恢复模型保持平台无关，diagnostics 只输出脱敏结构化 facts。
+
+本记录不把 CI/Xvfb 结果描述成真实设备体验。macOS 的透明命中、IME、Retina、Spaces、多屏，
+Linux X11 的透明命中/拖动/IME/多屏，以及 Linux Wayland compositor、窗口身份和输入体验，
+均登记为 WP-7-02/WP-7-02-HW 发布前硬门禁。ADR-0004 仍等待 WP-1P-06 完成后，才可更新为
+`Technically Validated for CI platform foundation`。
+
 ## 结果与代价
 
 收益：
