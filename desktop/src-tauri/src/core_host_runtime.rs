@@ -974,13 +974,15 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::{self, Cursor, Read},
         path::PathBuf,
-        sync::{Mutex, OnceLock},
+        sync::{Arc, Mutex, OnceLock},
+        thread,
         time::Duration,
     };
 
     #[cfg(windows)]
-    use std::{sync::mpsc, thread};
+    use std::sync::mpsc;
 
     use serde_json::json;
 
@@ -998,7 +1000,10 @@ mod tests {
         managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
     };
 
-    use super::{CoreHostRuntime, CoreSnapshotCache};
+    use super::{
+        drain_stderr, CoreHostRuntime, CoreSnapshotCache, StderrDrainState, StderrDrainStats,
+        StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
+    };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 
@@ -1008,7 +1013,7 @@ mod tests {
         LIFECYCLE_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("Core lifecycle test lock should not be poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn repo_root() -> PathBuf {
@@ -1034,6 +1039,162 @@ mod tests {
                 explicit_development_root: Some(root),
             })
             .expect("repository Runtime should resolve explicitly")
+    }
+
+    fn stderr_state() -> Arc<Mutex<StderrDrainState>> {
+        Arc::new(Mutex::new(StderrDrainState {
+            records: std::collections::VecDeque::new(),
+            buffered_bytes: 0,
+            stats: StderrDrainStats {
+                generation_id: GENERATION_ID.to_string(),
+                core_pid: 42,
+                bytes_read: 0,
+                dropped_bytes: 0,
+                dropped_records: 0,
+                truncated_records: 0,
+                eof: false,
+                read_failed: false,
+            },
+        }))
+    }
+
+    struct FragmentedReader {
+        bytes: Cursor<Vec<u8>>,
+        chunk_size: usize,
+    }
+
+    impl Read for FragmentedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let limit = buffer.len().min(self.chunk_size);
+            self.bytes.read(&mut buffer[..limit])
+        }
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected pipe failure"))
+        }
+    }
+
+    #[test]
+    fn stderr_drain_handles_lines_fragmented_utf8_invalid_bytes_and_eof() {
+        let state = stderr_state();
+        let redactor = StderrRedactor {
+            secrets: Vec::new(),
+        };
+        let mut bytes = "ordinary\n多行 UTF-8\n".as_bytes().to_vec();
+        bytes.extend_from_slice(&[0xff, 0x00, b'\n']);
+        drain_stderr(
+            FragmentedReader {
+                bytes: Cursor::new(bytes),
+                chunk_size: 1,
+            },
+            &state,
+            &redactor,
+        );
+        let state = state.lock().expect("stderr state");
+        let output = state.records.iter().cloned().collect::<String>();
+        assert!(output.contains("ordinary\n多行 UTF-8\n"));
+        assert!(output.contains('\u{fffd}'));
+        assert!(output.contains('\0'));
+        assert!(state.stats.eof);
+        assert!(!state.stats.read_failed);
+    }
+
+    #[test]
+    fn stderr_flood_is_bounded_truncated_counted_and_secret_free() {
+        let credential = "88888888888888888888888888888888";
+        let environment_value = "controlled-environment-value";
+        let state = stderr_state();
+        let redactor = StderrRedactor {
+            secrets: vec![credential.to_string(), environment_value.to_string()],
+        };
+        let sensitive = format!(
+            "token=plain Authorization: Bearer private cookie=session chat content=hello {credential} {environment_value} "
+        );
+        let flood = format!("{sensitive}\n{}", "x".repeat(256 * 1024));
+        drain_stderr(Cursor::new(flood.as_bytes()), &state, &redactor);
+        let state = state.lock().expect("stderr state");
+        let output = state.records.iter().cloned().collect::<String>();
+        assert!(state.buffered_bytes <= STDERR_CACHE_LIMIT);
+        assert!(state.stats.dropped_bytes > 0);
+        assert!(state.stats.dropped_records > 0);
+        assert!(state.stats.truncated_records > 0);
+        assert!(!output.contains(credential));
+        assert!(!output.contains(environment_value));
+        assert!(!output.contains("Bearer private"));
+        assert!(!output.contains("session"));
+        assert!(!output.contains("hello"));
+    }
+
+    #[test]
+    fn stderr_read_failure_and_repeated_finish_are_stable_and_idempotent() {
+        let state = stderr_state();
+        let redactor = StderrRedactor {
+            secrets: Vec::new(),
+        };
+        drain_stderr(FailingReader, &state, &redactor);
+        assert!(state.lock().expect("stderr state").stats.read_failed);
+
+        let mut drainer = StderrDrainer {
+            state,
+            reader: Some(thread::spawn(|| {})),
+        };
+        let first = drainer.finish().expect("first finish");
+        let second = drainer.finish().expect("repeated finish");
+        assert_eq!(first, second);
+        assert!(first.1.read_failed);
+    }
+
+    #[test]
+    fn real_stderr_flood_never_blocks_protocol_and_is_bounded_and_redacted() {
+        let _test_lock = lifecycle_test_lock();
+        let root = repo_root();
+        let python = development_layout().python_executable;
+        let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/stderr_flood_host.py");
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("stderr flood fixture launches");
+        let credential = host.generation_credential.clone();
+        host.request("hello-flood", "system.hello", Duration::from_secs(3))
+            .expect("stderr flood must not block hello");
+        let exit = host
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect("stderr flood fixture stops cleanly");
+        assert!(exit.stderr_stats.eof);
+        assert!(!exit.stderr_stats.read_failed);
+        assert!(exit.stderr_stats.bytes_read > 1024 * 1024);
+        assert!(exit.stderr_stats.dropped_bytes > 0);
+        assert!(exit.stderr_stats.dropped_records > 0);
+        assert!(exit.stderr_stats.truncated_records > 0);
+        assert!(exit.stderr.len() <= STDERR_CACHE_LIMIT);
+        assert!(!exit.stderr.contains(&credential));
+        for secret in ["private", "Bearer", "session", "user-chat"] {
+            assert!(!exit.stderr.contains(secret));
+        }
+    }
+
+    #[test]
+    fn core_crash_reclaims_stderr_reader_and_returns_redacted_diagnostics() {
+        let _test_lock = lifecycle_test_lock();
+        let root = repo_root();
+        let python = development_layout().python_executable;
+        let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/stderr_crash_host.py");
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("stderr crash fixture launches");
+        let error = host
+            .request("hello-crash", "system.hello", Duration::from_secs(3))
+            .expect_err("crashed Core cannot answer hello");
+        assert!(error.starts_with("CORE_CRASHED:") || error.starts_with("STDOUT_EOF:"));
+        let exit = host
+            .close_stdin_and_wait(Duration::from_secs(5))
+            .expect("crashed Core resources are finalized");
+        assert_eq!(exit.root_exit_code, 42);
+        assert!(exit.stderr_stats.eof);
+        assert!(!exit.stderr.contains("must-not-leak"));
     }
 
     #[test]
