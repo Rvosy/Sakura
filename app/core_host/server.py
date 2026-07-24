@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import queue
 import hmac
+import queue
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, BinaryIO
+from pathlib import Path
+from typing import Any, BinaryIO, Callable
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
@@ -23,16 +24,25 @@ CAPABILITIES = (
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
-_INITIALIZE_MODES = frozenset({"ready", "setup_required", "degraded", "failed", "hang"})
+_SUMMARY_KEYS = (
+    "id",
+    "displayName",
+    "initialMessage",
+    "replyTones",
+    "portraitChoices",
+)
 
 
 @dataclass(frozen=True)
 class HostConfig:
+    app_root: Path
     generation_id: str
     generation_credential: str = field(repr=False)
     generation_number: int = 1
 
     def __post_init__(self) -> None:
+        if not isinstance(self.app_root, Path):
+            raise TypeError("app_root must be a Path")
         if not self.generation_id.strip():
             raise ValueError("generation_id must not be empty")
         if len(self.generation_credential) != 32 or any(
@@ -71,21 +81,39 @@ class NegotiationError(ValueError):
         self.code = code
 
 
-class ReadinessController:
-    """Owns the fake background initialization state for one generation."""
+def _default_initializer_factory(app_root: Path) -> object:
+    from .assistant_adapter import AssistantAdapter
 
-    def __init__(self, config: HostConfig) -> None:
+    return AssistantAdapter(app_root)
+
+
+class ReadinessController:
+    """Owns one background Assistant initialization for one generation."""
+
+    def __init__(
+        self,
+        config: HostConfig,
+        *,
+        initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+    ) -> None:
         self._config = config
+        self._initializer_factory = initializer_factory
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._closed = False
+        self._close_called = False
         self._readiness = "transport_ready"
         self._revision = 0
-        self._component_state = "disabled"
+        self._component: dict[str, object] | None = None
+        self._current_character_summary: dict[str, object] | None = None
+        self._initializer: object | None = None
+        self._initializer_close_claimed = False
+        self._background_close_error: BaseException | None = None
 
     def begin(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        mode, delay_ms = self._validate_initialize_payload(payload)
+        if not isinstance(payload, Mapping) or payload:
+            raise InitializeError("initialize payload must be an empty mapping")
         with self._lock:
             if self._closed:
                 raise InitializeError("Core Host is shutting down")
@@ -96,11 +124,14 @@ class ReadinessController:
                     "readiness": self._readiness,
                 }
             self._readiness = "initializing"
-            self._component_state = "initializing"
+            self._component = {
+                "state": "initializing",
+                "code": "INITIALIZING",
+                "retryable": False,
+            }
             self._revision = 1
             self._worker = threading.Thread(
                 target=self._initialize,
-                args=(mode, delay_ms),
                 name="sakura-core-host-initialize",
             )
             self._worker.start()
@@ -116,59 +147,162 @@ class ReadinessController:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            components = {}
+            if self._component is not None:
+                components["assistant"] = dict(self._component)
             return {
                 "schemaVersion": 1,
                 "generationId": self._config.generation_id,
                 "generationNumber": self._config.generation_number,
                 "revision": self._revision,
                 "readiness": self._readiness,
-                "components": {"fixture": {"state": self._component_state}},
+                "components": components,
                 "capabilities": list(CAPABILITIES),
-                "currentCharacterSummary": None,
+                "currentCharacterSummary": self._copy_summary(
+                    self._current_character_summary
+                ),
                 "activeInteractionSummary": None,
                 "coreConfigRevision": 0,
             }
 
     def close(self) -> None:
         with self._lock:
-            if self._closed:
-                worker = self._worker
-            else:
-                self._closed = True
-                self._cancel.set()
-                worker = self._worker
+            if self._close_called:
+                return
+            self._close_called = True
+            self._closed = True
+            self._cancel.set()
+            worker = self._worker
+            initializer = self._claim_initializer_close_locked()
+        primary_error: BaseException | None = None
+        primary_traceback = None
+        if initializer is not None:
+            try:
+                self._close_initializer(initializer)
+            except BaseException as error:  # noqa: BLE001 - cleanup ownership boundary
+                primary_error = error
+                primary_traceback = error.__traceback__
         if worker is not None:
             worker.join(timeout=1)
             if worker.is_alive():
-                raise WriterError(
+                timeout_error = WriterError(
                     "SHUTDOWN_DURING_INITIALIZE",
                     "initialize worker did not stop before shutdown deadline",
                 )
+                if primary_error is None:
+                    primary_error = timeout_error
+                    primary_traceback = timeout_error.__traceback__
+                else:
+                    self._add_cleanup_note(primary_error, timeout_error)
+        with self._lock:
+            background_error = self._background_close_error
+            self._background_close_error = None
+        if background_error is not None:
+            if primary_error is None:
+                primary_error = background_error
+                primary_traceback = background_error.__traceback__
+            else:
+                self._add_cleanup_note(primary_error, background_error)
+        if primary_error is not None:
+            raise primary_error.with_traceback(primary_traceback)
+
+    def _initialize(self) -> None:
+        initializer: object | None = None
+        try:
+            initializer = self._initializer_factory(self._config.app_root)
+            with self._lock:
+                self._initializer = initializer
+                close_now = self._closed
+                claimed = self._claim_initializer_close_locked() if close_now else None
+            if claimed is not None:
+                self._close_initializer_in_worker(claimed)
+                return
+
+            initialize = getattr(initializer, "initialize")
+            result = initialize(self._cancel)
+            summary = self._project_summary(result.current_character_summary)
+            with self._lock:
+                if self._closed:
+                    claimed = self._claim_initializer_close_locked()
+                else:
+                    self._readiness = result.state
+                    self._component = {
+                        "state": result.state,
+                        "code": result.code,
+                        "retryable": result.retryable,
+                    }
+                    self._current_character_summary = summary
+                    self._revision = 2
+                    claimed = None
+            if claimed is not None:
+                self._close_initializer_in_worker(claimed)
+        except BaseException:  # noqa: BLE001 - publish a stable, sanitized readiness
+            with self._lock:
+                if self._closed:
+                    claimed = self._claim_initializer_close_locked()
+                else:
+                    self._readiness = "failed"
+                    self._component = {
+                        "state": "failed",
+                        "code": "ASSISTANT_INITIALIZATION_FAILED",
+                        "retryable": False,
+                    }
+                    self._current_character_summary = None
+                    self._revision = 2
+                    claimed = None
+            if claimed is not None:
+                self._close_initializer_in_worker(claimed)
+
+    def _claim_initializer_close_locked(self) -> object | None:
+        if self._initializer is None or self._initializer_close_claimed:
+            return None
+        self._initializer_close_claimed = True
+        return self._initializer
+
+    def _close_initializer_in_worker(self, initializer: object) -> None:
+        try:
+            self._close_initializer(initializer)
+        except BaseException as error:  # noqa: BLE001 - transferred to lifecycle owner
+            with self._lock:
+                if self._background_close_error is None:
+                    self._background_close_error = error
+                else:
+                    self._add_cleanup_note(self._background_close_error, error)
 
     @staticmethod
-    def _validate_initialize_payload(payload: Mapping[str, Any]) -> tuple[str, int]:
-        if set(payload) - {"mode", "delayMs"}:
-            raise InitializeError("initialize payload contains unknown fields")
-        mode = payload.get("mode", "ready")
-        delay_ms = payload.get("delayMs", 0)
-        if not isinstance(mode, str) or mode not in _INITIALIZE_MODES:
-            raise InitializeError("initialize mode is unsupported")
-        if isinstance(delay_ms, bool) or not isinstance(delay_ms, int) or not 0 <= delay_ms <= 5000:
-            raise InitializeError("initialize delayMs must be an integer from 0 to 5000")
-        return mode, delay_ms
+    def _close_initializer(initializer: object) -> None:
+        close = getattr(initializer, "close", None)
+        if callable(close):
+            close()
 
-    def _initialize(self, mode: str, delay_ms: int) -> None:
-        if delay_ms and self._cancel.wait(delay_ms / 1000):
-            return
-        if mode == "hang":
-            self._cancel.wait()
-            return
-        with self._lock:
-            if self._closed:
-                return
-            self._readiness = mode
-            self._component_state = mode
-            self._revision = 2
+    @staticmethod
+    def _project_summary(summary: object) -> dict[str, object] | None:
+        if summary is None:
+            return None
+        if not isinstance(summary, Mapping):
+            raise TypeError("current character summary must be a mapping")
+        projected = {key: summary[key] for key in _SUMMARY_KEYS}
+        if any(not isinstance(projected[key], str) for key in _SUMMARY_KEYS[:3]):
+            raise TypeError("current character summary strings are invalid")
+        for key in _SUMMARY_KEYS[3:]:
+            values = projected[key]
+            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                raise TypeError("current character summary arrays are invalid")
+            projected[key] = [*values]
+        return projected
+
+    @staticmethod
+    def _copy_summary(summary: dict[str, object] | None) -> dict[str, object] | None:
+        if summary is None:
+            return None
+        copied = dict(summary)
+        copied["replyTones"] = [*summary["replyTones"]]  # type: ignore[misc]
+        copied["portraitChoices"] = [*summary["portraitChoices"]]  # type: ignore[misc]
+        return copied
+
+    @staticmethod
+    def _add_cleanup_note(primary: BaseException, additional: BaseException) -> None:
+        primary.add_note(f"Additional cleanup failure: {type(additional).__name__}")
 
 
 class ResponseWriter:
@@ -224,14 +358,28 @@ class ResponseWriter:
 
 
 class ControlDispatcher:
-    def __init__(self, config: HostConfig) -> None:
+    def __init__(
+        self,
+        config: HostConfig,
+        *,
+        initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+    ) -> None:
         self._config = config
-        self._readiness = ReadinessController(config)
+        self._readiness = ReadinessController(
+            config,
+            initializer_factory=initializer_factory,
+        )
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self._readiness.close()
 
     def dispatch(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -418,17 +566,37 @@ def _capability_list(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 
 def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig) -> None:
-    writer = ResponseWriter(output_stream)
-    dispatcher = ControlDispatcher(config)
+    writer: ResponseWriter | None = None
+    dispatcher: ControlDispatcher | None = None
+    primary_error: BaseException | None = None
+    primary_traceback = None
     try:
+        writer = ResponseWriter(output_stream)
+        dispatcher = ControlDispatcher(config)
         while True:
             request = read_frame(input_stream)
             if request is None:
-                return
+                break
             message, should_stop = dispatcher.dispatch(request)
             writer.send(message)
             if should_stop:
-                return
-    finally:
-        dispatcher.close()
-        writer.close()
+                break
+    except BaseException as error:  # noqa: BLE001 - preserve process-boundary failure
+        primary_error = error
+        primary_traceback = error.__traceback__
+
+    for owner in (dispatcher, writer):
+        if owner is None:
+            continue
+        try:
+            owner.close()
+        except BaseException as error:  # noqa: BLE001 - deterministic cleanup aggregation
+            if primary_error is None:
+                primary_error = error
+                primary_traceback = error.__traceback__
+            else:
+                primary_error.add_note(
+                    f"Additional cleanup failure: {type(error).__name__}"
+                )
+    if primary_error is not None:
+        raise primary_error.with_traceback(primary_traceback)

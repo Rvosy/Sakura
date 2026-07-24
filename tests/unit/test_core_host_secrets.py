@@ -103,6 +103,7 @@ def test_sensitive_dto_modules_reject_generic_object_serializers() -> None:
 
 def test_host_config_repr_excludes_generation_credential() -> None:
     config = HostConfig(
+        app_root=Path("/isolated/not-read/secret-repr"),
         generation_id="generation",
         generation_credential=PLANTED_CREDENTIAL,
     )

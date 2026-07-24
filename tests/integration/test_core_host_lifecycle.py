@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import shutil
 import struct
 import subprocess
 import sys
@@ -31,6 +32,7 @@ LIFECYCLE_GOLDEN = json.loads(
     )
 )
 REQUEST_TIMEOUT = LIFECYCLE_GOLDEN["deadlinesMs"]["request"] / 1000
+READY_FIXTURE_ROOT = REPO_ROOT / "tests/fixtures/runtime_v2/wp_3_01/ready"
 
 
 def request(request_id: str, name: str, payload: dict[str, object] | None = None) -> dict[str, object]:
@@ -56,13 +58,24 @@ def request(request_id: str, name: str, payload: dict[str, object] | None = None
     }
 
 
-def start_host(generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
+def isolated_app_root(tmp_path: Path, *, ready: bool = False) -> Path:
+    root = tmp_path / "app-root"
+    if ready:
+        shutil.copytree(READY_FIXTURE_ROOT, root)
+    else:
+        root.mkdir()
+    return root
+
+
+def start_host(app_root: Path, generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     process = subprocess.Popen(
         [
             sys.executable,
             "-m",
             "app.core_host",
+            "--app-root",
+            str(app_root),
             "--generation-id",
             generation_id,
         ],
@@ -160,8 +173,8 @@ def test_wp_1c_04_shared_lifecycle_golden_matches_python_contract() -> None:
     }
 
 
-def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
-    process = start_host()
+def test_real_host_answers_hello_repeated_health_unknown_and_shutdown(tmp_path: Path) -> None:
+    process = start_host(isolated_app_root(tmp_path))
     try:
         hello = exchange(process, request("hello", "system.hello"))
         assert hello["ok"] is True
@@ -201,8 +214,8 @@ def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
         stop_host(process)
 
 
-def test_generation_mismatch_is_rejected_but_shutdown_remains_available() -> None:
-    process = start_host()
+def test_generation_mismatch_is_rejected_but_shutdown_remains_available(tmp_path: Path) -> None:
+    process = start_host(isolated_app_root(tmp_path))
     try:
         assert exchange(process, request("hello", "system.hello"))["ok"] is True
         mismatch = request("wrong-generation", "system.health")
@@ -224,8 +237,11 @@ def test_generation_mismatch_is_rejected_but_shutdown_remains_available() -> Non
         b"stdout pollution",
     ],
 )
-def test_real_host_fails_closed_without_writing_unframed_stdout(bad_frame: bytes) -> None:
-    process = start_host()
+def test_real_host_fails_closed_without_writing_unframed_stdout(
+    tmp_path: Path,
+    bad_frame: bytes,
+) -> None:
+    process = start_host(isolated_app_root(tmp_path))
     try:
         assert process.stdin is not None
         process.stdin.write(bad_frame)
@@ -243,8 +259,8 @@ def test_real_host_fails_closed_without_writing_unframed_stdout(bad_frame: bytes
         stop_host(process)
 
 
-def test_clean_stdin_eof_exits_without_output_or_residual_thread() -> None:
-    process = start_host()
+def test_clean_stdin_eof_exits_without_output_or_residual_thread(tmp_path: Path) -> None:
+    process = start_host(isolated_app_root(tmp_path))
     assert process.stdin is not None
     process.stdin.close()
     try:
@@ -257,9 +273,10 @@ def test_clean_stdin_eof_exits_without_output_or_residual_thread() -> None:
 
 @pytest.mark.parametrize("credential", [None, "77" * 16])
 def test_real_host_rejects_missing_or_wrong_message_credential_without_echo(
+    tmp_path: Path,
     credential: str | None,
 ) -> None:
-    process = start_host()
+    process = start_host(isolated_app_root(tmp_path))
     try:
         message = request("bad-credential", "system.hello")
         if credential is None:
@@ -282,10 +299,20 @@ def test_real_host_rejects_missing_or_wrong_message_credential_without_echo(
         stop_host(process)
 
 
-def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output() -> None:
+def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
+    tmp_path: Path,
+) -> None:
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     process = subprocess.Popen(
-        [sys.executable, "-m", "app.core_host", "--generation-id", GENERATION_ID],
+        [
+            sys.executable,
+            "-m",
+            "app.core_host",
+            "--app-root",
+            str(isolated_app_root(tmp_path)),
+            "--generation-id",
+            GENERATION_ID,
+        ],
         cwd=REPO_ROOT,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -304,14 +331,14 @@ def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
         stop_host(process)
 
 
-def test_real_host_initializes_in_background_and_returns_python_snapshot() -> None:
-    process = start_host()
+def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_path: Path) -> None:
+    process = start_host(isolated_app_root(tmp_path, ready=True))
     try:
         assert exchange(process, request("hello", "system.hello"))["ok"] is True
         started = time.monotonic()
         initialize = exchange(
             process,
-            request("initialize", "core.initialize", {"mode": "ready", "delayMs": 50}),
+            request("initialize", "core.initialize", {}),
         )
         assert time.monotonic() - started < 0.5
         assert initialize["payload"]["readiness"] == "initializing"
@@ -324,26 +351,36 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot() -> No
             assert time.monotonic() < deadline
         assert snapshot["generationId"] == GENERATION_ID
         assert snapshot["revision"] == 2
-        assert snapshot["components"] == {"fixture": {"state": "ready"}}
+        assert snapshot["components"] == {
+            "assistant": {"state": "ready", "code": "READY", "retryable": False}
+        }
+        assert set(snapshot["currentCharacterSummary"]) == {
+            "id",
+            "displayName",
+            "initialMessage",
+            "replyTones",
+            "portraitChoices",
+        }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
     finally:
         stop_host(process)
 
 
-def test_real_host_health_and_shutdown_remain_responsive_when_initialize_hangs() -> None:
-    process = start_host()
+def test_real_host_rejects_fixture_modes_and_remains_responsive(tmp_path: Path) -> None:
+    process = start_host(isolated_app_root(tmp_path))
     try:
         assert exchange(process, request("hello", "system.hello"))["ok"] is True
         initialize = exchange(
             process,
             request("initialize", "core.initialize", {"mode": "hang"}),
         )
-        assert initialize["payload"]["readiness"] == "initializing"
+        assert initialize["ok"] is False
+        assert initialize["error"]["code"] == "INVALID_INITIALIZE"
         for index in range(3):
             health = exchange(process, request(f"health-hang-{index}", "system.health"))
             assert health["payload"] == {
-                "hostState": "initializing",
+                "hostState": "transport_ready",
                 "status": "healthy",
             }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
@@ -352,13 +389,17 @@ def test_real_host_health_and_shutdown_remain_responsive_when_initialize_hangs()
         stop_host(process)
 
 
-def test_real_host_failed_readiness_still_cleans_init_and_writer_threads() -> None:
-    process = start_host()
+def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_path: Path) -> None:
+    app_root = isolated_app_root(tmp_path)
+    config_dir = app_root / "data" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "system_config.yaml").write_text("not: [valid", encoding="utf-8")
+    process = start_host(app_root)
     try:
         assert exchange(process, request("hello-failed", "system.hello"))["ok"] is True
         initialize = exchange(
             process,
-            request("initialize-failed", "core.initialize", {"mode": "failed"}),
+            request("initialize-failed", "core.initialize", {}),
         )
         assert initialize["payload"]["readiness"] == "initializing"
         deadline = (

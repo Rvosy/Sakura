@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import sys
+from pathlib import Path
 
 from .protocol import ProtocolError
 from .server import HostConfig, TransportFailure, WriterError, run_host
@@ -23,9 +24,14 @@ class GuardedStdout(io.TextIOBase):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--app-root", required=True, type=_resolved_path)
     parser.add_argument("--generation-id", required=True)
     parser.add_argument("--generation-number", type=int, default=1)
     return parser.parse_args(argv)
+
+
+def _resolved_path(value: str) -> Path:
+    return Path(value).resolve(strict=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             input_stream,
             output_stream,
             HostConfig(
+                args.app_root,
                 args.generation_id,
                 credential_bytes.hex(),
                 generation_number=args.generation_number,

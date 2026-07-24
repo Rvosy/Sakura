@@ -3,9 +3,11 @@ from __future__ import annotations
 import io
 import json
 import struct
+from pathlib import Path
 
 import pytest
 
+import app.core_host.server as server_module
 from app.core_host.protocol import (
     MAX_FRAME_SIZE,
     FrameDecoder,
@@ -14,11 +16,12 @@ from app.core_host.protocol import (
     encode_frame,
     read_frame,
 )
-from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError
+from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError, run_host
 
 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
 GENERATION_CREDENTIAL = "11" * 16
+APP_ROOT = Path("/isolated/not-read/core-host-protocol")
 
 
 def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
@@ -119,7 +122,7 @@ def test_envelope_and_error_shape_are_strict_and_json_safe() -> None:
 def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:
     output = io.BytesIO()
     writer = ResponseWriter(output)
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, GENERATION_CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL))
     hello_request = request("hello", "system.hello")
     hello_request["payload"] = {
         "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
@@ -151,3 +154,125 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
         writer.send(first)
     except WriterError as error:
         assert error.code == "WRITER_QUEUE_CLOSED"
+
+
+def test_run_host_raises_first_cleanup_failure_and_attaches_sanitized_later_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    first = RuntimeError("PRIVATE_DISPATCHER_CLOSE")
+    second = ValueError("PRIVATE_WRITER_CLOSE")
+
+    class Dispatcher:
+        def __init__(self, _config: HostConfig) -> None:
+            pass
+
+        def close(self) -> None:
+            events.append("dispatcher")
+            raise first
+
+    class Writer:
+        def __init__(self, _stream: io.BytesIO) -> None:
+            pass
+
+        def close(self) -> None:
+            events.append("writer")
+            raise second
+
+    monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
+    monkeypatch.setattr(server_module, "ResponseWriter", Writer)
+
+    with pytest.raises(RuntimeError) as raised:
+        run_host(
+            io.BytesIO(),
+            io.BytesIO(),
+            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+        )
+
+    assert raised.value is first
+    assert events == ["dispatcher", "writer"]
+    notes = getattr(raised.value, "__notes__", [])
+    assert any("ValueError" in note for note in notes)
+    assert all("PRIVATE_" not in note for note in notes)
+
+
+def test_run_host_preserves_primary_failure_and_attempts_every_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    primary = OSError("PRIVATE_PRIMARY")
+
+    class Dispatcher:
+        def __init__(self, _config: HostConfig) -> None:
+            pass
+
+        def close(self) -> None:
+            events.append("dispatcher")
+            raise RuntimeError("PRIVATE_DISPATCHER_CLOSE")
+
+    class Writer:
+        def __init__(self, _stream: io.BytesIO) -> None:
+            pass
+
+        def close(self) -> None:
+            events.append("writer")
+            raise ValueError("PRIVATE_WRITER_CLOSE")
+
+    monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
+    monkeypatch.setattr(server_module, "ResponseWriter", Writer)
+    monkeypatch.setattr(server_module, "read_frame", lambda _stream: (_ for _ in ()).throw(primary))
+
+    with pytest.raises(OSError) as raised:
+        run_host(
+            io.BytesIO(),
+            io.BytesIO(),
+            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+        )
+
+    assert raised.value is primary
+    assert events == ["dispatcher", "writer"]
+    notes = getattr(raised.value, "__notes__", [])
+    assert any("RuntimeError" in note for note in notes)
+    assert any("ValueError" in note for note in notes)
+    assert all("PRIVATE_" not in note for note in notes)
+
+
+def test_run_host_writer_failure_keeps_dispatcher_then_writer_cleanup_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    writer_failure = WriterError("TRANSPORT_WRITE_FAILED", "sanitized")
+
+    class Dispatcher:
+        def __init__(self, _config: HostConfig) -> None:
+            pass
+
+        def dispatch(self, _request: dict[str, object]) -> tuple[dict[str, object], bool]:
+            return {"response": True}, False
+
+        def close(self) -> None:
+            events.append("dispatcher")
+
+    class Writer:
+        def __init__(self, _stream: io.BytesIO) -> None:
+            pass
+
+        def send(self, _message: dict[str, object]) -> None:
+            raise writer_failure
+
+        def close(self) -> None:
+            events.append("writer")
+
+    monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
+    monkeypatch.setattr(server_module, "ResponseWriter", Writer)
+    monkeypatch.setattr(server_module, "read_frame", lambda _stream: request("one"))
+
+    with pytest.raises(WriterError) as raised:
+        run_host(
+            io.BytesIO(),
+            io.BytesIO(),
+            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+        )
+
+    assert raised.value is writer_failure
+    assert events == ["dispatcher", "writer"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from app.core_host.server import (
 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c03"
 CREDENTIAL = "44" * 16
+APP_ROOT = Path("/isolated/not-read/core-host-negotiation")
 
 
 def request(name: str, payload: dict[str, object] | None = None) -> dict[str, object]:
@@ -41,7 +43,7 @@ def hello_payload(*, major: int = 2, minimum: int = 0, maximum: int = 1) -> dict
 
 def test_exact_and_downward_minor_negotiation_are_deterministic() -> None:
     for maximum, expected in [(1, 1), (0, 0)]:
-        dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+        dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
         try:
             response, _ = dispatcher.dispatch(
                 request("system.hello", hello_payload(maximum=maximum))
@@ -74,21 +76,21 @@ def test_exact_and_downward_minor_negotiation_are_deterministic() -> None:
     ],
 )
 def test_incompatible_or_invalid_hello_fails_closed(mutate, code: str) -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
     try:
         payload = hello_payload()
         mutate(payload)
         response, _ = dispatcher.dispatch(request("system.hello", payload))
         assert response["ok"] is False
         assert response["error"]["code"] == code
-        initialize, _ = dispatcher.dispatch(request("core.initialize", {"mode": "ready"}))
+        initialize, _ = dispatcher.dispatch(request("core.initialize", {}))
         assert initialize["error"]["code"] == "HANDSHAKE_FAILED"
     finally:
         dispatcher.close()
 
 
 def test_hello_order_and_duplicate_are_rejected() -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
     try:
         early, _ = dispatcher.dispatch(request("system.health"))
         assert early["error"]["code"] == "HANDSHAKE_REQUIRED"
@@ -101,7 +103,7 @@ def test_hello_order_and_duplicate_are_rejected() -> None:
 
 
 def test_shutdown_during_handshake_is_classified_and_stops_the_host() -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
     try:
         response, should_stop = dispatcher.dispatch(request("system.shutdown"))
         assert response["error"]["code"] == "SHUTDOWN_DURING_HANDSHAKE"
@@ -112,7 +114,7 @@ def test_shutdown_during_handshake_is_classified_and_stops_the_host() -> None:
 
 @pytest.mark.parametrize("credential", [None, "55" * 16, ""])
 def test_missing_wrong_and_stale_credentials_are_transport_fatal(credential: str | None) -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
     message = request("system.hello", hello_payload())
     if credential is None:
         del message["generationCredential"]
@@ -131,7 +133,7 @@ def test_missing_wrong_and_stale_credentials_are_transport_fatal(credential: str
 
 
 def test_replayed_response_cannot_change_the_active_generation() -> None:
-    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
     old = request("system.hello", hello_payload())
     old["generationCredential"] = "66" * 16
     replay = copy.deepcopy(old)
