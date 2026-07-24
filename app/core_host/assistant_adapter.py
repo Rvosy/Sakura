@@ -173,6 +173,7 @@ class AssistantAdapter:
                 runtime=runtime,
                 pipeline=pipeline,
             )
+            self._check_active(cancel)
             if fallback_applied:
                 state = "degraded"
                 code = "CHARACTER_FALLBACK_APPLIED"
@@ -193,8 +194,9 @@ class AssistantAdapter:
                 current_character_summary=project_current_character_summary(profile),
                 session=session,
             )
+            self._check_active(cancel)
             with self._lock:
-                if self._closed:
+                if cancel.is_set() or self._closed:
                     raise OperationCancelled()
                 self._owned = owned
                 owned = []

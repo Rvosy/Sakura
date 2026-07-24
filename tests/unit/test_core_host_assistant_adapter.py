@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import json
+import os
 import shutil
 import socket
 import ssl
+import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 from threading import Event, Thread
@@ -124,6 +128,119 @@ def test_initialize_builds_exact_real_session_without_calls_or_fixture_writes(
     assert result.session.runtime.character_id == result.session.character.id
     assert result.session.runtime.character_name == result.session.character.display_name
     assert _file_snapshot(root) == before
+
+
+def test_fresh_adapter_import_and_construction_never_touch_forbidden_domains(
+    tmp_path: Path,
+) -> None:
+    root = _fresh_root(tmp_path)
+    probe = r"""
+import importlib.abc
+import json
+import sys
+from threading import Event
+
+blocked_roots = (
+    "PySide6",
+    "app.ui",
+    "app.agent.memory",
+    "app.agent.memory_curation_worker",
+    "app.agent.memory_curator",
+    "app.agent.mcp",
+    "app.agent.screen_awareness",
+    "app.agent.screen_observation",
+    "app.agent.screen_policy",
+    "app.agent.screen_tools",
+    "app.plugins",
+    "app.voice",
+    "app.storage.chat_history",
+    "app.storage.visual_observation",
+    "app.core.resource_manager",
+    "app.scheduler",
+    "app.core.scheduler",
+    "app.router",
+    "app.core.router",
+    "app.gateway",
+    "app.core.gateway",
+    "app.operation",
+    "app.core.operation",
+    "app.chat_commands",
+    "app.core.chat_commands",
+)
+attempts = []
+
+def is_blocked(fullname):
+    return any(fullname == root or fullname.startswith(root + ".") for root in blocked_roots)
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, _path, _target=None):
+        if is_blocked(fullname):
+            attempts.append(fullname)
+            raise AssertionError("forbidden startup import")
+        return None
+
+sys.meta_path.insert(0, Blocker())
+
+from app.core_host.assistant_adapter import AssistantAdapter
+from app.agent.runtime import AgentRuntime
+from app.core.chat_pipeline import ChatPipeline
+from app.llm.api_client import OpenAICompatibleClient
+
+def forbidden_call(*_args, **_kwargs):
+    raise AssertionError("forbidden startup constructor or call")
+
+AgentRuntime.context_orchestrator = property(forbidden_call)
+for name in (
+    "run_user_message",
+    "run_confirmed_action",
+    "run_cancelled_action",
+    "run_event",
+):
+    setattr(ChatPipeline, name, forbidden_call)
+for name in (
+    "test_connection",
+    "list_models",
+    "chat",
+    "complete_raw",
+    "complete_with_tools",
+    "_post_chat_completions_with_compatibility_fallbacks",
+    "_post_chat_completions",
+    "_send_with_retries",
+):
+    setattr(OpenAICompatibleClient, name, forbidden_call)
+
+result = AssistantAdapter(sys.argv[1]).initialize(Event())
+loaded = sorted(name for name in sys.modules if is_blocked(name))
+print(json.dumps({
+    "state": result.state,
+    "code": result.code,
+    "attempts": attempts,
+    "loaded": loaded,
+    "session": result.session is not None,
+}))
+"""
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe, str(root)],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.splitlines()[-1])
+    assert observed == {
+        "state": "ready",
+        "code": "READY",
+        "attempts": [],
+        "loaded": [],
+        "session": True,
+    }
 
 
 def test_public_character_projector_has_exact_five_keys_and_copies_lists(
@@ -373,6 +490,40 @@ def test_cancellation_before_read_and_after_constructed_boundary_cleans_up(
         AssistantAdapter(root).initialize(cancelled)
 
     assert closed == ["provider"]
+
+
+@pytest.mark.parametrize("boundary", ["session", "readiness_result"])
+def test_cancellation_during_final_dto_construction_prevents_handoff_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    root = _fresh_root(tmp_path)
+    closed: list[str] = []
+    _install_tracked_factories(monkeypatch, closed)
+    cancelled = Event()
+    real_factory = getattr(
+        adapter_module,
+        "AssistantSession" if boundary == "session" else "ReadinessResult",
+    )
+
+    def cancelling_factory(*args: object, **kwargs: object) -> object:
+        cancelled.set()
+        return real_factory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        adapter_module,
+        "AssistantSession" if boundary == "session" else "ReadinessResult",
+        cancelling_factory,
+    )
+    adapter = AssistantAdapter(root)
+
+    with pytest.raises(OperationCancelled):
+        adapter.initialize(cancelled)
+
+    assert closed == ["pipeline", "runtime", "memory", "tools", "provider"]
+    adapter.close()
+    assert closed == ["pipeline", "runtime", "memory", "tools", "provider"]
 
 
 def test_disabled_memory_contract() -> None:
