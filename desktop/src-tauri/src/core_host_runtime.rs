@@ -627,7 +627,13 @@ impl CoreHostRuntime {
             &NativeManagedProcessTreeBackend,
             ManagedProcessRequest {
                 program: python.to_path_buf(),
-                args: vec![script.as_os_str().to_owned()],
+                args: vec![
+                    "-I".into(),
+                    "-B".into(),
+                    "-X".into(),
+                    "utf8".into(),
+                    script.as_os_str().to_owned(),
+                ],
                 current_directory: Some(repo_root.to_path_buf()),
                 environment_overrides: Vec::new(),
                 stdio: ProcessStdio::Piped,
