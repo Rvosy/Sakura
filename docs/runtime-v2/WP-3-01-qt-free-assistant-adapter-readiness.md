@@ -116,25 +116,43 @@ class AssistantAdapter:
     def close(self) -> None: ...  # idempotent, reverse creation order
 ```
 
-以下同为允许实现路径中的强制秘密字段；无论是 dataclass default repr、custom repr、
-serialization、异常还是 public surface，均不得输出其值：
+以下同为允许实现路径中的强制秘密字段；无论是 dataclass default repr、custom repr、异常、
+日志、诊断或 public projection，均不得输出其值：
 
 ```python
 class ApiSettings:
     api_key: str = field(repr=False)
 
 class ApiConfigProfile:  # 仅当 CoreConfigReader 使用该 DTO
-    api_key: str = field(repr=False)
+    api_key: str = field(default="", repr=False)
 
 class HostConfig:
     generation_credential: str = field(repr=False)
 ```
 
 `AssistantSession` 内部可以持有 Provider settings/API key 以供真实 Provider 使用，但
-`AssistantSession.provider` 必须是 `field(repr=False)`；key 绝不进入 session repr、序列化或任何
-公共面。`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、
-`ApiSettings.api_key`、可能使用的 `ApiConfigProfile.api_key` 及
-`HostConfig.generation_credential` 均适用相同规则。generation credential 不得进入任意 repr。
+`AssistantSession.provider` 必须是 `field(repr=False)`；key 绝不进入 session repr、generic
+serialization 或 public projection。`ProviderSelection.api_settings`、
+`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、可能使用的
+`ApiConfigProfile.api_key` 及 `HostConfig.generation_credential` 均适用相同规则；
+`ApiConfigProfile` 的 `default=""`、构造签名与 equality 必须保持 legacy 等价。generation
+credential 不得进入任意 repr。
+
+### 显式 serializer 契约
+
+`repr=False` 只约束 dataclass repr，**不**授权或阻止其他序列化。含 API key 的 DTO、
+`AssistantSession` 与 `HostConfig` 不得传入 generic `dataclasses.asdict`、`vars`、`__dict__`、
+`pickle` 或 default-JSON serializer；生产代码只能使用显式 allowlist projector/serializer。API key
+没有任何授权输出 serializer，只允许存在于 Python 内部的 Provider settings（及其 transient
+`ProviderSelection` wrapper）与 session-held Provider。Snapshot 的 `currentCharacterSummary` 只能经显式
+`project_current_character_summary(profile)` 输出已冻结的五字段：`id`、`displayName`、
+`initialMessage`、`replyTones`、`portraitChoices`；不得以 generic object serialization 替代。
+
+generation credential 的唯一授权序列化出口是既有本地受控 Core framed IPC request/response envelope
+（`app/core_host/protocol.py` 与 Rust peer）。除该 envelope 外，它不得进入 Snapshot、repr、log、
+error、diagnostics、WebView 或其他 public surface。测试须对显式 projector、受控 envelope、日志等
+可观察输出进行 secret scan，并以静态和动态测试阻止内部 DTO 被 generic serializer 使用；这不是
+含义不定的“禁止一切序列化”。
 
 1. Core Host 从 Rust 通过 `RuntimeLocator` 已批准的 layout 获得 app root，写入 `HostConfig`/CLI；
    不提供默认路径，测试只能注入隔离 fixture 根。
@@ -143,8 +161,9 @@ class HostConfig:
 3. worker 懒导入 Adapter 和其窄依赖，读取 config/角色；任何取消检查命中时不发布新 revision。
 4. 读取成功后只做本地 Provider shape 校验，从 `ProviderSelection.api_settings` 构造
    `OpenAICompatibleClient(settings)`；`ProviderSelection`、`CoreConfigReadResult`、
-   `AssistantSession`、settings/profile 与 `HostConfig` 均不得以 default/custom repr、序列化、
-   异常或诊断暴露 API key 或 generation credential。禁止调用
+   `AssistantSession`、settings/profile 与 `HostConfig` 均不得以 default/custom repr、generic
+   serialization、异常、诊断或 public projection 暴露 API key 或 generation credential；credential
+   仅可进入既有受控 framed IPC envelope。禁止调用
    `test_connection`、`list_models`、`chat`、`complete_raw`、`complete_with_tools`。
 5. Adapter 构造真实 `AgentRuntime`，显式传入 `ToolRegistry([])`、truthy disabled/no-op
    `MemoryLike`、角色 prompt/metadata，再构造真实 `ChatPipeline`；不得调用 `run_*`。
@@ -299,11 +318,11 @@ mtime、SHA-256，必须完全一致。至少覆盖如下确定性矩阵。
 |---|---|---|
 | system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/`<4`/`>4`/`==4`；valid；configured current 无效的 `sakura`/first fallback；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 4` 继续；fallback 为 `CHARACTER_FALLBACK_APPLIED`、仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`、无有效角色为 `CHARACTER_SETUP_REQUIRED`；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
 | 辅助配置 fixture | `api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping；YAML syntax error；nonmapping nonnull；字段/容器类型错误；API mapping 缺/空/不匹配 profile/slot/model/base/key；characters mapping 缺/空 current id | 前一组为 `CORE_CONFIG_SETUP_REQUIRED`，syntax/shape/type 为 `CONFIG_DATA_INVALID`，API shape 为 `PROVIDER_SETUP_REQUIRED`，characters current id 缺/空为 `CORE_CONFIG_SETUP_REQUIRED`；读取前后 bytes/mtime/.bak 完全不变。 |
-| Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知、`repr()`/序列化/异常的 secret scan | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；`AssistantSession.provider`、`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、使用时的 `ApiConfigProfile.api_key` 与 `HostConfig.generation_credential` 均 repr-excluded，API key/credential 不出现在任何公开面。 |
+| Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知、`repr()`/异常/日志、allowlist projector、受控 IPC envelope 的 secret scan；`ApiConfigProfile` default 构造/签名/equality 对拍 | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；`AssistantSession.provider`、`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、使用时默认 `""` 的 `ApiConfigProfile.api_key` 与 `HostConfig.generation_credential` 均 repr-excluded；`ApiConfigProfile` 保持 legacy default/构造签名/equality；API key 无输出 serializer，credential 仅可出现在受控 envelope。 |
 | session/禁止域 | valid 角色与 Provider、Memory/MCP/plugins/TTS/voice/screen fail-if-called | 构造真实 runtime、空 tools、disabled Memory、pipeline；不运行 pipeline，不加载禁止域。 |
 | import/等价 | hello 前与 initialize 后 subprocess probe；legacy agent imports；Theme/VisualEffectMode | 前者无 agent/UI/PySide6，后者仍无 Qt/ResourceManager/禁止域；public import/default/validation 语义等价。 |
 | 生命周期/故障 | 慢 reader、构造中途异常、重复 initialize/shutdown、shutdown before initialize、EOF、writer failure、close throw、close block、init/close race、old worker late result | health 在 deadline 内；只构造/关闭一次；异常聚合不跳过 writer；晚结果不发布；shutdown successful-write 起共享 5000ms 内 root/后代/pipe/fd/handle/thread/temp 归零。 |
-| generation/安全 | 连续两 generation、stale Snapshot/credential、所有 `repr`/serialization/exception/public surface 的 credential 扫描、公开 summary 扫描 | 单调 revision、generation 隔离、Rust 只读 clone；generation credential 不进任意 repr，且无路径/prompt/key/credential/endpoint/model/诊断 internals。 |
+| generation/安全 | 连续两 generation、stale Snapshot/credential、受控 framed IPC envelope、`repr`/generic serializer/error/log/diagnostics/WebView/public projection 的 credential 扫描、公开 summary 扫描 | 单调 revision、generation 隔离、Rust 只读 clone；generation credential 仅可在既有 envelope 中序列化，不进任意 repr、Snapshot 或其他公开面；无路径/prompt/key/credential/endpoint/model/诊断 internals。 |
 | 真实进程树 | 协作与忽略 TERM 的一个/多个 Adapter 后代、Core crash、外部 kill | Rust ManagedProcessTree 在 Windows x64/macOS arm64/Linux x64 收束 root/后代/pipe/fd/handle/thread/temp，锁立即重获。 |
 
 Python unit、Python subprocess、Rust real-host 和 packaged/Shell 三平台纵向测试都必须覆盖
@@ -315,6 +334,11 @@ platform filter；新增 `core_host_*` tests 必须由
 `.github/workflows/runtime-v2-platform-foundation.yml` 的三平台 jobs 以明确 pytest step 实际执行，
 并由 `tests/unit/test_runtime_v2_platform_workflow.py` 断言该命令和 push/PR filters。仅 path
 trigger 不构成 Python pytest 已在三平台执行的证据。
+
+秘密回归另须用静态扫描拒绝 `dataclasses.asdict`、`vars`、`__dict__`、`pickle` 与 default-JSON
+serializer 对内部含密 DTO/Session/HostConfig 的调用，并在动态 probe 中让这些 generic 路径 fail
+closed；同时证明唯一显式角色 projector 的字段恰为五项，API key 不存在授权输出 serializer，
+generation credential 的唯一授权序列化出口是受控 framed IPC envelope。
 
 ## 回退与已冻结风险边界
 
