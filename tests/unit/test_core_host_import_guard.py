@@ -199,6 +199,10 @@ print(json.dumps({
     'theme_color': theme.ThemeSettings(primary_color='ABCDEF').normalized().primary_color,
     'profile_color': profile.theme_settings.normalized().primary_color,
     'effect': VisualEffectMode.validate('solid'),
+    'same_type': type(profile.theme_settings) is theme.ThemeSettings,
+    'isinstance': isinstance(profile.theme_settings, theme.ThemeSettings),
+    'equal_default': profile.theme_settings == theme.DEFAULT_THEME_SETTINGS,
+    'same_module': type(profile.theme_settings).__module__ == theme.ThemeSettings.__module__,
 }))
 """
     completed = subprocess.run(
@@ -220,6 +224,77 @@ print(json.dumps({
         "theme_color": "#abcdef",
         "profile_color": DEFAULT_THEME_SETTINGS.primary_color,
         "effect": "solid",
+        "same_type": True,
+        "isinstance": True,
+        "equal_default": True,
+        "same_module": True,
+    }
+
+
+def test_concurrent_core_first_theme_parsing_uses_canonical_ui_type() -> None:
+    probe = """
+import json
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+
+from app.config.character_loader import CharacterProfile
+
+barrier = Barrier(16)
+def build(index):
+    barrier.wait()
+    profile = CharacterProfile(
+        id=f'character-{index}',
+        display_name='Sakura',
+        package_dir=Path('.'),
+        card_path=Path('card.md'),
+        initial_message='hello',
+        default_portrait_path=Path('portrait.png'),
+    )
+    return profile.theme_settings
+
+with ThreadPoolExecutor(max_workers=16) as pool:
+    settings = list(pool.map(build, range(16)))
+
+core_forbidden = sorted(
+    name for name in sys.modules
+    if name.startswith(('PySide6', 'app.ui', 'app.plugins', 'app.voice'))
+)
+private_theme_modules = sorted(
+    name for name in sys.modules
+    if name.startswith('_sakura_core_ui_theme')
+)
+
+import app.ui.theme as theme
+
+print(json.dumps({
+    'core_forbidden': core_forbidden,
+    'private_theme_modules': private_theme_modules,
+    'one_type': len({id(type(item)) for item in settings}) == 1,
+    'same_type': all(type(item) is theme.ThemeSettings for item in settings),
+    'isinstance': all(isinstance(item, theme.ThemeSettings) for item in settings),
+    'equal_default': all(item == theme.DEFAULT_THEME_SETTINGS for item in settings),
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.splitlines()[-1])
+    assert result == {
+        "core_forbidden": [],
+        "private_theme_modules": [],
+        "one_type": True,
+        "same_type": True,
+        "isinstance": True,
+        "equal_default": True,
     }
 
 

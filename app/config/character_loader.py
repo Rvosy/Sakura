@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import Any, Callable, Literal
 
+from app.config.models import (
+    DEFAULT_THEME_SETTINGS,
+    ThemeSettings,
+    theme_colors_to_mapping,
+    theme_from_mapping,
+)
 from app.core.runtime_log import log_event
 from app.llm.prompt_templates import with_desktop_pet_context
 from app.storage.paths import sanitize_file_stem
-
-if TYPE_CHECKING:
-    from app.ui.theme import ThemeSettings
-
 
 DEFAULT_CHARACTER_ID = "sakura"
 DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
@@ -25,8 +24,6 @@ THEME_SOURCE_PACKAGE = "package"
 THEME_SOURCE_COMPAT_DEFAULT = "compat_default"
 CharacterThemeSource = Literal["package", "compat_default"]
 IssueSink = Callable[[str, str, dict[str, object]], None]
-_CORE_THEME_MODULE_NAME = "_sakura_core_ui_theme"
-_THEME_MODULE_LOCK = Lock()
 
 
 class CharacterConfigError(RuntimeError):
@@ -211,11 +208,6 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
 
 def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThemeSource, bool]:
-    theme_module = _theme_module()
-    ThemeSettings = theme_module.ThemeSettings
-    theme_colors_to_mapping = theme_module.theme_colors_to_mapping
-    theme_from_mapping = theme_module.theme_from_mapping
-
     if isinstance(data, dict):
         source = _theme_source_from_text(data.get("source"))
         theme = theme_from_mapping(data).normalized()
@@ -228,8 +220,6 @@ def character_theme_to_mapping(
     *,
     source: CharacterThemeSource = THEME_SOURCE_PACKAGE,
 ) -> dict[str, object]:
-    theme_colors_to_mapping = _theme_module().theme_colors_to_mapping
-
     settings = settings or _default_theme_settings()
     data = theme_colors_to_mapping(settings)
     data["source"] = _theme_source_from_text(source)
@@ -320,29 +310,7 @@ def _theme_source_from_text(value: object) -> CharacterThemeSource:
 
 
 def _default_theme_settings() -> ThemeSettings:
-    return _theme_module().DEFAULT_THEME_SETTINGS
-
-
-def _theme_module() -> Any:
-    with _THEME_MODULE_LOCK:
-        loaded = sys.modules.get(_CORE_THEME_MODULE_NAME)
-        if loaded is not None:
-            return loaded
-        loaded = sys.modules.get("app.ui.theme")
-        if loaded is not None:
-            return loaded
-        module_path = Path(__file__).resolve().parents[1] / "ui" / "theme.py"
-        spec = importlib.util.spec_from_file_location(_CORE_THEME_MODULE_NAME, module_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {_CORE_THEME_MODULE_NAME}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_CORE_THEME_MODULE_NAME] = module
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            sys.modules.pop(_CORE_THEME_MODULE_NAME, None)
-            raise
-        return module
+    return DEFAULT_THEME_SETTINGS
 
 
 def _write_character_theme_manifest(

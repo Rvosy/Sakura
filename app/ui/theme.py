@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,77 +12,32 @@ from app.config.defaults import (
     DEFAULT_NAME_FONT_SIZE,
     DEFAULT_SPEECH_FONT_SIZE,
 )
+from app.config.models import (
+    DEFAULT_ACCENT_COLOR,
+    DEFAULT_BORDER_COLOR,
+    DEFAULT_BUBBLE_BACKGROUND_COLOR,
+    DEFAULT_INPUT_BACKGROUND_COLOR,
+    DEFAULT_MUTED_TEXT_COLOR,
+    DEFAULT_PAGE_BACKGROUND_COLOR,
+    DEFAULT_PANEL_BACKGROUND_COLOR,
+    DEFAULT_PRIMARY_COLOR,
+    DEFAULT_PRIMARY_HOVER_COLOR,
+    DEFAULT_SECONDARY_TEXT_COLOR,
+    DEFAULT_TEXT_COLOR,
+    DEFAULT_THEME_SETTINGS,
+    THEME_COLOR_FIELDS,
+    ThemeSettings,
+    normalize_hex_color,
+    theme_colors_to_mapping,
+    theme_from_mapping,
+    theme_to_mapping,
+)
 from app.config.visual_effect import VisualEffectMode
 
 if TYPE_CHECKING:
     from app.config.character_loader import CharacterProfile
 
 
-DEFAULT_PRIMARY_COLOR = "#d55b91"
-DEFAULT_PRIMARY_HOVER_COLOR = "#bf3f7a"
-DEFAULT_ACCENT_COLOR = "#b13e73"
-DEFAULT_TEXT_COLOR = "#3d2b35"
-DEFAULT_SECONDARY_TEXT_COLOR = "#7a3656"
-DEFAULT_MUTED_TEXT_COLOR = "#9b4f72"
-DEFAULT_PAGE_BACKGROUND_COLOR = "#fff6fa"
-DEFAULT_PANEL_BACKGROUND_COLOR = "#ffe8f1"
-DEFAULT_INPUT_BACKGROUND_COLOR = "#ffffff"
-DEFAULT_BUBBLE_BACKGROUND_COLOR = "#ffe8f1"
-DEFAULT_BORDER_COLOR = "#eeacc8"
-
-THEME_COLOR_FIELDS: tuple[tuple[str, str, str], ...] = (
-    ("primary_color", "主题色", DEFAULT_PRIMARY_COLOR),
-    ("primary_hover_color", "按钮悬停色", DEFAULT_PRIMARY_HOVER_COLOR),
-    ("accent_color", "强调色", DEFAULT_ACCENT_COLOR),
-    ("text_color", "主文字色", DEFAULT_TEXT_COLOR),
-    ("secondary_text_color", "次级文字色", DEFAULT_SECONDARY_TEXT_COLOR),
-    ("muted_text_color", "弱提示文字色", DEFAULT_MUTED_TEXT_COLOR),
-    ("page_background_color", "页面背景色", DEFAULT_PAGE_BACKGROUND_COLOR),
-    ("panel_background_color", "面板背景色", DEFAULT_PANEL_BACKGROUND_COLOR),
-    ("input_background_color", "输入框背景色", DEFAULT_INPUT_BACKGROUND_COLOR),
-    ("bubble_background_color", "气泡背景色", DEFAULT_BUBBLE_BACKGROUND_COLOR),
-    ("border_color", "边框色", DEFAULT_BORDER_COLOR),
-)
-_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-
-
-@dataclass(frozen=True)
-class ThemeSettings:
-    """桌宠 UI 主题配置。"""
-
-    primary_color: str = DEFAULT_PRIMARY_COLOR
-    primary_hover_color: str = DEFAULT_PRIMARY_HOVER_COLOR
-    accent_color: str = DEFAULT_ACCENT_COLOR
-    text_color: str = DEFAULT_TEXT_COLOR
-    secondary_text_color: str = DEFAULT_SECONDARY_TEXT_COLOR
-    muted_text_color: str = DEFAULT_MUTED_TEXT_COLOR
-    page_background_color: str = DEFAULT_PAGE_BACKGROUND_COLOR
-    panel_background_color: str = DEFAULT_PANEL_BACKGROUND_COLOR
-    input_background_color: str = DEFAULT_INPUT_BACKGROUND_COLOR
-    bubble_background_color: str = DEFAULT_BUBBLE_BACKGROUND_COLOR
-    border_color: str = DEFAULT_BORDER_COLOR
-    ai_enabled: bool = False
-    visual_effect_mode: str = "gaussian_blur"
-
-    def normalized(self) -> "ThemeSettings":
-        return ThemeSettings(
-            primary_color=normalize_hex_color(self.primary_color, DEFAULT_PRIMARY_COLOR),
-            primary_hover_color=normalize_hex_color(self.primary_hover_color, DEFAULT_PRIMARY_HOVER_COLOR),
-            accent_color=normalize_hex_color(self.accent_color, DEFAULT_ACCENT_COLOR),
-            text_color=normalize_hex_color(self.text_color, DEFAULT_TEXT_COLOR),
-            secondary_text_color=normalize_hex_color(self.secondary_text_color, DEFAULT_SECONDARY_TEXT_COLOR),
-            muted_text_color=normalize_hex_color(self.muted_text_color, DEFAULT_MUTED_TEXT_COLOR),
-            page_background_color=normalize_hex_color(self.page_background_color, DEFAULT_PAGE_BACKGROUND_COLOR),
-            panel_background_color=normalize_hex_color(self.panel_background_color, DEFAULT_PANEL_BACKGROUND_COLOR),
-            input_background_color=normalize_hex_color(self.input_background_color, DEFAULT_INPUT_BACKGROUND_COLOR),
-            bubble_background_color=normalize_hex_color(self.bubble_background_color, DEFAULT_BUBBLE_BACKGROUND_COLOR),
-            border_color=normalize_hex_color(self.border_color, DEFAULT_BORDER_COLOR),
-            ai_enabled=bool(self.ai_enabled),
-            visual_effect_mode=VisualEffectMode.validate(self.visual_effect_mode),
-        )
-
-
-DEFAULT_THEME_SETTINGS = ThemeSettings()
 _SETTINGS_ARROW_DOWN_URL = (
     Path(__file__).with_name("assets").joinpath("chevron-down.svg").resolve().as_posix()
 )
@@ -93,39 +48,6 @@ _MENU_CHECK_URL = Path(__file__).with_name("assets").joinpath("menu-check.svg").
 SELECTION_DOT_URL = (
     Path(__file__).with_name("assets").joinpath("selection-dot.svg").resolve().as_posix()
 )
-
-
-def normalize_hex_color(value: object, default: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return default
-    if not text.startswith("#"):
-        text = f"#{text}"
-    if not _HEX_COLOR_RE.match(text):
-        return default
-    return text.lower()
-
-
-def theme_from_mapping(data: Any) -> ThemeSettings:
-    if not isinstance(data, dict):
-        return DEFAULT_THEME_SETTINGS
-    values = {
-        field: normalize_hex_color(data.get(field), default)
-        for field, _label, default in THEME_COLOR_FIELDS
-    }
-    return ThemeSettings(
-        **values,
-        ai_enabled=_bool_value(data.get("ai_enabled"), False),
-        visual_effect_mode=VisualEffectMode.validate(str(data.get("visual_effect_mode", VisualEffectMode.DEFAULT))),
-    )
-
-
-def theme_to_mapping(settings: ThemeSettings) -> dict[str, object]:
-    data = theme_colors_to_mapping(settings)
-    normalized = settings.normalized()
-    data["ai_enabled"] = bool(normalized.ai_enabled)
-    data["visual_effect_mode"] = normalized.visual_effect_mode
-    return data
 
 
 def resolve_effective_theme(
@@ -155,14 +77,6 @@ def merge_theme_with_character(
     profile: CharacterProfile | None,
 ) -> ThemeSettings:
     return resolve_effective_theme(profile, None, saved_settings)
-
-
-def theme_colors_to_mapping(settings: ThemeSettings) -> dict[str, object]:
-    normalized = settings.normalized()
-    return {
-        field: getattr(normalized, field)
-        for field, _label, _default in THEME_COLOR_FIELDS
-    }
 
 
 def _extract_json_text(raw_text: str) -> str:
