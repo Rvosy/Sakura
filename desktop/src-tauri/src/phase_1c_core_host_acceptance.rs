@@ -219,11 +219,7 @@ fn run_scenario(
     let initialize = host.request_with_payload(
         "initialize",
         "core.initialize",
-        if initialize_mode == "ready" {
-            json!({"mode": "ready", "delayMs": 50})
-        } else {
-            json!({"mode": "hang"})
-        },
+        json!({}),
         Duration::from_secs(5),
     )?;
     if initialize

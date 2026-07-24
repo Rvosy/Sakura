@@ -28,6 +28,13 @@ const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
 const STDERR_RECORD_LIMIT: usize = 4 * 1024;
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
+const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
+    "id",
+    "displayName",
+    "initialMessage",
+    "replyTones",
+    "portraitChoices",
+];
 const REQUIRED_CAPABILITIES: [&str; 5] = [
     "system.hello",
     "system.health",
@@ -120,6 +127,15 @@ impl CoreSnapshotCache {
                 return Err(format!("Core Snapshot {key} is invalid"));
             }
         }
+        if object
+            .get("activeInteractionSummary")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err("Core Snapshot activeInteractionSummary is unsupported".to_string());
+        }
+        reject_sensitive_snapshot_fields(snapshot)?;
+        validate_character_summary(object.get("currentCharacterSummary"))?;
+        validate_assistant_readiness(object, readiness)?;
         self.snapshot = Some(snapshot.clone());
         Ok(())
     }
@@ -127,6 +143,138 @@ impl CoreSnapshotCache {
     pub fn current(&self) -> Option<&Value> {
         self.snapshot.as_ref()
     }
+}
+
+fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                let normalized = key
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                if [
+                    "apikey",
+                    "authorization",
+                    "cookie",
+                    "credential",
+                    "private",
+                    "prompt",
+                    "secret",
+                    "token",
+                ]
+                .iter()
+                .any(|forbidden| normalized.contains(forbidden))
+                {
+                    return Err("Core Snapshot contains a forbidden private field".to_string());
+                }
+                reject_sensitive_snapshot_fields(nested)?;
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                reject_sensitive_snapshot_fields(nested)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_character_summary(summary: Option<&Value>) -> Result<(), String> {
+    let Some(summary) = summary else {
+        return Err("Core Snapshot currentCharacterSummary is missing".to_string());
+    };
+    if summary.is_null() {
+        return Ok(());
+    }
+    let object = summary
+        .as_object()
+        .ok_or_else(|| "Core Snapshot currentCharacterSummary is invalid".to_string())?;
+    if object.len() != CHARACTER_SUMMARY_KEYS.len()
+        || CHARACTER_SUMMARY_KEYS
+            .iter()
+            .any(|key| !object.contains_key(*key))
+    {
+        return Err("Core Snapshot currentCharacterSummary fields are invalid".to_string());
+    }
+    if CHARACTER_SUMMARY_KEYS[..3]
+        .iter()
+        .any(|key| object.get(*key).is_none_or(|value| !value.is_string()))
+    {
+        return Err("Core Snapshot currentCharacterSummary strings are invalid".to_string());
+    }
+    for key in &CHARACTER_SUMMARY_KEYS[3..] {
+        let values = object.get(*key).and_then(Value::as_array).ok_or_else(|| {
+            "Core Snapshot currentCharacterSummary arrays are invalid".to_string()
+        })?;
+        if values.iter().any(|value| !value.is_string()) {
+            return Err("Core Snapshot currentCharacterSummary arrays are invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_assistant_readiness(
+    snapshot: &serde_json::Map<String, Value>,
+    readiness: &str,
+) -> Result<(), String> {
+    let components = snapshot
+        .get("components")
+        .and_then(Value::as_object)
+        .expect("components were validated before Assistant readiness");
+    let Some(assistant) = components.get("assistant") else {
+        return if readiness == "transport_ready" {
+            Ok(())
+        } else {
+            Err("Core Snapshot Assistant component is missing".to_string())
+        };
+    };
+    let assistant = assistant
+        .as_object()
+        .ok_or_else(|| "Core Snapshot Assistant component is invalid".to_string())?;
+    if assistant.len() != 3
+        || !["state", "code", "retryable"]
+            .iter()
+            .all(|key| assistant.contains_key(*key))
+    {
+        return Err("Core Snapshot Assistant component fields are invalid".to_string());
+    }
+    let state = assistant
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Core Snapshot Assistant state is invalid".to_string())?;
+    let code = assistant
+        .get("code")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Core Snapshot Assistant code is invalid".to_string())?;
+    if state != readiness || assistant.get("retryable").and_then(Value::as_bool) != Some(false) {
+        return Err("Core Snapshot Assistant readiness is retryable or inconsistent".to_string());
+    }
+    let valid = matches!(
+        (state, code),
+        ("initializing", "INITIALIZING")
+            | ("ready", "READY")
+            | ("setup_required", "CORE_CONFIG_SETUP_REQUIRED")
+            | ("failed", "CONFIG_DATA_INVALID")
+            | ("failed", "CONFIG_VERSION_UNSUPPORTED")
+            | ("setup_required", "PROVIDER_SETUP_REQUIRED")
+            | ("setup_required", "CHARACTER_SETUP_REQUIRED")
+            | ("failed", "ASSISTANT_INITIALIZATION_FAILED")
+            | ("degraded", "CHARACTER_FALLBACK_APPLIED")
+            | ("degraded", "OPTIONAL_CHARACTER_SKIPPED")
+    );
+    if !valid {
+        return Err("Core Snapshot Assistant readiness is unsupported".to_string());
+    }
+    let has_summary = snapshot
+        .get("currentCharacterSummary")
+        .is_some_and(|summary| !summary.is_null());
+    if matches!(state, "ready" | "degraded") != has_summary {
+        return Err("Core Snapshot Assistant summary is inconsistent".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -528,38 +676,9 @@ impl std::fmt::Debug for CoreHostRuntime {
 impl CoreHostRuntime {
     pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
         validate_runtime_layout(layout)?;
-        let resource_root_text = layout.resource_root.to_string_lossy().replace('\\', "/");
-        let resource_root = serde_json::to_string(&resource_root_text)
-            .map_err(|error| format!("Core Host resource root encoding failed: {error}"))?;
-        let core_main = serde_json::to_string(&format!("{}.__main__", layout.core_module))
-            .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
-        // Official Windows embeddable Python runs with `isolated=1` and its
-        // `_pth` file intentionally ignores PYTHONPATH/current-directory
-        // discovery. Insert the RuntimeLocator-approved application root
-        // explicitly before importing the Qt-free Core Host module.
-        let bootstrap = format!(
-            "import runpy,sys;sys.path.insert(0,{resource_root});sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
-        );
         Self::launch_with_backend(
             &NativeManagedProcessTreeBackend,
-            ManagedProcessRequest {
-                program: layout.python_executable.clone(),
-                args: vec![
-                    "-I".into(),
-                    "-B".into(),
-                    "-X".into(),
-                    "utf8".into(),
-                    "-c".into(),
-                    bootstrap.into(),
-                    "--generation-id".into(),
-                    generation_id.into(),
-                    "--generation-number".into(),
-                    "1".into(),
-                ],
-                current_directory: Some(layout.working_directory.clone()),
-                environment_overrides: Vec::new(),
-                stdio: ProcessStdio::Piped,
-            },
+            core_host_process_request(layout, generation_id)?,
             generation_id,
         )
     }
@@ -917,6 +1036,44 @@ impl CoreHostRuntime {
     }
 }
 
+fn core_host_process_request(
+    layout: &RuntimeLayout,
+    generation_id: &str,
+) -> Result<ManagedProcessRequest, String> {
+    let resource_root_text = layout.resource_root.to_string_lossy().replace('\\', "/");
+    let resource_root = serde_json::to_string(&resource_root_text)
+        .map_err(|error| format!("Core Host resource root encoding failed: {error}"))?;
+    let core_main = serde_json::to_string(&format!("{}.__main__", layout.core_module))
+        .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
+    // Official Windows embeddable Python runs with `isolated=1` and its
+    // `_pth` file intentionally ignores PYTHONPATH/current-directory
+    // discovery. Insert the RuntimeLocator-approved application root
+    // explicitly before importing the Qt-free Core Host module.
+    let bootstrap = format!(
+        "import runpy,sys;sys.path.insert(0,{resource_root});sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
+    );
+    Ok(ManagedProcessRequest {
+        program: layout.python_executable.clone(),
+        args: vec![
+            "-I".into(),
+            "-B".into(),
+            "-X".into(),
+            "utf8".into(),
+            "-c".into(),
+            bootstrap.into(),
+            "--app-root".into(),
+            layout.application_root.as_os_str().to_owned(),
+            "--generation-id".into(),
+            generation_id.into(),
+            "--generation-number".into(),
+            "1".into(),
+        ],
+        current_directory: Some(layout.working_directory.clone()),
+        environment_overrides: Vec::new(),
+        stdio: ProcessStdio::Piped,
+    })
+}
+
 fn hello_payload() -> Value {
     json!({
         "protocol": {
@@ -1059,8 +1216,8 @@ mod tests {
     };
 
     use super::{
-        drain_stderr, CoreHostRuntime, CoreSnapshotCache, StderrDrainState, StderrDrainStats,
-        StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, CoreHostRuntime, CoreSnapshotCache,
+        StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
@@ -1116,6 +1273,189 @@ mod tests {
                 read_failed: false,
             },
         }))
+    }
+
+    fn valid_assistant_snapshot(code: &str, state: &str, summary: Value) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "generationId": GENERATION_ID,
+            "generationNumber": 1,
+            "revision": 2,
+            "readiness": state,
+            "components": {
+                "assistant": {"state": state, "code": code, "retryable": false}
+            },
+            "capabilities": ["core.snapshot"],
+            "currentCharacterSummary": summary,
+            "activeInteractionSummary": null,
+            "coreConfigRevision": 0
+        })
+    }
+
+    fn valid_character_summary() -> Value {
+        json!({
+            "id": "sakura",
+            "displayName": "Sakura",
+            "initialMessage": "hello",
+            "replyTones": ["gentle"],
+            "portraitChoices": ["default"]
+        })
+    }
+
+    #[test]
+    fn launch_command_uses_only_the_runtime_locator_approved_application_root() {
+        let layout = development_layout();
+        let request = core_host_process_request(&layout, GENERATION_ID)
+            .expect("approved launch command should build");
+        let app_root_index = request
+            .args
+            .iter()
+            .position(|argument| argument == "--app-root")
+            .expect("launch command must include --app-root");
+        assert_eq!(
+            request.args[app_root_index + 1].as_os_str(),
+            layout.application_root.as_os_str()
+        );
+        assert_eq!(
+            request
+                .args
+                .iter()
+                .filter(|argument| *argument == "--app-root")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn frozen_wp_3_01_assistant_states_are_all_non_retryable() {
+        for (state, code, has_summary) in [
+            ("ready", "READY", true),
+            ("setup_required", "CORE_CONFIG_SETUP_REQUIRED", false),
+            ("failed", "CONFIG_DATA_INVALID", false),
+            ("failed", "CONFIG_VERSION_UNSUPPORTED", false),
+            ("setup_required", "PROVIDER_SETUP_REQUIRED", false),
+            ("setup_required", "CHARACTER_SETUP_REQUIRED", false),
+            ("failed", "ASSISTANT_INITIALIZATION_FAILED", false),
+            ("degraded", "CHARACTER_FALLBACK_APPLIED", true),
+            ("degraded", "OPTIONAL_CHARACTER_SKIPPED", true),
+        ] {
+            let snapshot = valid_assistant_snapshot(
+                code,
+                state,
+                if has_summary {
+                    valid_character_summary()
+                } else {
+                    Value::Null
+                },
+            );
+            let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+            cache
+                .store_python_snapshot(&snapshot)
+                .unwrap_or_else(|error| panic!("{state}/{code} must validate: {error}"));
+
+            let mut retryable = snapshot.clone();
+            retryable["components"]["assistant"]["retryable"] = json!(true);
+            assert!(
+                cache.store_python_snapshot(&retryable).is_err(),
+                "{state}/{code} must never become automatically retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn character_summary_requires_the_exact_five_public_fields_and_types() {
+        let valid = valid_assistant_snapshot("READY", "ready", valid_character_summary());
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        cache
+            .store_python_snapshot(&valid)
+            .expect("exact public summary should validate");
+
+        for missing in [
+            "id",
+            "displayName",
+            "initialMessage",
+            "replyTones",
+            "portraitChoices",
+        ] {
+            let mut snapshot = valid.clone();
+            snapshot["currentCharacterSummary"]
+                .as_object_mut()
+                .expect("summary object")
+                .remove(missing);
+            assert!(cache.store_python_snapshot(&snapshot).is_err(), "{missing}");
+        }
+
+        for (field, invalid) in [
+            ("id", json!(7)),
+            ("displayName", json!(false)),
+            ("initialMessage", json!(["private"])),
+            ("replyTones", json!(["gentle", 7])),
+            ("portraitChoices", json!("default")),
+        ] {
+            let mut snapshot = valid.clone();
+            snapshot["currentCharacterSummary"][field] = invalid;
+            assert!(cache.store_python_snapshot(&snapshot).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn character_summary_rejects_extra_api_key_credential_and_private_fields() {
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        for forbidden in [
+            "apiKey",
+            "generationCredential",
+            "systemPrompt",
+            "privateCharacterPath",
+        ] {
+            let mut snapshot =
+                valid_assistant_snapshot("READY", "ready", valid_character_summary());
+            snapshot["currentCharacterSummary"][forbidden] = json!("must-not-leak");
+            assert!(
+                cache.store_python_snapshot(&snapshot).is_err(),
+                "private field {forbidden} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn final_assistant_readiness_cannot_omit_its_state_code_and_retryability() {
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        for readiness in ["ready", "setup_required", "degraded", "failed"] {
+            let mut snapshot = valid_assistant_snapshot(
+                "READY",
+                readiness,
+                if matches!(readiness, "ready" | "degraded") {
+                    valid_character_summary()
+                } else {
+                    Value::Null
+                },
+            );
+            snapshot["components"] = json!({});
+            assert!(
+                cache.store_python_snapshot(&snapshot).is_err(),
+                "final readiness {readiness} requires the Assistant component"
+            );
+        }
+
+        let mut transport = valid_assistant_snapshot("READY", "transport_ready", Value::Null);
+        transport["components"] = json!({});
+        cache
+            .store_python_snapshot(&transport)
+            .expect("transport readiness precedes Assistant construction");
+    }
+
+    #[test]
+    fn snapshot_rejects_sensitive_fields_outside_the_character_summary() {
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        for forbidden in ["api-key", "api key", "privateData", "generation_credential"] {
+            let mut snapshot =
+                valid_assistant_snapshot("READY", "ready", valid_character_summary());
+            snapshot[forbidden] = json!("must-not-leak");
+            assert!(
+                cache.store_python_snapshot(&snapshot).is_err(),
+                "{forbidden}"
+            );
+        }
     }
 
     struct FragmentedReader {
@@ -1352,7 +1692,7 @@ mod tests {
             .request_with_payload(
                 "initialize-after-failure",
                 "core.initialize",
-                json!({"mode": "ready"}),
+                json!({}),
                 Duration::from_secs(3),
             )
             .expect_err("initialize must not continue after failed hello");
@@ -1451,7 +1791,7 @@ mod tests {
             .expect("staged packaged Runtime should resolve")
     }
 
-    fn complete_ready_lifecycle(
+    fn complete_assistant_lifecycle(
         layout: &crate::platform::RuntimeLayout,
         generation_id: &str,
         golden: &Value,
@@ -1467,7 +1807,7 @@ mod tests {
             .request_with_payload(
                 "initialize",
                 "core.initialize",
-                json!({"mode": "ready", "delayMs": 20}),
+                json!({}),
                 golden_deadline(golden, "initializeAcceptance"),
             )
             .expect("initialize should be accepted");
@@ -1478,7 +1818,7 @@ mod tests {
             let snapshot = host
                 .refresh_snapshot("snapshot", golden_deadline(golden, "request"))
                 .expect("Snapshot should respond");
-            if snapshot["readiness"] == "ready" {
+            if snapshot["readiness"] != "initializing" {
                 break;
             }
             assert!(
@@ -1579,53 +1919,54 @@ mod tests {
         let first_generation = "00000000-0000-4000-8000-000000004001";
         let second_generation = "00000000-0000-4000-8000-000000004002";
         let (first_exit, first_credential) =
-            complete_ready_lifecycle(&layout, first_generation, &golden);
+            complete_assistant_lifecycle(&layout, first_generation, &golden);
         assert_eq!(first_exit.root_exit_code, 0);
         assert!(first_exit.tree_empty);
         assert!(!first_exit.forced);
 
         let (second_exit, second_credential) =
-            complete_ready_lifecycle(&layout, second_generation, &golden);
+            complete_assistant_lifecycle(&layout, second_generation, &golden);
         assert_eq!(second_exit.root_exit_code, 0);
         assert!(second_exit.tree_empty);
         assert!(!second_exit.forced);
         assert_ne!(first_credential, second_credential);
 
-        let mut failed = CoreHostRuntime::launch(&layout, "00000000-0000-4000-8000-000000004003")
-            .expect("failed-readiness generation launches");
-        failed
+        let mut final_readiness =
+            CoreHostRuntime::launch(&layout, "00000000-0000-4000-8000-000000004003")
+                .expect("final-readiness generation launches");
+        final_readiness
             .request(
-                "hello-failed",
+                "hello-final",
                 "system.hello",
                 golden_deadline(&golden, "hello"),
             )
-            .expect("failed-readiness hello negotiates");
-        failed
+            .expect("final-readiness hello negotiates");
+        final_readiness
             .request_with_payload(
-                "initialize-failed",
+                "initialize-final",
                 "core.initialize",
-                json!({"mode": "failed"}),
+                json!({}),
                 golden_deadline(&golden, "initializeAcceptance"),
             )
-            .expect("failed readiness initialization is accepted");
+            .expect("real initialization is accepted");
         let readiness_deadline =
             std::time::Instant::now() + golden_deadline(&golden, "readinessWatchdog");
         loop {
-            let snapshot = failed
-                .refresh_snapshot("snapshot-failed", golden_deadline(&golden, "request"))
-                .expect("failed readiness Snapshot responds");
-            if snapshot["readiness"] == "failed" {
+            let snapshot = final_readiness
+                .refresh_snapshot("snapshot-final", golden_deadline(&golden, "request"))
+                .expect("final readiness Snapshot responds");
+            if snapshot["readiness"] != "initializing" {
                 break;
             }
             assert!(std::time::Instant::now() < readiness_deadline);
         }
-        let failed_exit = failed
+        let final_exit = final_readiness
             .shutdown(
                 golden_deadline(&golden, "shutdown"),
                 golden_deadline(&golden, "treeStop"),
             )
-            .expect("failed readiness generation cleans up");
-        assert!(failed_exit.tree_empty);
+            .expect("final readiness generation cleans up");
+        assert!(final_exit.tree_empty);
 
         let root = repo_root();
         let crash_fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/stderr_crash_host.py");
@@ -1765,7 +2106,7 @@ mod tests {
             "generationId": first_generation,
             "generationNumber": 1,
             "revision": 2,
-            "readiness": "ready",
+            "readiness": "transport_ready",
             "components": {"fixture": {"state": "ready", "pythonOwned": [1, 2, 3]}},
             "capabilities": ["core.snapshot"],
             "currentCharacterSummary": null,
@@ -1797,7 +2138,7 @@ mod tests {
             .request_with_payload(
                 "initialize",
                 "core.initialize",
-                json!({"mode": "ready", "delayMs": 20}),
+                json!({}),
                 Duration::from_secs(3),
             )
             .expect("initialize should be accepted");
@@ -1808,7 +2149,7 @@ mod tests {
             let snapshot = host
                 .refresh_snapshot("snapshot", Duration::from_secs(3))
                 .expect("snapshot should respond");
-            if snapshot["readiness"] == "ready" {
+            if snapshot["readiness"] != "initializing" {
                 assert_eq!(host.cached_snapshot(), Some(&snapshot));
                 assert_eq!(snapshot["generationId"], GENERATION_ID);
                 break;
@@ -1824,7 +2165,7 @@ mod tests {
     }
 
     #[test]
-    fn hung_python_initialize_keeps_health_and_shutdown_responsive() {
+    fn real_python_initialize_keeps_health_and_shutdown_responsive() {
         let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let mut host =
@@ -1834,10 +2175,10 @@ mod tests {
         host.request_with_payload(
             "initialize",
             "core.initialize",
-            json!({"mode": "hang"}),
+            json!({}),
             Duration::from_secs(3),
         )
-        .expect("hung initialize should still be accepted quickly");
+        .expect("real initialize should be accepted quickly");
         for index in 0..3 {
             let health = host
                 .request(
@@ -1846,11 +2187,15 @@ mod tests {
                     Duration::from_secs(3),
                 )
                 .expect("health should remain responsive");
-            assert_eq!(health["payload"]["hostState"], "initializing");
+            assert_eq!(health["payload"]["status"], "healthy");
+            assert!(matches!(
+                health["payload"]["hostState"].as_str(),
+                Some("initializing" | "ready" | "setup_required" | "degraded" | "failed")
+            ));
         }
         let exit = host
             .shutdown(Duration::from_secs(3), Duration::from_secs(5))
-            .expect("shutdown should cancel hung initialize");
+            .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
     }
