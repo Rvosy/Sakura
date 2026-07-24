@@ -368,3 +368,9 @@ failed readiness、Core crash、忽略 shutdown 强制整树回收、连续 gene
 首轮 macOS/Linux 只读摘要曾捕获 test fixture 写入 bytecode；修正只给 test launcher 增加与产品一致
 的 `-I -B -X utf8`，未放宽门禁。PR #147 保持 Draft 且 merge state CLEAN，P0/P1 为 0。WP-1C-04
 据此进入 stabilizing；本节不改变 ADR 对 Router、cancel、真实 Assistant 和 Accepted 状态的后续门禁。
+
+Stabilizing 文档 HEAD `18a3cab` 的 push/pull_request platform runs `30091910794`/`30091915123`
+与 Unit/UI run `30091915140` 再次全绿；最终白名单、资源摘要、进程/临时目录、PR 和独立回退审查
+均通过，WP-1C-04 accepted。该结论完成 ADR-0002 所要求的 Phase 1C bundled lifecycle 技术验证，
+ADR 本身仍保持 `Technically Validated for Phase 1C transport foundation`；Router、cancel 和真实
+Assistant 消费验证仍是后续门禁，不因本 WP 提前 Accepted。

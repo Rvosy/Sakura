@@ -142,3 +142,13 @@ push run 三平台固定 archive 与 packaged 资源摘要分别为：Windows x6
 
 据此总表可进入 `stabilizing`。最终 `accepted` 仍要求本次状态/ADR/总表文档 HEAD 自身的三平台、
 Unit、UI 全绿并完成最终 diff、残留资源、PR 和回退审查；WP-3-01 继续保持 planned。
+
+Stabilizing 文档 HEAD `18a3cab` 的 push platform run `30091910794`、pull_request platform run
+`30091915123` 和 Unit/UI run `30091915140` 再次全绿。最终审查确认 WP 白名单外 tracked diff 为 0，
+`characters/`、`data/`、`runtime/` tracked diff 为 0，精确匹配 Shell/Core 进程、验收目录和 staging
+目录残留均为 0；PR #147 保持 Draft、merge state CLEAN、8/8 checks 成功，P0/P1 为 0。
+
+据此 WP-1C-04 验收闭环：三平台 development/packaged locator、固定 bundled Python identity/
+architecture/layout、正常与故障 lifecycle、连续 generation、pipe/reader/writer/init thread、handle/fd、
+完整进程树、临时目录、共享锁重获和保护资源摘要均有同提交自动证据。后续破坏性 lifecycle 修改必须
+暂停功能开发并更新 ADR/golden；WP-3-01 仍为 planned，本次不激活。

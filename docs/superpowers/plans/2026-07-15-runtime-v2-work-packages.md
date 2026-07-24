@@ -74,7 +74,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
-| WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | stabilizing |
+| WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04 | planned |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
@@ -111,7 +111,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
-当前启动点是 `WP-1C-04`，也是当前唯一 `stabilizing` Work Package；不得同时激活或稳定化后续 WP。
+`WP-1C-04` 已 accepted；当前没有 `active`/`stabilizing` Work Package。`WP-3-01` 仍为 planned，
+本次不激活；其后续激活必须由项目负责人另行开始。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1609,6 +1610,14 @@ arm64、Linux x64 均完成固定 archive、development/packaged RuntimeLocator�
 lifecycle/fault matrix、连续 generation、完整资源清理、共享锁重获和保护资源摘要门禁。首轮
 macOS/Linux 只读摘要暴露并关闭 test fixture bytecode 写入，未放宽 timeout 或断言。最终 accepted
 仍要求状态/ADR/总表文档最新 HEAD 自身的三平台、Unit、UI 全绿与最终审查；WP-3-01 不激活。
+
+Accepted 记录（2026-07-24）：stabilizing 文档 HEAD `18a3cab` 的 push platform run `30091910794`、
+pull_request platform run `30091915123` 和 Unit/UI run `30091915140` 全绿；PR #147 保持 Draft、
+merge state CLEAN、8/8 checks 成功。最终审查确认 WP 白名单外 tracked diff、用户保护目录 tracked
+diff、精确 Shell/Core 进程、验收/staging 临时目录和 P0/P1 均为 0；固定 archive、三平台
+development/packaged RuntimeLocator、真实 lifecycle/fault matrix、连续 generation、完整资源释放、
+锁立即重获和前后摘要证据完整。实现、CI 修正、逐平台摘要与独立回退见
+`docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md`；WP-3-01 保持 planned，未在本次激活。
 
 主要结果：在 Windows x64、macOS arm64、Linux x64 使用目标 bundled Python 启动真实 Core Host，完成真实进程树、hello、initialize、readiness、Snapshot、health 和 shutdown，并冻结仅供 lifecycle 使用的最小接口。
 
