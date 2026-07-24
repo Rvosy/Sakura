@@ -71,8 +71,8 @@ Core Host control plane ── quick initialize acceptance ──► background 
 existing readiness owner ── atomic publish ──► Snapshot schema 1 / Rust read-only cache
 ```
 
-实施候选为 `app/config/core_config_reader.py` 与
-`app/core_host/assistant_adapter.py`。前者是纯、显式只读的 raw YAML projection；后者是唯一
+实施文件固定为 `app/config/core_config_reader.py` 与
+`app/core_host/assistant_adapter.py`。前者是唯一的纯、显式只读 raw YAML projection；后者是唯一
 Assistant Facade，定义 `AssistantSession`、disabled/no-op `MemoryLike`，并协调构造与关闭。
 它们不得以 `application.py` 或 `AppContext` 作为入口。
 
@@ -88,13 +88,17 @@ HostConfig 中的 app root、readiness owner、cancellation 与 issue sink。Pro
 `failed` 或 `hang`。现有 fake mode 仅可通过测试注入 initializer 使用，生产 envelope 不得
 识别该开关。
 
-建议的窄接口如下（名称可在实现时保持等价，但语义不得扩大）：
+接口名称和秘密边界如下冻结，不得以等价外观重新暴露 Provider 凭据：
 
 ```python
 @dataclass(frozen=True)
+class ProviderSelection:
+    api_settings: app.llm.api_client.ApiSettings = field(repr=False)
+
+@dataclass(frozen=True)
 class CoreConfigReadResult:
     current_character_id: str | None
-    selected_chat_settings: ApiSettings | None
+    provider_selection: ProviderSelection | None
     config_problem: StableReadinessError | None
 
 class CoreConfigReader:
@@ -117,7 +121,9 @@ class AssistantAdapter:
 2. `core.initialize` 创建一次后台 initializer，立即发布 `initializing`；重复调用不创建第二
    worker/session，返回既有启动结果。
 3. worker 懒导入 Adapter 和其窄依赖，读取 config/角色；任何取消检查命中时不发布新 revision。
-4. 读取成功后只做本地 Provider shape 校验，构造 `OpenAICompatibleClient(settings)`；禁止调用
+4. 读取成功后只做本地 Provider shape 校验，从 `ProviderSelection.api_settings` 构造
+   `OpenAICompatibleClient(settings)`；`ProviderSelection` 与 `CoreConfigReadResult` 均不得以
+   默认 repr、异常或诊断暴露 API key。禁止调用
    `test_connection`、`list_models`、`chat`、`complete_raw`、`complete_with_tools`。
 5. Adapter 构造真实 `AgentRuntime`，显式传入 `ToolRegistry([])`、truthy disabled/no-op
    `MemoryLike`、角色 prompt/metadata，再构造真实 `ChatPipeline`；不得调用 `run_*`。
@@ -126,26 +132,32 @@ class AssistantAdapter:
 
 ## Readiness、错误与重试矩阵
 
-所有结果均有稳定 `state`、machine `code`、经脱敏的 `message` 和公共角色摘要（存在时）。
-下表是冻结映射；这些 code 都是确定性且 `retryable=false`，不得自动重启。Provider 网络和
-认证从不在启动阶段产生 readiness error。
+所有结果均有稳定 `state`、machine `code`、经脱敏的稳定诊断 `message` 和公共角色摘要（存在时）。
+下表是冻结映射；所有本 WP readiness result 均为 `retryable=false`，Core Supervisor 必须只按
+此稳定 state/code 映射为不自动重启。为承载该映射，允许对
+`desktop/src-tauri/src/core_supervisor.rs` 做必要的窄分类改动；不得增加第二条 restart 或
+生命周期路径。Provider 网络和认证从不在启动阶段产生 readiness error。
 
 | 输入或阶段 | state | stable code | session | restart |
 |---|---|---|---|---|
-| 初始未配置、缺空 config、无 chat profile/slot | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
-| 无有效角色，且无法安全 fallback | `setup_required` | `CHARACTER_SETUP_REQUIRED` | 不创建 | 不重启 |
+| `system_config.yaml` 不存在 | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
+| `system_config.yaml` 存在但为空、仅空白、null、YAML 损坏或不是 mapping | `failed` | `CONFIG_DATA_INVALID` | 不创建 | 不重启 |
+| `system_config.yaml` 是 mapping，但 `config_version` 缺失、非 int、bool、旧版或未来版 | `failed` | `CONFIG_VERSION_UNSUPPORTED` | 不创建 | 不重启 |
+| version 有效但 API/characters 配置缺失、空或未选择 chat profile/slot | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
+| 无任何有效角色 | `setup_required` | `CHARACTER_SETUP_REQUIRED` | 不创建 | 不重启 |
 | Provider type、profile、slot、模型归属、base URL、key 或 model 的本地形状无效 | `setup_required` | `PROVIDER_SETUP_REQUIRED` | 不创建 | 不重启 |
-| `config_version` 缺失、非 int、bool、旧版或未来版 | `failed` | `CONFIG_VERSION_UNSUPPORTED` | 不创建 | 不重启 |
-| YAML 损坏、非 mapping、严格数据 schema/必填角色字段失败 | `failed` | `CONFIG_DATA_INVALID` | 不创建 | 不重启 |
 | Adapter 必要 pure import 失败、禁止 Qt/域阻断、不可恢复构造异常 | `failed` | `ASSISTANT_INITIALIZATION_FAILED` | 已建部分逆序关闭 | 不重启 |
 | 配置当前角色失效，安全 fallback 为 `sakura` 或首个有效角色 | `degraded` | `CHARACTER_FALLBACK_APPLIED` | 构造 | 不重启 |
 | 已选有效角色，但跳过损坏的可选角色包 | `degraded` | `OPTIONAL_CHARACTER_SKIPPED` | 构造 | 不重启 |
 | 全部有效，本地 Provider shape 有效且 session 构造完成 | `ready` | `READY` | 构造 | 不重启 |
 
 `degraded` 仅表示基础 session 已可用且存在上述可选/回退问题；一项输入不得同时映射多个
-state。多个问题时优先阻止构造的 `failed`，其次 `setup_required`，最后以确定排序聚合
-`degraded` code/message。异常文本、文件名和日志均须脱敏，不能包含 key、credential、完整
-prompt、绝对路径或诊断内部对象 repr。
+state。configured current 无效但存在安全 fallback 时，唯一结果是
+`CHARACTER_FALLBACK_APPLIED`；选中角色有效且其他角色包损坏时，唯一结果是
+`OPTIONAL_CHARACTER_SKIPPED`；无任何有效角色时，唯一结果是 `CHARACTER_SETUP_REQUIRED`。
+fallback 与 skipped optional packages 同时存在时，唯一 code 优先为
+`CHARACTER_FALLBACK_APPLIED`，其次才是 `OPTIONAL_CHARACTER_SKIPPED`。异常文本、文件名和日志
+均须脱敏，不能包含 key、credential、完整 prompt、绝对路径或诊断内部对象 repr。
 
 ## Snapshot 公共契约
 
@@ -185,21 +197,24 @@ MCP、plugins、voice、TTS、backchannel 与 Qt stub。
   typing-only dependency/Protocol，需要时在 legacy default 路径局部导入。必须有 import API、
   default 行为及业务语义等价测试。
 
-`CharacterRegistry` 语义复用；若其坏包处理会触发 legacy 文件 logger，则增加注入 issue sink，
-由 Core Host 写受控 stderr。默认 legacy 行为保持不变。
+`CharacterRegistry` 固定接受 injectable issue sink：legacy 默认 sink 仍为 `log_event`，保持
+现有文件日志行为；Core Host 固定注入仅输出经脱敏 stderr 的 sink，绝不触发 legacy runtime
+log 文件。该分支必须有 legacy-default 与 Core-stderr 的等价/零写入测试。
 
 ## 严格只读配置与凭据规则
 
-CoreConfigReader 只读取注入 app root 内的原始文件，允许复用纯 DTO、`load_yaml_mapping` 与
-`resolve_model_slot`，但不得调用 `AppSettingsService.load_api_profiles()` 或
-`load_model_selection()`，也不得运行 `MigrationRunner`。它绝不 migrate、normalize-and-save、
+唯一的 `app/config/core_config_reader.py` 只读取注入 app root 内的原始文件，允许复用纯 DTO、
+`load_yaml_mapping` 与 `resolve_model_slot`，但不得调用 `AppSettingsService.load_api_profiles()`
+或 `load_model_selection()`，也不得运行 `MigrationRunner`。它绝不 migrate、normalize-and-save、
 创建 backup、写 legacy log 或改变任何文件 bytes/mtime。
 
-`config_version` 必须恰为非 bool 的 integer `4`。缺失、旧版、未来版、bool 或字符串一律为
-`CONFIG_VERSION_UNSUPPORTED`；空/首次安装与该版本错误不同，前者为
-`CORE_CONFIG_SETUP_REQUIRED`。Provider 的有效性仅为本地形状：选中的 chat profile/model 匹配，
-base URL、API key、model 非空，且 URL scheme/host 合法。API key 只保留在 Python 进程 Provider
-settings，不进入 session public repr、Snapshot、errors、stderr、logs 或 Rust。
+`system_config.yaml` 不存在是首次安装，固定为 `CORE_CONFIG_SETUP_REQUIRED`。文件存在但为空、
+仅空白、null、损坏或非 mapping 固定为 `CONFIG_DATA_INVALID`；mapping 的 `config_version` 缺失、
+非 int、bool、旧版或未来版固定为 `CONFIG_VERSION_UNSUPPORTED`。仅在 version 有效后，API 或
+characters 缺失、为空或未选中才是 `CORE_CONFIG_SETUP_REQUIRED`。Provider 的有效性仅为本地形状：
+选中的 chat profile/model 匹配，base URL、API key、model 非空，且 URL scheme/host 合法。API key
+仅存于 `ProviderSelection.api_settings` 和 Python 进程 Provider settings，不进入 default repr、
+session、Snapshot、errors、stderr、logs 或 Rust。
 
 ## 并发、取消与清理
 
@@ -207,10 +222,20 @@ control plane 不持有领域锁。初始化 worker 在读/构造边界检查 ca
 当前 readiness，`shutdown` 立即置 cancel 并不等待领域完成。Adapter `close()` 幂等，按
 pipeline、runtime、provider、角色读取附属资源的逆创建顺序关闭；已关闭状态禁止二次发布。
 
-`run_host` 的 finally 必须以异常安全嵌套/聚合关闭 dispatcher/adapter 与 writer：任一 close
-抛错都不能跳过其他 close，主异常与 cleanup 异常均保留为可诊断的稳定、脱敏失败。Python
-cleanup 有界；不合作 worker/后代的最终停止权仍属于 Rust `ManagedProcessTree`，不得在 Python
-引入第二个强杀所有者。
+`run_host` 的 finally 固定按 dispatcher/adapter、再 writer 的顺序逐项尝试 close；每一步均在
+`try/finally` 中保证下一步执行。若已有主异常，cleanup failures 作为聚合附属错误保留；若无
+主异常，首个 cleanup failure 为主错误，其余为聚合附属错误。所有输出均使用稳定、脱敏诊断，
+任一 close 抛错都不能跳过 writer 或其他 close。Python cleanup 有界；不合作 worker/后代的
+最终停止权仍属于 Rust `ManagedProcessTree`，不得在 Python 引入第二个强杀所有者。
+
+Rust shutdown intent 成功写入 Core stdin 的时刻起，使用**单一共享的端到端 5000ms deadline**：
+其中 protocol graceful shutdown 最多 3000ms，且该 3000ms 包含在同一 5000ms 内，而非随后再起
+一段 5000ms。剩余预算用于关闭 stdin、等待根、终止整树、验证树为空、排空/关闭 pipe、join
+stderr/writer thread、release fd/handle 与删除临时资源；5000ms 内必须使 root、所有后代、pipe、
+fd、handle、thread 和 temp 均归零。允许且必须测试对
+`desktop/src-tauri/src/core_host_runtime.rs` 的 deadline 改造，以把现有分段等待改成该共享
+deadline；Windows x64、macOS arm64、Linux x64 均验证正常、超时、忽略 shutdown 与 close-block
+场景。
 
 ## 实施候选白名单与禁止范围
 
@@ -219,12 +244,12 @@ guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化
 
 | 范围 | 候选路径 | 理由 |
 |---|---|---|
-| Adapter/readiness | `app/core_host/assistant_adapter.py`、`app/core_host/server.py` | 薄 Facade、注入 initializer、原子 publish/close。 |
+| Adapter/readiness/CLI | `app/core_host/assistant_adapter.py`、`app/core_host/server.py`、`app/core_host/__main__.py` | 薄 Facade、注入 initializer、原子 publish/close 与注入 app root 的唯一 CLI 入口。 |
 | 只读配置 | `app/config/core_config_reader.py`、`app/config/models.py`、`app/config/model_slots.py` | 纯 raw config projection 和 slot 解析。 |
 | 角色/Provider/Pipeline | `app/config/character_loader.py`、`app/llm/api_client.py`、`app/core/chat_pipeline.py` | 仅复用读取、构造和无网络 Provider。 |
 | 已证明的 Qt/import blocker | `app/config/visual_effect.py`、`app/ui/theme.py`、`app/ui/window_backdrop.py`、`app/agent/__init__.py`、`app/agent/runtime.py`、`app/agent/memory_recall.py` | 仅移出 Qt 依赖或改为 typing/lazy import，并保留 legacy 行为。 |
-| 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture 和既有 Core Host 命名以覆盖 platform filter。 |
-| 三平台验收 | `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、既有 runtime-v2 platform workflow | 仅将既有 lifecycle/snapshot acceptance 接到真实 Adapter，不创建第二链。 |
+| 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_core_host_cli.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture、CLI 注入和既有 Core Host 命名。 |
+| 三平台验收与 CI | `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/runtime-v2-platform-foundation.yml`、`tests/unit/test_runtime_v2_platform_workflow.py` | 仅将既有 lifecycle/snapshot acceptance、共享 deadline 与 retry 分类接到真实 Adapter；workflow 必须显式执行新增 `core_host_*` pytest。 |
 
 明确禁止 `app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/extensions.py`、resource
 manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、`app/agent/mcp/**`、
@@ -232,7 +257,9 @@ manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、
 runtime events/visual observation、`main.py`、`legacy_qt_main.py`、Router/Gateway/Operation/chat
 Rust 或 WebView 文件、`desktop/frontend/**`、`third_party/**`、`tools/mcp/**`。也禁止写
 `data/**`、`characters/**`、`runtime/**`、migration backup、用户日志/cache、Qdrant/mem0、TTS、
-插件私有数据和任何真实用户目录。
+插件私有数据和任何真实用户目录。零新增依赖：禁止修改 `requirements*.txt`、`pyproject.toml`、
+任何 Python/Node package manifest、`Cargo.toml`、`Cargo.lock`、`package-lock.json`、
+`pnpm-lock.yaml`、`yarn.lock` 或其他 package lock。
 
 ## 验收矩阵、CI 与资源零残留
 
@@ -241,11 +268,11 @@ mtime、SHA-256，必须完全一致。至少覆盖如下确定性矩阵。
 
 | 门类 | 必测情形 | 断言 |
 |---|---|---|
-| 配置/角色对拍 | valid、首次空配置、缺 current role、`sakura`/first fallback、坏可选包、当前角色 manifest/必填字段/未来 schema 失效、坏 YAML、非 mapping、missing/bool/string/old/future version | 精确 state/code（当前角色数据失效为 `CONFIG_DATA_INVALID`）；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
+| 配置/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；mapping 的 missing/bool/string/old/future version；version 有效但 API/characters 缺失/未选；valid；configured current 无效的 `sakura`/first fallback；坏可选包；无任何有效角色 | 精确 state/code：config 分支逐项对照矩阵；fallback 为 `CHARACTER_FALLBACK_APPLIED`、仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`、无有效角色为 `CHARACTER_SETUP_REQUIRED`；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
 | Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知 | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；秘密不出现在任何公开面。 |
 | session/禁止域 | valid 角色与 Provider、Memory/MCP/plugins/TTS/voice/screen fail-if-called | 构造真实 runtime、空 tools、disabled Memory、pipeline；不运行 pipeline，不加载禁止域。 |
 | import/等价 | hello 前与 initialize 后 subprocess probe；legacy agent imports；Theme/VisualEffectMode | 前者无 agent/UI/PySide6，后者仍无 Qt/ResourceManager/禁止域；public import/default/validation 语义等价。 |
-| 生命周期/故障 | 慢 reader、构造中途异常、重复 initialize/shutdown、shutdown before initialize、EOF、writer failure、close throw、close block、init/close race、old worker late result | health/shutdown 在 deadline 内；只构造/关闭一次；异常聚合不跳过 writer；晚结果不发布；worker/writer/owned refs 归零。 |
+| 生命周期/故障 | 慢 reader、构造中途异常、重复 initialize/shutdown、shutdown before initialize、EOF、writer failure、close throw、close block、init/close race、old worker late result | health 在 deadline 内；只构造/关闭一次；异常聚合不跳过 writer；晚结果不发布；shutdown successful-write 起共享 5000ms 内 root/后代/pipe/fd/handle/thread/temp 归零。 |
 | generation/安全 | 连续两 generation、stale Snapshot/credential、公开 summary 扫描 | 单调 revision、generation 隔离、Rust 只读 clone；无路径/prompt/key/credential/endpoint/model/诊断 internals。 |
 | 真实进程树 | 协作与忽略 TERM 的一个/多个 Adapter 后代、Core crash、外部 kill | Rust ManagedProcessTree 在 Windows x64/macOS arm64/Linux x64 收束 root/后代/pipe/fd/handle/thread/temp，锁立即重获。 |
 
@@ -254,19 +281,21 @@ Python unit、Python subprocess、Rust real-host 和 packaged/Shell 三平台纵
 failed、crash、强制回收和连续 generation。仅 fake mode、sleeping host、根 PID 消失或 Python
 unit 通过不能宣称真实 Adapter 资源归零。CI 延续 `app/**`、`desktop/src-tauri/**`、
 `desktop/tests/**`、`tests/fixtures/runtime_v2/**` 和 `tests/*/test_core_host_*.py` 的现有
-platform filter；若测试不采用 `test_core_host_*` 命名，必须在 push/PR 两侧显式补精确 glob，
-并更新 filter contract test。workflow 被触发不等于 Python pytest 已在三平台执行，必须有明确
-pytest step 或对应 acceptance 证据。
+platform filter；新增 `core_host_*` tests 必须由
+`.github/workflows/runtime-v2-platform-foundation.yml` 的三平台 jobs 以明确 pytest step 实际执行，
+并由 `tests/unit/test_runtime_v2_platform_workflow.py` 断言该命令和 push/PR filters。仅 path
+trigger 不构成 Python pytest 已在三平台执行的证据。
 
-## 回退、风险与开放决策
+## 回退与已冻结风险边界
 
 实施应以独立 WP-3-01 commit 回退：先停止/验证所有 generation 和受控树已退出，再 `git
 revert` 该 WP 的实现提交；不得删除或改写 data、角色、配置、日志、cache 或 migration
 工件。若真实 Adapter 导入阻断 legacy 或资源门禁失败，回退到 WP-1C-04 已接受的 fake readiness
 链，而不是引入 Qt stub、AppContext 或 sidecar。
 
-已知风险和实施前必须由激活记录固定的决策如下：只读 parser 选择 Adapter 内实现或唯一的
-`core_config_reader.py`（不得双轨）；稳定 code 到 Supervisor retry 分类与 Shell diagnostics 的
-映射；Core Host 专用 issue sink；现有 `run_host` 清理异常聚合形式；以及真实不合作 worker 的
-端到端停止时钟是否满足 ADR-0001 的完整树时限。上述决策均不改变本规格已冻结的 boundary、
-readiness 映射、公开摘要或禁止网络/写入规则。
+风险仅在实施验收中验证，不留实现选择：唯一 parser 是
+`app/config/core_config_reader.py`；`CharacterRegistry` 以 legacy `log_event` 默认 sink 与 Core
+sanitized-stderr sink 双路径保持等价；所有 readiness code 均 `retryable=false` 且映射到既有
+Core Supervisor 的不自动重启分类；`run_host` 以已规定顺序聚合 cleanup errors；Rust 从 shutdown
+successful-write 起以单一 5000ms deadline 收束完整树和资源。若任何门禁失败，按上节回退，不得
+放宽 code、重试、秘密、网络、写入、Qt 或进程所有权边界。
