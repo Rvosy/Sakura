@@ -274,12 +274,22 @@ fn drain_stderr<R: Read>(
 ) {
     let mut buffer = [0_u8; STDERR_READ_CHUNK_SIZE];
     let mut utf8_pending = Vec::with_capacity(4);
-    let mut unterminated_bytes = 0_usize;
+    let mut line_pending = String::new();
+    let mut dropping_long_line = false;
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => {
                 if !utf8_pending.is_empty() {
-                    push_stderr_text(state, redactor, &String::from_utf8_lossy(&utf8_pending));
+                    drain_stderr_text(
+                        state,
+                        redactor,
+                        &mut line_pending,
+                        &mut dropping_long_line,
+                        &String::from_utf8_lossy(&utf8_pending),
+                    );
+                }
+                if !line_pending.is_empty() {
+                    push_stderr_text(state, redactor, &line_pending);
                 }
                 if let Ok(mut state) = state.lock() {
                     state.stats.eof = true;
@@ -289,22 +299,16 @@ fn drain_stderr<R: Read>(
             Ok(count) => {
                 if let Ok(mut state) = state.lock() {
                     state.stats.bytes_read = state.stats.bytes_read.saturating_add(count as u64);
-                    for byte in &buffer[..count] {
-                        if *byte == b'\n' {
-                            unterminated_bytes = 0;
-                        } else {
-                            unterminated_bytes = unterminated_bytes.saturating_add(1);
-                            if unterminated_bytes > STDERR_RECORD_LIMIT {
-                                state.stats.truncated_records =
-                                    state.stats.truncated_records.saturating_add(1);
-                                unterminated_bytes = 1;
-                            }
-                        }
-                    }
                 }
                 utf8_pending.extend_from_slice(&buffer[..count]);
                 drain_valid_utf8(&mut utf8_pending, |text| {
-                    push_stderr_text(state, redactor, text)
+                    drain_stderr_text(
+                        state,
+                        redactor,
+                        &mut line_pending,
+                        &mut dropping_long_line,
+                        text,
+                    )
                 });
             }
             Err(_) => {
@@ -313,6 +317,47 @@ fn drain_stderr<R: Read>(
                 }
                 return;
             }
+        }
+    }
+}
+
+fn drain_stderr_text(
+    state: &Arc<Mutex<StderrDrainState>>,
+    redactor: &StderrRedactor,
+    line_pending: &mut String,
+    dropping_long_line: &mut bool,
+    text: &str,
+) {
+    for segment in text.split_inclusive('\n') {
+        let ends_line = segment.ends_with('\n');
+        if *dropping_long_line {
+            if let Ok(mut state) = state.lock() {
+                state.stats.dropped_bytes = state
+                    .stats
+                    .dropped_bytes
+                    .saturating_add(segment.len() as u64);
+                state.stats.dropped_records = state.stats.dropped_records.saturating_add(1);
+            }
+            if ends_line {
+                *dropping_long_line = false;
+            }
+            continue;
+        }
+        line_pending.push_str(segment);
+        if line_pending.len() > STDERR_RECORD_LIMIT {
+            if let Ok(mut state) = state.lock() {
+                state.stats.truncated_records = state.stats.truncated_records.saturating_add(1);
+                state.stats.dropped_bytes = state
+                    .stats
+                    .dropped_bytes
+                    .saturating_add(line_pending.len() as u64);
+                state.stats.dropped_records = state.stats.dropped_records.saturating_add(1);
+            }
+            line_pending.clear();
+            *dropping_long_line = !ends_line;
+        } else if ends_line {
+            push_stderr_text(state, redactor, line_pending);
+            line_pending.clear();
         }
     }
 }
@@ -1081,10 +1126,11 @@ mod tests {
     #[test]
     fn stderr_drain_handles_lines_fragmented_utf8_invalid_bytes_and_eof() {
         let state = stderr_state();
+        let split_secret = "fragmented-secret-value";
         let redactor = StderrRedactor {
-            secrets: Vec::new(),
+            secrets: vec![split_secret.to_string()],
         };
-        let mut bytes = "ordinary\n多行 UTF-8\n".as_bytes().to_vec();
+        let mut bytes = format!("ordinary\n多行 UTF-8\nsecret={split_secret}\n").into_bytes();
         bytes.extend_from_slice(&[0xff, 0x00, b'\n']);
         drain_stderr(
             FragmentedReader {
@@ -1099,6 +1145,7 @@ mod tests {
         assert!(output.contains("ordinary\n多行 UTF-8\n"));
         assert!(output.contains('\u{fffd}'));
         assert!(output.contains('\0'));
+        assert!(!output.contains(split_secret));
         assert!(state.stats.eof);
         assert!(!state.stats.read_failed);
     }
