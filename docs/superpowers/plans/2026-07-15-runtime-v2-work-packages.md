@@ -70,7 +70,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted（CI platform foundation） |
-| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
+| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | active |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
 | WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
@@ -1505,6 +1505,10 @@ Xvfb window backend 合同测试；macOS/X11/Wayland 真实设备体验保持 de
 独立回退：按 backend 独立回退平台实现，保留共享纯布局模型和已经验证的 Windows backend。
 
 ### WP-1P-06：三平台最小 Shell + Core lifecycle 和 CI 总门禁
+
+状态：`active`（2026-07-24；WP-1P-05 accepted 后单独激活）
+
+独立规范：`docs/runtime-v2/WP-1P-06-shell-core-lifecycle.md`
 
 主要结果：把 WP-1P-02 至 05 组合为持续门禁，三个平台都能从正式 locator 启动 Shell 与最小 Core 并完成有界关闭。
 
