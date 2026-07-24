@@ -74,7 +74,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
-| WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
+| WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | active |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04 | planned |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
@@ -111,7 +111,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
-当前启动点是 `WP-1C-04`。这是总表中第一个依赖已满足的 `planned` 项；不得同时激活后续 WP。
+当前启动点是 `WP-1C-04`，也是当前唯一 `active` Work Package；不得同时激活或稳定化后续 WP。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1566,14 +1566,16 @@ hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> loc
 `docs/runtime-v2/WP-1C-03-protocol-transport.md`；允许目录、非目标、协议版本与 capability 结构、
 generation credential 生命周期、stderr 有界排水/脱敏、故障矩阵、三平台证据责任、timeout、
 资源上限、退出条件和独立回退均以该规范为准。前置 WP-1P-06 已 accepted；同一时间没有其他
-`active`/`stabilizing` WP，WP-1C-04 保持 `planned`。
+`active`/`stabilizing` WP；WP-1C-04 的激活范围见
+`docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md`。
 
 Accepted 记录（2026-07-24）：最新实现 HEAD `af79255` 的 Unit/UI run `30074854468`、
 pull_request platform run `30074854406` 和 push platform run `30074851836` 全绿；三平台均完成
 正式 RuntimeLocator/ManagedProcessTree/shared-lock/Core lifecycle、协议协商、generation credential、
 stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。实现与 CI 修正提交、测试计数、
 数据零变化、故障矩阵和独立回退见 `docs/runtime-v2/WP-1C-03-protocol-transport.md`。WP-1C-03
-登记为 `accepted`；WP-1C-04 仍为 `planned`，未激活。
+登记为 `accepted`；随后激活 WP-1C-04，其范围和回退见
+`docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md`。
 
 主要结果：建立 Desktop/Core/Protocol 版本协商、日志排水和真实 transport 故障边界。
 
