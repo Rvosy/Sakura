@@ -359,6 +359,12 @@ Windows x64 预验收已通过固定 Python 3.12.8 AMD64 archive 校验、packag
 忽略 shutdown 强制整树回收、共享锁冲突/立即重获以及 packaged/Core/characters/data/runtime 前后
 内容摘要一致。最终精确进程和验收临时目录残留均为 0；Rust/Python 定向测试全绿。
 
-本记录尚待同一实现 HEAD 的 Windows x64、macOS arm64、Linux x64 push/pull_request platform
-foundation 与 Unit/UI 权威 run。全部通过、P0/P1 为 0 并完成最终审查后，才补入 run/SHA 证据并
-关闭 WP-1C-04；本节不改变 ADR 对 Router、cancel、真实 Assistant 和 Accepted 状态的后续门禁。
+实现 HEAD `7d4067f` 的 Windows x64、macOS arm64、Linux x64 已在 push platform run
+`30091500680` 和 pull_request platform run `30091504687` 全绿，Unit/UI run `30091504697` 也全绿。
+三个 runner 均验证固定 archive identity、development/packaged RuntimeLocator、完整 lifecycle、
+failed readiness、Core crash、忽略 shutdown 强制整树回收、连续 generation、pipe/thread/handle/fd/
+进程树/临时目录清理、锁冲突与立即重获，以及 packaged/Core/characters/data/runtime 前后摘要一致。
+
+首轮 macOS/Linux 只读摘要曾捕获 test fixture 写入 bytecode；修正只给 test launcher 增加与产品一致
+的 `-I -B -X utf8`，未放宽门禁。PR #147 保持 Draft 且 merge state CLEAN，P0/P1 为 0。WP-1C-04
+据此进入 stabilizing；本节不改变 ADR 对 Router、cancel、真实 Assistant 和 Accepted 状态的后续门禁。

@@ -121,5 +121,24 @@ build 和三份 Python 脚本 `py_compile` 通过。本机完整 Unit 的 WP 相
 残留 `F:\Projects\Sakura`/无权限 `D:\` 产生 6 failed、12 setup errors，不涉及本 WP 修改路径，最终
 权威结果以同一提交的 GitHub Unit/UI jobs 为准。
 
-三平台 push/pull_request platform foundation 与 Unit/UI 尚待首个实现提交触发；在这些 run 对同一
-最新 HEAD 全绿前，总表保持原状态，不激活 WP-3-01。
+首个实现提交 `97f5216` 的三平台 packaged lifecycle 都通过，但 macOS/Linux 只读摘要准确捕获到
+test-only fault fixture launcher 在解包标准库写入 bytecode；修正提交 `7d4067f` 让 test launcher 与
+产品启动统一使用 `-I -B -X utf8`，没有放宽 timeout、摘要或断言。修正后同一 HEAD 的 push
+platform run `30091500680`、pull_request platform run `30091504687` 和 Unit/UI run
+`30091504697` 全绿；PR #147 保持 Draft，merge state CLEAN，P0/P1 为 0。
+
+push run 三平台固定 archive 与 packaged 资源摘要分别为：Windows x64 `11094114` bytes /
+`8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb` /
+`7b331f6cc8688d448ead7663992808edbbadff4deffec921215e656894d64d73`；macOS arm64
+`15676873` bytes / `5dfd4d81ad8ea0407e6153ed998a5fba332275c60ece81c6db2b58e443de60b9` /
+`a0ad3a0c83b378ef38eb766735c0de718a88de9d87b3b736d7b5096189d43e9f`；Linux x64
+`67062562` bytes / `c8032747c8e44ce0164236fa70a6b767a43ef778dc51b99bd18f25984f8cba3b` /
+`fe60308e4dd1c5859a3c731e81f0c69967f74eda0e5d5739a38435d7136b88a4`。各平台摘要均为运行前后
+同值，development Shell 的 runtime 摘要也分别保持 Windows
+`c8526139bea34915e03dac13ada959f96ad95be7275c2e112ccfbd199222646b`、macOS
+`a770207330fff18eff6a23d470bdf9e967e615228bf8e480a802c6d8de208d2c`、Linux
+`0bb7c231f1123330359ba3cbadd32ead603f71b803f502c15700fe56c06eea6d`；CI checkout 的
+`characters/`、`data/` 均为零文件且前后摘要一致。
+
+据此总表可进入 `stabilizing`。最终 `accepted` 仍要求本次状态/ADR/总表文档 HEAD 自身的三平台、
+Unit、UI 全绿并完成最终 diff、残留资源、PR 和回退审查；WP-3-01 继续保持 planned。
