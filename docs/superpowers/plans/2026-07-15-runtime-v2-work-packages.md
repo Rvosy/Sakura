@@ -76,7 +76,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
-| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | planned |
+| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | active |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
@@ -113,9 +113,10 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
-`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。接受后没有 Work Package 处于
-`active` 或 `stabilizing`。`WP-3-01` 仍为 planned，实施前必须由项目负责人另行完成 docs-only
-激活；不得因 WP-1P-05A 已 accepted 而自动开始。
+`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。WP-1P-05A accepted 当时没有 Work
+Package 处于 `active` 或 `stabilizing`；本次 `WP-3-01` 已通过单独的 docs-only 激活成为当前唯一
+`active` WP；
+其设计、实施计划、允许列表和回退见对应独立文档。WP-1D-01 及后续 WP 继续保持 planned。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1666,6 +1667,27 @@ development/packaged RuntimeLocator、真实 lifecycle/fault matrix、连续 gen
 ## 9. Phase 3 提前切片：首个真实 Assistant 消费者
 
 ### WP-3-01：无 Qt Assistant Adapter 与真实 readiness
+
+激活记录（2026-07-25）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置：WP-1C-04 accepted；WP-1P-05A accepted 提交 be3bb34；设计 HEAD b6f343a
+设计规格：docs/runtime-v2/WP-3-01-qt-free-assistant-adapter-readiness.md
+实施计划：docs/superpowers/plans/2026-07-25-wp-3-01-assistant-adapter-readiness.md
+独立计划审查：.superpowers/sdd/wp-3-01-plan-fast-review.md；最终 Critical/Important/Minor 均为 0，Approved
+允许生产路径：app/config/{visual_effect.py,core_config_reader.py,character_loader.py,models.py,model_slots.py}；app/core_host/{assistant_adapter.py,server.py,__main__.py}；app/llm/api_client.py；app/core/chat_pipeline.py；app/agent/{__init__.py,runtime.py,memory_recall.py}；app/ui/{theme.py,window_backdrop.py}；desktop/src-tauri/src/{core_host_runtime.rs,core_supervisor.rs,phase_1c_core_host_acceptance.rs}
+允许测试/fixture/CI：tests/unit/test_core_host_*.py；tests/integration/test_core_host_*.py；tests/unit/test_agent_runtime.py；tests/integration/test_chat_pipeline.py；tests/fixtures/runtime_v2/wp_3_01/**；tests/unit/test_runtime_v2_platform_workflow.py；.github/workflows/runtime-v2-platform-foundation.yml
+允许文档：本总表、上述设计规格与实施计划；后续仅以 docs-only 提交登记 stabilizing/accepted 证据
+明确禁止：app/core/bootstrap.py、app/core/app_context.py、app/core/extensions.py、ResourceManager、Memory/curator、builtin/desktop Tools、app/agent/mcp/**、app/plugins/**、plugins/**、app/voice/**、history/storage/runtime events/visual observation、main.py、legacy_qt_main.py、desktop/frontend/**、Router/Gateway/Operation/chat Rust/WebView、third_party/**、tools/mcp/**、任何 package manifest/lockfile、新依赖、Provider 网络与真实聊天
+保护目录：data/**、characters/**、runtime/** 只读；激活前基线为 characters 不存在/0 files/0 bytes，data 1 file/939022 bytes，runtime 49938 files/2602963793 bytes；不得清理、截断、恢复或写入
+接口：空生产 core.initialize；懒加载单一 AssistantAdapter/CoreConfigReader；真实未运行 Session；五字段 currentCharacterSummary；activeInteractionSummary=null；全部 readiness retryable=false；generation credential 仅经既有 framed IPC；Rust shutdown successful-write 起共享 5000ms，3000ms graceful 包含其中
+故障矩阵：严格配置/版本/角色/Provider shape、fallback 与坏可选包优先级、secret/generic serializer、禁止域 import/fail-if-called、重复 initialize/shutdown/EOF/writer/close/race/old worker、连续 generation、一个/多个后代、crash/强杀/共享 deadline 和完整资源归零；逐项见设计规格与实施计划
+验收环境：本机 macOS arm64 bundled runtime；GitHub windows-2025 x64、macos-15 arm64、ubuntu-24.04 x64；Python/Cargo 使用 PYTHONDONTWRITEBYTECODE=1；不安装依赖
+CI：设计 SHA b6f343a 的 PR platform run 30122282238 与 Unit/UI run 30122282057 成功；docs-only push 未命中 platform push path filter。生产提交必须由对称 push/PR filters 触发三平台，并显式执行新增 core_host pytest
+计划提交：按实施计划 Task 1-6 分别执行 TDD、独立任务复审和单一目的中文 Conventional Commit；完成后另做 docs-only stabilizing 与 accepted
+回退：先停止并验证所有 generation/受控树/pipe/thread/temp/锁归零，再按 Task 6→1、激活提交逆序 git revert；恢复 WP-1C-04 fake readiness；绝不触碰保护目录或用户日志/cache/migration/Qdrant/plugin data
+```
 
 主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。它在 WP-1C-04 后立即执行，先验证 bundled Core lifecycle 能承载真实 Assistant 初始化和确定性释放；不等待 Router 或聊天协议。
 
