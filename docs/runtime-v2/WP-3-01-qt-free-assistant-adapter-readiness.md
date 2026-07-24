@@ -131,7 +131,7 @@ class HostConfig:
 ```
 
 `AssistantSession` 内部可以持有 Provider settings/API key 以供真实 Provider 使用，但
-`AssistantSession.provider` 必须是 `field(repr=False)`；key 绝不进入 session repr、generic
+`AssistantSession.provider` 必须是 `field(repr=False)`；key 不得进入 session repr、generic
 serialization 或 public projection。`ProviderSelection.api_settings`、
 `CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、可能使用的
 `ApiConfigProfile.api_key` 及 `HostConfig.generation_credential` 均适用相同规则；
@@ -261,8 +261,8 @@ bool、string、`<4`、`>4` 固定为 `CONFIG_VERSION_UNSUPPORTED`，仅 `==4` �
 是 `PROVIDER_SETUP_REQUIRED`；有效 characters mapping 缺失或 `current_character_id` 为空是
 `CORE_CONFIG_SETUP_REQUIRED`，非空但无效时按角色 fallback 规则处理。Provider 的有效性仅为本地
 形状：选中的 chat profile/model 匹配，base URL、API key、model 非空，且 URL scheme/host 合法。
-API key 仅存于 repr-excluded settings/profile/selection 与 Python 进程 Provider settings，不进入
-session、Snapshot、errors、stderr、logs 或 Rust。
+API key 可存在于 repr-excluded settings/profile/selection 及 session-held Provider settings；不得
+进入 session repr、generic serialization、public projection、Snapshot、errors、stderr、logs 或 Rust。
 
 ## 并发、取消与清理
 
