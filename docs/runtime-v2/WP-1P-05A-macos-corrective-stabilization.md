@@ -193,6 +193,30 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
 因此 WP-1P-05A 保持 `active`，WP-3-01 状态保持 `planned` 且继续不得激活；不得把本节当作
 WP-7-02 的 Spaces、多屏、Retina、IME、签名或发布证据。
 
+### 2026-07-25 稳定化转换记录（当前）
+
+本记录取代以上带日期的 `active` 阶段结论，作为当前稳定化转换的证据；历史记录仍准确描述其各自
+发生时的状态。实现边界 HEAD 为 `f499e327943794b40c822386efef59084f7b6f6b`。
+
+- 项目负责人已以物理鼠标验收：向左、向上和向屏幕中央拖动均在释放位置停止；idle、bubble、composer、
+  expanded 往返保持稳定。
+- 已有真实可见性证据覆盖 `bash scripts/start.sh` 与
+  `PYTHONDONTWRITEBYTECODE=1 ./runtime/bin/python3 main.py`：无需桌面点击即可可见，visibility probe
+  自动恢复，首次点击响应；`lsappinfo` 报告 bundle ID
+  `com.rvosy.sakura.runtimev2.shell`，类型为 `APPL`。
+- 项目负责人已批准受保护目录验收基线：已记录的日志增长以及
+  `runtime/lib/python3.12/encodings/__pycache__/ascii.cpython-312.pyc` 均为基线，不能删除；后续门禁
+  只报告新的差异。
+- 最近已记录的自动门禁为：33 项定向 pytest 通过；unit 为 `982 passed, 2 skipped`；frontend 为
+  `18 passed`；`cargo fmt --check`、`cargo build --locked` 与 `git diff --check` 通过；完整
+  `cargo test --locked` 在精确的临时 PATH shim 下为 `96 passed, 3 ignored`，该 shim 已清理。最终
+  稳定化重跑和当前 SHA 的 CI 仍待完成。
+- 已记录 UI 轮次结束后，没有 Shell、Core 或 shared-lock holder 残留。
+- P0/P1 尚未宣称已为验收清零；WP-3-01 仍为 `planned`，不得激活或实施。
+
+独立回退：revert 本次仅文档提交即可恢复 `active`。实现回退仍按既有 WP 的逐提交序列进行，且不得
+触碰 `data/`、`characters/` 或 `runtime/`。
+
 ## 5. 独立回退
 
 按提交顺序回退本 WP 的 accepted、实现和激活提交。回退后恢复 WP-1P-05 accepted 的状态，
