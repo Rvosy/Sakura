@@ -116,11 +116,34 @@ jobs:
           python --version
           uname -a || true
 
-      - name: Build the native Tauri Shell before guardian tests
+      - name: Build the native Tauri Shell before guardian tests (Windows/macOS)
+        if: runner.os != 'Linux'
         working-directory: desktop
+        timeout-minutes: 8
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
 
+      - name: Build the native Tauri Shell before guardian tests (Linux bounded retry)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 180s \
+              cargo build --manifest-path src-tauri/Cargo.toml --locked; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Linux Cargo build attempt $attempt failed; retrying." >&2
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "Linux Cargo build failed after 3 bounded attempts." >&2
+          exit 1
+
       - name: Download and verify the pinned Python archive
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -154,21 +177,25 @@ jobs:
 
       - name: Check formatting
         working-directory: desktop
+        timeout-minutes: 3
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Run platform contract and golden layout tests
         working-directory: desktop
+        timeout-minutes: 4
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked platform::
 
       - name: Run native shared instance lock tests
         working-directory: desktop
+        timeout-minutes: 4
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked shared_instance::
 
       - name: Run native managed process tree backend tests
         if: runner.os != 'Windows'
         working-directory: desktop
+        timeout-minutes: 4
         shell: bash
         env:
           SAKURA_RUNTIME_V2_TEST_PYTHON: ${{ github.workspace }}/runtime/bin/python3
@@ -253,6 +280,7 @@ jobs:
 
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop
+        timeout-minutes: 4
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked
           platform::runtime_locator::tests::staged_repository_runtime_is_an_explicit_development_layout
