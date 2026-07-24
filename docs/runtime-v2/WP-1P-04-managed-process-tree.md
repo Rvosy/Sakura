@@ -1,6 +1,6 @@
 # WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
-> 状态：Active
+> 状态：accepted（CI platform foundation）
 > 日期：2026-07-24
 > 前置：WP-1P-03 accepted，提交 `9d079a4d`
 > 规范来源：ADR-0001、ADR-0004、`WP-1P-01-platform-contract.md`
@@ -108,7 +108,28 @@ stdio pipe 均采用明确的 close-on-exec 和单一 owner。Linux 可以把 pa
 
 满足以上证据后才能把本文和总计划登记为 accepted，再激活 WP-1P-05。
 
-## 7. 独立回退
+## 7. Accepted 记录（2026-07-24）
+
+实现提交：`1aa02e5`（`feat(runtime): 实现三平台受控进程树后端`）。
+
+最新 Draft PR #147 HEAD：`1aa02e591335d7ebc43d50b2b3533f60d8edbf1b`。
+
+最新 `runtime-v2-platform-foundation.yml` 原生证据：
+
+- push run `30057738510`：Windows x64、macOS arm64、Linux x64 全部通过；
+- pull_request run `30057739993`：Windows x64、macOS arm64、Linux x64 全部通过；
+- 同一 HEAD 的 Unit/UI run `30057739984`：Unit 与 UI 全部通过。
+
+证据覆盖 RuntimeLocator staging、三平台编译、cargo fmt、platform/shared-instance 契约、
+Windows Job Object 回归和 macOS/Linux POSIX backend 的真实子进程组测试（root-first-exit、
+多层后代、忽略 TERM、guardian EOF、超时升级、重复 API、身份边界和资源回收）。Workflow
+使用真实 runner；没有用 skip/xfail、旧 run 或 Windows 结果替代其他平台。通过结果只证明
+进程树 backend 的 CI platform foundation，不替代 WP-1P-06 的完整 Shell + Core 生命周期门。
+
+审查确认没有修改 `data/`、`runtime/`、角色、插件、`.superpowers/` 或产品 IPC/Supervisor
+语义，P0/P1 为 0。独立回退为依次 revert `1aa02e5`、`8bffe3e`（保留 WP-1P-01/02/03）。
+
+## 8. 独立回退
 
 整体 revert WP-1P-04 的实现、修正和 accepted 提交：删除 POSIX guardian/backend 与新增
 fixture，恢复 Windows `ManagedProcessTree` 的直接调用和 WP-1P-03 accepted 启动点。回退

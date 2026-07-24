@@ -68,7 +68,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
-| WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | planned |
+| WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | planned |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | planned |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
@@ -1442,7 +1442,7 @@ P0/P1：WP-1P-03 范围内为 0，退出条件相关缺陷为 0
 
 ### WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
-状态：`active`（2026-07-24）
+状态：`accepted`（CI platform foundation，2026-07-24）
 
 前置提交：`9d079a4d`（WP-1P-03 accepted）
 
@@ -1452,6 +1452,10 @@ P0/P1：WP-1P-03 范围内为 0，退出条件相关缺陷为 0
 退出条件和回退方式以独立规范为准。本 WP active 期间 WP-1P-05/06 保持 planned。
 
 主要结果：保留 Windows Job Object，补齐 macOS/Linux session/process group、整树终止、wait 验证和身份安全边界。
+
+实现提交：`1aa02e5`；accepted 记录随本计划更新提交。最新 Draft PR HEAD 为
+`1aa02e591335d7ebc43d50b2b3533f60d8edbf1b`，原生 platform foundation push/pull runs 为
+`30057738510` / `30057739993`，Unit/UI run 为 `30057739984`，均全绿。
 
 允许能力：
 

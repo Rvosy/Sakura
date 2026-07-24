@@ -224,4 +224,9 @@ WP-1B-01 至 WP-1B-04 已在 Windows 11 23H2、x86_64-pc-windows-msvc、Rust/Car
 
 本 ADR 的 Supervisor 状态机、最终停止权、generation 隔离和 Windows backend 已在 Phase 1B 完成实现审查，因此保持 `Accepted`，不抹去现有 Windows 证据。
 
-跨平台总体交付必须同时满足 ADR-0004：WP-1P-04/06 在 macOS/Linux 完成真实后代回收、竞态和 Tauri 主动退出门禁前，任何后续 Work Package 不得把本 ADR 的 `Accepted` 描述为“三平台进程监管已完成”。后续若真实 Core 接线或 POSIX backend 推翻公共边界，应修改或 Supersede 本 ADR，不得为迁就当前实现降低产品门禁。
+跨平台总体交付必须同时满足 ADR-0004：WP-1P-04 已在最新 Draft PR HEAD 的 Windows x64、
+macOS arm64、Linux x64 原生 CI 完成 POSIX/Job backend 技术门（run `30057738510`、
+`30057739993`），因此本 ADR 的进程树 backend 证据扩展为三平台 `CI platform foundation`。
+该记录不等价于完整三平台 Shell + Core 生命周期 accepted；WP-1P-06 仍必须完成真实
+后代回收、竞态、Tauri 主动退出和锁/数据零残留门禁。后续若真实 Core 接线或 POSIX backend
+推翻公共边界，应修改或 Supersede 本 ADR，不得为迁就当前实现降低产品门禁。
