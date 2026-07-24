@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import struct
+import threading
 from pathlib import Path
 
 import pytest
@@ -276,3 +277,170 @@ def test_run_host_writer_failure_keeps_dispatcher_then_writer_cleanup_order(
 
     assert raised.value is writer_failure
     assert events == ["dispatcher", "writer"]
+
+
+def test_run_host_reaches_writer_cleanup_when_initializer_close_never_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    close_entered = threading.Event()
+    close_release = threading.Event()
+    initialized = threading.Event()
+
+    class Initializer:
+        close_calls = 0
+
+        def initialize(self, _cancel: threading.Event) -> object:
+            initialized.set()
+            return type(
+                "Result",
+                (),
+                {
+                    "state": "ready",
+                    "code": "READY",
+                    "retryable": False,
+                    "current_character_summary": None,
+                },
+            )()
+
+        def close(self) -> None:
+            self.close_calls += 1
+            close_entered.set()
+            close_release.wait()
+
+    initializer = Initializer()
+
+    class Dispatcher(ControlDispatcher):
+        def __init__(self, config: HostConfig) -> None:
+            super().__init__(config, initializer_factory=lambda _root: initializer)
+            self._readiness.begin({})
+            assert initialized.wait(1)
+
+        def close(self) -> None:
+            events.append("dispatcher")
+            super().close()
+
+    class Writer(ResponseWriter):
+        def close(self) -> None:
+            events.append("writer")
+            super().close()
+
+    monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
+    monkeypatch.setattr(server_module, "ResponseWriter", Writer)
+    failures: list[BaseException] = []
+    host_done = threading.Event()
+
+    def run() -> None:
+        try:
+            run_host(
+                io.BytesIO(),
+                io.BytesIO(),
+                HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+            )
+        except BaseException as error:  # noqa: BLE001 - asserted in test owner
+            failures.append(error)
+        finally:
+            host_done.set()
+
+    runner = threading.Thread(target=run)
+    runner.start()
+    assert close_entered.wait(1)
+    completed_within_owner_budget = host_done.wait(1.5)
+    if not completed_within_owner_budget:
+        close_release.set()
+        runner.join(1)
+
+    assert completed_within_owner_budget
+    assert events == ["dispatcher", "writer"]
+    assert len(failures) == 1
+    assert getattr(failures[0], "code", None) == "SHUTDOWN_DURING_INITIALIZE"
+    assert initializer.close_calls == 1
+    close_release.set()
+
+
+def test_real_writer_failure_is_observed_before_waiting_for_peer_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class BlockingAfterFrame:
+        def __init__(self, frame: bytes) -> None:
+            self._source = io.BytesIO(frame)
+            self.second_read_entered = threading.Event()
+            self.release = threading.Event()
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self._source.read(size)
+            if chunk:
+                return chunk
+            self.second_read_entered.set()
+            self.release.wait()
+            return b""
+
+    class FailingOutput:
+        def __init__(self) -> None:
+            self.write_failed = threading.Event()
+
+        def write(self, _data: bytes) -> int:
+            self.write_failed.set()
+            raise OSError("PRIVATE_OUTPUT_FAILURE")
+
+        def flush(self) -> None:
+            return None
+
+    class Dispatcher:
+        def __init__(self, _config: HostConfig) -> None:
+            pass
+
+        def dispatch(self, incoming: dict[str, object]) -> tuple[dict[str, object], bool]:
+            return (
+                server_module.response(
+                    incoming,
+                    generation_id=GENERATION_ID,
+                    generation_credential=GENERATION_CREDENTIAL,
+                    payload={"accepted": True},
+                ),
+                False,
+            )
+
+        def close(self) -> None:
+            events.append("dispatcher")
+
+    class TrackingWriter(ResponseWriter):
+        def close(self) -> None:
+            events.append("writer")
+            super().close()
+
+    input_stream = BlockingAfterFrame(encode_frame(request("one")))
+    output_stream = FailingOutput()
+    monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
+    monkeypatch.setattr(server_module, "ResponseWriter", TrackingWriter)
+    failures: list[BaseException] = []
+    host_done = threading.Event()
+
+    def run() -> None:
+        try:
+            run_host(
+                input_stream,
+                output_stream,
+                HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+            )
+        except BaseException as error:  # noqa: BLE001 - asserted in test owner
+            failures.append(error)
+        finally:
+            host_done.set()
+
+    runner = threading.Thread(target=run)
+    runner.start()
+    assert output_stream.write_failed.wait(1)
+    completed_before_peer_eof = host_done.wait(0.5)
+    if not completed_before_peer_eof:
+        input_stream.release.set()
+        runner.join(1)
+
+    assert completed_before_peer_eof
+    assert not input_stream.second_read_entered.is_set()
+    assert events == ["dispatcher", "writer"]
+    assert len(failures) == 1
+    assert getattr(failures[0], "code", None) == "TRANSPORT_WRITE_FAILED"
+    input_stream.release.set()

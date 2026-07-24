@@ -8,6 +8,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any, BinaryIO, Callable
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
@@ -24,6 +25,8 @@ CAPABILITIES = (
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
+_READINESS_CLOSE_TIMEOUT_SECONDS = 1.0
+_WRITER_OPERATION_TIMEOUT_SECONDS = 3.0
 _SUMMARY_KEYS = (
     "id",
     "displayName",
@@ -87,6 +90,13 @@ def _default_initializer_factory(app_root: Path) -> object:
     return AssistantAdapter(app_root)
 
 
+@dataclass
+class _WriteRequest:
+    message: dict[str, Any] = field(repr=False)
+    completed: threading.Event = field(default_factory=threading.Event, repr=False)
+    error: BaseException | None = field(default=None, repr=False)
+
+
 class ReadinessController:
     """Owns one background Assistant initialization for one generation."""
 
@@ -109,6 +119,7 @@ class ReadinessController:
         self._current_character_summary: dict[str, object] | None = None
         self._initializer: object | None = None
         self._initializer_close_claimed = False
+        self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
 
     def begin(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -166,6 +177,7 @@ class ReadinessController:
             }
 
     def close(self) -> None:
+        deadline = monotonic() + _READINESS_CLOSE_TIMEOUT_SECONDS
         with self._lock:
             if self._close_called:
                 return
@@ -174,35 +186,33 @@ class ReadinessController:
             self._cancel.set()
             worker = self._worker
             initializer = self._claim_initializer_close_locked()
-        primary_error: BaseException | None = None
-        primary_traceback = None
         if initializer is not None:
-            try:
-                self._close_initializer(initializer)
-            except BaseException as error:  # noqa: BLE001 - cleanup ownership boundary
-                primary_error = error
-                primary_traceback = error.__traceback__
+            self._start_initializer_close(initializer)
         if worker is not None:
-            worker.join(timeout=1)
-            if worker.is_alive():
-                timeout_error = WriterError(
-                    "SHUTDOWN_DURING_INITIALIZE",
-                    "initialize worker did not stop before shutdown deadline",
-                )
-                if primary_error is None:
-                    primary_error = timeout_error
-                    primary_traceback = timeout_error.__traceback__
-                else:
-                    self._add_cleanup_note(primary_error, timeout_error)
+            worker.join(timeout=max(0.0, deadline - monotonic()))
+        with self._lock:
+            close_thread = self._initializer_close_thread
+        if close_thread is not None:
+            close_thread.join(timeout=max(0.0, deadline - monotonic()))
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
-        if background_error is not None:
+        primary_error: BaseException | None = background_error
+        primary_traceback = (
+            background_error.__traceback__ if background_error is not None else None
+        )
+        if (worker is not None and worker.is_alive()) or (
+            close_thread is not None and close_thread.is_alive()
+        ):
+            timeout_error = WriterError(
+                "SHUTDOWN_DURING_INITIALIZE",
+                "Assistant cleanup did not stop before shutdown deadline",
+            )
             if primary_error is None:
-                primary_error = background_error
-                primary_traceback = background_error.__traceback__
+                primary_error = timeout_error
+                primary_traceback = timeout_error.__traceback__
             else:
-                self._add_cleanup_note(primary_error, background_error)
+                self._add_cleanup_note(primary_error, timeout_error)
         if primary_error is not None:
             raise primary_error.with_traceback(primary_traceback)
 
@@ -215,7 +225,7 @@ class ReadinessController:
                 close_now = self._closed
                 claimed = self._claim_initializer_close_locked() if close_now else None
             if claimed is not None:
-                self._close_initializer_in_worker(claimed)
+                self._start_initializer_close(claimed)
                 return
 
             initialize = getattr(initializer, "initialize")
@@ -235,7 +245,7 @@ class ReadinessController:
                     self._revision = 2
                     claimed = None
             if claimed is not None:
-                self._close_initializer_in_worker(claimed)
+                self._start_initializer_close(claimed)
         except BaseException:  # noqa: BLE001 - publish a stable, sanitized readiness
             with self._lock:
                 if self._closed:
@@ -251,7 +261,7 @@ class ReadinessController:
                     self._revision = 2
                     claimed = None
             if claimed is not None:
-                self._close_initializer_in_worker(claimed)
+                self._start_initializer_close(claimed)
 
     def _claim_initializer_close_locked(self) -> object | None:
         if self._initializer is None or self._initializer_close_claimed:
@@ -259,15 +269,25 @@ class ReadinessController:
         self._initializer_close_claimed = True
         return self._initializer
 
-    def _close_initializer_in_worker(self, initializer: object) -> None:
-        try:
-            self._close_initializer(initializer)
-        except BaseException as error:  # noqa: BLE001 - transferred to lifecycle owner
-            with self._lock:
-                if self._background_close_error is None:
-                    self._background_close_error = error
-                else:
-                    self._add_cleanup_note(self._background_close_error, error)
+    def _start_initializer_close(self, initializer: object) -> None:
+        def close_owned_initializer() -> None:
+            try:
+                self._close_initializer(initializer)
+            except BaseException as error:  # noqa: BLE001 - transferred to lifecycle owner
+                with self._lock:
+                    if self._background_close_error is None:
+                        self._background_close_error = error
+                    else:
+                        self._add_cleanup_note(self._background_close_error, error)
+
+        close_thread = threading.Thread(
+            target=close_owned_initializer,
+            name="sakura-core-host-initializer-close",
+            daemon=True,
+        )
+        with self._lock:
+            self._initializer_close_thread = close_thread
+        close_thread.start()
 
     @staticmethod
     def _close_initializer(initializer: object) -> None:
@@ -310,7 +330,7 @@ class ResponseWriter:
 
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
-        self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(maxsize=32)
+        self._queue: queue.Queue[_WriteRequest | object] = queue.Queue(maxsize=32)
         self._error: BaseException | None = None
         self._closed = False
         self._thread = threading.Thread(
@@ -320,14 +340,26 @@ class ResponseWriter:
         self._thread.start()
 
     def send(self, message: dict[str, Any]) -> None:
+        deadline = monotonic() + _WRITER_OPERATION_TIMEOUT_SECONDS
         if self._closed:
             raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is closed")
         if self._error is not None:
             raise WriterError("TRANSPORT_WRITE_FAILED", "writer failed") from self._error
+        request = _WriteRequest(message)
         try:
-            self._queue.put(message, timeout=3)
+            self._queue.put(
+                request,
+                timeout=max(0.0, deadline - monotonic()),
+            )
         except queue.Full as error:
             raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is unavailable") from error
+        if not request.completed.wait(timeout=max(0.0, deadline - monotonic())):
+            raise WriterError(
+                "TRANSPORT_WRITE_FAILED",
+                "writer did not acknowledge the response before deadline",
+            )
+        if request.error is not None:
+            raise WriterError("TRANSPORT_WRITE_FAILED", "writer failed") from request.error
 
     def close(self) -> None:
         if not self._closed:
@@ -349,8 +381,15 @@ class ResponseWriter:
                 try:
                     if item is _WRITER_STOP:
                         return
-                    assert isinstance(item, dict)
-                    write_frame(self._stream, item)
+                    assert isinstance(item, _WriteRequest)
+                    try:
+                        write_frame(self._stream, item.message)
+                    except BaseException as error:  # noqa: BLE001 - transferred to owner thread
+                        self._error = error
+                        item.error = error
+                        raise
+                    finally:
+                        item.completed.set()
                 finally:
                     self._queue.task_done()
         except BaseException as error:  # noqa: BLE001 - transferred to owner thread

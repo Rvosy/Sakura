@@ -65,6 +65,7 @@ class FakeInitializer:
         self.initialize_calls = 0
         self.close_calls = 0
         self.closed = threading.Event()
+        self.close_returned = threading.Event()
 
     def initialize(self, cancel: threading.Event) -> ReadinessResult:
         self.initialize_calls += 1
@@ -81,9 +82,10 @@ class FakeInitializer:
         self.close_calls += 1
         self.closed.set()
         if self.close_release is not None:
-            self.close_release.wait(2)
+            self.close_release.wait()
         if self.close_error is not None:
             raise self.close_error
+        self.close_returned.set()
 
 
 def request(
@@ -366,7 +368,7 @@ def test_close_throw_still_joins_worker_and_is_not_repeated(tmp_path: Path) -> N
     assert initializer.close_calls == 1
 
 
-def test_blocked_close_observes_cancel_and_has_single_owner(tmp_path: Path) -> None:
+def test_blocked_close_is_bounded_observes_cancel_and_has_single_owner(tmp_path: Path) -> None:
     close_release = threading.Event()
     initializer = FakeInitializer(close_release=close_release)
     controller = ReadinessController(config(tmp_path), initializer_factory=lambda _root: initializer)
@@ -375,15 +377,33 @@ def test_blocked_close_observes_cancel_and_has_single_owner(tmp_path: Path) -> N
     while controller.snapshot()["readiness"] == "initializing":
         assert time.monotonic() < deadline
 
-    closer = threading.Thread(target=controller.close)
+    failures: list[BaseException] = []
+    close_done = threading.Event()
+
+    def close_controller() -> None:
+        try:
+            controller.close()
+        except BaseException as error:  # noqa: BLE001 - asserted in the test owner
+            failures.append(error)
+        finally:
+            close_done.set()
+
+    closer = threading.Thread(target=close_controller)
     closer.start()
     assert initializer.closed.wait(1)
     assert initializer.cancel is not None and initializer.cancel.is_set()
-    assert closer.is_alive()
-    close_release.set()
-    closer.join(1)
-    assert not closer.is_alive()
+    completed_within_owner_budget = close_done.wait(1.5)
+    if not completed_within_owner_budget:
+        close_release.set()
+        closer.join(1)
+
+    assert completed_within_owner_budget
+    assert len(failures) == 1
+    assert getattr(failures[0], "code", None) == "SHUTDOWN_DURING_INITIALIZE"
     assert initializer.close_calls == 1
+    controller.close()
+    close_release.set()
+    assert initializer.close_returned.wait(1)
 
 
 def test_late_old_generation_result_is_closed_and_never_published(tmp_path: Path) -> None:
