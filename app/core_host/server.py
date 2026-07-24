@@ -6,7 +6,7 @@ import queue
 import hmac
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
@@ -29,7 +29,7 @@ _INITIALIZE_MODES = frozenset({"ready", "setup_required", "degraded", "failed", 
 @dataclass(frozen=True)
 class HostConfig:
     generation_id: str
-    generation_credential: str
+    generation_credential: str = field(repr=False)
     generation_number: int = 1
 
     def __post_init__(self) -> None:
