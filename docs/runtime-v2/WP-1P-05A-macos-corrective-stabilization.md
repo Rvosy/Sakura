@@ -10,15 +10,16 @@
 
 本 Work Package 只处理会阻断后续 Runtime v2 架构验证的 macOS 基础问题：默认入口必须定位
 平台正确的 Shell 产物，透明 Tauri Window 必须使用 Tauri 要求的 macOS private API 配置，拖动
-完成后必须以原生移动事件给出的物理位置更新固定立绘锚点。Windows 已验收的 Win32 region 和
-同步 move loop 保持原样。
+完成后必须以状态切换前读取的最终物理窗口位置更新固定立绘锚点。Windows 已验收的 Win32 region
+和同步 move loop 保持原样。
 
 根因假设及验证路径：Tauri Runtime WRY 的 `start_dragging()` 向 UI loop 投递 `DragWindow` 后即
 返回；Tao/macOS 随后从当时的 `NSApp.currentEvent` 构造并运行 `performWindowDragWithEvent:`。
 因此把该调用命名为 `start_drag_and_wait`，并在返回后立刻读取 `outer_position`，会读取拖动前的
-位置，且重新布局消息会在用户释放后用旧锚点覆盖真实落点。修复必须把 Windows 的同步完成语义
-和 macOS/Linux 的原生 `Moved` 事件完成语义明确分开，不能以 sleep、固定延时、禁用重布局或
-吞掉错误掩盖竞争。
+位置，且重新布局消息会在用户释放后用旧锚点覆盖真实落点。macOS 的一次 live drag 还会产生多个
+`Moved`，首个事件只是中间位置而不是完成信号。修复必须把 Windows 的同步完成语义和
+macOS/Linux 的 deferred start 语义明确分开，不能以 sleep、固定延时、禁用重布局或吞掉错误
+掩盖竞争。
 
 本 Work Package 不把 Apple Silicon 单显示器证据描述为完整 macOS 验收。Spaces、复杂多屏、
 Retina 矩阵、中文/日文 IME、代码签名、公证、DMG/App bundle 和发布继续属于 WP-7-02/WP-7-04。
@@ -57,9 +58,12 @@ Memory、Tools、TTS、设置或产品视觉重做。
   `tauri/macos-private-api`，使 `transparent: true` 在 macOS 真正生效。该配置使用私有 API，
   因而不能接受 Mac App Store 分发；它只允许未来按直接签名/公证路径评估，实际签名、公证和
   bundle 验收仍留给 WP-7-04。
+- visibility 技术探针必须由 Rust 在隐藏后向原生主线程事件循环排队恢复任务；恢复所有权不得留在
+  已隐藏并可能被 macOS WebKit 暂停的页面 timer 中，也不得依赖用户点击桌面重新激活应用。
 - `start_drag_and_wait` 改为表达实际时机的 start-only 接口。Windows 继续在既有 Win32 move
-  loop 返回后读取位置并同步提交锚点；macOS/Linux 只启动原生拖动，随后由对应 `Moved` 事件的
-  物理坐标提交一次锚点并应用边界约束。锚点提交完成前不得从旧 `outer_position` 重新布局。
+  loop 返回后读取位置并同步提交锚点；macOS/Linux 只启动原生拖动并保留 deferred pending，原生
+  `Moved` 不提交中间锚点。下一次被接受的状态布局必须先读取当前 `outer_position` 并推导最终物理
+  锚点，在任何程序化 bounds 之前清除 pending，再经共享布局应用边界约束。
 - idle、bubble、composer、expanded 均继续复用提交后的同一物理立绘锚点；边界约束仍由共享
   `apply_window_layout` 执行，只能在落点超出工作区时修正，不能回退到默认右侧锚点。
 
@@ -67,13 +71,13 @@ Memory、Tools、TTS、设置或产品视觉重做。
 
 自动测试先以失败测试锁定：三平台 Shell 名称选择、release/debug 定位、`start.sh` 对 macOS
 Debug/Release Shell 的直接交接、private API 配置与 native drag 完成语义。Rust 单元测试必须
-证明 Windows 仍选同步完成路径，macOS/Linux 只接受 native `Moved` 后的单次锚点提交；既有
-几何测试继续证明状态切换保持物理锚点及边界约束。
+证明 Windows 仍选同步完成路径，macOS/Linux 的 deferred pending 只由下一次布局完成；既有几何
+测试继续证明状态切换保持物理锚点及边界约束。
 
 真实设备仅使用 Apple Silicon 单显示器，依次验证：默认入口与 `bash scripts/start.sh` 能启动；
-背景无白色矩形；向左、向上、向屏幕中央拖动后都停在释放位置；idle/bubble/composer/expanded
-往返不跳变；关闭后 Shell/Core/共享锁无残留。验收前后比对 `data/`、`characters/` 和受保护
-`runtime/` 内容，确保没有非预期变化。
+背景无白色矩形；visibility 探针无需点击桌面即可恢复且首个输入立即响应；向左、向上、向屏幕
+中央拖动后都停在释放位置；idle/bubble/composer/expanded 往返不跳变；关闭后 Shell/Core/共享锁
+无残留。验收前后比对 `data/`、`characters/` 和受保护 `runtime/` 内容，确保没有非预期变化。
 
 故障门：未构建 Shell 必须给出明确错误；无效平台名必须安全回退为无扩展名而非 Windows 后缀；
 拖动未初始化布局、重复或陈旧移动提交、原生 bounds/region 失败必须返回稳定错误，不得静默
@@ -85,10 +89,11 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
 
 - TDD 红绿证据：先后以失败测试固定了 Darwin/Linux 错误查找 `.exe`、`start.sh` 错误交给 Python、
   缺少 macOS private API/初始可见窗口配置、WebView 异步事件注册丢失 native drag 提交、
-  阻塞事件注册使初始 idle 布局和关闭监听永远不安装，以及只关闭窗口而不退出 macOS Shell。
+  阻塞事件注册使初始 idle 布局和关闭监听永远不安装、只关闭窗口而不退出 macOS Shell，以及首个
+  native `Moved` 过早固化拖动中间锚点、隐藏 WebView 持有自身恢复 timer。
   修复后 `tests/integration/test_wp_1p_05a_macos_corrective.py` 和
-  `tests/integration/test_wp_1a_04_entries.py` 共 20 项通过。
-- 自动检查：定向 pytest 为 `20 passed`；`tests/unit` 为 `981 passed, 3 skipped`；
+  `tests/integration/test_wp_1a_04_entries.py` 共 22 项通过。
+- 自动检查：定向 pytest 为 `22 passed`；`tests/unit` 为 `981 passed, 3 skipped`；
   `npm test --prefix desktop/frontend` 为 `18 passed`；`cargo fmt --check` 通过；
   `cargo build --locked` 通过（仅既有 dead-code 警告）。
 - 原始 `cargo test --locked` 在本机为 `93 passed, 3 failed, 3 ignored`：三个 POSIX 跨语言锁
@@ -108,10 +113,15 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
   `performWindowDragWithEvent:` 原生 move loop，因而不能以合成指针伪造“向左、向上、屏幕中央
   释放后停在落点”及其后的状态切换稳定性。必须由真实 macOS 用户输入完成该三项手工验收后，才
   能写 accepted。
-- 后续用户真机复现曾显示：拖动本身正常，但状态切换会回到右下初始锚点。根因是 WebView 事件
-  注册和 Rust pending 建立都可能晚于原生 `Moved`；现已改由 `app.run` 的 native
-  `WindowEvent::Moved` 直接提交，并在启动 native drag 前预留 deferred session、启动失败时撤销。
-  该修正通过自动测试和构建，仍须用物理鼠标完成拖动后四种状态切换的复验。
+- 后续用户真机复现曾显示：拖动本身正常，但状态切换会回到右下锚点。第一轮修正消除了 WebView
+  监听和 pending 建立晚于 native `Moved` 的竞态；第二轮真机证据进一步证明一次 AppKit live drag
+  会产生多个 `Moved`，首个事件提交的是中间锚点。现已禁止移动事件消费 pending 或调用 bounds；
+  下一次状态切换以当时的 `outer_position` 推导释放锚点，并在程序化布局移动前清除 pending。该
+  修正未引入延时且保持 Windows 同步 move loop 不变，仍须用物理鼠标完成四种状态切换复验。
+- 同轮真机复验还发现 visibility 探针在 macOS 隐藏后必须点击桌面才恢复，恢复后的 WebView 首次
+  输入也被冻结。根因是恢复动作由已隐藏页面的 `window.setTimeout` 持有；现改为 Rust 隐藏后向
+  Tauri/WRY 原生主线程排队 show/focus，前端不再持有 timer。该修正等待本轮真机复验，不作为
+  accepted 证据。
 - 受保护目录摘要门禁也未通过：开始前的 `data/`、`characters/`、`runtime/` 合并摘要为
   `5fe97f2b21a1870dcf723e4387990efa1ce366ae5752df8af5aa23761de43043`，当前为
   `c8401222a9aefe01d8a22c2c76cf42921b99df0a`，且

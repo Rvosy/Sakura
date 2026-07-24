@@ -109,11 +109,13 @@ document.addEventListener("visibilitychange", () =>
 
 document.querySelector("#visibility-probe").addEventListener("click", async () => {
   inputFocus.handleVisibility(false);
-  await invoke("set_pet_visible", { visible: false });
-  window.setTimeout(async () => {
-    await invoke("set_pet_visible", { visible: true });
+  try {
+    await invoke("probe_pet_visibility");
+  } catch (error) {
+    readout.value = `visibility error: ${String(error)}`;
+  } finally {
     inputFocus.handleVisibility(true);
-  }, 220);
+  }
 });
 
 document.querySelector("#close-window").addEventListener("click", () => invoke("close_pet_window"));

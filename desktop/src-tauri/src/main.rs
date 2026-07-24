@@ -29,7 +29,7 @@ use platform::{
 };
 use serde::Serialize;
 use shared_instance::NativeInstanceLockBackend;
-use tauri::{Manager, WebviewWindow};
+use tauri::WebviewWindow;
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
     PhysicalRect, PresentationState,
@@ -65,8 +65,12 @@ impl WindowGeometrySession {
         self.deferred_drag_pending = false;
     }
 
-    fn claim_deferred_drag_position(&mut self) -> bool {
-        std::mem::take(&mut self.deferred_drag_pending)
+    fn is_deferred_drag_pending(&self) -> bool {
+        self.deferred_drag_pending
+    }
+
+    fn finish_deferred_drag(&mut self) {
+        self.deferred_drag_pending = false;
     }
 }
 
@@ -151,15 +155,28 @@ fn apply_pet_layout(
         });
     }
 
-    let monitor = target_monitor(&window, session.portrait_anchor)?;
-    let application = apply_window_layout(
-        &contract,
-        state,
-        revision,
-        &monitor,
-        session.portrait_anchor,
-    )?;
+    let requested_anchor = if session.is_deferred_drag_pending() {
+        let position = window
+            .outer_position()
+            .map_err(|error| format!("failed to read dragged window position: {error}"))?;
+        let monitor = target_monitor(&window, None)?;
+        Some(window_geometry::anchor_from_window_position(
+            &contract,
+            &monitor,
+            window_geometry::PhysicalPoint {
+                x: position.x,
+                y: position.y,
+            },
+        )?)
+    } else {
+        session.portrait_anchor
+    };
+    let monitor = target_monitor(&window, requested_anchor)?;
+    let application = apply_window_layout(&contract, state, revision, &monitor, requested_anchor)?;
 
+    if session.is_deferred_drag_pending() {
+        session.finish_deferred_drag();
+    }
     NativeWindowInteractionBackend
         .apply_bounds(&window, &application.physical_placement)
         .map_err(|error| error.to_string())?;
@@ -228,32 +245,6 @@ fn commit_dragged_window_position(
         layout: application,
         hit_regions: Some(hit_regions),
     })
-}
-
-fn commit_deferred_pet_drag(
-    app_handle: &tauri::AppHandle,
-    label: &str,
-    position: tauri::PhysicalPosition<i32>,
-) -> Result<(), String> {
-    let window = app_handle
-        .get_webview_window(label)
-        .ok_or_else(|| format!("moved pet window is unavailable: {label}"))?;
-    let session = app_handle.state::<Mutex<WindowGeometrySession>>();
-    let mut session = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
-    if !session.claim_deferred_drag_position() {
-        return Ok(());
-    }
-    commit_dragged_window_position(
-        window,
-        &mut session,
-        window_geometry::PhysicalPoint {
-            x: position.x,
-            y: position.y,
-        },
-    )
-    .map(|_| ())
 }
 
 #[tauri::command]
@@ -327,10 +318,27 @@ fn start_pet_drag(
 }
 
 #[tauri::command]
-fn set_pet_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
+fn probe_pet_visibility(window: WebviewWindow) -> Result<(), String> {
     NativeWindowInteractionBackend
-        .set_visible(&window, visible)
-        .map_err(|error| error.to_string())
+        .set_visible(&window, false)
+        .map_err(|error| error.to_string())?;
+
+    let restore_window = window.clone();
+    if let Err(error) = window.run_on_main_thread(move || {
+        if let Err(error) = NativeWindowInteractionBackend.set_visible(&restore_window, true) {
+            eprintln!("failed to restore pet visibility probe: {error}");
+        }
+    }) {
+        return match NativeWindowInteractionBackend.set_visible(&window, true) {
+            Ok(()) => Err(format!(
+                "failed to schedule pet visibility restoration: {error}"
+            )),
+            Err(recovery_error) => Err(format!(
+                "failed to schedule pet visibility restoration ({error}) and immediate recovery failed ({recovery_error})"
+            )),
+        };
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -434,7 +442,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
             start_pet_drag,
-            set_pet_visible,
+            probe_pet_visibility,
             close_pet_window,
             collect_native_diagnostics
         ])
@@ -509,18 +517,7 @@ fn main() {
         return;
     }
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::WindowEvent {
-            label,
-            event: tauri::WindowEvent::Moved(position),
-            ..
-        } = event
-        {
-            if let Err(error) = commit_deferred_pet_drag(app_handle, &label, position) {
-                eprintln!("failed to commit deferred pet drag: {error}");
-            }
-        }
-    });
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]
@@ -543,12 +540,13 @@ mod tests {
     }
 
     #[test]
-    fn deferred_drag_position_is_consumed_once_after_native_window_event() {
+    fn deferred_drag_is_finished_only_by_the_next_layout() {
         let mut session = WindowGeometrySession::default();
 
         session.begin_deferred_drag();
 
-        assert!(session.claim_deferred_drag_position());
-        assert!(!session.claim_deferred_drag_position());
+        assert!(session.is_deferred_drag_pending());
+        session.finish_deferred_drag();
+        assert!(!session.is_deferred_drag_pending());
     }
 }

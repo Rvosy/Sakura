@@ -100,13 +100,38 @@ def test_deferred_drag_does_not_depend_on_webview_event_registration() -> None:
     assert "commit_pet_drag" not in source
 
 
-def test_deferred_drag_anchor_is_committed_by_the_native_window_event_loop() -> None:
+def test_native_window_moves_do_not_commit_an_intermediate_drag_anchor() -> None:
     rust_source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
     frontend_source = (ROOT / "desktop" / "frontend" / "app.js").read_text("utf-8")
 
-    assert "tauri::WindowEvent::Moved(position)" in rust_source
-    assert "commit_deferred_pet_drag" in rust_source
+    assert "tauri::WindowEvent::Moved(position)" not in rust_source
+    assert "commit_deferred_pet_drag" not in rust_source
+    assert "claim_deferred_drag_position" not in rust_source
     assert "commit_pet_drag" not in frontend_source
+
+
+def test_next_layout_finalizes_deferred_drag_before_applying_programmatic_bounds() -> None:
+    source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
+
+    apply_layout = source[source.index("fn apply_pet_layout(") : source.index("fn apply_native_interaction_region(")]
+    assert ".outer_position()" in apply_layout
+    assert apply_layout.index("session.finish_deferred_drag();") < apply_layout.index(
+        ".apply_bounds(&window, &application.physical_placement)",
+    )
+
+
+def test_visibility_probe_restores_from_the_native_event_loop() -> None:
+    rust_source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
+    frontend_source = (ROOT / "desktop" / "frontend" / "app.js").read_text("utf-8")
+
+    assert 'invoke("probe_pet_visibility")' in frontend_source
+    assert "window.setTimeout" not in frontend_source
+    assert 'invoke("set_pet_visible"' not in frontend_source
+    probe = rust_source[
+        rust_source.index("fn probe_pet_visibility(") : rust_source.index("fn collect_native_diagnostics(")
+    ]
+    assert probe.index(".set_visible(&window, false)") < probe.index(".run_on_main_thread(")
+    assert ".set_visible(&restore_window, true)" in probe
 
 
 def test_deferred_drag_session_is_reserved_before_native_drag_starts() -> None:
