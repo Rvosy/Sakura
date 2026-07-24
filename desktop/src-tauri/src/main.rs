@@ -27,9 +27,9 @@ use platform::{
     NativeDiagnosticsBackendImpl, NativeDiagnosticsRequest, NativeWindowInteractionBackend,
     WindowInteractionBackend, SHARED_INSTANCE_ID,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shared_instance::NativeInstanceLockBackend;
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
     PhysicalRect, PresentationState,
@@ -61,16 +61,13 @@ impl WindowGeometrySession {
         self.deferred_drag_pending = true;
     }
 
+    fn cancel_deferred_drag(&mut self) {
+        self.deferred_drag_pending = false;
+    }
+
     fn claim_deferred_drag_position(&mut self) -> bool {
         std::mem::take(&mut self.deferred_drag_pending)
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DraggedWindowPosition {
-    x: i32,
-    y: i32,
 }
 
 #[derive(Serialize)]
@@ -233,25 +230,74 @@ fn commit_dragged_window_position(
     })
 }
 
+fn commit_deferred_pet_drag(
+    app_handle: &tauri::AppHandle,
+    label: &str,
+    position: tauri::PhysicalPosition<i32>,
+) -> Result<(), String> {
+    let window = app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| format!("moved pet window is unavailable: {label}"))?;
+    let session = app_handle.state::<Mutex<WindowGeometrySession>>();
+    let mut session = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !session.claim_deferred_drag_position() {
+        return Ok(());
+    }
+    commit_dragged_window_position(
+        window,
+        &mut session,
+        window_geometry::PhysicalPoint {
+            x: position.x,
+            y: position.y,
+        },
+    )
+    .map(|_| ())
+}
+
 #[tauri::command]
 fn start_pet_drag(
     window: WebviewWindow,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<Option<PetLayoutApplication>, String> {
+    let expects_deferred_completion = matches!(
+        window_interaction::native_drag_completion(),
+        window_interaction::NativeDragCompletion::DeferredWindowMoved
+    );
     {
-        let session = session
+        let mut session = session
             .lock()
             .map_err(|_| "window geometry state is unavailable".to_string())?;
         if session.state.is_none() {
             return Err("pet layout is not ready for dragging".to_string());
         }
+        if expects_deferred_completion {
+            session.begin_deferred_drag();
+        }
     }
 
-    match NativeWindowInteractionBackend
-        .start_drag(&window)
-        .map_err(|error| error.to_string())?
-    {
+    let completion = match NativeWindowInteractionBackend.start_drag(&window) {
+        Ok(completion) => completion,
+        Err(error) => {
+            if expects_deferred_completion {
+                let mut session = session
+                    .lock()
+                    .map_err(|_| "window geometry state is unavailable".to_string())?;
+                session.cancel_deferred_drag();
+            }
+            return Err(error.to_string());
+        }
+    };
+
+    match completion {
         window_interaction::NativeDragCompletion::SynchronousMoveLoop => {
+            if expects_deferred_completion {
+                let mut session = session
+                    .lock()
+                    .map_err(|_| "window geometry state is unavailable".to_string())?;
+                session.cancel_deferred_drag();
+            }
             let position = window
                 .outer_position()
                 .map_err(|error| format!("failed to read dragged window position: {error}"))?;
@@ -269,35 +315,15 @@ fn start_pet_drag(
             .map(Some)
         }
         window_interaction::NativeDragCompletion::DeferredWindowMoved => {
-            let mut session = session
-                .lock()
-                .map_err(|_| "window geometry state is unavailable".to_string())?;
-            session.begin_deferred_drag();
+            if !expects_deferred_completion {
+                let mut session = session
+                    .lock()
+                    .map_err(|_| "window geometry state is unavailable".to_string())?;
+                session.begin_deferred_drag();
+            }
             Ok(None)
         }
     }
-}
-
-#[tauri::command]
-fn commit_pet_drag(
-    window: WebviewWindow,
-    position: DraggedWindowPosition,
-    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<PetLayoutApplication, String> {
-    let mut session = session
-        .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?;
-    if !session.claim_deferred_drag_position() {
-        return Err("no native pet drag is awaiting a moved event".to_string());
-    }
-    commit_dragged_window_position(
-        window,
-        &mut session,
-        window_geometry::PhysicalPoint {
-            x: position.x,
-            y: position.y,
-        },
-    )
 }
 
 #[tauri::command]
@@ -408,7 +434,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
             start_pet_drag,
-            commit_pet_drag,
             set_pet_visible,
             close_pet_window,
             collect_native_diagnostics
@@ -484,7 +509,18 @@ fn main() {
         return;
     }
 
-    app.run(|_, _| {});
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Moved(position),
+            ..
+        } = event
+        {
+            if let Err(error) = commit_deferred_pet_drag(app_handle, &label, position) {
+                eprintln!("failed to commit deferred pet drag: {error}");
+            }
+        }
+    });
 }
 
 #[cfg(test)]

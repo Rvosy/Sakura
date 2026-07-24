@@ -84,11 +84,11 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
 本节记录本次窄范围实现和截至当前可重复的验证结果，不构成 WP-1P-05A accepted 记录。
 
 - TDD 红绿证据：先后以失败测试固定了 Darwin/Linux 错误查找 `.exe`、`start.sh` 错误交给 Python、
-  缺少 macOS private API/初始可见窗口配置、把 `tauri://move` 当作 DOM 事件而非 Tauri 事件桥接、
+  缺少 macOS private API/初始可见窗口配置、WebView 异步事件注册丢失 native drag 提交、
   阻塞事件注册使初始 idle 布局和关闭监听永远不安装，以及只关闭窗口而不退出 macOS Shell。
   修复后 `tests/integration/test_wp_1p_05a_macos_corrective.py` 和
-  `tests/integration/test_wp_1a_04_entries.py` 共 18 项通过。
-- 自动检查：定向 pytest 为 `18 passed`；`tests/unit` 为 `981 passed, 3 skipped`；
+  `tests/integration/test_wp_1a_04_entries.py` 共 20 项通过。
+- 自动检查：定向 pytest 为 `20 passed`；`tests/unit` 为 `981 passed, 3 skipped`；
   `npm test --prefix desktop/frontend` 为 `18 passed`；`cargo fmt --check` 通过；
   `cargo build --locked` 通过（仅既有 dead-code 警告）。
 - 原始 `cargo test --locked` 在本机为 `93 passed, 3 failed, 3 ignored`：三个 POSIX 跨语言锁
@@ -108,6 +108,10 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
   `performWindowDragWithEvent:` 原生 move loop，因而不能以合成指针伪造“向左、向上、屏幕中央
   释放后停在落点”及其后的状态切换稳定性。必须由真实 macOS 用户输入完成该三项手工验收后，才
   能写 accepted。
+- 后续用户真机复现曾显示：拖动本身正常，但状态切换会回到右下初始锚点。根因是 WebView 事件
+  注册和 Rust pending 建立都可能晚于原生 `Moved`；现已改由 `app.run` 的 native
+  `WindowEvent::Moved` 直接提交，并在启动 native drag 前预留 deferred session、启动失败时撤销。
+  该修正通过自动测试和构建，仍须用物理鼠标完成拖动后四种状态切换的复验。
 - 受保护目录摘要门禁也未通过：开始前的 `data/`、`characters/`、`runtime/` 合并摘要为
   `5fe97f2b21a1870dcf723e4387990efa1ce366ae5752df8af5aa23761de43043`，当前为
   `c8401222a9aefe01d8a22c2c76cf42921b99df0a`，且

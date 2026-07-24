@@ -92,13 +92,30 @@ def test_tauri_config_enables_required_macos_transparent_window_support() -> Non
     assert "opacity: 0;" in styles
 
 
-def test_deferred_drag_commits_from_tauri_window_event_bridge() -> None:
+def test_deferred_drag_does_not_depend_on_webview_event_registration() -> None:
     source = (ROOT / "desktop" / "frontend" / "app.js").read_text("utf-8")
 
-    assert "window.__TAURI__.event" in source
-    assert '.listen("tauri://move"' in source
+    assert "window.__TAURI__.event" not in source
     assert 'window.addEventListener("tauri://move"' not in source
-    assert 'await window.__TAURI__.event.listen("tauri://move"' not in source
+    assert "commit_pet_drag" not in source
+
+
+def test_deferred_drag_anchor_is_committed_by_the_native_window_event_loop() -> None:
+    rust_source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
+    frontend_source = (ROOT / "desktop" / "frontend" / "app.js").read_text("utf-8")
+
+    assert "tauri::WindowEvent::Moved(position)" in rust_source
+    assert "commit_deferred_pet_drag" in rust_source
+    assert "commit_pet_drag" not in frontend_source
+
+
+def test_deferred_drag_session_is_reserved_before_native_drag_starts() -> None:
+    source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
+
+    assert source.index("session.begin_deferred_drag();") < source.index(
+        ".start_drag(&window)",
+    )
+    assert "session.cancel_deferred_drag();" in source
 
 
 def test_shell_close_releases_the_process_lifecycle_not_just_its_window() -> None:
