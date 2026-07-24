@@ -72,10 +72,11 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted |
+| WP-1P-05A | macOS Runtime v2 窄范围基础纠正稳定化 | WP-1P-05 | active |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
-| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04 | planned |
+| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | planned |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
@@ -111,8 +112,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
-`WP-1C-04` 已 accepted；当前没有 `active`/`stabilizing` Work Package。`WP-3-01` 仍为 planned，
-本次不激活；其后续激活必须由项目负责人另行开始。
+`WP-1P-05A` 是当前唯一 `active` Work Package，范围、允许目录、故障矩阵、真实 macOS
+验收和独立回退见 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01`
+仍为 planned；在 WP-1P-05A accepted 前不得激活，其后续激活仍须由项目负责人另行开始。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1524,6 +1526,19 @@ Xvfb window backend 合同测试；macOS/X11/Wayland 真实设备体验保持 de
 退出证据：三平台真实 Shell 可见且可关闭；目标 scale/DPI、多屏、负坐标、拖动、IME、Alt+Tab/Spaces/desktop、显示隐藏和失败安全恢复通过；Linux 证据明确 X11/Wayland，不把 compositor/Tao 内部窗口当主窗口。
 
 独立回退：按 backend 独立回退平台实现，保留共享纯布局模型和已经验证的 Windows backend。
+
+### WP-1P-05A：macOS Runtime v2 窄范围基础纠正稳定化
+
+独立规范：`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。
+
+主要结果：在不扩大产品能力的前提下，纠正 macOS 默认启动、透明 Shell 与 native drag 完成时机，
+使用户拖动后的物理立绘锚点成为后续状态切换的唯一位置来源。
+
+强制前置：WP-1P-05 accepted。WP-3-01 必须等待本 WP accepted，不能把尚未验证的 macOS
+窗口基础带入真实 Assistant Adapter。
+
+独立回退：只回退本 WP 的激活、实现与 accepted 记录；保留 WP-1P-05/06、WP-1C-03/04 的
+既有 accepted 证据和 Windows Win32 region/move-loop 实现。
 
 ### WP-1P-06：三平台最小 Shell + Core lifecycle 和 CI 总门禁
 

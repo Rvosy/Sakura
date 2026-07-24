@@ -74,6 +74,11 @@ legacy 行为与数据
 | CAP-029 | 长时间运行、重复启停和故障恢复 | 三平台 soak + Core/MCP/TTS/browser 故障注入 | WP-7-05 | 休眠、多用户、资源泄漏 | planned |
 | CAP-030 | 用户数据与 Qt 双向兼容 | Qt -> Tauri -> Qt 全量读取/允许写入门禁 | WP-3-06、WP-3V-01、WP-7-03 | 路径、锁、原子替换、编码 | planned |
 
+2026-07-24 的 WP-1P-05A 是 CAP-001、CAP-002、CAP-003 的窄范围 macOS 基础纠正稳定化：
+它只修正默认入口、透明 Shell 和拖动后的固定立绘锚点，不改变本表任何能力状态，也不接入
+CAP-004 及之后的 Assistant、聊天、Memory、Tools、TTS 或设置能力。它的真实单显示器证据不替代
+WP-7-02 的 Spaces、多屏、IME、Retina、签名和发布门禁。
+
 ## 早期 Architecture Validation 门禁
 
 `architecture-validated` 必须至少通过：
