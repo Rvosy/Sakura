@@ -16,6 +16,8 @@ const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
 let contentScale = 1;
 let currentHitRegions = null;
+let nativeDragPending = false;
+let nativeDragCommitInFlight = false;
 
 const contractResponse = await fetch("./pet/layout-contract.json", { cache: "no-store" });
 if (!contractResponse.ok) throw new Error("failed to load pet layout contract");
@@ -70,14 +72,37 @@ for (const dragRegion of dragRegions) {
       : classifyHitPoint(currentHitRegions, point);
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     event.preventDefault();
+    nativeDragPending = true;
     try {
       const result = await invoke("start_pet_drag");
-      readout.value = `${result.state} · anchor ${result.portraitAnchor.x},${result.portraitAnchor.y}`;
+      if (result) {
+        nativeDragPending = false;
+        readout.value = `${result.state} · anchor ${result.portraitAnchor.x},${result.portraitAnchor.y}`;
+      }
     } catch (error) {
+      nativeDragPending = false;
       readout.value = `drag error: ${String(error)}`;
     }
   });
 }
+
+window.__TAURI__.event
+  .listen("tauri://move", async ({ payload }) => {
+    if (!nativeDragPending || nativeDragCommitInFlight) return;
+    nativeDragCommitInFlight = true;
+    try {
+      const result = await invoke("commit_pet_drag", { position: payload });
+      readout.value = `${result.state} · anchor ${result.portraitAnchor.x},${result.portraitAnchor.y}`;
+    } catch (error) {
+      readout.value = `drag error: ${String(error)}`;
+    } finally {
+      nativeDragPending = false;
+      nativeDragCommitInFlight = false;
+    }
+  })
+  .catch((error) => {
+    readout.value = `drag event error: ${String(error)}`;
+  });
 
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);

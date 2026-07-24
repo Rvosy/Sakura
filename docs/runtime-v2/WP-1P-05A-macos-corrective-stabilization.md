@@ -79,6 +79,45 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
 拖动未初始化布局、重复或陈旧移动提交、原生 bounds/region 失败必须返回稳定错误，不得静默
 回退为默认锚点或关闭重布局。
 
+### 2026-07-24 实现证据（仍为 active，非 accepted）
+
+本节记录本次窄范围实现和截至当前可重复的验证结果，不构成 WP-1P-05A accepted 记录。
+
+- TDD 红绿证据：先后以失败测试固定了 Darwin/Linux 错误查找 `.exe`、`start.sh` 错误交给 Python、
+  缺少 macOS private API/初始可见窗口配置、把 `tauri://move` 当作 DOM 事件而非 Tauri 事件桥接、
+  阻塞事件注册使初始 idle 布局和关闭监听永远不安装，以及只关闭窗口而不退出 macOS Shell。
+  修复后 `tests/integration/test_wp_1p_05a_macos_corrective.py` 和
+  `tests/integration/test_wp_1a_04_entries.py` 共 18 项通过。
+- 自动检查：定向 pytest 为 `18 passed`；`tests/unit` 为 `981 passed, 3 skipped`；
+  `npm test --prefix desktop/frontend` 为 `18 passed`；`cargo fmt --check` 通过；
+  `cargo build --locked` 通过（仅既有 dead-code 警告）。
+- 原始 `cargo test --locked` 在本机为 `93 passed, 3 failed, 3 ignored`：三个 POSIX 跨语言锁
+  测试固定调用 PATH 中的 `python`，而这台新 Mac 只提供仓库 `runtime/bin/python3`。临时将该
+  解释器以仅本次命令 PATH shim 暴露为 `python` 后为 `96 passed, 3 ignored`；shim 已删除。本
+  WP 不修改与窗口修正无关的既有 shared-lock 测试前提。
+- 全量 `./runtime/bin/python3 -m pytest` 曾在约 14% 的既有 legacy Qt 路径
+  `app/ui/pet_window.py:_set_macos_window_topmost` 段错误；该路径被本 WP 的允许目录排除，未作
+  修改。
+- 真实 Apple Silicon（M4）单显示器 UI 冒烟已确认：`bash scripts/start.sh` 能交接并启动最新
+  Debug Shell、取得共享锁并在受控中断后释放；同一 Debug Mach-O 仅以 `/private/tmp` 临时 `.app`
+  包装供 macOS 无障碍 UI 验证，未触碰发布资产。Tauri WebView 已加载；透明窗口没有额外白色
+  矩形；初始 idle、bubble、composer、expanded 均能切换；使用 Shell 内关闭按钮后共享锁立即
+  释放。当前技术验证 Shell 没有接入 Core，因此该项仅覆盖 Shell 和锁，不声称 Core 已启动或
+  已验收。
+- 未通过的原生拖动门禁：本自动化环境的 Computer Use `drag` 没有进入 AppKit 的
+  `performWindowDragWithEvent:` 原生 move loop，因而不能以合成指针伪造“向左、向上、屏幕中央
+  释放后停在落点”及其后的状态切换稳定性。必须由真实 macOS 用户输入完成该三项手工验收后，才
+  能写 accepted。
+- 受保护目录摘要门禁也未通过：开始前的 `data/`、`characters/`、`runtime/` 合并摘要为
+  `5fe97f2b21a1870dcf723e4387990efa1ce366ae5752df8af5aa23761de43043`，当前为
+  `c8401222a9aefe01d8a22c2c76cf42921b99df0a`，且
+  `characters/` 在此 checkout 中不存在。可见 `data/logs/sakura-runtime.log` 及大量
+  `runtime/lib/**/__pycache__/*.pyc` 的时间戳发生变化；为遵守禁止清理用户数据的范围，本 WP
+  没有删除、回退或改写这些受保护内容。需要由项目负责人确认基线或授权恢复后，才能完成该门禁。
+
+因此 WP-1P-05A 保持 `active`，WP-3-01 继续不得激活；不得把本节当作 WP-7-02 的 Spaces、多屏、
+Retina、IME、签名或发布证据。
+
 ## 5. 独立回退
 
 按提交顺序回退本 WP 的 accepted、实现和激活提交。回退后恢复 WP-1P-05 accepted 的状态，

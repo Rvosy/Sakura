@@ -12,12 +12,19 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-TAURI_BINARY_NAME = "sakura-runtime-v2-shell.exe"
+TAURI_BINARY_STEM = "sakura-runtime-v2-shell"
+
+
+def tauri_binary_name(platform: str | None = None) -> str:
+    if (platform or sys.platform) == "win32":
+        return f"{TAURI_BINARY_STEM}.exe"
+    return TAURI_BINARY_STEM
 
 
 def resolve_tauri_binary(base_dir: Path = BASE_DIR) -> Path | None:
+    binary_name = tauri_binary_name()
     for profile in ("release", "debug"):
-        candidate = base_dir / "desktop" / "src-tauri" / "target" / profile / TAURI_BINARY_NAME
+        candidate = base_dir / "desktop" / "src-tauri" / "target" / profile / binary_name
         if candidate.is_file():
             return candidate
     return None

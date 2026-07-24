@@ -6,7 +6,10 @@ use super::{
     PlatformError, PlatformErrorCategory, PlatformResult, PlatformService, PlatformTarget,
     RetryAdvice,
 };
-use crate::{window_geometry::PhysicalPlacement, window_interaction::PhysicalHitRegions};
+use crate::{
+    window_geometry::PhysicalPlacement,
+    window_interaction::{NativeDragCompletion, PhysicalHitRegions},
+};
 
 pub const SHARED_INSTANCE_ID: &str = "sakura.desktop.shared-user-data.v1";
 
@@ -88,7 +91,7 @@ pub trait WindowInteractionBackend: Send + Sync {
     ) -> PlatformResult<()>;
 
     fn restore_full_hit_region(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
-    fn start_drag_and_wait(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+    fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion>;
     fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()>;
     fn focus_text_input(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
 }
@@ -254,10 +257,13 @@ mod tests {
             ))
         }
 
-        fn start_drag_and_wait(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+        fn start_drag(
+            &self,
+            _window: &tauri::WebviewWindow,
+        ) -> PlatformResult<NativeDragCompletion> {
             Err(contract_only(
                 PlatformService::WindowInteraction,
-                "start_drag_and_wait",
+                "start_drag",
             ))
         }
 

@@ -23,7 +23,9 @@ def test_default_python_entry_only_hands_off_to_tauri() -> None:
     assert "PySide6" not in source
     assert "subprocess" not in imports
     assert "os.execv(" in source
-    assert "sakura-runtime-v2-shell.exe" in source
+    assert 'TAURI_BINARY_STEM = "sakura-runtime-v2-shell"' in source
+    assert 'if (platform or sys.platform) == "win32"' in source
+    assert 'return f"{TAURI_BINARY_STEM}.exe"' in source
 
 
 def test_legacy_entry_acquires_mutex_before_any_shared_data_action() -> None:

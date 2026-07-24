@@ -1,6 +1,6 @@
 use crate::{
     window_geometry::PhysicalPlacement,
-    window_interaction::{self, PhysicalHitRegions},
+    window_interaction::{self, NativeDragCompletion, PhysicalHitRegions},
 };
 
 use super::{
@@ -114,9 +114,9 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
         }
     }
 
-    fn start_drag_and_wait(&self, window: &tauri::WebviewWindow) -> PlatformResult<()> {
-        window_interaction::start_native_drag_and_wait(window)
-            .map_err(|error| map_error("start_drag_and_wait", error))
+    fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion> {
+        window_interaction::start_native_drag(window)
+            .map_err(|error| map_error("start_drag", error))
     }
 
     fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()> {

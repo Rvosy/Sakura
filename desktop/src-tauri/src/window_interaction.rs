@@ -2,6 +2,23 @@ use serde::Serialize;
 
 use crate::window_geometry::{LayoutContract, PresentationState};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeDragCompletion {
+    SynchronousMoveLoop,
+    DeferredWindowMoved,
+}
+
+pub const fn native_drag_completion() -> NativeDragCompletion {
+    #[cfg(windows)]
+    {
+        NativeDragCompletion::SynchronousMoveLoop
+    }
+    #[cfg(not(windows))]
+    {
+        NativeDragCompletion::DeferredWindowMoved
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -300,7 +317,7 @@ pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(
 }
 
 #[cfg(windows)]
-pub fn start_native_drag_and_wait(window: &tauri::WebviewWindow) -> Result<(), String> {
+pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragCompletion, String> {
     use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -326,7 +343,7 @@ pub fn start_native_drag_and_wait(window: &tauri::WebviewWindow) -> Result<(), S
             Some(LPARAM(packed)),
         );
     }
-    Ok(())
+    Ok(native_drag_completion())
 }
 
 #[cfg(not(windows))]
@@ -351,8 +368,9 @@ pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(
 }
 
 #[cfg(not(windows))]
-pub fn start_native_drag_and_wait(window: &tauri::WebviewWindow) -> Result<(), String> {
-    window.start_dragging().map_err(|error| error.to_string())
+pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragCompletion, String> {
+    window.start_dragging().map_err(|error| error.to_string())?;
+    Ok(native_drag_completion())
 }
 
 #[cfg(test)]
@@ -386,6 +404,20 @@ mod tests {
             assert!(model.neutral.is_empty());
             assert_eq!(model.drag[0], LogicalHitRect::new(360, 332, 240, 336));
         }
+    }
+
+    #[test]
+    fn native_drag_completion_matches_platform_event_timing() {
+        #[cfg(windows)]
+        assert_eq!(
+            native_drag_completion(),
+            NativeDragCompletion::SynchronousMoveLoop
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            native_drag_completion(),
+            NativeDragCompletion::DeferredWindowMoved
+        );
     }
 
     #[test]
