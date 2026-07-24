@@ -38,6 +38,13 @@ def main() -> int:
             "desktop/src-tauri（debug 或 release）。\n"
         )
         return 1
+    if sys.platform == "darwin":
+        start_script = BASE_DIR / "scripts" / "start.sh"
+        os.execv(
+            "/bin/bash",
+            ["/bin/bash", str(start_script), *sys.argv[1:]],
+        )
+        return 1
     os.execv(str(executable), [str(executable), *sys.argv[1:]])
     return 1
 

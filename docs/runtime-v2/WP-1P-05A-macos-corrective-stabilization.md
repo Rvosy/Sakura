@@ -21,8 +21,15 @@
 macOS/Linux 的 deferred start 语义明确分开，不能以 sleep、固定延时、禁用重布局或吞掉错误
 掩盖竞争。
 
+visibility 复核进一步证明：同一 Mach-O 以 raw 路径启动时没有 LaunchServices app identity，
+`lsappinfo` 显示 `bundleID=NULL`、`fileType=????`，窗口可能不可见或在 hide/show 后冻结；同字节
+Mach-O 从最小 `.app` 内直接执行时拥有稳定 `APPL` identity，显示、恢复和首次输入均正常。向 raw
+进程注入 `__CFBundleIdentifier` 无法替代真实 bundle 结构，因此该问题属于 macOS 开发生命周期，
+不能继续用 show/focus、页面 timer 或固定延时修补。
+
 本 Work Package 不把 Apple Silicon 单显示器证据描述为完整 macOS 验收。Spaces、复杂多屏、
-Retina 矩阵、中文/日文 IME、代码签名、公证、DMG/App bundle 和发布继续属于 WP-7-02/WP-7-04。
+Retina 矩阵、中文/日文 IME、代码签名、公证、DMG、正式发布 `.app` 和发布流程继续属于
+WP-7-02/WP-7-04；本 WP 的忽略目录开发 app identity wrapper 不属于发布工件。
 
 ## 2. 允许目录
 
@@ -51,15 +58,23 @@ Memory、Tools、TTS、设置或产品视觉重做。
 
 - `main.py` 的公共定位逻辑只根据平台选择 Shell 名称：`win32` 使用
   `sakura-runtime-v2-shell.exe`，`darwin` 和 `linux` 使用无扩展名
-  `sakura-runtime-v2-shell`；仍按 release 后 debug 的顺序定位。
-- `scripts/start.sh` 直接定位并 `exec` 已构建的无扩展名 Debug/Release Shell。它不得先启动
-  Python，也不得创建或修改 `runtime/` 缓存、模型或用户数据。
+  `sakura-runtime-v2-shell`；仍按 release 后 debug 的顺序定位。Darwin 验证产物存在后必须以
+  `os.execv` 交接给 `/bin/bash scripts/start.sh`，使所有 macOS 入口共享同一 app identity 逻辑；
+  Windows/Linux 继续直接交接已解析 Shell。
+- `scripts/start.sh` 保持 release 后 debug 的无扩展名 Shell 查找顺序。Linux 和其他非 Darwin
+  Unix 直接 `exec` raw Shell；Darwin 在所选 profile 的
+  `target/<profile>/.sakura-dev/Sakura Runtime v2.app` 中原子刷新最小 `Info.plist` 和指向同 profile
+  Mach-O 的相对 symlink，再直接 `exec` bundle 内入口。wrapper 失败必须明确报错并安全关闭，
+  不得回退 raw Mach-O；脚本不得使用 `open`、先启动 Python，或创建/修改 `runtime/` 缓存、模型
+  和用户数据。
 - Tauri 配置同时声明透明、无装饰、无阴影和 `app.macOSPrivateApi: true`，Cargo 显式启用
   `tauri/macos-private-api`，使 `transparent: true` 在 macOS 真正生效。该配置使用私有 API，
   因而不能接受 Mac App Store 分发；它只允许未来按直接签名/公证路径评估，实际签名、公证和
   bundle 验收仍留给 WP-7-04。
-- visibility 技术探针必须由 Rust 在隐藏后向原生主线程事件循环排队恢复任务；恢复所有权不得留在
-  已隐藏并可能被 macOS WebKit 暂停的页面 timer 中，也不得依赖用户点击桌面重新激活应用。
+- visibility 技术探针的恢复所有权不得留在已隐藏并可能被 macOS WebKit 暂停的页面 timer 中，
+  也不得依赖用户点击桌面重新激活应用。`run_on_main_thread` 在调用方已位于 Tauri 主线程时会立即
+  执行，不能作为跨越独立事件循环 turn 的证据；真实显示恢复只由具备 `.app` identity 的 Apple
+  Silicon 真机门证明，源码字符串测试不得宣称可见性已经修复。
 - `start_drag_and_wait` 改为表达实际时机的 start-only 接口。Windows 继续在既有 Win32 move
   loop 返回后读取位置并同步提交锚点；macOS/Linux 只启动原生拖动并保留 deferred pending，原生
   `Moved` 不提交中间锚点。下一次被接受的状态布局必须先读取当前 `outer_position` 并推导最终物理
@@ -70,7 +85,8 @@ Memory、Tools、TTS、设置或产品视觉重做。
 ## 4. 测试与真实验收
 
 自动测试先以失败测试锁定：三平台 Shell 名称选择、release/debug 定位、`start.sh` 对 macOS
-Debug/Release Shell 的直接交接、private API 配置与 native drag 完成语义。Rust 单元测试必须
+Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink 原子刷新、并发生成、失败
+关闭、private API 配置与 native drag 完成语义。Rust 单元测试必须
 证明 Windows 仍选同步完成路径，macOS/Linux 的 deferred pending 只由下一次布局完成；既有几何
 测试继续证明状态切换保持物理锚点及边界约束。
 
@@ -103,12 +119,12 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
 - 全量 `./runtime/bin/python3 -m pytest` 曾在约 14% 的既有 legacy Qt 路径
   `app/ui/pet_window.py:_set_macos_window_topmost` 段错误；该路径被本 WP 的允许目录排除，未作
   修改。
-- 真实 Apple Silicon（M4）单显示器 UI 冒烟已确认：`bash scripts/start.sh` 能交接并启动最新
-  Debug Shell、取得共享锁并在受控中断后释放；同一 Debug Mach-O 仅以 `/private/tmp` 临时 `.app`
-  包装供 macOS 无障碍 UI 验证，未触碰发布资产。Tauri WebView 已加载；透明窗口没有额外白色
-  矩形；初始 idle、bubble、composer、expanded 均能切换；使用 Shell 内关闭按钮后共享锁立即
-  释放。当前技术验证 Shell 没有接入 Core，因此该项仅覆盖 Shell 和锁，不声称 Core 已启动或
-  已验收。
+- 真实 Apple Silicon（M4）单显示器复核显示：`bash scripts/start.sh` 直接执行 raw Debug Mach-O
+  的两轮启动均取得共享锁并创建 WebKit 子进程，但 `lsappinfo` 均为 `bundleID=NULL`、
+  `fileType=????`，窗口不可见；注入 `__CFBundleIdentifier` 也没有改变该身份。相同 SHA-256 的
+  Mach-O 通过 `/private/tmp` 最小 `.app` 的 LaunchServices 启动、bundle 内直接 exec 以及 symlink
+  入口三种方式均稳定，`lsappinfo` 显示正式 bundle ID 和 `fileType=APPL`，连续 hide/show 与恢复
+  后首次输入通过。该临时验证未触碰发布资产，也不构成发布 bundle 验收。
 - 未通过的原生拖动门禁：本自动化环境的 Computer Use `drag` 没有进入 AppKit 的
   `performWindowDragWithEvent:` 原生 move loop，因而不能以合成指针伪造“向左、向上、屏幕中央
   释放后停在落点”及其后的状态切换稳定性。必须由真实 macOS 用户输入完成该三项手工验收后，才
@@ -118,10 +134,12 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
   会产生多个 `Moved`，首个事件提交的是中间锚点。现已禁止移动事件消费 pending 或调用 bounds；
   下一次状态切换以当时的 `outer_position` 推导释放锚点，并在程序化布局移动前清除 pending。该
   修正未引入延时且保持 Windows 同步 move loop 不变，仍须用物理鼠标完成四种状态切换复验。
-- 同轮真机复验还发现 visibility 探针在 macOS 隐藏后必须点击桌面才恢复，恢复后的 WebView 首次
-  输入也被冻结。根因是恢复动作由已隐藏页面的 `window.setTimeout` 持有；现改为 Rust 隐藏后向
-  Tauri/WRY 原生主线程排队 show/focus，前端不再持有 timer。该修正等待本轮真机复验，不作为
-  accepted 证据。
+- 同轮真机复验还发现 visibility 探针在 raw Mach-O 下隐藏后必须点击桌面才恢复，恢复后的 WebView
+  首次输入也被冻结。此前将根因仅归为隐藏页面 `window.setTimeout`，并声称 Rust
+  `run_on_main_thread` 已排队到独立事件循环 turn；该结论现已撤回。诊断日志证明 hide/show 前后的
+  NSWindow/Tauri visible/focused 状态完整正常，而 Tauri/WRY 在调用方已位于主线程时会立即执行
+  `run_on_main_thread`。页面不得拥有恢复 timer 仍是有效边界，但真实修复条件是 macOS `.app`
+  identity，只能由真机显示和首次输入门禁证明。
 - 受保护目录摘要门禁也未通过：开始前的 `data/`、`characters/`、`runtime/` 合并摘要为
   `5fe97f2b21a1870dcf723e4387990efa1ce366ae5752df8af5aa23761de43043`，当前为
   `c8401222a9aefe01d8a22c2c76cf42921b99df0a`，且
@@ -129,8 +147,51 @@ Debug/Release Shell 的直接交接、private API 配置与 native drag 完成�
   `runtime/lib/**/__pycache__/*.pyc` 的时间戳发生变化；为遵守禁止清理用户数据的范围，本 WP
   没有删除、回退或改写这些受保护内容。需要由项目负责人确认基线或授权恢复后，才能完成该门禁。
 
-因此 WP-1P-05A 保持 `active`，WP-3-01 继续不得激活；不得把本节当作 WP-7-02 的 Spaces、多屏、
-Retina、IME、签名或发布证据。
+### 2026-07-25 开发 app identity 修正证据（仍为 active，非 accepted）
+
+- 新增行为测试先在 raw 启动实现上得到 `5 failed, 23 passed`，失败精确覆盖 Darwin 未从 `.app`
+  入口执行、stale wrapper 未刷新、wrapper 失败仍执行 raw Shell，以及 `main.py` 未交接统一脚本；
+  最小实现后，Darwin Debug/Release、release 优先、参数与退出码传播、带空格路径、可解析 plist、
+  相对 symlink、四进程 barrier 下持续观察的原子刷新、运行时同 PID 信号传播、plist 提交后的
+  symlink 失败关闭、Linux raw 路径和非 Darwin 直接 exec 共 `33 passed`。独立复审曾在 72 轮压力
+  中复现一次观察端 `readlink` 的 `EINVAL`；诊断确认调用前后均为 symlink，但 inode 已变化，即
+  读取跨越了原子替换。稳定快照读取现在只在前后 inode 确认变化时重试该错误，非 symlink、路径
+  缺失、稳定 inode 错误和非法 target 仍失败；确定性 RED/GREEN 用例及修正后连续 200 轮并发压力
+  均通过。
+- Darwin wrapper 位于所选 profile 的
+  `target/<profile>/.sakura-dev/Sakura Runtime v2.app`；`Info.plist` 的
+  `CFBundlePackageType=APPL`、`CFBundleExecutable=sakura-runtime-v2-shell`、
+  `CFBundleIdentifier=com.rvosy.sakura.runtimev2.shell` 与 Tauri 配置一致。Mach-O 入口是相对
+  symlink，不复制二进制；plist 和 symlink 均以 PID 唯一临时项加同目录 `mv` 原子替换，任一步
+  失败均不回退 raw Mach-O。
+- 自动门禁：定向 pytest `33 passed`；`tests/unit` 为 `982 passed, 2 skipped`；frontend 为
+  `18 passed`；`bash -n`、`cargo fmt --check`、`cargo build --locked` 和 `git diff --check` 通过。
+  仅本次 `/private/tmp` PATH shim 下完整 `cargo test --locked` 为 `96 passed, 3 ignored`，shim 已
+  精确删除；Rust 输出仍只有既有 dead-code warning。
+- Apple Silicon 单显示器通过 `bash scripts/start.sh` 和
+  `PYTHONDONTWRITEBYTECODE=1 ./runtime/bin/python3 main.py` 启动时均无需点击桌面即可显示完整 idle
+  窗口。`lsappinfo` 显示 `bundleID=com.rvosy.sakura.runtimev2.shell`、`fileType=APPL`；bundle path
+  结束于 profile 的 `.sakura-dev/Sakura Runtime v2.app`，executable path 位于该 bundle 的
+  `Contents/MacOS`。Computer Use 连续三轮
+  visibility 探针均自动恢复，恢复后的首次点击分别立即进入 composer、expanded、bubble；默认
+  Python 入口另复验一轮 hide/show 后首次点击立即进入 bubble。全过程没有固定 sleep、页面 timer
+  或桌面点击；应用内关闭后 Shell、Core 和共享锁持有进程均为零，随后两个入口可重新取得锁。
+- 本轮初始只读保护摘要为：`characters/` 为 `0` 字节、`0` 文件，`data/` 为 `658678` 字节、
+  `1` 文件，`runtime/` 为 `2602961234` 字节、`49937` 文件。首次自动门禁后
+  `data/logs/sakura-runtime.log` 增至 `752126` 字节；收尾重跑完整门禁后又增长 `93448` 字节，
+  最终为 `845574` 字节（较本轮开始共新增 `186896` 字节）。收尾 Rust 测试还新增
+  `runtime/lib/python3.12/encodings/__pycache__/ascii.cpython-312.pyc`（`2559` 字节），因此最终
+  `runtime/` 为 `2602963793` 字节、`49938` 文件；`characters/` 保持不变。按“相对路径 + NUL +
+  文件内容 + NUL”的排序 SHA-256 树摘要，开始/最终分别为：`characters/`
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` / 同值，`data/`
+  `59c26614d80653bf51d10ee80817b69ec881e80cf72145f268514f986ee75073` /
+  `09fc8d2310a3fc0b1d7bb417358263ef27d1370ec1d0a0fbe1e389b860761f69`，`runtime/`
+  `0191bb27fc2c93867c7899a4e8b99337584696359e29252a602bcd3234b0f4f2` /
+  `aee23379b9e1eb2b83a694fe1580f57c3331ea0a954884e7da4af78aa1d7f173`。本 WP 只报告新增差异，
+  没有清理、截断或回退日志/缓存；保护目录门禁仍未关闭。
+
+因此 WP-1P-05A 保持 `active`，WP-3-01 状态保持 `planned` 且继续不得激活；不得把本节当作
+WP-7-02 的 Spaces、多屏、Retina、IME、签名或发布证据。
 
 ## 5. 独立回退
 
