@@ -12,7 +12,7 @@ mod fake_core_runtime;
 mod managed_process_tree;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1b_runtime_acceptance;
-#[cfg(all(windows, debug_assertions))]
+#[cfg(debug_assertions)]
 mod phase_1c_core_host_acceptance;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
@@ -303,6 +303,11 @@ fn main() {
     let _instance_guard = match instance_lock_backend.acquire(SHARED_INSTANCE_ID) {
         Ok(InstanceLockAcquire::Acquired(guard)) => guard,
         Ok(InstanceLockAcquire::AlreadyRunning) => {
+            #[cfg(debug_assertions)]
+            if phase_1c_core_host_acceptance::record_lock_conflict_if_requested().unwrap_or(false) {
+                eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
+                return;
+            }
             show_startup_message(ALREADY_RUNNING_TITLE, ALREADY_RUNNING_BODY, false);
             return;
         }
@@ -339,7 +344,7 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Sakura Runtime v2 pet geometry gate");
 
-    #[cfg(all(windows, debug_assertions))]
+    #[cfg(debug_assertions)]
     let mut phase_1c_acceptance =
         match phase_1c_core_host_acceptance::AcceptanceSession::start_if_requested() {
             Ok(session) => session,
@@ -380,9 +385,10 @@ fn main() {
         return;
     }
 
-    #[cfg(all(windows, debug_assertions))]
+    #[cfg(debug_assertions)]
     if let Some(session) = phase_1c_acceptance.take() {
         let shutdown = session.shutdown_signal();
+        let exit_watcher = session.start_controlled_exit_watcher(app.handle().clone());
         let exit_code = app.run_return(move |_app_handle, event| match event {
             tauri::RunEvent::Exit
             | tauri::RunEvent::ExitRequested { .. }
@@ -392,6 +398,11 @@ fn main() {
             } => shutdown.request(),
             _ => {}
         });
+        if let Some(exit_watcher) = exit_watcher {
+            exit_watcher
+                .join()
+                .expect("Phase 1P controlled exit watcher should not panic");
+        }
         session
             .shutdown_and_join()
             .expect("Phase 1C acceptance worker should stop without residuals");

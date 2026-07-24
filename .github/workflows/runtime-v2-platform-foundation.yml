@@ -189,9 +189,10 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked
           platform::window_backend:: -- --nocapture
 
-      - name: Run minimum Shell + Python Core lifecycle
+      - name: Run Windows Core lifecycle contracts
         if: runner.os == 'Windows'
         working-directory: desktop
+        timeout-minutes: 4
         shell: pwsh
         env:
           RUST_BACKTRACE: '1'
@@ -199,9 +200,10 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked
           core_host_runtime::tests:: -- --nocapture --test-threads=1
 
-      - name: Run minimum Shell + Python Core lifecycle (POSIX)
+      - name: Run POSIX Core lifecycle contracts
         if: runner.os != 'Windows'
         working-directory: desktop
+        timeout-minutes: 4
         shell: bash
         env:
           RUST_BACKTRACE: '1'
@@ -214,6 +216,40 @@ jobs:
               "--test-threads=1",
           ], timeout=180).returncode)
           PY
+
+      - name: Run native Windows Shell + Python Core lifecycle
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        timeout-minutes: 5
+        shell: pwsh
+        run: >-
+          python tests/cross_platform_shell_core_lifecycle.py
+          --binary src-tauri/target/debug/sakura-runtime-v2-shell.exe
+          --repo ..
+
+      - name: Run native macOS Shell + Python Core lifecycle
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        timeout-minutes: 5
+        shell: bash
+        run: >-
+          python3 tests/cross_platform_shell_core_lifecycle.py
+          --binary src-tauri/target/debug/sakura-runtime-v2-shell
+          --repo ..
+
+      - name: Run native Linux Xvfb Shell + Python Core lifecycle
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        timeout-minutes: 5
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: >-
+          timeout --signal=TERM --kill-after=10s 240s
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24'
+          python3 tests/cross_platform_shell_core_lifecycle.py
+          --binary src-tauri/target/debug/sakura-runtime-v2-shell
+          --repo ..
 
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop

@@ -23,6 +23,7 @@ const ACCEPTANCE_DIRECTORY_ENV: &str = "SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY";
 const REPO_ROOT_ENV: &str = "SAKURA_PHASE_1C_REPO_ROOT";
 const INITIALIZE_MODE_ENV: &str = "SAKURA_PHASE_1C_INITIALIZE_MODE";
 const PHASE_1B_DIRECTORY_ENV: &str = "SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY";
+const CONTROLLED_EXIT_ENV: &str = "SAKURA_PHASE_1P_CONTROLLED_EXIT";
 const ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-1c-02-";
 const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 
@@ -112,12 +113,70 @@ impl AcceptanceSession {
         }
     }
 
+    pub fn start_controlled_exit_watcher(
+        &self,
+        app_handle: tauri::AppHandle,
+    ) -> Option<JoinHandle<()>> {
+        if std::env::var(CONTROLLED_EXIT_ENV).as_deref() != Ok("1") {
+            return None;
+        }
+        let shutdown = self.shutdown_signal();
+        let directory = self.directory.clone();
+        Some(thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                if directory.join("acceptance.error").is_file() {
+                    app_handle.exit(3);
+                    return;
+                }
+                if directory.join("acceptance.exit_requested").is_file() {
+                    shutdown.request();
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    let _ = fs::write(
+                        directory.join("acceptance.error"),
+                        b"controlled Shell exit was not requested before deadline",
+                    );
+                    app_handle.exit(3);
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let cleanup_deadline = Instant::now() + Duration::from_secs(10);
+            while !directory.join("acceptance.cleaned").is_file() {
+                if directory.join("acceptance.error").is_file()
+                    || Instant::now() >= cleanup_deadline
+                {
+                    app_handle.exit(3);
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            app_handle.exit(0);
+        }))
+    }
+
     pub fn shutdown_and_join(self) -> Result<(), String> {
         self.shutdown_signal().request();
         self.worker
             .join()
             .map_err(|_| "Phase 1C acceptance worker panicked".to_string())?
     }
+}
+
+pub fn record_lock_conflict_if_requested() -> Result<bool, String> {
+    let Some(directory) = std::env::var_os(ACCEPTANCE_DIRECTORY_ENV) else {
+        return Ok(false);
+    };
+    let directory = validate_acceptance_path(PathBuf::from(directory))?;
+    fs::write(
+        directory.join("acceptance.lock_conflict"),
+        b"already-running",
+    )
+    .map_err(|error| format!("failed to write shared-lock conflict marker: {error}"))?;
+    Ok(true)
 }
 
 fn run_scenario(
