@@ -98,7 +98,7 @@ class ProviderSelection:
 @dataclass(frozen=True)
 class CoreConfigReadResult:
     current_character_id: str | None
-    provider_selection: ProviderSelection | None
+    provider_selection: ProviderSelection | None = field(repr=False)
     config_problem: StableReadinessError | None
 
 class CoreConfigReader:
@@ -107,7 +107,7 @@ class CoreConfigReader:
 @dataclass
 class AssistantSession:
     character: CharacterProfile
-    provider: OpenAICompatibleClient
+    provider: OpenAICompatibleClient = field(repr=False)
     runtime: AgentRuntime
     pipeline: ChatPipeline
 
@@ -116,14 +116,35 @@ class AssistantAdapter:
     def close(self) -> None: ...  # idempotent, reverse creation order
 ```
 
+以下同为允许实现路径中的强制秘密字段；无论是 dataclass default repr、custom repr、
+serialization、异常还是 public surface，均不得输出其值：
+
+```python
+class ApiSettings:
+    api_key: str = field(repr=False)
+
+class ApiConfigProfile:  # 仅当 CoreConfigReader 使用该 DTO
+    api_key: str = field(repr=False)
+
+class HostConfig:
+    generation_credential: str = field(repr=False)
+```
+
+`AssistantSession` 内部可以持有 Provider settings/API key 以供真实 Provider 使用，但
+`AssistantSession.provider` 必须是 `field(repr=False)`；key 绝不进入 session repr、序列化或任何
+公共面。`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、
+`ApiSettings.api_key`、可能使用的 `ApiConfigProfile.api_key` 及
+`HostConfig.generation_credential` 均适用相同规则。generation credential 不得进入任意 repr。
+
 1. Core Host 从 Rust 通过 `RuntimeLocator` 已批准的 layout 获得 app root，写入 `HostConfig`/CLI；
    不提供默认路径，测试只能注入隔离 fixture 根。
 2. `core.initialize` 创建一次后台 initializer，立即发布 `initializing`；重复调用不创建第二
    worker/session，返回既有启动结果。
 3. worker 懒导入 Adapter 和其窄依赖，读取 config/角色；任何取消检查命中时不发布新 revision。
 4. 读取成功后只做本地 Provider shape 校验，从 `ProviderSelection.api_settings` 构造
-   `OpenAICompatibleClient(settings)`；`ProviderSelection` 与 `CoreConfigReadResult` 均不得以
-   默认 repr、异常或诊断暴露 API key。禁止调用
+   `OpenAICompatibleClient(settings)`；`ProviderSelection`、`CoreConfigReadResult`、
+   `AssistantSession`、settings/profile 与 `HostConfig` 均不得以 default/custom repr、序列化、
+   异常或诊断暴露 API key 或 generation credential。禁止调用
    `test_connection`、`list_models`、`chat`、`complete_raw`、`complete_with_tools`。
 5. Adapter 构造真实 `AgentRuntime`，显式传入 `ToolRegistry([])`、truthy disabled/no-op
    `MemoryLike`、角色 prompt/metadata，再构造真实 `ChatPipeline`；不得调用 `run_*`。
@@ -143,9 +164,11 @@ class AssistantAdapter:
 | `system_config.yaml` 不存在 | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
 | `system_config.yaml` 存在但为空、仅空白、null、YAML 损坏或不是 mapping | `failed` | `CONFIG_DATA_INVALID` | 不创建 | 不重启 |
 | `system_config.yaml` 是 mapping，但 `config_version` 缺失、非 int、bool、旧版或未来版 | `failed` | `CONFIG_VERSION_UNSUPPORTED` | 不创建 | 不重启 |
-| version 有效但 API/characters 配置缺失、空或未选择 chat profile/slot | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
+| version 有效，`api.yaml` 或 `characters.yaml` 不存在、zero/blank/null/empty mapping | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
+| `api.yaml`/`characters.yaml` 存在但 YAML 语法坏、非 mapping 且非 null、字段或容器类型错误 | `failed` | `CONFIG_DATA_INVALID` | 不创建 | 不重启 |
+| 有效 API mapping 缺失、为空或不匹配 profile/slot/model/base URL/key | `setup_required` | `PROVIDER_SETUP_REQUIRED` | 不创建 | 不重启 |
+| 有效 characters mapping 缺失或 `current_character_id` 为空 | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
 | 无任何有效角色 | `setup_required` | `CHARACTER_SETUP_REQUIRED` | 不创建 | 不重启 |
-| Provider type、profile、slot、模型归属、base URL、key 或 model 的本地形状无效 | `setup_required` | `PROVIDER_SETUP_REQUIRED` | 不创建 | 不重启 |
 | Adapter 必要 pure import 失败、禁止 Qt/域阻断、不可恢复构造异常 | `failed` | `ASSISTANT_INITIALIZATION_FAILED` | 已建部分逆序关闭 | 不重启 |
 | 配置当前角色失效，安全 fallback 为 `sakura` 或首个有效角色 | `degraded` | `CHARACTER_FALLBACK_APPLIED` | 构造 | 不重启 |
 | 已选有效角色，但跳过损坏的可选角色包 | `degraded` | `OPTIONAL_CHARACTER_SKIPPED` | 构造 | 不重启 |
@@ -205,15 +228,21 @@ log 文件。该分支必须有 legacy-default 与 Core-stderr 的等价/零写�
 
 唯一的 `app/config/core_config_reader.py` 只读取注入 app root 内的原始文件，允许复用纯 DTO、
 `load_yaml_mapping` 与 `resolve_model_slot`，但不得调用 `AppSettingsService.load_api_profiles()`
-或 `load_model_selection()`，也不得运行 `MigrationRunner`。它绝不 migrate、normalize-and-save、
+或 `load_model_selection()`，也不得 import 或运行 `MigrationRunner`。它在自身（或唯一纯 config
+辅助模块）定义 `SUPPORTED_CORE_CONFIG_VERSION = 4`；唯一支持值是 non-bool integer `4`，不得从
+migration 常量、运行时 migration 或其他写入路径取得版本语义。它绝不 migrate、normalize-and-save、
 创建 backup、写 legacy log 或改变任何文件 bytes/mtime。
 
 `system_config.yaml` 不存在是首次安装，固定为 `CORE_CONFIG_SETUP_REQUIRED`。文件存在但为空、
 仅空白、null、损坏或非 mapping 固定为 `CONFIG_DATA_INVALID`；mapping 的 `config_version` 缺失、
-非 int、bool、旧版或未来版固定为 `CONFIG_VERSION_UNSUPPORTED`。仅在 version 有效后，API 或
-characters 缺失、为空或未选中才是 `CORE_CONFIG_SETUP_REQUIRED`。Provider 的有效性仅为本地形状：
-选中的 chat profile/model 匹配，base URL、API key、model 非空，且 URL scheme/host 合法。API key
-仅存于 `ProviderSelection.api_settings` 和 Python 进程 Provider settings，不进入 default repr、
+bool、string、`<4`、`>4` 固定为 `CONFIG_VERSION_UNSUPPORTED`，仅 `==4` 可继续读取。辅助配置
+使用唯一矩阵：`api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping 都是
+`CORE_CONFIG_SETUP_REQUIRED`；文件存在而 YAML 语法坏、非 mapping 且非 null、字段或容器类型错误
+都是 `CONFIG_DATA_INVALID`。有效 API mapping 缺失、为空或不匹配 profile/slot/model/base URL/key
+是 `PROVIDER_SETUP_REQUIRED`；有效 characters mapping 缺失或 `current_character_id` 为空是
+`CORE_CONFIG_SETUP_REQUIRED`，非空但无效时按角色 fallback 规则处理。Provider 的有效性仅为本地
+形状：选中的 chat profile/model 匹配，base URL、API key、model 非空，且 URL scheme/host 合法。
+API key 仅存于 repr-excluded settings/profile/selection 与 Python 进程 Provider settings，不进入
 session、Snapshot、errors、stderr、logs 或 Rust。
 
 ## 并发、取消与清理
@@ -268,12 +297,13 @@ mtime、SHA-256，必须完全一致。至少覆盖如下确定性矩阵。
 
 | 门类 | 必测情形 | 断言 |
 |---|---|---|
-| 配置/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；mapping 的 missing/bool/string/old/future version；version 有效但 API/characters 缺失/未选；valid；configured current 无效的 `sakura`/first fallback；坏可选包；无任何有效角色 | 精确 state/code：config 分支逐项对照矩阵；fallback 为 `CHARACTER_FALLBACK_APPLIED`、仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`、无有效角色为 `CHARACTER_SETUP_REQUIRED`；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
-| Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知 | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；秘密不出现在任何公开面。 |
+| system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/`<4`/`>4`/`==4`；valid；configured current 无效的 `sakura`/first fallback；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 4` 继续；fallback 为 `CHARACTER_FALLBACK_APPLIED`、仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`、无有效角色为 `CHARACTER_SETUP_REQUIRED`；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
+| 辅助配置 fixture | `api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping；YAML syntax error；nonmapping nonnull；字段/容器类型错误；API mapping 缺/空/不匹配 profile/slot/model/base/key；characters mapping 缺/空 current id | 前一组为 `CORE_CONFIG_SETUP_REQUIRED`，syntax/shape/type 为 `CONFIG_DATA_INVALID`，API shape 为 `PROVIDER_SETUP_REQUIRED`，characters current id 缺/空为 `CORE_CONFIG_SETUP_REQUIRED`；读取前后 bytes/mtime/.bak 完全不变。 |
+| Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知、`repr()`/序列化/异常的 secret scan | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；`AssistantSession.provider`、`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、使用时的 `ApiConfigProfile.api_key` 与 `HostConfig.generation_credential` 均 repr-excluded，API key/credential 不出现在任何公开面。 |
 | session/禁止域 | valid 角色与 Provider、Memory/MCP/plugins/TTS/voice/screen fail-if-called | 构造真实 runtime、空 tools、disabled Memory、pipeline；不运行 pipeline，不加载禁止域。 |
 | import/等价 | hello 前与 initialize 后 subprocess probe；legacy agent imports；Theme/VisualEffectMode | 前者无 agent/UI/PySide6，后者仍无 Qt/ResourceManager/禁止域；public import/default/validation 语义等价。 |
 | 生命周期/故障 | 慢 reader、构造中途异常、重复 initialize/shutdown、shutdown before initialize、EOF、writer failure、close throw、close block、init/close race、old worker late result | health 在 deadline 内；只构造/关闭一次；异常聚合不跳过 writer；晚结果不发布；shutdown successful-write 起共享 5000ms 内 root/后代/pipe/fd/handle/thread/temp 归零。 |
-| generation/安全 | 连续两 generation、stale Snapshot/credential、公开 summary 扫描 | 单调 revision、generation 隔离、Rust 只读 clone；无路径/prompt/key/credential/endpoint/model/诊断 internals。 |
+| generation/安全 | 连续两 generation、stale Snapshot/credential、所有 `repr`/serialization/exception/public surface 的 credential 扫描、公开 summary 扫描 | 单调 revision、generation 隔离、Rust 只读 clone；generation credential 不进任意 repr，且无路径/prompt/key/credential/endpoint/model/诊断 internals。 |
 | 真实进程树 | 协作与忽略 TERM 的一个/多个 Adapter 后代、Core crash、外部 kill | Rust ManagedProcessTree 在 Windows x64/macOS arm64/Linux x64 收束 root/后代/pipe/fd/handle/thread/temp，锁立即重获。 |
 
 Python unit、Python subprocess、Rust real-host 和 packaged/Shell 三平台纵向测试都必须覆盖
