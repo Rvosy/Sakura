@@ -435,7 +435,12 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
+    use std::{
+        path::PathBuf,
+        sync::{mpsc, Mutex, OnceLock},
+        thread,
+        time::Duration,
+    };
 
     use serde_json::json;
 
@@ -452,6 +457,15 @@ mod tests {
     use super::{CoreHostRuntime, CoreSnapshotCache};
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
+
+    static LIFECYCLE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lifecycle_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        LIFECYCLE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("Core lifecycle test lock should not be poisoned")
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -480,6 +494,7 @@ mod tests {
 
     #[test]
     fn managed_real_python_host_answers_control_and_releases_its_job_and_pipes() {
+        let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real Core Host should launch in a managed Job");
@@ -518,6 +533,7 @@ mod tests {
 
     #[test]
     fn managed_real_python_host_treats_clean_stdin_eof_as_orderly_exit() {
+        let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real Core Host should launch in a managed Job");
@@ -532,6 +548,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn polluted_real_stdout_fails_framing_and_the_job_is_force_reclaimed() {
+        let _test_lock = lifecycle_test_lock();
         let root = repo_root();
         let python = development_layout().python_executable;
         let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_01/polluting_host.py");
@@ -568,6 +585,7 @@ mod tests {
 
     #[test]
     fn ignored_control_deadline_force_reclaims_the_managed_python_job() {
+        let _test_lock = lifecycle_test_lock();
         let root = repo_root();
         let python = development_layout().python_executable;
         let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_01/ignoring_shutdown_host.py");
@@ -612,6 +630,7 @@ mod tests {
 
     #[test]
     fn managed_real_python_host_initializes_and_caches_its_snapshot() {
+        let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
@@ -647,6 +666,7 @@ mod tests {
 
     #[test]
     fn hung_python_initialize_keeps_health_and_shutdown_responsive() {
+        let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");

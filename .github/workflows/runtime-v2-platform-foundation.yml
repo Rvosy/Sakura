@@ -88,6 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
+            sudo timeout --signal=TERM --kill-after=10s 45s dpkg --configure -a || true
             if sudo timeout --signal=TERM --kill-after=10s 45s \
                 apt-get update -o Acquire::Retries=3 && \
               sudo timeout --signal=TERM --kill-after=10s 75s \
@@ -204,10 +205,14 @@ jobs:
         shell: bash
         env:
           RUST_BACKTRACE: '1'
-        run: >-
-          timeout --signal=TERM --kill-after=15s 180s
-          cargo test --manifest-path src-tauri/Cargo.toml --locked
-          core_host_runtime::tests:: -- --nocapture
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          raise SystemExit(subprocess.run([
+              "cargo", "test", "--manifest-path", "src-tauri/Cargo.toml",
+              "--locked", "core_host_runtime::tests::", "--", "--nocapture",
+          ], timeout=180).returncode)
+          PY
 
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop
