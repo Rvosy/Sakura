@@ -1,6 +1,6 @@
 # ADR-0002：Runtime v2 IPC
 
-> 状态：Proposed
+> 状态：Technically Validated for Phase 1C transport foundation（Phase 2 Router/backpressure pending）
 > 日期：2026-07-15
 > 适用范围：Tauri/Rust 与 Python Core 之间的请求、响应、事件和状态同步
 
@@ -323,4 +323,21 @@ details
 - 自动门禁结果：Python 19 passed；Rust 72 passed、13 ignored fixture、0 failed；`cargo fmt --check`、Debug/Release `cargo build --locked`、PowerShell parser、Python `py_compile` 和 `git diff --check` 通过。
 - 两轮真实 Debug Tauri + `runtime/python.exe` 验收均观察到可见窗口、hello、两次 health、协议 shutdown 和根退出码 0；每轮登记 9 个进程身份，最终进程和系统临时目录残留均为 0。
 - 两轮验收前后真实 `data/` 完整路径/长度/mtime/SHA-256 清单均为 121 文件、1,045,983,998 bytes，canonical SHA-256 均为 `300b89fa68dd973f6970f3435ad0c5cc15fc84a2088baf3514e20dae25d0b62b`，证明零变化。
-- 当前已知限制：`CreateProcessW` 的受控 stdio 继承依赖父进程其他句柄保持默认不可继承；显式 handle allowlist、generation credential、持续 stderr 排水和协议协商留待 WP-1C-03 门禁验证。
+- 当时已知限制：generation credential、持续 stderr 排水和协议协商尚未实现；这些缺口现已由下一节的 WP-1C-03 门禁关闭。`CreateProcessW` 的受控 stdio handle allowlist 仍属于平台 spawn hardening，不改变本 ADR 的公共 transport 语义。
+
+## WP-1C-03 transport foundation 验证记录（2026-07-24）
+
+WP-1C-03 已在同一公共 stdio framing 上冻结 protocol `2.1`、`2.0..2.1` minor/capability 协商、
+每 generation 128-bit credential、64 KiB 有界 stderr 排水/脱敏和稳定 transport 故障分类。Windows
+x64、macOS arm64、Linux x64 的最新实现 HEAD `af79255` 均通过原生 Core lifecycle、故障 fixtures、
+完整树/pipe/fd/handle/thread/temp 清理和 shared lock 重获；Unit/UI 与 push/pull_request platform
+runs 分别为 `30074854468`、`30074851836`、`30074854406`。
+
+major/capability 失败禁止 initialize；旧 generation/stale response credential fail closed；stderr flood、
+分片 UTF-8/非法字节/二进制/无换行长记录、secret 跨 read chunk、stdout 前缀/后缀污染、半帧 EOF、
+deadline、Core crash、writer queue closed 和 shutdown 竞态均有可执行证据。credential 不进入 argv、
+环境、日志、错误、Debug、Snapshot 或 diagnostics。平台原生 process/pipe identity 没有进入公共 DTO。
+
+据此 ADR 更新为 `Technically Validated for Phase 1C transport foundation`。这不接受 Phase 2：并发
+pending/event Router、Operation/cancel、乱序 response、progress backpressure、终态配额和长业务任务
+隔离仍未实现，必须完成对应门禁后才能把本 ADR 更新为 `Accepted`。

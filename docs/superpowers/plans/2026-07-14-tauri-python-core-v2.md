@@ -1,6 +1,6 @@
 # Sakura Tauri + Python Core Runtime v2 计划
 
-> 状态：WP-1C-02 accepted（`a06e1dada`）；下一生产阶段为跨平台 Phase 1P
+> 状态：Phase 1P 与 WP-1C-03 accepted；下一启动点为 WP-1C-04（planned）
 > 工作分支：`refactor/tauri-runtime-v2`
 > 基线：`dev` / `4e8dc7f0a6afbc391149046febeb0c796dd641b8`
 > 目标：用 Tauri 替代 Qt 桌面运行时和 UI，复用现有 Python Assistant 能力，保持发布时全部现有用户能力，并从基础阶段持续支持 Windows、macOS 和 Linux。

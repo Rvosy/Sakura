@@ -1,6 +1,6 @@
 # WP-1C-03：协议协商、stderr 排水和故障 transport
 
-> 状态：active
+> 状态：accepted
 > 日期：2026-07-24
 > 前置：WP-1P-06 accepted，提交 `ca8fea3`
 > 规范来源：ADR-0001、ADR-0002、ADR-0003、ADR-0004、WP-1C-01/02、WP-1P-01 至 06
@@ -120,3 +120,70 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 独立回退：依次 revert accepted 文档、实现/修正提交和 activation 提交，恢复 WP-1P-06 的兼容
 最小握手路径；保留基础 framing、Snapshot、RuntimeLocator、三平台进程树/共享锁/窗口 backend，
 不删除或改写真实 `data/`、`runtime/`、普通 POSIX lock 或用户资源。
+
+## 8. Accepted 记录（2026-07-24）
+
+提交边界：activation `07f7afc`；协议/credential `079280f`；stderr 门禁 `f36f04d`；分片脱敏
+修正 `a1c07ca`；握手/EOF/后缀污染分类 `b5ab652`；Linux Cargo 下载重试与 step timeout
+`af79255`。Draft PR #147 在最新实现 HEAD
+`af7925572a53d693cf12ab02c93f6a6bfab0cf9f` 保持 Draft。
+
+最新实现 HEAD 的权威证据：
+
+- Unit/UI run [`30074854468`](https://github.com/Rvosy/Sakura/actions/runs/30074854468) 全绿；
+- pull_request platform run [`30074854406`](https://github.com/Rvosy/Sakura/actions/runs/30074854406)
+  的 Windows x64、macOS arm64、Linux x64 全绿；
+- push platform run [`30074851836`](https://github.com/Rvosy/Sakura/actions/runs/30074851836)
+  的 Windows x64、macOS arm64、Linux x64 全绿。
+
+协议证据：Python/Rust 公共版本固定为 `2.1`，支持 `2.0..2.1`；测试覆盖完全匹配、minor 降到
+`2.0`、major 不兼容、minor 无交集、缺失 required、未知 optional、重复/非法 capability DTO、
+hello 前消息、重复 hello、协商失败后禁止 initialize，以及 hello/initialize 中 shutdown。required
+capability 按 Core 冻结顺序确定返回，不按 OS 分叉。
+
+credential 证据：每次 Rust launch 从 Windows `RtlGenRandom` 或 POSIX `/dev/urandom` 生成独立
+128-bit 值，在公共 frame 前经当前 stdin pipe 私有 bootstrap 传递；每个 response 在交付前验证
+generation ID、credential、request identity 和协商版本。缺失、错误、旧 generation、stale response
+和 replay 均拒绝；跨 generation uniqueness、旧 response 强制整树回收，以及 Debug、错误、Snapshot、
+stderr 和测试输出不含 credential 均有可执行断言。
+
+stderr 证据：reader 在 bootstrap 前启动，以 4096-byte chunk 持续排水；覆盖普通/多行、逐字节
+分片 UTF-8、非法 UTF-8、NUL/二进制、无换行超长输出、超过 1 MiB flood、EOF、read failure、
+重复 finish、正常退出和 Core crash。每 generation 只保留 64 KiB 脱敏尾缓存；超长记录 fail-closed
+丢弃原文并稳定累计 `droppedBytes`、`droppedRecords`、`truncatedRecords`。credential、token、
+Authorization、cookie、key/secret/password、prompt/message/content、聊天内容和非空环境值在完整
+有界行上脱敏；跨 read chunk secret 回归已关闭。
+
+transport 证据：双端 codec 覆盖任意 frame 分片/合并、空帧、8 MiB 上限、非法 UTF-8/JSON、
+半 header/payload EOF、pipe read/write failure 和 writer queue closed；真实 fixtures 覆盖 stdout 前缀/
+后缀污染、旧 credential response、request deadline、Core crash、stdin/stdout/stderr EOF 顺序、
+忽略 shutdown 与强制整树回收。稳定分类包括 `PROTOCOL_MAJOR_MISMATCH`、
+`CAPABILITY_NEGOTIATION_FAILED`、`GENERATION_CREDENTIAL_MISMATCH`、
+`STDOUT_FRAMING_POLLUTION`、`INVALID_FRAME`、`INVALID_UTF8`、`INVALID_JSON`、
+`FRAME_TOO_LARGE`、`INCOMPLETE_FRAME`、`STDOUT_EOF`、`REQUEST_DEADLINE_EXCEEDED`、
+`CORE_CRASHED`、`TRANSPORT_READ_FAILED`、`TRANSPORT_WRITE_FAILED`、`WRITER_QUEUE_CLOSED`、
+`SHUTDOWN_DURING_HANDSHAKE` 和 `SHUTDOWN_DURING_INITIALIZE`。
+
+本机 Windows 证据：Python Core Host 定向最终 44 passed；Rust `core_host_` 最终 22 passed；Rust
+完整 108 passed / 14 ignored fixture；UI 379 passed；fmt、Debug/Release locked build、py_compile、
+YAML safe-load 和 diff check 通过。完整本机 Unit 为 958 passed / 6 skipped / 6 failed / 12 errors；
+失败精确来自环境残留 `F:\Projects\Sakura`/`.pytest-basetemp` 和无权限 `D:\`，本次 diff 未触及
+对应 backchannel/storage/TTS 模块；最新 HEAD GitHub Unit job 为权威全绿证据。
+
+真实 Windows Shell + bundled Python Core 完成 normal、Shell crash 和 lock reacquire 三轮，保护范围
+为仓库根 `data/` 与 `runtime/` 的全部递归 path/type/file length/content SHA-256；before/after canonical
+manifest 均为 `b4d51258a488d00413689c8c963a1210f243825f3444dafb633a406819596b2d`。CI 每个平台还通过
+shared lock、RuntimeLocator、正式 ManagedProcessTree、hello/initialize/readiness/health/Snapshot、
+stderr fixtures、protocol shutdown、根/后代/pipe/fd/handle/reader/writer/init thread/临时目录清理，
+以及锁释放后立即重获。`ca8fea3..af79255` tracked diff 不含 `data/`、`runtime/` 或 `.superpowers/`。
+
+CI 暴露并关闭一个外部下载问题：push run `30074514479` 的 Linux runner 在 crates.io `bytes`
+下载收到 curl 18 partial file；没有以同 SHA 的 PR 绿灯代替失败。workflow 现使用单次 180 秒、最多
+3 次的 Linux Cargo build retry，并为 build/archive/format/platform/shared-lock/process-tree/locator
+步骤设置分钟级 timeout；最新 push/PR run 均证明修正有效，concurrency 继续 cancel-in-progress。
+
+审查确认公共 IPC/Snapshot/Assistant 层没有 Win32 handle、POSIX fd/signal/PID/PGID；平台差异仍只
+位于 RuntimeLocator、ManagedProcessTree、共享锁和随机源边界。没有修改 CoreSupervisor 状态机、
+generation/restart budget、Snapshot/shared-data schema、用户可见功能、Assistant、聊天、Memory、
+插件、MCP、Tools、TTS、浏览器、截图或主动互动。P0/P1 为 0，WP-1C-04 具备独立激活前置但仍为
+`planned`。
