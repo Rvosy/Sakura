@@ -76,7 +76,7 @@ Phase 1P：
 
 Phase 1D：
 基础聊天前只允许 startup、initializing、ready、failed、Core crashed、retry、
-脱敏 diagnostics 文本和 exit。
+脱敏 diagnostics 文本和 exit；这些状态直接消费已提前完成的 WP-3-01 真实 readiness。
 禁止完整 Runtime Repair 页面、自动修复、在线下载/替换、通用日志浏览平台。
 
 Phase 2：
@@ -92,6 +92,8 @@ legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁；必须以真实 Sakura
 完成 Architecture Validation Slice，不得用 Fake Core 代替。
 禁止 TTS、截图、主动观察、设置和工作室。
 ```
+
+显式顺序例外：WP-3-01 在 WP-1C-04 后立即执行，早于 Phase 1D/2。其允许范围只有无 Qt Assistant Adapter、当前角色/Session/基础 Provider 构造和真实 readiness；不得借提前执行接入聊天、Operation、Tools、Memory、MCP、插件或 TTS。这样先产生真实产品消费者，再由后续最小 IPC WP 服务它。
 
 Phase 4–7 必须按 Work Package 清单和产品功能等价台账逐项激活，不得把多个既有产品能力合并成一次“大迁移”。
 
@@ -365,6 +367,7 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 - 修改范围和禁止目录检查。
 - Windows、macOS、Linux 平台矩阵；Linux GUI 能力额外登记 X11/Wayland。
 - RuntimeLocator、共享锁和受控进程树的对应平台真实测试。
+- platform foundation workflow 的 push/pull_request path filter 必须对称覆盖 `app/core_host/**`、本轮允许修改的 Python Core/Assistant 领域路径、Core fixtures/tests 和原生 lifecycle harness；Python/Core-only 提交不得因只改 Python 而跳过三平台门。
 
 Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python、Rust、三平台 WebView E2E、产品功能等价台账和发布验收，并由项目负责人做最终审查。
 
@@ -426,6 +429,8 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 审查不得删除或放宽 major/minor 协商、required capability、generation credential、stderr 持续排水/脱敏、framing/EOF/deadline/stdout 污染 transport fatal、完整进程树清理、应用锁和数据兼容门禁；也不得用同步阻塞聊天通道换取更短路径。
 
 WP-3V-01 是这项规则的第一次强制收口：CAP-004 未达到 `architecture-validated` 前，不得激活 WP-4-01 或任何完整 diagnostics、Runtime Repair、通用资源/Operation 平台 WP。若验证发现前置生产缺陷，WP-3V-01 退回 `planned`，只允许一个责任 WP 重新进入 `stabilizing`；不得同时修多个 WP 或在验证 WP 内顺手扩张生产范围。
+
+本计划的首轮路径按同一规则自检：WP-1C-04 后立即安排 WP-3-01，新增真实 Assistant Adapter/readiness 消费者；WP-1D-01 又新增用户可见的真实失败/重试消费者，此后到 WP-3-02 之间只有两个底层 IPC WP，因此不触发“连续三个以上底层 WP 无真实产品消费者”的暂停条件。
 
 ## 执行原则摘要
 

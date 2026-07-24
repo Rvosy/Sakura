@@ -46,7 +46,7 @@ legacy 行为与数据
 | CAP-001 | 默认启动、单实例、显式 legacy Qt 回退 | Tauri 为默认根；Qt/Tauri 共用锁；安全切换 | WP-1P-02、WP-1P-03、WP-1P-06、WP-3-06 | 可执行/Runtime 定位、锁、退出 | implemented |
 | CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 同一 Tauri App 下连续组合体验 | WP-1P-05、WP-3-03、WP-3-04 | 透明窗口、scale、多屏 | implemented |
 | CAP-003 | 点击穿透、拖动、焦点、IME、显示隐藏 | 平台 backend 保持相同用户语义 | WP-1P-05、WP-3-03 | Win32、NSWindow、X11/Wayland | implemented |
-| CAP-004 | 真实聊天、思考、完成与错误 | 无 Qt Assistant Adapter + 最小 IPC/Gateway/Snapshot 纵向链 | WP-2-01、WP-2-02、WP-3-01、WP-3-02、WP-3-04、WP-3V-01 | Provider/网络失败不阻塞 Shell | planned |
+| CAP-004 | 真实聊天、思考、完成与错误 | WP-3-01 先验证无 Qt Adapter/readiness，再由最小 IPC/Gateway/Snapshot 承载聊天 | WP-3-01、WP-2-01、WP-2-02、WP-3-02、WP-3-04、WP-3V-01 | Provider/网络失败不阻塞 Shell | planned |
 | CAP-005 | 取消、跳过打字机、请求唯一终态 | 最小聊天 cancel 与 UI 表现动作分离；不以前置通用 Operation 为条件 | WP-2-02、WP-3-02、WP-3-03、WP-3-04、WP-3V-01 | 旧 generation、晚到事件 | planned |
 | CAP-006 | 角色、初始消息、立绘/表情切换 | 最小 Snapshot + WebView 状态；资源平台按真实消费者后移 | WP-2-02、WP-3-03、WP-3-04、WP-3-05、WP-5-03 | 资源路径、scale、编码 | planned |
 | CAP-007 | 聊天历史读取、追加和分页 | Python 数据真相源；Rust 只读 DTO | WP-3-02、WP-3-06、WP-3V-01、WP-5-03 | 文件锁、原子写、路径 | planned |

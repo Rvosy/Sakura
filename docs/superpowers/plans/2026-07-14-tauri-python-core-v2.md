@@ -27,7 +27,7 @@ WebView
 
 首轮迁移以“基础聊天垂直链真实可用”为中心。基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链；真实 Assistant 是 IPC、Snapshot、取消、恢复和状态边界的首个消费者与架构验证者，而不是这些系统全部泛化完成后的最终接入者。
 
-因此，WP-1C-04 后只允许先完成最小故障可见性、最小 Router 和最小聊天边界，再进入无 Qt Adapter 与真实聊天。第二个真实消费者出现前，不冻结不必要的通用 Operation、资源平台、业务优先级、完整 Snapshot component model 或未来消费者抽象。
+因此，WP-1C-04 后立即执行 WP-3-01 无 Qt Assistant Adapter，让真实角色/Session/Provider readiness 成为 bundled Core lifecycle 的首个产品消费者；之后才完成最小故障可见性、Router 和聊天边界，并进入 WP-3-02 真实聊天。第二个真实消费者出现前，不冻结不必要的通用 Operation、资源平台、业务优先级、完整 Snapshot component model 或未来消费者抽象。
 
 ## 2. Assistant / Agent 产品边界
 
@@ -446,6 +446,8 @@ WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前�
 
 退出条件：真实 Python Core 可以在不加载 Qt UI 和重型领域模块的情况下建立通信、上报状态并可靠关闭；WP-1C-04 还必须使用 WP-1P-02/04 冻结的三平台 Runtime 与进程树 backend 完成同语义端到端。
 
+执行顺序例外：WP-1C-04 accepted 后立即执行 WP-3-01，只接入薄 Assistant Adapter 与真实 readiness；它不接入聊天/Router，但必须使用真实角色、Session 和 Provider 构造验证 Core lifecycle。随后才进入 Phase 1D 和 Phase 2 最小链。
+
 ### Phase 1P：跨平台基础回补
 
 - [ ] 冻结 Windows x64、macOS arm64、Linux x64 target matrix、最低系统环境、平台接口和错误分类。
@@ -584,7 +586,7 @@ WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前�
 15. WP-1C-02 完成后先执行 Phase 1P；Windows x64、macOS arm64、Linux x64 从基础生命周期开始持续参与门禁，不能在产品功能接近完成时再适配。
 16. 已完成的 Windows WP 保留为 Windows backend 证据，不代表跨平台总体 accepted；ADR-0004/WP-1P 负责回补。
 17. 发布功能范围以产品功能等价台账为准，不能以代码仍存在或 legacy Qt 可回退代替迁移完成。
-18. WP-1C-04 后先完成最小故障可见性、Router、聊天取消/Gateway/Snapshot，然后立即让真实 Assistant 验证边界；完整 Phase 1D/2 泛化不再前置。
+18. WP-1C-04 后立即执行 WP-3-01，让无 Qt Assistant Adapter/readiness 成为首个真实消费者；随后只完成最小故障可见性、Router、聊天取消/Gateway/Snapshot，再由 WP-3-02 验证真实聊天。
 19. 通用 Operation、完整业务优先级、worker process、resource token、完整 Snapshot/背压、schema 代码生成和自动 Runtime Repair 只在对应真实消费者出现时建设。
 20. WP-3V-01 是 Phase 4 之前的硬门禁；CAP-004 未达到 `architecture-validated` 时不得继续堆叠通用基础设施。
 

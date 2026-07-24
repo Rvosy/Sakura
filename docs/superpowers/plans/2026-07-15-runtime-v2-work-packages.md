@@ -22,7 +22,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
 - WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
 - WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
-- 基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链。真实 Assistant 是 IPC、Snapshot、取消、恢复和状态边界的首个真实消费者与架构验证者。
+- 基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链。WP-1C-04 后立即执行 WP-3-01，让真实 Assistant Adapter/readiness 先消费 bundled Core lifecycle；随后最小 Router、Snapshot、取消和恢复继续由它驱动验证。
 - 第二个真实消费者出现前，不冻结不必要的通用 Operation、资源、业务优先级、Snapshot component 或未来消费者抽象；方向性 ADR 内容不自动成为当前实现门禁。
 
 每个 Work Package 的激活记录至少包含：
@@ -75,11 +75,11 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
-| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-1C-04 | planned |
+| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04 | planned |
+| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
-| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-2-02 | planned |
-| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01 | planned |
+| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -121,6 +121,7 @@ WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/
 |---|---|---|
 | WP-1C-03 | WP-1C-03 | 保持原位且边界不变：协议协商、credential、stderr 排水和 transport fatal；不接入业务 |
 | WP-1C-04 | WP-1C-04 | 保持原位并收窄为三平台 bundled Python 与真实 Core lifecycle；不扩大协议抽象 |
+| WP-3-01 | WP-3-01，移至 WP-1C-04 后 | 立即引入首个真实 Assistant 消费者，只适配角色/Session/Provider/readiness，不接聊天或通用平台 |
 | WP-1D-01 | WP-1D-01 | 收窄为 startup/initializing/ready/failed/Core crashed、diagnostics 文本、retry 和 exit |
 | WP-1D-02 | WP-1D-01 的必要文本；其余移至 WP-5-06 | 基础聊天前不建设 Runtime Repair 页面、通用日志浏览或自动修复 |
 | WP-1D-03 | WP-1D-01 的最小安全 retry；其余移至 WP-5-06 | 仅保留同一 Supervisor 路径的清理、重试与退出门 |
@@ -130,7 +131,7 @@ WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/
 | WP-2-04 | WP-2-02 | Gateway 只为固定聊天 allowlist 建立，后续 command 权限由所属功能 WP 扩展 |
 | WP-2-05 | WP-2-02 的最小聊天 Snapshot；资源 token 移至 WP-4-06，完整 component model 移至对应消费者 | 截图、音频、导入和所有未来 component 不阻塞聊天 |
 | WP-2-06 | WP-2-01/02 的有界队列、terminal 不丢和安全断开；完整 progress/多等级背压移至 WP-4-08 或 WP-6-05 | Envelope 只冻结真实聊天已证明需要的字段 |
-| WP-3-01 至 WP-3-06 | 编号保留，前置改为最小 IPC 链 | 提前成为真实消费者；不再等待完整 Phase 1D/2 |
+| WP-3-02 至 WP-3-06 | 编号保留，前置改为已提前的 Adapter 和最小 IPC 链 | 真实聊天不再等待完整 Phase 1D/2 |
 | 无 | WP-3V-01 | 新增组合架构验证门；通过后 CAP-004 才可标记 `architecture-validated` |
 
 ## 3. Phase 0：冻结与基线
@@ -1628,7 +1629,39 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 独立回退：恢复到 WP-1P 已验证的开发 RuntimeLocator/Fake Core 路径，不影响 legacy Qt；不得回退为 Windows-only 硬编码路径。
 
-## 9. Phase 1D：最小开发与故障可见性
+## 9. Phase 3 提前切片：首个真实 Assistant 消费者
+
+### WP-3-01：无 Qt Assistant Adapter 与真实 readiness
+
+主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。它在 WP-1C-04 后立即执行，先验证 bundled Core lifecycle 能承载真实 Assistant 初始化和确定性释放；不等待 Router 或聊天协议。
+
+允许能力：
+
+- 读取现有角色与 Core 配置。
+- 构建基础 Provider 客户端，不在启动阶段发起远程网络验证。
+- 建立最小 Assistant Session 和公开角色 Snapshot。
+- 为真实迁移需要增加的无 Qt Adapter 和等价性测试。
+- 使用现有 lifecycle hello/initialize/readiness/Snapshot/health/shutdown 验证真实 Adapter，不新增聊天 command。
+
+明确禁止：
+
+- 不重写 AgentRuntime、Memory、插件、MCP、TTS 或配置领域。
+- 不创建新的巨型 `application.py`，不重新聚合全部 Assistant 逻辑。
+- 既有领域代码只在直接依赖 Qt、不能在受监管子进程运行、阻塞控制/取消/关闭或初始化/释放不确定时才可修改。
+- 每个领域修改必须说明 Adapter/Facade 为何不足、业务语义是否改变、legacy Qt 影响和等价性测试；语义变化须独立批准。
+- 不接入聊天 UI、聊天 Router、cancel/Gateway 或通用 Operation。
+
+退出证据：
+
+- 无角色、无有效 Provider 和首次配置未完成进入 setup_required，不触发重启。
+- 尚未进入所属能力 WP 的可选组件不阻止基础 Session，也不得为填充通用 Snapshot 而提前初始化；本 WP 实际接入的可选读取失败才按既有语义进入 degraded。
+- Core Host 导入和运行路径不加载 PySide6 或 Qt UI。
+- Adapter 初始化期间 health/shutdown 仍按 lifecycle deadline 处理；正常退出、初始化失败和 Core 强杀后完整树及 Adapter 资源归零。
+- 三平台 workflow 必须由 `app/core_host/**` 及本 WP 允许的 Python/Core 领域路径触发，Python/Core-only 提交不得绕过平台门。
+
+独立回退：回退 Assistant Adapter，Core Host 退回假组件 readiness；保留 WP-1C-04 bundled lifecycle、协议安全和三平台进程清理门禁。
+
+## 10. Phase 1D：最小开发与故障可见性
 
 ### WP-1D-01：最小生命周期可见性与安全重试
 
@@ -1655,7 +1688,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 独立回退：回退最小状态/重试 UI，保留底层 Supervisor、Core Host 和 fatal exit；完整 diagnostics/Runtime Repair 留到 WP-5-06 或后续经批准 WP。
 
-## 10. Phase 2：最小可靠聊天 IPC 基础链
+## 11. Phase 2：最小可靠聊天 IPC 基础链
 
 ### WP-2-01：最小并发 request/response/event Router
 
@@ -1716,34 +1749,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 独立回退：禁用聊天 Gateway/取消/Snapshot 扩展，保留 WP-2-01 Router 和只读 lifecycle 状态。
 
-## 11. Phase 3：基础聊天垂直链
-
-### WP-3-01：无 Qt Assistant Adapter 与真实 readiness
-
-主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。
-
-允许能力：
-
-- 读取现有角色与 Core 配置。
-- 构建基础 Provider 客户端，不在启动阶段发起远程网络验证。
-- 建立最小 Assistant Session 和公开角色 Snapshot。
-- 为真实迁移需要增加的无 Qt Adapter 和等价性测试。
-
-明确禁止：
-
-- 不重写 AgentRuntime、Memory、插件、MCP、TTS 或配置领域。
-- 不创建新的巨型 `application.py`，不重新聚合全部 Assistant 逻辑。
-- 既有领域代码只在直接依赖 Qt、不能在受监管子进程运行、阻塞控制/取消/关闭或初始化/释放不确定时才可修改。
-- 每个领域修改必须说明 Adapter/Facade 为何不足、业务语义是否改变、legacy Qt 影响和等价性测试；语义变化须独立批准。
-- 不接入聊天 UI。
-
-退出证据：
-
-- 无角色、无有效 Provider 和首次配置未完成进入 setup_required，不触发重启。
-- 尚未进入所属能力 WP 的可选组件不阻止基础 Session，也不得为填充通用 Snapshot 而提前初始化；本 WP 实际接入的可选读取失败才按既有语义进入 degraded。
-- Core Host 导入和运行路径不加载 PySide6 或 Qt UI。
-
-独立回退：回退 Assistant Adapter，Core Host 退回假组件 readiness。
+## 12. Phase 3：基础聊天垂直链
 
 ### WP-3-02：无 UI 的真实聊天 Core 垂直链
 
@@ -1872,7 +1878,7 @@ legacy Qt 创建/修改数据并退出
 
 独立回退：停止 v2 共享数据写入并退回只读使用，不删除 legacy Qt 数据或入口。
 
-## 12. Phase 3V：Assistant 架构验证硬门禁
+## 13. Phase 3V：Assistant 架构验证硬门禁
 
 ### WP-3V-01：Runtime v2 Assistant Architecture Validation Slice
 
@@ -1925,7 +1931,7 @@ Tauri/Rust 启动 bundled Python Core
 
 稳定化与回退：本 WP 只接受验证设施和证据修正。发现生产缺陷时，停止 WP-3V-01 并把它退回 `planned`，只将拥有该缺陷的一个前置 WP 重新置为 `stabilizing`；修复并重新 accepted 后再激活本 WP。独立回退验证 harness/调试 UI/台账证据即可，不回退已独立 accepted 的生产 WP，不删除或改写用户数据。
 
-## 13. Phase 4–7 强制 Work Package
+## 14. Phase 4–7 强制 Work Package
 
 以下编号和发布能力映射保留为暂定执行序列。WP-3V-01 通过后，应按下一个真实产品消费者重新确认依赖；不得仅因 ADR 已记录方向就提前完整实现通用抽象。每个 WP 进入 `active` 前必须补充逐文件允许目录、平台环境、真实消费者、协议字段、故障矩阵、人工步骤和独立回退；不得把相邻行合并成一次“大迁移”。
 
@@ -1979,7 +1985,7 @@ Apple Silicon 覆盖透明窗口、命中、拖动、焦点、中日文 IME、Re
 覆盖透明窗口、命中、拖动、焦点、IME、多屏；Linux Wayland 覆盖透明、命中、拖动、焦点、
 IME、窗口身份与 compositor 行为。任一对应平台未完成这些设备证据时，不得正式发布。
 
-## 14. 已记录但不阻塞基础聊天的未来设计
+## 15. 已记录但不阻塞基础聊天的未来设计
 
 下列方向可以保留在 ADR、backlog 或所属能力 WP 中，但在 WP-3V-01 前不是硬门禁：
 

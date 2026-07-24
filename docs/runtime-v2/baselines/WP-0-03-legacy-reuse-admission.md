@@ -257,10 +257,10 @@ subtitle timer / bubble timer / pure theme normalization / executable fault scen
 | WP-1C-02 | 无旧实现准入 | R41 被拒绝；readiness/Snapshot 从 ADR 重写 |
 | WP-1C-03 | R55 | 日志、协议协商、credential 和故障 transport 重新实现 |
 | WP-1C-04 | R31、R34、R47 | fixture 必须升级为 v2 lifecycle，使用 bundled Python |
+| WP-3-01 | R16、R44、R53、R56 | 紧随 WP-1C-04；R39、R54 被拒绝，薄 Adapter 不改 Assistant 业务语义 |
 | WP-1D-01 | R04、R22 | R05/R08 被拒绝；路由不能拥有 Core 真相，只建最小故障文本、retry 和 exit，R21 后移 WP-5-06 |
 | WP-2-01 | R35 | R27/R36 被拒绝；只复用错误案例，建立最小 pending/event Router 和有界终态交付 |
 | WP-2-02 | R23、R42、R43 | 旧 `host_call`/混合 AppState 被拒绝；只建聊天 allowlist、控制隔离、取消、唯一终态和最小 Snapshot；R41 被拒绝，R57 后移 WP-4-06 |
-| WP-3-01 | R16、R44、R53、R56 | R39、R54 被拒绝；薄 Adapter，不改 Assistant 业务语义 |
 | WP-3-02 | R40、R50 | 只接基础聊天/历史；Tools/TTS/截图均不进入 |
 | WP-3-03 | R11、R12、R13、R14、R17、R18、R49、R51 | 只用 Fake Core 驱动表现层 |
 | WP-3-04 | 无旧生产文件准入 | R19 被拒绝；使用已验证的最小 Gateway/聊天 identity 小步接通 |
