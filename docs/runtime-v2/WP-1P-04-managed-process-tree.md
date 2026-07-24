@@ -1,6 +1,6 @@
 # WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
-> 状态：accepted（CI platform foundation）
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-24
 > 前置：WP-1P-03 accepted，提交 `9d079a4d`
 > 规范来源：ADR-0001、ADR-0004、`WP-1P-01-platform-contract.md`

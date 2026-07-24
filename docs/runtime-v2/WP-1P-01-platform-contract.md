@@ -1,6 +1,6 @@
 # WP-1P-01：跨平台 target、平台契约与错误分类
 
-> 状态：Accepted / Contract Frozen
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-22
 > 规范来源：ADR-0001、ADR-0003、ADR-0004
 > 适用实现：`desktop/src-tauri/src/platform/`

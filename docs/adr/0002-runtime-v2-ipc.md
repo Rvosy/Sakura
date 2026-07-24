@@ -1,6 +1,6 @@
 # ADR-0002：Runtime v2 IPC
 
-> 状态：Technically Validated for Phase 1C transport foundation（Phase 2 Router/backpressure pending）
+> 状态：Technically Validated for Phase 1C transport foundation（最小 Router/真实 Assistant 消费验证待完成）
 > 日期：2026-07-15
 > 适用范围：Tauri/Rust 与 Python Core 之间的请求、响应、事件和状态同步
 
@@ -16,7 +16,7 @@ Runtime v2 第一版保留 stdin/stdout framed transport，避免本地端口、
 - transport reader、control dispatcher 和 stdout writer 不执行或等待任何 Assistant 领域代码。
 - 支持多个并发 in-flight request。
 - health、cancel、shutdown 始终可处理。
-- 长任务返回 operation ID，并通过事件报告结果。
+- 第一条聊天为每次请求分配唯一 request/operation identity，并通过事件报告唯一终态；是否提取通用 Operation 必须等待第二个真实消费者。
 - Core 重启后旧 generation 的请求、事件、Operation 和 Snapshot 全部失效。
 - 前端不能调用任意内部 Python 方法。
 - 队列有界，帧大小受限，协议异常安全失败。
@@ -42,16 +42,16 @@ Transport / Control Plane
 ├─ reader
 ├─ control dispatcher
 ├─ writer queue
-└─ pending / operation registry
+└─ pending / chat task registry
 
-Domain Execution Plane
-├─ bounded async tasks
-├─ bounded thread executor
-└─ 必要时的受控 worker process
+Domain Execution Plane（按真实消费者逐步验证）
+├─ bounded chat tasks
+├─ 聊天确需的 bounded executor
+└─ 后续消费者证明必要时的受控 worker process
 ```
 
 - 同步 SDK、阻塞 I/O 和同步领域方法不得在 transport/control 事件循环上执行。
-- 可能长时间占用 CPU、GIL 或运行不可信插件代码的操作，应进入可终止的受控 worker process，或由技术验证证明 thread executor 足够。
+- 可能长时间占用 CPU、GIL 或运行不可信插件代码的未来操作，必须由所属真实消费者 WP 选择可终止 worker process 或证明其他隔离足够；基础聊天前不建设通用 worker 框架。
 - Rust 的进程树 deadline/强杀仍是非协作领域任务的最终退出保证。
 
 ### stderr 与日志排水
@@ -115,7 +115,7 @@ Rust Gateway 必须：
 - 分配 request ID。
 - 注入当前 generationId 和协议版本。
 - 将 deadline 限制在 command 注册表允许范围内。
-- 根据 command 注册表决定 priority。
+- 根据当前窄 allowlist 选择内部调度类别；WebView 不提供 priority。完整业务 priority 注册表等待多个真实消费者。
 - 构造真正发送给 Python Core 的 Envelope。
 - 每个窗口有独立权限集合。
 - 前端通过封装 client 调用。
@@ -144,11 +144,11 @@ sequence（可选，等待技术验证）
 
 `generationId` 使用 UUID，是隔离旧消息的权威身份。可另保留递增的 `generationNumber`，但它只用于诊断展示，不参与协议授权。
 
-`sequence` 是否保留为强校验字段由 Phase 2 技术验证决定。stdio 和单 writer queue 已提供字节顺序；只有确实需要检测应用层丢帧、重复或多来源合并时才加入 sequence。
+`sequence` 是否保留为强校验字段由 WP-2-01/02 与真实 Assistant 技术验证决定。stdio 和单 writer queue 已提供字节顺序；只有确实需要检测应用层丢帧、重复或多来源合并时才加入 sequence。基础聊天中的 `priority` 只允许由 Rust 表达 control 与 chat 的最小内部区分，WebView 不可提交；完整业务枚举仍是后续方向。
 
 普通帧初始建议限制为 8 MiB，但具体值属于实现参数。截图、音频和大文件必须使用受控资源描述符。
 
-## Priority
+## Priority（方向性设计，不阻塞基础聊天）
 
 ```text
 control
@@ -161,11 +161,11 @@ background
   资源扫描、Memory 整理、主动调度
 ```
 
-Priority 是调度语义，不要求实现三个物理管道。
+Priority 是后续可能的调度语义，不要求实现三个物理管道，也不要求在第一条聊天前完整实现 control/interactive/background 平台。最小聊天链只证明 health/shutdown/cancel 不排在聊天任务之后；在 Tools、Memory、MCP 等真实消费者出现前，不冻结通用业务优先级。
 
-## Operation
+## Operation（方向性设计，不阻塞基础聊天）
 
-预计不能在短 request deadline 内完成的任务返回：
+以下是多个真实长任务消费者出现后的候选统一结构，不是基础聊天前的完整实现门禁：
 
 ```json
 {
@@ -192,37 +192,34 @@ Operation：
 - 不可取消时返回明确原因。
 - 完成后从 registry 清理。
 
+基础聊天只要求 Rust 分配唯一 request/operation identity、`chat.cancel` 和唯一终态。只有聊天与第二个真实消费者证明生命周期、取消、progress 和权限语义确实相同时，才允许由所属 WP 提取上述通用 Operation。
+
 ## Chat 事件
 
 ```text
 chat.started
-chat.progress
 chat.completed
 chat.cancelled
 chat.failed
+chat.progress（预留，不要求基础聊天实现）
 chat.delta（预留，不要求实现）
 ```
 
 Phase 3 使用完整回复 + WebView 打字机展示，不要求 Provider token streaming。
 
-- `chat.cancel_request` 取消实际模型请求。
+- `chat.cancel` 取消实际模型请求。
 - 跳过打字机属于 WebView 本地 presentation 行为，不调用 Python。
 
 ## Snapshot
 
-Core Snapshot 至少表达：
+第一条聊天前冻结的最小 Snapshot 只表达：
 
 ```text
-schemaVersion
 generationId
-generationNumber
 revision
 readiness
-components
-capabilities
 currentCharacterSummary
 activeInteractionSummary
-coreConfigRevision
 ```
 
 规则：
@@ -230,11 +227,11 @@ coreConfigRevision
 - Snapshot 由 Python Core 构造，Rust 只读缓存。
 - 新 generation 建立时立即清空旧 Snapshot。
 - revision 不匹配时请求完整 Snapshot，不在 Rust 中猜测业务补丁。
-- 组件状态显式区分 disabled、initializing、ready、degraded 和 failed。
 - Snapshot 不包含 API Key、Credential、完整系统 Prompt、插件私密配置和任意本地文件裸路径。
 - `currentCharacterSummary` 只包含渲染 UI 所需的公开字段。
+- `schemaVersion`、`generationNumber`、通用 `components`、`capabilities`、`coreConfigRevision` 和未来 patch/component 类型是候选扩展，只在对应真实消费者出现时验证；它们不得阻塞基础聊天。
 
-### 受控资源描述符
+### 受控资源描述符（方向性设计，不阻塞基础聊天）
 
 截图、音频、角色导入和其他大文件通过 generation-scoped opaque token 传递，而不是裸文件路径。token 至少具有：
 
@@ -247,14 +244,14 @@ coreConfigRevision
 
 WebView 不得通过 token 扩展为任意文件系统访问。
 
+基础聊天不传递截图、音频或导入大文件，因此不要求先实现通用 token、所有资源类型或完整资源权限平台。首个真实资源消费者由所属 WP 验证最窄 token；多个消费者证明共性后才能冻结通用资源模型。
+
 ## Backpressure
 
 - reader、writer 和 event queue 必须有界。
-- progress 在入队前优先合并，只保留对 UI 有意义的最新中间值。
-- 队列紧张时允许丢弃旧的非终态 progress。
-- control、response 和终态事件使用预留容量或独立优先配额。
-- shutdown/cancel response 以及 operation.completed/failed/cancelled 不得被普通 progress 挤出或丢失。
-- 合并和优先级配额仍无法恢复时，才关闭当前 generation 的 IPC 连接。
+- 基础聊天的最小门禁是：response、chat terminal、health/shutdown/cancel 使用预留容量或等价有界机制，不被可丢弃消息挤出。
+- 完整 progress 合并、多等级配额、跨业务公平性和通用过载策略是方向性设计，等待产生 progress 的真实消费者。
+- 最小有界机制仍无法恢复时，安全关闭当前 generation 的 IPC 连接；不得无限增长队列或阻塞 transport reader。
 - 帧超限、stdout 污染或协议损坏时立即关闭当前 generation 的 IPC 连接。
 - request deadline 到期或窗口关闭后，Rust 清理 pending waiter。
 
@@ -279,6 +276,8 @@ details
 
 ## 测试
 
+基础聊天架构验证前的强制测试：
+
 - 分片帧和合并帧。
 - 非法 JSON 和超大帧。
 - 并发响应乱序。
@@ -287,7 +286,7 @@ details
 - 同步 sleep 和阻塞文件 I/O 在领域执行期间，health 和 shutdown 仍响应。
 - CPU 密集循环无法协作结束时，Rust 在 deadline 后仍能终止完整进程树。
 - deadline、取消和窗口关闭。
-- 大量 progress、慢 writer 和终态事件的背压优先级。
+- 慢 writer、队列饱和和 chat 终态/control 不丢失。
 - stdout 污染。
 - stderr 持续输出和日志队列过载。
 - Core 重启后的旧 generation 消息。
@@ -296,9 +295,11 @@ details
 - Rust/Python golden fixtures。
 - Windows、macOS、Linux 使用同一 golden fixtures；对应平台的真实 Python Host 都完成 hello、health、shutdown 和损坏 transport 回收。
 
+完整 Operation progress 合并、通用三级优先级、跨资源公平性和多类 resource token 测试由出现对应真实消费者的后续 WP 增加，不是 WP-3V-01 前置。
+
 ## 允许调整的范围
 
-以下内容可以根据 Phase 2 验证调整：
+以下内容可以根据最小 Router、真实 Assistant 纵向验证及后续消费者调整：
 
 - sequence 是否必需。
 - frame 上限具体数值。
@@ -309,9 +310,11 @@ details
 
 不可调整的是并发、取消、生命周期优先级、generation 隔离、WebView 权限边界、控制面隔离和安全失败边界。
 
+方向性内容统一遵循：设计方向已记录，不阻塞基础聊天架构验证；在出现对应真实消费者时由所属 Work Package 验证并冻结。
+
 ## ADR 状态门禁
 
-本 ADR 在 Phase 1P 已提供三平台 transport/process backend、Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后更新为 `Technically Validated`，在 Phase 2 的并发、阻塞隔离、取消与背压门禁通过后更新为 `Accepted`。单平台结果只能作为该 backend 证据。验证失败时应更新或 Supersede 本 ADR，不得用静态契约测试替代真实阻塞与故障测试。
+本 ADR 在 Phase 1P 已提供三平台 transport/process backend、Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后更新为 `Technically Validated`。只有 WP-2-01/02 的最小 Router/聊天边界通过，并由 WP-3V-01 使用真实 Sakura Assistant 证明并发、health/shutdown 隔离、取消唯一终态、generation 重建、最小 Snapshot 水合、队列压力和完整资源清理后，才更新为 `Accepted`。完整通用 Operation、resource token、三级优先级、Snapshot component model 和多等级背压不属于该状态前置。单平台结果只能作为该 backend 证据；验证失败时应更新或 Supersede 本 ADR，不得用 Fake Core、静态契约或直接 Python 调用替代真实纵向故障测试。
 
 ## WP-1C-01 基础 transport 验证记录（2026-07-22）
 
@@ -338,6 +341,7 @@ major/capability 失败禁止 initialize；旧 generation/stale response credent
 deadline、Core crash、writer queue closed 和 shutdown 竞态均有可执行证据。credential 不进入 argv、
 环境、日志、错误、Debug、Snapshot 或 diagnostics。平台原生 process/pipe identity 没有进入公共 DTO。
 
-据此 ADR 更新为 `Technically Validated for Phase 1C transport foundation`。这不接受 Phase 2：并发
-pending/event Router、Operation/cancel、乱序 response、progress backpressure、终态配额和长业务任务
-隔离仍未实现，必须完成对应门禁后才能把本 ADR 更新为 `Accepted`。
+据此 ADR 更新为 `Technically Validated for Phase 1C transport foundation`。这尚不接受最小 Router、
+聊天 cancel/唯一终态、乱序 response/event、终态保留和真实 Assistant 控制隔离；这些必须由
+WP-2-01/02 与 WP-3V-01 完成。通用 Operation、完整 progress backpressure、资源平台和未来消费者
+模型仍只是方向，不需要在本 ADR Accepted 前完整实现。

@@ -1,8 +1,8 @@
 # WP-1C-03：协议协商、stderr 排水和故障 transport
 
-> 状态：accepted
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-24
-> 前置：WP-1P-06 accepted，提交 `ca8fea3`
+> 前置证据：WP-1P-06 验收提交 `ca8fea3`
 > 规范来源：ADR-0001、ADR-0002、ADR-0003、ADR-0004、WP-1C-01/02、WP-1P-01 至 06
 
 ## 1. 结果边界
@@ -115,13 +115,13 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 退出条件：本文列出的协商、credential、stderr、framing/EOF/deadline/crash/queue/shutdown 竞态
 测试全部通过；三平台最新实现 HEAD 与 accepted 文档 HEAD 的 Unit/UI、platform foundation 全绿；
 完整树、pipe、fd/handle、reader/writer/init thread、锁和临时目录零残留；真实 `data/`、`runtime/`
-内容清单前后相同；P0/P1 为 0；PR 保持 Draft，WP-1C-04 保持 planned。
+内容清单前后相同；P0/P1 为 0；PR 保持 Draft。后续 WP 不得在本验收中顺手激活。
 
 独立回退：依次 revert accepted 文档、实现/修正提交和 activation 提交，恢复 WP-1P-06 的兼容
 最小握手路径；保留基础 framing、Snapshot、RuntimeLocator、三平台进程树/共享锁/窗口 backend，
 不删除或改写真实 `data/`、`runtime/`、普通 POSIX lock 或用户资源。
 
-## 8. Accepted 记录（2026-07-24）
+## 8. 验收证据记录（2026-07-24）
 
 提交边界：activation `07f7afc`；协议/credential `079280f`；stderr 门禁 `f36f04d`；分片脱敏
 修正 `a1c07ca`；握手/EOF/后缀污染分类 `b5ab652`；Linux Cargo 下载重试与 step timeout
@@ -185,5 +185,5 @@ CI 暴露并关闭一个外部下载问题：push run `30074514479` 的 Linux ru
 审查确认公共 IPC/Snapshot/Assistant 层没有 Win32 handle、POSIX fd/signal/PID/PGID；平台差异仍只
 位于 RuntimeLocator、ManagedProcessTree、共享锁和随机源边界。没有修改 CoreSupervisor 状态机、
 generation/restart budget、Snapshot/shared-data schema、用户可见功能、Assistant、聊天、Memory、
-插件、MCP、Tools、TTS、浏览器、截图或主动互动。P0/P1 为 0，WP-1C-04 具备独立激活前置但仍为
-`planned`。
+插件、MCP、Tools、TTS、浏览器、截图或主动互动。P0/P1 为 0；WP-1C-04 是否可激活及其当前状态
+只由 Work Package 总表决定。

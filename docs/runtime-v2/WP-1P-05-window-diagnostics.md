@@ -1,6 +1,6 @@
 # WP-1P-05：三平台窗口交互与原生诊断 backends
 
-> 状态：accepted（CI platform foundation）
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-24
 > 前置：WP-1P-04 accepted，提交 `a3dc6c0e`
 > 规范来源：ADR-0004、`WP-1P-01-platform-contract.md`

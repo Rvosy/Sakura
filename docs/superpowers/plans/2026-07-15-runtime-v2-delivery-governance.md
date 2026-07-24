@@ -75,17 +75,21 @@ Phase 1P：
 现有 Windows 实现保留为 backend，不借平台化重写 Supervisor/IPC 语义。
 
 Phase 1D：
-允许启动状态、诊断、重试、日志入口和 Runtime Repair 页面。
-禁止自动下载、在线替换、Runtime 更新和回滚平台。
+基础聊天前只允许 startup、initializing、ready、failed、Core crashed、retry、
+脱敏 diagnostics 文本和 exit。
+禁止完整 Runtime Repair 页面、自动修复、在线下载/替换、通用日志浏览平台。
 
 Phase 2：
-允许并发 IPC、取消、Operation、Snapshot、权限、错误边界、背压、
-受控资源 token 和真实阻塞/故障测试。
+只允许首条聊天需要的独立 reader/writer、pending map、event/response 交错、
+control 隔离、有界队列、聊天取消/唯一终态、固定 Gateway allowlist 和最小 Snapshot。
+禁止完整三级业务优先级、通用 Operation/worker process/resource token、
+完整 Snapshot component model、所有未来权限注册和多等级背压平台。
 禁止迁移设置、TTS、Tools、工作室和其他产品功能。
 
 Phase 3：
 允许基础聊天、立绘、气泡、输入框、打字机、Core 恢复和
-legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁。
+legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁；必须以真实 Sakura Assistant
+完成 Architecture Validation Slice，不得用 Fake Core 代替。
 禁止 TTS、截图、主动观察、设置和工作室。
 ```
 
@@ -177,6 +181,8 @@ Phase / Work Package:
 - 自动 Runtime 修复。
 - 完整 schema 代码生成平台。
 - Capability Broker。
+- 面向未来业务的完整通用 Operation、任务图和 worker process 框架。
+- 基础聊天尚未消费的通用 resource token、完整 Snapshot component model 和多等级背压平台。
 - 跨进程分布式设置事务。
 - 真实 token streaming。
 - 高级动画引擎。
@@ -185,10 +191,11 @@ Phase / Work Package:
 
 抽象原则：
 
-- 一个当前消费者时优先使用简单接口。
-- 出现第二个真实消费者后再提取通用抽象。
+- 一个当前消费者时优先使用简单接口；Fake Core、测试 fixture 和未来计划不算真实消费者。
+- 出现第二个真实消费者，并证明存在相同所有权/故障语义后再提取通用抽象。
 - 不为假设中的未来消费者建设框架。
-- 进程安全、数据安全、平台隔离和协议边界可以按已批准 ADR 建立必要抽象，不受“第二个消费者”规则限制。
+- framing、安全失败、generation、credential、生命周期控制、进程安全、数据安全和平台清理可以按已批准 ADR 提前冻结必要边界。
+- 通用 Operation、资源平台、业务优先级、通用 Snapshot/未来消费者模型不能仅以“协议边界”为理由提前完整实现。
 
 ## G-006：Python 领域代码冻结原则
 
@@ -293,7 +300,9 @@ Work Package 完成不能以“代码已经写完”或“单元测试数量足�
 
 - WP-1C-02 完成后只冻结 Python/Rust 的最小 lifecycle 语义草案；Phase 1P 可以把平台实现移入 backend，但不得改变业务所有权。
 - Phase 1P 与 WP-1C-04 完成后冻结跨平台 lifecycle 接口、RuntimeLocator 和平台错误分类。
-- Phase 2 完成后冻结基础 request/response/event envelope。
+- WP-2-01/02 只冻结首条聊天证明需要的 request/response/event、取消、Gateway 和最小 Snapshot 字段。
+- 完整通用 Operation、资源、业务优先级、Snapshot component 和多等级背压契约必须等待对应真实消费者，不随 Phase 2 自动冻结。
+- WP-3V-01 通过后，真实 Assistant 已消费且通过故障门的最小 IPC 子集进入变更控制；未被消费的 ADR 方向仍可调整。
 - Phase 3 开始后，不得为 UI 便利随意修改生命周期协议。
 - 需要破坏性修改时，暂停功能开发、更新 ADR、兼容门禁和测试 fixture。
 
@@ -375,6 +384,7 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 10. 提交后获得了什么可验证结果？
 11. 是否影响平台 backend、Runtime 路径、窗口、进程、锁、权限或打包？哪些正式平台已经验证？
 12. 对应产品功能等价台账中的哪一项？状态为什么可以前进？
+13. 哪个近期真实用户场景会被这个改动阻塞？当前真实消费者是谁？
 
 任何问题无法清晰回答时，不应提交该生产改动。
 
@@ -382,7 +392,7 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 
 跨平台和功能等价不是 Phase 7 的清理任务：
 
-- WP-1C-02 已以 `a06e1dada` 完成提交闭环；下一生产阶段固定为 Phase 1P，WP-1C-03 及后续 Work Package 必须依赖 WP-1P-06。
+- WP-1C-02 后插入 Phase 1P 的历史决策已完成；WP-1C-03 及后续 Work Package 继续强制依赖 WP-1P-06。当前启动点只引用 Work Package 总表。
 - 正式基础矩阵固定为 Windows x64、macOS arm64、Linux x64；调整 target 必须更新 ADR-0004、Work Package、CI 和发布台账。
 - Windows 已 accepted 的历史 WP 保留为 Windows backend 证据，不撤销其实现价值，也不代表 macOS/Linux 已通过。
 - 共享 Supervisor、IPC、Snapshot、数据 schema 和产品语义不得按平台 fork；原生差异只能位于批准的平台 backend。
@@ -391,6 +401,31 @@ Phase 7 和任何最终集成到 `dev` 的操作前，必须运行完整 Python�
 - 发布前，台账中的发布必备项必须达到 `parity-accepted` 或存在项目负责人批准的替代设计。
 
 如果某个平台无法保持原交互，必须在实现对应产品能力前完成替代架构评审；不得等到 Phase 7 再以平台限制为由降级。
+
+## G-016：整体路径防扩张与真实消费者门禁
+
+单个 Work Package 符合允许目录和单一目的，不代表整体执行路径没有扩张。如果连续的基础设施 WP 让首个真实产品垂直链持续后移，必须暂停并进行架构验证审查。
+
+出现以下任一条件即触发审查：
+
+- 连续三个以上底层 WP 没有新增真实产品消费者。
+- 新抽象只有 Fake Core、测试 fixture 或未来计划作为消费者。
+- 新 WP 无法说明它阻塞哪一个近期真实用户场景。
+- 第一条真实聊天继续被后移，或 CAP-004 未达到 `architecture-validated` 就开始堆叠通用平台。
+- ADR 的方向性内容被误当成当前必须完整实现的内容。
+- 一个当前消费者的窄需求被升级为面向 Tools、MCP、Memory、导入或未来 Agent 的统一框架。
+
+触发后必须按顺序：
+
+1. 说明当前缺失的真实消费者和被后移的用户场景。
+2. 判断能否先实现更窄、仍满足进程/协议/数据安全的垂直切片。
+3. 将非必要泛化后移到出现对应真实消费者的所属 WP。
+4. 更新 Work Package 总表、依赖、退出条件、ADR 状态门和产品能力映射。
+5. 经项目负责人批准后才继续生产实现。
+
+审查不得删除或放宽 major/minor 协商、required capability、generation credential、stderr 持续排水/脱敏、framing/EOF/deadline/stdout 污染 transport fatal、完整进程树清理、应用锁和数据兼容门禁；也不得用同步阻塞聊天通道换取更短路径。
+
+WP-3V-01 是这项规则的第一次强制收口：CAP-004 未达到 `architecture-validated` 前，不得激活 WP-4-01 或任何完整 diagnostics、Runtime Repair、通用资源/Operation 平台 WP。若验证发现前置生产缺陷，WP-3V-01 退回 `planned`，只允许一个责任 WP 重新进入 `stabilizing`；不得同时修多个 WP 或在验证 WP 内顺手扩张生产范围。
 
 ## 执行原则摘要
 

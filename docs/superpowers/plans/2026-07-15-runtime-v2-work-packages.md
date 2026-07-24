@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：Phase 1P accepted（CI platform foundation）；当前启动点为 WP-1C-03（planned）
+> 执行状态唯一真相源：本文第 2 节；当前启动点按总表中第一个依赖已满足的 `planned` 项确定
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -8,7 +8,7 @@
 
 本文把 Runtime v2 Phase 0–7 拆成可独立验证、稳定化和回退的 Work Package。主计划继续描述产品目标、架构边界和阶段结果；本文是 Work Package 顺序、状态和范围的执行真相源；产品发布能力范围以 `docs/runtime-v2/product-capability-parity.md` 为准；技术选择及其状态仍以 ADR 为准。
 
-Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `active` 前补齐实际允许目录、验收环境、故障矩阵和回退命令，不得仅凭总表提前编码。
+Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等对应真实消费者出现后，才由所属 WP 验证和冻结。每个 WP 仍须在进入 `active` 前补齐实际允许目录、验收环境、故障矩阵和回退命令，不得仅凭总表提前编码。
 
 ## 1. 执行规则
 
@@ -18,10 +18,12 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 - Work Package 从 `planned` 进入 `active` 前，必须补充实际允许目录、验收环境和回退命令。
 - 每个 Work Package 完成生产实现后必须进入 `stabilizing`，清零 P0、P1 和退出条件相关缺陷后才能标记 `accepted`。
 - 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
-- Work Package 状态只在本文登记，避免在主计划、提交正文和多个清单中维护互相冲突的状态。
+- Work Package 当前状态只在本文第 2 节登记。独立规范、主计划、ADR、PR 描述和提交正文只能链接本表；可以保存带日期的历史激活/验收证据，但不得声明另一个“当前状态”或“当前启动点”。
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
 - WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
-- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；该前置现已满足，但 WP-1C-03 仍须独立激活，不得用已有 Windows 证据绕过三平台持续门禁。
+- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
+- 基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链。真实 Assistant 是 IPC、Snapshot、取消、恢复和状态边界的首个真实消费者与架构验证者。
+- 第二个真实消费者出现前，不冻结不必要的通用 Operation、资源、业务优先级、Snapshot component 或未来消费者抽象；方向性 ADR 内容不自动成为当前实现门禁。
 
 每个 Work Package 的激活记录至少包含：
 
@@ -68,27 +70,22 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-01 | 跨平台 target、接口与错误分类冻结 | WP-1C-02 | accepted |
 | WP-1P-02 | 三平台 RuntimeLocator 与 bundled Python 布局 | WP-1P-01 | accepted |
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
-| WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
-| WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted（CI platform foundation） |
-| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted（CI platform foundation） |
+| WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted |
+| WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted |
+| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
-| WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
-| WP-1D-02 | diagnostics 与最小 Runtime Repair 页面 | WP-1D-01 | planned |
-| WP-1D-03 | 手动重试和恢复路径端到端验收 | WP-1D-02 | planned |
-| WP-2-01 | 并发 request/response/event Router | WP-1D-03 | planned |
-| WP-2-02 | 控制面优先级与阻塞任务隔离 | WP-2-01 | planned |
-| WP-2-03 | Operation、deadline 和取消语义 | WP-2-02 | planned |
-| WP-2-04 | WebView 到 Rust 的受控 Gateway | WP-2-03 | planned |
-| WP-2-05 | Snapshot revision、generation 和资源描述符 | WP-2-04 | planned |
-| WP-2-06 | 背压、协议故障矩阵与基础 Envelope 冻结 | WP-2-05 | planned |
-| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-2-06 | planned |
+| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-1C-04 | planned |
+| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
+| WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
+| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-2-02 | planned |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
-| WP-4-01 | Memory 能力等价 | WP-3-06 | planned |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
+| WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -113,6 +110,28 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-7-04 | 三平台打包、签名、更新与干净安装 | WP-7-03 | planned |
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
+
+当前启动点是 `WP-1C-04`。这是总表中第一个依赖已满足的 `planned` 项；不得同时激活后续 WP。
+
+WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
+
+### 2.1 旧顺序到新顺序迁移表
+
+| 旧 WP | 新归属 | 调整 |
+|---|---|---|
+| WP-1C-03 | WP-1C-03 | 保持原位且边界不变：协议协商、credential、stderr 排水和 transport fatal；不接入业务 |
+| WP-1C-04 | WP-1C-04 | 保持原位并收窄为三平台 bundled Python 与真实 Core lifecycle；不扩大协议抽象 |
+| WP-1D-01 | WP-1D-01 | 收窄为 startup/initializing/ready/failed/Core crashed、diagnostics 文本、retry 和 exit |
+| WP-1D-02 | WP-1D-01 的必要文本；其余移至 WP-5-06 | 基础聊天前不建设 Runtime Repair 页面、通用日志浏览或自动修复 |
+| WP-1D-03 | WP-1D-01 的最小安全 retry；其余移至 WP-5-06 | 仅保留同一 Supervisor 路径的清理、重试与退出门 |
+| WP-2-01 | WP-2-01 | 收窄为独立 reader/writer、pending map、交错 event/response、有界队列和 generation 失效 |
+| WP-2-02 | WP-2-01 的必要 control 隔离；其余按消费者移至 WP-4-01/02/03/08 | 不先建三级优先级或通用 worker process 框架 |
+| WP-2-03 | WP-2-02 的聊天唯一终态/取消；通用 Operation 移至 WP-4-02 及后续真实消费者 | 先验证 `chat.send`/`chat.cancel`，不冻结未来任务平台 |
+| WP-2-04 | WP-2-02 | Gateway 只为固定聊天 allowlist 建立，后续 command 权限由所属功能 WP 扩展 |
+| WP-2-05 | WP-2-02 的最小聊天 Snapshot；资源 token 移至 WP-4-06，完整 component model 移至对应消费者 | 截图、音频、导入和所有未来 component 不阻塞聊天 |
+| WP-2-06 | WP-2-01/02 的有界队列、terminal 不丢和安全断开；完整 progress/多等级背压移至 WP-4-08 或 WP-6-05 | Envelope 只冻结真实聊天已证明需要的字段 |
+| WP-3-01 至 WP-3-06 | 编号保留，前置改为最小 IPC 链 | 提前成为真实消费者；不再等待完整 Phase 1D/2 |
+| 无 | WP-3V-01 | 新增组合架构验证门；通过后 CAP-004 才可标记 `architecture-validated` |
 
 ## 3. Phase 0：冻结与基线
 
@@ -1536,7 +1555,7 @@ hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> loc
 退出、隔离临时目录删除和 `data/`/`runtime/` 内容清单前后相同。ADR-0004 已更新为
 `Technically Validated for CI platform foundation`，不等于完整产品 Accepted。
 
-独立回退：回退组合门禁和 CI 接线，保留每个平台已独立验证的 backend；WP-1C-03 继续保持 planned。
+独立回退：回退组合门禁和 CI 接线，保留每个平台已独立验证的 backend；后续 WP 的当前状态只见第 2 节总表。
 
 ## 8. Phase 1C 续：协议与 bundled Runtime 冻结
 
@@ -1581,246 +1600,127 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 ### WP-1C-04：bundled Python 端到端与 lifecycle 接口冻结
 
-主要结果：使用目标 bundled Python 完成真实进程树、握手、initialize、Snapshot 和 shutdown，并冻结最小 lifecycle 接口。
+主要结果：在 Windows x64、macOS arm64、Linux x64 使用目标 bundled Python 启动真实 Core Host，完成真实进程树、hello、initialize、readiness、Snapshot、health 和 shutdown，并冻结仅供 lifecycle 使用的最小接口。
 
 强制前置：WP-1C-03 accepted；必须通过 WP-1P-02 的三平台 `RuntimeLocator` 和 WP-1P-04 的进程树 backend，不得恢复硬编码 `runtime/python.exe`。
 
 允许能力：
 
 - bundled Python 定位、环境构造和 release 资源路径。
-- Phase 1C 全链端到端测试和协议 golden fixtures。
+- 真实 Core Host lifecycle、Core crash、完整树回收、锁重获和 generation 资源清理。
+- Phase 1C lifecycle 端到端测试和协议 golden fixtures。
 - lifecycle 接口文档与变更控制记录。
 
 明确禁止：
 
 - 不接入聊天和 Assistant 领域服务。
 - 不为未来 Named Pipe、Unix Domain Socket 或代码生成平台提前实现抽象。
+- 不扩展协议为通用业务平台，不建设 Router、Operation、业务优先级或资源系统。
 
 退出证据：
 
 - 开发和 release 环境均使用目标 Python 完成全链冒烟。
 - lifecycle fixture 可由 Rust 和 Python 共同读取。
+- 正常、Core crash 和强制回收后，完整进程树、pipe/thread 和 generation 资源残留为零，应用锁可立即重获。
+- `data/`、角色、配置和历史没有非预期变化。
 - ADR-0002 完成 Phase 1C 的 `Technically Validated` 前置证据。
 - 后续破坏性 lifecycle 修改必须暂停功能开发并更新 ADR/fixtures。
 
 独立回退：恢复到 WP-1P 已验证的开发 RuntimeLocator/Fake Core 路径，不影响 legacy Qt；不得回退为 Windows-only 硬编码路径。
 
-## 9. Phase 1D：恢复、诊断和修复入口
+## 9. Phase 1D：最小开发与故障可见性
 
-### WP-1D-01：Shell 启动、初始化和失败状态路由
+### WP-1D-01：最小生命周期可见性与安全重试
 
-主要结果：Shell 使用 SupervisorState、CoreReadiness 和 ShellRoute 的组合展示真实启动状态。
+主要结果：在第一条真实聊天前，开发者和用户能理解 lifecycle 失败并安全 retry 或 exit；本 WP 不建设完整 Runtime Repair。
 
 允许能力：
 
-- startup、pet 占位、diagnostics 和 fatal_error 路由。
-- spawning、transport ready、initializing、setup required、degraded、failed 和 restarting 提示。
+- startup、initializing、ready、failed、Core crashed 和 retry 状态。
+- 受控 diagnostics 文本、必要版本/日志位置、显式 exit。
+- retry 复用唯一 Supervisor 意图：先清理旧树和 pending lifecycle waiter，再创建新 generation。
 - 状态组合和旧 generation UI 事件过滤。
 
 明确禁止：
 
 - 不实现自动 Runtime 修复。
-- 不接入聊天、设置或真实角色业务。
+- 不实现在线下载/替换 Runtime、通用日志浏览平台或覆盖所有未来故障的完整诊断 UI。
+- 不接入聊天、设置或真实角色业务；不建立第二套重启路径。
 
 退出证据：
 
-- Core 缺失、启动失败、初始化卡死和崩溃均不会产生空白窗口。
+- Core 缺失、启动失败、初始化卡死和崩溃均不会产生空白窗口，且错误不泄露 credential、API Key、完整 Prompt 或私密配置。
+- 连续 retry 合并为一个有效意图；旧 generation 清理完成前不创建新 generation。
 - UI 路由不反向成为 Supervisor 或 CoreReadiness 真相源。
 
-独立回退：回退状态页面，保留底层 Supervisor/Core Host。
+独立回退：回退最小状态/重试 UI，保留底层 Supervisor、Core Host 和 fatal exit；完整 diagnostics/Runtime Repair 留到 WP-5-06 或后续经批准 WP。
 
-### WP-1D-02：diagnostics 与最小 Runtime Repair 页面
+## 10. Phase 2：最小可靠聊天 IPC 基础链
 
-主要结果：用户可以理解 Runtime 缺失、损坏、协议不兼容和初始化失败，并执行安全操作。
+### WP-2-01：最小并发 request/response/event Router
 
-允许能力：
-
-- 错误原因、Desktop/Core/Protocol 版本、运行目录和日志位置。
-- 重试、打开诊断、打开安装说明或文件位置、退出。
-- 受控显示必要绝对路径。
-
-明确禁止：
-
-- 不自动下载、替换、迁移或回滚 Python Runtime。
-- 不向普通 WebView 暴露任意文件读取或 Shell 命令。
-
-退出证据：
-
-- 每种不可重试错误有明确说明和安全操作。
-- 诊断页面不泄露 credential、API Key、完整 Prompt 或私密配置。
-
-独立回退：回退 Runtime Repair 页面和动作，保留基础 diagnostics 状态。
-
-### WP-1D-03：手动重试和恢复路径端到端验收
-
-主要结果：用户触发的 retry 通过同一 Supervisor 状态机完成旧树清理、新 generation 创建和页面恢复。
+主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
 
 允许能力：
 
-- diagnostics/restarting 页面上的手动 retry。
-- 连续点击合并、停止期间 retry 和失败预算重置规则。
-- Shell、Supervisor、Core Host 的恢复端到端测试。
-
-明确禁止：
-
-- 不引入第二套重启路径。
-- 不接入真实 Assistant 业务。
-
-退出证据：
-
-- 旧 generation 未清理完成前不会创建新 generation。
-- 连续 retry 只产生一个有效意图。
-- 恢复成功后页面状态与当前 generation 一致。
-
-独立回退：移除 UI retry 入口，保留自动恢复和诊断能力。
-
-## 10. Phase 2：并发 IPC 与只读快照
-
-### WP-2-01：并发 request/response/event Router
-
-主要结果：支持多个并发 in-flight request、乱序 response 和 event/response 交错，同时保持有界队列。
-
-允许能力：
-
-- Rust pending request router、独立 reader/writer。
-- Python bounded task registry 和单 writer queue。
-- request ID、generation 校验和窗口关闭后的 waiter 清理。
+- Rust 独立 stdin writer、独立 stdout reader 和 pending request map。
+- Python 独立 reader、dispatcher 和有界单 writer queue；领域任务不能直接写 stdout。
+- 多个 in-flight request、乱序 response、event/response 交错和 request identity 校验。
+- 新 generation 建立时旧 request、response、event 和 pending waiter 立即失效。
+- control 与聊天形状的阻塞 fixture 隔离，health 和 shutdown 不等待聊天任务。
+- 队列有界，并为 response/terminal event 保留不可被非终态消息挤出的容量。
 
 明确禁止：
 
 - 不接入真实 Assistant、设置、TTS、Tools 或截图。
-- 不让业务任务直接写 stdout。
+- 不实现完整 control/interactive/background 三级优先级、通用 worker process 或任务图。
+- 不实现通用 Operation、Gateway、resource token 或完整 progress 背压平台。
 
 退出证据：
 
 - 并发响应乱序和事件交错不串请求。
 - reader、writer 和 pending registry 均有界且可清理。
 - 旧 generation response 不能完成当前 waiter。
+- 阻塞 sleep/I/O 聊天 fixture 期间 health/shutdown 可响应；非协作任务仍由进程树 deadline/强杀兜底。
+- terminal response/event 在队列压力和关闭竞态中不丢失。
 
 独立回退：恢复到最小 lifecycle transport，不影响 Supervisor。
 
-### WP-2-02：控制面优先级与阻塞任务隔离
+### WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
 
-主要结果：同步 sleep、阻塞文件 I/O 和 CPU 密集任务运行时，health、cancel 和 shutdown 仍可处理。
-
-允许能力：
-
-- control dispatcher 与 domain execution plane 分离。
-- bounded async task、thread executor 和必要的测试 worker process。
-- control/interactive/background 调度语义。
-
-明确禁止：
-
-- 不为假设中的插件平台建设通用 worker 编排器。
-- 不在 transport/control 线程执行领域代码。
-
-退出证据：
-
-- sleep、阻塞 I/O、CPU 循环和非协作任务故障测试通过。
-- thread 无法安全终止的任务拥有明确的 worker process 或 Core 强杀边界。
-- shutdown/cancel 不排在普通长任务之后。
-
-独立回退：回退执行平面实现，保留并发 transport Router。
-
-### WP-2-03：Operation、deadline 和取消语义
-
-主要结果：长任务通过 generation-scoped Operation 表达，并定义 deadline、取消竞态和唯一终态。
+主要结果：只为第一条聊天垂直链冻结可授权、可取消、可重新水合的最小外部边界。
 
 允许能力：
 
-- operation accepted、started、progress、completed、failed、cancelled。
-- request deadline、operation cancel 和不可取消原因。
-- 完成与取消同时发生、重复取消和晚到事件的幂等规则。
+- 固定 Gateway allowlist：`chat.send`、`chat.cancel`；未知 command 默认拒绝。
+- 固定聊天事件：`chat.started`、`chat.completed`、`chat.failed`、`chat.cancelled`。
+- 每次聊天由 Rust 分配唯一 request/operation identity；Rust 注入 generation、credential、deadline 和协议字段。
+- WebView 只能持有 Rust 返回的取消 handle，不能伪造 generation、request ID、deadline、priority 或 credential。
+- 聊天每次最多一个终态；完成/失败/取消竞态、重复取消和晚到事件幂等。
+- 窗口关闭、Core restart 和 generation 切换清理 pending waiter；取消不阻塞 health/shutdown。
+- 最小 Snapshot 只包含 generation、revision、readiness、当前角色公开摘要、当前聊天交互摘要和 UI 重新水合所需最小状态。
 
 明确禁止：
 
-- 不实现真实聊天 token streaming。
-- 不以 Core 全局 busy 状态代替独立 Operation 生命周期。
+- 不建设面向 Tools、MCP、Memory、导入或未来任务的完整 Operation 平台。
+- 不冻结通用 priority 注册表、所有未来 component 类型或通用 Snapshot component model。
+- 不实现截图、音频、角色导入资源、通用 resource token、schema 代码生成或完整多等级背压。
+- 不接入真实 Assistant 领域代码；本 WP 使用窄 Fake Core/fixture 验证边界。
 
 退出证据：
 
-- 每个 Operation 最多一个可见终态。
-- Core 重启、窗口关闭和 deadline 到期会清理 registry/waiter。
-- progress 丢弃或合并不影响终态交付。
+- send/cancel/complete、send/cancel/fail、重复取消和晚到旧 generation 事件均只有一个可见终态。
+- 未知 command、错误窗口、伪造字段和超限 payload 默认拒绝，且安全失败不妨碍诊断和退出。
+- 最小 Snapshot revision/generation 失配触发完整重取；Rust 不推导或修改 Python 业务对象。
+- 队列压力下 chat 终态、cancel response、health 和 shutdown 不丢失。
 
-独立回退：回退 Operation API，保留短请求并发 Router。
-
-### WP-2-04：WebView 到 Rust 的受控 Gateway
-
-主要结果：WebView 只能提交注册过的业务意图，不能伪造 transport 和授权字段。
-
-允许能力：
-
-- command 注册表、payload 校验、窗口权限和 deadline/priority 上限。
-- Rust 注入 request ID、generation、协议版本和 credential。
-- 前端封装 client、Tauri capability、CSP 和远程导航限制。
-
-明确禁止：
-
-- 不提供无限制 `host_call(method, params)`。
-- 不向 WebView 暴露任意文件系统、Shell 或 Python 内部方法。
-
-退出证据：
-
-- 未知 command、错误窗口、伪造字段和超限 payload 默认拒绝。
-- 页面导航或注入不能扩大当前窗口权限。
-- Gateway 安全失败不影响 Shell 退出和诊断。
-
-独立回退：禁用业务 Gateway，保留只读 lifecycle 状态展示。
-
-### WP-2-05：Snapshot revision、generation 和资源描述符
-
-主要结果：建立只读 Snapshot 缓存、revision 重取和最小 generation-scoped 受控资源描述符。
-
-允许能力：
-
-- 完整 Snapshot 请求、revision 校验和新 generation 清空。
-- 组件状态、公开角色摘要和 active interaction 摘要。
-- 使用测试资源验证 opaque token、TTL、大小、窗口/command 范围和读取次数。
-
-明确禁止：
-
-- Rust 不推导或修改 Python 业务对象。
-- Snapshot 不包含密钥、完整 Prompt、私密配置和任意裸路径。
-- 不在本 WP 接入真实截图、音频或角色导入。
-
-退出证据：
-
-- revision 不连续时请求完整 Snapshot，不在 Rust 猜测补丁。
-- 旧 generation Snapshot 和 token 立即失效。
-- token 不能扩展为任意文件访问。
-
-独立回退：关闭测试资源能力，保留基础 Snapshot。
-
-### WP-2-06：背压、协议故障矩阵与基础 Envelope 冻结
-
-主要结果：完成 ADR-0002 的背压、损坏协议、慢 writer 和 golden fixtures 门禁，并冻结基础 Envelope。
-
-允许能力：
-
-- progress 合并、预留 control/response/terminal 配额和过载断开策略。
-- 大量 progress、慢 writer、超大帧、stdout 污染和连接关闭测试。
-- Rust/Python golden fixtures 和基础 Envelope 变更控制。
-
-明确禁止：
-
-- 不因测试方便扩大 frame 上限或改用裸文件路径。
-- 不提前接入 Phase 3 业务。
-
-退出证据：
-
-- shutdown/cancel response 和终态事件不会被 progress 挤出。
-- 无法恢复的过载只关闭当前 generation，不拖垮 Shell。
-- ADR-0002 可在实现审查后更新为 `Accepted`。
-- 后续破坏性 Envelope 修改必须暂停功能开发并更新 ADR/fixtures。
-
-独立回退：回退背压优化参数，保留已冻结 Envelope 和安全断开边界。
+独立回退：禁用聊天 Gateway/取消/Snapshot 扩展，保留 WP-2-01 Router 和只读 lifecycle 状态。
 
 ## 11. Phase 3：基础聊天垂直链
 
 ### WP-3-01：无 Qt Assistant Adapter 与真实 readiness
 
-主要结果：`app.core_host` 通过 Adapter/Facade 建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。
+主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。
 
 允许能力：
 
@@ -1832,24 +1732,26 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 明确禁止：
 
 - 不重写 AgentRuntime、Memory、插件、MCP、TTS 或配置领域。
-- 不修改现有业务语义；确需修改必须拆出独立批准范围。
+- 不创建新的巨型 `application.py`，不重新聚合全部 Assistant 逻辑。
+- 既有领域代码只在直接依赖 Qt、不能在受监管子进程运行、阻塞控制/取消/关闭或初始化/释放不确定时才可修改。
+- 每个领域修改必须说明 Adapter/Facade 为何不足、业务语义是否改变、legacy Qt 影响和等价性测试；语义变化须独立批准。
 - 不接入聊天 UI。
 
 退出证据：
 
 - 无角色、无有效 Provider 和首次配置未完成进入 setup_required，不触发重启。
-- 可选组件失败进入 degraded，不阻止基础 Session 建立。
+- 尚未进入所属能力 WP 的可选组件不阻止基础 Session，也不得为填充通用 Snapshot 而提前初始化；本 WP 实际接入的可选读取失败才按既有语义进入 degraded。
 - Core Host 导入和运行路径不加载 PySide6 或 Qt UI。
 
 独立回退：回退 Assistant Adapter，Core Host 退回假组件 readiness。
 
 ### WP-3-02：无 UI 的真实聊天 Core 垂直链
 
-主要结果：通过冻结 IPC 完成真实 `chat.send`、完成、错误和取消链，不依赖桌宠 UI。
+主要结果：让真实 Sakura Assistant 成为 Router、取消、Snapshot 和 generation 边界的首个真实消费者；通过 Rust acceptance harness 完成无 UI 聊天链。
 
 允许能力：
 
-- `chat.send`、`chat.started`、必要 progress、`chat.completed`、`chat.failed`、`chat.cancelled`。
+- `chat.send`、`chat.cancel`、`chat.started`、`chat.completed`、`chat.failed`、`chat.cancelled`。
 - 真实 Chat Pipeline、基础历史写入和可恢复 Provider 错误。
 - 自动测试使用确定性 fake/local Provider，人工验收使用已有开发配置。
 
@@ -1863,6 +1765,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 - 正常回复、网络错误、格式错误、取消和 Core shutdown 均有唯一终态。
 - Provider 网络不可达只影响请求，不改变 Core readiness 为启动失败。
 - History 失败时仍可聊天并返回 degraded/不保存提示所需状态。
+- 强制终止或 shutdown 不阻塞 health/control，且完整 Core 进程树和 IPC 资源归零。
 
 独立回退：关闭真实 chat command，保留 Assistant readiness 和 Core Host。
 
@@ -1874,6 +1777,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 - 立绘加载和简单淡入淡出/位移。
 - composer 打开/关闭、发送、取消、错误和重连状态。
+- WP-1D-01 的 startup/initializing/ready/failed/Core crashed/retry/exit 表现。
 - 完整回复后的 WebView 打字机和立即跳过动画。
 - 长文本边界、主题、DPI、IME 和固定锚点视觉验收。
 
@@ -1898,7 +1802,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 
 - 真实角色立绘、初始消息、输入、发送、思考、完成、错误和取消。
 - 根据回复段或表情状态切换立绘。
-- 受控 Gateway、Chat Operation 和 UI 状态映射。
+- 最小受控 Gateway、聊天 identity/取消和 UI 状态映射。
 
 明确禁止：
 
@@ -1931,7 +1835,7 @@ stderr 排水/脱敏、故障 fixtures、完整资源清理和锁立即重获。
 退出证据：
 
 - 强杀 Core 不关闭或重建桌宠窗口。
-- 旧请求、Operation、Snapshot、token 和事件全部失效。
+- 旧请求、聊天 handle、Snapshot 和事件全部失效。
 - UI 明确区分已完成内容、已中断请求和仍保留的本地草稿。
 - 重复崩溃受 restart budget 控制且无进程树残留。
 
@@ -1964,26 +1868,79 @@ legacy Qt 创建/修改数据并退出
 - 两个入口同时启动时只有一个成功持锁。
 - v2 专属配置不改变 Qt 行为。
 - 不支持的未来 schema 进入 diagnostics/只读安全状态。
-- ADR-0003 可以更新为 `Accepted`。
+- 本 WP 产生 ADR-0003 的真实双向证据；须经 WP-3V-01 组合纵向复验后才能更新为 `Accepted`。
 
 独立回退：停止 v2 共享数据写入并退回只读使用，不删除 legacy Qt 数据或入口。
 
-## 12. Phase 4–7 强制 Work Package
+## 12. Phase 3V：Assistant 架构验证硬门禁
 
-以下编号、顺序、主要结果和等价范围已经冻结，但仍是 `planned`。每个 WP 进入 `active` 前必须补充逐文件允许目录、平台环境、协议字段、故障矩阵、人工步骤和独立回退；不得把表中相邻行合并成一次“大迁移”。每行对应的详细现有能力与发布状态见产品功能等价台账。
+### WP-3V-01：Runtime v2 Assistant Architecture Validation Slice
+
+主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
+
+强制前置：WP-3-01 至 WP-3-06 全部 accepted；WP-2-01/02 的最小 Router、聊天边界和 Snapshot 已由这些真实消费者使用。
+
+必须执行的单一纵向场景：
+
+```text
+Tauri/Rust 启动 bundled Python Core
+-> Core 加载无 Qt Assistant Adapter
+-> 读取当前角色和已有开发配置
+-> 构造基础 Provider
+-> 发送一条真实聊天请求
+-> 获得真实完整回复
+-> 发送并完成一次取消请求
+-> 使用现有兼容格式追加聊天历史
+-> 强制终止 Core
+-> 启动新 generation
+-> 恢复角色、历史和最小 UI 状态
+-> 正常退出
+-> 完整进程树和 IPC 资源残留为 0
+-> 除明确允许的兼容历史追加外，非预期用户数据变化为 0
+-> legacy Qt 重新获取同一应用锁并读取允许写入的数据
+```
+
+允许范围：
+
+- Rust acceptance harness、最小调试 WebView 或当前桌宠 UI；不要求完整视觉表现。
+- 自动化在三平台使用真实 Adapter/Chat Pipeline 和确定性 local Provider；另以已有开发配置执行至少一次真实 Provider 完整回复，不把静态 fixture 冒充真实聊天。
+- lifecycle/IPC/generation/数据 manifest、历史兼容 oracle、进程/pipe/thread/handle/fd 残留和锁重获证据。
+- 验证记录、可重复脚本和能力台账更新。
+
+明确禁止：
+
+- 不在本 WP 建设通用 Agent、Capability Broker、任务图、通用 Operation、完整资源平台、自动 Runtime Repair 或新业务能力。
+- 不用 Fake Core、直接 Python 单元调用或静态 schema 测试替代上述跨边界场景。
+- 不把 Rust/WebView 变成角色、会话、历史或聊天状态的第二真相源。
+- 不为使验收通过而执行破坏性 schema 迁移、放宽 credential/generation 校验或绕过进程树清理。
+
+退出证据：
+
+- Windows x64、macOS arm64、Linux x64 使用同一公共 transport/generation 语义完成自动纵向场景；对应真实 WebView 平台证据按 WP-3-04/05 保留，Linux 区分 X11/Wayland 责任。
+- 真实 Provider 完整回复、取消唯一终态、Core 强杀、新 generation 水合、正常退出和 legacy Qt 回读全部通过。
+- health/shutdown 在聊天与取消期间可响应；旧 generation request/response/event/Snapshot 不影响新 UI。
+- 完整进程树、pending waiter、reader/writer、pipe/thread/handle/fd 和临时资源残留为零；共享锁可立即重获。
+- 除测试预先声明的兼容历史追加外，`data/`/角色/配置 manifest 没有非预期变化；credential、API Key、完整 Prompt 和私密配置不进入日志、Snapshot 或证据工件。
+- CAP-004 记录完整证据并标记 `architecture-validated`；这不等于 `parity-accepted`，也不替代 Phase 7。
+
+稳定化与回退：本 WP 只接受验证设施和证据修正。发现生产缺陷时，停止 WP-3V-01 并把它退回 `planned`，只将拥有该缺陷的一个前置 WP 重新置为 `stabilizing`；修复并重新 accepted 后再激活本 WP。独立回退验证 harness/调试 UI/台账证据即可，不回退已独立 accepted 的生产 WP，不删除或改写用户数据。
+
+## 13. Phase 4–7 强制 Work Package
+
+以下编号和发布能力映射保留为暂定执行序列。WP-3V-01 通过后，应按下一个真实产品消费者重新确认依赖；不得仅因 ADR 已记录方向就提前完整实现通用抽象。每个 WP 进入 `active` 前必须补充逐文件允许目录、平台环境、真实消费者、协议字段、故障矩阵、人工步骤和独立回退；不得把相邻行合并成一次“大迁移”。
 
 ### Phase 4：Assistant 辅助能力等价
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
 |---|---|---|---|
-| WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级 | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；三平台数据兼容 |
-| WP-4-02 | CAP-009/010 | 内置 Tools、Operation、Action ID 确认 | WebView 不能伪造执行参数；取消/超时唯一终态；副作用有确认证据 |
+| WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级；只扩展其真实需要的任务边界 | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；三平台数据兼容 |
+| WP-4-02 | CAP-009/010 | 内置 Tools、Action ID 确认，并在聊天与 Tools 两个真实消费者证明确有共性后提取 Operation | WebView 不能伪造执行参数；取消/超时唯一终态；副作用有确认证据 |
 | WP-4-03 | CAP-011 | MCP 配置、启动、工具调用与恢复 | MCP 进程属于当前 generation；崩溃/超时/退出零残留；凭据不泄漏 |
 | WP-4-04 | CAP-012 | 现有插件 context/event/tool 和私有数据等价 | 插件加载/卸载、错误隔离、反向清理和数据兼容通过 |
 | WP-4-05 | CAP-013/014 | TTS、播放、设备错误与 audio ADR | 三平台真实音频设备；服务/模型子进程回收；播放失败不拖垮聊天 |
-| WP-4-06 | CAP-015 | 手动截图、资源 token 与平台权限 | 多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
+| WP-4-06 | CAP-015 | 手动截图及其首个 generation resource token 消费者与平台权限 | 多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
 | WP-4-07 | CAP-016/017 | 自动观察、主动互动、提醒、任务调度 | 时区/休眠恢复、重复事件、取消、数据持久化和截图权限通过 |
-| WP-4-08 | CAP-008–017 | Phase 4 组合稳定化 | 长任务不阻塞 control；Memory/MCP/plugin/TTS/screenshot 全资源零残留 |
+| WP-4-08 | CAP-008–017 | Phase 4 组合稳定化；只冻结已经有多个真实消费者证明的调度/背压共性 | 长任务不阻塞 control；Memory/MCP/plugin/TTS/screenshot 全资源零残留 |
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
@@ -1994,7 +1951,7 @@ legacy Qt 创建/修改数据并退出
 | WP-5-03 | CAP-006/007/021 | 角色切换、Session、历史分页与受控重启 | 旧 generation/资源失效；角色、历史、Memory/TTS scope 不串线 |
 | WP-5-04 | CAP-022 | 托盘、置顶、快捷键、显示隐藏、开机启动 | Windows/macOS/Linux 原生行为、权限和重复注册/卸载通过 |
 | WP-5-05 | CAP-023/024 | 浏览器自动化与移动/本地桥接 | 浏览器树受控；端口/防火墙/鉴权安全；插件不拥有第二生命周期根 |
-| WP-5-06 | CAP-025 | 扩展诊断、Repair、安全重试、更新前置检查 | 三平台路径/日志/权限诊断；无自动下载；失败后仍可退出/回退 |
+| WP-5-06 | CAP-025 | 扩展诊断、Runtime Repair、安全重试和更新前置检查 | 三平台路径/日志/权限诊断；任何自动下载/替换须单独批准且可回退；失败后仍可退出 |
 
 ### Phase 6：角色 Studio 等价
 
@@ -2022,12 +1979,17 @@ Apple Silicon 覆盖透明窗口、命中、拖动、焦点、中日文 IME、Re
 覆盖透明窗口、命中、拖动、焦点、IME、多屏；Linux Wayland 覆盖透明、命中、拖动、焦点、
 IME、窗口身份与 compositor 行为。任一对应平台未完成这些设备证据时，不得正式发布。
 
-## 13. 当前启动点
+## 14. 已记录但不阻塞基础聊天的未来设计
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-06` 已登记 accepted；Phase 1P 的
-`CI platform foundation complete`。WP-1P-06 最新实现 HEAD 为 `b88e744`，三平台 platform
-foundation runs 为 `30068988807` / `30068990391`，Unit/UI run 为 `30068990399`；P0/P1 为 0。
+下列方向可以保留在 ADR、backlog 或所属能力 WP 中，但在 WP-3V-01 前不是硬门禁：
 
-当前启动点更新为 `WP-1C-03`，状态仍为 `planned`，必须在后续独立提交中按治理流程激活；本次
-Phase 1P accepted 不顺手开始协议协商、stderr 排水或任何产品能力。macOS、X11、Wayland 的
-真实窗口、IME、多屏和 compositor 体验继续由 WP-7-02 作为正式发布前硬门禁。
+- 完整 control/interactive/background 三级业务优先级和通用 worker process 框架。
+- 面向 Tools、MCP、导入、Memory 等全部任务的通用 Operation 与 progress 模型。
+- 截图、音频、角色导入共用的 resource token 和完整资源权限平台注册表。
+- 完整 Snapshot component model、所有未来 component 类型和通用 patch 模型。
+- 完整 progress 合并、多等级背压和跨业务公平调度。
+- schema 代码生成平台、Named Pipe/Unix Domain Socket 替换和未来 transport 抽象。
+- 完整 Runtime Repair 页面、自动修复、在线下载/替换 Runtime 和通用日志浏览平台。
+- 未来 Agent Capability Broker、任务图、多 Agent Runtime 和自治任务平台。
+
+统一约束：设计方向已记录，不阻塞基础聊天架构验证；在出现对应真实消费者时由所属 Work Package 验证并冻结。

@@ -1,6 +1,6 @@
 # ADR-0003：Runtime v2 用户数据兼容与 legacy Qt 回退
 
-> 状态：Technically Validated（Windows shared lock）；POSIX backends 与跨平台兼容门禁待 Phase 1P/Phase 3 验证
+> 状态：Technically Validated（Windows/POSIX shared lock 与三平台 lifecycle 数据零变化）；Qt → Tauri → Qt 兼容门禁待 WP-3-06/WP-3V-01
 > 日期：2026-07-15
 > 适用范围：Runtime v2 与 legacy Qt 入口共享的角色、配置、历史、Memory、工具数据、插件数据和用户资源
 > Phase 0 基线：`docs/runtime-v2/baselines/WP-0-02-data-lock-baseline.md`
@@ -254,7 +254,7 @@ legacy Qt 获取共用 mutex
 - `docs/runtime-v2/baselines/wp_0_02_contract.py`
 - `docs/runtime-v2/baselines/run_wp_0_02_baseline.ps1`
 
-Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebView 和应用锁门禁。Phase 3 全部通过后，本 ADR 才可更新为 `Accepted`。
+Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebView 和应用锁门禁。WP-3-06 完成双向兼容且 WP-3V-01 组合复验通过后，本 ADR 才可更新为 `Accepted`。
 
 ## 结果与代价
 
@@ -287,4 +287,4 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 
 ## ADR 状态门禁
 
-本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过，且 WP-1P-03 的 macOS/Linux Rust/Python shared-lock backend 已在原生平台通过双向冲突、正常/强杀释放和安全属性测试。更新为 `Accepted` 前仍必须完成 WP-1P-06 的真实三平台应用生命周期/数据零变化总门、全部正式平台的 Qt → Tauri → Qt 真实兼容门禁和产品功能等价台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。
+本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过；WP-1P-03 的 macOS/Linux Rust/Python shared-lock backend 已在原生平台通过双向冲突、正常/强杀释放和安全属性测试；WP-1P-06 的三平台应用 lifecycle、树清理、锁重获和隔离数据零变化总门也已通过。更新为 `Accepted` 前仍必须由 WP-3-06/WP-3V-01 完成正式平台的 Qt → Tauri → Qt 真实兼容纵向链，并关闭产品能力台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。

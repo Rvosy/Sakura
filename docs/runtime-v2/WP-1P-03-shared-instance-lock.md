@@ -1,6 +1,6 @@
 # WP-1P-03：Windows/POSIX 共享应用锁 backends
 
-> 状态：Accepted
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-23
 > 前置：WP-1P-02 accepted，提交 `d7248da3`
 > 规范来源：ADR-0003、ADR-0004、`WP-1P-01-platform-contract.md`

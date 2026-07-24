@@ -1,6 +1,6 @@
 # Sakura Tauri + Python Core Runtime v2 计划
 
-> 状态：Phase 1P 与 WP-1C-03 accepted；下一启动点为 WP-1C-04（planned）
+> 执行阶段、Work Package 状态和当前启动点：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`
 > 工作分支：`refactor/tauri-runtime-v2`
 > 基线：`dev` / `4e8dc7f0a6afbc391149046febeb0c796dd641b8`
 > 目标：用 Tauri 替代 Qt 桌面运行时和 UI，复用现有 Python Assistant 能力，保持发布时全部现有用户能力，并从基础阶段持续支持 Windows、macOS 和 Linux。
@@ -25,7 +25,9 @@ WebView
   -> 桌宠表现、气泡、输入、设置和短期交互状态
 ```
 
-首轮迁移以“基础聊天垂直链真实可用”为中心。生命周期、IPC 和恢复机制只建设到足以支撑可靠产品的程度，不借迁移之机提前建设完整桌面平台。
+首轮迁移以“基础聊天垂直链真实可用”为中心。基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链；真实 Assistant 是 IPC、Snapshot、取消、恢复和状态边界的首个消费者与架构验证者，而不是这些系统全部泛化完成后的最终接入者。
+
+因此，WP-1C-04 后只允许先完成最小故障可见性、最小 Router 和最小聊天边界，再进入无 Qt Adapter 与真实聊天。第二个真实消费者出现前，不冻结不必要的通用 Operation、资源平台、业务优先级、完整 Snapshot component model 或未来消费者抽象。
 
 ## 2. Assistant / Agent 产品边界
 
@@ -109,7 +111,7 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 - WebView 只保存短期表现状态和未提交表单草稿。
 - Core 重启后旧 generation 的事件和快照立即失效。
 - Snapshot 和普通 UI 诊断数据不得包含 Credential、API Key、完整系统 Prompt、插件私密配置或可任意访问本地文件的裸路径。
-- 截图、音频和大文件只通过当前 generation 有效的受控资源 token 暴露给 WebView。
+- 截图、音频和大文件未来只通过当前 generation 有效的受控资源 token 暴露给 WebView；该方向不要求在基础聊天前建设通用资源平台。
 
 ### 3.5 IPC 不得阻塞生命周期
 
@@ -118,6 +120,7 @@ Tauri 必须能够启动、监控、优雅关闭和强制回收 Python Core 及�
 - 请求、响应、事件和错误必须有明确结构。
 - 大文件、截图和音频不直接塞进 JSON 消息。
 - WebView 只能提交受控 command 和业务 payload；request ID、generation、priority、deadline 和协议字段由 Rust 构造。
+- 第一条聊天链必须使用独立 reader/writer、pending map 和有界队列，不能为了赶进度恢复同步阻塞聊天通道。
 
 ### 3.6 用户数据兼容与 Qt 回退
 
@@ -174,6 +177,8 @@ app.core_host
 4. 无法实现确定性的初始化与释放。
 
 此外，任何领域模块修改都必须有独立测试证明修改前后业务语义等价。确需改变业务语义时，必须作为独立范围明确说明并获得项目负责人批准，不能借 Runtime 迁移顺手完成。
+
+每次领域修改还必须记录：为什么 Adapter/Facade 无法解决、业务语义是否改变、对 legacy Qt 的影响，以及哪些测试证明语义等价。
 
 禁止：
 
@@ -260,11 +265,11 @@ failed
 startup
 pet
 diagnostics
-runtime_repair
 fatal_error
+runtime_repair（WP-5-06 或后续批准范围）
 ```
 
-`runtime_repair` 在早期阶段仅表示诊断和修复入口页面，不承诺自动下载、替换或回滚 Python Runtime。
+基础聊天前只要求 `diagnostics` 提供脱敏原因、retry 和 exit。`runtime_repair` 是后续路由，不是第一条聊天的前置；任何自动下载、替换或回滚 Python Runtime 仍须独立批准和可回退门禁。
 
 ### 6.1 关键与可选组件
 
@@ -292,6 +297,8 @@ fatal_error
 - 插件。
 - TTS 合成。
 - Scheduler 和主动互动。
+
+第一条聊天架构验证只初始化角色、Session、Chat Pipeline 和基础 Provider。尚未进入所属能力 WP 的 Memory、Tools、MCP、插件、TTS 和 Scheduler 不得仅为填充通用 component/Snapshot 状态而提前接入；上述 degraded 规则在各能力成为真实消费者时生效。
 
 History 失败时允许聊天，但 UI 必须提示当前对话不会保存。
 
@@ -374,6 +381,8 @@ Phase 1–3 沿用 `dev` 的主题色、透明度、边框和阴影，不实现�
 
 Work Package 执行清单是 Phase 0–7 的顺序、状态和范围真相源；功能等价规范是发布能力范围真相源。当前项目采用个人开发模式：不为 Work Package 创建 PR，生产改动直接提交到 `refactor/tauri-runtime-v2`，通过单一目的、详细提交记录、退出门禁和稳定化检查控制范围。
 
+以下阶段条目描述目标范围，不维护当前完成状态；即使使用历史勾选或“退出条件”措辞，也必须以 Work Package 总表为当前状态依据。
+
 开发分支 dogfooding 与 legacy Qt 回退：
 
 - v2 分支默认入口只允许在 WP-1A-04 完成共享应用锁后切换到 Tauri；WP-1A-01 至 WP-1A-03 不改变当前默认入口。
@@ -433,7 +442,7 @@ Work Package 执行清单是 Phase 0–7 的顺序、状态和范围真相源；
 - [ ] 覆盖 initialize 期间 shutdown，且协议不兼容不会触发无限自动重启。
 - [ ] 使用 bundled Python 完成 hello、initialize、snapshot 和 shutdown 冒烟测试。
 
-WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initialize/readiness/Snapshot。现在暂停本 Phase，先执行 Phase 1P；WP-1C-03/04 不得提前开始。
+WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前启动点和后续状态只引用 Work Package 总表。WP-1C-04 不接入 Assistant、聊天、Router 或通用业务平台。
 
 退出条件：真实 Python Core 可以在不加载 Qt UI 和重型领域模块的情况下建立通信、上报状态并可靠关闭；WP-1C-04 还必须使用 WP-1P-02/04 冻结的三平台 Runtime 与进程树 backend 完成同语义端到端。
 
@@ -448,25 +457,27 @@ WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initia
 
 退出条件：WP-1P-01 至 WP-1P-06 全部 accepted；ADR-0004 至少更新为 `Technically Validated`；后续 Work Package 不再依赖 `.exe`、WinDLL、Win32 region 或 Windows Job 的公共语义。
 
-### Phase 1D：恢复、诊断和修复入口
+### Phase 1D：最小开发与故障可见性
 
-- [ ] Shell 展示启动、初始化、失败、降级和重启状态。
-- [ ] Runtime missing 页面显示错误原因、运行目录和日志位置。
-- [ ] 提供重试、打开诊断、打开安装说明/文件位置和退出。
-- [ ] 不在本阶段实现 Runtime 自动下载、在线替换、版本迁移或回滚。
+- [ ] Shell 展示 startup、initializing、ready、failed、Core crashed 和 retry。
+- [ ] 提供脱敏 diagnostics 文本、必要版本/日志位置、安全 retry 和 exit。
+- [ ] retry 必须复用 Supervisor 唯一路径，清理旧 generation 后再启动新 generation。
+- [ ] 不实现完整 Runtime Repair 页面、自动修复、在线下载/替换、通用日志浏览或覆盖未来全部故障的诊断 UI。
 
-退出条件：Core 缺失、损坏、初始化失败或崩溃时，用户始终能理解当前状态并执行安全操作。
+退出条件：Core 缺失、损坏、初始化失败或崩溃时，用户始终能理解当前状态并执行安全 retry 或 exit；失败界面不成为生命周期真相源。
 
-### Phase 2：并发 IPC 与只读快照
+### Phase 2：最小可靠聊天 IPC 基础链
 
-- [ ] 支持并发请求、事件、取消和长任务 Operation。
-- [ ] health、cancel、shutdown 不受业务长任务阻塞。
-- [ ] 建立受控 IPC Gateway、窗口权限和运行时校验。
-- [ ] 新 generation 建立时立即废弃旧事件和快照。
-- [ ] 建立协议 golden fixtures、背压和错误注入测试。
-- [ ] 使用同步 sleep、阻塞文件 I/O、CPU 密集循环、大量 progress、慢 writer 和窗口关闭中的请求验证真实隔离。
+- [ ] Rust 建立独立 stdin writer、stdout reader 和 pending request map；Python 建立独立 reader、dispatcher 和 writer queue。
+- [ ] response/event 可以交错；health、shutdown 和聊天取消不等待聊天任务。
+- [ ] 新 generation 建立时立即废弃旧 request、response、event、waiter 和 Snapshot。
+- [ ] 队列有界，response 与 terminal event 不丢失。
+- [ ] Gateway 只允许 `chat.send`/`chat.cancel`，聊天只暴露 started/completed/failed/cancelled，一个 identity 只有一个终态。
+- [ ] Rust 注入 generation、request ID、credential 和 deadline；WebView 不能伪造 transport/授权字段。
+- [ ] 最小 Snapshot 只冻结 generation、revision、readiness、当前角色公开摘要、当前聊天交互摘要和 UI 水合所需状态。
+- [ ] 使用聊天形状的阻塞 fixture、取消竞态、慢 writer、窗口关闭和旧 generation 验证真实隔离。
 
-退出条件：任意长操作期间控制请求和 UI 始终响应；业务冲突明确 queued 或 busy。
+退出条件：最小聊天边界在并发、取消、generation 重建和队列压力下可靠，且不要求完整三级优先级、通用 Operation、worker process、resource token、完整 Snapshot component model 或通用背压平台。
 
 ### Phase 3：基础聊天垂直链
 
@@ -480,6 +491,7 @@ WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initia
 - [ ] Core 崩溃后保持窗口、恢复 Core 并重新水合 UI。
 - [ ] 正常退出和强制恢复均清理完整进程树。
 - [ ] 完成 legacy Qt → Tauri v2 → legacy Qt 的真实用户数据兼容门禁。
+- [ ] 执行 `WP-3V-01 Runtime v2 Assistant Architecture Validation Slice`，使用真实 Sakura Assistant 领域代码完成 bundled Core → 真实回复/取消 → 兼容历史追加 → Core 强杀 → 新 generation 水合 → legacy Qt 回读的组合场景。
 
 视觉体验门禁：
 
@@ -493,7 +505,7 @@ WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initia
 - Core 重启状态与正常气泡使用一致的视觉语言。
 - CSS 动画不能阻塞输入、取消或关闭。
 
-退出条件：在已有开发配置下，直接启动 Tauri、真实聊天、打字机、取消、立绘切换、Core 强杀恢复、长时间运行和 Qt 双向回退兼容全部通过。
+退出条件：在已有开发配置下，直接启动 Tauri、真实聊天、打字机、取消、立绘切换、Core 强杀恢复和 Qt 双向回退兼容全部通过；完整进程树/IPC 资源残留为零，除明确允许的兼容历史追加外非预期用户数据变化为零；CAP-004 达到 `architecture-validated`。这不等于最终 `parity-accepted`。
 
 ### Phase 4：TTS、工具确认、截图和主动事件
 
@@ -572,6 +584,9 @@ WP-1C-01 和 WP-1C-02 已按既有 Windows 技术门完成基础 Host 与 initia
 15. WP-1C-02 完成后先执行 Phase 1P；Windows x64、macOS arm64、Linux x64 从基础生命周期开始持续参与门禁，不能在产品功能接近完成时再适配。
 16. 已完成的 Windows WP 保留为 Windows backend 证据，不代表跨平台总体 accepted；ADR-0004/WP-1P 负责回补。
 17. 发布功能范围以产品功能等价台账为准，不能以代码仍存在或 legacy Qt 可回退代替迁移完成。
+18. WP-1C-04 后先完成最小故障可见性、Router、聊天取消/Gateway/Snapshot，然后立即让真实 Assistant 验证边界；完整 Phase 1D/2 泛化不再前置。
+19. 通用 Operation、完整业务优先级、worker process、resource token、完整 Snapshot/背压、schema 代码生成和自动 Runtime Repair 只在对应真实消费者出现时建设。
+20. WP-3V-01 是 Phase 4 之前的硬门禁；CAP-004 未达到 `architecture-validated` 时不得继续堆叠通用基础设施。
 
 ## 13. 交付治理与技术 ADR
 
@@ -601,7 +616,7 @@ Proposed
 ```
 
 - ADR-0001 的 Supervisor 与 Windows backend 已 accepted；macOS/Linux backend 和跨平台总体门禁由 ADR-0004/WP-1P 承担。
-- ADR-0002 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后进入 `Technically Validated`，在 Phase 2 并发、阻塞隔离、取消和背压门禁通过后进入 `Accepted`。
+- ADR-0002 在 Phase 1C 的握手、版本、stderr 和故障 transport 门禁通过后进入 `Technically Validated`；在最小 Router/聊天边界通过且 WP-3V-01 以真实 Assistant 验证并发、控制隔离、取消、generation 和终态交付后，才进入 `Accepted`。完整通用 Operation、资源平台和多等级背压不是该状态的前置。
 - ADR-0003 的 Windows named mutex 已 `Technically Validated`；POSIX 共享锁和三平台 Qt/Tauri 双向门禁必须在 accepted 前补齐。
 - ADR-0004 在 WP-1P-01 至 WP-1P-06 通过后进入 `Technically Validated`，在首个三平台真实产品垂直链通过后进入 `Accepted`。
 - 技术验证失败时更新或替代 ADR，不为了符合文档而强行保留失败方案。
@@ -616,6 +631,8 @@ Proposed
 - Phase 1A–1D 是否足够小且可独立验收。
 - Phase 3 是否同时具备真实聊天和明确视觉收益。
 - 可靠性基础设施是否只建设到支撑当前产品所需的程度。
+- 真实聊天是否在大量通用 Phase 2/Phase 1D 能力之前达到 `architecture-validated`。
+- 是否把 ADR 的未来方向误当成基础聊天前必须完整实现的内容。
 - 技术 ADR 是否保留了根据验证结果简化实现的空间。
 - 旧用户数据、legacy Qt 回退和双入口互斥是否拥有可执行门禁。
 - WebView、Rust 控制面和 Python 领域执行面是否保持明确权限边界。

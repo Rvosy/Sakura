@@ -29,7 +29,7 @@
 - Phase 0–3 的 Work Package 顺序、范围和状态只由 `2026-07-15-runtime-v2-work-packages.md` 维护。
 - 主计划描述产品目标、硬边界、阶段结果和最终审查结论，不重复维护 Work Package 状态。
 - 治理文件约束允许列表、证据、稳定化、Bug Budget、提交和停止条件。
-- ADR 描述当前推荐技术方案及状态门禁。三份 ADR 当前状态均为 `Proposed`。
+- ADR 描述当前推荐技术方案及状态门禁。本基线审查时三份 ADR 均为 `Proposed`；后续当前状态只读各 ADR 顶部及其验证记录，不由本历史基线重复维护。
 - Phase 0 基线保存历史取证和未来门禁输入，不替代真实 Tauri、进程、IPC 或双入口验证。
 
 固定旧迁移取证源已复核：
@@ -60,11 +60,11 @@ origin branch ref: 190dfafd24f5c5226bff8b4347837b6e45d9a331
 | Phase 1A–3 dogfooding 成本 | 主计划要求 v2 分支在 Phase 1A 后默认 Tauri，Qt 保留回退；WP-1A-04 才切入口 | WP-0-01 证明当前 Qt 可启动/退出；WP-0-02 冻结共用锁；WP-0-03 拒绝旧 Python 启动 Tauri 链 | 开发者能否接受 Phase 3 前需要显式启动 legacy Qt 使用完整产品 | 默认入口只在 WP-1A-04 accepted 后切换；只影响 v2 分支，不影响 `dev`、正式安装包和发布入口；两入口不得并行 | 若显式回退不可用、锁不安全或产生数据差异，WP-1A-04 不得 accepted，恢复当前 Qt 默认入口 | 成本可接受，前提是回退命令、shared mutex 和分支边界全部成立 | WP-1A-04；真实双向数据门禁由 WP-3-06 |
 | legacy Qt 回退与数据责任 | ADR-0003 要求同一 mutex、无破坏性迁移和真实 Qt→Tauri→Qt | WP-0-02 的 lock identity、schema epoch、数据分类、故障矩阵和脱敏 fixture | 当前 Qt 锁能否前移到所有 data/log 写入前；Tauri 能否最后释放锁 | 回退命令规划为 `.\runtime\python.exe .\legacy_qt_main.py`；必须先退出 Tauri；用户不删锁、不并发运行、不手工合并数据 | 锁失败或 schema 不安全时进入 already_running/fatal/diagnostics-read-only，不继续启动写入者 | 命令、适用范围、责任和代码回退均明确 | WP-1A-04、WP-3-06 |
 | lifecycle deadline | ADR-0001/0002 原先只要求确定 deadline，未给初值 | WP-0-01 启动 p95 约 1.538 秒；主计划要求退出后 5 秒内无后代；架构要求 hello 早于重型初始化 | bundled Python、Job Object、stderr 排水和初始化在真实环境中的尾延迟 | hello 3 秒；initialize 接受 5 秒；readiness watchdog 30 秒；shutdown 协议优雅期 3 秒；完整树退出 5 秒 | 超时按结构化失败进入重试预算或强杀；超过 5 秒树退出为 P1；调整必须同步 ADR/fixture | 初值足以进入技术验证，不视为已验证性能承诺 | WP-1B-03、WP-1B-04、WP-1C-01 至 WP-1C-04 |
-| 不可自动重试分类 | ADR-0001 已列 major/capability/setup_required 示例；ADR-0002 定义版本协商 | readiness 模型、ADR-0003 安全状态、WP-0-03 的故障经验 | 具体错误码和 diagnostics UX 尚未实现 | major 不兼容、缺必要 capability、setup_required、确定性配置/数据错误、Runtime/打包错误、credential 错误、应用锁结果均不自动重启；Provider 网络错误不重启 Core | 进入 diagnostics/setup_required；只有外部状态变化后用户手动 retry，仍走同一 Supervisor | 分类可进入 Fake Core/真实 Host 技术验证 | WP-1B-04、WP-1C-03、WP-1D-01 至 WP-1D-03 |
+| 不可自动重试分类 | ADR-0001 已列 major/capability/setup_required 示例；ADR-0002 定义版本协商 | readiness 模型、ADR-0003 安全状态、WP-0-03 的故障经验 | 具体错误码和 diagnostics UX 尚未实现 | major 不兼容、缺必要 capability、setup_required、确定性配置/数据错误、Runtime/打包错误、credential 错误、应用锁结果均不自动重启；Provider 网络错误不重启 Core | 进入 diagnostics/setup_required；只有外部状态变化后用户手动 retry，仍走同一 Supervisor | 分类可进入 Fake Core/真实 Host 技术验证 | WP-1B-04、WP-1C-03、WP-1D-01；完整 Repair 为 WP-5-06 |
 | Runtime v2 工具链 | WP-0-01 记录 legacy 环境；现有 Tauri 工具使用 Tauri 2，但未冻结 v2 版本 | 当前锁文件为 Tauri 2.11.3、tauri-build 2.6.3；当前 Rust/Cargo 1.96.0；Tauri CLI 缺失 | 新最小 Shell 在固定版本上能否 dev/release 构建并真实显示 | WP-1A-01 在 `desktop/` 内固定 Rust 1.96.0、Tauri/Cargo.lock；静态页面不要求 Node；CLI 非前置 | 任一版本需要变化时先更新准备记录和证据，不以临时全局安装掩盖 | 版本和非前置工具已明确 | WP-1A-01；后续升级由对应激活 WP |
 | bundled Python 来源 | 主计划要求 bundled Python end-to-end；旧文档只写 `runtime/python.exe` | release workflow 固定 CPython 3.12.8 官方 Windows embeddable amd64 URL；本机 runtime 为 3.12.8 x64 | 打包后的路径、依赖、校验和 Core Host import 边界尚未验证 | Phase 1A 不启动 Python；Phase 1C 不得回退系统 Python；release 与开发路径使用同一来源 | 缺失/不兼容进入不可自动重试 diagnostics；工件完整性校验未完成前不得冻结发布链 | 来源明确；供应链完整性验证保留给 WP-1C-04 | WP-1C-04 |
 | Windows-only 平台边界 | 主计划和 ADR-0001 已规定 Phase 1A–3 Windows 正式目标 | 当前参考环境 Windows 11 23H2 x64、WebView2 150；WP-0-01 保留 legacy Windows 环境 | Windows 10、ARM64、Server、其他 GPU/DPI 组合尚未验证 | 正式范围仅 Windows x64；非 Windows/ARM64/32 位/Wine/Server 不作为 Phase 1A–3 门禁 | 其他平台需求进入独立 ADR、窗口/进程树验证和新 WP | 边界明确，无跨平台投机实现 | WP-1A-01 至 WP-3-06；扩平台另立 ADR/WP |
-| Supervisor 与 IPC 所有权 | 主计划要求 Tauri 唯一根；ADR-0001 串行 Supervisor；ADR-0002 control/domain plane | WP-0-03 拒绝同步 Supervisor、根进程 kill、巨型 Host 和混合 AppState | Job Object、并发 Router、bounded executor、backpressure 参数未验证 | 生命周期意图串行；transport/control 不运行领域代码；generation 隔离；Rust 只读 Snapshot | Fake Core/真实阻塞门失败则停在当前 WP，不用全局状态或额外兼容层绕过 | 文档一致，参数仍保留技术验证空间 | WP-1B-01 至 WP-2-06 |
+| Supervisor 与 IPC 所有权 | 主计划要求 Tauri 唯一根；ADR-0001 串行 Supervisor；ADR-0002 control/domain plane | WP-0-03 拒绝同步 Supervisor、根进程 kill、巨型 Host 和混合 AppState | Job Object、并发 Router、bounded executor、backpressure 参数未验证 | 生命周期意图串行；transport/control 不运行领域代码；generation 隔离；Rust 只读 Snapshot | Fake Core/真实阻塞门失败则停在当前 WP，不用全局状态或额外兼容层绕过 | 文档一致；先验证最小 Router/chat，通用参数后移真实消费者 | WP-1B-01 至 WP-2-02、WP-3V-01 |
 | Assistant Adapter 与 Phase 3 范围 | 主计划要求 Adapter/Facade 复用现有服务；Phase 3 只做基础聊天 | WP-0-01 记录当前能力；WP-0-03 拒绝 BrainHostApplication，条件准入薄 Facade/DTO/测试 | 无 Qt import、readiness、真实 Chat Pipeline 等价性未验证 | 不重写 Assistant；基础聊天只含角色、Provider、聊天、历史、取消和表现层；TTS、截图、设置、Studio 延后 | 需要改业务语义时停止并申请独立范围；可选组件失败只 degraded | 范围一致，无 Phase 4/5/6 偷跑 | WP-3-01 至 WP-3-06 |
 | ADR 和 Work Package 状态 | 主计划定义 Proposed→Technically Validated→Accepted；清单是 WP 状态真相源 | 三份 ADR 标题均为 Proposed；WP-0-01/02/03 基线和提交存在 | 所有技术方案仍待实现门禁 | WP-0-04 只能认可 Proposed；WP-1A-01 继续 planned | 若验证失败，更新或 Supersede ADR；不为符合文档强行实现 | 状态漂移已修复，ADR 没有越级 | ADR-0001：WP-1B；ADR-0002：WP-1C/2；ADR-0003：WP-1A-04/3-06 |
 
@@ -155,15 +155,15 @@ WP-1A-04 计划建立：
 
 | 类别 | 例子 | 自动重试 | 用户手动重试 | UI/状态 | 负责 WP |
 |---|---|---|---|---|---|
-| 协议不兼容 | `protocol_major_incompatible` | 禁止 | 更新/修复 Runtime 后允许 | diagnostics | WP-1C-03、WP-1D-02 |
-| 必要能力缺失 | `missing_required_capability` | 禁止 | 安装兼容 Core 后允许 | diagnostics | WP-1C-03、WP-1D-02 |
+| 协议不兼容 | `protocol_major_incompatible` | 禁止 | 更新/修复 Runtime 后允许 | diagnostics | WP-1C-03、WP-1D-01；完整 Repair 为 WP-5-06 |
+| 必要能力缺失 | `missing_required_capability` | 禁止 | 安装兼容 Core 后允许 | diagnostics | WP-1C-03、WP-1D-01；完整 Repair 为 WP-5-06 |
 | 等待设置 | `setup_required` | 禁止；不是错误 | 完成配置后允许 | setup_required | WP-1C-02、WP-3-01 |
-| 确定性配置/数据错误 | 必需字段缺失、类型无效、未知 Provider、损坏必要数据、未来 schema | 禁止 | 修复或回到兼容数据后允许 | diagnostics/read-only 或 failed | WP-1C-02/03、WP-1D-02、WP-3-01 |
-| Runtime/打包错误 | bundled Python 缺失、架构/版本不兼容、入口缺失、import guard 发现 Qt | 禁止 | 修复安装后允许 | runtime_repair/diagnostics | WP-1C-01/04、WP-1D-02 |
+| 确定性配置/数据错误 | 必需字段缺失、类型无效、未知 Provider、损坏必要数据、未来 schema | 禁止 | 修复或回到兼容数据后允许 | diagnostics/read-only 或 failed | WP-1C-02/03、WP-1D-01、WP-3-01 |
+| Runtime/打包错误 | bundled Python 缺失、架构/版本不兼容、入口缺失、import guard 发现 Qt | 禁止 | 修复安装后允许 | diagnostics | WP-1C-01/04、WP-1D-01；完整 Repair 为 WP-5-06 |
 | 安全边界错误 | generation credential 不匹配、握手认证失败 | 禁止 | 仅在实现/安装修复后允许 | fatal diagnostics | WP-1C-03 |
 | 桌面锁结果 | `already_running`、mutex API access/fatal | 不创建 Core 重试 | 退出另一入口或修复权限后重新启动 | already_running/fatal | WP-1A-04 |
 | 领域请求错误 | Provider 网络不可达、模型认证失败、单次聊天格式错误 | 不重启 Core | 用户重试请求 | request error；Core 仍 ready/degraded | WP-3-02/04 |
-| 暂时性生命周期错误 | OS spawn/pipe 暂时失败、hello timeout、unexpected exit、broken pipe | 在有限 budget/backoff 内允许 | 允许，仍走同一 Supervisor | restarting/diagnostics | WP-1B-04、WP-1D-03 |
+| 暂时性生命周期错误 | OS spawn/pipe 暂时失败、hello timeout、unexpected exit、broken pipe | 在有限 budget/backoff 内允许 | 允许，仍走同一 Supervisor | restarting/diagnostics | WP-1B-04、WP-1D-01 |
 
 不可自动重试错误必须稳定显示原因和安全动作，不能通过无限 restart budget 把空白窗口或错误循环伪装成恢复。
 
@@ -214,7 +214,7 @@ Phase 1C/发布链要求：
 | 用户数据权限和回退 | Phase 1–3 无破坏迁移；Qt→Tauri→Qt | G-008/G-010 要求备份、异常和回退 | ADR-0003 分类、schema epoch、read-only | WP-0-02 fixture/oracle；WP-3-06 真实门 | 一致；WP-1A-04/3-06 负责 |
 | Supervisor 与进程树所有权 | Rust 监管 Core 和后代 | G-002/G-009 强制故障和零 P1 | ADR-0001 Job Object/串行状态机 | WP-0-03 R26/R27 拒绝旧根进程 kill/同步 Supervisor | 一致；WP-1B-01 至 WP-1B-04 |
 | IPC control/domain plane | 生命周期请求不受长任务阻塞 | G-002/G-011 冻结点与真实阻塞门 | ADR-0002 reader/control/writer 与领域执行面分离 | WP-0-03 R36/R42 保留阻塞测试、拒绝同步 server | 一致；WP-1C/2 验证 |
-| generation、Snapshot 和资源描述符 | Rust 只读缓存；旧 generation 失效；无裸路径 | G-005 允许安全边界必要抽象 | ADR-0002 UUID generation、revision、opaque token | WP-0-03 R15/R41/R57 提供正负例 | 一致；WP-1C-02、WP-2-05 |
+| generation、Snapshot 和资源描述符 | Rust 只读缓存；旧 generation 失效；无裸路径 | G-005 允许安全边界必要抽象，但禁止借此提前建通用平台 | ADR-0002 UUID generation、最小 revision；opaque token 为后续方向 | WP-0-03 R15/R41/R57 提供正负例 | 一致；WP-1C-02、WP-2-02；资源 token 由 WP-4-06 首次验证 |
 | Assistant Adapter/Facade | 适配现有服务，不重写领域 | G-006 修改必须证明等价 | ADR-0002 只规定 Host/IPC，不拥有业务 | WP-0-03 R39 拒绝巨型 Host，R44 条件准入薄 Facade | 一致；WP-3-01 |
 | Phase 3 基础聊天范围 | 角色、Provider、聊天、历史、取消、表现和恢复 | G-002 Phase 3 明确允许/禁止 | ADR-0002 Chat event 与完整回复；ADR-0003 仅 history 兼容写 | WP-0-03 R40/R50/R51/R63 只复用 DTO/场景 | 一致；WP-3-01 至 WP-3-06 |
 | TTS、截图、设置和 Studio 延期边界 | TTS/截图到 Phase 4，设置/历史到 Phase 5，Studio 到 Phase 6 | G-002/G-005 禁止跨 Phase | ADR-0002 资源仅用测试 token；ADR-0003 禁写相关数据 | WP-0-03 R45/46/52/58/59/61/62/65 延后或拒绝 | 一致，无提前实现 |

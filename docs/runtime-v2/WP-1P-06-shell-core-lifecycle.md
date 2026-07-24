@@ -1,6 +1,6 @@
 # WP-1P-06：三平台最小 Shell + Core lifecycle 总门
 
-> 状态：accepted（CI platform foundation）
+> 执行状态：仅见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节
 > 日期：2026-07-24
 > 前置：WP-1P-05 accepted，提交 `63a4106`
 > 规范来源：ADR-0001、ADR-0003、ADR-0004、WP-1P-01/02/03/04/05

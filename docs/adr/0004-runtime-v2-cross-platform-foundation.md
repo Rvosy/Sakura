@@ -172,4 +172,4 @@ WP-7-02 是正式发布对应平台前不可绕过的真实设备硬门禁：mac
 本 ADR 已在 WP-1P-01 至 WP-1P-06 全部完成 CI platform foundation、三平台最小生命周期链
 无 P0/P1 后更新为 `Technically Validated for CI platform foundation`。
 
-本 ADR 更新为 `Accepted` 前，还必须在至少一个真实产品垂直链中证明三个平台共用相同 Supervisor、IPC、Snapshot 和能力语义；平台 backend 只处理原生差异，没有产品能力静默降级。最终发布仍受功能等价台账和 Phase 7 门禁约束。
+本 ADR 更新为 `Accepted` 前，还必须由 WP-3V-01 的真实 Sakura Assistant 纵向链证明三个平台共用相同 Supervisor、IPC、最小 Snapshot 和能力语义；平台 backend 只处理原生差异，没有产品能力静默降级。Fake Core 或 CI lifecycle 不能替代该证据。最终发布仍受功能等价台账和 Phase 7 门禁约束。
