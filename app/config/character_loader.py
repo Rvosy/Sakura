@@ -6,6 +6,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from app.core.runtime_log import log_event
@@ -24,6 +25,8 @@ THEME_SOURCE_PACKAGE = "package"
 THEME_SOURCE_COMPAT_DEFAULT = "compat_default"
 CharacterThemeSource = Literal["package", "compat_default"]
 IssueSink = Callable[[str, str, dict[str, object]], None]
+_CORE_THEME_MODULE_NAME = "_sakura_core_ui_theme"
+_THEME_MODULE_LOCK = Lock()
 
 
 class CharacterConfigError(RuntimeError):
@@ -321,22 +324,25 @@ def _default_theme_settings() -> ThemeSettings:
 
 
 def _theme_module() -> Any:
-    module_name = "app.ui.theme"
-    loaded = sys.modules.get(module_name)
-    if loaded is not None:
-        return loaded
-    module_path = Path(__file__).resolve().parents[1] / "ui" / "theme.py"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {module_name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
+    with _THEME_MODULE_LOCK:
+        loaded = sys.modules.get(_CORE_THEME_MODULE_NAME)
+        if loaded is not None:
+            return loaded
+        loaded = sys.modules.get("app.ui.theme")
+        if loaded is not None:
+            return loaded
+        module_path = Path(__file__).resolve().parents[1] / "ui" / "theme.py"
+        spec = importlib.util.spec_from_file_location(_CORE_THEME_MODULE_NAME, module_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {_CORE_THEME_MODULE_NAME}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_CORE_THEME_MODULE_NAME] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(_CORE_THEME_MODULE_NAME, None)
+            raise
+        return module
 
 
 def _write_character_theme_manifest(

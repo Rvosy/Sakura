@@ -163,6 +163,66 @@ print(json.dumps({
     assert result["theme_type"] == "ThemeSettings"
 
 
+def test_core_first_theme_loading_does_not_poison_normal_ui_imports() -> None:
+    probe = """
+import json
+import sys
+from pathlib import Path
+
+from app.config.character_loader import CharacterProfile
+
+profile = CharacterProfile(
+    id='sakura',
+    display_name='Sakura',
+    package_dir=Path('.'),
+    card_path=Path('card.md'),
+    initial_message='hello',
+    default_portrait_path=Path('portrait.png'),
+)
+core_forbidden = sorted(
+    name for name in sys.modules
+    if name.startswith(('PySide6', 'app.plugins', 'app.voice'))
+    or (name.startswith('app.ui.') and name != 'app.ui.theme')
+)
+core_ui_loaded = 'app.ui' in sys.modules
+core_theme_loaded = 'app.ui.theme' in sys.modules
+app_has_ui = hasattr(sys.modules['app'], 'ui')
+
+import app.ui.theme as theme
+from app.ui.window_backdrop import VisualEffectMode
+
+print(json.dumps({
+    'core_forbidden': core_forbidden,
+    'core_ui_loaded': core_ui_loaded,
+    'core_theme_loaded': core_theme_loaded,
+    'app_has_ui': app_has_ui,
+    'theme_color': theme.ThemeSettings(primary_color='ABCDEF').normalized().primary_color,
+    'profile_color': profile.theme_settings.normalized().primary_color,
+    'effect': VisualEffectMode.validate('solid'),
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.splitlines()[-1])
+    assert result == {
+        "core_forbidden": [],
+        "core_ui_loaded": False,
+        "core_theme_loaded": False,
+        "app_has_ui": False,
+        "theme_color": "#abcdef",
+        "profile_color": DEFAULT_THEME_SETTINGS.primary_color,
+        "effect": "solid",
+    }
+
+
 def _write_character(root: Path, character_id: str, theme: dict[str, object] | None) -> None:
     package_dir = root / "characters" / character_id
     package_dir.mkdir(parents=True)
