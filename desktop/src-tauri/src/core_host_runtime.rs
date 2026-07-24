@@ -437,21 +437,27 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 mod tests {
     use std::{
         path::PathBuf,
-        sync::{mpsc, Mutex, OnceLock},
-        thread,
+        sync::{Mutex, OnceLock},
         time::Duration,
     };
+
+    #[cfg(windows)]
+    use std::{sync::mpsc, thread};
 
     use serde_json::json;
 
     use crate::{
-        core_host_protocol::read_frame,
-        managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
         platform::{
             FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
             RuntimeLocationRequest, RuntimeLocator, RuntimeMode, SHARED_INSTANCE_ID,
         },
         shared_instance::NativeInstanceLockBackend,
+    };
+
+    #[cfg(windows)]
+    use crate::{
+        core_host_protocol::read_frame,
+        managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
     };
 
     use super::{CoreHostRuntime, CoreSnapshotCache};
@@ -594,7 +600,10 @@ mod tests {
         let exit = host
             .shutdown(Duration::from_millis(250), Duration::from_secs(5))
             .expect("ignored shutdown should force and finalize its Job");
+        #[cfg(windows)]
         assert_eq!(exit.root_exit_code, 93);
+        #[cfg(unix)]
+        assert_eq!(exit.root_exit_code, 143);
         assert!(exit.tree_empty);
         assert!(exit.forced);
     }
