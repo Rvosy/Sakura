@@ -197,7 +197,7 @@ jobs:
           RUST_BACKTRACE: '1'
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked
-          core_host_runtime::tests:: -- --nocapture
+          core_host_runtime::tests:: -- --nocapture --test-threads=1
 
       - name: Run minimum Shell + Python Core lifecycle (POSIX)
         if: runner.os != 'Windows'
@@ -211,6 +211,7 @@ jobs:
           raise SystemExit(subprocess.run([
               "cargo", "test", "--manifest-path", "src-tauri/Cargo.toml",
               "--locked", "core_host_runtime::tests::", "--", "--nocapture",
+              "--test-threads=1",
           ], timeout=180).returncode)
           PY
 
