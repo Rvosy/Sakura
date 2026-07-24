@@ -147,3 +147,7 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
     decoder.finish()
     with pytest.raises(WriterError):
         writer.send(first)
+    try:
+        writer.send(first)
+    except WriterError as error:
+        assert error.code == "WRITER_QUEUE_CLOSED"

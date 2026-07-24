@@ -836,7 +836,7 @@ impl CoreHostRuntime {
         received
             .1
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| match self.tree.wait_root(Duration::ZERO) {
+            .ok_or_else(|| match self.tree.wait_root(Duration::from_millis(50)) {
                 Ok(ProcessWaitOutcome::Exited(_)) => {
                     "CORE_CRASHED: Core Host exited before its response".to_string()
                 }
@@ -1235,7 +1235,7 @@ mod tests {
         let error = host
             .request("hello-crash", "system.hello", Duration::from_secs(3))
             .expect_err("crashed Core cannot answer hello");
-        assert!(error.starts_with("CORE_CRASHED:") || error.starts_with("STDOUT_EOF:"));
+        assert!(error.starts_with("CORE_CRASHED:"));
         let exit = host
             .close_stdin_and_wait(Duration::from_secs(5))
             .expect("crashed Core resources are finalized");
@@ -1398,6 +1398,23 @@ mod tests {
             .expect("stale generation tree is reclaimed");
         assert!(exit.tree_empty);
         assert!(exit.forced);
+    }
+
+    #[test]
+    fn trailing_stdout_pollution_is_rejected_after_a_valid_shutdown_response() {
+        let _test_lock = lifecycle_test_lock();
+        let root = repo_root();
+        let python = development_layout().python_executable;
+        let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/trailing_stdout_host.py");
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("trailing stdout fixture launches");
+        host.request("hello-trailing", "system.hello", Duration::from_secs(3))
+            .expect("fixture hello negotiates");
+        let error = host
+            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .expect_err("trailing stdout must be transport fatal");
+        assert!(error.starts_with("STDOUT_FRAMING_POLLUTION:"));
     }
 
     #[test]

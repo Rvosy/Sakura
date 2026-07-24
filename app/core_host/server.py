@@ -272,6 +272,12 @@ class ControlDispatcher:
                 request, "HANDSHAKE_FAILED", "protocol negotiation already failed"
             ), False
         if self._handshake == "pending" and name != "system.hello":
+            if name == "system.shutdown":
+                return self._error_response(
+                    request,
+                    "SHUTDOWN_DURING_HANDSHAKE",
+                    "shutdown interrupted protocol negotiation",
+                ), True
             return self._error_response(
                 request, "HANDSHAKE_REQUIRED", "system.hello must be the first request"
             ), False

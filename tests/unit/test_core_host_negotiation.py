@@ -100,6 +100,16 @@ def test_hello_order_and_duplicate_are_rejected() -> None:
         dispatcher.close()
 
 
+def test_shutdown_during_handshake_is_classified_and_stops_the_host() -> None:
+    dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
+    try:
+        response, should_stop = dispatcher.dispatch(request("system.shutdown"))
+        assert response["error"]["code"] == "SHUTDOWN_DURING_HANDSHAKE"
+        assert should_stop is True
+    finally:
+        dispatcher.close()
+
+
 @pytest.mark.parametrize("credential", [None, "55" * 16, ""])
 def test_missing_wrong_and_stale_credentials_are_transport_fatal(credential: str | None) -> None:
     dispatcher = ControlDispatcher(HostConfig(GENERATION_ID, CREDENTIAL))
