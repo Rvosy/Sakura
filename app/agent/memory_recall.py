@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
-from app.agent.memory import MemoryStore
 from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
@@ -15,6 +14,15 @@ DEFAULT_MEMORY_RECALL_CANDIDATES = 10
 # 与按分排序，既挡住明显无关项，又能让最相关的少量记忆进入上下文。
 DEFAULT_MEMORY_RELEVANCE_THRESHOLD = 0.3
 MAX_MEMORY_QUERY_CHARS = 4000
+
+
+class MemoryLike(Protocol):
+    def search_memory(
+        self,
+        arguments: dict[str, Any],
+        *,
+        wait: bool = False,
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -29,7 +37,7 @@ class MemoryRecallService:
 
     def __init__(
         self,
-        memory: MemoryStore,
+        memory: MemoryLike,
         *,
         limit: int = DEFAULT_MEMORY_RECALL_LIMIT,
         threshold: float = DEFAULT_MEMORY_RELEVANCE_THRESHOLD,

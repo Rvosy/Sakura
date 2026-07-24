@@ -52,7 +52,7 @@ class ApiSettings:
     """LLM API 连接配置。"""
 
     base_url: str = ""
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     model: str = ""
     timeout_seconds: int = 60
     # 角色对话生成参数；None 表示沿用内置默认/不发送该参数，保持历史行为。
@@ -71,7 +71,7 @@ class ApiConfigProfile:
     id: str
     alias: str
     base_url: str
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     models: tuple[str, ...] = ()
 
 

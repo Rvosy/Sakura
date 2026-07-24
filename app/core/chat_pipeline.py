@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
+from app.agent.actions import AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.runtime import AgentRuntime
 from app.core.cancellation import CancelChecker, check_cancelled
 from app.core.runtime_log import log_event, summarize_messages
-from app.storage.visual_observation import (
-    VisualObservationJob,
-    VisualObservationStore,
-    visual_observation_record_from_summary,
-)
+
+if TYPE_CHECKING:
+    from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
 
 ProgressCallback = Callable[[AgentProgress], None]
@@ -119,6 +118,8 @@ class ChatPipeline:
         if result.visual_observation is None:
             log_event(log_scope, "视觉观察摘要缺失，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
+        from app.storage.visual_observation import visual_observation_record_from_summary
+
         record = visual_observation_record_from_summary(
             visual_observation_jobs[0],
             result.visual_observation,

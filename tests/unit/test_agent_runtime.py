@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -85,6 +86,11 @@ def _dummy_api_client() -> MagicMock:
     # 角色对话入口会读取生成参数；返回内置默认温度与空额外参数，保持原有调用行为。
     client.resolve_dialogue_params.return_value = (0.8, {})
     return client
+
+
+class _DisabledMemory:
+    def search_memory(self, _arguments: dict[str, object], *, wait: bool = False) -> dict[str, object]:
+        return {"status": "disabled", "memories": []}
 
 
 class _FakeHistoryStore:
@@ -249,6 +255,30 @@ class TestRuntimeLimits:
 
         runtime_context = client.complete_with_tools.call_args.kwargs["runtime_context"]
         assert "最近会话状态" not in runtime_context
+
+    def test_context_orchestrator_is_constructed_once_on_first_real_request(self) -> None:
+        client = _dummy_api_client()
+        runtime = AgentRuntime(client, _dummy_system_prompt(), memory=_DisabledMemory())  # type: ignore[arg-type]
+        assert runtime._context_orchestrator is None
+
+        from app.agent import context_orchestrator as context_module
+
+        real_orchestrator = context_module.ContextOrchestrator
+        with patch.object(context_module, "ContextOrchestrator", wraps=real_orchestrator) as constructor:
+            first = runtime.handle_user_message([ChatMessage(role="user", content="第一轮")])
+            first_instance = runtime.context_orchestrator
+            second = runtime.handle_user_message([ChatMessage(role="user", content="第二轮")])
+
+        assert constructor.call_count == 1
+        assert runtime.context_orchestrator is first_instance
+        assert first.reply.text == "おはよう"
+        assert second.reply.text == "おはよう"
+
+    def test_legacy_default_memory_is_still_created_when_none_is_passed(self) -> None:
+        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt(), memory=None)
+
+        assert runtime.memory.__class__.__name__ == "MemoryStore"
+        assert "app.agent.memory" in sys.modules
 
 
 class TestToolCallCountLimits:

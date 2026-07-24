@@ -6,7 +6,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
@@ -46,7 +46,7 @@ class ApiRequestError(RuntimeError):
 @dataclass(frozen=True)
 class ApiSettings:
     base_url: str
-    api_key: str
+    api_key: str = field(repr=False)
     model: str
     timeout_seconds: int = 60
     # 角色对话生成参数；None 表示沿用内置默认/不发送该参数，保持历史行为。

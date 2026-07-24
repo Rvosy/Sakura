@@ -12,6 +12,7 @@ from app.config.defaults import (
     DEFAULT_NAME_FONT_SIZE,
     DEFAULT_SPEECH_FONT_SIZE,
 )
+from app.config.visual_effect import VisualEffectMode
 
 if TYPE_CHECKING:
     from app.config.character_loader import CharacterProfile
@@ -64,8 +65,6 @@ class ThemeSettings:
     visual_effect_mode: str = "gaussian_blur"
 
     def normalized(self) -> "ThemeSettings":
-        from app.ui.window_backdrop import VisualEffectMode
-
         return ThemeSettings(
             primary_color=normalize_hex_color(self.primary_color, DEFAULT_PRIMARY_COLOR),
             primary_hover_color=normalize_hex_color(self.primary_hover_color, DEFAULT_PRIMARY_HOVER_COLOR),
@@ -108,8 +107,6 @@ def normalize_hex_color(value: object, default: str) -> str:
 
 
 def theme_from_mapping(data: Any) -> ThemeSettings:
-    from app.ui.window_backdrop import VisualEffectMode
-
     if not isinstance(data, dict):
         return DEFAULT_THEME_SETTINGS
     values = {

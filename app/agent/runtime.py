@@ -5,24 +5,10 @@ import time
 from datetime import datetime
 from dataclasses import replace
 from threading import Lock
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
-from app.agent.context_orchestrator import ContextOrchestrator, build_context_request
 from app.agent.memory_recall import MemoryRecallService
-from app.agent.memory import MemoryStore
-from app.agent.screen_awareness import SCREEN_AWARENESS_IMAGE_DETAIL
-from app.agent.screen_tools import (
-    OBSERVE_SCREEN_TOOL_NAME,
-    SCREEN_OBSERVATION_CAPABILITY,
-    SCREEN_OBSERVATION_DISABLED_ERROR,
-    SCREEN_OBSERVATION_REQUEST_ACTION,
-)
-from app.agent.screen_policy import ScreenPolicy
-from app.agent.session_state_context import (
-    SESSION_DIGEST_INJECT_MAX_RECENT_MESSAGES,
-    build_session_state_fragment,
-)
 from app.agent.tool_policy import (
     BROWSER_NAVIGATE_TOOL_NAME,
     BROWSER_SNAPSHOT_TOOL_NAME,
@@ -31,9 +17,7 @@ from app.agent.tool_policy import (
     WINDOWS_SCREENSHOT_TOOL_NAME,
     WINDOWS_SNAPSHOT_TOOL_NAME,
 )
-import app.agent.tool_routing as tool_routing
 from app.agent.tools import ToolExecutionResult, ToolRegistry
-from app.storage.chat_history import ChatHistoryStore
 from app.llm.api_client import (
     ApiRequestError,
     ChatMessage,
@@ -62,9 +46,6 @@ from app.llm.prompt_templates import (
     build_screen_awareness_check_tool_system_prefix,
     build_segmented_reply_instruction,
 )
-from app.plugins.models import ContextProviderContribution, PromptPatchContribution
-from app.storage.visual_observation import extract_visual_observation_summary
-
 from app.llm.prompts.runtime import PromptRuntime
 from app.llm.prompts.types import (
     ContextFragment,
@@ -74,6 +55,12 @@ from app.llm.prompts.types import (
     PromptRecipe,
     PromptSection,
 )
+
+if TYPE_CHECKING:
+    from app.agent.context_orchestrator import ContextOrchestrator
+    from app.agent.memory import MemoryStore
+    from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+    from app.storage.chat_history import ChatHistoryStore
 
 
 _VISUAL_OBSERVATION_REPLY_INSTRUCTION = """
@@ -122,7 +109,11 @@ class AgentRuntime:
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
-        self.memory = memory or MemoryStore()
+        if memory is None:
+            from app.agent.memory import MemoryStore
+
+            memory = MemoryStore()
+        self.memory = memory
         self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
         self.context_providers = (
@@ -130,13 +121,23 @@ class AgentRuntime:
         )
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self.prompt_runtime = PromptRuntime()
-        self.context_orchestrator = ContextOrchestrator()
+        self._context_orchestrator: ContextOrchestrator | None = None
         self.memory_recall = MemoryRecallService(self.memory)
         self._last_prompt_inspection: PromptInspection | None = None
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
         self._native_tool_results_blocked_models: set[str] = set()
+
+    @property
+    def context_orchestrator(self) -> ContextOrchestrator:
+        orchestrator = self._context_orchestrator
+        if orchestrator is None:
+            from app.agent.context_orchestrator import ContextOrchestrator
+
+            orchestrator = ContextOrchestrator()
+            self._context_orchestrator = orchestrator
+        return orchestrator
 
     @property
     def vision_api_client(self) -> OpenAICompatibleClient | None:
@@ -200,6 +201,11 @@ class AgentRuntime:
         store = self.history_store
         if store is None:
             return ()
+        from app.agent.session_state_context import (
+            SESSION_DIGEST_INJECT_MAX_RECENT_MESSAGES,
+            build_session_state_fragment,
+        )
+
         # 仅在会话刚开始（实时窗口尚浅）时才回看历史，避免每轮全量读盘与重复注入。
         if len(request.recent_messages) >= SESSION_DIGEST_INJECT_MAX_RECENT_MESSAGES:
             return ()
@@ -251,6 +257,8 @@ class AgentRuntime:
         event_type: str = "",
         event_payload: dict[str, Any] | None = None,
     ) -> ContextSnapshot:
+        from app.agent.context_orchestrator import build_context_request
+
         request = build_context_request(
             messages,
             source=source,
@@ -371,11 +379,11 @@ class AgentRuntime:
         *,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
-        visual_observation = (
-            extract_visual_observation_summary(raw_content)
-            if messages_contain_image(working_messages)
-            else None
-        )
+        visual_observation = None
+        if messages_contain_image(working_messages):
+            from app.storage.visual_observation import extract_visual_observation_summary
+
+            visual_observation = extract_visual_observation_summary(raw_content)
         return (
             self._parse_final_reply_with_retry(
                 system_prompt,
@@ -444,6 +452,8 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
+        import app.agent.tool_routing as tool_routing
+
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
         allow_screen_observation = (
@@ -489,6 +499,15 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         """执行 OpenAI 原生 tools/tool_calls 循环。"""
+        import app.agent.tool_routing as tool_routing
+        from app.agent.context_orchestrator import build_context_request
+        from app.agent.screen_tools import (
+            OBSERVE_SCREEN_TOOL_NAME,
+            SCREEN_OBSERVATION_CAPABILITY,
+            SCREEN_OBSERVATION_DISABLED_ERROR,
+            SCREEN_OBSERVATION_REQUEST_ACTION,
+        )
+
         working_messages: list[ChatMessage] = [*messages]
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
@@ -1078,6 +1097,8 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
+        import app.agent.tool_routing as tool_routing
+
         check_cancelled(cancel_checker)
         turn_started_at = time.perf_counter()
         log_event("AgentRuntime", "执行已确认动作", action.to_dict())
@@ -1342,6 +1363,8 @@ class AgentRuntime:
         visible_browser_mode: bool = False,
         include_visual_observation: bool = False,
     ):
+        import app.agent.tool_routing as tool_routing
+
         reply_protocol = self._apply_reply_protocol_patches(
             build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
         )
@@ -1711,6 +1734,11 @@ def _build_skipped_after_pending_messages(
 
 
 def _is_screen_observation_request(result: ToolExecutionResult) -> bool:
+    from app.agent.screen_tools import (
+        OBSERVE_SCREEN_TOOL_NAME,
+        SCREEN_OBSERVATION_REQUEST_ACTION,
+    )
+
     if result.tool_name != OBSERVE_SCREEN_TOOL_NAME or not result.success:
         return False
     if not isinstance(result.content, dict):
@@ -2329,6 +2357,8 @@ def _build_event_screen_context_image_parts(payload: dict[str, Any]) -> list[dic
 
 
 def _build_screen_context_image_part(screen_context: dict[str, Any]) -> dict[str, Any] | None:
+    from app.agent.screen_awareness import SCREEN_AWARENESS_IMAGE_DETAIL
+
     data_url = screen_context.get("data_url")
     if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
         return None

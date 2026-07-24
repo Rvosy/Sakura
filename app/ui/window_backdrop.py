@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
+from app.config.visual_effect import VisualEffectMode
 from app.core.runtime_log import log_event
 
 
@@ -21,29 +22,6 @@ class WindowBackdrop(Protocol):
 
 
 # ── 视觉效果模式枚举 ────────────────────────────────────────────────
-
-class VisualEffectMode:
-    """输入框/卡片窗口的视觉效果模式。"""
-
-    SOLID = "solid"
-    GAUSSIAN_BLUR = "gaussian_blur"
-    WINDOWS_ACRYLIC = "windows_acrylic"
-    MACOS_VISUAL_EFFECT = "macos_visual_effect"
-
-    _ALL = (SOLID, GAUSSIAN_BLUR, WINDOWS_ACRYLIC, MACOS_VISUAL_EFFECT)
-    DEFAULT = GAUSSIAN_BLUR
-
-    @classmethod
-    def available_modes(cls) -> list[str]:
-        modes = [cls.SOLID, cls.GAUSSIAN_BLUR]
-        if sys.platform == "darwin":
-            modes.append(cls.MACOS_VISUAL_EFFECT)
-        return modes
-
-    @classmethod
-    def validate(cls, value: str) -> str:
-        return value if value in cls._ALL else cls.DEFAULT
-
 
 # ── 工厂 ─────────────────────────────────────────────────────────────
 

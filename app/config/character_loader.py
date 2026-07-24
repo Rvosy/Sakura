@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from app.core.runtime_log import log_event
 from app.llm.prompt_templates import with_desktop_pet_context
@@ -21,6 +23,7 @@ FALLBACK_SYSTEM_PROMPT = """你是夜乃桜，一个冷静、克制、可靠的�
 THEME_SOURCE_PACKAGE = "package"
 THEME_SOURCE_COMPAT_DEFAULT = "compat_default"
 CharacterThemeSource = Literal["package", "compat_default"]
+IssueSink = Callable[[str, str, dict[str, object]], None]
 
 
 class CharacterConfigError(RuntimeError):
@@ -85,8 +88,9 @@ class CharacterProfile:
 class CharacterRegistry:
     """扫描并管理 characters/<角色id>/character.json 角色包。"""
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(self, base_dir: Path, issue_sink: IssueSink = log_event) -> None:
         self.base_dir = base_dir
+        self.issue_sink = issue_sink
         self.characters_dir = base_dir / "characters"
         self.load_errors: tuple[CharacterLoadIssue, ...] = ()
         self.profiles = self._load_profiles()
@@ -120,7 +124,7 @@ class CharacterRegistry:
             except CharacterConfigError as exc:
                 issue = CharacterLoadIssue(manifest_path=manifest_path, error=str(exc))
                 issues.append(issue)
-                log_event(
+                self.issue_sink(
                     "Character",
                     "跳过损坏或不安全的角色包",
                     {"manifest": str(manifest_path), "error": str(exc)},
@@ -204,7 +208,10 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
 
 def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThemeSource, bool]:
-    from app.ui.theme import ThemeSettings, theme_colors_to_mapping, theme_from_mapping
+    theme_module = _theme_module()
+    ThemeSettings = theme_module.ThemeSettings
+    theme_colors_to_mapping = theme_module.theme_colors_to_mapping
+    theme_from_mapping = theme_module.theme_from_mapping
 
     if isinstance(data, dict):
         source = _theme_source_from_text(data.get("source"))
@@ -218,7 +225,7 @@ def character_theme_to_mapping(
     *,
     source: CharacterThemeSource = THEME_SOURCE_PACKAGE,
 ) -> dict[str, object]:
-    from app.ui.theme import theme_colors_to_mapping
+    theme_colors_to_mapping = _theme_module().theme_colors_to_mapping
 
     settings = settings or _default_theme_settings()
     data = theme_colors_to_mapping(settings)
@@ -310,9 +317,26 @@ def _theme_source_from_text(value: object) -> CharacterThemeSource:
 
 
 def _default_theme_settings() -> ThemeSettings:
-    from app.ui.theme import DEFAULT_THEME_SETTINGS
+    return _theme_module().DEFAULT_THEME_SETTINGS
 
-    return DEFAULT_THEME_SETTINGS
+
+def _theme_module() -> Any:
+    module_name = "app.ui.theme"
+    loaded = sys.modules.get(module_name)
+    if loaded is not None:
+        return loaded
+    module_path = Path(__file__).resolve().parents[1] / "ui" / "theme.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
 
 
 def _write_character_theme_manifest(
