@@ -1,6 +1,6 @@
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 状态：WP-1C-02 accepted（`a06e1dada`）；下一生产阶段为跨平台 Phase 1P
+> 状态：Phase 1P accepted（CI platform foundation）；当前启动点为 WP-1C-03（planned）
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/superpowers/plans/2026-07-14-tauri-python-core-v2.md`
 > 治理约束：`docs/superpowers/plans/2026-07-15-runtime-v2-delivery-governance.md`
@@ -20,8 +20,8 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 - 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
 - Work Package 状态只在本文登记，避免在主计划、提交正文和多个清单中维护互相冲突的状态。
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
-- WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证、accepted 记录和生产提交闭环；下一项允许激活的生产 WP 是 WP-1P-01。
-- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06，不得用已有 Windows 证据绕过跨平台阶段。
+- WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
+- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；该前置现已满足，但 WP-1C-03 仍须独立激活，不得用已有 Windows 证据绕过三平台持续门禁。
 
 每个 Work Package 的激活记录至少包含：
 
@@ -70,7 +70,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted（CI platform foundation） |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted（CI platform foundation） |
-| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | active |
+| WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted（CI platform foundation） |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | planned |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | planned |
 | WP-1D-01 | Shell 启动、初始化和失败状态路由 | WP-1C-04 | planned |
@@ -108,7 +108,7 @@ Phase 4–7 已建立强制编号和依赖，但每个 WP 仍须在进入 `activ
 | WP-6-04 | 原子保存、发布与回滚 | WP-6-03 | planned |
 | WP-6-05 | 大文件 Operation 与故障恢复 | WP-6-04 | planned |
 | WP-7-01 | 完整自动化与三平台 CI 矩阵 | WP-6-05 | planned |
-| WP-7-02 | 三平台真实 Tauri WebView E2E | WP-7-01 | planned |
+| WP-7-02 | 三平台真实 Tauri WebView E2E 与 deferred 设备硬门禁 | WP-7-01 | planned |
 | WP-7-03 | 产品功能等价与数据兼容总审查 | WP-7-02 | planned |
 | WP-7-04 | 三平台打包、签名、更新与干净安装 | WP-7-03 | planned |
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
@@ -1506,9 +1506,14 @@ Xvfb window backend 合同测试；macOS/X11/Wayland 真实设备体验保持 de
 
 ### WP-1P-06：三平台最小 Shell + Core lifecycle 和 CI 总门禁
 
-状态：`active`（2026-07-24；WP-1P-05 accepted 后单独激活）
+状态：`accepted`（CI platform foundation，2026-07-24）
 
 独立规范：`docs/runtime-v2/WP-1P-06-shell-core-lifecycle.md`
+
+激活提交：`abfe0fe`；实现提交：`d331919`；修正提交：`35f5a30`、`f71cc68`、
+`ee3a39e`、`077dab8`、`b88e744`。最新实现 HEAD `b88e744918c0d84548fbdd43df8b17a0e00a4797`
+的 push/pull_request platform runs `30068988807` / `30068990391` 与 Unit/UI run
+`30068990399` 全绿。
 
 主要结果：把 WP-1P-02 至 05 组合为持续门禁，三个平台都能从正式 locator 启动 Shell 与最小 Core 并完成有界关闭。
 
@@ -1525,7 +1530,11 @@ Xvfb window backend 合同测试；macOS/X11/Wayland 真实设备体验保持 de
 
 故障测试：Runtime 缺失、锁冲突、spawn/pipe 失败、hello/initialize 卡死、损坏 stdout、忽略 shutdown、根崩溃并遗留后代、窗口关闭、重复两轮和失败后恢复。
 
-退出证据：三个平台连续两轮完成 `Shell visible -> lock held -> Core hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> lock reacquirable`；无根、后代、pipe、fd/handle、timer、WebView profile 和临时目录残留；真实用户数据零变化；ADR-0004 更新为 `Technically Validated`。
+退出证据：三个平台完成真实 native Shell 的 `lock held -> RuntimeLocator -> managed Core ->
+hello/initialize/health/Snapshot -> protocol shutdown -> full tree exited -> lock reacquirable`，并覆盖
+第二入口冲突、Shell 强杀后的 OS 保险回收与恢复轮；backend tree/pipe/fd/handle 清理、Core PID
+退出、隔离临时目录删除和 `data/`/`runtime/` 内容清单前后相同。ADR-0004 已更新为
+`Technically Validated for CI platform foundation`，不等于完整产品 Accepted。
 
 独立回退：回退组合门禁和 CI 接线，保留每个平台已独立验证的 backend；WP-1C-03 继续保持 planned。
 
@@ -1995,8 +2004,17 @@ legacy Qt 创建/修改数据并退出
 | WP-7-05 | CAP-029 | soak、休眠恢复、重复启停和故障注入 | Core/MCP/TTS/browser/更新链无泄漏、死锁、数据损坏 |
 | WP-7-06 | 全部 | 最终发布审查与进入 `dev` 决策 | P0/P1=0；回退演练完成；项目负责人明确批准合并/发布 |
 
+WP-7-02 本身承载 Phase 1P deferred 的发布前真实设备硬门禁，不以 CI 或 Xvfb 替代：macOS
+Apple Silicon 覆盖透明窗口、命中、拖动、焦点、中日文 IME、Retina、Spaces、多屏；Linux X11
+覆盖透明窗口、命中、拖动、焦点、IME、多屏；Linux Wayland 覆盖透明、命中、拖动、焦点、
+IME、窗口身份与 compositor 行为。任一对应平台未完成这些设备证据时，不得正式发布。
+
 ## 13. 当前启动点
 
-`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-03` 已登记 accepted；WP-1P-04 已于 2026-07-24 独立激活，当前唯一状态为 `active`。WP-1P-03 的三平台 native CI 证据为 `71c3039c` / run `30025831299`，普通 Unit/UI 为 run `30025831268`；WP-1P-02 的三平台证据为 `5c0ef64b` / run `30018844932`；WP-1C-02 对应提交为 `a06e1dada66b02474f3d65d4124f31094cda5e9e`。
+`WP-0-01` 至 `WP-1C-02` 以及 `WP-1P-01` 至 `WP-1P-06` 已登记 accepted；Phase 1P 的
+`CI platform foundation complete`。WP-1P-06 最新实现 HEAD 为 `b88e744`，三平台 platform
+foundation runs 为 `30068988807` / `30068990391`，Unit/UI run 为 `30068990399`；P0/P1 为 0。
 
-当前只执行 `WP-1P-04`；其最新 HEAD 原生三平台 CI 全绿并登记 accepted 前，`WP-1P-05`、`WP-1P-06`、`WP-1C-03` 及全部后续产品 WP 保持 `planned`，不得并行激活或继续 Windows-only 扩张。
+当前启动点更新为 `WP-1C-03`，状态仍为 `planned`，必须在后续独立提交中按治理流程激活；本次
+Phase 1P accepted 不顺手开始协议协商、stderr 排水或任何产品能力。macOS、X11、Wayland 的
+真实窗口、IME、多屏和 compositor 体验继续由 WP-7-02 作为正式发布前硬门禁。

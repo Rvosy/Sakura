@@ -1,6 +1,6 @@
 # ADR-0004：Runtime v2 跨平台基础与平台后端边界
 
-> 状态：Proposed（跨平台要求已批准，技术实现待 Phase 1P 验证）
+> 状态：Technically Validated for CI platform foundation
 > 日期：2026-07-22
 > 适用范围：Tauri Shell、legacy Qt 回退、Python Core 监管、透明窗口、运行时定位、诊断、CI 和发布打包
 
@@ -10,7 +10,9 @@ Runtime v2 已经在 Windows 上建立 Tauri Shell、共享应用锁、透明窗
 
 本 ADR 不否定已有 Windows 证据。现有 Win32 实现继续保留为 Windows backend；需要纠正的是把平台 backend 当成 Runtime 抽象本身，以及用单平台证据接受影响多平台的 Work Package。
 
-本 ADR 的跨平台要求是已批准的产品和架构约束。`Proposed` 仅表示具体 backend 尚未完成技术验证，不表示可以继续按 Windows-only 路线实现后续阶段。
+本 ADR 的跨平台要求是已批准的产品和架构约束。Phase 1P 开始时的 `Proposed` 仅表示具体
+backend 尚未完成技术验证；当前已完成 CI platform foundation，但仍不表示真实设备体验或完整
+产品垂直链已经 Accepted。
 
 ## 决策
 
@@ -129,8 +131,25 @@ revision 和失败恢复模型保持平台无关，diagnostics 只输出脱敏�
 
 本记录不把 CI/Xvfb 结果描述成真实设备体验。macOS 的透明命中、IME、Retina、Spaces、多屏，
 Linux X11 的透明命中/拖动/IME/多屏，以及 Linux Wayland compositor、窗口身份和输入体验，
-均登记为 WP-7-02/WP-7-02-HW 发布前硬门禁。ADR-0004 仍等待 WP-1P-06 完成后，才可更新为
-`Technically Validated for CI platform foundation`。
+均登记为 WP-7-02/WP-7-02-HW 发布前硬门禁。本记录形成时 ADR-0004 仍等待 WP-1P-06；其
+完成证据和状态更新见下一节。
+
+## WP-1P-06 CI platform foundation 记录（2026-07-24）
+
+WP-1P-06 在最新实现 HEAD `b88e744918c0d84548fbdd43df8b17a0e00a4797` 完成三平台组合门禁。
+push platform run `30068988807`、pull_request platform run `30068990391` 与 Unit/UI run
+`30068990399` 全绿。Windows x64、macOS arm64、Linux x64 的原生 Shell 均通过正式共享锁、
+RuntimeLocator、ManagedProcessTreeBackend 启动 bundled Python Core，完成 hello、initialize/
+readiness、health、Snapshot、protocol shutdown、完整树清理、锁立即重获及 Shell 强杀保险回收。
+
+这使本 ADR 达到 `Technically Validated for CI platform foundation`，不构成完整产品
+`Accepted`。当前最小 Core 未伪造 Assistant、插件、MCP、TTS 或浏览器产品级排水；Supervisor、
+generation、IPC 和 Snapshot 产品语义也未改变。
+
+WP-7-02 是正式发布对应平台前不可绕过的真实设备硬门禁：macOS Apple Silicon 必须验证透明
+窗口、命中、拖动、焦点、中文/日文 IME、Retina、Spaces 和多屏；Linux X11 必须验证透明窗口、
+命中、拖动、焦点、IME 和多屏；Linux Wayland 必须验证透明、命中、拖动、焦点、IME、窗口身份
+及 compositor 行为。Phase 1P 的 CI/Xvfb 结果不计入这些设备证据。
 
 ## 结果与代价
 
@@ -150,6 +169,7 @@ Linux X11 的透明命中/拖动/IME/多屏，以及 Linux Wayland compositor、
 
 ## ADR 状态门禁
 
-本 ADR 从 `Proposed` 更新为 `Technically Validated` 前，WP-1P-01 至 WP-1P-06 必须全部完成自动和真实技术门，且三平台最小生命周期链均无 P0/P1。
+本 ADR 已在 WP-1P-01 至 WP-1P-06 全部完成 CI platform foundation、三平台最小生命周期链
+无 P0/P1 后更新为 `Technically Validated for CI platform foundation`。
 
 本 ADR 更新为 `Accepted` 前，还必须在至少一个真实产品垂直链中证明三个平台共用相同 Supervisor、IPC、Snapshot 和能力语义；平台 backend 只处理原生差异，没有产品能力静默降级。最终发布仍受功能等价台账和 Phase 7 门禁约束。
