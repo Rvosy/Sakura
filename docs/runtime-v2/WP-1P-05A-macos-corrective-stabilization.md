@@ -217,6 +217,46 @@ WP-7-02 的 Spaces、多屏、Retina、IME、签名或发布证据。
 独立回退：revert 本次仅文档提交即可恢复 `active`。实现回退仍按既有 WP 的逐提交序列进行，且不得
 触碰 `data/`、`characters/` 或 `runtime/`。
 
+### 2026-07-25 最终 accepted 记录（当前）
+
+本记录将 WP-1P-05A 的当前状态结论更新为 `accepted`，并且只取代以上历史 `active` 与
+`stabilizing` 记录中的旧当前状态结论；各历史记录仍作为其发生时的实施、验证和稳定化证据。实现边界
+为 `f499e327943794b40c822386efef59084f7b6f6b`；稳定化文档提交及当前已验证 SHA 为
+`beea2ea10d513dc3d3cdca7804f80af45fbb518c`。
+
+- 独立任务复审判定稳定化转换符合规范、任务质量获批准，且没有 Critical/Important 或 P0/P1 发现。
+- 在 `beea2ea` 的新鲜本地门禁：定向 Python `33 passed`；`tests/unit` 为 `982 passed, 2 skipped`；
+  frontend 为 `18 passed`；`cargo fmt --check` 通过；debug 与 release `cargo build --locked` 均通过；
+  `cargo test --locked -- --test-threads=1` 为 `96 passed, 3 ignored`；`git diff --check` 通过。
+- Python 与 Cargo 命令均使用 `PYTHONDONTWRITEBYTECODE=1`。Cargo test 使用唯一 `/private/tmp`
+  `python` shim；精确 `unlink`/`rmdir` 清理成功，未遗留 shim。既有 Rust dead-code warnings 未变化。
+- macOS Computer Use 覆盖 `PYTHONDONTWRITEBYTECODE=1 bash scripts/start.sh` 与
+  `PYTHONDONTWRITEBYTECODE=1 ./runtime/bin/python3 main.py`：两者均无需桌面点击即可出现；visibility
+  probe 隐藏并自动恢复窗口，恢复后首次点击立即改变状态；`lsappinfo` 报告 bundle ID
+  `com.rvosy.sakura.runtimev2.shell`、`fileType=APPL`，以及 release
+  `.sakura-dev/Sakura Runtime v2.app` 路径。`start.sh` 轮次还覆盖 idle → bubble → composer →
+  expanded → idle 和本地文本输入。两次启动均以 exit code 0 关闭，最终 Shell/Core/shared-lock-holder
+  扫描为空。
+- 项目负责人关于物理鼠标的证据明确获接受：向左、向上、向中央拖动，以及全部四种状态往返均通过。
+- 精确 SHA `beea2ea10d513dc3d3cdca7804f80af45fbb518c` 的 CI：push platform matrix run
+  `30117418138` 成功，Windows x64/macOS arm64/Linux x64 全部通过：
+  https://github.com/Rvosy/Sakura/actions/runs/30117418138；既有 Draft PR platform matrix run
+  `30117421223` 成功，三平台全部通过：
+  https://github.com/Rvosy/Sakura/actions/runs/30117421223；Unit/UI run `30117421237` 成功，两个
+  job 均通过：
+  https://github.com/Rvosy/Sakura/actions/runs/30117421237。既有 Draft PR #147 早于本任务，未创建或修改。
+- 已批准的受保护目录基线保持不触碰；本 docs 任务前的新鲜只读摘要为：`characters/` 不存在 / 0 files /
+  0 bytes；`data/` 为 1 file / 939022 bytes；`runtime/` 为 49938 files / 2602963793 bytes；获批准的
+  既有 pyc 为 2559 bytes，SHA-256
+  `4f8dfdcb014ea40daa8ae7f0e0e1125841d20f2aee825f43f15fc65eaa6edcfd`。获批准的起始基线之后唯一新
+  差异是 `data/logs/sakura-runtime.log` 增长 93448 bytes，现为 939022 bytes，SHA-256
+  `2f450db0fdb911f97da107f47245705a7a4aae8793e4955f89ce12fca668830a`；`characters/` 和 Runtime
+  文件数/bytes 均未变化。
+- P0/P1 acceptance audit 为零。此 accepted 记录不宣称 WP-7-02 对 Spaces、多显示器、Retina、IME、
+  签名、公证或发布打包的覆盖。
+- 独立回退：revert 本 accepted docs commit 即可将 WP-1P-05A 恢复为 `stabilizing`；实现回退仍按既有
+  逐提交路径进行；绝不触碰受保护目录。
+
 ## 5. 独立回退
 
 按提交顺序回退本 WP 的 accepted、实现和激活提交。回退后恢复 WP-1P-05 accepted 的状态，

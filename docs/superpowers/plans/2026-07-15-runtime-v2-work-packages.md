@@ -72,7 +72,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-03 | Windows/POSIX 共享应用锁 backends | WP-1P-02 | accepted |
 | WP-1P-04 | Windows/macOS/Linux 受控进程树 backends | WP-1P-03 | accepted |
 | WP-1P-05 | 三平台窗口交互、IME 与原生诊断 backends | WP-1P-04 | accepted |
-| WP-1P-05A | macOS Runtime v2 窄范围基础纠正稳定化 | WP-1P-05 | stabilizing |
+| WP-1P-05A | macOS Runtime v2 窄范围基础纠正稳定化 | WP-1P-05 | accepted |
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
@@ -112,9 +112,10 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
-`WP-1P-05A` 是当前唯一 `stabilizing` Work Package，范围、允许目录、故障矩阵、真实 macOS
-验收和独立回退见 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01`
-仍为 planned；在 WP-1P-05A accepted 前不得激活，其后续激活仍须由项目负责人另行开始。
+`WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
+`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。接受后没有 Work Package 处于
+`active` 或 `stabilizing`。`WP-3-01` 仍为 planned，实施前必须由项目负责人另行完成 docs-only
+激活；不得因 WP-1P-05A 已 accepted 而自动开始。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
