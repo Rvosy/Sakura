@@ -331,15 +331,23 @@ pub fn start_native_drag_and_wait(window: &tauri::WebviewWindow) -> Result<(), S
 
 #[cfg(not(windows))]
 pub fn apply_native_hit_regions(
-    _window: &tauri::WebviewWindow,
-    _model: &PhysicalHitRegions,
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    Err("native transparent hit regions are supported only on Windows".to_string())
+    // POSIX routing is performed by WebView pointer-events and the shared
+    // model. Keep this compatibility entry point interactive for callers that
+    // still use the pre-backend helper.
+    let _ = model;
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(not(windows))]
-pub fn restore_full_native_hit_region(_window: &tauri::WebviewWindow) -> Result<(), String> {
-    Ok(())
+pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(not(windows))]

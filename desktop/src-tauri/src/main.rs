@@ -22,7 +22,11 @@ mod window_interaction;
 
 use std::sync::Mutex;
 
-use platform::{InstanceLockAcquire, InstanceLockBackend, SHARED_INSTANCE_ID};
+use platform::{
+    InstanceLockAcquire, InstanceLockBackend, NativeDiagnosticsBackend,
+    NativeDiagnosticsBackendImpl, NativeDiagnosticsRequest, NativeWindowInteractionBackend,
+    WindowInteractionBackend, SHARED_INSTANCE_ID,
+};
 use serde::Serialize;
 use shared_instance::NativeInstanceLockBackend;
 use tauri::WebviewWindow;
@@ -141,7 +145,9 @@ fn apply_pet_layout(
         session.portrait_anchor,
     )?;
 
-    apply_native_bounds(&window, &application.physical_placement)?;
+    NativeWindowInteractionBackend
+        .apply_bounds(&window, &application.physical_placement)
+        .map_err(|error| error.to_string())?;
     let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
@@ -165,8 +171,9 @@ fn apply_native_interaction_region(
         &logical,
         application.scale_factor * application.content_scale,
     )?;
-    if let Err(error) = window_interaction::apply_native_hit_regions(window, &physical) {
-        return match window_interaction::restore_full_native_hit_region(window) {
+    let backend = NativeWindowInteractionBackend;
+    if let Err(error) = backend.apply_hit_regions(window, &physical) {
+        return match backend.restore_full_hit_region(window) {
             Ok(()) => Err(format!(
                 "failed to apply native hit regions; restored full-window interaction: {error}"
             )),
@@ -183,7 +190,9 @@ fn start_pet_drag(
     window: WebviewWindow,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<PetLayoutApplication, String> {
-    window_interaction::start_native_drag_and_wait(&window)?;
+    NativeWindowInteractionBackend
+        .start_drag_and_wait(&window)
+        .map_err(|error| error.to_string())?;
 
     let contract = layout_contract()?;
     let mut session = session
@@ -211,7 +220,9 @@ fn start_pet_drag(
         &monitor,
         Some(requested_anchor),
     )?;
-    apply_native_bounds(&window, &application.physical_placement)?;
+    NativeWindowInteractionBackend
+        .apply_bounds(&window, &application.physical_placement)
+        .map_err(|error| error.to_string())?;
     let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
     session.portrait_anchor = Some(application.portrait_anchor);
     Ok(PetLayoutApplication {
@@ -220,60 +231,20 @@ fn start_pet_drag(
     })
 }
 
-#[cfg(windows)]
-fn apply_native_bounds(
-    window: &WebviewWindow,
-    placement: &window_geometry::PhysicalPlacement,
-) -> Result<(), String> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-    };
-
-    let hwnd = window
-        .hwnd()
-        .map_err(|error| format!("failed to access native pet window: {error}"))?;
-    let width = i32::try_from(placement.width)
-        .map_err(|_| "pet window width exceeds Win32 limits".to_string())?;
-    let height = i32::try_from(placement.height)
-        .map_err(|_| "pet window height exceeds Win32 limits".to_string())?;
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            placement.x,
-            placement.y,
-            width,
-            height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
-        )
-        .map_err(|error| format!("failed to apply atomic pet window bounds: {error}"))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn apply_native_bounds(
-    window: &WebviewWindow,
-    placement: &window_geometry::PhysicalPlacement,
-) -> Result<(), String> {
-    use tauri::{PhysicalPosition, PhysicalSize};
-
-    window
-        .set_size(PhysicalSize::new(placement.width, placement.height))
-        .map_err(|error| error.to_string())?;
-    window
-        .set_position(PhysicalPosition::new(placement.x, placement.y))
+#[tauri::command]
+fn set_pet_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
+    NativeWindowInteractionBackend
+        .set_visible(&window, visible)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn set_pet_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
-    if visible {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())
-    } else {
-        window.hide().map_err(|error| error.to_string())
-    }
+fn collect_native_diagnostics(
+    request: Option<NativeDiagnosticsRequest>,
+) -> Result<platform::NativeDiagnosticsSnapshot, String> {
+    NativeDiagnosticsBackendImpl
+        .collect(&request.unwrap_or_default())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -362,7 +333,8 @@ fn main() {
             apply_pet_layout,
             start_pet_drag,
             set_pet_visible,
-            close_pet_window
+            close_pet_window,
+            collect_native_diagnostics
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Sakura Runtime v2 pet geometry gate");

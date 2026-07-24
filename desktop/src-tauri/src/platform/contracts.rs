@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, ffi::OsString, fs::File, path::PathBuf, time::Duration};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     PlatformError, PlatformErrorCategory, PlatformResult, PlatformService, PlatformTarget,
@@ -150,7 +150,8 @@ pub trait RuntimeLocator: Send + Sync {
     fn locate(&self, request: &RuntimeLocationRequest) -> PlatformResult<RuntimeLayout>;
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeDiagnosticsRequest {
     pub window_label: Option<String>,
 }
