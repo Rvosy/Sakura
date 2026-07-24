@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::RuntimeArchitecture;
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, Serialize)]
 pub enum PlatformTarget {
     #[serde(rename = "windows-x64")]
@@ -26,6 +28,13 @@ impl PlatformTarget {
             Self::WindowsX64 => "windows-x64",
             Self::MacOsArm64 => "macos-arm64",
             Self::LinuxX64 => "linux-x64",
+        }
+    }
+
+    pub const fn architecture(self) -> RuntimeArchitecture {
+        match self {
+            Self::WindowsX64 | Self::LinuxX64 => RuntimeArchitecture::X64,
+            Self::MacOsArm64 => RuntimeArchitecture::Arm64,
         }
     }
 
@@ -76,6 +85,18 @@ mod tests {
                 Some(target)
             );
         }
+        assert_eq!(
+            PlatformTarget::WindowsX64.architecture(),
+            RuntimeArchitecture::X64
+        );
+        assert_eq!(
+            PlatformTarget::MacOsArm64.architecture(),
+            RuntimeArchitecture::Arm64
+        );
+        assert_eq!(
+            PlatformTarget::LinuxX64.architecture(),
+            RuntimeArchitecture::X64
+        );
         assert_eq!(
             PlatformTarget::from_rust_triple("x86_64-apple-darwin"),
             None

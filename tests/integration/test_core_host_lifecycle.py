@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import struct
 import subprocess
@@ -24,6 +25,12 @@ CAPABILITIES = [
     "core.initialize",
     "core.snapshot",
 ]
+LIFECYCLE_GOLDEN = json.loads(
+    (REPO_ROOT / "tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json").read_text(
+        encoding="utf-8"
+    )
+)
+REQUEST_TIMEOUT = LIFECYCLE_GOLDEN["deadlinesMs"]["request"] / 1000
 
 
 def request(request_id: str, name: str, payload: dict[str, object] | None = None) -> dict[str, object]:
@@ -72,7 +79,7 @@ def start_host(generation_id: str = GENERATION_ID) -> subprocess.Popen[bytes]:
 
 
 def read_with_deadline(
-    process: subprocess.Popen[bytes], stream: BinaryIO, timeout: float = 3.0
+    process: subprocess.Popen[bytes], stream: BinaryIO, timeout: float = REQUEST_TIMEOUT
 ) -> dict[str, object]:
     result: queue.Queue[object] = queue.Queue(maxsize=1)
 
@@ -120,6 +127,37 @@ def stop_host(process: subprocess.Popen[bytes]) -> None:
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+
+
+def test_wp_1c_04_shared_lifecycle_golden_matches_python_contract() -> None:
+    assert LIFECYCLE_GOLDEN["schemaVersion"] == 1
+    assert LIFECYCLE_GOLDEN["protocol"] == {
+        "major": 2,
+        "minMinor": 0,
+        "maxMinor": 1,
+        "requiredCapabilities": CAPABILITIES,
+    }
+    assert LIFECYCLE_GOLDEN["deadlinesMs"] == {
+        "hello": 3000,
+        "initializeAcceptance": 5000,
+        "readinessWatchdog": 30000,
+        "request": 3000,
+        "shutdown": 3000,
+        "treeStop": 5000,
+    }
+    assert LIFECYCLE_GOLDEN["lifecycle"] == [
+        "system.hello",
+        "core.initialize",
+        "core.readiness",
+        "core.snapshot",
+        "system.health",
+        "system.shutdown",
+    ]
+    assert {layout["target"] for layout in LIFECYCLE_GOLDEN["layouts"]} == {
+        "windows-x64",
+        "macos-arm64",
+        "linux-x64",
+    }
 
 
 def test_real_host_answers_hello_repeated_health_unknown_and_shutdown() -> None:
@@ -310,5 +348,36 @@ def test_real_host_health_and_shutdown_remain_responsive_when_initialize_hangs()
             }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
+    finally:
+        stop_host(process)
+
+
+def test_real_host_failed_readiness_still_cleans_init_and_writer_threads() -> None:
+    process = start_host()
+    try:
+        assert exchange(process, request("hello-failed", "system.hello"))["ok"] is True
+        initialize = exchange(
+            process,
+            request("initialize-failed", "core.initialize", {"mode": "failed"}),
+        )
+        assert initialize["payload"]["readiness"] == "initializing"
+        deadline = (
+            time.monotonic()
+            + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        )
+        while True:
+            snapshot = exchange(process, request("snapshot-failed", "core.snapshot"))["payload"]
+            if snapshot["readiness"] == "failed":
+                break
+            assert time.monotonic() < deadline
+        health = exchange(process, request("health-failed", "system.health"))
+        assert health["payload"] == {"hostState": "failed", "status": "healthy"}
+        assert exchange(process, request("shutdown-failed", "system.shutdown"))["ok"] is True
+        assert (
+            process.wait(timeout=LIFECYCLE_GOLDEN["deadlinesMs"]["treeStop"] / 1000)
+            == 0
+        )
+        assert process.stdout is not None
+        assert process.stdout.read() == b""
     finally:
         stop_host(process)

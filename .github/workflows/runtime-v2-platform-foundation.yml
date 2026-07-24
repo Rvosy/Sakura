@@ -185,6 +185,17 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
+      - name: Stage the frozen packaged Runtime and Core resource layout
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python desktop/tests/stage_wp_1c_04_bundled_runtime.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --target "${{ matrix.platform }}" \
+            --development-runtime "$GITHUB_WORKSPACE/runtime" \
+            --resources "$RUNNER_TEMP/sakura-wp-1c-04-packaged-resources"
+
       - name: Check formatting
         working-directory: desktop
         timeout-minutes: 3
@@ -254,7 +265,17 @@ jobs:
           ], timeout=180).returncode)
           PY
 
-      - name: Run native Windows Shell + Python Core lifecycle
+      - name: Run packaged bundled Python lifecycle and fault matrix
+        working-directory: desktop
+        timeout-minutes: 4
+        env:
+          RUST_BACKTRACE: '1'
+          SAKURA_WP_1C_04_PACKAGED_RESOURCES: ${{ runner.temp }}/sakura-wp-1c-04-packaged-resources
+        run: >-
+          python tests/run_wp_1c_04_packaged_lifecycle.py
+          --resources "${{ runner.temp }}/sakura-wp-1c-04-packaged-resources"
+
+      - name: Run native Windows Shell + development bundled Python Core lifecycle
         if: runner.os == 'Windows'
         working-directory: desktop
         timeout-minutes: 5
@@ -264,7 +285,7 @@ jobs:
           --binary src-tauri/target/debug/sakura-runtime-v2-shell.exe
           --repo ..
 
-      - name: Run native macOS Shell + Python Core lifecycle
+      - name: Run native macOS Shell + development bundled Python Core lifecycle
         if: runner.os == 'macOS'
         working-directory: desktop
         timeout-minutes: 5
@@ -274,7 +295,7 @@ jobs:
           --binary src-tauri/target/debug/sakura-runtime-v2-shell
           --repo ..
 
-      - name: Run native Linux Xvfb Shell + Python Core lifecycle
+      - name: Run native Linux Xvfb Shell + development bundled Python Core lifecycle
         if: runner.os == 'Linux'
         working-directory: desktop
         timeout-minutes: 5

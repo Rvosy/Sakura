@@ -345,3 +345,20 @@ deadline、Core crash、writer queue closed 和 shutdown 竞态均有可执行�
 聊天 cancel/唯一终态、乱序 response/event、终态保留和真实 Assistant 控制隔离；这些必须由
 WP-2-01/02 与 WP-3V-01 完成。通用 Operation、完整 progress backpressure、资源平台和未来消费者
 模型仍只是方向，不需要在本 ADR Accepted 前完整实现。
+
+## WP-1C-04 bundled lifecycle 技术验证记录（2026-07-24）
+
+WP-1C-04 在既有 transport foundation 上增加由 `RuntimeLocator` 唯一提供的结构化 Runtime layout，
+冻结 target/architecture、bundled Python、资源根、Core entry/module、工作目录和 source identity。
+Core 启动前 fail closed 验证 absolute/canonical containment；产品路径不扫描 `PATH`、不回退系统
+Python、不推断 build directory，也不在公共逻辑假设 `.exe`。共享 lifecycle golden 同时约束 Rust、
+Python 和真实 Shell 的三平台 packaged layout、协议 capability、既有 deadline 与最小生命周期顺序。
+
+Windows x64 预验收已通过固定 Python 3.12.8 AMD64 archive 校验、packaged lifecycle/fault matrix、
+真实 Tauri Shell normal/crash/reacquire 三轮、连续 generation 隔离、failed readiness、Core crash、
+忽略 shutdown 强制整树回收、共享锁冲突/立即重获以及 packaged/Core/characters/data/runtime 前后
+内容摘要一致。最终精确进程和验收临时目录残留均为 0；Rust/Python 定向测试全绿。
+
+本记录尚待同一实现 HEAD 的 Windows x64、macOS arm64、Linux x64 push/pull_request platform
+foundation 与 Unit/UI 权威 run。全部通过、P0/P1 为 0 并完成最终审查后，才补入 run/SHA 证据并
+关闭 WP-1C-04；本节不改变 ADR 对 Router、cancel、真实 Assistant 和 Accepted 状态的后续门禁。

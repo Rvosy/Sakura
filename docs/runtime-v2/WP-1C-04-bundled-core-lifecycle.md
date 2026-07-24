@@ -84,3 +84,42 @@ git revert --no-edit <WP-1C-04-commit-SHA>
 
 回退后恢复 WP-1P-06 已验证的开发 `RuntimeLocator`/Fake Core 生命周期路径；保留 WP-1C-03
 协议安全、三平台进程树与共享锁门禁，不删除或改写 `data/`、`runtime/`、角色、配置和历史。
+
+## 7. 实现与 Windows 预验收记录（2026-07-24）
+
+当前实现把 `RuntimeLayout` 冻结为 target、architecture、mode、Runtime root、Python executable、
+resource root、Core entry、Core module、working directory 和 source ID。`CoreHostRuntime` 仅消费
+该结构，并在 spawn 前验证所有路径为 absolute/canonical、Python 与资源位于 Runtime root、Core
+entry 位于资源根且与 module 一致。启动参数固定使用 `-I -B -X utf8` 和受控 bootstrap；生产代码
+没有系统 Python fallback、`PATH` 扫描、隐式 cwd、`target/debug` 推断或公共 `.exe` 假设。
+
+共享 `lifecycle-golden.json` 同时由 Rust locator/runtime 与 Python integration/Shell 验收读取，冻结
+三 target 的 architecture/packaged layout、协议版本/capability、既有 deadline 和
+`hello -> initialize -> readiness -> Snapshot -> health -> shutdown` 顺序。CI 从现有三份固定 manifest
+下载并校验 archive 后，同时 staging development 和 packaged Runtime；packaged 资源只复制无 Qt
+`app/core_host`，运行前后递归内容摘要必须相同。
+
+Windows x64 本机预验收使用 Python 3.12.8 AMD64 固定 archive，size `11094114`、SHA-256
+`8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb`。packaged lifecycle/fault
+matrix 为 1 passed，覆盖连续两代 ready lifecycle、failed readiness、Core crash、忽略 shutdown 与
+强制整树回收；40 个 packaged 文件、`22450769` bytes，前后摘要均为
+`fcdc6dfa6eb426aac2b71d9c1c037140a3d15e8695b51b4534432e8b85b86121`。
+
+真实 Debug Tauri Shell 完成 normal+lock conflict、Shell crash、lock reacquire 三轮；每轮由正式
+development `RuntimeLocator` 启动 bundled Python，完成 hello/initialize/ready Snapshot/两次 health/
+protocol shutdown，crash 后 Core Job 整树退出，下一轮立即重获共享锁。最终精确匹配 Shell/Core
+进程 0、验收临时目录 0。保护资源 before/after 逐项相同：`characters/` 16 文件、343514157 bytes、
+SHA-256 `612d93d89a4f32a5033bafae7852200fe3161beaf8035ce41338a98a542d15f5`；`data/` 13 文件、
+4182744 bytes、SHA-256 `c5a4019f0af056d6b317524f2345f68c46b911ef9b74f92f562b9f667663a5fa`；
+`runtime/` 47501 文件、2028445327 bytes、SHA-256
+`03cb4c7039ebaf4a7ab5e4232d1395455c5aafeb03024fe040b503b279304a78`。
+
+本机自动门禁：相关 Python 47 passed；archive/workflow 3 passed；最终 Python integration/workflow
+16 passed；Rust CoreHost 19 passed、1 个 packaged 显式验收项按默认 ignored；显式 packaged 项
+1 passed；完整 Rust 112 passed、15 个 fixture/显式验收项 ignored；`cargo fmt --check`、Debug locked
+build 和三份 Python 脚本 `py_compile` 通过。本机完整 Unit 的 WP 相关测试全绿；其余既有测试因本机
+残留 `F:\Projects\Sakura`/无权限 `D:\` 产生 6 failed、12 setup errors，不涉及本 WP 修改路径，最终
+权威结果以同一提交的 GitHub Unit/UI jobs 为准。
+
+三平台 push/pull_request platform foundation 与 Unit/UI 尚待首个实现提交触发；在这些 run 对同一
+最新 HEAD 全绿前，总表保持原状态，不激活 WP-3-01。

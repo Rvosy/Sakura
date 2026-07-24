@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    fs::File,
+    fs::{self, File},
     io::{Read, Write},
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -527,21 +527,28 @@ impl std::fmt::Debug for CoreHostRuntime {
 
 impl CoreHostRuntime {
     pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
-        let application_root_text = layout.application_root.to_string_lossy().replace('\\', "/");
-        let application_root = serde_json::to_string(&application_root_text)
-            .map_err(|error| format!("Core Host application root encoding failed: {error}"))?;
+        validate_runtime_layout(layout)?;
+        let resource_root_text = layout.resource_root.to_string_lossy().replace('\\', "/");
+        let resource_root = serde_json::to_string(&resource_root_text)
+            .map_err(|error| format!("Core Host resource root encoding failed: {error}"))?;
+        let core_main = serde_json::to_string(&format!("{}.__main__", layout.core_module))
+            .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
         // Official Windows embeddable Python runs with `isolated=1` and its
         // `_pth` file intentionally ignores PYTHONPATH/current-directory
         // discovery. Insert the RuntimeLocator-approved application root
         // explicitly before importing the Qt-free Core Host module.
         let bootstrap = format!(
-            "import runpy,sys;sys.path.insert(0,{application_root});sys.argv[0]='app.core_host';runpy.run_module('app.core_host.__main__',run_name='__main__')"
+            "import runpy,sys;sys.path.insert(0,{resource_root});sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
         );
         Self::launch_with_backend(
             &NativeManagedProcessTreeBackend,
             ManagedProcessRequest {
                 program: layout.python_executable.clone(),
                 args: vec![
+                    "-I".into(),
+                    "-B".into(),
+                    "-X".into(),
+                    "utf8".into(),
                     "-c".into(),
                     bootstrap.into(),
                     "--generation-id".into(),
@@ -549,7 +556,7 @@ impl CoreHostRuntime {
                     "--generation-number".into(),
                     "1".into(),
                 ],
-                current_directory: Some(layout.application_root.clone()),
+                current_directory: Some(layout.working_directory.clone()),
                 environment_overrides: Vec::new(),
                 stdio: ProcessStdio::Piped,
             },
@@ -1029,7 +1036,7 @@ mod tests {
     #[cfg(windows)]
     use std::sync::mpsc;
 
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use crate::{
         platform::{
@@ -1051,6 +1058,8 @@ mod tests {
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
+    const WP_1C_04_LIFECYCLE_GOLDEN: &str =
+        include_str!("../../../tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json");
 
     static LIFECYCLE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -1400,6 +1409,259 @@ mod tests {
         assert!(exit.forced);
     }
 
+    fn lifecycle_golden() -> Value {
+        serde_json::from_str(WP_1C_04_LIFECYCLE_GOLDEN)
+            .expect("WP-1C-04 lifecycle golden should parse")
+    }
+
+    fn golden_deadline(golden: &Value, name: &str) -> Duration {
+        Duration::from_millis(
+            golden["deadlinesMs"][name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("missing WP-1C-04 {name} deadline")),
+        )
+    }
+
+    fn packaged_layout() -> crate::platform::RuntimeLayout {
+        let resource_directory = PathBuf::from(
+            std::env::var_os("SAKURA_WP_1C_04_PACKAGED_RESOURCES")
+                .expect("packaged resource fixture environment is required"),
+        )
+        .canonicalize()
+        .expect("packaged resource fixture should resolve");
+        FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::Packaged,
+                target: crate::platform::current_platform_target()
+                    .expect("tests run on a formal Runtime v2 target"),
+                executable_directory: std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf(),
+                resource_directory,
+                explicit_development_root: None,
+            })
+            .expect("staged packaged Runtime should resolve")
+    }
+
+    fn complete_ready_lifecycle(
+        layout: &crate::platform::RuntimeLayout,
+        generation_id: &str,
+        golden: &Value,
+    ) -> (super::CoreHostExit, String) {
+        let mut host = CoreHostRuntime::launch(layout, generation_id)
+            .expect("bundled Python Core Host should launch");
+        let credential = host.generation_credential.clone();
+        let hello = host
+            .request("hello", "system.hello", golden_deadline(golden, "hello"))
+            .expect("hello should negotiate");
+        assert_eq!(hello["ok"], true);
+        let initialize = host
+            .request_with_payload(
+                "initialize",
+                "core.initialize",
+                json!({"mode": "ready", "delayMs": 20}),
+                golden_deadline(golden, "initializeAcceptance"),
+            )
+            .expect("initialize should be accepted");
+        assert_eq!(initialize["payload"]["readiness"], "initializing");
+        let readiness_deadline =
+            std::time::Instant::now() + golden_deadline(golden, "readinessWatchdog");
+        loop {
+            let snapshot = host
+                .refresh_snapshot("snapshot", golden_deadline(golden, "request"))
+                .expect("Snapshot should respond");
+            if snapshot["readiness"] == "ready" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < readiness_deadline,
+                "readiness watchdog expired"
+            );
+        }
+        let health = host
+            .request(
+                "health",
+                "system.health",
+                golden_deadline(golden, "request"),
+            )
+            .expect("health should respond");
+        assert_eq!(health["payload"]["status"], "healthy");
+        let exit = host
+            .shutdown(
+                golden_deadline(golden, "shutdown"),
+                golden_deadline(golden, "treeStop"),
+            )
+            .expect("protocol shutdown should clean the bundled Core tree");
+        (exit, credential)
+    }
+
+    #[test]
+    fn wp_1c_04_shared_golden_freezes_lifecycle_order_and_deadlines() {
+        let golden = lifecycle_golden();
+        assert_eq!(golden["schemaVersion"], 1);
+        assert_eq!(
+            golden["lifecycle"],
+            json!([
+                "system.hello",
+                "core.initialize",
+                "core.readiness",
+                "core.snapshot",
+                "system.health",
+                "system.shutdown"
+            ])
+        );
+        assert_eq!(golden_deadline(&golden, "hello"), Duration::from_secs(3));
+        assert_eq!(
+            golden_deadline(&golden, "initializeAcceptance"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            golden_deadline(&golden, "readinessWatchdog"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(golden_deadline(&golden, "shutdown"), Duration::from_secs(3));
+        assert_eq!(golden_deadline(&golden, "treeStop"), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn core_host_launch_rejects_layouts_outside_the_locator_contract_before_spawn() {
+        let mut wrong_architecture = development_layout();
+        wrong_architecture.architecture = match wrong_architecture.architecture {
+            crate::platform::RuntimeArchitecture::X64 => {
+                crate::platform::RuntimeArchitecture::Arm64
+            }
+            crate::platform::RuntimeArchitecture::Arm64 => {
+                crate::platform::RuntimeArchitecture::X64
+            }
+        };
+        let error = CoreHostRuntime::launch(&wrong_architecture, GENERATION_ID)
+            .expect_err("incompatible layout architecture must fail before spawn");
+        assert!(error.contains("architecture"));
+
+        let mut inconsistent_entry = development_layout();
+        inconsistent_entry.core_entry = inconsistent_entry.python_executable.clone();
+        let error = CoreHostRuntime::launch(&inconsistent_entry, GENERATION_ID)
+            .expect_err("inconsistent Core entry must fail before spawn");
+        assert!(error.contains("Core entry"));
+
+        let mut escaped_resources = development_layout();
+        escaped_resources.runtime_root = escaped_resources
+            .runtime_root
+            .join("runtime")
+            .canonicalize()
+            .expect("development Runtime directory should resolve");
+        let error = CoreHostRuntime::launch(&escaped_resources, GENERATION_ID)
+            .expect_err("resources outside the Runtime root must fail before spawn");
+        assert!(error.contains("resources"));
+    }
+
+    #[test]
+    #[ignore = "requires the exact packaged target Runtime staged by the platform CI job"]
+    fn staged_packaged_runtime_runs_lifecycle_faults_and_clean_generations() {
+        let _test_lock = lifecycle_test_lock();
+        let golden = lifecycle_golden();
+        let layout = packaged_layout();
+        assert_eq!(layout.mode, RuntimeMode::Packaged);
+        assert_eq!(layout.architecture, layout.target.architecture());
+        assert!(layout.python_executable.starts_with(&layout.runtime_root));
+        assert!(layout.resource_root.starts_with(&layout.runtime_root));
+        assert_eq!(layout.working_directory, layout.resource_root);
+        assert!(layout.core_entry.starts_with(&layout.resource_root));
+
+        let first_generation = "00000000-0000-4000-8000-000000004001";
+        let second_generation = "00000000-0000-4000-8000-000000004002";
+        let (first_exit, first_credential) =
+            complete_ready_lifecycle(&layout, first_generation, &golden);
+        assert_eq!(first_exit.root_exit_code, 0);
+        assert!(first_exit.tree_empty);
+        assert!(!first_exit.forced);
+
+        let (second_exit, second_credential) =
+            complete_ready_lifecycle(&layout, second_generation, &golden);
+        assert_eq!(second_exit.root_exit_code, 0);
+        assert!(second_exit.tree_empty);
+        assert!(!second_exit.forced);
+        assert_ne!(first_credential, second_credential);
+
+        let mut failed = CoreHostRuntime::launch(&layout, "00000000-0000-4000-8000-000000004003")
+            .expect("failed-readiness generation launches");
+        failed
+            .request(
+                "hello-failed",
+                "system.hello",
+                golden_deadline(&golden, "hello"),
+            )
+            .expect("failed-readiness hello negotiates");
+        failed
+            .request_with_payload(
+                "initialize-failed",
+                "core.initialize",
+                json!({"mode": "failed"}),
+                golden_deadline(&golden, "initializeAcceptance"),
+            )
+            .expect("failed readiness initialization is accepted");
+        let readiness_deadline =
+            std::time::Instant::now() + golden_deadline(&golden, "readinessWatchdog");
+        loop {
+            let snapshot = failed
+                .refresh_snapshot("snapshot-failed", golden_deadline(&golden, "request"))
+                .expect("failed readiness Snapshot responds");
+            if snapshot["readiness"] == "failed" {
+                break;
+            }
+            assert!(std::time::Instant::now() < readiness_deadline);
+        }
+        let failed_exit = failed
+            .shutdown(
+                golden_deadline(&golden, "shutdown"),
+                golden_deadline(&golden, "treeStop"),
+            )
+            .expect("failed readiness generation cleans up");
+        assert!(failed_exit.tree_empty);
+
+        let root = repo_root();
+        let crash_fixture = root.join("tests/fixtures/runtime_v2/wp_1c_03/stderr_crash_host.py");
+        let mut crashed = CoreHostRuntime::launch_script_for_test(
+            &layout.python_executable,
+            &layout.working_directory,
+            &crash_fixture,
+            "00000000-0000-4000-8000-000000004004",
+        )
+        .expect("bundled Python crash fixture launches");
+        let error = crashed
+            .request(
+                "hello-crash",
+                "system.hello",
+                golden_deadline(&golden, "hello"),
+            )
+            .expect_err("crashed bundled Core cannot answer hello");
+        assert!(error.starts_with("CORE_CRASHED:"));
+        let crash_exit = crashed
+            .close_stdin_and_wait(golden_deadline(&golden, "treeStop"))
+            .expect("crashed bundled Core resources finalize");
+        assert!(crash_exit.tree_empty);
+
+        let ignoring_fixture =
+            root.join("tests/fixtures/runtime_v2/wp_1c_01/ignoring_shutdown_host.py");
+        let ignoring = CoreHostRuntime::launch_script_for_test(
+            &layout.python_executable,
+            &layout.working_directory,
+            &ignoring_fixture,
+            "00000000-0000-4000-8000-000000004005",
+        )
+        .expect("bundled Python ignored-shutdown fixture launches");
+        let forced = ignoring
+            .shutdown(
+                Duration::from_millis(250),
+                golden_deadline(&golden, "treeStop"),
+            )
+            .expect("ignored shutdown force-cleans bundled Core tree");
+        assert!(forced.forced);
+        assert!(forced.tree_empty);
+    }
+
     #[test]
     fn trailing_stdout_pollution_is_rejected_after_a_valid_shutdown_response() {
         let _test_lock = lifecycle_test_lock();
@@ -1605,4 +1867,51 @@ mod tests {
         assert!(matches!(reacquired, InstanceLockAcquire::Acquired(_)));
         drop(reacquired);
     }
+}
+
+fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
+    let current_target = crate::platform::current_platform_target()
+        .ok_or_else(|| "Core Host requires a formal Runtime v2 target".to_string())?;
+    if layout.target != current_target || layout.architecture != layout.target.architecture() {
+        return Err("Core Host Runtime layout target or architecture is incompatible".to_string());
+    }
+    if layout.core_module != "app.core_host" || layout.source_id.trim().is_empty() {
+        return Err("Core Host Runtime layout identity is invalid".to_string());
+    }
+    for path in [
+        &layout.runtime_root,
+        &layout.python_executable,
+        &layout.resource_root,
+        &layout.application_root,
+        &layout.core_entry,
+        &layout.working_directory,
+    ] {
+        if !path.is_absolute() {
+            return Err("Core Host Runtime layout paths must be absolute".to_string());
+        }
+        if fs::canonicalize(path).ok().as_ref() != Some(path) {
+            return Err("Core Host Runtime layout paths must be canonical".to_string());
+        }
+    }
+    if !layout.runtime_root.is_dir()
+        || !layout.python_executable.is_file()
+        || !layout.resource_root.is_dir()
+        || !layout.core_entry.is_file()
+        || !layout.working_directory.is_dir()
+        || layout.application_root != layout.resource_root
+        || !layout.python_executable.starts_with(&layout.runtime_root)
+        || !layout.resource_root.starts_with(&layout.runtime_root)
+        || !layout.core_entry.starts_with(&layout.resource_root)
+        || !layout.working_directory.starts_with(&layout.resource_root)
+    {
+        return Err("Core Host Runtime layout resources are invalid".to_string());
+    }
+    let located_entry = layout
+        .resource_root
+        .join(layout.core_module.replace('.', "/"))
+        .join("__main__.py");
+    if fs::canonicalize(located_entry).ok().as_ref() != Some(&layout.core_entry) {
+        return Err("Core Host Runtime layout Core entry is inconsistent".to_string());
+    }
+    Ok(())
 }

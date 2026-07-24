@@ -100,6 +100,13 @@ pub enum RuntimeMode {
     Packaged,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeArchitecture {
+    X64,
+    Arm64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeLocationRequest {
     pub mode: RuntimeMode,
@@ -138,11 +145,17 @@ impl RuntimeLocationRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeLayout {
     pub target: PlatformTarget,
+    pub architecture: RuntimeArchitecture,
     pub mode: RuntimeMode,
     pub runtime_root: PathBuf,
     pub python_executable: PathBuf,
+    /// Root containing the Python Core resources approved by RuntimeLocator.
+    pub resource_root: PathBuf,
+    /// Compatibility name retained for the Phase 1P acceptance wiring.
     pub application_root: PathBuf,
+    pub core_entry: PathBuf,
     pub core_module: String,
+    pub working_directory: PathBuf,
     pub source_id: String,
 }
 
