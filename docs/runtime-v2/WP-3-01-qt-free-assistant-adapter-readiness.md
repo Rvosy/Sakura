@@ -2,10 +2,9 @@
 
 ## 状态与范围
 
-**状态：active。** docs-only 激活记录见
-`docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`，逐任务实施步骤见
-`docs/superpowers/plans/2026-07-25-wp-3-01-assistant-adapter-readiness.md`。WP-3-01 是当前唯一
-`active` Work Package；WP-1D-01、WP-2-01、WP-2-02 与 WP-3-02 保持 `planned`。
+**历史结论：2026-07-26 accepted。** 当前状态唯一来源、接受证据和下一启动点见
+`docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`；逐任务实施记录见
+`docs/superpowers/plans/2026-07-25-wp-3-01-assistant-adapter-readiness.md`。
 
 WP-3-01 的结果是在既有 Core Host worker/lifecycle/readiness/Snapshot 机制中接入第一个
 真实、无 Qt 的 Assistant 会话。它加载角色和基础 Provider 配置，构造但不运行真实

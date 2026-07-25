@@ -16,11 +16,13 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 - 同一时间最多一个 Work Package 为 `active` 或 `stabilizing`。
 - 前置 Work Package 未 `accepted` 时，不得开始依赖它的生产实现。
 - Work Package 从 `planned` 进入 `active` 前，必须补充实际允许目录、验收环境和回退命令。
-- 每个 Work Package 完成生产实现后必须进入 `stabilizing`，清零 P0、P1 和退出条件相关缺陷后才能标记 `accepted`。
+- 每个 Work Package 完成生产实现后进入有界 `stabilizing` 候选验收；它不设最短持续时间，不隐含
+  独立 reviewer、whole-WP re-review 或未变化层级的重复测试。清零可复现、可归因的 P0、P1 和
+  退出条件缺陷，或由项目负责人按交付治理明确接受剩余非失败型证据风险后，即可标记 `accepted`。
 - 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
 - Work Package 当前状态只在本文第 2 节登记。独立规范、主计划、ADR、PR 描述和提交正文只能链接本表；可以保存带日期的历史激活/验收证据，但不得声明另一个“当前状态”或“当前启动点”。
 - 历史 WP 中的真实 `data/` 零变化摘要只证明当时那个 WP 的验收结果，不是当前或后续 WP 的
-  通用禁写规则；当前数据写入边界以仓库 `AGENTS.md` 和唯一 active WP 的激活记录为准。
+  通用禁写规则；当前数据写入边界以仓库 `AGENTS.md` 和当前 active WP（如有）的激活记录为准。
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
 - WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
 - WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
@@ -78,7 +80,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1P-06 | 三平台最小 Shell + Core lifecycle 和 CI 总门禁 | WP-1P-05 | accepted |
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
-| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | active |
+| WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
@@ -115,10 +117,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
-`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。WP-1P-05A accepted 当时没有 Work
-Package 处于 `active` 或 `stabilizing`；本次 `WP-3-01` 已通过单独的 docs-only 激活成为当前唯一
-`active` WP；
-其设计、实施计划、允许列表和回退见对应独立文档。WP-1D-01 及后续 WP 继续保持 planned。
+`docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
+accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。当前没有
+`active` 或 `stabilizing` Work Package；依赖已满足的下一个启动点是仍为 `planned` 的 WP-1D-01。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1689,6 +1690,20 @@ development/packaged RuntimeLocator、真实 lifecycle/fault matrix、连续 gen
 CI：设计 SHA b6f343a 的 PR platform run 30122282238 与 Unit/UI run 30122282057 成功；docs-only push 未命中 platform push path filter。生产提交必须由对称 push/PR filters 触发三平台，并显式执行新增 core_host pytest
 计划提交：按实施计划 Task 1-6 分别执行 TDD、独立任务复审和单一目的中文 Conventional Commit；完成后另做 docs-only stabilizing 与 accepted
 回退：先停止并验证所有 generation/受控树/pipe/thread/temp/锁归零，再按 Task 6→1、激活提交逆序 git revert；恢复 WP-1C-04 fake readiness；不删除、恢复或改写既有用户日志/cache/migration/Qdrant/plugin data
+```
+
+接受记录（2026-07-26）：
+
+```text
+状态：accepted
+实施范围：激活提交 5878f61bf；Task 1-6、稳定化修复及政策同步截至 8063f2066
+三平台证据：Task 6 候选 ea32cf823 的 Runtime v2 platform workflow push run 30164771596 与 PR run 30164833465 全绿；Windows x64、macOS arm64、Linux x64 均显式执行 core_host pytest 和原生 Shell/Core lifecycle
+自动测试：ea32cf823 本地 Core Host 177 passed、frontend 18 passed、Rust 150 passed/23 ignored；c630575a4 本地 Runtime Python 189 passed、tests/unit 1106 passed/6 skipped、Rust RuntimeLocator/Phase 1C/CoreHostRuntime 定向及完整 cargo test 153 passed/23 ignored；cargo fmt 与 git diff --check 通过
+安全与资源：ready 零 Provider 网络调用、无 Qt/禁止领域 import；配置与 fixture 写集受控；正常、crash、close throw/block、强制 recovery、一个/多个 TERM-ignoring 后代均由受控树接管，root/后代/pipe/fd/handle/thread/temp 归零，锁可立即重获
+稳定化修复：c630575a4 冻结 PyYAML import artifact，移除 CI 对受验 Runtime 的 pip/site-packages/_pth 修改，并补齐真实 fault matrix、连续 generation、stale identity 与 expired-deadline recovery；8063f2066 将 data 全目录零变化纠正为按所有权审计预期/禁止写集
+项目负责人接受的剩余风险：c630575a4 自身尚无原生三平台 workflow 结果；它没有已知失败且本地相关与完整测试全绿。推送后的同 SHA 三平台运行作为发布监控，不再触发重复 review；仅可复现且可归因的 P0/P1 或退出条件回归暂停后续 WP 并重新打开 WP-3-01
+非目标：未增加聊天、Router、Gateway、Operation、Memory、MCP、插件、TTS、UI、Provider 网络调用或第二生命周期根
+回退：先停止并验证全部 generation、受控树、pipe/thread/temp 和锁归零；按 8063f2066、c630575a4、Task 6→1、5878f61bf 逆序 git revert；不删除、恢复或改写用户 data、角色、runtime、日志、cache 或 migration 工件
 ```
 
 主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。它在 WP-1C-04 后立即执行，先验证 bundled Core lifecycle 能承载真实 Assistant 初始化和确定性释放；不等待 Router 或聊天协议。

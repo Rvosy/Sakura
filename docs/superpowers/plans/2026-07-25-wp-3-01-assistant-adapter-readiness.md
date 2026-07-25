@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- WP-3-01 is the only active Work Package. WP-1D-01, WP-2-01, WP-2-02, and WP-3-02 remain `planned` throughout implementation.
+- WP-3-01 was the only active Work Package throughout implementation. It was accepted on 2026-07-26; the next activation point is maintained only in the Work Package status table.
 - Production `core.initialize` accepts exactly `{}` and returns quickly; fake readiness modes exist only through an injected test initializer and are not protocol fields.
 - Startup performs no DNS, socket, HTTP, TLS, authentication, model-list, chat, or Provider test call.
 - The real session is exactly `CharacterProfile + OpenAICompatibleClient + AgentRuntime(ToolRegistry([]), truthy disabled MemoryLike) + ChatPipeline(not run)`.
@@ -467,29 +467,19 @@ Expected: every command exits 0; no temporary Python shim, Shell, Core, child pr
 
 Commit only Task 6 files with `test(runtime): 建立 Assistant 三平台 readiness 门禁` and the required detailed WP body.
 
-## Per-task Review and Tracking
+## Completed Review Record
 
-After each implementation task:
+Task-level review was an implementation aid, not a repeatable status gate. Tasks 1-6 completed TDD and local verification; the one broad correction wave is commit `c630575a4`, followed by the policy-only synchronization in `8063f2066`. Do not dispatch another independent reviewer or invalidate successful evidence whose production inputs have not changed.
 
-1. Generate a task brief with the `subagent-driven-development/scripts/task-brief` helper.
-2. Dispatch a fresh implementer subagent that follows TDD and writes its report file.
-3. Verify the resulting diff and test evidence locally.
-4. Generate a review package from the recorded task base SHA to the task head SHA.
-5. Dispatch a fresh task reviewer for both specification compliance and code quality.
-6. Send every Critical/Important finding back to a fixer, re-run covering tests, and re-review.
-7. Record the clean task and commit range in `.superpowers/sdd/progress.md`.
+## Bounded Stabilization and Acceptance
 
-After Task 6, dispatch a fresh broad whole-WP reviewer using the range from the docs-only activation commit through HEAD. Resolve all Critical/Important findings as one fix wave and re-review.
+WP-3-01 was accepted on 2026-07-26 under the bounded stabilization rules in the Runtime v2 delivery governance:
 
-## Stabilizing and Acceptance Gates
-
-Implementation completion does not change WP status directly. After the broad review is clean:
-
-1. Create a docs-only commit changing WP-3-01 from `active` to `stabilizing`, recording exact implementation SHAs, review results, allowlist audit, known risks, and rollback.
-2. Run fresh Python unit/integration tests, frontend tests, Rust fmt/build/test `--locked`, protocol/fixture/fault tests, secret scans, `git diff --check`, allowlist/forbidden audit, P0/P1 audit, exact process/temp scan, and scoped expected/forbidden write audits. Do not require a whole-repository `data/` zero-delta summary.
-3. Use the macOS real app only for the affected lifecycle smoke: Shell visible, real Adapter reaches one frozen readiness state, repeated health responds, clean shutdown succeeds, and Shell/Core/shared-lock/temp residuals are zero. Use an isolated fixture by default for deterministic CI; operator-authorized real config is allowed. Do not call the Provider network.
-4. Push normally and monitor all runs for the exact stabilizing SHA. Use systematic debugging and `github:gh-fix-ci` for any failure.
-5. Only after Windows x64/macOS arm64/Linux x64 platform runs and Unit/UI checks are green, create a separate docs-only accepted commit. Keep WP-1D-01 planned until that commit is verified and pushed.
+1. Task 6 candidate `ea32cf823` completed Windows x64, macOS arm64, and Linux x64 platform runs, explicit Core Host pytest, native Shell/Core lifecycle, local Python/frontend/Rust tests, resource-zero checks, and rollback recording.
+2. `c630575a4` closed the single whole-WP correction wave and completed the expanded local Python and Rust suites. Its not-yet-run exact-SHA native platform matrix is an explicitly accepted residual evidence risk, not a known product failure.
+3. Push-time same-SHA CI is release monitoring. Environment failures cause only same-SHA reruns; they do not authorize speculative product changes or another review.
+4. Only a reproducible P0/P1 or frozen exit-condition regression attributable to the accepted implementation may pause the next Work Package and reopen WP-3-01. P2/P3, future enhancements, style suggestions, and non-attributable flakes go to backlog.
+5. The status-only acceptance commit does not require another full verification cycle. Current status and the next activation point exist only in the Work Package table.
 
 ## Independent Rollback
 
