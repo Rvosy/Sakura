@@ -1172,10 +1172,18 @@ mod native {
         if unsafe { libc::kill(-process_group_id, 0) } == 0 {
             return Ok(true);
         }
-        let error = io::Error::last_os_error();
+        classify_process_group_probe_error(io::Error::last_os_error())
+    }
+
+    fn classify_process_group_probe_error(error: io::Error) -> io::Result<bool> {
         match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
+            Some(libc::ESRCH | libc::EPERM) => {
+                // Every process admitted to this Runtime-owned group inherits
+                // the current user identity. EPERM therefore identifies a
+                // stale/reused numeric PGID, not a signalable Sakura owner.
+                // Never claim or signal that unrelated replacement group.
+                Ok(false)
+            }
             _ => Err(error),
         }
     }
@@ -1699,6 +1707,20 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn stale_or_unowned_process_group_probe_never_claims_a_reused_pgid() {
+            for code in [libc::ESRCH, libc::EPERM] {
+                assert!(
+                    !classify_process_group_probe_error(io::Error::from_raw_os_error(code))
+                        .expect("missing or unowned group must classify safely")
+                );
+            }
+            assert!(
+                classify_process_group_probe_error(io::Error::from_raw_os_error(libc::EINVAL))
+                    .is_err()
+            );
+        }
 
         #[test]
         fn explicit_control_carries_one_frozen_absolute_monotonic_deadline() {

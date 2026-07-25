@@ -462,13 +462,10 @@ impl Drop for StderrDrainer {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(reader_handle) = self.reader.take() {
-            let insurance_deadline = Instant::now() + STDERR_READ_SLICE;
-            while !reader_handle.is_finished() && Instant::now() < insurance_deadline {
-                thread::yield_now();
-            }
-            if reader_handle.is_finished() {
-                let _ = reader_handle.join();
-            }
+            // Managed readers freeze each native poll to STDERR_READ_SLICE.
+            // Cancellation therefore bounds this insurance join without a
+            // second lifecycle budget and preserves the unique thread owner.
+            let _ = reader_handle.join();
         }
     }
 }
@@ -3344,7 +3341,11 @@ mod tests {
         assert!(failure
             .diagnostic()
             .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
-        assert!(failure.into_recovery().is_none());
+        let diagnostic = failure.diagnostic().to_string();
+        assert!(
+            failure.into_recovery().is_none(),
+            "ignored shutdown retained a recovery owner: {diagnostic}"
+        );
     }
 
     #[test]
@@ -3449,7 +3450,11 @@ mod tests {
         assert!(failure
             .diagnostic()
             .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
-        assert!(failure.into_recovery().is_none());
+        let diagnostic = failure.diagnostic().to_string();
+        assert!(
+            failure.into_recovery().is_none(),
+            "ignored shutdown retained a recovery owner: {diagnostic}"
+        );
     }
 
     #[test]
