@@ -10,8 +10,8 @@ use std::{
 use super::{
     ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
     ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
-    PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio, ProcessWaitOutcome,
-    RetryAdvice, SpawnedProcessTree,
+    PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio, ProcessTreeFinalization,
+    ProcessWaitOutcome, RetryAdvice, SpawnedProcessTree,
 };
 
 const PIPE_POLL_QUANTUM: Duration = Duration::from_millis(10);
@@ -262,6 +262,20 @@ mod native {
                 .release_exited_handles()
                 .map_err(|error| native_error("release_exited", error))
         }
+
+        fn finalize_until(
+            self: Box<Self>,
+            deadline: Instant,
+            reason_code: u32,
+        ) -> PlatformResult<ProcessTreeFinalization> {
+            self.inner
+                .finalize_until(deadline, reason_code)
+                .map(|result| ProcessTreeFinalization {
+                    root_status: ProcessExitStatus::Code(i64::from(result.exit_code)),
+                    forced: result.forced,
+                })
+                .map_err(|error| native_error("finalize_until", error))
+        }
     }
 
     pub(super) fn spawn(request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
@@ -318,6 +332,9 @@ mod native {
                 | crate::managed_process_tree::ManagedProcessError::InvalidState(_) => {
                     PlatformErrorCategory::InvalidInput
                 }
+                crate::managed_process_tree::ManagedProcessError::TimedOut => {
+                    PlatformErrorCategory::TimedOut
+                }
                 crate::managed_process_tree::ManagedProcessError::Windows { .. } => {
                     PlatformErrorCategory::NativeFailure
                 }
@@ -365,6 +382,8 @@ mod native {
     const GUARDIAN_EXECUTABLE_ENV: &str = "SAKURA_RUNTIME_V2_GUARDIAN_EXECUTABLE";
     const GUARDIAN_READY_TIMEOUT: Duration = Duration::from_secs(5);
     const TERMINATE_GRACE: Duration = Duration::from_millis(500);
+    // Guardian-only insurance while no explicit caller deadline is armed.
+    // Explicit finalization carries only its remaining budget and never reaches this ceiling.
     const FORCE_WAIT: Duration = Duration::from_secs(5);
     static GUARDIAN_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
@@ -382,11 +401,17 @@ mod native {
         root_status: Option<ProcessExitStatus>,
         tree_exited: bool,
         released: bool,
+        cleanup_deadline: Option<Instant>,
     }
 
     impl ManagedProcessTree for NativeTree {
         fn root_pid(&self) -> u32 {
             self.root_pid
+        }
+
+        #[cfg(test)]
+        fn native_owner_pid_for_test(&self) -> Option<u32> {
+            Some(self.state.lock().ok()?.guardian.id())
         }
 
         fn wait_root(&mut self, timeout: Duration) -> PlatformResult<ProcessWaitOutcome> {
@@ -432,10 +457,19 @@ mod native {
                     "cannot release a POSIX process tree before verified exit",
                 ));
             }
-            let guardian_status = state
-                .guardian
-                .wait()
-                .map_err(|error| io_error("wait_guardian", error))?;
+            let Some(guardian_status) = reap_guardian_until(
+                &mut state.guardian,
+                Instant::now() + Duration::from_millis(100),
+            )
+            .map_err(|error| io_error("reap_guardian", error))?
+            else {
+                return Err(platform_error(
+                    PlatformErrorCategory::ResourceBusy,
+                    "release_exited",
+                    RetryAdvice::AfterExternalChange,
+                    "process guardian has not reached a reapable state",
+                ));
+            };
             if !guardian_status.success() {
                 return Err(platform_error(
                     PlatformErrorCategory::NativeFailure,
@@ -447,6 +481,14 @@ mod native {
             state.control.take();
             state.released = true;
             Ok(())
+        }
+
+        fn finalize_until(
+            self: Box<Self>,
+            deadline: Instant,
+            _reason_code: u32,
+        ) -> PlatformResult<ProcessTreeFinalization> {
+            finalize_posix_tree(&self, deadline)
         }
     }
 
@@ -462,17 +504,162 @@ mod native {
                 return;
             }
             state.control.take();
-            let _ = pump_until(&mut state, FORCE_WAIT + TERMINATE_GRACE, |state| {
-                state.tree_exited
-            });
-            if !state.tree_exited {
-                unsafe {
-                    libc::kill(-self.process_group_id, libc::SIGKILL);
-                }
-                let _ = state.guardian.kill();
+            unsafe {
+                libc::kill(-self.process_group_id, libc::SIGKILL);
             }
-            let _ = state.guardian.wait();
+            let _ = state.guardian.kill();
+            state.released = true;
         }
+    }
+
+    fn finalize_posix_tree(
+        tree: &NativeTree,
+        deadline: Instant,
+    ) -> PlatformResult<ProcessTreeFinalization> {
+        let mut state = lock_state(&tree.state)?;
+        state.cleanup_deadline = Some(deadline);
+        let expired_on_entry = Instant::now() >= deadline;
+
+        pump_until_deadline(&mut state, Instant::now(), |_| false)
+            .map_err(finalizer_platform_error)?;
+        let forced = process_group_exists(tree.process_group_id)
+            .map_err(|error| finalizer_io_error(error))?;
+        if forced {
+            arm_explicit_cleanup(&mut state, deadline)?;
+            signal_group(tree.process_group_id, libc::SIGTERM).map_err(finalizer_io_error)?;
+            if !expired_on_entry {
+                let graceful_deadline = deadline.min(
+                    Instant::now()
+                        .checked_add(TERMINATE_GRACE)
+                        .unwrap_or(deadline),
+                );
+                let _ =
+                    pump_until_deadline(&mut state, graceful_deadline, |state| state.tree_exited)
+                        .map_err(finalizer_platform_error)?;
+            }
+            if process_group_exists(tree.process_group_id).map_err(finalizer_io_error)? {
+                signal_group(tree.process_group_id, libc::SIGKILL).map_err(finalizer_io_error)?;
+            }
+        }
+
+        if expired_on_entry {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(finalization_timeout());
+        }
+
+        if !state.tree_exited
+            && !pump_until_deadline(&mut state, deadline, |state| state.tree_exited)
+                .map_err(finalizer_platform_error)?
+        {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(finalization_timeout());
+        }
+        if process_group_exists(tree.process_group_id).map_err(finalizer_io_error)? {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(platform_error(
+                PlatformErrorCategory::NativeFailure,
+                "finalize_until",
+                RetryAdvice::Never,
+                "guardian reported completion before the process group reached zero",
+            ));
+        }
+
+        let guardian_status = loop {
+            if let Some(status) = state
+                .guardian
+                .try_wait()
+                .map_err(|error| finalizer_io_error(error))?
+            {
+                break status;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                immediate_posix_cleanup(&mut state, tree.process_group_id);
+                return Err(finalization_timeout());
+            }
+            thread::sleep(Duration::from_millis(10).min(remaining));
+        };
+        if !guardian_status.success() {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(platform_error(
+                PlatformErrorCategory::NativeFailure,
+                "finalize_until",
+                RetryAdvice::Never,
+                "process guardian exited unsuccessfully during finalization",
+            ));
+        }
+        let root_status = state.root_status.ok_or_else(|| {
+            platform_error(
+                PlatformErrorCategory::NativeFailure,
+                "finalize_until",
+                RetryAdvice::Never,
+                "process guardian omitted the root exit status",
+            )
+        })?;
+        state.control.take();
+        state.released = true;
+        Ok(ProcessTreeFinalization {
+            root_status,
+            forced,
+        })
+    }
+
+    fn arm_explicit_cleanup(state: &mut TreeState, deadline: Instant) -> PlatformResult<()> {
+        let Some(mut control) = state.control.take() else {
+            return Ok(());
+        };
+        let remaining_nanos = deadline
+            .saturating_duration_since(Instant::now())
+            .as_nanos();
+        control
+            .write_all(format!("FINALIZE {remaining_nanos}\n").as_bytes())
+            .map_err(|error| finalizer_io_error(error))?;
+        Ok(())
+    }
+
+    fn immediate_posix_cleanup(state: &mut TreeState, process_group_id: libc::pid_t) {
+        state.control.take();
+        unsafe {
+            libc::kill(-process_group_id, libc::SIGKILL);
+        }
+        let _ = state.guardian.kill();
+        state.released = true;
+    }
+
+    fn reap_guardian_until(
+        guardian: &mut Child,
+        deadline: Instant,
+    ) -> io::Result<Option<ExitStatus>> {
+        loop {
+            if let Some(status) = guardian.try_wait()? {
+                return Ok(Some(status));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(10).min(remaining));
+        }
+    }
+
+    fn finalization_timeout() -> PlatformError {
+        platform_error(
+            PlatformErrorCategory::TimedOut,
+            "finalize_until",
+            RetryAdvice::Never,
+            "managed process tree did not finalize before the caller deadline",
+        )
+    }
+
+    fn finalizer_io_error(error: io::Error) -> PlatformError {
+        finalizer_platform_error(io_error("finalize_until", error))
+    }
+
+    fn finalizer_platform_error(mut error: PlatformError) -> PlatformError {
+        error.operation = "finalize_until";
+        error.retry = RetryAdvice::Never;
+        error.message = "native process tree finalization failed".into();
+        error
     }
 
     pub(super) fn spawn(request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
@@ -575,6 +762,7 @@ mod native {
             root_status: None,
             tree_exited: false,
             released: false,
+            cleanup_deadline: None,
         };
         let ready = read_status_line(&mut state, GUARDIAN_READY_TIMEOUT)?.ok_or_else(|| {
             platform_error(
@@ -673,56 +861,159 @@ mod native {
         writeln!(status, "READY {root_pid} {process_group_id}")?;
         status.flush()?;
 
-        let root_status = monitor_root_or_control(&mut child, &control, process_group_id)?;
+        let (root_status, cleanup_mode) =
+            monitor_root_or_control(&mut child, &control, process_group_id)?;
         write_root_status(&mut status, root_status)?;
         status.flush()?;
-        cleanup_process_group(process_group_id)?;
+        cleanup_process_group(process_group_id, &control, cleanup_mode)?;
         writeln!(status, "TREE_EXITED")?;
         status.flush()
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum GuardianCleanupMode {
+        Natural,
+        Explicit(Instant),
+        ParentDeath,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ControlEvent {
+        Open,
+        Explicit(Duration),
+        Closed,
     }
 
     fn monitor_root_or_control(
         child: &mut Child,
         control: &File,
         process_group_id: libc::pid_t,
-    ) -> io::Result<ExitStatus> {
+    ) -> io::Result<(ExitStatus, GuardianCleanupMode)> {
         loop {
             if let Some(status) = child.try_wait()? {
-                return Ok(status);
+                return Ok((status, GuardianCleanupMode::Natural));
             }
-            if control_closed(control.as_raw_fd())? {
-                signal_group(process_group_id, libc::SIGTERM)?;
-                let deadline = Instant::now() + TERMINATE_GRACE;
-                while Instant::now() < deadline {
-                    if let Some(status) = child.try_wait()? {
-                        return Ok(status);
+            match control_event(control.as_raw_fd())? {
+                ControlEvent::Open => {}
+                ControlEvent::Explicit(remaining) => {
+                    let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "guardian finalization deadline overflowed",
+                        )
+                    })?;
+                    loop {
+                        if let Some(status) = child.try_wait()? {
+                            return Ok((status, GuardianCleanupMode::Explicit(deadline)));
+                        }
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "root survived explicit finalization deadline",
+                            ));
+                        }
+                        thread::sleep(Duration::from_millis(10).min(remaining));
                     }
-                    thread::sleep(Duration::from_millis(10));
                 }
-                signal_group(process_group_id, libc::SIGKILL)?;
-                return child.wait();
+                ControlEvent::Closed => {
+                    signal_group(process_group_id, libc::SIGTERM)?;
+                    let graceful_deadline = Instant::now() + TERMINATE_GRACE;
+                    while Instant::now() < graceful_deadline {
+                        if let Some(status) = child.try_wait()? {
+                            return Ok((status, GuardianCleanupMode::ParentDeath));
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    signal_group(process_group_id, libc::SIGKILL)?;
+                    let force_deadline = Instant::now() + FORCE_WAIT;
+                    while Instant::now() < force_deadline {
+                        if let Some(status) = child.try_wait()? {
+                            return Ok((status, GuardianCleanupMode::ParentDeath));
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "root survived parent-death cleanup deadline",
+                    ));
+                }
             }
             thread::sleep(Duration::from_millis(10));
         }
     }
 
-    fn cleanup_process_group(process_group_id: libc::pid_t) -> io::Result<()> {
+    fn cleanup_process_group(
+        process_group_id: libc::pid_t,
+        control: &File,
+        mut cleanup_mode: GuardianCleanupMode,
+    ) -> io::Result<()> {
         if !process_group_exists(process_group_id)? {
             return Ok(());
         }
+        if cleanup_mode == GuardianCleanupMode::Natural {
+            cleanup_mode = match control_event(control.as_raw_fd())? {
+                ControlEvent::Open => GuardianCleanupMode::Natural,
+                ControlEvent::Explicit(remaining) => GuardianCleanupMode::Explicit(
+                    Instant::now().checked_add(remaining).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "guardian finalization deadline overflowed",
+                        )
+                    })?,
+                ),
+                ControlEvent::Closed => GuardianCleanupMode::ParentDeath,
+            };
+        }
+        if let GuardianCleanupMode::Explicit(deadline) = cleanup_mode {
+            return wait_for_explicit_group_cleanup(process_group_id, deadline);
+        }
+
         signal_group(process_group_id, libc::SIGTERM)?;
         let graceful_deadline = Instant::now() + TERMINATE_GRACE;
         while Instant::now() < graceful_deadline {
             if !process_group_exists(process_group_id)? {
                 return Ok(());
             }
+            if cleanup_mode == GuardianCleanupMode::Natural {
+                match control_event(control.as_raw_fd())? {
+                    ControlEvent::Open => {}
+                    ControlEvent::Explicit(remaining) => {
+                        let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "guardian finalization deadline overflowed",
+                            )
+                        })?;
+                        return wait_for_explicit_group_cleanup(process_group_id, deadline);
+                    }
+                    ControlEvent::Closed => cleanup_mode = GuardianCleanupMode::ParentDeath,
+                }
+            }
             thread::sleep(Duration::from_millis(10));
         }
         signal_group(process_group_id, libc::SIGKILL)?;
+        // Every explicit-control branch above returns with the caller-derived deadline.
+        // This ceiling therefore protects only an unarmed guardian cleanup.
         let force_deadline = Instant::now() + FORCE_WAIT;
         while Instant::now() < force_deadline {
             if !process_group_exists(process_group_id)? {
                 return Ok(());
+            }
+            if cleanup_mode == GuardianCleanupMode::Natural {
+                match control_event(control.as_raw_fd())? {
+                    ControlEvent::Open => {}
+                    ControlEvent::Explicit(remaining) => {
+                        let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "guardian finalization deadline overflowed",
+                            )
+                        })?;
+                        return wait_for_explicit_group_cleanup(process_group_id, deadline);
+                    }
+                    ControlEvent::Closed => cleanup_mode = GuardianCleanupMode::ParentDeath,
+                }
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -730,6 +1021,23 @@ mod native {
             io::ErrorKind::TimedOut,
             "process group survived forced cleanup deadline",
         ))
+    }
+
+    fn wait_for_explicit_group_cleanup(
+        process_group_id: libc::pid_t,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        while process_group_exists(process_group_id)? {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "process group survived explicit finalization deadline",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10).min(remaining));
+        }
+        Ok(())
     }
 
     fn process_group_exists(process_group_id: libc::pid_t) -> io::Result<bool> {
@@ -756,7 +1064,7 @@ mod native {
         }
     }
 
-    fn control_closed(fd: RawFd) -> io::Result<bool> {
+    fn control_event(fd: RawFd) -> io::Result<ControlEvent> {
         let mut descriptor = libc::pollfd {
             fd,
             events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
@@ -766,7 +1074,48 @@ mod native {
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
-        Ok(result > 0 && descriptor.revents & (libc::POLLHUP | libc::POLLERR) != 0)
+        if result == 0 {
+            return Ok(ControlEvent::Open);
+        }
+        let mut command = [0_u8; 128];
+        let read = unsafe { libc::read(fd, command.as_mut_ptr().cast(), command.len()) };
+        if read > 0 {
+            let command = std::str::from_utf8(&command[..read as usize]).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid guardian control command",
+                )
+            })?;
+            let remaining_nanos = command
+                .strip_prefix("FINALIZE ")
+                .and_then(|value| value.trim().parse::<u128>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid guardian control command",
+                    )
+                })?;
+            let seconds = u64::try_from(remaining_nanos / 1_000_000_000).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "guardian finalization duration overflowed",
+                )
+            })?;
+            let nanos = (remaining_nanos % 1_000_000_000) as u32;
+            return Ok(ControlEvent::Explicit(Duration::new(seconds, nanos)));
+        }
+        if read == 0 {
+            return Ok(ControlEvent::Closed);
+        }
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ) {
+            Ok(ControlEvent::Open)
+        } else {
+            Err(error)
+        }
     }
 
     fn pump_until(
@@ -774,15 +1123,27 @@ mod native {
         timeout: Duration,
         complete: impl Fn(&TreeState) -> bool,
     ) -> PlatformResult<bool> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            platform_error(
+                PlatformErrorCategory::InvalidInput,
+                "pump_guardian_status",
+                RetryAdvice::Never,
+                "guardian status deadline overflowed",
+            )
+        })?;
+        pump_until_deadline(state, deadline, complete)
+    }
+
+    fn pump_until_deadline(
+        state: &mut TreeState,
+        deadline: Instant,
+        complete: impl Fn(&TreeState) -> bool,
+    ) -> PlatformResult<bool> {
         if complete(state) {
             return Ok(true);
         }
-        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(complete(state));
-            }
             let Some(line) = read_status_line(state, remaining)? else {
                 return Ok(complete(state));
             };
@@ -813,9 +1174,6 @@ mod native {
                     });
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(None);
-            }
             let mut descriptor = libc::pollfd {
                 fd: state.status.as_raw_fd(),
                 events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
@@ -1241,6 +1599,436 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.category, PlatformErrorCategory::InvalidInput);
+    }
+
+    struct ObservedTree {
+        tree: Box<dyn ManagedProcessTree>,
+        #[cfg(unix)]
+        identity: PosixTreeIdentity,
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug)]
+    struct PosixTreeIdentity {
+        guardian_pid: libc::pid_t,
+        process_group_id: libc::pid_t,
+    }
+
+    fn spawn_observed(request: ManagedProcessRequest) -> ObservedTree {
+        let spawned = NativeManagedProcessTreeBackend
+            .spawn(&request)
+            .expect("native finalizer fixture should spawn");
+        assert!(spawned.pipes.is_none());
+        #[cfg(unix)]
+        let identity = {
+            let process_group_id = i32::try_from(spawned.tree.root_pid())
+                .expect("root pid should fit the native pid type");
+            PosixTreeIdentity {
+                guardian_pid: i32::try_from(
+                    spawned
+                        .tree
+                        .native_owner_pid_for_test()
+                        .expect("POSIX tree should expose its guardian to native tests"),
+                )
+                .expect("guardian pid should fit the native pid type"),
+                process_group_id,
+            }
+        };
+        ObservedTree {
+            tree: spawned.tree,
+            #[cfg(unix)]
+            identity,
+        }
+    }
+
+    fn assert_finalization(
+        result: ProcessTreeFinalization,
+        expected_status: Option<ProcessExitStatus>,
+        forced: bool,
+    ) {
+        if let Some(expected_status) = expected_status {
+            assert_eq!(result.root_status, expected_status);
+        }
+        assert_eq!(result.forced, forced);
+    }
+
+    fn finalize_forced(tree: Box<dyn ManagedProcessTree>) -> ProcessTreeFinalization {
+        let started = Instant::now();
+        let result = tree
+            .finalize_until(started + Duration::from_secs(2), 97)
+            .expect("managed tree must finalize inside the one deadline");
+        assert!(result.forced);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        result
+    }
+
+    #[test]
+    fn finalizer_preserves_a_naturally_exited_root_without_forcing() {
+        let ObservedTree {
+            mut tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(normal_exit_request());
+        assert_eq!(
+            tree.wait_root(Duration::from_secs(2))
+                .expect("normal root observation should succeed"),
+            ProcessWaitOutcome::Exited(ProcessExitStatus::Code(23))
+        );
+        assert!(tree
+            .wait_tree_exited(Duration::from_secs(2))
+            .expect("normal tree observation should reach zero"));
+
+        let result = tree
+            .finalize_until(Instant::now() + Duration::from_secs(2), 97)
+            .expect("already exited tree should finalize");
+        assert_finalization(result, Some(ProcessExitStatus::Code(23)), false);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+    }
+
+    #[test]
+    fn finalizer_forces_a_holding_root_inside_the_single_deadline() {
+        let ObservedTree {
+            tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(holding_root_request());
+
+        assert_finalization(finalize_forced(tree), None, true);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+    }
+
+    #[test]
+    fn finalizer_reclaims_a_term_ignoring_descendant_after_root_first_exit() {
+        let marker = finalizer_marker("root-first");
+        let ObservedTree {
+            mut tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(root_first_request(&marker));
+        wait_for_marker(&marker);
+        assert!(matches!(
+            tree.wait_root(Duration::from_secs(2))
+                .expect("root-first status should be observed"),
+            ProcessWaitOutcome::Exited(_)
+        ));
+
+        assert_finalization(finalize_forced(tree), None, true);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+        let _ = std::fs::remove_file(marker);
+    }
+
+    #[test]
+    fn finalizer_reclaims_two_descendant_levels() {
+        let marker = finalizer_marker("two-levels");
+        let ObservedTree {
+            tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(two_level_request(&marker));
+        wait_for_marker(&marker);
+
+        assert_finalization(finalize_forced(tree), None, true);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+        let _ = std::fs::remove_file(marker);
+    }
+
+    #[test]
+    fn finalizer_tolerates_repeated_pre_finalize_observations() {
+        let ObservedTree {
+            mut tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(holding_root_request());
+        for _ in 0..3 {
+            assert_eq!(
+                tree.wait_root(Duration::ZERO)
+                    .expect("zero-time root observation should succeed"),
+                ProcessWaitOutcome::TimedOut
+            );
+            assert!(!tree
+                .wait_tree_exited(Duration::ZERO)
+                .expect("zero-time tree observation should succeed"));
+        }
+
+        assert_finalization(finalize_forced(tree), None, true);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+    }
+
+    #[test]
+    fn expired_finalizer_deadline_still_closes_and_kills_owned_resources() {
+        let ObservedTree {
+            tree,
+            #[cfg(unix)]
+            identity,
+        } = spawn_observed(holding_root_request());
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond should fit before the current instant");
+
+        let error = tree
+            .finalize_until(deadline, 97)
+            .expect_err("expired finalization must report its exhausted budget");
+        assert_eq!(error.category, PlatformErrorCategory::TimedOut);
+        assert_eq!(error.operation, "finalize_until");
+        #[cfg(unix)]
+        assert_posix_group_gone(identity.process_group_id);
+    }
+
+    #[test]
+    fn finalizer_releases_native_ownership_in_a_bounded_loop() {
+        let before = native_resource_count();
+        for _ in 0..8 {
+            let ObservedTree {
+                mut tree,
+                #[cfg(unix)]
+                identity,
+            } = spawn_observed(normal_exit_request());
+            assert!(matches!(
+                tree.wait_root(Duration::from_secs(2)).unwrap(),
+                ProcessWaitOutcome::Exited(_)
+            ));
+            tree.finalize_until(Instant::now() + Duration::from_secs(2), 97)
+                .expect("bounded-loop tree should finalize");
+            #[cfg(unix)]
+            assert_posix_identity_gone(identity);
+        }
+        let after = native_resource_count();
+        #[cfg(unix)]
+        assert_eq!(
+            after, before,
+            "control/status descriptors must return to baseline"
+        );
+        #[cfg(windows)]
+        assert!(
+            after <= before + 2,
+            "process/Job handles leaked: before={before}, after={after}"
+        );
+    }
+
+    fn finalizer_marker(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sakura-wp-3-01-finalizer-{label}-{}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn wait_for_marker(marker: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "fixture marker should appear");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_for_marker(_marker: &std::path::Path) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    #[cfg(unix)]
+    fn normal_exit_request() -> ManagedProcessRequest {
+        shell_request("exit 23")
+    }
+
+    #[cfg(unix)]
+    fn holding_root_request() -> ManagedProcessRequest {
+        shell_request("while :; do sleep 1; done")
+    }
+
+    #[cfg(unix)]
+    fn root_first_request(marker: &std::path::Path) -> ManagedProcessRequest {
+        shell_request(&format!(
+            "(trap '' TERM; echo ready > '{}'; while :; do sleep 1; done) & exit 44",
+            marker.display()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn two_level_request(marker: &std::path::Path) -> ManagedProcessRequest {
+        shell_request(&format!(
+            "(/bin/sh -c 'sleep 60 & echo ready > \"{}\"; wait') & wait",
+            marker.display()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn shell_request(script: &str) -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), script.into()],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Null,
+        }
+    }
+
+    #[cfg(windows)]
+    fn normal_exit_request() -> ManagedProcessRequest {
+        windows_fixture_request("finalizer_fixture_exit_23")
+    }
+
+    #[cfg(windows)]
+    fn holding_root_request() -> ManagedProcessRequest {
+        windows_fixture_request("finalizer_fixture_holds")
+    }
+
+    #[cfg(windows)]
+    fn root_first_request(_marker: &std::path::Path) -> ManagedProcessRequest {
+        windows_fixture_request("finalizer_fixture_root_first")
+    }
+
+    #[cfg(windows)]
+    fn two_level_request(_marker: &std::path::Path) -> ManagedProcessRequest {
+        windows_fixture_request("finalizer_fixture_two_levels")
+    }
+
+    #[cfg(windows)]
+    fn windows_fixture_request(name: &str) -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: std::env::current_exe().expect("current test executable should resolve"),
+            args: vec![
+                "--ignored".into(),
+                "--exact".into(),
+                format!("platform::process_tree_backend::tests::{name}").into(),
+                "--nocapture".into(),
+            ],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Null,
+        }
+    }
+
+    #[cfg(unix)]
+    fn native_process_exists(pid: libc::pid_t) -> bool {
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    #[cfg(unix)]
+    fn assert_posix_identity_gone(identity: PosixTreeIdentity) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let guardian_exists = native_process_exists(identity.guardian_pid);
+            let group_exists = native_process_exists(-identity.process_group_id);
+            if !guardian_exists && !group_exists {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "guardian/PGID must be gone: {identity:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_posix_group_gone(process_group_id: libc::pid_t) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while native_process_exists(-process_group_id) {
+            assert!(
+                Instant::now() < deadline,
+                "expired finalization must still kill PGID {process_group_id}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn native_resource_count() -> u32 {
+        (0..1024)
+            .filter(|descriptor| {
+                if unsafe { libc::fcntl(*descriptor, libc::F_GETFD) } != -1 {
+                    return true;
+                }
+                io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+            })
+            .count() as u32
+    }
+
+    #[cfg(windows)]
+    fn native_resource_count() -> u32 {
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+        let mut count = 0;
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) }
+            .expect("current process handle count should query");
+        count
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "test-process fixture; launched by finalizer tests"]
+    fn finalizer_fixture_exit_23() {
+        std::process::exit(23);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "test-process fixture; launched by finalizer tests"]
+    fn finalizer_fixture_holds() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "test-process fixture; launched by finalizer tests"]
+    fn finalizer_fixture_root_first() {
+        std::process::Command::new(
+            std::env::current_exe().expect("current test executable should resolve"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "platform::process_tree_backend::tests::finalizer_fixture_holds",
+            "--nocapture",
+        ])
+        .spawn()
+        .expect("holding descendant should spawn");
+        std::process::exit(44);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "test-process fixture; launched by finalizer tests"]
+    fn finalizer_fixture_two_levels() {
+        std::process::Command::new(
+            std::env::current_exe().expect("current test executable should resolve"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "platform::process_tree_backend::tests::finalizer_fixture_spawns_leaf",
+            "--nocapture",
+        ])
+        .spawn()
+        .expect("first descendant should spawn");
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "test-process fixture; launched by finalizer tests"]
+    fn finalizer_fixture_spawns_leaf() {
+        std::process::Command::new(
+            std::env::current_exe().expect("current test executable should resolve"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "platform::process_tree_backend::tests::finalizer_fixture_holds",
+            "--nocapture",
+        ])
+        .spawn()
+        .expect("second descendant should spawn");
+        std::thread::sleep(Duration::from_secs(60));
     }
 
     #[test]

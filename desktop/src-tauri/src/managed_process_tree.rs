@@ -75,6 +75,12 @@ pub enum WaitOutcome {
     TimedOut,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalizationOutcome {
+    pub exit_code: u32,
+    pub forced: bool,
+}
+
 #[derive(Debug)]
 pub enum ManagedProcessError {
     EmptyProgram,
@@ -82,6 +88,7 @@ pub enum ManagedProcessError {
     #[cfg(not(windows))]
     UnsupportedPlatform,
     InvalidState(&'static str),
+    TimedOut,
     Windows {
         operation: &'static str,
         code: i32,
@@ -105,6 +112,7 @@ impl fmt::Display for ManagedProcessError {
             Self::InvalidState(message) => {
                 write!(formatter, "invalid managed process state: {message}")
             }
+            Self::TimedOut => write!(formatter, "managed process finalization deadline expired"),
             Self::Windows { operation, code } => {
                 write!(formatter, "{operation} failed with Windows error {code}")
             }
@@ -482,6 +490,75 @@ impl ManagedProcessTree {
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub fn finalize_until(
+        mut self,
+        deadline: Instant,
+        reason_code: u32,
+    ) -> ManagedProcessResult<FinalizationOutcome> {
+        let expired_on_entry = Instant::now() >= deadline;
+        let result = (|| {
+            let process = self
+                .process
+                .as_ref()
+                .ok_or(ManagedProcessError::InvalidState(
+                    "process handle was released",
+                ))?;
+            let job = self
+                .job
+                .as_ref()
+                .ok_or(ManagedProcessError::InvalidState("job handle was released"))?;
+
+            let root_observation = unsafe { WaitForSingleObject(process.raw(), 0) };
+            if root_observation != WAIT_OBJECT_0 && root_observation != WAIT_TIMEOUT {
+                return Err(windows_error(
+                    "WaitForSingleObject",
+                    WindowsError::from_win32(),
+                ));
+            }
+
+            let active = active_processes(job)?;
+            let forced = active != 0;
+            if forced {
+                unsafe { TerminateJobObject(job.raw(), reason_code) }
+                    .map_err(|error| windows_error("TerminateJobObject", error))?;
+            }
+
+            let root_wait = unsafe {
+                WaitForSingleObject(
+                    process.raw(),
+                    duration_millis(deadline.saturating_duration_since(Instant::now())),
+                )
+            };
+            if root_wait == WAIT_TIMEOUT {
+                return Err(ManagedProcessError::TimedOut);
+            }
+            if root_wait != WAIT_OBJECT_0 {
+                return Err(windows_error(
+                    "WaitForSingleObject",
+                    WindowsError::from_win32(),
+                ));
+            }
+
+            if !wait_for_job_empty_until(job, deadline, false)? {
+                return Err(ManagedProcessError::TimedOut);
+            }
+
+            let mut exit_code = 0;
+            unsafe { GetExitCodeProcess(process.raw(), &mut exit_code) }
+                .map_err(|error| windows_error("GetExitCodeProcess", error))?;
+            self.exit_code = Some(exit_code);
+            if expired_on_entry {
+                return Err(ManagedProcessError::TimedOut);
+            }
+            Ok(FinalizationOutcome { exit_code, forced })
+        })();
+
+        self.process.take();
+        self.job.take();
+        result
+    }
+
     #[cfg(not(windows))]
     pub fn release_exited_handles(&mut self) -> ManagedProcessResult<()> {
         Err(ManagedProcessError::UnsupportedPlatform)
@@ -520,6 +597,15 @@ fn rollback_assigned_tree(job: &OwnedHandle, process: &OwnedHandle) -> ManagedPr
 #[cfg(windows)]
 fn wait_for_job_empty(job: &OwnedHandle, timeout: Duration) -> ManagedProcessResult<bool> {
     let deadline = Instant::now() + timeout;
+    wait_for_job_empty_until(job, deadline, timeout.is_zero())
+}
+
+#[cfg(windows)]
+fn wait_for_job_empty_until(
+    job: &OwnedHandle,
+    deadline: Instant,
+    allow_initial_zero_timeout_observation: bool,
+) -> ManagedProcessResult<bool> {
     let mut initial_observation = true;
     loop {
         let active = active_processes(job)?;
@@ -528,7 +614,7 @@ fn wait_for_job_empty(job: &OwnedHandle, timeout: Duration) -> ManagedProcessRes
             active,
             observed_at,
             deadline,
-            initial_observation && timeout.is_zero(),
+            initial_observation && allow_initial_zero_timeout_observation,
         ) {
             JobPollDecision::Complete => return Ok(true),
             JobPollDecision::TimedOut => return Ok(false),

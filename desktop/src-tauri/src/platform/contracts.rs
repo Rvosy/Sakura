@@ -83,12 +83,35 @@ pub enum ProcessWaitOutcome {
     TimedOut,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessTreeFinalization {
+    pub root_status: ProcessExitStatus,
+    pub forced: bool,
+}
+
 pub trait ManagedProcessTree: Send {
     fn root_pid(&self) -> u32;
+    #[cfg(test)]
+    fn native_owner_pid_for_test(&self) -> Option<u32> {
+        None
+    }
     fn wait_root(&mut self, timeout: Duration) -> PlatformResult<ProcessWaitOutcome>;
     fn terminate_tree(&mut self, reason_code: u32) -> PlatformResult<()>;
     fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool>;
     fn release_exited(self: Box<Self>) -> PlatformResult<()>;
+    fn finalize_until(
+        self: Box<Self>,
+        _deadline: Instant,
+        _reason_code: u32,
+    ) -> PlatformResult<ProcessTreeFinalization> {
+        Err(PlatformError::new(
+            PlatformService::ManagedProcessTree,
+            PlatformErrorCategory::UnsupportedEnvironment,
+            "finalize_until",
+            RetryAdvice::Never,
+            "managed process tree finalization is unavailable for this backend",
+        ))
+    }
 }
 
 pub struct SpawnedProcessTree {
