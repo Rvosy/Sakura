@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, ffi::OsString, fs::File, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    fs::File,
+    path::PathBuf,
+    sync::atomic::AtomicBool,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,11 +46,27 @@ pub struct ManagedProcessRequest {
     pub stdio: ProcessStdio,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManagedPipeReadOutcome {
+    Read(usize),
+    Eof,
+    Cancelled,
+    TimedOut,
+}
+
+pub trait ManagedPipeReader: Send {
+    fn read_until(
+        &mut self,
+        buffer: &mut [u8],
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> PlatformResult<ManagedPipeReadOutcome>;
+}
+
 pub struct ManagedProcessPipes {
     pub stdin: File,
-    pub stdout: File,
-    pub stderr: File,
+    pub stdout: Box<dyn ManagedPipeReader>,
+    pub stderr: Box<dyn ManagedPipeReader>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

@@ -1,23 +1,29 @@
 use std::{
     collections::VecDeque,
     fs::{self, File},
-    io::{Read, Write},
-    sync::{mpsc, Arc, Mutex},
+    io::Write,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(test)]
 use std::path::Path;
 
+#[cfg(unix)]
+use std::io::Read;
+
 use serde_json::{json, Value};
 
 use crate::{
-    core_host_protocol::{read_frame, write_frame, PROTOCOL_MAJOR, PROTOCOL_MINOR},
+    core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     platform::{
-        ManagedProcessRequest, ManagedProcessTree, ManagedProcessTreeBackend,
-        NativeManagedProcessTreeBackend, ProcessExitStatus, ProcessStdio, ProcessWaitOutcome,
-        RuntimeLayout,
+        ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessRequest, ManagedProcessTree,
+        ManagedProcessTreeBackend, NativeManagedProcessTreeBackend, ProcessExitStatus,
+        ProcessStdio, ProcessWaitOutcome, RuntimeLayout,
     },
 };
 
@@ -26,6 +32,7 @@ const DEADLINE_EXIT_CODE: u32 = 93;
 const MIN_PROTOCOL_MINOR: u64 = 0;
 const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
+const STDERR_READ_SLICE: Duration = Duration::from_millis(100);
 const STDERR_RECORD_LIMIT: usize = 4 * 1024;
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
@@ -307,6 +314,8 @@ struct StderrDrainState {
 
 struct StderrDrainer {
     state: Arc<Mutex<StderrDrainState>>,
+    cancelled: Arc<AtomicBool>,
+    completion: mpsc::Receiver<()>,
     reader: Option<thread::JoinHandle<()>>,
 }
 
@@ -320,7 +329,12 @@ impl std::fmt::Debug for StderrDrainer {
 }
 
 impl StderrDrainer {
-    fn start(pipe: File, generation_id: &str, core_pid: u32, generation_credential: &str) -> Self {
+    fn start(
+        pipe: Box<dyn ManagedPipeReader>,
+        generation_id: &str,
+        core_pid: u32,
+        generation_credential: &str,
+    ) -> Self {
         let state = Arc::new(Mutex::new(StderrDrainState {
             records: VecDeque::new(),
             buffered_bytes: 0,
@@ -336,20 +350,42 @@ impl StderrDrainer {
             },
         }));
         let reader_state = Arc::clone(&state);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let reader_cancelled = Arc::clone(&cancelled);
+        let (completion_sender, completion) = mpsc::sync_channel(1);
         let redactor = StderrRedactor::new(generation_credential);
         let reader = thread::Builder::new()
             .name(format!("sakura-core-stderr-{core_pid}"))
-            .spawn(move || drain_stderr(pipe, &reader_state, &redactor))
+            .spawn(move || {
+                drain_stderr(pipe, &reader_state, &redactor, &reader_cancelled);
+                let _ = completion_sender.send(());
+            })
             .expect("stderr reader thread creation must succeed");
         Self {
             state,
+            cancelled,
+            completion,
             reader: Some(reader),
         }
     }
 
-    fn finish(&mut self) -> Result<(String, StderrDrainStats), String> {
-        if let Some(reader) = self.reader.take() {
-            reader
+    fn finish_until(&mut self, deadline: Instant) -> Result<(String, StderrDrainStats), String> {
+        if self.reader.is_some() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.completion.recv_timeout(remaining) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.cancelled.store(true, Ordering::Release);
+                    return Err(
+                        "STDERR_READ_FAILED: stderr reader exceeded its completion deadline"
+                            .to_string(),
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            }
+            self.reader
+                .take()
+                .expect("stderr reader exists after completion wait")
                 .join()
                 .map_err(|_| "STDERR_READ_FAILED: stderr reader panicked".to_string())?;
         }
@@ -366,8 +402,9 @@ impl StderrDrainer {
 
 impl Drop for StderrDrainer {
     fn drop(&mut self) {
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(reader_handle) = self.reader.take() {
+            let _ = reader_handle.join();
         }
     }
 }
@@ -415,36 +452,19 @@ impl StderrRedactor {
     }
 }
 
-fn drain_stderr<R: Read>(
-    mut reader: R,
+fn drain_stderr(
+    mut reader: Box<dyn ManagedPipeReader>,
     state: &Arc<Mutex<StderrDrainState>>,
     redactor: &StderrRedactor,
+    cancelled: &AtomicBool,
 ) {
     let mut buffer = [0_u8; STDERR_READ_CHUNK_SIZE];
     let mut utf8_pending = Vec::with_capacity(4);
     let mut line_pending = String::new();
     let mut dropping_long_line = false;
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => {
-                if !utf8_pending.is_empty() {
-                    drain_stderr_text(
-                        state,
-                        redactor,
-                        &mut line_pending,
-                        &mut dropping_long_line,
-                        &String::from_utf8_lossy(&utf8_pending),
-                    );
-                }
-                if !line_pending.is_empty() {
-                    push_stderr_text(state, redactor, &line_pending);
-                }
-                if let Ok(mut state) = state.lock() {
-                    state.stats.eof = true;
-                }
-                return;
-            }
-            Ok(count) => {
+        match reader.read_until(&mut buffer, Instant::now() + STDERR_READ_SLICE, cancelled) {
+            Ok(ManagedPipeReadOutcome::Read(count)) => {
                 if let Ok(mut state) = state.lock() {
                     state.stats.bytes_read = state.stats.bytes_read.saturating_add(count as u64);
                 }
@@ -459,11 +479,98 @@ fn drain_stderr<R: Read>(
                     )
                 });
             }
+            Ok(ManagedPipeReadOutcome::Eof) => {
+                flush_stderr_pending(
+                    state,
+                    redactor,
+                    &mut utf8_pending,
+                    &mut line_pending,
+                    &mut dropping_long_line,
+                );
+                if let Ok(mut state) = state.lock() {
+                    state.stats.eof = true;
+                }
+                return;
+            }
+            Ok(ManagedPipeReadOutcome::Cancelled) => {
+                flush_stderr_pending(
+                    state,
+                    redactor,
+                    &mut utf8_pending,
+                    &mut line_pending,
+                    &mut dropping_long_line,
+                );
+                return;
+            }
+            Ok(ManagedPipeReadOutcome::TimedOut) => continue,
             Err(_) => {
                 if let Ok(mut state) = state.lock() {
                     state.stats.read_failed = true;
                 }
                 return;
+            }
+        }
+    }
+}
+
+fn flush_stderr_pending(
+    state: &Arc<Mutex<StderrDrainState>>,
+    redactor: &StderrRedactor,
+    utf8_pending: &mut Vec<u8>,
+    line_pending: &mut String,
+    dropping_long_line: &mut bool,
+) {
+    if !utf8_pending.is_empty() {
+        drain_stderr_text(
+            state,
+            redactor,
+            line_pending,
+            dropping_long_line,
+            &String::from_utf8_lossy(utf8_pending),
+        );
+        utf8_pending.clear();
+    }
+    if !line_pending.is_empty() {
+        push_stderr_text(state, redactor, line_pending);
+        line_pending.clear();
+    }
+}
+
+fn read_frame_until(
+    reader: &mut dyn ManagedPipeReader,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<Option<Value>, String> {
+    let mut decoder = FrameDecoder::default();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match reader
+            .read_until(&mut chunk, deadline, cancelled)
+            .map_err(|error| error.to_string())?
+        {
+            ManagedPipeReadOutcome::Read(count) => {
+                let mut frames = decoder
+                    .feed(&chunk[..count])
+                    .map_err(|error| error.to_string())?;
+                if let Some(frame) = frames.pop() {
+                    if !frames.is_empty() {
+                        return Err("TRANSPORT_READ_FAILED: unexpected response burst".to_string());
+                    }
+                    return Ok(Some(frame));
+                }
+            }
+            ManagedPipeReadOutcome::Eof => {
+                decoder.finish().map_err(|error| error.to_string())?;
+                return Ok(None);
+            }
+            ManagedPipeReadOutcome::Cancelled => {
+                return Err("TRANSPORT_READ_CANCELLED: stdout read was cancelled".to_string())
+            }
+            ManagedPipeReadOutcome::TimedOut => {
+                return Err(
+                    "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
+                        .to_string(),
+                )
             }
         }
     }
@@ -635,7 +742,7 @@ fn redact_key_values(text: &str, key: &str) -> String {
 pub struct CoreHostRuntime {
     tree: Box<dyn ManagedProcessTree>,
     stdin: Option<File>,
-    stdout: Option<File>,
+    stdout: Option<Box<dyn ManagedPipeReader>>,
     stderr_drain: Option<StderrDrainer>,
     generation_id: String,
     generation_credential: String,
@@ -715,7 +822,7 @@ impl CoreHostRuntime {
             let _ = tree.terminate_tree(DEADLINE_EXIT_CODE);
             let _ = tree.wait_root(Duration::from_secs(5));
             let _ = tree.wait_tree_exited(Duration::from_secs(5));
-            let _ = stderr_drain.finish();
+            let _ = stderr_drain.finish_until(Instant::now() + Duration::from_secs(5));
             let _ = tree.release_exited();
             return Err(
                 "TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed".to_string(),
@@ -827,7 +934,7 @@ impl CoreHostRuntime {
             .flush()
             .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
 
-        let response = self.read_response(deadline)?;
+        let response = self.read_response_until(Instant::now() + deadline)?;
         if response.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str())
             || response.get("generationCredential").and_then(Value::as_str)
                 != Some(self.generation_credential.as_str())
@@ -904,6 +1011,9 @@ impl CoreHostRuntime {
                 if exit.forced {
                     return Ok(exit);
                 }
+                if error.starts_with("STDOUT_FRAMING_POLLUTION:") {
+                    return Err(format!("{error}; cleanup result: {exit:?}"));
+                }
                 return Err(format!(
                     "Core Host shutdown response failed ({error}); cleanup result: {exit:?}"
                 ));
@@ -922,58 +1032,30 @@ impl CoreHostRuntime {
         self.finish_exit(stop_deadline)
     }
 
-    fn read_response(&mut self, deadline: Duration) -> Result<Value, String> {
-        let mut stdout = self
+    fn read_response_until(&mut self, deadline: Instant) -> Result<Value, String> {
+        let stdout = self
             .stdout
-            .take()
+            .as_mut()
             .ok_or_else(|| "TRANSPORT_READ_FAILED: Core Host stdout is unavailable".to_string())?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let reader = thread::spawn(move || {
-            let result = read_frame(&mut stdout);
-            let _ = sender.send((stdout, result));
-        });
-
-        let received = match receiver.recv_timeout(deadline) {
-            Ok(received) => received,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+        let response = match read_frame_until(stdout.as_mut(), deadline, &AtomicBool::new(false)) {
+            Ok(response) => response,
+            Err(error) if error.starts_with("REQUEST_DEADLINE_EXCEEDED:") => {
                 self.tree
                     .terminate_tree(DEADLINE_EXIT_CODE)
                     .map_err(|error| {
                         format!("Core Host response timeout cleanup failed: {error}")
                     })?;
                 self.deadline_forced = true;
-                let received = receiver.recv_timeout(Duration::from_secs(5)).map_err(|_| {
-                    "Core Host stdout reader did not stop after timeout".to_string()
-                })?;
-                reader
-                    .join()
-                    .map_err(|_| "Core Host stdout reader panicked".to_string())?;
-                self.stdout = Some(received.0);
-                return Err(
-                    "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
-                        .to_string(),
-                );
+                return Err(error);
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                reader
-                    .join()
-                    .map_err(|_| "Core Host stdout reader panicked".to_string())?;
-                return Err("TRANSPORT_READ_FAILED: stdout reader disconnected".to_string());
-            }
+            Err(error) => return Err(error),
         };
-        reader
-            .join()
-            .map_err(|_| "Core Host stdout reader panicked".to_string())?;
-        self.stdout = Some(received.0);
-        received
-            .1
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| match self.tree.wait_root(Duration::from_millis(50)) {
-                Ok(ProcessWaitOutcome::Exited(_)) => {
-                    "CORE_CRASHED: Core Host exited before its response".to_string()
-                }
-                _ => "STDOUT_EOF: Core Host stdout reached EOF before its response".to_string(),
-            })
+        response.ok_or_else(|| match self.tree.wait_root(Duration::from_millis(50)) {
+            Ok(ProcessWaitOutcome::Exited(_)) => {
+                "CORE_CRASHED: Core Host exited before its response".to_string()
+            }
+            _ => "STDOUT_EOF: Core Host stdout reached EOF before its response".to_string(),
+        })
     }
 
     fn finish_exit(mut self, stop_deadline: Duration) -> Result<CoreHostExit, String> {
@@ -1010,14 +1092,32 @@ impl CoreHostRuntime {
         }
         let mut trailing_stdout = Vec::new();
         if let Some(mut pipe) = self.stdout.take() {
-            pipe.read_to_end(&mut trailing_stdout)
-                .map_err(|error| format!("Core Host stdout drain failed: {error}"))?;
+            let cancelled = AtomicBool::new(false);
+            let drain_deadline = Instant::now() + stop_deadline;
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match pipe
+                    .read_until(&mut chunk, drain_deadline, &cancelled)
+                    .map_err(|error| format!("Core Host stdout drain failed: {error}"))?
+                {
+                    ManagedPipeReadOutcome::Read(count) => {
+                        trailing_stdout.extend_from_slice(&chunk[..count])
+                    }
+                    ManagedPipeReadOutcome::Eof => break,
+                    ManagedPipeReadOutcome::Cancelled => {
+                        return Err("Core Host stdout drain was cancelled".to_string())
+                    }
+                    ManagedPipeReadOutcome::TimedOut => {
+                        return Err("Core Host stdout drain exceeded its deadline".to_string())
+                    }
+                }
+            }
         }
         let (stderr, stderr_stats) = self
             .stderr_drain
             .as_mut()
             .ok_or_else(|| "STDERR_READ_FAILED: stderr reader is unavailable".to_string())?
-            .finish()?;
+            .finish_until(Instant::now() + stop_deadline)?;
         self.tree
             .release_exited()
             .map_err(|error| format!("Core Host handle release failed: {error}"))?;
@@ -1191,20 +1291,21 @@ mod tests {
     use std::{
         io::{self, Cursor, Read},
         path::PathBuf,
-        sync::{Arc, Mutex, OnceLock},
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc, Arc, Mutex, OnceLock,
+        },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
-
-    #[cfg(windows)]
-    use std::sync::mpsc;
 
     use serde_json::{json, Value};
 
     use crate::{
         platform::{
             FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
-            RuntimeLocationRequest, RuntimeLocator, RuntimeMode, SHARED_INSTANCE_ID,
+            ManagedPipeReadOutcome, ManagedPipeReader, PlatformResult, RuntimeLocationRequest,
+            RuntimeLocator, RuntimeMode, SHARED_INSTANCE_ID,
         },
         shared_instance::NativeInstanceLockBackend,
     };
@@ -1216,8 +1317,9 @@ mod tests {
     };
 
     use super::{
-        core_host_process_request, drain_stderr, CoreHostRuntime, CoreSnapshotCache,
-        StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, read_frame_until, CoreHostRuntime,
+        CoreSnapshotCache, StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor,
+        STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
@@ -1274,6 +1376,39 @@ mod tests {
                 read_failed: false,
             },
         }))
+    }
+
+    struct InjectedTimeoutReader {
+        active_readers: Arc<AtomicUsize>,
+    }
+
+    impl ManagedPipeReader for InjectedTimeoutReader {
+        fn read_until(
+            &mut self,
+            _buffer: &mut [u8],
+            _deadline: Instant,
+            _cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            self.active_readers.fetch_add(1, Ordering::SeqCst);
+            self.active_readers.fetch_sub(1, Ordering::SeqCst);
+            Ok(ManagedPipeReadOutcome::TimedOut)
+        }
+    }
+
+    #[test]
+    fn timed_out_response_read_leaves_no_active_reader() {
+        let active_readers = Arc::new(AtomicUsize::new(0));
+        let mut reader = InjectedTimeoutReader {
+            active_readers: Arc::clone(&active_readers),
+        };
+        let error = read_frame_until(
+            &mut reader,
+            Instant::now() + Duration::from_millis(50),
+            &AtomicBool::new(false),
+        )
+        .expect_err("injected response timeout must fail closed");
+        assert!(error.starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert_eq!(active_readers.load(Ordering::SeqCst), 0);
     }
 
     fn valid_assistant_snapshot(code: &str, state: &str, summary: Value) -> Value {
@@ -1481,6 +1616,37 @@ mod tests {
         }
     }
 
+    struct TestPipeReader<R> {
+        inner: R,
+    }
+
+    impl<R: Read + Send> ManagedPipeReader for TestPipeReader<R> {
+        fn read_until(
+            &mut self,
+            buffer: &mut [u8],
+            deadline: Instant,
+            cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(ManagedPipeReadOutcome::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Ok(ManagedPipeReadOutcome::TimedOut);
+            }
+            match self.inner.read(buffer) {
+                Ok(0) => Ok(ManagedPipeReadOutcome::Eof),
+                Ok(count) => Ok(ManagedPipeReadOutcome::Read(count)),
+                Err(error) => Err(crate::platform::PlatformError::new(
+                    crate::platform::PlatformService::ManagedProcessTree,
+                    crate::platform::PlatformErrorCategory::NativeFailure,
+                    "test_pipe_read",
+                    crate::platform::RetryAdvice::Never,
+                    error.to_string(),
+                )),
+            }
+        }
+    }
+
     #[test]
     fn stderr_drain_handles_lines_fragmented_utf8_invalid_bytes_and_eof() {
         let state = stderr_state();
@@ -1491,12 +1657,15 @@ mod tests {
         let mut bytes = format!("ordinary\n多行 UTF-8\nsecret={split_secret}\n").into_bytes();
         bytes.extend_from_slice(&[0xff, 0x00, b'\n']);
         drain_stderr(
-            FragmentedReader {
-                bytes: Cursor::new(bytes),
-                chunk_size: 1,
-            },
+            Box::new(TestPipeReader {
+                inner: FragmentedReader {
+                    bytes: Cursor::new(bytes),
+                    chunk_size: 1,
+                },
+            }),
             &state,
             &redactor,
+            &AtomicBool::new(false),
         );
         let state = state.lock().expect("stderr state");
         let output = state.records.iter().cloned().collect::<String>();
@@ -1520,7 +1689,14 @@ mod tests {
             "token=plain Authorization: Bearer private cookie=session chat content=hello {credential} {environment_value} "
         );
         let flood = format!("{sensitive}\n{}", "x".repeat(256 * 1024));
-        drain_stderr(Cursor::new(flood.as_bytes()), &state, &redactor);
+        drain_stderr(
+            Box::new(TestPipeReader {
+                inner: Cursor::new(flood.into_bytes()),
+            }),
+            &state,
+            &redactor,
+            &AtomicBool::new(false),
+        );
         let state = state.lock().expect("stderr state");
         let output = state.records.iter().cloned().collect::<String>();
         assert!(state.buffered_bytes <= STDERR_CACHE_LIMIT);
@@ -1540,15 +1716,33 @@ mod tests {
         let redactor = StderrRedactor {
             secrets: Vec::new(),
         };
-        drain_stderr(FailingReader, &state, &redactor);
+        drain_stderr(
+            Box::new(TestPipeReader {
+                inner: FailingReader,
+            }),
+            &state,
+            &redactor,
+            &AtomicBool::new(false),
+        );
         assert!(state.lock().expect("stderr state").stats.read_failed);
 
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (completion_sender, completion) = mpsc::sync_channel(1);
+        completion_sender
+            .send(())
+            .expect("completed reader notification should send");
         let mut drainer = StderrDrainer {
             state,
+            cancelled,
+            completion,
             reader: Some(thread::spawn(|| {})),
         };
-        let first = drainer.finish().expect("first finish");
-        let second = drainer.finish().expect("repeated finish");
+        let first = drainer
+            .finish_until(Instant::now() + Duration::from_secs(1))
+            .expect("first finish");
+        let second = drainer
+            .finish_until(Instant::now() + Duration::from_secs(1))
+            .expect("repeated finish");
         assert_eq!(first, second);
         assert!(first.1.read_failed);
     }
@@ -2027,7 +2221,10 @@ mod tests {
         let error = host
             .shutdown(Duration::from_secs(3), Duration::from_secs(5))
             .expect_err("trailing stdout must be transport fatal");
-        assert!(error.starts_with("STDOUT_FRAMING_POLLUTION:"));
+        assert!(
+            error.starts_with("STDOUT_FRAMING_POLLUTION:"),
+            "unexpected trailing stdout error: {error}"
+        );
     }
 
     #[test]
@@ -2056,7 +2253,7 @@ mod tests {
         let (mut tree, pipes) =
             ManagedProcessTree::spawn_piped(&spec).expect("polluting fixture should launch");
         let (sender, receiver) = mpsc::sync_channel(1);
-        let reader = thread::spawn(move || {
+        let pollution_reader = thread::spawn(move || {
             let mut stdout = pipes.stdout;
             let result = read_frame(&mut stdout);
             let _ = sender.send((pipes.stdin, stdout, pipes.stderr, result));
@@ -2079,7 +2276,9 @@ mod tests {
             .expect("Job query"));
         tree.release_exited_handles().expect("handle release");
         drop((stdin, stdout, stderr));
-        reader.join().expect("pollution reader should join");
+        pollution_reader
+            .join()
+            .expect("pollution reader should join");
     }
 
     #[test]

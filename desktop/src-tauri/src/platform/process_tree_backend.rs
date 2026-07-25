@@ -1,12 +1,214 @@
 //! Native managed-process-tree backends and the POSIX guardian containment.
 
-use std::time::Duration;
+use std::{
+    fs::File,
+    io::{self, Read},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
 use super::{
-    ManagedProcessPipes, ManagedProcessRequest, ManagedProcessTree, ManagedProcessTreeBackend,
-    PlatformError, PlatformErrorCategory, PlatformResult, PlatformService, ProcessExitStatus,
-    ProcessStdio, ProcessWaitOutcome, RetryAdvice, SpawnedProcessTree,
+    ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
+    ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
+    PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio, ProcessWaitOutcome,
+    RetryAdvice, SpawnedProcessTree,
 };
+
+const PIPE_POLL_QUANTUM: Duration = Duration::from_millis(10);
+
+struct NativePipeReader {
+    file: File,
+}
+
+impl ManagedPipeReader for NativePipeReader {
+    fn read_until(
+        &mut self,
+        buffer: &mut [u8],
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> PlatformResult<ManagedPipeReadOutcome> {
+        native_pipe_read_until(&mut self.file, buffer, deadline, cancelled)
+    }
+}
+
+#[cfg(unix)]
+fn native_pipe_read_until(
+    file: &mut File,
+    buffer: &mut [u8],
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> PlatformResult<ManagedPipeReadOutcome> {
+    use std::os::fd::AsRawFd;
+
+    if buffer.is_empty() {
+        return Ok(ManagedPipeReadOutcome::Read(0));
+    }
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(ManagedPipeReadOutcome::Cancelled);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(ManagedPipeReadOutcome::TimedOut);
+        }
+        let poll_for = remaining.min(PIPE_POLL_QUANTUM);
+        let timeout_ms = poll_for.as_millis().max(1).min(i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: file.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if poll_result == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(pipe_io_error("poll_pipe", error));
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(ManagedPipeReadOutcome::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Ok(ManagedPipeReadOutcome::TimedOut);
+        }
+        if poll_result == 0 {
+            continue;
+        }
+        if descriptor.revents & libc::POLLNVAL != 0 {
+            return Err(pipe_native_error("poll_pipe", i64::from(libc::EBADF)));
+        }
+        if descriptor.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
+            continue;
+        }
+        match file.read(buffer) {
+            Ok(0) => return Ok(ManagedPipeReadOutcome::Eof),
+            Ok(count) => return Ok(ManagedPipeReadOutcome::Read(count)),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if pipe_error_is_eof(&error) => return Ok(ManagedPipeReadOutcome::Eof),
+            Err(error) => return Err(pipe_io_error("read_pipe", error)),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn native_pipe_read_until(
+    file: &mut File,
+    buffer: &mut [u8],
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> PlatformResult<ManagedPipeReadOutcome> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::{
+            GetLastError, ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE, ERROR_NO_DATA,
+            ERROR_PIPE_NOT_CONNECTED, HANDLE,
+        },
+        System::Pipes::PeekNamedPipe,
+    };
+
+    if buffer.is_empty() {
+        return Ok(ManagedPipeReadOutcome::Read(0));
+    }
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(ManagedPipeReadOutcome::Cancelled);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(ManagedPipeReadOutcome::TimedOut);
+        }
+        let mut available = 0_u32;
+        let peek = unsafe {
+            PeekNamedPipe(
+                HANDLE(file.as_raw_handle()),
+                None,
+                0,
+                None,
+                Some(&mut available),
+                None,
+            )
+        };
+        if peek.is_err() {
+            let code = unsafe { GetLastError() };
+            if matches!(
+                code,
+                ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED | ERROR_NO_DATA | ERROR_INVALID_HANDLE
+            ) {
+                return Ok(ManagedPipeReadOutcome::Eof);
+            }
+            return Err(pipe_native_error("peek_pipe", i64::from(code.0)));
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(ManagedPipeReadOutcome::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Ok(ManagedPipeReadOutcome::TimedOut);
+        }
+        if available == 0 {
+            std::thread::sleep(remaining.min(PIPE_POLL_QUANTUM));
+            continue;
+        }
+        let read_limit = buffer.len().min(available as usize);
+        match file.read(&mut buffer[..read_limit]) {
+            Ok(0) => return Ok(ManagedPipeReadOutcome::Eof),
+            Ok(count) => return Ok(ManagedPipeReadOutcome::Read(count)),
+            Err(error) if pipe_error_is_eof(&error) => return Ok(ManagedPipeReadOutcome::Eof),
+            Err(error) => return Err(pipe_io_error("read_pipe", error)),
+        }
+    }
+}
+
+fn pipe_error_is_eof(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        return true;
+    }
+    #[cfg(unix)]
+    return error.raw_os_error() == Some(libc::EPIPE);
+    #[cfg(windows)]
+    return matches!(error.raw_os_error(), Some(6 | 109 | 232 | 233));
+}
+
+fn pipe_io_error(operation: &'static str, error: io::Error) -> PlatformError {
+    let category = match error.kind() {
+        io::ErrorKind::PermissionDenied => PlatformErrorCategory::PermissionDenied,
+        io::ErrorKind::TimedOut => PlatformErrorCategory::TimedOut,
+        io::ErrorKind::WouldBlock => PlatformErrorCategory::TemporarilyUnavailable,
+        _ => PlatformErrorCategory::NativeFailure,
+    };
+    let mut platform_error = PlatformError::new(
+        PlatformService::ManagedProcessTree,
+        category,
+        operation,
+        RetryAdvice::Never,
+        "native pipe read failed",
+    );
+    if let Some(code) = error.raw_os_error() {
+        platform_error = platform_error.with_native_code(pipe_native_namespace(), i64::from(code));
+    }
+    platform_error
+}
+
+fn pipe_native_error(operation: &'static str, code: i64) -> PlatformError {
+    PlatformError::new(
+        PlatformService::ManagedProcessTree,
+        PlatformErrorCategory::NativeFailure,
+        operation,
+        RetryAdvice::Never,
+        "native pipe read failed",
+    )
+    .with_native_code(pipe_native_namespace(), code)
+}
+
+#[cfg(unix)]
+const fn pipe_native_namespace() -> &'static str {
+    "errno"
+}
+
+#[cfg(windows)]
+const fn pipe_native_namespace() -> &'static str {
+    "win32"
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeManagedProcessTreeBackend;
@@ -92,8 +294,8 @@ mod native {
                     tree,
                     Some(ManagedProcessPipes {
                         stdin: pipes.stdin,
-                        stdout: pipes.stdout,
-                        stderr: pipes.stderr,
+                        stdout: Box::new(NativePipeReader { file: pipes.stdout }),
+                        stderr: Box::new(NativePipeReader { file: pipes.stderr }),
                     }),
                 )
             }
@@ -347,18 +549,22 @@ mod native {
                         .take()
                         .expect("piped guardian stdin must exist"),
                 ),
-                stdout: child_stdout_file(
-                    guardian
-                        .stdout
-                        .take()
-                        .expect("piped guardian stdout must exist"),
-                ),
-                stderr: child_stderr_file(
-                    guardian
-                        .stderr
-                        .take()
-                        .expect("piped guardian stderr must exist"),
-                ),
+                stdout: Box::new(NativePipeReader {
+                    file: child_stdout_file(
+                        guardian
+                            .stdout
+                            .take()
+                            .expect("piped guardian stdout must exist"),
+                    ),
+                }),
+                stderr: Box::new(NativePipeReader {
+                    file: child_stderr_file(
+                        guardian
+                            .stderr
+                            .take()
+                            .expect("piped guardian stderr must exist"),
+                    ),
+                }),
             }),
         };
         let mut state = TreeState {
@@ -1008,7 +1214,11 @@ pub(crate) use native::run_guardian_if_requested;
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -1033,11 +1243,178 @@ mod tests {
         assert_eq!(error.category, PlatformErrorCategory::InvalidInput);
     }
 
+    #[test]
+    fn native_pipe_read_times_out_while_child_holds_stdout_open() {
+        let spawned = spawn_pipe_fixture(pipe_hold_open_request())
+            .expect("hold-open fixture should spawn with managed pipes");
+        let mut tree = spawned.tree;
+        let mut pipes = spawned.pipes.expect("hold-open fixture returns pipes");
+        drop(pipes.stdin);
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        let outcome = pipes
+            .stdout
+            .read_until(
+                &mut [0_u8; 32],
+                started + Duration::from_millis(50),
+                &cancelled,
+            )
+            .expect("deadline-aware pipe read should not fail");
+        assert_eq!(outcome, ManagedPipeReadOutcome::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "50ms pipe deadline must remain bounded"
+        );
+        reclaim_fixture(&mut tree);
+        tree.release_exited().expect("fixture handles release");
+    }
+
+    #[test]
+    fn native_pipe_read_honors_preexisting_cancellation() {
+        let spawned = spawn_pipe_fixture(pipe_hold_open_request())
+            .expect("hold-open fixture should spawn with managed pipes");
+        let mut tree = spawned.tree;
+        let mut pipes = spawned.pipes.expect("hold-open fixture returns pipes");
+        drop(pipes.stdin);
+        let cancelled = AtomicBool::new(true);
+        let outcome = pipes
+            .stdout
+            .read_until(
+                &mut [0_u8; 32],
+                Instant::now() + Duration::from_secs(1),
+                &cancelled,
+            )
+            .expect("cancelled pipe read should not fail");
+        assert_eq!(outcome, ManagedPipeReadOutcome::Cancelled);
+        reclaim_fixture(&mut tree);
+        tree.release_exited().expect("fixture handles release");
+    }
+
+    #[test]
+    fn native_pipe_read_reports_data_then_eof() {
+        let spawned = spawn_pipe_fixture(pipe_output_request())
+            .expect("output fixture should spawn with managed pipes");
+        let mut tree = spawned.tree;
+        let mut pipes = spawned.pipes.expect("output fixture returns pipes");
+        drop(pipes.stdin);
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 32];
+            match pipes
+                .stdout
+                .read_until(&mut chunk, deadline, &cancelled)
+                .expect("output pipe read should succeed")
+            {
+                ManagedPipeReadOutcome::Read(count) => output.extend_from_slice(&chunk[..count]),
+                ManagedPipeReadOutcome::Eof => break,
+                other => panic!("output fixture returned unexpected outcome: {other:?}"),
+            }
+        }
+        assert_eq!(output, b"managed-pipe");
+        assert!(matches!(
+            tree.wait_root(Duration::from_secs(5))
+                .expect("output fixture root wait succeeds"),
+            ProcessWaitOutcome::Exited(_)
+        ));
+        assert!(tree
+            .wait_tree_exited(Duration::from_secs(5))
+            .expect("output fixture tree exits"));
+        tree.release_exited().expect("fixture handles release");
+    }
+
+    fn spawn_pipe_fixture(request: ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+        NativeManagedProcessTreeBackend.spawn(&request)
+    }
+
+    fn read_pipe_to_end(reader: &mut dyn ManagedPipeReader) -> Vec<u8> {
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 128];
+            match reader
+                .read_until(&mut chunk, deadline, &cancelled)
+                .expect("managed pipe should drain")
+            {
+                ManagedPipeReadOutcome::Read(count) => output.extend_from_slice(&chunk[..count]),
+                ManagedPipeReadOutcome::Eof => return output,
+                other => panic!("managed pipe returned unexpected drain outcome: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn pipe_hold_open_request() -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 2".into()],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        }
+    }
+
+    #[cfg(windows)]
+    fn pipe_hold_open_request() -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from(std::env::var_os("COMSPEC").expect("Windows cmd path")),
+            args: vec![
+                "/D".into(),
+                "/S".into(),
+                "/C".into(),
+                "ping -n 3 127.0.0.1 >NUL".into(),
+            ],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        }
+    }
+
+    #[cfg(unix)]
+    fn pipe_output_request() -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf managed-pipe".into()],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        }
+    }
+
+    #[cfg(windows)]
+    fn pipe_output_request() -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from(std::env::var_os("COMSPEC").expect("Windows cmd path")),
+            args: vec![
+                "/D".into(),
+                "/S".into(),
+                "/C".into(),
+                "<NUL set /P =managed-pipe".into(),
+            ],
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        }
+    }
+
+    fn reclaim_fixture(tree: &mut Box<dyn ManagedProcessTree>) {
+        tree.terminate_tree(93)
+            .expect("fixture tree should terminate cooperatively");
+        assert!(matches!(
+            tree.wait_root(Duration::from_secs(5))
+                .expect("fixture root wait succeeds"),
+            ProcessWaitOutcome::Exited(_)
+        ));
+        assert!(tree
+            .wait_tree_exited(Duration::from_secs(5))
+            .expect("fixture tree exits"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_backend_preserves_piped_job_spawn_wait_and_release() {
-        use std::io::Read;
-
         let spawned = NativeManagedProcessTreeBackend
             .spawn(&ManagedProcessRequest {
                 program: PathBuf::from(std::env::var_os("COMSPEC").expect("Windows cmd path")),
@@ -1063,11 +1440,8 @@ mod tests {
         assert!(tree
             .wait_tree_exited(Duration::from_secs(5))
             .expect("Job verification succeeds"));
-        let mut output = String::new();
-        pipes
-            .stdout
-            .read_to_string(&mut output)
-            .expect("Job stdout drains");
+        let output = String::from_utf8(read_pipe_to_end(pipes.stdout.as_mut()))
+            .expect("Job stdout should be UTF-8");
         assert_eq!(output.trim(), "managed-tree");
         tree.release_exited().expect("verified Job releases");
     }
@@ -1075,8 +1449,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn posix_piped_spawn_wait_verify_and_release_are_bounded() {
-        use std::io::Read;
-
         let spawned = NativeManagedProcessTreeBackend
             .spawn(&ManagedProcessRequest {
                 program: PathBuf::from("/bin/sh"),
@@ -1097,11 +1469,8 @@ mod tests {
         assert!(tree
             .wait_tree_exited(Duration::from_secs(5))
             .expect("tree verification succeeds"));
-        let mut stdout = String::new();
-        pipes
-            .stdout
-            .read_to_string(&mut stdout)
-            .expect("stdout drains");
+        let stdout = String::from_utf8(read_pipe_to_end(pipes.stdout.as_mut()))
+            .expect("stdout should be UTF-8");
         assert_eq!(stdout, "managed-tree");
         tree.release_exited().expect("verified tree releases");
     }
@@ -1146,8 +1515,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn posix_staged_python_root_is_contained_and_released() {
-        use std::io::Read;
-
         let python = std::env::var_os("SAKURA_RUNTIME_V2_TEST_PYTHON")
             .map(PathBuf::from)
             .or_else(|| {
@@ -1179,11 +1546,8 @@ mod tests {
         assert!(tree
             .wait_tree_exited(Duration::from_secs(5))
             .expect("Python tree verification succeeds"));
-        let mut output = String::new();
-        pipes
-            .stdout
-            .read_to_string(&mut output)
-            .expect("Python stdout drains");
+        let output = String::from_utf8(read_pipe_to_end(pipes.stdout.as_mut()))
+            .expect("Python stdout should be UTF-8");
         assert_eq!(output, "bundled-python");
         tree.release_exited().expect("Python tree releases");
     }
