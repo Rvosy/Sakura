@@ -81,7 +81,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
-| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | active |
+| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
@@ -119,7 +119,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
 accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
-已于 2026-07-26 激活，是当前唯一 `active` 或 `stabilizing` Work Package；后续 WP 保持 `planned`。
+已于 2026-07-26 accepted；当前没有 `active` 或 `stabilizing` Work Package，依赖已满足的下一个
+启动点是仍为 `planned` 的 WP-2-01。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1752,6 +1753,24 @@ CI：设计 SHA b6f343a 的 PR platform run 30122282238 与 Unit/UI run 30122282
 退出条件：全部 lifecycle/readiness 组合有表驱动投影；失败路径无空白窗口；retry 只提交 LifecycleIntent::Retry 并由既有串行 Supervisor 合并，旧 generation 完整清理前不创建新 generation；setup_required/degraded/failed 不新增自动 retry；diagnostics 只含稳定状态/code、必要版本和批准日志位置；正常/失败/retry/exit 后 Shell/Core/后代/pipe/thread/temp 残留为零
 计划提交：docs(runtime): 激活 WP-1D-01 最小生命周期可见性；feat(runtime): 增加最小生命周期状态与安全重试
 独立回退：先退出 Shell 并验证全部 generation、受控进程树、pipe/thread/temp 归零；单独 revert 实现提交以恢复 WP-3-01/WP-1C-04 底层 lifecycle 与原 fatal exit，再单独 revert 本激活提交；不清理、恢复或改写用户数据
+```
+
+接受记录（2026-07-26）：
+
+```text
+状态：accepted
+关联提交：激活 be770c73；实现 7a52a2dd
+RED/GREEN：前端先以 ERR_MODULE_NOT_FOUND 证明 lifecycle 投影缺失；Rust 先证明 Running generation 的 Retry 没有 StopGeneration；实现后 frontend 22 passed，Rust 159 passed/23 ignored，platform workflow pytest 4 passed
+状态矩阵：表驱动覆盖 7 个 SupervisorState × 7 个 readiness 输入；Shell 明确显示 startup、initializing、ready、setup_required、degraded、failed、Core crashed、restarting
+状态所有权：Rust 发布既有 SupervisorState、当前 generation 和既有 Core Snapshot readiness/revision；WebView 只投影并忽略旧 generation、错 identity 和旧 revision，不拥有或改写 Supervisor/CoreReadiness
+Retry/退出：Retry 只提交 LifecycleIntent::Retry；Running 发出一次串行 StopGeneration，Stopping 合并重复意图，Spawning 忽略重复意图；旧 generation 的树、pipe、waiter/Snapshot owner 完成清理后才创建新 generation；Exit、窗口关闭和 AppShutdown 共用同一 worker；既有 retry budget/backoff 与 5000ms shutdown deadline 未改
+Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol 版本和 Sakura application logs 逻辑位置；序列化白名单与秘密测试拒绝 credential、API Key、Prompt、Provider endpoint、模型、私有配置、异常 repr 和用户私有路径
+故障与资源：缺 Runtime、重复 Retry、旧 generation/revision、真实 Core 两代、initialize hang、spawn/crash、退出竞态和秘密门均通过；真实 Shell-Core lifecycle harness 通过，Shell/Core 精确进程及验收 temp 残留为 0，受保护 data/characters/runtime 摘要不变
+平台证据：本地 Windows x64 完整 frontend/Rust/真实 lifecycle 全绿；实现命中既有三平台 workflow paths，但按本次“不推送”要求未创建 7a52a2dd 的远端 Windows/macOS/Linux jobs。本次指令明确只有可复现、可归因 P0/P1 或退出条件回归阻断，故将该非失败型证据缺口作为已知风险接受；推送后只跟踪同 SHA 明确可归因失败
+真实 UI：Windows 应用控制确认真实 Shell 窗口创建；随后检测到用户输入并按安全规则停止争抢，未取得截图。初始 HTML 默认可见、frontend 投影测试与真实 lifecycle harness 已证明失败不依赖 Core 才显示
+已知问题：除未推送 SHA 的远端三平台结果和因用户输入中止的截图外，无已知 P0/P1、退出条件缺陷、秘密泄露或资源残留
+非目标：未实现 Runtime Repair/下载/安装/替换、通用日志浏览、设置、聊天、Router/Gateway/Operation、Memory、MCP、插件、TTS、新 diagnostics 窗口或后续 WP 生产代码；manifest/lockfile/依赖/协议/Snapshot schema/readiness code/重试预算均未变
+回退：先请求 Exit 并确认 Shell/Core/后代/pipe/thread/temp 归零；单独 revert 7a52a2dd 恢复 WP-3-01/WP-1C-04 底层 lifecycle 和 fatal exit，再单独 revert be770c73 恢复 planned；不清理、恢复或改写用户数据
 ```
 
 主要结果：在第一条真实聊天前，开发者和用户能理解 lifecycle 失败并安全 retry 或 exit；本 WP 不建设完整 Runtime Repair。
