@@ -231,6 +231,12 @@ completion 已确认、pipe owner 已关闭、平台 tree owner 已消费。若�
 剩余 owner cleanup 后，capsule 才能产生 stopped/resource-zero 结果。WP-3-01 不借此修改 Supervisor
 restart 语义。
 
+failure 仅允许三种 consuming 处理：`into_recovery` 保留 owner、成功路径不产生 failure，或
+`into_terminal_diagnostic` 在调用者已经冻结“当前进程退出且不再启动 generation”的终止路径中触发
+Drop 保险。不得实现把 failure 隐式转换为 `String` 的 `From`，也不得让 `?` 静默丢弃 recovery。
+Phase 1C worker 的 error 分支会立即 `app.exit(3)`，因此可显式使用 terminal conversion；正常路径和
+未来 Supervisor 集成必须保留 recovery capsule。
+
 Core Host 当前没有生产 filesystem temp owner；因此正常 Task 5 路径的 temp 集合为空。若测试或
 后续调用为 generation 注册临时资源，它必须在同一 cleanup tail 中使用 remaining budget 清除。
 Phase 1C harness 自己拥有的验收目录不冒充 Core 资源，由 Task 6 外层门禁独立删除并验证零残留。

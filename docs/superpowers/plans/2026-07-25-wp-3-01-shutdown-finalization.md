@@ -460,6 +460,7 @@ success result before Job/group/guardian zero, secret/native identity exposure, 
 
 **Files:**
 - Modify: `desktop/src-tauri/src/core_host_runtime.rs`
+- Modify mechanically for typed launch/shutdown failures: `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`
 - Add: `tests/fixtures/runtime_v2/wp_3_01/slow_shutdown_host.py`
 - Use: `tests/fixtures/runtime_v2/wp_1c_01/ignoring_shutdown_host.py`
 - Test: inline Core Host runtime tests
@@ -502,6 +503,11 @@ Only expose a redacted diagnostic accessor and consuming `into_recovery`; never 
 format the native owner. A fake finalizer error must return a capsule, record exactly one shutdown deadline,
 and prove no automatic second `finalize_until` call occurs. A test-only explicit recovery call supplies a new
 deadline, succeeds, and only then permits the stopped/resource-zero assertion.
+
+Also expose consuming `into_terminal_diagnostic` only for a caller that has already committed to process exit
+with no next generation. Do not implement `From<CoreHostLifecycleFailure> for String` or another implicit owner-
+dropping conversion. Update Phase 1C error branches explicitly: its worker immediately calls `app.exit(3)`, so
+it may use terminal conversion; its normal launch/shutdown path must never receive a recovery capsule.
 
 `CoreHostRuntime::launch` and `launch_with_backend` return the same failure type. Validation/spawn errors before
 an owner exists use `recovery=None`; credential bootstrap or initialization failures after spawn must build the
@@ -612,7 +618,8 @@ fix(runtime): 统一 Assistant 关闭期限与资源回收
 ```
 
 Review the exact t0 sampling point, remaining-budget propagation, error cleanup continuation, reader/tree owner
-consumption, timing-test tolerance versus exact fake-clock proof, and unchanged readiness/retry behavior.
+consumption, typed Phase 1C callsites, timing-test tolerance versus exact fake-clock proof, and unchanged
+readiness/retry behavior.
 
 ---
 
