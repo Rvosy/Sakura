@@ -438,10 +438,33 @@ mod native {
 
         fn wait_tree_exited(&self, timeout: Duration) -> PlatformResult<bool> {
             let mut state = lock_state(&self.state)?;
-            if state.tree_exited {
-                return Ok(true);
+            let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+                platform_error(
+                    PlatformErrorCategory::InvalidInput,
+                    "wait_tree_exited",
+                    RetryAdvice::Never,
+                    "process tree wait deadline overflowed",
+                )
+            })?;
+            if !state.tree_exited
+                && !pump_until_deadline(&mut state, deadline, |state| state.tree_exited)?
+            {
+                return Ok(false);
             }
-            pump_until(&mut state, timeout, |state| state.tree_exited)
+            let Some(guardian_status) = reap_guardian_until(&mut state.guardian, deadline)
+                .map_err(|error| io_error("reap_guardian", error))?
+            else {
+                return Ok(false);
+            };
+            if !guardian_status.success() {
+                return Err(platform_error(
+                    PlatformErrorCategory::NativeFailure,
+                    "wait_guardian",
+                    RetryAdvice::Never,
+                    format!("process guardian exited unexpectedly: {guardian_status}"),
+                ));
+            }
+            Ok(true)
         }
 
         fn release_exited(self: Box<Self>) -> PlatformResult<()> {
@@ -457,11 +480,10 @@ mod native {
                     "cannot release a POSIX process tree before verified exit",
                 ));
             }
-            let Some(guardian_status) = reap_guardian_until(
-                &mut state.guardian,
-                Instant::now() + Duration::from_millis(100),
-            )
-            .map_err(|error| io_error("reap_guardian", error))?
+            let Some(guardian_status) = state
+                .guardian
+                .try_wait()
+                .map_err(|error| io_error("reap_guardian", error))?
             else {
                 return Err(platform_error(
                     PlatformErrorCategory::ResourceBusy,
@@ -547,6 +569,10 @@ mod native {
             return Err(finalization_timeout());
         }
 
+        if !status_observation_allowed(Instant::now(), deadline) {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(finalization_timeout());
+        }
         if !state.tree_exited
             && !pump_until_deadline(&mut state, deadline, |state| state.tree_exited)
                 .map_err(finalizer_platform_error)?
@@ -565,17 +591,17 @@ mod native {
         }
 
         let guardian_status = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                immediate_posix_cleanup(&mut state, tree.process_group_id);
+                return Err(finalization_timeout());
+            }
             if let Some(status) = state
                 .guardian
                 .try_wait()
                 .map_err(|error| finalizer_io_error(error))?
             {
                 break status;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                immediate_posix_cleanup(&mut state, tree.process_group_id);
-                return Err(finalization_timeout());
             }
             thread::sleep(Duration::from_millis(10).min(remaining));
         };
@@ -596,6 +622,10 @@ mod native {
                 "process guardian omitted the root exit status",
             )
         })?;
+        if !status_observation_allowed(Instant::now(), deadline) {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+            return Err(finalization_timeout());
+        }
         state.control.take();
         state.released = true;
         Ok(ProcessTreeFinalization {
@@ -608,13 +638,67 @@ mod native {
         let Some(mut control) = state.control.take() else {
             return Ok(());
         };
-        let remaining_nanos = deadline
-            .saturating_duration_since(Instant::now())
-            .as_nanos();
+        let deadline_nanos =
+            monotonic_deadline_from_instant(deadline).map_err(finalizer_io_error)?;
         control
-            .write_all(format!("FINALIZE {remaining_nanos}\n").as_bytes())
+            .write_all(&encode_explicit_cleanup_command(deadline_nanos))
             .map_err(|error| finalizer_io_error(error))?;
         Ok(())
+    }
+
+    fn monotonic_deadline_from_instant(deadline: Instant) -> io::Result<u128> {
+        let monotonic_sample = monotonic_now_nanos()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        monotonic_sample
+            .checked_add(remaining.as_nanos())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "deadline overflowed"))
+    }
+
+    fn monotonic_now_nanos() -> io::Result<u128> {
+        let mut timestamp = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let seconds = u128::try_from(timestamp.tv_sec)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid monotonic clock"))?;
+        let nanos = u128::try_from(timestamp.tv_nsec)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid monotonic clock"))?;
+        seconds
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_add(nanos))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "monotonic clock overflowed"))
+    }
+
+    fn encode_explicit_cleanup_command(deadline_nanos: u128) -> Vec<u8> {
+        format!("FINALIZE_AT {deadline_nanos}\n").into_bytes()
+    }
+
+    fn parse_explicit_cleanup_command(command: &[u8]) -> io::Result<u128> {
+        let command = std::str::from_utf8(command).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid guardian control command",
+            )
+        })?;
+        command
+            .strip_prefix("FINALIZE_AT ")
+            .and_then(|value| value.trim().parse::<u128>().ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid guardian control command",
+                )
+            })
+    }
+
+    fn monotonic_remaining(deadline_nanos: u128, observed_nanos: u128) -> Duration {
+        let remaining = deadline_nanos.saturating_sub(observed_nanos);
+        let seconds = (remaining / 1_000_000_000).min(u128::from(u64::MAX)) as u64;
+        let nanos = (remaining % 1_000_000_000) as u32;
+        Duration::new(seconds, nanos)
     }
 
     fn immediate_posix_cleanup(state: &mut TreeState, process_group_id: libc::pid_t) {
@@ -873,14 +957,14 @@ mod native {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum GuardianCleanupMode {
         Natural,
-        Explicit(Instant),
+        Explicit(u128),
         ParentDeath,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ControlEvent {
         Open,
-        Explicit(Duration),
+        Explicit(u128),
         Closed,
     }
 
@@ -895,27 +979,19 @@ mod native {
             }
             match control_event(control.as_raw_fd())? {
                 ControlEvent::Open => {}
-                ControlEvent::Explicit(remaining) => {
-                    let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "guardian finalization deadline overflowed",
-                        )
-                    })?;
-                    loop {
-                        if let Some(status) = child.try_wait()? {
-                            return Ok((status, GuardianCleanupMode::Explicit(deadline)));
-                        }
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            return Err(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "root survived explicit finalization deadline",
-                            ));
-                        }
-                        thread::sleep(Duration::from_millis(10).min(remaining));
+                ControlEvent::Explicit(deadline_nanos) => loop {
+                    let remaining = monotonic_remaining(deadline_nanos, monotonic_now_nanos()?);
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "root survived explicit finalization deadline",
+                        ));
                     }
-                }
+                    if let Some(status) = child.try_wait()? {
+                        return Ok((status, GuardianCleanupMode::Explicit(deadline_nanos)));
+                    }
+                    thread::sleep(Duration::from_millis(10).min(remaining));
+                },
                 ControlEvent::Closed => {
                     signal_group(process_group_id, libc::SIGTERM)?;
                     let graceful_deadline = Instant::now() + TERMINATE_GRACE;
@@ -954,19 +1030,14 @@ mod native {
         if cleanup_mode == GuardianCleanupMode::Natural {
             cleanup_mode = match control_event(control.as_raw_fd())? {
                 ControlEvent::Open => GuardianCleanupMode::Natural,
-                ControlEvent::Explicit(remaining) => GuardianCleanupMode::Explicit(
-                    Instant::now().checked_add(remaining).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "guardian finalization deadline overflowed",
-                        )
-                    })?,
-                ),
+                ControlEvent::Explicit(deadline_nanos) => {
+                    GuardianCleanupMode::Explicit(deadline_nanos)
+                }
                 ControlEvent::Closed => GuardianCleanupMode::ParentDeath,
             };
         }
-        if let GuardianCleanupMode::Explicit(deadline) = cleanup_mode {
-            return wait_for_explicit_group_cleanup(process_group_id, deadline);
+        if let GuardianCleanupMode::Explicit(deadline_nanos) = cleanup_mode {
+            return wait_for_explicit_group_cleanup(process_group_id, deadline_nanos);
         }
 
         signal_group(process_group_id, libc::SIGTERM)?;
@@ -978,14 +1049,8 @@ mod native {
             if cleanup_mode == GuardianCleanupMode::Natural {
                 match control_event(control.as_raw_fd())? {
                     ControlEvent::Open => {}
-                    ControlEvent::Explicit(remaining) => {
-                        let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "guardian finalization deadline overflowed",
-                            )
-                        })?;
-                        return wait_for_explicit_group_cleanup(process_group_id, deadline);
+                    ControlEvent::Explicit(deadline_nanos) => {
+                        return wait_for_explicit_group_cleanup(process_group_id, deadline_nanos);
                     }
                     ControlEvent::Closed => cleanup_mode = GuardianCleanupMode::ParentDeath,
                 }
@@ -1003,14 +1068,8 @@ mod native {
             if cleanup_mode == GuardianCleanupMode::Natural {
                 match control_event(control.as_raw_fd())? {
                     ControlEvent::Open => {}
-                    ControlEvent::Explicit(remaining) => {
-                        let deadline = Instant::now().checked_add(remaining).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "guardian finalization deadline overflowed",
-                            )
-                        })?;
-                        return wait_for_explicit_group_cleanup(process_group_id, deadline);
+                    ControlEvent::Explicit(deadline_nanos) => {
+                        return wait_for_explicit_group_cleanup(process_group_id, deadline_nanos);
                     }
                     ControlEvent::Closed => cleanup_mode = GuardianCleanupMode::ParentDeath,
                 }
@@ -1025,19 +1084,21 @@ mod native {
 
     fn wait_for_explicit_group_cleanup(
         process_group_id: libc::pid_t,
-        deadline: Instant,
+        deadline_nanos: u128,
     ) -> io::Result<()> {
-        while process_group_exists(process_group_id)? {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+        loop {
+            let remaining = monotonic_remaining(deadline_nanos, monotonic_now_nanos()?);
             if remaining.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "process group survived explicit finalization deadline",
                 ));
             }
+            if !process_group_exists(process_group_id)? {
+                return Ok(());
+            }
             thread::sleep(Duration::from_millis(10).min(remaining));
         }
-        Ok(())
     }
 
     fn process_group_exists(process_group_id: libc::pid_t) -> io::Result<bool> {
@@ -1080,29 +1141,8 @@ mod native {
         let mut command = [0_u8; 128];
         let read = unsafe { libc::read(fd, command.as_mut_ptr().cast(), command.len()) };
         if read > 0 {
-            let command = std::str::from_utf8(&command[..read as usize]).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid guardian control command",
-                )
-            })?;
-            let remaining_nanos = command
-                .strip_prefix("FINALIZE ")
-                .and_then(|value| value.trim().parse::<u128>().ok())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid guardian control command",
-                    )
-                })?;
-            let seconds = u64::try_from(remaining_nanos / 1_000_000_000).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "guardian finalization duration overflowed",
-                )
-            })?;
-            let nanos = (remaining_nanos % 1_000_000_000) as u32;
-            return Ok(ControlEvent::Explicit(Duration::new(seconds, nanos)));
+            return parse_explicit_cleanup_command(&command[..read as usize])
+                .map(ControlEvent::Explicit);
         }
         if read == 0 {
             return Ok(ControlEvent::Closed);
@@ -1139,14 +1179,19 @@ mod native {
         deadline: Instant,
         complete: impl Fn(&TreeState) -> bool,
     ) -> PlatformResult<bool> {
-        if complete(state) {
+        if status_observation_allowed(Instant::now(), deadline) && complete(state) {
             return Ok(true);
         }
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let Some(line) = read_status_line(state, remaining)? else {
-                return Ok(complete(state));
+            if !status_observation_allowed(Instant::now(), deadline) {
+                return Ok(false);
+            }
+            let Some(line) = read_status_line_until(state, deadline)? else {
+                return Ok(status_observation_allowed(Instant::now(), deadline) && complete(state));
             };
+            if !status_observation_allowed(Instant::now(), deadline) {
+                return Ok(false);
+            }
             apply_status_line(state, &line)?;
             if complete(state) {
                 return Ok(true);
@@ -1158,8 +1203,25 @@ mod native {
         state: &mut TreeState,
         timeout: Duration,
     ) -> PlatformResult<Option<String>> {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            platform_error(
+                PlatformErrorCategory::InvalidInput,
+                "read_guardian_status",
+                RetryAdvice::Never,
+                "guardian status deadline overflowed",
+            )
+        })?;
+        read_status_line_until(state, deadline)
+    }
+
+    fn read_status_line_until(
+        state: &mut TreeState,
+        deadline: Instant,
+    ) -> PlatformResult<Option<String>> {
         loop {
+            if !status_observation_allowed(Instant::now(), deadline) {
+                return Ok(None);
+            }
             if let Some(newline) = state.status_buffer.iter().position(|byte| *byte == b'\n') {
                 let line = state.status_buffer.drain(..=newline).collect::<Vec<_>>();
                 return String::from_utf8(line[..line.len() - 1].to_vec())
@@ -1179,12 +1241,15 @@ mod native {
                 events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
                 revents: 0,
             };
-            let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+            let timeout_ms = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
             let poll_result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
             if poll_result == -1 {
                 return Err(io_error("poll_guardian_status", io::Error::last_os_error()));
             }
             if poll_result == 0 {
+                return Ok(None);
+            }
+            if !status_observation_allowed(Instant::now(), deadline) {
                 return Ok(None);
             }
             let mut byte = [0_u8; 1];
@@ -1211,6 +1276,10 @@ mod native {
                 Err(error) => return Err(io_error("read_guardian_status", error)),
             }
         }
+    }
+
+    fn status_observation_allowed(observed_at: Instant, deadline: Instant) -> bool {
+        observed_at < deadline
     }
 
     fn apply_status_line(state: &mut TreeState, line: &str) -> PlatformResult<()> {
@@ -1558,6 +1627,103 @@ mod native {
             .chars()
             .take(512)
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn explicit_control_carries_one_frozen_absolute_monotonic_deadline() {
+            let deadline_nanos = 4_200_000_123_u128;
+            let command = encode_explicit_cleanup_command(deadline_nanos);
+
+            assert_eq!(command, b"FINALIZE_AT 4200000123\n");
+            assert_eq!(
+                parse_explicit_cleanup_command(&command).unwrap(),
+                deadline_nanos
+            );
+            assert_eq!(
+                monotonic_remaining(deadline_nanos, deadline_nanos - 123),
+                Duration::from_nanos(123)
+            );
+            assert_eq!(
+                monotonic_remaining(deadline_nanos, deadline_nanos),
+                Duration::ZERO
+            );
+            assert_eq!(
+                monotonic_remaining(deadline_nanos, deadline_nanos + 1_000),
+                Duration::ZERO,
+                "receiving a command late must not shift its deadline"
+            );
+        }
+
+        #[test]
+        fn status_observation_is_forbidden_at_or_after_the_absolute_deadline() {
+            let deadline = Instant::now() + Duration::from_secs(1);
+
+            assert!(status_observation_allowed(
+                deadline - Duration::from_nanos(1),
+                deadline
+            ));
+            assert!(!status_observation_allowed(deadline, deadline));
+            assert!(!status_observation_allowed(
+                deadline + Duration::from_nanos(1),
+                deadline
+            ));
+        }
+
+        #[test]
+        fn wait_tree_exited_budget_also_reaps_guardian_before_release() {
+            let mut guardian_command = Command::new("/bin/sh");
+            guardian_command
+                .args(["-c", "sleep 0.2"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            unsafe {
+                guardian_command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let guardian = guardian_command
+                .spawn()
+                .expect("delayed guardian fixture should spawn");
+            let guardian_pid = guardian.id();
+            let (control_read, control_write) =
+                create_pipe().expect("control fixture pipe should open");
+            let (status_read, mut status_write) =
+                create_pipe().expect("status fixture pipe should open");
+            status_write
+                .write_all(b"ROOT_CODE 0\nTREE_EXITED\n")
+                .expect("fixture status should be writable");
+            drop(control_read);
+            drop(status_write);
+
+            let tree = Box::new(NativeTree {
+                root_pid: guardian_pid,
+                process_group_id: guardian_pid as libc::pid_t,
+                state: Mutex::new(TreeState {
+                    guardian,
+                    control: Some(control_write),
+                    status: status_read,
+                    status_buffer: Vec::new(),
+                    root_status: None,
+                    tree_exited: false,
+                    released: false,
+                    cleanup_deadline: None,
+                }),
+            });
+
+            assert!(tree
+                .wait_tree_exited(Duration::from_millis(500))
+                .expect("tree exit observation should use the caller budget"));
+            tree.release_exited()
+                .expect("successful wait must make immediate release safe");
+        }
     }
 }
 
