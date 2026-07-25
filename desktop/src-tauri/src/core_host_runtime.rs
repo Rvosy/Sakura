@@ -536,43 +536,112 @@ fn flush_stderr_pending(
     }
 }
 
-fn read_frame_until(
-    reader: &mut dyn ManagedPipeReader,
-    deadline: Instant,
-    cancelled: &AtomicBool,
-) -> Result<Option<Value>, String> {
-    let mut decoder = FrameDecoder::default();
-    let mut chunk = [0_u8; 8192];
-    loop {
-        match reader
-            .read_until(&mut chunk, deadline, cancelled)
-            .map_err(|error| error.to_string())?
-        {
-            ManagedPipeReadOutcome::Read(count) => {
-                let mut frames = decoder
-                    .feed(&chunk[..count])
-                    .map_err(|error| error.to_string())?;
-                if let Some(frame) = frames.pop() {
-                    if !frames.is_empty() {
-                        return Err("TRANSPORT_READ_FAILED: unexpected response burst".to_string());
+struct ResponseFrameReader {
+    decoder: FrameDecoder,
+    header: [u8; 4],
+    header_read: usize,
+    payload_remaining: Option<usize>,
+}
+
+impl Default for ResponseFrameReader {
+    fn default() -> Self {
+        Self {
+            decoder: FrameDecoder::default(),
+            header: [0_u8; 4],
+            header_read: 0,
+            payload_remaining: None,
+        }
+    }
+}
+
+impl ResponseFrameReader {
+    fn read_until(
+        &mut self,
+        reader: &mut dyn ManagedPipeReader,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Value>, String> {
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let reading_payload = self.payload_remaining.is_some();
+            let outcome = if let Some(remaining) = self.payload_remaining {
+                let read_limit = remaining.min(chunk.len());
+                reader.read_until(&mut chunk[..read_limit], deadline, cancelled)
+            } else {
+                reader.read_until(&mut self.header[self.header_read..], deadline, cancelled)
+            }
+            .map_err(|error| error.to_string())?;
+
+            match outcome {
+                ManagedPipeReadOutcome::Read(0) => {
+                    return Err("TRANSPORT_READ_FAILED: stdout returned an empty read".to_string())
+                }
+                ManagedPipeReadOutcome::Read(count) if reading_payload => {
+                    let remaining = self
+                        .payload_remaining
+                        .expect("payload mode has a remaining byte count");
+                    let frames = self
+                        .decoder
+                        .feed(&chunk[..count])
+                        .map_err(|error| error.to_string())?;
+                    let remaining = remaining - count;
+                    self.payload_remaining = (remaining != 0).then_some(remaining);
+                    if remaining == 0 {
+                        if frames.len() != 1 {
+                            return Err("TRANSPORT_READ_FAILED: response frame count was invalid"
+                                .to_string());
+                        }
+                        return Ok(frames.into_iter().next());
                     }
-                    return Ok(Some(frame));
+                    if !frames.is_empty() {
+                        return Err(
+                            "TRANSPORT_READ_FAILED: response completed before its boundary"
+                                .to_string(),
+                        );
+                    }
+                }
+                ManagedPipeReadOutcome::Read(count) => {
+                    self.header_read += count;
+                    if self.header_read == self.header.len() {
+                        let payload_length = u32::from_be_bytes(self.header) as usize;
+                        let frames = self
+                            .decoder
+                            .feed(&self.header)
+                            .map_err(|error| error.to_string())?;
+                        self.header_read = 0;
+                        if !frames.is_empty() {
+                            return Err(
+                                "TRANSPORT_READ_FAILED: header completed a response".to_string()
+                            );
+                        }
+                        self.payload_remaining = Some(payload_length);
+                    }
+                }
+                ManagedPipeReadOutcome::Eof => {
+                    if self.header_read != 0 {
+                        self.decoder
+                            .feed(&self.header[..self.header_read])
+                            .map_err(|error| error.to_string())?;
+                        self.header_read = 0;
+                    }
+                    self.decoder.finish().map_err(|error| error.to_string())?;
+                    return Ok(None);
+                }
+                ManagedPipeReadOutcome::Cancelled => {
+                    return Err("TRANSPORT_READ_CANCELLED: stdout read was cancelled".to_string())
+                }
+                ManagedPipeReadOutcome::TimedOut => {
+                    return Err(
+                        "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
+                            .to_string(),
+                    )
                 }
             }
-            ManagedPipeReadOutcome::Eof => {
-                decoder.finish().map_err(|error| error.to_string())?;
-                return Ok(None);
-            }
-            ManagedPipeReadOutcome::Cancelled => {
-                return Err("TRANSPORT_READ_CANCELLED: stdout read was cancelled".to_string())
-            }
-            ManagedPipeReadOutcome::TimedOut => {
-                return Err(
-                    "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
-                        .to_string(),
-                )
-            }
         }
+    }
+
+    fn has_incomplete_frame(&self) -> bool {
+        self.header_read != 0 || self.payload_remaining.is_some() || self.decoder.finish().is_err()
     }
 }
 
@@ -743,6 +812,7 @@ pub struct CoreHostRuntime {
     tree: Box<dyn ManagedProcessTree>,
     stdin: Option<File>,
     stdout: Option<Box<dyn ManagedPipeReader>>,
+    stdout_frames: ResponseFrameReader,
     stderr_drain: Option<StderrDrainer>,
     generation_id: String,
     generation_credential: String,
@@ -832,6 +902,7 @@ impl CoreHostRuntime {
             tree: spawned.tree,
             stdin: Some(stdin),
             stdout: Some(pipes.stdout),
+            stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
             generation_credential,
@@ -1037,19 +1108,23 @@ impl CoreHostRuntime {
             .stdout
             .as_mut()
             .ok_or_else(|| "TRANSPORT_READ_FAILED: Core Host stdout is unavailable".to_string())?;
-        let response = match read_frame_until(stdout.as_mut(), deadline, &AtomicBool::new(false)) {
-            Ok(response) => response,
-            Err(error) if error.starts_with("REQUEST_DEADLINE_EXCEEDED:") => {
-                self.tree
-                    .terminate_tree(DEADLINE_EXIT_CODE)
-                    .map_err(|error| {
-                        format!("Core Host response timeout cleanup failed: {error}")
-                    })?;
-                self.deadline_forced = true;
-                return Err(error);
-            }
-            Err(error) => return Err(error),
-        };
+        let response =
+            match self
+                .stdout_frames
+                .read_until(stdout.as_mut(), deadline, &AtomicBool::new(false))
+            {
+                Ok(response) => response,
+                Err(error) if error.starts_with("REQUEST_DEADLINE_EXCEEDED:") => {
+                    self.tree
+                        .terminate_tree(DEADLINE_EXIT_CODE)
+                        .map_err(|error| {
+                            format!("Core Host response timeout cleanup failed: {error}")
+                        })?;
+                    self.deadline_forced = true;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
         response.ok_or_else(|| match self.tree.wait_root(Duration::from_millis(50)) {
             Ok(ProcessWaitOutcome::Exited(_)) => {
                 "CORE_CRASHED: Core Host exited before its response".to_string()
@@ -1121,7 +1196,7 @@ impl CoreHostRuntime {
         self.tree
             .release_exited()
             .map_err(|error| format!("Core Host handle release failed: {error}"))?;
-        if !trailing_stdout.is_empty() {
+        if self.stdout_frames.has_incomplete_frame() || !trailing_stdout.is_empty() {
             return Err(
                 "STDOUT_FRAMING_POLLUTION: Core Host wrote trailing stdout bytes".to_string(),
             );
@@ -1289,6 +1364,8 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::VecDeque,
+        fs::File,
         io::{self, Cursor, Read},
         path::PathBuf,
         sync::{
@@ -1302,10 +1379,13 @@ mod tests {
     use serde_json::{json, Value};
 
     use crate::{
+        core_host_protocol::encode_frame,
         platform::{
             FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
-            ManagedPipeReadOutcome, ManagedPipeReader, PlatformResult, RuntimeLocationRequest,
-            RuntimeLocator, RuntimeMode, SHARED_INSTANCE_ID,
+            ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
+            ManagedProcessTree, ManagedProcessTreeBackend, PlatformResult, ProcessStdio,
+            ProcessWaitOutcome, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
+            SpawnedProcessTree, SHARED_INSTANCE_ID,
         },
         shared_instance::NativeInstanceLockBackend,
     };
@@ -1313,13 +1393,14 @@ mod tests {
     #[cfg(windows)]
     use crate::{
         core_host_protocol::read_frame,
-        managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
+        managed_process_tree::{
+            ManagedProcessSpec, ManagedProcessTree as WindowsManagedProcessTree, WaitOutcome,
+        },
     };
 
     use super::{
-        core_host_process_request, drain_stderr, read_frame_until, CoreHostRuntime,
-        CoreSnapshotCache, StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor,
-        STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, CoreHostRuntime, CoreSnapshotCache,
+        StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
@@ -1378,11 +1459,95 @@ mod tests {
         }))
     }
 
-    struct InjectedTimeoutReader {
-        active_readers: Arc<AtomicUsize>,
+    struct InjectedTree;
+
+    impl ManagedProcessTree for InjectedTree {
+        fn root_pid(&self) -> u32 {
+            42
+        }
+
+        fn wait_root(&mut self, _timeout: Duration) -> PlatformResult<ProcessWaitOutcome> {
+            Ok(ProcessWaitOutcome::TimedOut)
+        }
+
+        fn terminate_tree(&mut self, _reason_code: u32) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn wait_tree_exited(&self, _timeout: Duration) -> PlatformResult<bool> {
+            Ok(true)
+        }
+
+        fn release_exited(self: Box<Self>) -> PlatformResult<()> {
+            Ok(())
+        }
     }
 
-    impl ManagedPipeReader for InjectedTimeoutReader {
+    struct InjectedBackend {
+        stdout: Mutex<Option<Box<dyn ManagedPipeReader>>>,
+    }
+
+    impl ManagedProcessTreeBackend for InjectedBackend {
+        fn spawn(&self, _request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+            Ok(SpawnedProcessTree {
+                tree: Box::new(InjectedTree),
+                pipes: Some(ManagedProcessPipes {
+                    stdin: null_file(),
+                    stdout: self
+                        .stdout
+                        .lock()
+                        .expect("injected stdout lock")
+                        .take()
+                        .expect("injected stdout is consumed once"),
+                    stderr: Box::new(EofPipeReader),
+                }),
+            })
+        }
+    }
+
+    struct EofPipeReader;
+
+    impl ManagedPipeReader for EofPipeReader {
+        fn read_until(
+            &mut self,
+            _buffer: &mut [u8],
+            _deadline: Instant,
+            _cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            Ok(ManagedPipeReadOutcome::Eof)
+        }
+    }
+
+    struct ChunkedPipeReader {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl ManagedPipeReader for ChunkedPipeReader {
+        fn read_until(
+            &mut self,
+            buffer: &mut [u8],
+            _deadline: Instant,
+            _cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            let Some(mut chunk) = self.chunks.pop_front() else {
+                return Ok(ManagedPipeReadOutcome::Eof);
+            };
+            let count = chunk.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&chunk[..count]);
+            if count < chunk.len() {
+                self.chunks.push_front(chunk.split_off(count));
+            }
+            Ok(ManagedPipeReadOutcome::Read(count))
+        }
+    }
+
+    struct DelayedTimeoutReader {
+        active_readers: Arc<AtomicUsize>,
+        completed: Arc<AtomicBool>,
+        delay: Duration,
+    }
+
+    impl ManagedPipeReader for DelayedTimeoutReader {
         fn read_until(
             &mut self,
             _buffer: &mut [u8],
@@ -1390,24 +1555,205 @@ mod tests {
             _cancelled: &AtomicBool,
         ) -> PlatformResult<ManagedPipeReadOutcome> {
             self.active_readers.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(self.delay);
             self.active_readers.fetch_sub(1, Ordering::SeqCst);
+            self.completed.store(true, Ordering::SeqCst);
             Ok(ManagedPipeReadOutcome::TimedOut)
         }
     }
 
-    #[test]
-    fn timed_out_response_read_leaves_no_active_reader() {
-        let active_readers = Arc::new(AtomicUsize::new(0));
-        let mut reader = InjectedTimeoutReader {
-            active_readers: Arc::clone(&active_readers),
+    struct CancelAwareReader {
+        active_readers: Arc<AtomicUsize>,
+        completed: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl ManagedPipeReader for CancelAwareReader {
+        fn read_until(
+            &mut self,
+            _buffer: &mut [u8],
+            _deadline: Instant,
+            cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            self.active_readers.fetch_add(1, Ordering::SeqCst);
+            while !cancelled.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            self.active_readers.fetch_sub(1, Ordering::SeqCst);
+            self.completed.store(true, Ordering::SeqCst);
+            Ok(ManagedPipeReadOutcome::Cancelled)
+        }
+    }
+
+    impl Drop for CancelAwareReader {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(unix)]
+    fn null_file() -> File {
+        File::options()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .expect("POSIX null device should open")
+    }
+
+    #[cfg(windows)]
+    fn null_file() -> File {
+        File::options()
+            .read(true)
+            .write(true)
+            .open("NUL")
+            .expect("Windows null device should open")
+    }
+
+    fn runtime_with_stdout(stdout: Box<dyn ManagedPipeReader>) -> CoreHostRuntime {
+        let backend = InjectedBackend {
+            stdout: Mutex::new(Some(stdout)),
         };
-        let error = read_frame_until(
-            &mut reader,
-            Instant::now() + Duration::from_millis(50),
-            &AtomicBool::new(false),
+        CoreHostRuntime::launch_with_backend(
+            &backend,
+            ManagedProcessRequest {
+                program: PathBuf::from("injected-core-host"),
+                args: Vec::new(),
+                current_directory: None,
+                environment_overrides: Vec::new(),
+                stdio: ProcessStdio::Piped,
+            },
+            GENERATION_ID,
         )
-        .expect_err("injected response timeout must fail closed");
+        .expect("injected Core Host should launch")
+    }
+
+    fn framed_response(id: &str) -> (Value, Vec<u8>) {
+        let response = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 1,
+            "kind": "response",
+            "generationId": GENERATION_ID,
+            "generationCredential": "11111111111111111111111111111111",
+            "id": id,
+            "name": "system.health",
+            "payload": {},
+            "ok": true
+        });
+        let frame = encode_frame(&response).expect("test response frame should encode");
+        (response, frame)
+    }
+
+    #[test]
+    fn response_read_preserves_a_partial_following_frame() {
+        let (first, first_frame) = framed_response("first");
+        let (second, second_frame) = framed_response("second");
+        let split = 2;
+        let mut first_chunk = first_frame;
+        first_chunk.extend_from_slice(&second_frame[..split]);
+        let mut host = runtime_with_stdout(Box::new(ChunkedPipeReader {
+            chunks: VecDeque::from([first_chunk, second_frame[split..].to_vec()]),
+        }));
+
+        assert_eq!(
+            host.read_response_until(Instant::now() + Duration::from_secs(1))
+                .expect("first response should decode"),
+            first
+        );
+        assert_eq!(
+            host.read_response_until(Instant::now() + Duration::from_secs(1))
+                .expect("partial second response must remain observable"),
+            second
+        );
+    }
+
+    #[test]
+    fn response_read_preserves_a_trailing_byte_for_eof_validation() {
+        let (response, mut frame) = framed_response("trailing-byte");
+        frame.push(0xff);
+        let mut host = runtime_with_stdout(Box::new(ChunkedPipeReader {
+            chunks: VecDeque::from([frame]),
+        }));
+
+        assert_eq!(
+            host.read_response_until(Instant::now() + Duration::from_secs(1))
+                .expect("first response should decode"),
+            response
+        );
+        let error = host
+            .read_response_until(Instant::now() + Duration::from_secs(1))
+            .expect_err("trailing byte must remain observable at EOF");
+        assert!(error.starts_with("INCOMPLETE_FRAME:"), "{error}");
+    }
+
+    #[test]
+    fn response_read_does_not_parse_following_pollution_before_returning_first_frame() {
+        let (response, mut frame) = framed_response("pollution-after-frame");
+        frame.extend_from_slice(b"junk");
+        let mut host = runtime_with_stdout(Box::new(ChunkedPipeReader {
+            chunks: VecDeque::from([frame]),
+        }));
+
+        assert_eq!(
+            host.read_response_until(Instant::now() + Duration::from_secs(1))
+                .expect("first response must return before following pollution is parsed"),
+            response
+        );
+        let error = host
+            .read_response_until(Instant::now() + Duration::from_secs(1))
+            .expect_err("following pollution must remain observable by the next read");
+        assert!(error.starts_with("STDOUT_FRAMING_POLLUTION:"), "{error}");
+    }
+
+    #[test]
+    fn timed_out_runtime_response_read_leaves_no_active_reader() {
+        let active_readers = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicBool::new(false));
+        let delay = Duration::from_millis(75);
+        let mut host = runtime_with_stdout(Box::new(DelayedTimeoutReader {
+            active_readers: Arc::clone(&active_readers),
+            completed: Arc::clone(&completed),
+            delay,
+        }));
+        let started = Instant::now();
+        let error = host
+            .read_response_until(Instant::now() + Duration::from_millis(10))
+            .expect_err("injected response timeout must fail closed");
         assert!(error.starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(started.elapsed() >= delay);
+        assert!(completed.load(Ordering::SeqCst));
+        assert_eq!(active_readers.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stderr_finish_timeout_cancels_and_drop_joins_the_reader() {
+        let active_readers = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut drainer = StderrDrainer::start(
+            Box::new(CancelAwareReader {
+                active_readers: Arc::clone(&active_readers),
+                completed: Arc::clone(&completed),
+                dropped: Arc::clone(&dropped),
+            }),
+            GENERATION_ID,
+            42,
+            "11111111111111111111111111111111",
+        );
+        let active_deadline = Instant::now() + Duration::from_millis(500);
+        while active_readers.load(Ordering::SeqCst) == 0 && Instant::now() < active_deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(active_readers.load(Ordering::SeqCst), 1);
+
+        let error = drainer
+            .finish_until(Instant::now())
+            .expect_err("expired stderr completion deadline must cancel");
+        assert!(error.starts_with("STDERR_READ_FAILED:"));
+        assert!(drainer.cancelled.load(Ordering::Acquire));
+        drop(drainer);
+
+        assert!(completed.load(Ordering::SeqCst));
+        assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(active_readers.load(Ordering::SeqCst), 0);
     }
 
@@ -2251,7 +2597,7 @@ mod tests {
         let mut spec = ManagedProcessSpec::new(python);
         spec.arg(fixture.as_os_str()).current_dir(&root);
         let (mut tree, pipes) =
-            ManagedProcessTree::spawn_piped(&spec).expect("polluting fixture should launch");
+            WindowsManagedProcessTree::spawn_piped(&spec).expect("polluting fixture should launch");
         let (sender, receiver) = mpsc::sync_channel(1);
         let pollution_reader = thread::spawn(move || {
             let mut stdout = pipes.stdout;
