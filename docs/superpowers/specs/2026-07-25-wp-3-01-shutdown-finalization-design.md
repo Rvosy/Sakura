@@ -1,6 +1,6 @@
 # WP-3-01 Task 5：共享关闭期限与隔离 Assistant 根设计
 
-> 状态：设计方案已批准，书面规范待复核
+> 状态：方案 C（失败返还 recovery owner）已批准，书面修订待负责人复核
 > 日期：2026-07-25
 > 分支：`refactor/tauri-runtime-v2`
 > 基线：`f5b5e49509239c920cc7dcc054c4ebfa5a6cffbd`
@@ -31,10 +31,24 @@ thread、释放 fd/handle，以及清理当前 generation 拥有的临时资源�
 因此 Task 5 必须窄扩平台契约、进程树 backend、Windows Job 实现和 RuntimeLocator；只在
 `core_host_runtime.rs` 内重算 timeout 不能证明 deadline 与 resource-zero 同时成立。
 
+### 1.1 方案 C 修订背景
+
+Task 5C 的严格 RED 证明：当 POSIX finalizer 在进入时 caller deadline 已经过期，`SIGKILL` 只会
+异步投递；guardian 可以在函数必须返回之后才进入 waitable 状态。原规范同时要求 error 也消费
+唯一 `Child` owner、deadline 后不得等待、不得创建第二预算或转交 reaper，并要求 guardian 同步
+resource-zero。这组条件在 POSIX 上不可同时满足。
+
+负责人批准方案 C：保留 hard deadline、单 owner 和“未归零不得进入下一 generation”三项核心
+安全边界；finalizer 只在成功时消费并释放 owner，失败时把同一个 recovery owner 返还给调用者。
+失败返回本身不自动开始第二次 finalization。后续恢复是一个由 Rust owner 明确发起、具有新 absolute
+deadline 的独立 operation；恢复成功前 generation 保持 `failed/stopping`，不得报告 `stopped`，也
+不得创建下一 generation。
+
 ## 2. 设计目标
 
 1. 一个 shutdown intent 只创建一个 `Instant` deadline，并把同一值传到所有后续资源 owner。
-2. 进程树 finalizer 消费所有权；成功只表示 root、后代、guardian/Job 和平台句柄均已归零。
+2. 进程树 finalizer 成功时消费所有权；失败时返还唯一 recovery owner。成功只表示 root、后代、
+   guardian/Job 和平台句柄均已归零。
 3. stdout/stderr 读取可被 deadline 或 cancellation 唤醒，不产生 detached thread。
 4. 任一协议、读取或平台错误都汇合到同一 cleanup path；cleanup 尽可能继续并在最后聚合错误。
 5. Python code root 与 Assistant 配置/角色 root 明确分离，二者都由 RuntimeLocator 显式批准。
@@ -74,18 +88,32 @@ graceful deadline = min(t0 + 3000ms, absolute deadline)
 在 shutdown frame 未成功写入时，启动/transport 失败仍必须走同一个显式 finalization helper；
 它以调用处创建的单一 5000ms recovery deadline 为上限，但不得伪装成“successful shutdown”。
 
-### 4.2 Consuming process-tree finalizer
+### 4.2 Success-consuming process-tree finalizer 与 recovery owner
 
 在 `platform/contracts.rs` 保留既有 wait/terminate/verify 方法以兼容已验收消费者，并增加仅供
-需要完整后置条件的消费式终结操作。冻结语义等价于：
+需要完整后置条件的 success-consuming 终结操作。冻结语义等价于：
 
 ```rust
+pub struct ProcessTreeFinalizationFailure {
+    error: PlatformError,
+    recovery: Box<dyn ManagedProcessTree>,
+}
+
+pub type ProcessTreeFinalizationResult =
+    Result<ProcessTreeFinalization, ProcessTreeFinalizationFailure>;
+
 fn finalize_until(
     self: Box<Self>,
     deadline: Instant,
     reason_code: u32,
-) -> PlatformResult<ProcessTreeFinalization>;
+) -> ProcessTreeFinalizationResult;
 ```
+
+failure 类型只公开 `new(error, recovery)`、`error(&self)` 和
+`into_parts(self) -> (PlatformError, Box<dyn ManagedProcessTree>)`。如测试需要 `Debug`，实现只输出
+脱敏 error 和 `has_recovery_owner=true`，不得格式化 native owner、PID/PGID、handle 或路径；不得为
+该类型实现 `Clone`、`Copy`、`Serialize` 或 `Deserialize`。trait 不提供生产默认
+`finalize_until`，所有 backend 和 test double 必须在编译期显式选择成功或返还 owner。
 
 `ProcessTreeFinalization` 至少记录 root status 和是否执行强制终止；它不携带平台 handle、路径、
 credential 或原始错误。finalizer 必须：
@@ -95,11 +123,23 @@ credential 或原始错误。finalizer 必须：
 3. 在 graceful deadline 已耗尽或调用者要求收束时终止完整树。
 4. 使用剩余预算等待 root status、验证 tree empty，并回收 guardian/Job。
 5. 只有 tree empty 且所有 owned process handle/fd 已释放时返回成功。
-6. 单项失败不应提前跳过仍可执行的 cleanup；最终返回稳定、脱敏的聚合错误。
+6. 单项失败不应提前跳过仍可执行的 cleanup；最终返回稳定、脱敏的错误和原唯一 owner。
 
-finalizer 消费 tree 后，`CoreHostRuntime` 不再有可重复释放或被错误路径隐式 Drop 的第二 owner。
+成功 finalization 消费 tree 后，`CoreHostRuntime` 不再有可重复释放的第二 owner。失败时
+`ProcessTreeFinalizationFailure` 必须满足以下合同：
+
+- `recovery` 是原 owner 的继续，不是 clone、新 backend 或从 PID/PGID 重建的 owner；它保留 POSIX
+  `Child`/冻结 PGID 或 Windows process/Job handle，足以再次调用 `finalize_until`。
+- failure 和 recovery owner 不可复制、不可序列化，不进入 Snapshot、WebView、日志或 evidence；
+  对外诊断只使用 `error` 的稳定 category/operation/message。
+- 当前调用可立即 TERM/KILL、关闭不再需要的控制 writer，但不能把 guardian/Job owner 标为
+  `released`，也不能在返回 failure 前丢弃它。
+- 当前 shutdown intent 不得自动消费 failure 再创建一个 timeout。只有明确持有 recovery owner 的
+  Rust 调用者可以在后续独立 recovery operation 中提供新的 absolute deadline。
+
 Drop 只作保险：可以立即关闭控制 fd、发出 kill 或关闭 kill-on-close Job，但不得 sleep、无界 wait
-或创建新 deadline。显式 finalizer 是唯一可以宣称 resource-zero 的路径。
+或创建新 deadline，也不得宣称 resource-zero。显式 finalizer 成功结果是唯一可以宣称
+resource-zero 的路径。
 
 ### 4.3 Deadline-aware pipe reader
 
@@ -133,6 +173,8 @@ timeout，也不能把该保险路径记为成功终结。reader panic、redacti
 - graceful phase 后若 Job 仍有 active process，调用 `TerminateJobObject`。
 - 使用 absolute deadline 的剩余预算等待 root handle 和 Job accounting 变为零。
 - 只有 accounting 为零后才释放 process 和 Job handle；关闭 Job 不是 tree-empty 证据。
+- deadline/error 返回时 process/Job handle 必须保留在 recovery owner；不得先 `take()` 后只返回
+  `PlatformError`。后续 recovery 仍以 Job accounting 零作为成功前置。
 - `ManagedProcessTree::Drop` 保留 kill-on-close 保险，但不得把快速关闭 handle 记为成功终结。
 - stdout/stderr polling 不新增 crate feature 或依赖。
 
@@ -148,6 +190,9 @@ timeout，也不能把该保险路径记为成功终结。reader panic、redacti
   已 armed 的显式 finalizer 错误路径中成为第二预算。
 - Drop 最多立即关闭 control、向已验证 PGID 发 KILL、kill guardian 和释放本地 fd；不得 sleep
   或无界 reap。正常与可验收路径必须在消费式 finalizer 内完成 wait/reap。
+- deadline/error 返回时不得设置 `released=true` 后丢弃 guardian `Child`；原 `Child`、冻结 PGID 和
+  尚需读取的 status owner 必须留在 recovery owner。后续 recovery 可以对已被 kill、已进入 zombie
+  的 guardian 执行有界 `try_wait` reap。
 
 ## 6. Core Host shutdown 数据流
 
@@ -157,7 +202,7 @@ write + flush system.shutdown
   -> read protocol response until graceful_deadline
   -> close stdin owner
   -> wait root only within remaining graceful budget
-  -> consume tree with finalize_until(absolute_deadline)
+  -> attempt tree finalization with finalize_until(absolute_deadline)
        -> root-first descendants are still terminated
        -> tree empty verified
        -> guardian/Job reaped and handles released
@@ -165,7 +210,8 @@ write + flush system.shutdown
   -> finish stderr drainer and join its sole thread
   -> close reader handles and generation-owned temp resources
   -> aggregate protocol + cleanup results
-  -> return only before absolute_deadline
+  -> success: return only before absolute_deadline
+  -> failure: return typed diagnostic + recovery owner before/at the failed boundary
 ```
 
 如果 protocol response 无效、stdout frame 失败、root wait 失败或 tree finalization 报错，控制流
@@ -176,6 +222,12 @@ credential、API key、prompt、endpoint 或异常 repr。
 成功的 `CoreHostExit` 必须同时证明：root status 已知或稳定标为 unknown、tree empty、reader
 completion 已确认、pipe owner 已关闭、平台 tree owner 已消费。若任一后置条件未证明，返回失败，
 并禁止调用者把 generation 视为 stopped 或启动下一 generation。
+
+`CoreHostRuntime` 不得把 tree failure 立即格式化为 `String` 后丢弃 owner。Task 5D 使用 typed
+`CoreHostShutdownFailure`，其中诊断保持脱敏，并在 tree 未归零时携带不可复制的 recovery capsule。
+第一次 `shutdown()` 不自动重试；调用者要么继续持有 capsule，要么显式以新的 recovery operation
+调用其 tree owner 的 `finalize_until`。只有 recovery 成功并完成剩余 owner cleanup 后，capsule 才
+能产生 stopped/resource-zero 结果。WP-3-01 不借此修改 Supervisor restart 语义。
 
 Core Host 当前没有生产 filesystem temp owner；因此正常 Task 5 路径的 temp 集合为空。若测试或
 后续调用为 generation 注册临时资源，它必须在同一 cleanup tail 中使用 remaining budget 清除。
@@ -208,12 +260,15 @@ Adapter，不修改仓库 `data/`/`characters/`，也不增加 test-only protoco
 
 - root 正常退出不代表 tree empty；后代存在时仍强制整树收束。
 - tree、stdout、stderr 任一 owner 不允许 `mem::forget`、detach 或把 cleanup 转交给不再 join 的线程。
-- timeout 只改变是否强制终止和最终错误，不允许放宽 resource-zero 后置条件。
+- timeout 不允许伪造 resource-zero：成功结果仍要求全部归零；失败结果必须返还 recovery owner，
+  generation 保持 `failed/stopping`。
 - writer/reader/platform failure 不触发新的 Supervisor restart path；WP-3-01 readiness code 继续
   全部 `retryable=false`。
 - Windows handle 与 POSIX fd 均只有一个 owner；转换为 reader 后原始 `File` 不再另行保留。
 - deadline/credential 不序列化到 Snapshot、WebView、runtime-layout evidence 或 stderr。
 - cleanup failure 后旧 generation 状态必须失效；完整树未证明为空前不得创建下一 generation。
+- recovery failure 不允许隐式 Drop 后继续：生产调用链必须继续持有 typed recovery capsule，或在明确
+  的上层终止路径中执行 Drop 保险并保持 generation 非 stopped。
 - fixture 和保护目录验证使用 path、length、mtime、SHA-256；不得以测试 cleanup 修改真实现场。
 
 ## 9. TDD 与验收矩阵
@@ -226,6 +281,11 @@ Adapter，不修改仓库 `data/`/`characters/`，也不增加 test-only protoco
 - root-first-exit + surviving descendants 必须触发 terminate，而不是只等待后报错。
 - wait-root、terminate、verify、guardian reap/Job accounting、reader 和 release 注入失败后，Drop
   不创建第二预算。
+- already-expired finalizer 必须 RED 证明：第一次调用稳定返回 `TimedOut + recovery owner`，不遗失
+  POSIX guardian/Windows Job owner；对同一 owner 的后续显式 recovery 使用新 absolute deadline，
+  成功后 guardian PID/PGID/fd 或 Windows Job/process handle 归零。
+- fake owner 证明第一次 failure 不会自动触发第二次 finalization，且 recovery 成功前 generation
+  transition 不能进入 stopped 或启动下一 generation。
 - RuntimeLocator 拒绝相对、缺失、非 canonical assistant root 和隐式 fallback；接受与 code root
   分离的显式 isolated root。
 
@@ -237,6 +297,8 @@ Adapter，不修改仓库 `data/`/`characters/`，也不增加 test-only protoco
 - 每个场景从 successful shutdown write 起测量，小于单一 5000ms 门禁允许的测试抖动上限，且
   PID/group/Job、pipe、fd/handle、reader thread 和 generation temp 立即归零。
 - cleanup 后共享锁立即可重新获取，连续 generation 不接收旧 reader/Snapshot 状态。
+- timeout/fault 行先证明 recovery capsule 仍拥有同一 native identity，再执行测试明确授权的 recovery
+  operation 清零；测试不得把 recovery deadline 混入原 5000ms shutdown elapsed 结果。
 
 ### 9.3 Real Adapter acceptance
 
@@ -278,6 +340,10 @@ guardian mode，不改变产品启动或 Supervisor 状态机；实施前必须�
 - 只把每段 timeout 改成 `remaining()`：仍有 POSIX/reader 无界等待。
 - 依赖 tree empty 后最终 EOF：不能证明 detached reader、guardian handle 和用户态 drain 完成。
 - timeout 后丢弃 `JoinHandle` 或 tree：满足返回延迟但泄漏 thread/fd/process owner。
+- timeout 后继续消费 tree 并只返回 `PlatformError`：POSIX already-expired deadline 下无法同时保证
+  hard deadline 与 guardian reap；改为方案 C 的 typed recovery owner。
+- timeout 后自动启动第二个 recovery deadline：掩盖原 shutdown deadline 失败；recovery 必须由
+  持有 typed owner 的上层显式发起，并保持 generation 非 stopped。
 - 仅关闭 Windows Job：可以触发 kill-on-close，但没有 Job accounting 零证据。
 - test-only env/cwd app-root override：绕过 RuntimeLocator 批准链，不能代表生产路径。
 - 平台统一 `ManagedProcessSession` 或单 lifecycle actor：所有权更集中，但改动面更大，并会提前
