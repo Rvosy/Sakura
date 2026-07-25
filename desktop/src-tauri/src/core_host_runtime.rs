@@ -23,7 +23,7 @@ use crate::{
     platform::{
         ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessRequest, ManagedProcessTree,
         ManagedProcessTreeBackend, NativeManagedProcessTreeBackend, ProcessExitStatus,
-        ProcessStdio, ProcessWaitOutcome, RuntimeLayout,
+        ProcessStdio, ProcessTreeFinalizationResult, ProcessWaitOutcome, RuntimeLayout,
     },
 };
 
@@ -32,7 +32,7 @@ const DEADLINE_EXIT_CODE: u32 = 93;
 const MIN_PROTOCOL_MINOR: u64 = 0;
 const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
-const STDERR_READ_SLICE: Duration = Duration::from_millis(100);
+const STDERR_READ_SLICE: Duration = Duration::from_millis(10);
 const STDERR_RECORD_LIMIT: usize = 4 * 1024;
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
@@ -57,6 +57,17 @@ const SNAPSHOT_READINESS: [&str; 6] = [
     "degraded",
     "failed",
 ];
+
+#[derive(Clone, Copy)]
+struct ShutdownPolicy {
+    graceful: Duration,
+    total: Duration,
+}
+
+const PRODUCTION_SHUTDOWN_POLICY: ShutdownPolicy = ShutdownPolicy {
+    graceful: Duration::from_millis(3000),
+    total: Duration::from_millis(5000),
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreSnapshotCache {
@@ -293,6 +304,52 @@ pub struct CoreHostExit {
     pub stderr_stats: StderrDrainStats,
 }
 
+pub struct CoreHostLifecycleFailure {
+    diagnostic: String,
+    recovery: Option<CoreHostRecovery>,
+}
+
+pub(crate) struct CoreHostRecovery {
+    tree: Box<dyn ManagedProcessTree>,
+}
+
+impl CoreHostRecovery {
+    pub(crate) fn finalize_until(self, deadline: Instant) -> ProcessTreeFinalizationResult {
+        self.tree.finalize_until(deadline, DEADLINE_EXIT_CODE)
+    }
+}
+
+impl CoreHostLifecycleFailure {
+    fn without_recovery(diagnostic: impl Into<String>) -> Self {
+        Self {
+            diagnostic: diagnostic.into(),
+            recovery: None,
+        }
+    }
+
+    pub fn diagnostic(&self) -> &str {
+        &self.diagnostic
+    }
+
+    pub(crate) fn into_recovery(self) -> Option<CoreHostRecovery> {
+        self.recovery
+    }
+
+    pub(crate) fn into_terminal_diagnostic(self) -> String {
+        self.diagnostic
+    }
+}
+
+impl std::fmt::Debug for CoreHostLifecycleFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CoreHostLifecycleFailure")
+            .field("diagnostic", &self.diagnostic)
+            .field("has_recovery", &self.recovery.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StderrDrainStats {
     pub generation_id: String,
@@ -383,9 +440,10 @@ impl StderrDrainer {
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {}
             }
-            self.reader
-                .take()
-                .expect("stderr reader exists after completion wait")
+            let Some(reader_handle) = self.reader.take() else {
+                return Err("STDERR_READ_FAILED: stderr reader ownership was missing".to_string());
+            };
+            reader_handle
                 .join()
                 .map_err(|_| "STDERR_READ_FAILED: stderr reader panicked".to_string())?;
         }
@@ -404,7 +462,13 @@ impl Drop for StderrDrainer {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(reader_handle) = self.reader.take() {
-            let _ = reader_handle.join();
+            let insurance_deadline = Instant::now() + STDERR_READ_SLICE;
+            while !reader_handle.is_finished() && Instant::now() < insurance_deadline {
+                thread::yield_now();
+            }
+            if reader_handle.is_finished() {
+                let _ = reader_handle.join();
+            }
         }
     }
 }
@@ -808,8 +872,15 @@ fn redact_key_values(text: &str, key: &str) -> String {
     output
 }
 
+struct RequestExpectation {
+    id: String,
+    name: String,
+    protocol_minor: u64,
+    is_hello: bool,
+}
+
 pub struct CoreHostRuntime {
-    tree: Box<dyn ManagedProcessTree>,
+    tree: Option<Box<dyn ManagedProcessTree>>,
     stdin: Option<File>,
     stdout: Option<Box<dyn ManagedPipeReader>>,
     stdout_frames: ResponseFrameReader,
@@ -820,6 +891,10 @@ pub struct CoreHostRuntime {
     negotiation: Option<ProtocolNegotiation>,
     deadline_forced: bool,
     snapshot_cache: CoreSnapshotCache,
+    #[cfg(test)]
+    cleanup_events: Option<Arc<Mutex<Vec<&'static str>>>>,
+    #[cfg(test)]
+    shutdown_written_at: Option<Arc<Mutex<Option<Instant>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -840,7 +915,7 @@ impl std::fmt::Debug for CoreHostRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CoreHostRuntime")
-            .field("root_pid", &self.tree.root_pid())
+            .field("root_pid", &self.tree.as_ref().map(|tree| tree.root_pid()))
             .field("generation_id", &self.generation_id)
             .field("handshake", &self.handshake)
             .field("negotiation", &self.negotiation)
@@ -851,56 +926,67 @@ impl std::fmt::Debug for CoreHostRuntime {
 }
 
 impl CoreHostRuntime {
-    pub fn launch(layout: &RuntimeLayout, generation_id: &str) -> Result<Self, String> {
-        validate_runtime_layout(layout)?;
-        Self::launch_with_backend(
-            &NativeManagedProcessTreeBackend,
-            core_host_process_request(layout, generation_id)?,
-            generation_id,
-        )
+    pub fn launch(
+        layout: &RuntimeLayout,
+        generation_id: &str,
+    ) -> Result<Self, CoreHostLifecycleFailure> {
+        validate_runtime_layout(layout).map_err(CoreHostLifecycleFailure::without_recovery)?;
+        let request = core_host_process_request(layout, generation_id)
+            .map_err(CoreHostLifecycleFailure::without_recovery)?;
+        Self::launch_with_backend(&NativeManagedProcessTreeBackend, request, generation_id)
     }
 
     fn launch_with_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
         generation_id: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, CoreHostLifecycleFailure> {
         if generation_id.trim().is_empty() {
-            return Err("Core Host generation ID must not be empty".to_string());
+            return Err(CoreHostLifecycleFailure::without_recovery(
+                "Core Host generation ID must not be empty",
+            ));
         }
-        let (credential_bytes, generation_credential) = create_generation_credential()?;
-        let spawned = backend
-            .spawn(&request)
-            .map_err(|error| format!("Core Host managed spawn failed: {error}"))?;
-        let pipes = spawned
-            .pipes
-            .ok_or_else(|| "Core Host managed spawn returned no pipes".to_string())?;
+        let (credential_bytes, generation_credential) =
+            create_generation_credential().map_err(CoreHostLifecycleFailure::without_recovery)?;
+        let snapshot_cache = CoreSnapshotCache::new(generation_id)
+            .map_err(CoreHostLifecycleFailure::without_recovery)?;
+        let spawned = backend.spawn(&request).map_err(|error| {
+            CoreHostLifecycleFailure::without_recovery(format!(
+                "Core Host managed spawn failed: {error}"
+            ))
+        })?;
         let core_pid = spawned.tree.root_pid();
-        let mut stderr_drain = StderrDrainer::start(
+        let Some(pipes) = spawned.pipes else {
+            let runtime = Self {
+                tree: Some(spawned.tree),
+                stdin: None,
+                stdout: None,
+                stdout_frames: ResponseFrameReader::default(),
+                stderr_drain: None,
+                generation_id: generation_id.to_string(),
+                generation_credential,
+                handshake: HandshakeState::Pending,
+                negotiation: None,
+                deadline_forced: false,
+                snapshot_cache,
+                #[cfg(test)]
+                cleanup_events: None,
+                #[cfg(test)]
+                shutdown_written_at: None,
+            };
+            return Err(
+                runtime.fail_after_spawn("Core Host managed spawn returned no pipes".to_string())
+            );
+        };
+        let stderr_drain = StderrDrainer::start(
             pipes.stderr,
             generation_id,
             core_pid,
             &generation_credential,
         );
-        let mut stdin = pipes.stdin;
-        if stdin
-            .write_all(&credential_bytes)
-            .and_then(|_| stdin.flush())
-            .is_err()
-        {
-            let mut tree = spawned.tree;
-            let _ = tree.terminate_tree(DEADLINE_EXIT_CODE);
-            let _ = tree.wait_root(Duration::from_secs(5));
-            let _ = tree.wait_tree_exited(Duration::from_secs(5));
-            let _ = stderr_drain.finish_until(Instant::now() + Duration::from_secs(5));
-            let _ = tree.release_exited();
-            return Err(
-                "TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed".to_string(),
-            );
-        }
-        Ok(Self {
-            tree: spawned.tree,
-            stdin: Some(stdin),
+        let mut runtime = Self {
+            tree: Some(spawned.tree),
+            stdin: Some(pipes.stdin),
             stdout: Some(pipes.stdout),
             stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
@@ -909,8 +995,24 @@ impl CoreHostRuntime {
             handshake: HandshakeState::Pending,
             negotiation: None,
             deadline_forced: false,
-            snapshot_cache: CoreSnapshotCache::new(generation_id)?,
-        })
+            snapshot_cache,
+            #[cfg(test)]
+            cleanup_events: None,
+            #[cfg(test)]
+            shutdown_written_at: None,
+        };
+        let credential_written = runtime.stdin.as_mut().is_some_and(|stdin| {
+            stdin
+                .write_all(&credential_bytes)
+                .and_then(|_| stdin.flush())
+                .is_ok()
+        });
+        if !credential_written {
+            return Err(runtime.fail_after_spawn(
+                "TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed".to_string(),
+            ));
+        }
+        Ok(runtime)
     }
 
     #[cfg(test)]
@@ -919,7 +1021,7 @@ impl CoreHostRuntime {
         repo_root: &Path,
         script: &Path,
         generation_id: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, CoreHostLifecycleFailure> {
         Self::launch_with_backend(
             &NativeManagedProcessTreeBackend,
             ManagedProcessRequest {
@@ -939,8 +1041,42 @@ impl CoreHostRuntime {
         )
     }
 
+    #[cfg(test)]
+    fn from_test_owners(
+        tree: Box<dyn ManagedProcessTree>,
+        stdin: File,
+        stdout: Box<dyn ManagedPipeReader>,
+        stderr_drain: StderrDrainer,
+        generation_id: &str,
+        generation_credential: &str,
+        cleanup_events: Arc<Mutex<Vec<&'static str>>>,
+        shutdown_written_at: Arc<Mutex<Option<Instant>>>,
+    ) -> Self {
+        Self {
+            tree: Some(tree),
+            stdin: Some(stdin),
+            stdout: Some(stdout),
+            stdout_frames: ResponseFrameReader::default(),
+            stderr_drain: Some(stderr_drain),
+            generation_id: generation_id.to_string(),
+            generation_credential: generation_credential.to_string(),
+            handshake: HandshakeState::Pending,
+            negotiation: None,
+            deadline_forced: false,
+            snapshot_cache: CoreSnapshotCache::new(generation_id)
+                .expect("test generation ID is valid"),
+            cleanup_events: Some(cleanup_events),
+            shutdown_written_at: Some(shutdown_written_at),
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_shutdown_write_for_test(&mut self, observed: Arc<Mutex<Option<Instant>>>) {
+        self.shutdown_written_at = Some(observed);
+    }
+
     pub fn pid(&self) -> u32 {
-        self.tree.root_pid()
+        self.tree.as_ref().map_or(0, |tree| tree.root_pid())
     }
 
     pub fn request(
@@ -959,6 +1095,22 @@ impl CoreHostRuntime {
         payload: Value,
         deadline: Duration,
     ) -> Result<Value, String> {
+        let (expectation, written_at) =
+            self.write_request_frame(request_id, name, payload, deadline)?;
+        let response_deadline = written_at
+            .checked_add(deadline)
+            .ok_or_else(|| "Core Host control request deadline overflowed".to_string())?;
+        let response = self.read_response_until(response_deadline)?;
+        self.validate_response(response, expectation)
+    }
+
+    fn write_request_frame(
+        &mut self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<(RequestExpectation, Instant), String> {
         if request_id.trim().is_empty() || name.trim().is_empty() || deadline.is_zero() {
             return Err("Core Host control request is invalid".to_string());
         }
@@ -1004,15 +1156,44 @@ impl CoreHostRuntime {
         stdin
             .flush()
             .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
+        let written_at = Instant::now();
+        #[cfg(test)]
+        if name == "system.shutdown" {
+            if let Some(events) = &self.cleanup_events {
+                events
+                    .lock()
+                    .expect("cleanup events")
+                    .push("shutdown_written");
+            }
+            if let Some(observed) = &self.shutdown_written_at {
+                *observed.lock().expect("shutdown write instant") = Some(written_at);
+            }
+        }
+        Ok((
+            RequestExpectation {
+                id: request_id.to_string(),
+                name: name.to_string(),
+                protocol_minor,
+                is_hello,
+            },
+            written_at,
+        ))
+    }
 
-        let response = self.read_response_until(Instant::now() + deadline)?;
+    fn validate_response(
+        &mut self,
+        response: Value,
+        expectation: RequestExpectation,
+    ) -> Result<Value, String> {
         if response.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str())
             || response.get("generationCredential").and_then(Value::as_str)
                 != Some(self.generation_credential.as_str())
-            || response.get("id").and_then(Value::as_str) != Some(request_id)
-            || response.get("name").and_then(Value::as_str) != Some(name)
+            || response.get("id").and_then(Value::as_str) != Some(expectation.id.as_str())
+            || response.get("name").and_then(Value::as_str) != Some(expectation.name.as_str())
         {
-            let _ = self.tree.terminate_tree(DEADLINE_EXIT_CODE);
+            if let Some(tree) = self.tree.as_mut() {
+                let _ = tree.terminate_tree(DEADLINE_EXIT_CODE);
+            }
             self.deadline_forced = true;
             return Err(
                 "GENERATION_CREDENTIAL_MISMATCH: Core Host response identity was stale or invalid"
@@ -1023,7 +1204,7 @@ impl CoreHostRuntime {
             self.handshake = HandshakeState::Failed;
             return Err("PROTOCOL_MAJOR_MISMATCH: response major is incompatible".to_string());
         }
-        if is_hello {
+        if expectation.is_hello {
             if response.get("ok").and_then(Value::as_bool) == Some(true) {
                 match parse_negotiation(&response) {
                     Ok(negotiation) => {
@@ -1038,7 +1219,9 @@ impl CoreHostRuntime {
             } else {
                 self.handshake = HandshakeState::Failed;
             }
-        } else if response.get("protocolMinor").and_then(Value::as_u64) != Some(protocol_minor) {
+        } else if response.get("protocolMinor").and_then(Value::as_u64)
+            != Some(expectation.protocol_minor)
+        {
             return Err("INVALID_NEGOTIATION: response minor changed after handshake".to_string());
         }
         Ok(response)
@@ -1069,38 +1252,72 @@ impl CoreHostRuntime {
         self.snapshot_cache.current()
     }
 
-    pub fn shutdown(
-        mut self,
-        protocol_deadline: Duration,
-        stop_deadline: Duration,
-    ) -> Result<CoreHostExit, String> {
-        let response = match self.request("shutdown", "system.shutdown", protocol_deadline) {
-            Ok(response) => response,
-            Err(error) => {
-                self.stdin.take();
-                let exit = self.finish_exit(stop_deadline)?;
-                if exit.forced {
-                    return Ok(exit);
-                }
-                if error.starts_with("STDOUT_FRAMING_POLLUTION:") {
-                    return Err(format!("{error}; cleanup result: {exit:?}"));
-                }
-                return Err(format!(
-                    "Core Host shutdown response failed ({error}); cleanup result: {exit:?}"
-                ));
-            }
-        };
-        if response.get("ok").and_then(Value::as_bool) != Some(true) {
-            self.stdin.take();
-            return self.finish_exit(stop_deadline);
-        }
-        self.stdin.take();
-        self.finish_exit(stop_deadline)
+    pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
     }
 
-    pub fn close_stdin_and_wait(mut self, stop_deadline: Duration) -> Result<CoreHostExit, String> {
-        self.stdin.take();
-        self.finish_exit(stop_deadline)
+    #[cfg(test)]
+    fn shutdown_with_policy(
+        self,
+        policy: ShutdownPolicy,
+    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        self.shutdown_using_policy(policy)
+    }
+
+    fn shutdown_using_policy(
+        mut self,
+        policy: ShutdownPolicy,
+    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        let write_result =
+            self.write_request_frame("shutdown", "system.shutdown", json!({}), policy.graceful);
+        let (primary, graceful_deadline, absolute_deadline) = match write_result {
+            Ok((expectation, written_at)) => {
+                let Some(absolute_deadline) = written_at.checked_add(policy.total) else {
+                    return self.finish_exit_until(
+                        written_at,
+                        written_at,
+                        Some("Core Host shutdown total deadline overflowed".to_string()),
+                    );
+                };
+                let graceful_deadline = written_at
+                    .checked_add(policy.graceful)
+                    .unwrap_or(absolute_deadline)
+                    .min(absolute_deadline);
+                let response_result = self
+                    .read_response_until(graceful_deadline)
+                    .and_then(|response| self.validate_response(response, expectation));
+                let primary = match response_result {
+                    Ok(response) if response.get("ok").and_then(Value::as_bool) == Some(true) => {
+                        None
+                    }
+                    Ok(_) => Some("Core Host rejected system.shutdown".to_string()),
+                    Err(error) => Some(error),
+                };
+                (primary, graceful_deadline, absolute_deadline)
+            }
+            Err(error) => {
+                let started = Instant::now();
+                let absolute_deadline = started.checked_add(policy.total).unwrap_or(started);
+                let graceful_deadline = started
+                    .checked_add(policy.graceful)
+                    .unwrap_or(absolute_deadline)
+                    .min(absolute_deadline);
+                (Some(error), graceful_deadline, absolute_deadline)
+            }
+        };
+        self.finish_exit_until(absolute_deadline, graceful_deadline, primary)
+    }
+
+    pub fn close_stdin_and_wait(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        let started = Instant::now();
+        let absolute_deadline = started
+            .checked_add(PRODUCTION_SHUTDOWN_POLICY.total)
+            .unwrap_or(started);
+        let graceful_deadline = started
+            .checked_add(PRODUCTION_SHUTDOWN_POLICY.graceful)
+            .unwrap_or(absolute_deadline)
+            .min(absolute_deadline);
+        self.finish_exit_until(absolute_deadline, graceful_deadline, None)
     }
 
     fn read_response_until(&mut self, deadline: Instant) -> Result<Value, String> {
@@ -1115,100 +1332,226 @@ impl CoreHostRuntime {
             {
                 Ok(response) => response,
                 Err(error) if error.starts_with("REQUEST_DEADLINE_EXCEEDED:") => {
-                    self.tree
-                        .terminate_tree(DEADLINE_EXIT_CODE)
-                        .map_err(|error| {
-                            format!("Core Host response timeout cleanup failed: {error}")
-                        })?;
+                    let tree = self.tree.as_mut().ok_or_else(|| {
+                        "Core Host response timeout cleanup lost the tree owner".to_string()
+                    })?;
+                    tree.terminate_tree(DEADLINE_EXIT_CODE).map_err(|error| {
+                        format!("Core Host response timeout cleanup failed: {error}")
+                    })?;
                     self.deadline_forced = true;
                     return Err(error);
                 }
                 Err(error) => return Err(error),
             };
-        response.ok_or_else(|| match self.tree.wait_root(Duration::from_millis(50)) {
-            Ok(ProcessWaitOutcome::Exited(_)) => {
-                "CORE_CRASHED: Core Host exited before its response".to_string()
+        response.ok_or_else(|| {
+            let root_exit = self
+                .tree
+                .as_mut()
+                .map(|tree| tree.wait_root(Duration::from_millis(50)));
+            match root_exit {
+                Some(Ok(ProcessWaitOutcome::Exited(_))) => {
+                    "CORE_CRASHED: Core Host exited before its response".to_string()
+                }
+                _ => "STDOUT_EOF: Core Host stdout reached EOF before its response".to_string(),
             }
-            _ => "STDOUT_EOF: Core Host stdout reached EOF before its response".to_string(),
         })
     }
 
-    fn finish_exit(mut self, stop_deadline: Duration) -> Result<CoreHostExit, String> {
-        let mut forced = self.deadline_forced;
-        let root_exit_code = match self
-            .tree
-            .wait_root(stop_deadline)
-            .map_err(|error| format!("Core Host root wait failed: {error}"))?
-        {
-            ProcessWaitOutcome::Exited(status) => process_exit_code(status),
-            ProcessWaitOutcome::TimedOut => {
-                forced = true;
-                self.tree
-                    .terminate_tree(DEADLINE_EXIT_CODE)
-                    .map_err(|error| format!("Core Host forced cleanup failed: {error}"))?;
-                match self
-                    .tree
-                    .wait_root(Duration::from_secs(5))
-                    .map_err(|error| format!("Core Host forced root wait failed: {error}"))?
-                {
-                    ProcessWaitOutcome::Exited(status) => process_exit_code(status),
-                    ProcessWaitOutcome::TimedOut => {
-                        return Err("Core Host root survived forced cleanup".to_string())
-                    }
-                }
-            }
-        };
-        let tree_empty = self
-            .tree
-            .wait_tree_exited(Duration::from_secs(5))
-            .map_err(|error| format!("Core Host Job verification failed: {error}"))?;
-        if !tree_empty {
-            return Err("Core Host Job retained active processes".to_string());
+    fn fail_after_spawn(self, diagnostic: String) -> CoreHostLifecycleFailure {
+        let started = Instant::now();
+        let absolute_deadline = started
+            .checked_add(PRODUCTION_SHUTDOWN_POLICY.total)
+            .unwrap_or(started);
+        let graceful_deadline = started
+            .checked_add(PRODUCTION_SHUTDOWN_POLICY.graceful)
+            .unwrap_or(absolute_deadline)
+            .min(absolute_deadline);
+        match self.finish_exit_until(
+            absolute_deadline,
+            graceful_deadline,
+            Some(diagnostic.clone()),
+        ) {
+            Err(failure) => failure,
+            Ok(_) => CoreHostLifecycleFailure::without_recovery(diagnostic),
         }
-        let mut trailing_stdout = Vec::new();
-        if let Some(mut pipe) = self.stdout.take() {
-            let cancelled = AtomicBool::new(false);
-            let drain_deadline = Instant::now() + stop_deadline;
-            let mut chunk = [0_u8; 8192];
-            loop {
-                match pipe
-                    .read_until(&mut chunk, drain_deadline, &cancelled)
-                    .map_err(|error| format!("Core Host stdout drain failed: {error}"))?
-                {
-                    ManagedPipeReadOutcome::Read(count) => {
-                        trailing_stdout.extend_from_slice(&chunk[..count])
+    }
+
+    fn finish_exit_until(
+        mut self,
+        absolute_deadline: Instant,
+        graceful_deadline: Instant,
+        mut primary: Option<String>,
+    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        self.stdin.take();
+        #[cfg(test)]
+        if let Some(events) = &self.cleanup_events {
+            events.lock().expect("cleanup events").push("stdin_closed");
+        }
+
+        if let Some(tree) = self.tree.as_mut() {
+            let root_wait_deadline = graceful_deadline.min(absolute_deadline);
+            let root_wait =
+                tree.wait_root(root_wait_deadline.saturating_duration_since(Instant::now()));
+            if let Err(error) = root_wait {
+                let note = format!("Core Host root observation failed: {error}");
+                match &mut primary {
+                    Some(primary) => {
+                        primary.push_str("; cleanup note: ");
+                        primary.push_str(&note);
                     }
-                    ManagedPipeReadOutcome::Eof => break,
-                    ManagedPipeReadOutcome::Cancelled => {
-                        return Err("Core Host stdout drain was cancelled".to_string())
-                    }
-                    ManagedPipeReadOutcome::TimedOut => {
-                        return Err("Core Host stdout drain exceeded its deadline".to_string())
-                    }
+                    None => primary = Some(note),
                 }
             }
         }
-        let (stderr, stderr_stats) = self
+
+        let tree_result = self
+            .tree
+            .take()
+            .map(|tree| tree.finalize_until(absolute_deadline, DEADLINE_EXIT_CODE));
+
+        let stdout_result = self
+            .stdout
+            .as_deref_mut()
+            .map(|stdout| drain_trailing_stdout_until(stdout, absolute_deadline));
+
+        let stderr_result = self
             .stderr_drain
             .as_mut()
-            .ok_or_else(|| "STDERR_READ_FAILED: stderr reader is unavailable".to_string())?
-            .finish_until(Instant::now() + stop_deadline)?;
-        self.tree
-            .release_exited()
-            .map_err(|error| format!("Core Host handle release failed: {error}"))?;
-        if self.stdout_frames.has_incomplete_frame() || !trailing_stdout.is_empty() {
-            return Err(
-                "STDOUT_FRAMING_POLLUTION: Core Host wrote trailing stdout bytes".to_string(),
-            );
+            .map(|stderr| stderr.finish_until(absolute_deadline));
+        #[cfg(test)]
+        if let Some(events) = &self.cleanup_events {
+            events
+                .lock()
+                .expect("cleanup events")
+                .push("stderr_finished");
         }
-        Ok(CoreHostExit {
-            root_exit_code,
-            tree_empty,
-            forced,
-            stderr,
-            stderr_stats,
-        })
+
+        self.stdout.take();
+        self.stderr_drain.take();
+        #[cfg(test)]
+        if let Some(events) = &self.cleanup_events {
+            events
+                .lock()
+                .expect("cleanup events")
+                .push("readers_dropped");
+        }
+
+        let stdout_incomplete = self.stdout_frames.has_incomplete_frame();
+        aggregate_exit_or_retain_recovery(
+            primary,
+            self.deadline_forced,
+            tree_result,
+            stdout_result,
+            stdout_incomplete,
+            stderr_result,
+        )
     }
+}
+
+fn drain_trailing_stdout_until(
+    stdout: &mut dyn ManagedPipeReader,
+    absolute_deadline: Instant,
+) -> Result<bool, String> {
+    let cancelled = AtomicBool::new(false);
+    let mut chunk = [0_u8; 8192];
+    let mut saw_trailing_bytes = false;
+    loop {
+        match stdout
+            .read_until(&mut chunk, absolute_deadline, &cancelled)
+            .map_err(|error| format!("Core Host stdout drain failed: {error}"))?
+        {
+            ManagedPipeReadOutcome::Read(0) => {
+                return Err("Core Host stdout drain returned an empty read".to_string())
+            }
+            ManagedPipeReadOutcome::Read(_) => saw_trailing_bytes = true,
+            ManagedPipeReadOutcome::Eof => return Ok(saw_trailing_bytes),
+            ManagedPipeReadOutcome::Cancelled => {
+                return Err("Core Host stdout drain was cancelled".to_string())
+            }
+            ManagedPipeReadOutcome::TimedOut => {
+                return Err("Core Host stdout drain exceeded its deadline".to_string())
+            }
+        }
+    }
+}
+
+fn aggregate_exit_or_retain_recovery(
+    primary: Option<String>,
+    deadline_forced: bool,
+    tree_result: Option<ProcessTreeFinalizationResult>,
+    stdout_result: Option<Result<bool, String>>,
+    stdout_incomplete: bool,
+    stderr_result: Option<Result<(String, StderrDrainStats), String>>,
+) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+    let mut diagnostics = Vec::new();
+    if let Some(primary) = primary {
+        diagnostics.push(primary);
+    }
+
+    let mut recovery = None;
+    let mut finalization = None;
+    match tree_result {
+        Some(Ok(result)) => finalization = Some(result),
+        Some(Err(failure)) => {
+            let (error, tree) = failure.into_parts();
+            diagnostics.push(format!("Core Host process tree cleanup failed: {error}"));
+            recovery = Some(CoreHostRecovery { tree });
+        }
+        None => diagnostics.push("Core Host process tree owner was unavailable".to_string()),
+    }
+
+    match stdout_result {
+        Some(Ok(saw_trailing_bytes)) => {
+            if stdout_incomplete || saw_trailing_bytes {
+                diagnostics.push(
+                    "STDOUT_FRAMING_POLLUTION: Core Host wrote trailing stdout bytes".to_string(),
+                );
+            }
+        }
+        Some(Err(error)) => diagnostics.push(error),
+        None => {
+            diagnostics.push("TRANSPORT_READ_FAILED: Core Host stdout is unavailable".to_string())
+        }
+    }
+
+    let mut stderr = None;
+    match stderr_result {
+        Some(Ok((output, stats))) => {
+            if stats.read_failed {
+                diagnostics.push("STDERR_READ_FAILED: stderr reader reported failure".to_string());
+            }
+            stderr = Some((output, stats));
+        }
+        Some(Err(error)) => diagnostics.push(error),
+        None => diagnostics.push("STDERR_READ_FAILED: stderr reader is unavailable".to_string()),
+    }
+
+    if !diagnostics.is_empty() {
+        return Err(CoreHostLifecycleFailure {
+            diagnostic: diagnostics.join("; cleanup note: "),
+            recovery,
+        });
+    }
+
+    let Some(finalization) = finalization else {
+        return Err(CoreHostLifecycleFailure {
+            diagnostic: "Core Host process tree finalization result was unavailable".to_string(),
+            recovery,
+        });
+    };
+    let Some((stderr, stderr_stats)) = stderr else {
+        return Err(CoreHostLifecycleFailure {
+            diagnostic: "STDERR_READ_FAILED: stderr completion result was unavailable".to_string(),
+            recovery,
+        });
+    };
+    Ok(CoreHostExit {
+        root_exit_code: process_exit_code(finalization.root_status),
+        tree_empty: true,
+        forced: deadline_forced || finalization.forced,
+        stderr,
+        stderr_stats,
+    })
 }
 
 fn core_host_process_request(
@@ -1364,7 +1707,7 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeSet, VecDeque},
         fs::File,
         io::{self, Cursor, Read},
         path::PathBuf,
@@ -1383,9 +1726,10 @@ mod tests {
         platform::{
             FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
             ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
-            ManagedProcessTree, ManagedProcessTreeBackend, PlatformResult, ProcessExitStatus,
-            ProcessStdio, ProcessTreeFinalization, ProcessTreeFinalizationResult,
-            ProcessWaitOutcome, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
+            ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
+            PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio,
+            ProcessTreeFinalization, ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult,
+            ProcessWaitOutcome, RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
             SpawnedProcessTree, SHARED_INSTANCE_ID,
         },
         shared_instance::NativeInstanceLockBackend,
@@ -1401,7 +1745,8 @@ mod tests {
 
     use super::{
         core_host_process_request, drain_stderr, CoreHostRuntime, CoreSnapshotCache,
-        StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor, STDERR_CACHE_LIMIT,
+        ShutdownPolicy, StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor,
+        PRODUCTION_SHUTDOWN_POLICY, STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
@@ -1603,6 +1948,39 @@ mod tests {
         }
     }
 
+    struct DeadlinePollingReader {
+        active_readers: Arc<AtomicUsize>,
+        completed: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl ManagedPipeReader for DeadlinePollingReader {
+        fn read_until(
+            &mut self,
+            _buffer: &mut [u8],
+            deadline: Instant,
+            cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            self.active_readers.fetch_add(1, Ordering::SeqCst);
+            while Instant::now() < deadline {
+                thread::yield_now();
+            }
+            self.active_readers.fetch_sub(1, Ordering::SeqCst);
+            self.completed.store(true, Ordering::SeqCst);
+            if cancelled.load(Ordering::Acquire) {
+                Ok(ManagedPipeReadOutcome::Cancelled)
+            } else {
+                Ok(ManagedPipeReadOutcome::TimedOut)
+            }
+        }
+    }
+
+    impl Drop for DeadlinePollingReader {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
     #[cfg(unix)]
     fn null_file() -> File {
         File::options()
@@ -1621,6 +1999,16 @@ mod tests {
             .expect("Windows null device should open")
     }
 
+    #[cfg(unix)]
+    fn read_only_null_file() -> File {
+        File::open("/dev/null").expect("POSIX null device should open read-only")
+    }
+
+    #[cfg(windows)]
+    fn read_only_null_file() -> File {
+        File::open("NUL").expect("Windows null device should open read-only")
+    }
+
     fn runtime_with_stdout(stdout: Box<dyn ManagedPipeReader>) -> CoreHostRuntime {
         let backend = InjectedBackend {
             stdout: Mutex::new(Some(stdout)),
@@ -1637,6 +2025,346 @@ mod tests {
             GENERATION_ID,
         )
         .expect("injected Core Host should launch")
+    }
+
+    struct CleanupTree {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        deadlines: Arc<Mutex<Vec<Instant>>>,
+        finalize_calls: Arc<AtomicUsize>,
+        fail_first: bool,
+        forced: bool,
+    }
+
+    impl ManagedProcessTree for CleanupTree {
+        fn root_pid(&self) -> u32 {
+            42
+        }
+
+        fn wait_root(&mut self, _timeout: Duration) -> PlatformResult<ProcessWaitOutcome> {
+            Ok(ProcessWaitOutcome::Exited(ProcessExitStatus::Code(0)))
+        }
+
+        fn terminate_tree(&mut self, _reason_code: u32) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn wait_tree_exited(&self, _timeout: Duration) -> PlatformResult<bool> {
+            Ok(true)
+        }
+
+        fn release_exited(self: Box<Self>) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn finalize_until(
+            self: Box<Self>,
+            deadline: Instant,
+            _reason_code: u32,
+        ) -> ProcessTreeFinalizationResult {
+            self.events
+                .lock()
+                .expect("cleanup events")
+                .push("tree_finalized");
+            self.deadlines
+                .lock()
+                .expect("cleanup deadlines")
+                .push(deadline);
+            let call = self.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first && call == 0 {
+                return Err(ProcessTreeFinalizationFailure::new(
+                    PlatformError::new(
+                        PlatformService::ManagedProcessTree,
+                        PlatformErrorCategory::TimedOut,
+                        "finalize_until",
+                        RetryAdvice::Never,
+                        "injected finalizer exhausted the shared cleanup deadline",
+                    ),
+                    self,
+                ));
+            }
+            Ok(ProcessTreeFinalization {
+                root_status: ProcessExitStatus::Code(0),
+                forced: self.forced || call > 0,
+            })
+        }
+    }
+
+    struct CleanupStdout {
+        chunks: VecDeque<Vec<u8>>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+        deadlines: Arc<Mutex<Vec<Instant>>>,
+    }
+
+    impl ManagedPipeReader for CleanupStdout {
+        fn read_until(
+            &mut self,
+            buffer: &mut [u8],
+            deadline: Instant,
+            _cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            let Some(mut chunk) = self.chunks.pop_front() else {
+                self.events
+                    .lock()
+                    .expect("cleanup events")
+                    .push("stdout_drained");
+                self.deadlines
+                    .lock()
+                    .expect("cleanup deadlines")
+                    .push(deadline);
+                return Ok(ManagedPipeReadOutcome::Eof);
+            };
+            let count = chunk.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&chunk[..count]);
+            if count < chunk.len() {
+                self.chunks.push_front(chunk.split_off(count));
+            }
+            Ok(ManagedPipeReadOutcome::Read(count))
+        }
+    }
+
+    fn completed_stderr_drainer() -> StderrDrainer {
+        let state = stderr_state();
+        state.lock().expect("stderr state").stats.eof = true;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (sender, completion) = mpsc::sync_channel(1);
+        sender.send(()).expect("stderr completion marker");
+        StderrDrainer {
+            state,
+            cancelled,
+            completion,
+            reader: Some(thread::spawn(|| {})),
+        }
+    }
+
+    fn shutdown_frame() -> Vec<u8> {
+        encode_frame(&json!({
+            "protocolMajor": 2,
+            "protocolMinor": 1,
+            "kind": "response",
+            "generationId": GENERATION_ID,
+            "generationCredential": "11111111111111111111111111111111",
+            "id": "shutdown",
+            "name": "system.shutdown",
+            "payload": {"accepted": true},
+            "ok": true
+        }))
+        .expect("shutdown response frame")
+    }
+
+    fn cleanup_runtime(
+        tree: Box<dyn ManagedProcessTree>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+        deadlines: Arc<Mutex<Vec<Instant>>>,
+        shutdown_written_at: Arc<Mutex<Option<Instant>>>,
+    ) -> CoreHostRuntime {
+        CoreHostRuntime::from_test_owners(
+            tree,
+            null_file(),
+            Box::new(CleanupStdout {
+                chunks: VecDeque::from([shutdown_frame()]),
+                events: Arc::clone(&events),
+                deadlines,
+            }),
+            completed_stderr_drainer(),
+            GENERATION_ID,
+            "11111111111111111111111111111111",
+            events,
+            shutdown_written_at,
+        )
+    }
+
+    struct CredentialWriteFailureBackend {
+        tree: Mutex<Option<Box<dyn ManagedProcessTree>>>,
+    }
+
+    impl ManagedProcessTreeBackend for CredentialWriteFailureBackend {
+        fn spawn(&self, _request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+            Ok(SpawnedProcessTree {
+                tree: self
+                    .tree
+                    .lock()
+                    .expect("credential failure tree")
+                    .take()
+                    .expect("credential failure backend spawns once"),
+                pipes: Some(ManagedProcessPipes {
+                    stdin: read_only_null_file(),
+                    stdout: Box::new(EofPipeReader),
+                    stderr: Box::new(EofPipeReader),
+                }),
+            })
+        }
+    }
+
+    #[test]
+    fn credential_bootstrap_failure_uses_the_same_typed_consuming_cleanup_tail() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let deadlines = Arc::new(Mutex::new(Vec::new()));
+        let finalize_calls = Arc::new(AtomicUsize::new(0));
+        let backend = CredentialWriteFailureBackend {
+            tree: Mutex::new(Some(Box::new(CleanupTree {
+                events,
+                deadlines,
+                finalize_calls: Arc::clone(&finalize_calls),
+                fail_first: false,
+                forced: false,
+            }))),
+        };
+
+        let failure = CoreHostRuntime::launch_with_backend(
+            &backend,
+            ManagedProcessRequest {
+                program: PathBuf::from("injected-core-host"),
+                args: Vec::new(),
+                current_directory: None,
+                environment_overrides: Vec::new(),
+                stdio: ProcessStdio::Piped,
+            },
+            GENERATION_ID,
+        )
+        .expect_err("read-only stdin must fail credential bootstrap");
+
+        assert!(failure
+            .diagnostic()
+            .starts_with("TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed"));
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
+        assert!(failure.into_recovery().is_none());
+    }
+
+    #[test]
+    fn production_shutdown_policy_is_exactly_3000ms_graceful_and_5000ms_total() {
+        assert_eq!(
+            PRODUCTION_SHUTDOWN_POLICY.graceful,
+            Duration::from_millis(3000)
+        );
+        assert_eq!(
+            PRODUCTION_SHUTDOWN_POLICY.total,
+            Duration::from_millis(5000)
+        );
+    }
+
+    #[test]
+    fn shutdown_freezes_one_total_deadline_and_consumes_owners_in_order() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let deadlines = Arc::new(Mutex::new(Vec::new()));
+        let finalize_calls = Arc::new(AtomicUsize::new(0));
+        let shutdown_written_at = Arc::new(Mutex::new(None));
+        let policy = PRODUCTION_SHUTDOWN_POLICY;
+        let host = cleanup_runtime(
+            Box::new(CleanupTree {
+                events: Arc::clone(&events),
+                deadlines: Arc::clone(&deadlines),
+                finalize_calls: Arc::clone(&finalize_calls),
+                fail_first: false,
+                forced: false,
+            }),
+            Arc::clone(&events),
+            Arc::clone(&deadlines),
+            Arc::clone(&shutdown_written_at),
+        );
+
+        let exit = host
+            .shutdown_with_policy(policy)
+            .expect("injected cleanup should consume every owner");
+
+        assert!(!exit.forced);
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *events.lock().expect("cleanup events"),
+            [
+                "shutdown_written",
+                "stdin_closed",
+                "tree_finalized",
+                "stdout_drained",
+                "stderr_finished",
+                "readers_dropped",
+            ]
+        );
+        let deadlines = deadlines.lock().expect("cleanup deadlines");
+        assert_eq!(deadlines.iter().copied().collect::<BTreeSet<_>>().len(), 1);
+        let written_at = shutdown_written_at
+            .lock()
+            .expect("shutdown write instant")
+            .expect("shutdown write must be sampled after flush");
+        assert_eq!(deadlines[0].duration_since(written_at), policy.total);
+    }
+
+    #[test]
+    fn finalizer_failure_returns_recovery_without_automatic_second_call() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let deadlines = Arc::new(Mutex::new(Vec::new()));
+        let finalize_calls = Arc::new(AtomicUsize::new(0));
+        let shutdown_written_at = Arc::new(Mutex::new(None));
+        let host = cleanup_runtime(
+            Box::new(CleanupTree {
+                events: Arc::clone(&events),
+                deadlines: Arc::clone(&deadlines),
+                finalize_calls: Arc::clone(&finalize_calls),
+                fail_first: true,
+                forced: true,
+            }),
+            Arc::clone(&events),
+            Arc::clone(&deadlines),
+            shutdown_written_at,
+        );
+
+        let failure = host
+            .shutdown_with_policy(ShutdownPolicy {
+                graceful: Duration::from_millis(30),
+                total: Duration::from_millis(50),
+            })
+            .expect_err("tree failure must retain a recovery capsule");
+
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
+        assert!(failure.diagnostic().contains("finalize_until"));
+        assert!(!format!("{failure:?}").contains("CleanupTree"));
+        assert_eq!(
+            *events.lock().expect("cleanup events"),
+            [
+                "shutdown_written",
+                "stdin_closed",
+                "tree_finalized",
+                "stdout_drained",
+                "stderr_finished",
+                "readers_dropped",
+            ]
+        );
+        let recovery = failure
+            .into_recovery()
+            .expect("tree finalizer failure must retain the owner");
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
+        let recovered = recovery
+            .finalize_until(Instant::now() + Duration::from_secs(1))
+            .expect("explicit recovery with a new deadline should consume the owner");
+        assert!(recovered.forced);
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn root_first_exit_still_requires_the_consuming_tree_finalizer() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let deadlines = Arc::new(Mutex::new(Vec::new()));
+        let finalize_calls = Arc::new(AtomicUsize::new(0));
+        let host = cleanup_runtime(
+            Box::new(CleanupTree {
+                events: Arc::clone(&events),
+                deadlines: Arc::clone(&deadlines),
+                finalize_calls: Arc::clone(&finalize_calls),
+                fail_first: false,
+                forced: true,
+            }),
+            events,
+            deadlines,
+            Arc::new(Mutex::new(None)),
+        );
+
+        let exit = host
+            .shutdown_with_policy(ShutdownPolicy {
+                graceful: Duration::from_millis(30),
+                total: Duration::from_millis(50),
+            })
+            .expect("root-first descendant cleanup should succeed");
+        assert!(exit.forced);
+        assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
     }
 
     fn framed_response(id: &str) -> (Value, Vec<u8>) {
@@ -1764,6 +2492,43 @@ mod tests {
         assert!(drainer.cancelled.load(Ordering::Acquire));
         drop(drainer);
 
+        assert!(completed.load(Ordering::SeqCst));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(active_readers.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stderr_drop_insurance_is_bounded_by_one_pipe_poll_quantum() {
+        let active_readers = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut drainer = StderrDrainer::start(
+            Box::new(DeadlinePollingReader {
+                active_readers: Arc::clone(&active_readers),
+                completed: Arc::clone(&completed),
+                dropped: Arc::clone(&dropped),
+            }),
+            GENERATION_ID,
+            42,
+            "11111111111111111111111111111111",
+        );
+        let active_deadline = Instant::now() + Duration::from_millis(500);
+        while active_readers.load(Ordering::SeqCst) == 0 && Instant::now() < active_deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(active_readers.load(Ordering::SeqCst), 1);
+
+        drainer
+            .finish_until(Instant::now())
+            .expect_err("expired completion deadline must cancel the reader");
+        let drop_started = Instant::now();
+        drop(drainer);
+        let drop_elapsed = drop_started.elapsed();
+
+        assert!(
+            drop_elapsed < Duration::from_millis(50),
+            "stderr Drop exceeded one 10ms pipe poll quantum: {drop_elapsed:?}"
+        );
         assert!(completed.load(Ordering::SeqCst));
         assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(active_readers.load(Ordering::SeqCst), 0);
@@ -2117,9 +2882,7 @@ mod tests {
         let credential = host.generation_credential.clone();
         host.request("hello-flood", "system.hello", Duration::from_secs(3))
             .expect("stderr flood must not block hello");
-        let exit = host
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
-            .expect("stderr flood fixture stops cleanly");
+        let exit = host.shutdown().expect("stderr flood fixture stops cleanly");
         assert!(exit.stderr_stats.eof);
         assert!(!exit.stderr_stats.read_failed);
         assert!(exit.stderr_stats.bytes_read > 1024 * 1024);
@@ -2131,6 +2894,38 @@ mod tests {
         for secret in ["private", "Bearer", "session", "user-chat"] {
             assert!(!exit.stderr.contains(secret));
         }
+    }
+
+    #[test]
+    fn slow_cooperative_shutdown_uses_graceful_time_inside_the_single_total_budget() {
+        let _test_lock = lifecycle_test_lock();
+        let root = repo_root();
+        let python = development_layout().python_executable;
+        let fixture = root.join("tests/fixtures/runtime_v2/wp_3_01/slow_shutdown_host.py");
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("slow shutdown fixture launches");
+        host.request("hello-slow", "system.hello", Duration::from_secs(3))
+            .expect("slow fixture hello negotiates");
+        let shutdown_written_at = Arc::new(Mutex::new(None));
+        host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
+
+        let exit = host
+            .shutdown()
+            .expect("slow cooperative shutdown should finish inside the total budget");
+        let elapsed = shutdown_written_at
+            .lock()
+            .expect("shutdown write instant")
+            .expect("shutdown flush must expose t0")
+            .elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(2850),
+            "elapsed={elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_millis(5500), "elapsed={elapsed:?}");
+        assert!(!exit.forced);
+        assert!(exit.tree_empty);
     }
 
     #[test]
@@ -2147,7 +2942,7 @@ mod tests {
             .expect_err("crashed Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let exit = host
-            .close_stdin_and_wait(Duration::from_secs(5))
+            .close_stdin_and_wait()
             .expect("crashed Core resources are finalized");
         assert_eq!(exit.root_exit_code, 42);
         assert!(exit.stderr_stats.eof);
@@ -2186,7 +2981,7 @@ mod tests {
         assert_eq!(unknown["error"]["code"], "UNKNOWN_CONTROL");
 
         let exit = host
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .shutdown()
             .expect("protocol shutdown should reclaim the complete Job");
         assert_eq!(exit.root_exit_code, 0);
         assert!(exit.tree_empty);
@@ -2224,9 +3019,7 @@ mod tests {
                 .len(),
             5
         );
-        compatible
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
-            .expect("compatible Host stops");
+        compatible.shutdown().expect("compatible Host stops");
 
         let mut incompatible =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("incompatible Host launches");
@@ -2253,7 +3046,7 @@ mod tests {
             .expect_err("initialize must not continue after failed hello");
         assert!(error.starts_with("HANDSHAKE_FAILED:"));
         incompatible
-            .close_stdin_and_wait(Duration::from_secs(5))
+            .close_stdin_and_wait()
             .expect("failed handshake Host stops on stdin EOF");
     }
 
@@ -2272,9 +3065,7 @@ mod tests {
             .refresh_snapshot("snapshot-first", Duration::from_secs(3))
             .expect("first snapshot");
         assert!(!snapshot.to_string().contains(&first_credential));
-        first
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
-            .expect("first Host stops");
+        first.shutdown().expect("first Host stops");
 
         let second = CoreHostRuntime::launch(&layout, GENERATION_ID).expect("second Host launches");
         let second_credential = second.generation_credential.clone();
@@ -2283,9 +3074,7 @@ mod tests {
             "each generation must receive a unique credential"
         );
         assert!(!format!("{second:?}").contains(&second_credential));
-        second
-            .close_stdin_and_wait(Duration::from_secs(5))
-            .expect("second Host stops");
+        second.close_stdin_and_wait().expect("second Host stops");
     }
 
     #[test]
@@ -2304,7 +3093,7 @@ mod tests {
         assert!(error.starts_with("GENERATION_CREDENTIAL_MISMATCH:"));
         assert!(!error.contains(&credential));
         let exit = host
-            .close_stdin_and_wait(Duration::from_secs(5))
+            .close_stdin_and_wait()
             .expect("stale generation tree is reclaimed");
         assert!(exit.tree_empty);
         assert!(exit.forced);
@@ -2391,10 +3180,7 @@ mod tests {
             .expect("health should respond");
         assert_eq!(health["payload"]["status"], "healthy");
         let exit = host
-            .shutdown(
-                golden_deadline(golden, "shutdown"),
-                golden_deadline(golden, "treeStop"),
-            )
+            .shutdown()
             .expect("protocol shutdown should clean the bundled Core tree");
         (exit, credential)
     }
@@ -2440,13 +3226,13 @@ mod tests {
         };
         let error = CoreHostRuntime::launch(&wrong_architecture, GENERATION_ID)
             .expect_err("incompatible layout architecture must fail before spawn");
-        assert!(error.contains("architecture"));
+        assert!(error.diagnostic().contains("architecture"));
 
         let mut inconsistent_entry = development_layout();
         inconsistent_entry.core_entry = inconsistent_entry.python_executable.clone();
         let error = CoreHostRuntime::launch(&inconsistent_entry, GENERATION_ID)
             .expect_err("inconsistent Core entry must fail before spawn");
-        assert!(error.contains("Core entry"));
+        assert!(error.diagnostic().contains("Core entry"));
 
         let mut escaped_resources = development_layout();
         escaped_resources.runtime_root = escaped_resources
@@ -2456,7 +3242,7 @@ mod tests {
             .expect("development Runtime directory should resolve");
         let error = CoreHostRuntime::launch(&escaped_resources, GENERATION_ID)
             .expect_err("resources outside the Runtime root must fail before spawn");
-        assert!(error.contains("resources"));
+        assert!(error.diagnostic().contains("resources"));
     }
 
     #[test]
@@ -2517,10 +3303,7 @@ mod tests {
             assert!(std::time::Instant::now() < readiness_deadline);
         }
         let final_exit = final_readiness
-            .shutdown(
-                golden_deadline(&golden, "shutdown"),
-                golden_deadline(&golden, "treeStop"),
-            )
+            .shutdown()
             .expect("final readiness generation cleans up");
         assert!(final_exit.tree_empty);
 
@@ -2542,7 +3325,7 @@ mod tests {
             .expect_err("crashed bundled Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let crash_exit = crashed
-            .close_stdin_and_wait(golden_deadline(&golden, "treeStop"))
+            .close_stdin_and_wait()
             .expect("crashed bundled Core resources finalize");
         assert!(crash_exit.tree_empty);
 
@@ -2555,14 +3338,13 @@ mod tests {
             "00000000-0000-4000-8000-000000004005",
         )
         .expect("bundled Python ignored-shutdown fixture launches");
-        let forced = ignoring
-            .shutdown(
-                Duration::from_millis(250),
-                golden_deadline(&golden, "treeStop"),
-            )
-            .expect("ignored shutdown force-cleans bundled Core tree");
-        assert!(forced.forced);
-        assert!(forced.tree_empty);
+        let failure = ignoring
+            .shutdown()
+            .expect_err("ignored shutdown must preserve its protocol timeout diagnostic");
+        assert!(failure
+            .diagnostic()
+            .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(failure.into_recovery().is_none());
     }
 
     #[test]
@@ -2577,11 +3359,12 @@ mod tests {
         host.request("hello-trailing", "system.hello", Duration::from_secs(3))
             .expect("fixture hello negotiates");
         let error = host
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .shutdown()
             .expect_err("trailing stdout must be transport fatal");
         assert!(
-            error.starts_with("STDOUT_FRAMING_POLLUTION:"),
-            "unexpected trailing stdout error: {error}"
+            error.diagnostic().starts_with("STDOUT_FRAMING_POLLUTION:"),
+            "unexpected trailing stdout error: {}",
+            error.diagnostic()
         );
     }
 
@@ -2592,7 +3375,7 @@ mod tests {
         let host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real Core Host should launch in a managed Job");
         let exit = host
-            .close_stdin_and_wait(Duration::from_secs(5))
+            .close_stdin_and_wait()
             .expect("stdin EOF should stop and reclaim the Core Host");
         assert_eq!(exit.root_exit_code, 0);
         assert!(exit.tree_empty);
@@ -2645,17 +3428,28 @@ mod tests {
         let root = repo_root();
         let python = development_layout().python_executable;
         let fixture = root.join("tests/fixtures/runtime_v2/wp_1c_01/ignoring_shutdown_host.py");
-        let host = CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
-            .expect("ignoring fixture should launch");
-        let exit = host
-            .shutdown(Duration::from_millis(250), Duration::from_secs(5))
-            .expect("ignored shutdown should force and finalize its Job");
-        #[cfg(windows)]
-        assert_eq!(exit.root_exit_code, 93);
-        #[cfg(unix)]
-        assert_eq!(exit.root_exit_code, 143);
-        assert!(exit.tree_empty);
-        assert!(exit.forced);
+        let mut host =
+            CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
+                .expect("ignoring fixture should launch");
+        let shutdown_written_at = Arc::new(Mutex::new(None));
+        host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
+        let failure = host
+            .shutdown()
+            .expect_err("ignored shutdown must preserve its protocol timeout diagnostic");
+        let elapsed = shutdown_written_at
+            .lock()
+            .expect("shutdown write instant")
+            .expect("shutdown flush must expose t0")
+            .elapsed();
+        assert!(
+            elapsed < Duration::from_millis(5500),
+            "ignored shutdown exceeded its one total budget: {:?}",
+            elapsed
+        );
+        assert!(failure
+            .diagnostic()
+            .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(failure.into_recovery().is_none());
     }
 
     #[test]
@@ -2719,7 +3513,7 @@ mod tests {
         }
 
         let exit = host
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .shutdown()
             .expect("initialized Host should stop cleanly");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
@@ -2755,7 +3549,7 @@ mod tests {
             ));
         }
         let exit = host
-            .shutdown(Duration::from_secs(3), Duration::from_secs(5))
+            .shutdown()
             .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);

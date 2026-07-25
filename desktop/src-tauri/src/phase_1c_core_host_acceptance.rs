@@ -12,7 +12,7 @@ use std::{
 use serde_json::json;
 
 use crate::{
-    core_host_runtime::CoreHostRuntime,
+    core_host_runtime::{CoreHostLifecycleFailure, CoreHostRuntime},
     platform::{
         current_platform_target, FilesystemRuntimeLocator, RuntimeLayout, RuntimeLocationRequest,
         RuntimeLocator, RuntimeMode,
@@ -201,7 +201,8 @@ fn run_scenario(
         .map_err(|error| format!("failed to encode Runtime layout evidence: {error}"))?,
     )
     .map_err(|error| format!("failed to write Runtime layout evidence: {error}"))?;
-    let mut host = CoreHostRuntime::launch(layout, GENERATION_ID)?;
+    let mut host = CoreHostRuntime::launch(layout, GENERATION_ID)
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
     fs::write(directory.join("core.pid"), host.pid().to_string())
         .map_err(|error| format!("failed to write Core PID marker: {error}"))?;
 
@@ -283,7 +284,9 @@ fn run_scenario(
     .map_err(|error| format!("failed to write ready marker: {error}"))?;
     wait_for_cancellation(cancellation, Instant::now() + Duration::from_secs(30))?;
 
-    let exit = host.shutdown(Duration::from_secs(3), Duration::from_secs(5))?;
+    let exit = host
+        .shutdown()
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
     if exit.root_exit_code != 0 || !exit.tree_empty || exit.forced || !exit.stderr.is_empty() {
         return Err(format!("real Core Host shutdown was not clean: {exit:?}"));
     }
