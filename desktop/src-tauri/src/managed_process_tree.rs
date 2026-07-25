@@ -827,6 +827,29 @@ mod tests {
         spec
     }
 
+    fn run_isolated_test_fixture(name: &str) {
+        let output = Command::new(
+            std::env::current_exe().expect("current Rust test executable should resolve"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            &format!("managed_process_tree::tests::{name}"),
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("isolated handle-count fixture should spawn");
+
+        assert!(
+            output.status.success(),
+            "isolated handle-count fixture failed: status={}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     #[test]
     fn job_poll_rejects_an_empty_observation_made_after_the_deadline() {
         let deadline = Instant::now();
@@ -1147,6 +1170,12 @@ mod tests {
 
     #[test]
     fn spawn_failures_and_repeated_release_do_not_leak_process_handles() {
+        run_isolated_test_fixture("fixture_handle_release_loop");
+    }
+
+    #[test]
+    #[ignore = "isolated handle-count fixture; launched by the parent test"]
+    fn fixture_handle_release_loop() {
         fn current_handle_count() -> u32 {
             let mut count = 0;
             unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) }

@@ -2035,6 +2035,9 @@ mod tests {
 
     use super::*;
 
+    #[cfg(windows)]
+    use std::process::Command;
+
     #[test]
     fn native_backend_contract_is_injectable() {
         let backend = NativeManagedProcessTreeBackend;
@@ -2115,6 +2118,30 @@ mod tests {
         assert!(result.forced);
         assert!(started.elapsed() < Duration::from_secs(2));
         result
+    }
+
+    #[cfg(windows)]
+    fn run_isolated_windows_test(name: &str) {
+        let output = Command::new(
+            std::env::current_exe().expect("current Rust test executable should resolve"),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            &format!("platform::process_tree_backend::tests::{name}"),
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("isolated Windows handle-count fixture should spawn");
+
+        assert!(
+            output.status.success(),
+            "isolated Windows handle-count fixture failed: status={}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     struct CountingFailureTree {
@@ -2267,6 +2294,25 @@ mod tests {
     #[test]
     fn expired_finalizer_returns_same_owner_for_explicit_recovery() {
         #[cfg(windows)]
+        {
+            run_isolated_windows_test("finalizer_fixture_expired_recovery_handle_contract");
+        }
+        #[cfg(unix)]
+        expired_finalizer_recovery_handle_contract();
+    }
+
+    fn expired_finalizer_recovery_handle_contract() {
+        #[cfg(windows)]
+        {
+            let ObservedTree { mut tree } = spawn_observed(normal_exit_request());
+            assert!(matches!(
+                tree.wait_root(Duration::from_secs(2)).unwrap(),
+                ProcessWaitOutcome::Exited(_)
+            ));
+            tree.finalize_until(Instant::now() + Duration::from_secs(2), 97)
+                .expect("handle-count warmup tree should finalize");
+        }
+        #[cfg(windows)]
         let handles_before = native_resource_count();
         let ObservedTree {
             tree,
@@ -2335,6 +2381,25 @@ mod tests {
 
     #[test]
     fn finalizer_releases_native_ownership_in_a_bounded_loop() {
+        #[cfg(windows)]
+        {
+            run_isolated_windows_test("finalizer_fixture_handle_release_loop");
+        }
+        #[cfg(unix)]
+        finalizer_release_handle_contract();
+    }
+
+    fn finalizer_release_handle_contract() {
+        #[cfg(windows)]
+        {
+            let ObservedTree { mut tree } = spawn_observed(normal_exit_request());
+            assert!(matches!(
+                tree.wait_root(Duration::from_secs(2)).unwrap(),
+                ProcessWaitOutcome::Exited(_)
+            ));
+            tree.finalize_until(Instant::now() + Duration::from_secs(2), 97)
+                .expect("handle-count warmup tree should finalize");
+        }
         let before = native_resource_count();
         for _ in 0..8 {
             let ObservedTree {
@@ -2529,6 +2594,20 @@ mod tests {
     #[ignore = "test-process fixture; launched by finalizer tests"]
     fn finalizer_fixture_holds() {
         std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "isolated handle-count fixture; launched by the parent test"]
+    fn finalizer_fixture_expired_recovery_handle_contract() {
+        expired_finalizer_recovery_handle_contract();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "isolated handle-count fixture; launched by the parent test"]
+    fn finalizer_fixture_handle_release_loop() {
+        finalizer_release_handle_contract();
     }
 
     #[cfg(windows)]

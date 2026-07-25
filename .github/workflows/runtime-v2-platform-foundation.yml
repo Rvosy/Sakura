@@ -224,6 +224,12 @@ jobs:
         run: >-
           cargo test --manifest-path src-tauri/Cargo.toml --locked platform:: -- --test-threads=1
 
+      - name: Run default concurrent Rust test suite on Windows
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        timeout-minutes: 5
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
       - name: Run native shared instance lock tests
         working-directory: desktop
         timeout-minutes: 4
