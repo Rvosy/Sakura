@@ -715,12 +715,12 @@ mod native {
         deadline: Instant,
     ) -> io::Result<Option<ExitStatus>> {
         loop {
-            if let Some(status) = guardian.try_wait()? {
-                return Ok(Some(status));
-            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(None);
+            }
+            if let Some(status) = guardian.try_wait()? {
+                return Ok(Some(status));
             }
             thread::sleep(Duration::from_millis(10).min(remaining));
         }
@@ -1189,9 +1189,6 @@ mod native {
             let Some(line) = read_status_line_until(state, deadline)? else {
                 return Ok(status_observation_allowed(Instant::now(), deadline) && complete(state));
             };
-            if !status_observation_allowed(Instant::now(), deadline) {
-                return Ok(false);
-            }
             apply_status_line(state, &line)?;
             if complete(state) {
                 return Ok(true);
@@ -1223,17 +1220,20 @@ mod native {
                 return Ok(None);
             }
             if let Some(newline) = state.status_buffer.iter().position(|byte| *byte == b'\n') {
-                let line = state.status_buffer.drain(..=newline).collect::<Vec<_>>();
-                return String::from_utf8(line[..line.len() - 1].to_vec())
-                    .map(Some)
-                    .map_err(|_| {
+                let line =
+                    String::from_utf8(state.status_buffer[..newline].to_vec()).map_err(|_| {
                         platform_error(
                             PlatformErrorCategory::NativeFailure,
                             "read_guardian_status",
                             RetryAdvice::Never,
                             "guardian emitted non-UTF-8 status",
                         )
-                    });
+                    })?;
+                if !status_observation_allowed(Instant::now(), deadline) {
+                    return Ok(None);
+                }
+                state.status_buffer.drain(..=newline);
+                return Ok(Some(line));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let mut descriptor = libc::pollfd {
@@ -1241,7 +1241,7 @@ mod native {
                 events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
                 revents: 0,
             };
-            let timeout_ms = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
+            let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
             let poll_result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
             if poll_result == -1 {
                 return Err(io_error("poll_guardian_status", io::Error::last_os_error()));
@@ -1671,6 +1671,199 @@ mod native {
                 deadline + Duration::from_nanos(1),
                 deadline
             ));
+        }
+
+        #[test]
+        fn sub_millisecond_status_wait_uses_a_real_zero_timeout_poll() {
+            let mut guardian_command = Command::new("/bin/sh");
+            guardian_command
+                .args(["-c", "sleep 5"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            unsafe {
+                guardian_command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let guardian = guardian_command
+                .spawn()
+                .expect("poll fixture guardian should spawn");
+            let guardian_pid = guardian.id();
+            let (control_read, control_write) =
+                create_pipe().expect("control fixture pipe should open");
+            let (status_read, status_write) =
+                create_pipe().expect("status fixture pipe should open");
+            drop(control_read);
+            let tree = Box::new(NativeTree {
+                root_pid: guardian_pid,
+                process_group_id: guardian_pid as libc::pid_t,
+                state: Mutex::new(TreeState {
+                    guardian,
+                    control: Some(control_write),
+                    status: status_read,
+                    status_buffer: Vec::new(),
+                    root_status: None,
+                    tree_exited: false,
+                    released: false,
+                    cleanup_deadline: None,
+                }),
+            });
+            let mut observed_conservative_poll = false;
+
+            for _ in 0..32 {
+                let deadline = Instant::now() + Duration::from_micros(900);
+                let outcome = {
+                    let mut state = tree.state.lock().expect("fixture state should lock");
+                    read_status_line_until(&mut state, deadline)
+                };
+                if matches!(outcome, Ok(None)) && Instant::now() < deadline {
+                    observed_conservative_poll = true;
+                    break;
+                }
+            }
+
+            drop(status_write);
+            assert!(
+                observed_conservative_poll,
+                "a positive sub-millisecond remaining budget must reach real poll as zero"
+            );
+        }
+
+        #[test]
+        fn late_buffered_status_line_is_preserved_for_the_next_observation() {
+            let mut guardian_command = Command::new("/bin/sh");
+            guardian_command
+                .args(["-c", "sleep 5"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            unsafe {
+                guardian_command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let guardian = guardian_command
+                .spawn()
+                .expect("buffer fixture guardian should spawn");
+            let guardian_pid = guardian.id();
+            let (control_read, control_write) =
+                create_pipe().expect("control fixture pipe should open");
+            let (status_read, status_write) =
+                create_pipe().expect("status fixture pipe should open");
+            drop(control_read);
+            let mut buffered_line = Vec::with_capacity(32 * 1024 * 1024);
+            buffered_line.extend_from_slice(b"TREE_EXITED");
+            buffered_line.resize(32 * 1024 * 1024 - 1, b' ');
+            buffered_line.push(b'\n');
+            let buffered_len = buffered_line.len();
+            let tree = Box::new(NativeTree {
+                root_pid: guardian_pid,
+                process_group_id: guardian_pid as libc::pid_t,
+                state: Mutex::new(TreeState {
+                    guardian,
+                    control: Some(control_write),
+                    status: status_read,
+                    status_buffer: buffered_line,
+                    root_status: None,
+                    tree_exited: false,
+                    released: false,
+                    cleanup_deadline: None,
+                }),
+            });
+
+            {
+                let mut state = tree.state.lock().expect("fixture state should lock");
+                let first_deadline = Instant::now() + Duration::from_micros(100);
+                assert!(!pump_until_deadline(&mut state, first_deadline, |state| {
+                    state.tree_exited
+                })
+                .expect("late observation should be rejected"));
+                assert_eq!(
+                    state.status_buffer.len(),
+                    buffered_len,
+                    "rejecting a late apply must retain the complete buffered line"
+                );
+
+                let retry_deadline = Instant::now() + Duration::from_secs(1);
+                assert!(pump_until_deadline(&mut state, retry_deadline, |state| {
+                    state.tree_exited
+                })
+                .expect("a later valid observation should retry the same line"));
+            }
+
+            drop(status_write);
+        }
+
+        #[test]
+        fn wait_tree_exited_rejects_guardian_observed_only_after_deadline() {
+            let mut guardian_command = Command::new("/bin/sh");
+            guardian_command
+                .args(["-c", "read line || true"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let mut guardian = guardian_command
+                .spawn()
+                .expect("late guardian fixture should spawn");
+            let guardian_stdin = guardian
+                .stdin
+                .take()
+                .expect("late guardian fixture should own stdin");
+            let expired_deadline = Instant::now();
+            drop(guardian_stdin);
+
+            let fixture_deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                if guardian
+                    .try_wait()
+                    .expect("late guardian fixture should remain observable")
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < fixture_deadline,
+                    "late guardian fixture should exit after stdin closes"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(Instant::now() >= expired_deadline);
+            assert!(
+                reap_guardian_until(&mut guardian, expired_deadline)
+                    .expect("strict reap observation should remain valid")
+                    .is_none(),
+                "a guardian observed only after the deadline must be rejected"
+            );
+
+            let (status_read, status_write) =
+                create_pipe().expect("status fixture pipe should open");
+            let guardian_pid = guardian.id();
+            let tree = Box::new(NativeTree {
+                root_pid: guardian_pid,
+                process_group_id: guardian_pid as libc::pid_t,
+                state: Mutex::new(TreeState {
+                    guardian,
+                    control: None,
+                    status: status_read,
+                    status_buffer: Vec::new(),
+                    root_status: Some(ProcessExitStatus::Code(0)),
+                    tree_exited: true,
+                    released: true,
+                    cleanup_deadline: None,
+                }),
+            });
+
+            assert!(!tree
+                .wait_tree_exited(Duration::ZERO)
+                .expect("zero-budget wait should reject a late guardian observation"));
+            drop(status_write);
         }
 
         #[test]
