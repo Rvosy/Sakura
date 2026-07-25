@@ -42,6 +42,9 @@ use windows::{
     },
 };
 
+#[cfg(windows)]
+const JOB_ACCOUNTING_SETTLE_BUDGET: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Clone)]
 pub struct ManagedProcessSpec {
     program: PathBuf,
@@ -520,7 +523,19 @@ impl ManagedProcessTree {
                 ));
             }
 
-            let active = active_processes(job)?;
+            let mut active = active_processes(job)?;
+            if root_observation == WAIT_OBJECT_0 && active != 0 {
+                // A signaled root handle can precede the Job accounting update.
+                // Reconcile that native observation for one short bounded window
+                // before classifying the already-exited root as a forced cleanup.
+                let settle_deadline = Instant::now()
+                    .checked_add(JOB_ACCOUNTING_SETTLE_BUDGET)
+                    .unwrap_or(deadline)
+                    .min(deadline);
+                if wait_for_job_empty_until(job, settle_deadline, false)? {
+                    active = 0;
+                }
+            }
             if active != 0 {
                 unsafe { TerminateJobObject(job.raw(), reason_code) }
                     .map_err(|error| windows_error("TerminateJobObject", error))?;
@@ -897,6 +912,24 @@ mod tests {
             .expect("exited handles should release");
         tree.release_exited_handles()
             .expect("repeated exited-handle release should be idempotent");
+    }
+
+    #[test]
+    fn finalizer_does_not_force_an_observed_natural_exit_during_job_accounting_settle() {
+        let mut tree = ManagedProcessTree::spawn(&fixture_spec("fixture_exit_23"))
+            .expect("managed process should spawn");
+        assert_eq!(
+            tree.wait(Duration::from_secs(3))
+                .expect("root wait should succeed"),
+            WaitOutcome::Exited(23)
+        );
+
+        let outcome = tree
+            .finalize_until(Instant::now() + Duration::from_secs(2), 97)
+            .expect("naturally exited tree should finalize");
+
+        assert_eq!(outcome.exit_code, 23);
+        assert!(!outcome.forced);
     }
 
     #[test]
