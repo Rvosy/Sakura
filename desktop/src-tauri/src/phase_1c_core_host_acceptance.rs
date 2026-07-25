@@ -361,21 +361,24 @@ fn run_scenario(
 }
 
 fn validate_ready_snapshot(snapshot: &Value) -> Result<(), String> {
-    if snapshot.get("readiness").and_then(Value::as_str) != Some("ready")
-        || snapshot
-            .pointer("/components/assistant/state")
-            .and_then(Value::as_str)
-            != Some("ready")
-        || snapshot
-            .pointer("/components/assistant/code")
-            .and_then(Value::as_str)
-            != Some("READY")
-        || snapshot
-            .pointer("/components/assistant/retryable")
-            .and_then(Value::as_bool)
-            != Some(false)
+    let readiness = snapshot.get("readiness").and_then(Value::as_str);
+    let assistant_state = snapshot
+        .pointer("/components/assistant/state")
+        .and_then(Value::as_str);
+    let assistant_code = snapshot
+        .pointer("/components/assistant/code")
+        .and_then(Value::as_str);
+    let retryable = snapshot
+        .pointer("/components/assistant/retryable")
+        .and_then(Value::as_bool);
+    if readiness != Some("ready")
+        || assistant_state != Some("ready")
+        || assistant_code != Some("READY")
+        || retryable != Some(false)
     {
-        return Err("real Core Host did not produce the exact ready Assistant state".to_string());
+        return Err(format!(
+            "real Core Host did not produce the exact ready Assistant state: readiness={readiness:?}, assistantState={assistant_state:?}, assistantCode={assistant_code:?}, retryable={retryable:?}"
+        ));
     }
     let assistant = snapshot
         .pointer("/components/assistant")
@@ -801,6 +804,36 @@ mod tests {
         let mut polluted = snapshot;
         polluted["currentCharacterSummary"]["apiKey"] = json!("secret");
         assert!(validate_ready_snapshot(&polluted).is_err());
+    }
+
+    #[test]
+    fn readiness_failure_diagnostic_exposes_only_public_state_classification() {
+        let snapshot = json!({
+            "readiness": "failed",
+            "components": {
+                "assistant": {
+                    "state": "failed",
+                    "code": "ASSISTANT_INITIALIZATION_FAILED",
+                    "retryable": false,
+                    "privatePath": "/private/assistant/root"
+                }
+            },
+            "currentCharacterSummary": {
+                "apiKey": "must-not-leak",
+                "initialMessage": "private prompt"
+            }
+        });
+
+        let diagnostic =
+            validate_ready_snapshot(&snapshot).expect_err("failed readiness must be rejected");
+
+        assert_eq!(
+            diagnostic,
+            "real Core Host did not produce the exact ready Assistant state: readiness=Some(\"failed\"), assistantState=Some(\"failed\"), assistantCode=Some(\"ASSISTANT_INITIALIZATION_FAILED\"), retryable=Some(false)"
+        );
+        for private in ["/private/assistant/root", "must-not-leak", "private prompt"] {
+            assert!(!diagnostic.contains(private));
+        }
     }
 
     #[test]

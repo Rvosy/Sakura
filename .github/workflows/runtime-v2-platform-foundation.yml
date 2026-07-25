@@ -191,6 +191,38 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
+      - name: Install Runtime v2 Python dependencies
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          runtime_dir="$GITHUB_WORKSPACE/runtime"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python -m pip install \
+              --disable-pip-version-check \
+              --no-compile \
+              --no-deps \
+              --only-binary=:all: \
+              --platform win_amd64 \
+              --python-version 3.12 \
+              --target "$runtime_dir/Lib/site-packages" \
+              --requirement requirements-runtime-v2.txt
+            pth_file="$runtime_dir/python312._pth"
+            test -f "$pth_file"
+            if ! grep -Fqx 'Lib/site-packages' "$pth_file"; then
+              printf '\nLib/site-packages\n' >> "$pth_file"
+            fi
+            "$runtime_dir/python.exe" -I -B -X utf8 -c 'import yaml'
+          else
+            "$runtime_dir/bin/python3" -m pip install \
+              --disable-pip-version-check \
+              --no-compile \
+              --no-deps \
+              --requirement requirements-runtime-v2.txt
+            "$runtime_dir/bin/python3" -I -B -X utf8 -c 'import yaml'
+          fi
+
       - name: Stage the frozen packaged Runtime and Core resource layout
         timeout-minutes: 2
         shell: bash
