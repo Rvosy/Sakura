@@ -4,7 +4,7 @@
 
 **Goal:** Complete WP-3-01 Task 5 with one 5000ms shutdown deadline, deadline-safe three-platform process-tree/pipe finalization, and an isolated RuntimeLocator-approved Assistant root.
 
-**Architecture:** Preserve the accepted `ManagedProcessTree` and Core Host protocol boundaries, but add a consuming absolute-deadline finalizer and deadline-aware pipe readers. Separate Python `resource_root` from an explicit `assistant_root`, then make `CoreHostRuntime` use one cleanup tail that consumes the tree, finishes readers, and returns success only after resource-zero.
+**Architecture:** Preserve the accepted `ManagedProcessTree` and Core Host protocol boundaries, but add a success-consuming absolute-deadline finalizer that returns the same recovery owner on failure, plus deadline-aware pipe readers. Separate Python `resource_root` from an explicit `assistant_root`, then make `CoreHostRuntime` use one cleanup tail that consumes the tree only on resource-zero success and otherwise returns a typed recovery capsule.
 
 **Tech Stack:** Rust 1.96, Tauri 2.11.3, `windows` 0.61.3 with existing Pipes/JobObjects/Threading features, POSIX `libc` poll/process groups, Python 3.12.8 fixtures, pytest, GitHub Actions native Windows/macOS/Linux runners.
 
@@ -13,7 +13,8 @@
 - Work only on `refactor/tauri-runtime-v2`; WP-3-01 remains the sole active WP until its accepted commit.
 - The starting implementation baseline is `f5b5e49509239c920cc7dcc054c4ebfa5a6cffbd`; design commit `92f8798` is docs-only.
 - From successful `system.shutdown` frame write+flush, production uses exactly 3000ms graceful inside one 5000ms total absolute deadline.
-- No Drop path, guardian, reader, release helper, or error branch may create a second full timeout or detach a thread/tree owner.
+- No Drop path, guardian, reader, release helper, or error branch may create a second full timeout or detach a thread/tree owner. A failed finalizer returns the original recovery owner without automatically retrying.
+- `finalize_until` success consumes and releases the tree; failure returns `ProcessTreeFinalizationFailure { error, recovery }`. Recovery success is a separate explicitly invoked operation, and no generation may become stopped or be replaced while the capsule remains unresolved.
 - Production shutdown deadlines are Rust constants; only `#[cfg(test)]` helpers may inject proportionally shorter policies.
 - Do not change Supervisor restart semantics, IPC envelopes, Snapshot schema, readiness codes, Router/Gateway/Operation, frontend, Python Adapter behavior, or Provider networking.
 - Do not add or update dependencies, Cargo features, manifests, or lockfiles.
@@ -324,116 +325,134 @@ handle, framing equivalence, and secret safety.
 
 ---
 
-### Task 3: Add one consuming process-tree finalizer on Windows and POSIX
+### Task 3: Complete the success-consuming process-tree finalizer with recovery ownership
 
 **Files:**
 - Modify: `desktop/src-tauri/src/platform/contracts.rs`
 - Modify: `desktop/src-tauri/src/platform/process_tree_backend.rs`
 - Modify: `desktop/src-tauri/src/managed_process_tree.rs`
-- Test: inline native process-tree tests
+- Modify mechanically for explicit test-double conformance: `desktop/src-tauri/src/core_host_runtime.rs`
+- Test: inline native process-tree and injected-tree tests
 
 **Interfaces:**
-- Consumes: existing wait/terminate/verify/release APIs and an absolute `Instant`.
-- Produces: `ManagedProcessTree::finalize_until(self: Box<Self>, deadline: Instant, reason_code: u32)` returning `ProcessTreeFinalization { root_status, forced }` only after tree/resource zero.
+- Consumes: the strict native finalizer and absolute-deadline fixes through `e2be6a2`, plus the approved scheme C design in `675a494`.
+- Produces: `ManagedProcessTree::finalize_until(self: Box<Self>, deadline: Instant, reason_code: u32) -> ProcessTreeFinalizationResult`, where success consumes/releases every native owner and failure returns `ProcessTreeFinalizationFailure { error, recovery }` containing the same owner.
 
-- [ ] **Step 1: Write RED finalizer tests**
+- [ ] **Step 1: Write RED recovery-owner contract and native tests**
 
-Add the DTO and trait call to tests before implementation:
-
-```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProcessTreeFinalization {
-    pub root_status: ProcessExitStatus,
-    pub forced: bool,
-}
-```
-
-Platform tests must cover normal exit, a holding root, root-first exit with one TERM-ignoring descendant, two
-descendant levels, repeated pre-finalize observations, and an already-expired deadline. For forced rows:
+Add the result types and expired-owner behavior to tests before changing production signatures:
 
 ```rust
-let started = Instant::now();
-let result = tree
-    .finalize_until(started + Duration::from_secs(2), 97)
-    .expect("managed tree must finalize inside the one deadline");
+pub type ProcessTreeFinalizationResult =
+    Result<ProcessTreeFinalization, ProcessTreeFinalizationFailure>;
+
+let identity = native_tree_identity(&*tree);
+let failure = tree
+    .finalize_until(Instant::now(), 97)
+    .expect_err("expired finalization must return the recovery owner");
+assert_eq!(failure.error().category, PlatformErrorCategory::TimedOut);
+let (error, recovery) = failure.into_parts();
+assert_eq!(error.category, PlatformErrorCategory::TimedOut);
+assert_eq!(recovery.native_owner_pid_for_test(), Some(identity.guardian_pid));
+
+let result = recovery
+    .finalize_until(Instant::now() + Duration::from_secs(2), 97)
+    .expect("explicit recovery must reap the same native owner");
 assert!(result.forced);
-assert!(started.elapsed() < Duration::from_secs(2));
+assert_posix_identity_gone(identity);
 ```
 
-On Windows, sample process/Job handle count before and after a bounded loop. On POSIX, assert guardian PID and
-PGID no longer exist and the control/status fd count returns to baseline.
+The POSIX row applies the existing `.superpowers/sdd/task-5c-i1-resource-zero-red.diff` condition but changes
+the first-call expectation from impossible synchronous reap to `TimedOut + same owner`; the second explicit
+call must reap guardian/PGID/fds to zero. The Windows cfg row must prove the first expired call retains process
+and Job handles and the second call reaches Job accounting zero before releasing them. Add a counter fake that
+proves the first failure invokes `finalize_until` exactly once and does not start recovery automatically.
 
-- [ ] **Step 2: Run RED on the current native platform**
+- [ ] **Step 2: Run RED on native and test-double paths**
 
 Run:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked process_tree_backend::tests -- --nocapture --test-threads=1
+PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked platform::process_tree_backend::tests::expired_finalizer -- --nocapture --test-threads=1
+PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked core_host_runtime::tests --no-run
 ```
 
-Expected: compilation fails because `finalize_until` and `ProcessTreeFinalization` are absent.
+Expected: the native test cannot recover an owner because the current API returns only `PlatformError`; the
+Core test build exposes every test double relying on the old production default implementation.
 
-- [ ] **Step 3: Implement Windows Job finalization**
+- [ ] **Step 3: Freeze the explicit failure type and remove the trait default**
 
-In `managed_process_tree.rs`, add an internal method with this order:
+In `platform/contracts.rs`, define the non-clone, non-serializable failure type with exactly these operations:
 
-```text
-zero-time root observation
--> zero-time Job accounting observation
--> if any process remains: TerminateJobObject(reason), forced=true
--> WaitForSingleObject(root, remaining)
--> poll Job accounting with remaining absolute budget
--> read/cache root exit code
--> release process then Job handles
--> return finalization
+```rust
+pub struct ProcessTreeFinalizationFailure {
+    error: PlatformError,
+    recovery: Box<dyn ManagedProcessTree>,
+}
+
+impl ProcessTreeFinalizationFailure {
+    pub fn new(error: PlatformError, recovery: Box<dyn ManagedProcessTree>) -> Self;
+    pub fn error(&self) -> &PlatformError;
+    pub fn into_parts(self) -> (PlatformError, Box<dyn ManagedProcessTree>);
+}
 ```
 
-Every call recomputes remaining time from the same `Instant`. An expired deadline still performs immediate
-terminate/kill-on-close and handle close, but returns `TimedOut`; it never starts a 5000ms rollback. Keep the
-accepted spawn rollback behavior unchanged because it occurs before a Core shutdown intent.
+Implement a redacted `Debug` that prints the error and `has_recovery_owner=true` only. Remove the production
+default body from `ManagedProcessTree::finalize_until`; every backend/test double must implement the method.
 
-- [ ] **Step 4: Implement POSIX explicit finalization**
+- [ ] **Step 4: Preserve the POSIX owner on every finalization error**
 
-At the first line, store `cleanup_deadline: Some(deadline)` in `TreeState`. If root or group remains, close the
-control writer, send TERM directly to the verified PGID, allow at most
-`min(TERMINATE_GRACE, remaining)`, then send KILL. Pump guardian status only with remaining time, require
-`TREE_EXITED`, and reap guardian by `try_wait` polling; do not call unbounded `wait()`.
+Make the POSIX trait wrapper own `self` across the platform attempt. On success, set `released=true` only after
+`TREE_EXITED`, PGID zero, guardian `try_wait` reap and root status are proven. On every error/timeout, immediately
+close the control writer and signal the frozen PGID/guardian as already required, but do not set `released=true`
+and do not drop `Child`/status ownership; return `ProcessTreeFinalizationFailure::new(error, self)`. A later
+explicit call on `recovery` uses its new caller deadline to reap the same guardian. Drop remains immediate
+kill/close insurance and never waits or claims success.
 
-Change guardian cleanup so explicit-control shutdown never receives its own `FORCE_WAIT`. The parent-death EOF
-insurance may retain a crash-only ceiling only when no explicit deadline was armed. Change `NativeTree::Drop`
-to immediate close/signal/kill/handle release with no `pump_until`, sleep, or `guardian.wait()`.
+- [ ] **Step 5: Preserve Windows process/Job handles on error and release only on success**
 
-- [ ] **Step 5: Wire the common trait without migrating legacy consumers**
+Change the Windows internal finalizer to operate on `&mut self`: it may terminate the Job and observe root/Job
+within the caller deadline, but any error leaves `process` and `job` owned. Only a successful root observation,
+Job accounting zero and exit-code read may `take()` process then Job handles. The platform wrapper maps an
+internal error to `ProcessTreeFinalizationFailure::new(stable_error, self)`. Keep suspended spawn,
+assignment-before-resume and pre-shutdown rollback unchanged.
 
-Add `finalize_until` to `ManagedProcessTree` and implement it in both cfg wrappers. Keep wait/terminate/verify/
-release methods for WP-1P-04 consumers. Map platform errors to stable categories and operation names; do not
-include program paths, PGIDs, credentials, stderr, or command arguments in public error text.
+- [ ] **Step 6: Make all test doubles explicit without changing production Core behavior**
 
-- [ ] **Step 6: Run GREEN and static hidden-wait audit**
+In `core_host_runtime.rs`, update `InjectedTree` and other `ManagedProcessTree` test implementations to declare
+`finalize_until` explicitly. Failure fakes return themselves in `ProcessTreeFinalizationFailure`; success fakes
+return `ProcessTreeFinalization`. Do not change `CoreHostRuntime::shutdown` or its production cleanup path in
+this task; Task 4 consumes the new result.
+
+- [ ] **Step 7: Run GREEN, cross-target type checks and ownership audits**
 
 Run:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
 PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked platform::process_tree_backend::tests -- --nocapture --test-threads=1
+PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked core_host_runtime::tests --no-run
 PYTHONDONTWRITEBYTECODE=1 cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked managed_process_tree -- --nocapture --test-threads=1
+rg -n "fn finalize_until|ProcessTreeFinalizationFailure|released = true|process\.take\(\)|job\.take\(\)" desktop/src-tauri/src/platform/contracts.rs desktop/src-tauri/src/platform/process_tree_backend.rs desktop/src-tauri/src/managed_process_tree.rs desktop/src-tauri/src/core_host_runtime.rs
 rg -n "FORCE_WAIT|guardian\.wait\(\)|pump_until\(&mut state, FORCE_WAIT" desktop/src-tauri/src/platform/process_tree_backend.rs
 git diff --check
 ```
 
-Expected: tests pass. Any remaining `FORCE_WAIT` is confined to documented unarmed parent-death insurance;
-`release_exited` and armed Drop contain no unbounded wait.
+Also repeat the existing temporary non-repository `llvm-rc` MSVC target check. Expected: native tests pass;
+Windows cfg/tests type-check; every production/test backend implements the trait; success paths release owners;
+error paths return them; remaining `FORCE_WAIT` is confined to unarmed parent-death insurance.
 
-- [ ] **Step 7: Commit and review Task 3**
+- [ ] **Step 8: Commit and independently re-review Task 3**
 
 Commit title:
 
 ```text
-refactor(runtime): 统一三平台进程树终结期限
+fix(runtime): 保留进程终结恢复所有权
 ```
 
-Review Windows and POSIX independently. Reject success without Job/group zero evidence, a Drop second budget,
-PID/PGID reconstruction, changed spawn containment, or a new dependency.
+Stage only the four allowed files. The review covers the complete `0f487d4..HEAD` Task 3 range and must close
+I1 while preserving the already-closed I2/I3 findings. Reject owner reconstruction, automatic recovery, a
+success result before Job/group/guardian zero, secret/native identity exposure, or any new full timeout.
 
 ---
 
@@ -446,8 +465,8 @@ PID/PGID reconstruction, changed spawn containment, or a new dependency.
 - Test: inline Core Host runtime tests
 
 **Interfaces:**
-- Consumes: `ManagedPipeReader`, `ManagedProcessTree::finalize_until`, explicit `assistant_root`.
-- Produces: production `CoreHostRuntime::shutdown(self)` with fixed `ShutdownPolicy { graceful: 3000ms, total: 5000ms }`, no segmented timeout, and a fully consumed successful exit.
+- Consumes: `ManagedPipeReader`, scheme C `ProcessTreeFinalizationResult`, explicit `assistant_root`.
+- Produces: production `CoreHostRuntime::shutdown(self)` with fixed `ShutdownPolicy { graceful: 3000ms, total: 5000ms }`, no segmented timeout, a fully consumed successful exit, or a typed `CoreHostShutdownFailure` that retains the tree recovery capsule.
 
 - [ ] **Step 1: Write RED policy, timing, and cleanup-order tests**
 
@@ -465,6 +484,24 @@ const PRODUCTION_SHUTDOWN_POLICY: ShutdownPolicy = ShutdownPolicy {
     total: Duration::from_millis(5000),
 };
 ```
+
+Freeze the typed failure boundary before implementation:
+
+```rust
+pub struct CoreHostShutdownFailure {
+    diagnostic: String,
+    recovery: Option<CoreHostRecovery>,
+}
+
+struct CoreHostRecovery {
+    tree: Box<dyn ManagedProcessTree>,
+}
+```
+
+Only expose a redacted diagnostic accessor and consuming `into_recovery`; never implement Clone/Serialize or
+format the native owner. A fake finalizer error must return a capsule, record exactly one shutdown deadline,
+and prove no automatic second `finalize_until` call occurs. A test-only explicit recovery call supplies a new
+deadline, succeeds, and only then permits the stopped/resource-zero assertion.
 
 Add tests for: cooperative exit; slow host consuming 2900-3000ms before exit; ignore shutdown; root-first
 descendant; trailing stdout; stderr flood; reader timeout; tree finalizer error; stderr completion error. The
@@ -513,7 +550,7 @@ fn finish_exit_until(
     mut self,
     absolute_deadline: Instant,
     primary: Option<String>,
-) -> Result<CoreHostExit, String> {
+) -> Result<CoreHostExit, CoreHostShutdownFailure> {
     self.stdin.take();
     let tree_result = self.tree.take().expect("tree owner").finalize_until(
         absolute_deadline,
@@ -528,20 +565,24 @@ fn finish_exit_until(
     );
     self.stdout.take();
     self.stderr_drain.take();
-    aggregate_exit(primary, tree_result, stdout_result, stderr_result)
+    aggregate_exit_or_retain_recovery(primary, tree_result, stdout_result, stderr_result)
 }
 ```
 
 The real implementation must not use `expect` on recoverable state; missing owners become stable cleanup
-failures while later cleanup continues. `aggregate_exit` preserves the first protocol/transport error and adds
-only stable operation/type notes. Success requires a finalization result, stdout EOF with no pollution, stderr
-completion, and all owners consumed before `absolute_deadline`.
+failures while later cleanup continues. Aggregation preserves the first protocol/transport error and adds only
+stable operation/type notes. If tree finalization failed, later pipe/thread cleanup still runs, but the returned
+`CoreHostShutdownFailure` retains the recovery owner and does not claim stopped. Success requires a finalization
+result, stdout EOF with no pollution, stderr completion, and all owners consumed before `absolute_deadline`.
 
-- [ ] **Step 5: Cover non-shutdown failure cleanup**
+- [ ] **Step 5: Cover non-shutdown failure cleanup and explicit recovery ownership**
 
 Credential bootstrap failure, stale credential, request timeout, and explicit stdin EOF each create one recovery
 deadline and call the same consuming cleanup tail. Remove every fixed forced 5s wait, unbounded `read_to_end`,
-unconditional `JoinHandle::join`, and direct `release_exited` call from `CoreHostRuntime`.
+unconditional `JoinHandle::join`, and direct `release_exited` call from `CoreHostRuntime`. Tree failure must not
+be converted to `String` or dropped. The current operation returns the capsule without retrying; a separately
+invoked recovery operation may use a new deadline, and no new generation/stopped result is allowed before it
+succeeds.
 
 - [ ] **Step 6: Run GREEN and exact timeout audit**
 
@@ -639,6 +680,11 @@ root exit code 0, empty sanitized stderr, reader completion true, and no Core/de
 non-sensitive booleans/counts/durations to acceptance evidence. Verify copied fixture manifest unchanged before
 writing `acceptance.cleaned`.
 
+The ready row must return no recovery capsule. Fault rows that intentionally exhaust the first deadline record
+only that first elapsed interval, assert `failed/stopping + same recovery owner`, then invoke a separately timed
+test recovery operation and require resource-zero before the acceptance directory is released. Never add the
+recovery duration to a passing shutdown measurement or start the next generation before recovery succeeds.
+
 - [ ] **Step 5: Run complete local Task 5 gates**
 
 Use one unique shim only if the full Rust suite needs `python`:
@@ -694,6 +740,8 @@ checks are green may the parent WP proceed to Task 6.
 - Five implementation tasks have individual RED/GREEN evidence, commits, and clean independent reviews.
 - `CoreHostRuntime::shutdown()` uses one internal 3000ms/5000ms policy sampled after successful frame flush.
 - Windows Job and POSIX guardian/group are verified empty and released within the same absolute deadline.
+- A failed first finalization returns the original native recovery owner without automatic retry; an explicit
+  later recovery reaches resource-zero, and no stopped/new-generation transition occurs between the two calls.
 - stdout/stderr have no detached reader and complete before success.
 - RuntimeLocator supplies a distinct explicit `assistant_root`; no cwd/repo/home/env fallback exists.
 - Phase 1C real-ready uses the copied `wp_3_01/ready` fixture and leaves source/protected roots unchanged.
