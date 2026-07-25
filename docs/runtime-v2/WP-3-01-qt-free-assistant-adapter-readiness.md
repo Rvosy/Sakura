@@ -8,7 +8,7 @@
 `active` Work Package；WP-1D-01、WP-2-01、WP-2-02 与 WP-3-02 保持 `planned`。
 
 WP-3-01 的结果是在既有 Core Host worker/lifecycle/readiness/Snapshot 机制中接入第一个
-真实、无 Qt 的 Assistant 会话。它仅只读加载角色和基础 Provider 配置，构造但不运行真实
+真实、无 Qt 的 Assistant 会话。它加载角色和基础 Provider 配置，构造但不运行真实
 `AgentRuntime` 与 `ChatPipeline`。它不是聊天、设置、迁移、资源管理或第二条进程生命
 周期。
 
@@ -19,7 +19,7 @@ WP-1C-04 和 WP-1P-05A 已接受；WP-3-01 是第一个消费 bundled Core lifec
 
 | 方案 | 结论 | 原因 |
 |---|---|---|
-| 懒导入的薄 Assistant Facade + 专用严格只读 Core 配置读取器 | **采用** | 在 Core Host worker 内复用角色、模型 slot、Provider、`AgentRuntime` 和 `ChatPipeline` 的既有语义，同时维持无 Qt、无写入、无网络的边界。 |
+| 懒导入的薄 Assistant Facade + 专用 Core 配置投影 | **采用** | 在 Core Host worker 内复用角色、模型 slot、Provider、`AgentRuntime` 和 `ChatPipeline` 的既有语义，同时维持无 Qt、无隐式迁移、无网络的边界。 |
 | 复用或 headless 包装 `build_initial_app_context`/`AppContext` | 拒绝 | 导入 Qt，并初始化或写入 Memory、Tools、插件、MCP、TTS 和存储；范围及资源所有权均不可接受。 |
 | Assistant sidecar/第二进程 | 拒绝 | 新增第二个生命周期根、IPC 与进程树所有权，不能比现有 Core Host 更安全或更小。 |
 
@@ -29,14 +29,14 @@ WP-1C-04 和 WP-1P-05A 已接受；WP-3-01 是第一个消费 bundled Core lifec
 
 - `core.initialize` 快速接受空的生产 payload，在后台 worker 完成真实、可取消的初始化；
   `health`、`shutdown` 和握手不得等待领域工作。
-- 只读地确定当前 `CharacterProfile`、chat Provider 与模型，并构造最小 `AssistantSession`。
+- 确定当前 `CharacterProfile`、chat Provider 与模型，并构造最小 `AssistantSession`。
 - 复用 `CharacterRegistry`、角色 prompt 读取、`resolve_model_slot`、
   `OpenAICompatibleClient` 构造器、`AgentRuntime`、空 `ToolRegistry` 和 `ChatPipeline` 的
   业务语义。
 - 将安全的角色摘要发布到既有 Python-owned Snapshot schema 1，并保持 generation 隔离和
   单调 revision。
-- 在 hello 前及真实初始化后均不加载 PySide6/Qt UI，也不调用 Provider 网络、迁移或真实
-  用户目录写入。
+- 在 hello 前及真实初始化后均不加载 PySide6/Qt UI，也不调用 Provider 网络或隐式迁移；
+  正常日志、cache、配置和其他运行时写入遵循既有数据所有权与原子写契约。
 - 为三平台真实 Core Host/受控进程树验收预留一组确定的 fixture、故障和资源归零门禁。
 
 ### 非目标
@@ -59,7 +59,7 @@ Core Host control plane ── quick initialize acceptance ──► background 
           │                                                   │ lazy imports only
           │ health/shutdown                                   ▼
           │                                           AssistantAdapter
-          │                                           ├─ CoreConfigReader (read-only)
+          │                                           ├─ CoreConfigReader (projection)
           │                                           ├─ CharacterRegistry
           │                                           └─ AssistantSession
           │                                              ├─ CharacterProfile
@@ -72,7 +72,7 @@ existing readiness owner ── atomic publish ──► Snapshot schema 1 / Rus
 ```
 
 实施文件固定为 `app/config/core_config_reader.py` 与
-`app/core_host/assistant_adapter.py`。前者是唯一的纯、显式只读 raw YAML projection；后者是唯一
+`app/core_host/assistant_adapter.py`。前者是唯一的纯、显式 raw YAML projection；后者是唯一
 Assistant Facade，定义 `AssistantSession`、disabled/no-op `MemoryLike`，并协调构造与关闭。
 它们不得以 `application.py` 或 `AppContext` 作为入口。
 
@@ -240,17 +240,18 @@ MCP、plugins、voice、TTS、backchannel 与 Qt stub。
   default 行为及业务语义等价测试。
 
 `CharacterRegistry` 固定接受 injectable issue sink：legacy 默认 sink 仍为 `log_event`，保持
-现有文件日志行为；Core Host 固定注入仅输出经脱敏 stderr 的 sink，绝不触发 legacy runtime
-log 文件。该分支必须有 legacy-default 与 Core-stderr 的等价/零写入测试。
+现有文件日志行为；Core Host 的 sink 必须保证诊断脱敏，可以输出 stderr，也可以接入既有 runtime
+log 所有权路径。该分支验证 legacy-default 与 Core 诊断语义等价、无秘密泄漏；不要求全局零写入。
 
-## 严格只读配置与凭据规则
+## 配置投影与凭据规则
 
-唯一的 `app/config/core_config_reader.py` 只读取注入 app root 内的原始文件，允许复用纯 DTO、
+唯一的 `app/config/core_config_reader.py` 投影注入 app root 内的原始文件，允许复用纯 DTO、
 `load_yaml_mapping` 与 `resolve_model_slot`，但不得调用 `AppSettingsService.load_api_profiles()`
 或 `load_model_selection()`，也不得 import 或运行 `MigrationRunner`。它在自身（或唯一纯 config
 辅助模块）定义 `SUPPORTED_CORE_CONFIG_VERSION = 4`；唯一支持值是 non-bool integer `4`，不得从
 migration 常量、运行时 migration 或其他写入路径取得版本语义。它绝不 migrate、normalize-and-save、
-创建 backup、写 legacy log 或改变任何文件 bytes/mtime。
+创建 backup 或写 legacy log。这个“不由投影器持久化”的约束只是组件职责，不是对 `data/` 的
+全局只读政策；其他受权组件可以按既有契约正常写入。
 
 `system_config.yaml` 不存在是首次安装，固定为 `CORE_CONFIG_SETUP_REQUIRED`。文件存在但为空、
 仅空白、null、损坏或非 mapping 固定为 `CONFIG_DATA_INVALID`；mapping 的 `config_version` 缺失、
@@ -293,7 +294,7 @@ guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化
 | 范围 | 候选路径 | 理由 |
 |---|---|---|
 | Adapter/readiness/CLI | `app/core_host/assistant_adapter.py`、`app/core_host/server.py`、`app/core_host/__main__.py` | 薄 Facade、注入 initializer、原子 publish/close 与注入 app root 的唯一 CLI 入口。 |
-| 只读配置 | `app/config/core_config_reader.py`、`app/config/models.py`、`app/config/model_slots.py` | 纯 raw config projection 和 slot 解析。 |
+| 配置投影 | `app/config/core_config_reader.py`、`app/config/models.py`、`app/config/model_slots.py` | 纯 raw config projection 和 slot 解析。 |
 | 角色/Provider/Pipeline | `app/config/character_loader.py`、`app/llm/api_client.py`、`app/core/chat_pipeline.py` | 仅复用读取、构造和无网络 Provider。 |
 | 已证明的 Qt/import blocker | `app/config/visual_effect.py`、`app/ui/theme.py`、`app/ui/window_backdrop.py`、`app/agent/__init__.py`、`app/agent/runtime.py`、`app/agent/memory_recall.py` | 仅移出 Qt 依赖或改为 typing/lazy import，并保留 legacy 行为。 |
 | 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_core_host_cli.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture、CLI 注入和既有 Core Host 命名。 |
@@ -303,16 +304,24 @@ guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化
 manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、`app/agent/mcp/**`、
 `app/plugins/**`、顶层 `plugins/**`、`app/voice/**`、产品 UI/Settings/Studio、storage/history/
 runtime events/visual observation、`main.py`、`legacy_qt_main.py`、Router/Gateway/Operation/chat
-Rust 或 WebView 文件、`desktop/frontend/**`、`third_party/**`、`tools/mcp/**`。也禁止写
-`data/**`、`characters/**`、`runtime/**`、migration backup、用户日志/cache、Qdrant/mem0、TTS、
-插件私有数据和任何真实用户目录。零新增依赖：禁止修改 `requirements*.txt`、`pyproject.toml`、
+Rust 或 WebView 文件、`desktop/frontend/**`、`third_party/**`、`tools/mcp/**`。零新增依赖：禁止修改 `requirements*.txt`、`pyproject.toml`、
 任何 Python/Node package manifest、`Cargo.toml`、`Cargo.lock`、`package-lock.json`、
 `pnpm-lock.yaml`、`yarn.lock` 或其他 package lock。
 
+`data/**` 是应用的正常运行时可写目录，不设整目录只读门禁。开发、启动和验收可以产生任务范围内
+预期的日志、cache、配置、history 或其他由对应服务拥有的持久化结果，也不要求为这些预期写入
+恢复 mtime 或伪造“零变化”证据。写入必须由任务范围或被测产品路径触发，遵循已有原子写、schema、
+凭据脱敏和共享锁契约；不得顺手改写、清理、截断、恢复或删除无关用户数据。破坏性故障注入、
+migration 回放以及会污染既有状态的测试仍使用隔离临时根。`characters/**` 和 `runtime/**` 只有在
+任务明确涉及角色资源或 Runtime 布局时才修改。
+
+本 WP 只消费 WP-1P-02 manifest 已冻结的 PyYAML 6.0.2 wheel import artifact；它是 `requirements.txt` 中既有依赖的不可变打包闭包，不构成新增依赖或 package manifest。三平台验收必须直接消费并复核该工件，禁止在下载 CPython 后运行 pip、写入 site-packages 或修改 `_pth` 来改变受验 Runtime。
+
 ## 验收矩阵、CI 与资源零残留
 
-所有 fixture 位于隔离临时根且完全脱敏；每项 data/characters/config 前后记录相对路径、长度、
-mtime、SHA-256，必须完全一致。至少覆盖如下确定性矩阵。
+所有受版本控制的 fixture 保持脱敏且不原地污染；需要故障注入或破坏性写入时复制到隔离临时根。
+验收只核对本场景声明的预期写集、禁止写集和内容不变量，不再计算或要求仓库真实 `data/` 整目录
+的 path/mtime/SHA-256 前后完全一致。至少覆盖如下确定性矩阵。
 
 | 门类 | 必测情形 | 断言 |
 |---|---|---|
@@ -352,4 +361,4 @@ revert` 该 WP 的实现提交；不得删除或改写 data、角色、配置、
 sanitized-stderr sink 双路径保持等价；所有 readiness code 均 `retryable=false` 且映射到既有
 Core Supervisor 的不自动重启分类；`run_host` 以已规定顺序聚合 cleanup errors；Rust 从 shutdown
 successful-write 起以单一 5000ms deadline 收束完整树和资源。若任何门禁失败，按上节回退，不得
-放宽 code、重试、秘密、网络、写入、Qt 或进程所有权边界。
+放宽 code、重试、秘密、网络、数据所有权、Qt 或进程所有权边界。

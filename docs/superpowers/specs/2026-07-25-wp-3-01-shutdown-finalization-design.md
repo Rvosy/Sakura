@@ -64,7 +64,8 @@ deadline 的独立 operation；恢复成功前 generation 保持 `failed/stoppin
 - 不恢复 fake `ready`/`hang` 协议字段，不通过 cwd、环境变量、仓库根或用户目录隐式寻找配置。
 - 不修改 Cargo/Node/Python manifest 或 lockfile；当前 Windows crate feature 已包含 Pipes、
   JobObjects 和 Threading。
-- 不读取、写入、复制到、删除、截断或清理仓库真实 `data/`、`characters/`、`runtime/`。
+- 允许产品启动与验收按既有所有权正常读写仓库 `data/`；不顺手清理、截断、恢复或删除无关
+  用户数据。破坏性故障注入仍使用隔离临时根，`characters/`、`runtime/` 仅在任务明确涉及时修改。
 
 ## 4. 公共所有权契约
 
@@ -259,10 +260,11 @@ Phase 1C harness 自己拥有的验收目录不冒充 Core 资源，由 Task 6 �
 - Python 不增加 cwd/repository/home/env fallback；缺配置仍由真实 Adapter 返回稳定
   `setup_required`，而不是由 Locator 猜测路径。
 
-Phase 1C acceptance 在已校验的系统临时目录内复制只读 Assistant fixture，拒绝 symlink 和路径
+Phase 1C acceptance 在已校验的系统临时目录内复制 Assistant fixture，拒绝 symlink 和路径
 逃逸，然后把 canonical fixture root 显式交给 RuntimeLocator。Python code 仍从仓库或 staged
 runtime 的 `resource_root` 导入。这样 `ready`、`setup_required`、`degraded` 和 `failed` 都走真实
-Adapter，不修改仓库 `data/`/`characters/`，也不增加 test-only protocol 字段。
+Adapter，也不增加 test-only protocol 字段。隔离 fixture 是为了保证确定性和容纳故障注入，
+不是仓库 `data/` 的全局禁写规则。
 
 ## 8. 故障处理与安全不变量
 
@@ -313,8 +315,8 @@ Adapter，不修改仓库 `data/`/`characters/`，也不增加 test-only protoco
 - isolated ready fixture 最终得到 `ready/READY/retryable=false` 和精确五字段 summary。
 - setup_required/degraded/failed 均由真实配置 fixture 产生，不使用 fake mode。
 - 初始化期间 repeated health 响应；正常、close-block、强杀后均满足同一资源门禁。
-- fixture 和仓库真实 `data/`、`characters/`、`runtime/` 前后只读摘要符合冻结基线；fixture
-  无 `.bak`、log、cache、`__pycache__` 或 symlink。
+- fixture 的预期写集、禁止写集和内容不变量符合场景声明；不再要求仓库真实 `data/`、
+  `characters/`、`runtime/` 整目录摘要零变化。受版本控制的源 fixture 不被原地污染且无 symlink。
 - Windows x64、macOS arm64、Linux x64 workflow 执行相同 Rust/Core Host 测试，不以单平台替代。
 
 ## 10. 精确实施范围

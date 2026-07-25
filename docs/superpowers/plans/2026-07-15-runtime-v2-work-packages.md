@@ -19,6 +19,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 - 每个 Work Package 完成生产实现后必须进入 `stabilizing`，清零 P0、P1 和退出条件相关缺陷后才能标记 `accepted`。
 - 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
 - Work Package 当前状态只在本文第 2 节登记。独立规范、主计划、ADR、PR 描述和提交正文只能链接本表；可以保存带日期的历史激活/验收证据，但不得声明另一个“当前状态”或“当前启动点”。
+- 历史 WP 中的真实 `data/` 零变化摘要只证明当时那个 WP 的验收结果，不是当前或后续 WP 的
+  通用禁写规则；当前数据写入边界以仓库 `AGENTS.md` 和唯一 active WP 的激活记录为准。
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
 - WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
 - WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
@@ -1680,13 +1682,13 @@ development/packaged RuntimeLocator、真实 lifecycle/fault matrix、连续 gen
 允许测试/fixture/CI：tests/unit/test_core_host_*.py；tests/integration/test_core_host_*.py；tests/unit/test_agent_runtime.py；tests/integration/test_chat_pipeline.py；tests/fixtures/runtime_v2/wp_3_01/**；tests/unit/test_runtime_v2_platform_workflow.py；.github/workflows/runtime-v2-platform-foundation.yml
 允许文档：本总表、上述设计规格与实施计划；后续仅以 docs-only 提交登记 stabilizing/accepted 证据
 明确禁止：app/core/bootstrap.py、app/core/app_context.py、app/core/extensions.py、ResourceManager、Memory/curator、builtin/desktop Tools、app/agent/mcp/**、app/plugins/**、plugins/**、app/voice/**、history/storage/runtime events/visual observation、main.py、legacy_qt_main.py、desktop/frontend/**、Router/Gateway/Operation/chat Rust/WebView、third_party/**、tools/mcp/**、任何 package manifest/lockfile、新依赖、Provider 网络与真实聊天
-保护目录：data/**、characters/**、runtime/** 只读；激活前基线为 characters 不存在/0 files/0 bytes，data 1 file/939022 bytes，runtime 49938 files/2602963793 bytes；不得清理、截断、恢复或写入
+数据写入政策：data/** 是正常可写运行时状态，允许任务范围内的产品写入；验收审计场景声明的预期/禁止写集，不要求沿用激活前整目录 byte/mtime/hash 基线。不得清理、截断、恢复或删除无关用户数据；破坏性故障注入使用隔离临时根，characters/**、runtime/** 仅在任务明确涉及时修改
 接口：空生产 core.initialize；懒加载单一 AssistantAdapter/CoreConfigReader；真实未运行 Session；五字段 currentCharacterSummary；activeInteractionSummary=null；全部 readiness retryable=false；generation credential 仅经既有 framed IPC；Rust shutdown successful-write 起共享 5000ms，3000ms graceful 包含其中
 故障矩阵：严格配置/版本/角色/Provider shape、fallback 与坏可选包优先级、secret/generic serializer、禁止域 import/fail-if-called、重复 initialize/shutdown/EOF/writer/close/race/old worker、连续 generation、一个/多个后代、crash/强杀/共享 deadline 和完整资源归零；逐项见设计规格与实施计划
 验收环境：本机 macOS arm64 bundled runtime；GitHub windows-2025 x64、macos-15 arm64、ubuntu-24.04 x64；Python/Cargo 使用 PYTHONDONTWRITEBYTECODE=1；不安装依赖
 CI：设计 SHA b6f343a 的 PR platform run 30122282238 与 Unit/UI run 30122282057 成功；docs-only push 未命中 platform push path filter。生产提交必须由对称 push/PR filters 触发三平台，并显式执行新增 core_host pytest
 计划提交：按实施计划 Task 1-6 分别执行 TDD、独立任务复审和单一目的中文 Conventional Commit；完成后另做 docs-only stabilizing 与 accepted
-回退：先停止并验证所有 generation/受控树/pipe/thread/temp/锁归零，再按 Task 6→1、激活提交逆序 git revert；恢复 WP-1C-04 fake readiness；绝不触碰保护目录或用户日志/cache/migration/Qdrant/plugin data
+回退：先停止并验证所有 generation/受控树/pipe/thread/temp/锁归零，再按 Task 6→1、激活提交逆序 git revert；恢复 WP-1C-04 fake readiness；不删除、恢复或改写既有用户日志/cache/migration/Qdrant/plugin data
 ```
 
 主要结果：`app.core_host` 通过薄 Adapter/Facade 使用现有 Sakura Assistant 领域服务，建立当前角色、Assistant Session、Chat Pipeline 和基础 Provider，并表达真实 ready/setup_required/degraded。它在 WP-1C-04 后立即执行，先验证 bundled Core lifecycle 能承载真实 Assistant 初始化和确定性释放；不等待 Router 或聊天协议。

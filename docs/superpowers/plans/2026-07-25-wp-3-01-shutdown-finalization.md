@@ -18,7 +18,7 @@
 - Production shutdown deadlines are Rust constants; only `#[cfg(test)]` helpers may inject proportionally shorter policies.
 - Do not change Supervisor restart semantics, IPC envelopes, Snapshot schema, readiness codes, Router/Gateway/Operation, frontend, Python Adapter behavior, or Provider networking.
 - Do not add or update dependencies, Cargo features, manifests, or lockfiles.
-- Never delete, truncate, restore, clean, or write repository `data/`, `characters/`, or `runtime/`; fixtures live under isolated temp roots.
+- Repository `data/` is writable runtime state: allow task-scoped product writes and audit declared expected/forbidden write sets. Never delete, truncate, restore, or clean unrelated user data; use isolated temp roots for destructive fault injection, and modify `characters/` or `runtime/` only when explicitly in scope.
 - Set `PYTHONDONTWRITEBYTECODE=1` for every Python and Cargo verification command.
 - When a test needs `python` on PATH, create one unique `/private/tmp` shim, install a trap before running tests, and remove only that shim; never create `runtime/python.exe` or write into `runtime/`.
 - Each task uses RED→GREEN, a single-purpose Chinese Conventional Commit with detailed body, a fresh independent reviewer, and Critical/Important findings fixed before the next task.
@@ -31,7 +31,7 @@
 - `desktop/src-tauri/src/platform/process_tree_backend.rs`: POSIX guardian, native deadline readers, and cross-platform trait adapters.
 - `desktop/src-tauri/src/managed_process_tree.rs`: accepted Windows Job implementation and deadline-aware Job accounting finalization.
 - `desktop/src-tauri/src/core_host_runtime.rs`: framed transport reads, stderr drainer ownership, one shutdown budget, and cleanup aggregation.
-- `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`: copied read-only ready fixture and real lifecycle evidence.
+- `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`: copied deterministic ready fixture and real lifecycle evidence.
 - `tests/fixtures/runtime_v2/wp_3_01/ready/**`: existing deterministic no-network Assistant fixture; it is copied, never mutated in place.
 
 ---
@@ -632,7 +632,7 @@ readiness/retry behavior.
 - Update untracked execution evidence: `.superpowers/sdd/task-5-report.md`, `.superpowers/sdd/progress.md`
 
 **Interfaces:**
-- Consumes: Tasks 1-4 production path and the existing read-only ready fixture.
+- Consumes: Tasks 1-4 production path and the existing deterministic ready fixture.
 - Produces: Phase 1C `ready` through the real Adapter with copied isolated config/characters, precise shutdown evidence, and a reviewed complete Task 5.
 
 - [ ] **Step 1: Write RED fixture-copy and real-ready tests**
@@ -723,7 +723,8 @@ npm test --prefix desktop/frontend
 ```
 
 After the commands, prove no shim, Shell/Core/descendant, shared-lock holder, reader thread, guardian, or
-acceptance temp remains. Record read-only protected-directory summaries without removing new logs/cache.
+acceptance temp remains. Record the scenario's expected/forbidden write delta; do not require whole-directory
+zero-change summaries or remove newly produced logs/cache merely to satisfy a gate.
 
 - [ ] **Step 6: Commit and perform complete Task 5 review**
 
@@ -733,8 +734,8 @@ Commit title:
 test(runtime): 接入隔离 Assistant readiness 验收
 ```
 
-The body records exact Task 1-4 SHAs and the Task 5 base, RED/GREEN commands, no-network/no-write evidence,
-protected-directory delta, non-goals, risks, and independent revert. After commit, record the resulting Task 5
+The body records exact Task 1-4 SHAs and the Task 5 base, RED/GREEN commands, no-network evidence,
+the scoped expected/forbidden write delta, non-goals, risks, and independent revert. After commit, record the resulting Task 5
 SHA in `.superpowers/sdd/task-5-report.md`. Generate a review package from the pre-plan implementation SHA
 through this commit; dispatch a fresh broad reviewer. Fix every Critical/Important finding in one focused fix
 wave and re-review before marking `.superpowers/sdd/progress.md` Task 5 complete.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Connect the existing Qt-free Core Host lifecycle to a real, read-only Sakura Assistant session that reports deterministic readiness and a five-field public character snapshot without networking, user-data writes, or later chat/platform capabilities.
+**Goal:** Connect the existing Qt-free Core Host lifecycle to a real Sakura Assistant session that reports deterministic readiness and a five-field public character snapshot without networking or later chat/platform capabilities, while allowing normal runtime data writes owned by the exercised product path.
 
 **Architecture:** Keep the Core Host control plane minimal and inject one background initializer. The initializer lazily imports a thin `AssistantAdapter`, which uses one strict raw-YAML `CoreConfigReader`, a `CharacterRegistry` with an injected issue sink, an OpenAI-compatible client constructed locally, a real `AgentRuntime` with empty tools and disabled memory, and an unexecuted `ChatPipeline`. Python remains the readiness/Snapshot owner; Rust only validates and caches the current generation and uses one 5000 ms shutdown deadline.
 
@@ -21,7 +21,7 @@
 - All WP-3-01 readiness results are `retryable=false`; no state/code causes an automatic Core restart.
 - Rust shutdown uses one shared 5000 ms end-to-end deadline beginning after the shutdown request is successfully written; the 3000 ms graceful interval is included in that budget.
 - Zero new dependencies or manifest/lockfile changes.
-- Never modify, clean, truncate, restore, or otherwise write `data/`, `characters/`, or `runtime/`. All fixtures use isolated temporary roots and `PYTHONDONTWRITEBYTECODE=1`.
+- `data/` is writable runtime state. Allow task-scoped product writes and audit only the declared expected/forbidden write sets; never clean, truncate, restore, or delete unrelated user data. Use isolated temporary roots for destructive fault injection. Modify `characters/` or `runtime/` only when the task explicitly requires it.
 - Allowed production candidates are limited to the paths frozen in `docs/runtime-v2/WP-3-01-qt-free-assistant-adapter-readiness.md`; all forbidden paths in that specification remain forbidden.
 
 ---
@@ -29,7 +29,7 @@
 ## File Map
 
 - `app/config/visual_effect.py`: pure `VisualEffectMode` constants and validation, with no Qt import.
-- `app/config/core_config_reader.py`: the sole strict, read-only projection of `system_config.yaml`, `api.yaml`, and `characters.yaml`.
+- `app/config/core_config_reader.py`: the sole explicit projection of `system_config.yaml`, `api.yaml`, and `characters.yaml`; its non-persisting behavior is a component responsibility, not a global `data/` write ban.
 - `app/core_host/assistant_adapter.py`: readiness DTOs, disabled memory object, public character projector, real session construction, ownership, and idempotent close.
 - `app/core_host/server.py`: injected initializer lifecycle, atomic readiness/Snapshot publication, empty production initialize payload, and cleanup aggregation.
 - `app/core_host/__main__.py`: required RuntimeLocator-provided app root CLI argument and secret-safe `HostConfig` construction.
@@ -158,7 +158,7 @@ Run the Step 2 command. Expected: all selected tests pass, subprocess imports ar
 
 Commit only Task 1 files with `refactor(runtime): 解耦 Assistant 无 Qt 导入边界` and a detailed WP-3-01 body including RED/GREEN evidence, unchanged legacy semantics, non-goals, risk, and revert instructions.
 
-### Task 2: Implement the strict read-only Core configuration projection
+### Task 2: Implement the explicit Core configuration projection
 
 **Files:**
 - Create: `app/config/core_config_reader.py`
@@ -227,7 +227,7 @@ Expected: pytest passes and the scan returns no matches.
 
 - [ ] **Step 5: Commit**
 
-Commit only Task 2 files with `feat(runtime): 增加 Core 严格只读配置读取器` and the required detailed WP body.
+Commit only Task 2 files with `feat(runtime): 增加 Core 显式配置投影` and the required detailed WP body.
 
 ### Task 3: Build the thin Assistant Adapter and safe public projection
 
@@ -486,8 +486,8 @@ After Task 6, dispatch a fresh broad whole-WP reviewer using the range from the 
 Implementation completion does not change WP status directly. After the broad review is clean:
 
 1. Create a docs-only commit changing WP-3-01 from `active` to `stabilizing`, recording exact implementation SHAs, review results, allowlist audit, known risks, and rollback.
-2. Run fresh Python unit/integration tests, frontend tests, Rust fmt/build/test `--locked`, protocol/fixture/fault tests, secret scans, `git diff --check`, allowlist/forbidden audit, P0/P1 audit, exact process/temp scan, and read-only protected-directory summaries.
-3. Use the macOS real app only for the affected lifecycle smoke: Shell visible, real Adapter reaches one frozen readiness state from an isolated fixture, repeated health responds, clean shutdown succeeds, and Shell/Core/shared-lock/temp residuals are zero. Do not use real user config or Provider network.
+2. Run fresh Python unit/integration tests, frontend tests, Rust fmt/build/test `--locked`, protocol/fixture/fault tests, secret scans, `git diff --check`, allowlist/forbidden audit, P0/P1 audit, exact process/temp scan, and scoped expected/forbidden write audits. Do not require a whole-repository `data/` zero-delta summary.
+3. Use the macOS real app only for the affected lifecycle smoke: Shell visible, real Adapter reaches one frozen readiness state, repeated health responds, clean shutdown succeeds, and Shell/Core/shared-lock/temp residuals are zero. Use an isolated fixture by default for deterministic CI; operator-authorized real config is allowed. Do not call the Provider network.
 4. Push normally and monitor all runs for the exact stabilizing SHA. Use systematic debugging and `github:gh-fix-ci` for any failure.
 5. Only after Windows x64/macOS arm64/Linux x64 platform runs and Unit/UI checks are green, create a separate docs-only accepted commit. Keep WP-1D-01 planned until that commit is verified and pushed.
 
