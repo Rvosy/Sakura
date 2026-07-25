@@ -429,6 +429,13 @@ impl CoreSupervisor {
                 self.restart_pending = true;
                 self.pending_failure = None;
                 self.automatic_restart_attempts = 0;
+                return Vec::new();
+            }
+            if self.state == SupervisorState::Running {
+                self.restart_pending = true;
+                self.pending_failure = None;
+                self.automatic_restart_attempts = 0;
+                return self.begin_stop(StopReason::Restart);
             }
             return Vec::new();
         }
@@ -976,6 +983,35 @@ mod tests {
             }]
         ));
         assert_eq!(supervisor.snapshot().automatic_restart_attempts, 0);
+    }
+
+    #[test]
+    fn repeated_manual_retry_from_running_submits_one_serial_restart() {
+        let mut supervisor = CoreSupervisor::new(0x1d01_0000_0000_0001);
+        let generation_id = match supervisor.submit(LifecycleIntent::Start).as_slice() {
+            [LifecycleAction::SpawnGeneration { generation_id, .. }] => *generation_id,
+            actions => panic!("expected initial spawn, got {actions:?}"),
+        };
+        supervisor.observe_spawn_succeeded(generation_id);
+
+        assert_eq!(
+            supervisor.submit(LifecycleIntent::Retry),
+            vec![LifecycleAction::StopGeneration {
+                generation_id,
+                reason: StopReason::Restart,
+            }]
+        );
+        assert!(supervisor.submit(LifecycleIntent::Retry).is_empty());
+        assert!(supervisor.snapshot().restart_pending);
+
+        let replacement = supervisor.finalize_generation(generation_id).actions;
+        assert!(matches!(
+            replacement.as_slice(),
+            [LifecycleAction::SpawnGeneration {
+                generation_number: 2,
+                ..
+            }]
+        ));
     }
 
     #[test]

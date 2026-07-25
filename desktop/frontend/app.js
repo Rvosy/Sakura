@@ -6,6 +6,11 @@ import {
   shouldStartNativeDrag,
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
+import {
+  createLifecycleReducer,
+  projectLifecycle,
+  sanitizeDiagnostics,
+} from "./lifecycle.js";
 
 const invoke = window.__TAURI__.core.invoke;
 const stage = document.querySelector("#pet-stage");
@@ -16,6 +21,16 @@ const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
 let contentScale = 1;
 let currentHitRegions = null;
+const lifecycleReducer = createLifecycleReducer();
+const lifecycleLabel = document.querySelector("#lifecycle-label");
+const lifecycleHeadline = document.querySelector("#lifecycle-headline");
+const lifecycleCode = document.querySelector("#lifecycle-code");
+const lifecycleVersions = document.querySelector("#lifecycle-versions");
+const lifecycleProtocol = document.querySelector("#lifecycle-protocol");
+const lifecycleLogs = document.querySelector("#lifecycle-logs");
+const lifecycleRetry = document.querySelector("#lifecycle-retry");
+const lifecycleExit = document.querySelector("#lifecycle-exit");
+let lifecycleRefreshPending = false;
 
 const contractResponse = await fetch("./pet/layout-contract.json", { cache: "no-store" });
 if (!contractResponse.ok) throw new Error("failed to load pet layout contract");
@@ -53,7 +68,7 @@ async function transition(state) {
   try {
     await controller.transition(state, document.querySelector("#bubble-copy").textContent);
   } catch (error) {
-    readout.value = `layout error: ${String(error)}`;
+    readout.value = "LAYOUT_APPLY_FAILED";
   }
 }
 
@@ -76,7 +91,7 @@ for (const dragRegion of dragRegions) {
         readout.value = `${result.state} · anchor ${result.portraitAnchor.x},${result.portraitAnchor.y}`;
       }
     } catch (error) {
-      readout.value = `drag error: ${String(error)}`;
+      readout.value = "WINDOW_DRAG_FAILED";
     }
   });
 }
@@ -112,7 +127,7 @@ document.querySelector("#visibility-probe").addEventListener("click", async () =
   try {
     await invoke("probe_pet_visibility");
   } catch (error) {
-    readout.value = `visibility error: ${String(error)}`;
+    readout.value = "VISIBILITY_PROBE_FAILED";
   } finally {
     inputFocus.handleVisibility(true);
   }
@@ -120,4 +135,66 @@ document.querySelector("#visibility-probe").addEventListener("click", async () =
 
 document.querySelector("#close-window").addEventListener("click", () => invoke("close_pet_window"));
 
+function renderLifecycle(publication) {
+  const view = projectLifecycle(publication);
+  const accepted = lifecycleReducer.reduce({
+    generationId: publication.supervisor.generationId,
+    generationNumber: publication.supervisor.generationNumber,
+    revision: publication.snapshot?.revision ?? 0,
+    view,
+  });
+  if (!accepted.applied) return;
+  const diagnostics = sanitizeDiagnostics({ ...view, ...publication.versions });
+  lifecycleLabel.textContent = view.label;
+  lifecycleHeadline.textContent = view.headline;
+  lifecycleCode.textContent = diagnostics.code;
+  lifecycleVersions.textContent = `${diagnostics.desktopVersion} / ${diagnostics.coreVersion}`;
+  lifecycleProtocol.textContent = diagnostics.protocolVersion;
+  lifecycleLogs.textContent = diagnostics.logLocation;
+  lifecycleRetry.disabled = !view.canRetry;
+  document.body.dataset.lifecycleState = view.status;
+}
+
+function renderLifecycleTransportFailure() {
+  const diagnostics = sanitizeDiagnostics({ status: "failed" });
+  lifecycleLabel.textContent = "failed";
+  lifecycleHeadline.textContent = "生命周期状态暂不可用";
+  lifecycleCode.textContent = diagnostics.code;
+  lifecycleVersions.textContent = `${diagnostics.desktopVersion} / ${diagnostics.coreVersion}`;
+  lifecycleProtocol.textContent = diagnostics.protocolVersion;
+  lifecycleLogs.textContent = diagnostics.logLocation;
+  lifecycleRetry.disabled = false;
+  document.body.dataset.lifecycleState = "failed";
+}
+
+async function refreshLifecycle() {
+  if (lifecycleRefreshPending) return;
+  lifecycleRefreshPending = true;
+  try {
+    renderLifecycle(await invoke("runtime_lifecycle_snapshot"));
+  } catch {
+    renderLifecycleTransportFailure();
+  } finally {
+    lifecycleRefreshPending = false;
+  }
+}
+
+lifecycleRetry.addEventListener("click", async () => {
+  lifecycleRetry.disabled = true;
+  try {
+    await invoke("retry_core");
+  } catch {
+    renderLifecycleTransportFailure();
+  }
+  await refreshLifecycle();
+});
+
+lifecycleExit.addEventListener("click", () => {
+  lifecycleExit.disabled = true;
+  lifecycleRetry.disabled = true;
+  invoke("exit_runtime").catch(renderLifecycleTransportFailure);
+});
+
 await transition("idle");
+await refreshLifecycle();
+window.setInterval(refreshLifecycle, 250);

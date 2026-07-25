@@ -10,6 +10,23 @@
   </head>
   <body data-shell-state="pet-geometry-loading">
     <main id="pet-stage" class="pet-stage" aria-label="透明桌宠窗口交互技术门">
+      <section id="lifecycle-panel" class="lifecycle-panel" data-interactive="true" aria-live="polite">
+        <div>
+          <span id="lifecycle-label" class="lifecycle-label">startup</span>
+          <strong id="lifecycle-headline">Sakura 正在启动</strong>
+        </div>
+        <dl class="lifecycle-diagnostics" aria-label="脱敏生命周期诊断">
+          <div><dt>Code</dt><dd id="lifecycle-code">SHELL_STARTUP</dd></div>
+          <div><dt>Desktop / Core</dt><dd id="lifecycle-versions">0.1.0 / unavailable</dd></div>
+          <div><dt>Protocol</dt><dd id="lifecycle-protocol">2.1</dd></div>
+          <div><dt>Logs</dt><dd id="lifecycle-logs">Sakura application logs</dd></div>
+        </dl>
+        <div class="lifecycle-actions">
+          <button type="button" id="lifecycle-retry" disabled>Retry</button>
+          <button type="button" id="lifecycle-exit">Exit</button>
+        </div>
+      </section>
+
       <section class="bubble" data-drag-region="true" aria-live="polite" aria-label="气泡正文，可拖动窗口">
         <span class="bubble-kicker">Interaction gate</span>
         <p id="bubble-copy">

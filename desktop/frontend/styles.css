@@ -32,10 +32,6 @@ body {
   opacity: 1;
 }
 
-body[data-shell-state="pet-geometry-loading"] {
-  opacity: 0;
-}
-
 .pet-stage {
   position: absolute;
   top: 0;
@@ -45,6 +41,82 @@ body[data-shell-state="pet-geometry-loading"] {
   overflow: hidden;
   transform: scale(var(--content-scale));
   transform-origin: top left;
+}
+
+.lifecycle-panel {
+  position: absolute;
+  z-index: 20;
+  top: 8px;
+  left: 8px;
+  width: 304px;
+  min-height: 128px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fffafcf5;
+  box-shadow: 0 12px 28px var(--shadow);
+}
+
+.lifecycle-panel strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+}
+
+.lifecycle-label {
+  color: var(--sakura-deep);
+  font: 700 10px/1 "Segoe UI", sans-serif;
+  letter-spacing: 0.1em;
+}
+
+.lifecycle-diagnostics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+  margin: 9px 0;
+  font-size: 9px;
+}
+
+.lifecycle-diagnostics div {
+  min-width: 0;
+}
+
+.lifecycle-diagnostics dt {
+  color: var(--muted);
+}
+
+.lifecycle-diagnostics dd {
+  margin: 1px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lifecycle-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.lifecycle-actions button {
+  min-width: 62px;
+  height: 25px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--sakura-deep);
+  background: var(--paper);
+  font: 700 10px/1 "Segoe UI", sans-serif;
+}
+
+.lifecycle-actions button:disabled {
+  opacity: 0.45;
+}
+
+.lifecycle-actions button:not(:disabled):hover,
+.lifecycle-actions button:not(:disabled):focus-visible {
+  color: white;
+  background: var(--sakura);
 }
 
 .portrait,
