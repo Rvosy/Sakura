@@ -16,8 +16,8 @@ use serde_json::Value;
 use crate::{
     core_host_runtime::{CoreHostLifecycleFailure, CoreHostRuntime},
     platform::{
-        current_platform_target, FilesystemRuntimeLocator, RuntimeLayout, RuntimeLocationRequest,
-        RuntimeLocator, RuntimeMode,
+        current_platform_target, FilesystemRuntimeLocator, PlatformTarget, RuntimeLayout,
+        RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
     },
 };
 
@@ -30,6 +30,46 @@ const ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-1c-02-";
 const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 const READY_FIXTURE_RELATIVE: &str = "tests/fixtures/runtime_v2/wp_3_01/ready";
 const SHUTDOWN_SCHEDULING_TOLERANCE: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy)]
+enum FixtureMutation {
+    SetupRequired,
+    DegradedCombinedCharacterFaults,
+    Failed,
+}
+
+#[derive(Clone, Copy)]
+struct ReadinessExpectation {
+    label: &'static str,
+    state: &'static str,
+    code: &'static str,
+    has_summary: bool,
+    mutation: FixtureMutation,
+}
+
+const PREFLIGHT_MATRIX: [ReadinessExpectation; 3] = [
+    ReadinessExpectation {
+        label: "setup-required",
+        state: "setup_required",
+        code: "CORE_CONFIG_SETUP_REQUIRED",
+        has_summary: false,
+        mutation: FixtureMutation::SetupRequired,
+    },
+    ReadinessExpectation {
+        label: "degraded-combined-character-faults",
+        state: "degraded",
+        code: "CHARACTER_FALLBACK_APPLIED",
+        has_summary: true,
+        mutation: FixtureMutation::DegradedCombinedCharacterFaults,
+    },
+    ReadinessExpectation {
+        label: "failed",
+        state: "failed",
+        code: "CONFIG_DATA_INVALID",
+        has_summary: false,
+        mutation: FixtureMutation::Failed,
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FixtureFileRecord {
@@ -88,8 +128,6 @@ impl AcceptanceSession {
         if initialize_mode != "ready" {
             return Err("Phase 1C initialize mode must be ready".to_string());
         }
-        let fixture_source = repo_root.join(READY_FIXTURE_RELATIVE);
-        let fixture_copy = copy_fixture_tree(&fixture_source, &directory.join("assistant-root"))?;
         let executable_directory = std::env::current_exe()
             .map_err(|error| format!("failed to resolve acceptance executable: {error}"))?
             .parent()
@@ -97,6 +135,25 @@ impl AcceptanceSession {
             .to_path_buf();
         let target = current_platform_target()
             .ok_or_else(|| "Phase 1C acceptance requires a formal platform target".to_string())?;
+        let fixture_source = repo_root.join(READY_FIXTURE_RELATIVE);
+        let preflight_evidence = run_readiness_preflight_matrix(
+            &directory,
+            &repo_root,
+            &fixture_source,
+            &executable_directory,
+            target,
+        )
+        .map_err(|error| {
+            let _ = fs::write(directory.join("acceptance.error"), error.as_bytes());
+            error
+        })?;
+        fs::write(
+            directory.join("readiness-matrix.json"),
+            serde_json::to_vec_pretty(&preflight_evidence)
+                .map_err(|error| format!("failed to encode readiness matrix evidence: {error}"))?,
+        )
+        .map_err(|error| format!("failed to write readiness matrix evidence: {error}"))?;
+        let fixture_copy = copy_fixture_tree(&fixture_source, &directory.join("assistant-root"))?;
         let layout = FilesystemRuntimeLocator
             .locate(&RuntimeLocationRequest {
                 mode: RuntimeMode::ExplicitDevelopment,
@@ -188,6 +245,224 @@ impl AcceptanceSession {
             .join()
             .map_err(|_| "Phase 1C acceptance worker panicked".to_string())?
     }
+}
+
+fn run_readiness_preflight_matrix(
+    directory: &Path,
+    repo_root: &Path,
+    fixture_source: &Path,
+    executable_directory: &Path,
+    target: PlatformTarget,
+) -> Result<Value, String> {
+    let matrix_root = directory.join("readiness-matrix");
+    fs::create_dir(&matrix_root)
+        .map_err(|error| format!("failed to create readiness matrix root: {error}"))?;
+    let mut rows = Vec::with_capacity(PREFLIGHT_MATRIX.len());
+    for (index, expectation) in PREFLIGHT_MATRIX.into_iter().enumerate() {
+        let scenario_root = matrix_root.join(expectation.label);
+        fs::create_dir(&scenario_root).map_err(|error| {
+            format!(
+                "failed to create {} scenario root: {error}",
+                expectation.label
+            )
+        })?;
+        let mut fixture_copy =
+            copy_fixture_tree(fixture_source, &scenario_root.join("assistant-root"))?;
+        mutate_fixture(&fixture_copy.copied_root, expectation.mutation)?;
+        fixture_copy.copied_manifest = fixture_manifest(&fixture_copy.copied_root)?;
+        let layout = FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::ExplicitDevelopment,
+                target,
+                executable_directory: executable_directory.to_path_buf(),
+                resource_directory: repo_root.to_path_buf(),
+                explicit_development_root: Some(repo_root.to_path_buf()),
+                assistant_root: fixture_copy.copied_root.clone(),
+            })
+            .map_err(|error| {
+                format!(
+                    "{} scenario RuntimeLocator failed: {error}",
+                    expectation.label
+                )
+            })?;
+        rows.push(run_readiness_preflight_case(
+            &layout,
+            &fixture_copy,
+            expectation,
+            &format!("00000000-0000-4000-8000-{:012x}", index + 1),
+        )?);
+    }
+    Ok(json!({
+        "platform": target,
+        "rows": rows,
+    }))
+}
+
+fn mutate_fixture(root: &Path, mutation: FixtureMutation) -> Result<(), String> {
+    match mutation {
+        FixtureMutation::SetupRequired => {
+            fs::remove_file(root.join("data/config/system_config.yaml"))
+                .map_err(|error| format!("failed to create setup-required fixture: {error}"))
+        }
+        FixtureMutation::DegradedCombinedCharacterFaults => {
+            fs::write(
+                root.join("data/config/characters.yaml"),
+                b"current_character_id: missing\n",
+            )
+            .map_err(|error| format!("failed to configure missing current character: {error}"))?;
+            let broken = root.join("characters/broken");
+            fs::create_dir(&broken)
+                .map_err(|error| format!("failed to create corrupt optional character: {error}"))?;
+            fs::write(
+                broken.join("character.json"),
+                br#"{"id":"broken","display_name":"PRIVATE_OPTIONAL_CHARACTER"}"#,
+            )
+            .map_err(|error| format!("failed to write corrupt optional character: {error}"))
+        }
+        FixtureMutation::Failed => {
+            fs::write(root.join("data/config/system_config.yaml"), b"not: [valid")
+                .map_err(|error| format!("failed to create failed fixture: {error}"))
+        }
+    }
+}
+
+fn run_readiness_preflight_case(
+    layout: &RuntimeLayout,
+    fixture_copy: &FixtureCopy,
+    expectation: ReadinessExpectation,
+    generation_id: &str,
+) -> Result<Value, String> {
+    let mut host = CoreHostRuntime::launch(layout, generation_id)
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+    let pid = host.pid();
+    let hello = host.request("hello", "system.hello", Duration::from_secs(3))?;
+    if hello.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(format!("{} scenario hello failed", expectation.label));
+    }
+    let initialize = host.request_with_payload(
+        "initialize",
+        "core.initialize",
+        json!({}),
+        Duration::from_secs(5),
+    )?;
+    if initialize
+        .pointer("/payload/readiness")
+        .and_then(Value::as_str)
+        != Some("initializing")
+    {
+        return Err(format!(
+            "{} scenario did not accept background initialization",
+            expectation.label
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut snapshots = 0_u64;
+    let final_snapshot = loop {
+        let health = host.request(
+            &format!("health-{snapshots}"),
+            "system.health",
+            Duration::from_secs(3),
+        )?;
+        if health.pointer("/payload/status").and_then(Value::as_str) != Some("healthy") {
+            return Err(format!("{} scenario health failed", expectation.label));
+        }
+        let snapshot =
+            host.refresh_snapshot(&format!("snapshot-{snapshots}"), Duration::from_secs(3))?;
+        snapshots += 1;
+        if snapshot.get("readiness").and_then(Value::as_str) != Some("initializing") {
+            break snapshot;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{} scenario exceeded the readiness deadline",
+                expectation.label
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    validate_readiness_snapshot(&final_snapshot, expectation)?;
+    let repeated = host.refresh_snapshot("snapshot-repeated", Duration::from_secs(3))?;
+    if repeated != final_snapshot {
+        return Err(format!(
+            "{} scenario returned a stale or unstable Snapshot",
+            expectation.label
+        ));
+    }
+
+    let shutdown_started = Instant::now();
+    let exit = host
+        .shutdown()
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+    let shutdown_elapsed = shutdown_started.elapsed();
+    let stderr_reader_completed = exit.stderr_stats.eof && !exit.stderr_stats.read_failed;
+    if shutdown_elapsed >= Duration::from_secs(5) + SHUTDOWN_SCHEDULING_TOLERANCE
+        || exit.root_exit_code != 0
+        || !exit.tree_empty
+        || exit.forced
+        || !stderr_reader_completed
+    {
+        return Err(format!(
+            "{} scenario did not release its exact process tree: {exit:?}",
+            expectation.label
+        ));
+    }
+    let source_unchanged =
+        fixture_manifest(&fixture_copy.source_root)? == fixture_copy.source_manifest;
+    let copied_unchanged =
+        fixture_manifest(&fixture_copy.copied_root)? == fixture_copy.copied_manifest;
+    if !source_unchanged || !copied_unchanged {
+        return Err(format!(
+            "{} scenario changed its protected fixture",
+            expectation.label
+        ));
+    }
+    if exit.stderr.contains("PRIVATE_OPTIONAL_CHARACTER") {
+        return Err("readiness matrix leaked optional character data".to_string());
+    }
+    Ok(json!({
+        "label": expectation.label,
+        "state": expectation.state,
+        "code": expectation.code,
+        "pid": pid,
+        "snapshots": snapshots + 1,
+        "shutdownElapsedMs": shutdown_elapsed.as_millis(),
+        "treeEmpty": exit.tree_empty,
+        "forced": exit.forced,
+        "rootExitCode": exit.root_exit_code,
+        "stderrReaderCompleted": stderr_reader_completed,
+        "sourceFixtureUnchanged": source_unchanged,
+        "copiedFixtureUnchanged": copied_unchanged,
+    }))
+}
+
+fn validate_readiness_snapshot(
+    snapshot: &Value,
+    expectation: ReadinessExpectation,
+) -> Result<(), String> {
+    let component = snapshot
+        .pointer("/components/assistant")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} scenario omitted Assistant", expectation.label))?;
+    if snapshot.get("readiness").and_then(Value::as_str) != Some(expectation.state)
+        || component.get("state").and_then(Value::as_str) != Some(expectation.state)
+        || component.get("code").and_then(Value::as_str) != Some(expectation.code)
+        || component.get("retryable").and_then(Value::as_bool) != Some(false)
+        || component
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(["code", "retryable", "state"])
+        || snapshot
+            .get("currentCharacterSummary")
+            .is_some_and(|summary| !summary.is_null())
+            != expectation.has_summary
+    {
+        return Err(format!(
+            "{} scenario returned an unexpected readiness projection",
+            expectation.label
+        ));
+    }
+    Ok(())
 }
 
 pub fn record_lock_conflict_if_requested() -> Result<bool, String> {
