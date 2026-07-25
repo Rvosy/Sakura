@@ -2,27 +2,6 @@ name: Runtime v2 platform foundation
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - refactor/tauri-runtime-v2
-    paths:
-      - ".github/workflows/runtime-v2-platform-foundation.yml"
-      - "desktop/rust-toolchain.toml"
-      - "desktop/src-tauri/**"
-      - "desktop/tests/**"
-      - "app/**"
-      - "legacy_qt_main.py"
-      - "requirements*.txt"
-      - "scripts/runtime_v2_archive.py"
-      - "tests/fixtures/runtime_v2/**"
-      - "tests/integration/test_core_host_*.py"
-      - "tests/unit/test_core_host_*.py"
-      - "tests/unit/test_runtime_v2_platform_workflow.py"
-      - "tests/unit/test_wp_1a_04_shared_mutex.py"
-      - "tests/unit/test_runtime_v2_archive.py"
-      - "docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
-      - "docs/adr/0002-runtime-v2-ipc.md"
-      - "docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md"
   pull_request:
     paths:
       - ".github/workflows/runtime-v2-platform-foundation.yml"

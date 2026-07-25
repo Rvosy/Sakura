@@ -22,17 +22,17 @@ REQUIRED_PLATFORM_TRIGGER_PATHS = {
 }
 
 
-def _event_paths() -> tuple[set[str], set[str]]:
+def _triggers() -> dict[str, object]:
     document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    triggers = document["on"]
-    return set(triggers["push"]["paths"]), set(triggers["pull_request"]["paths"])
+    return document["on"]
 
 
-def test_platform_workflow_cannot_skip_python_core_only_changes() -> None:
-    push_paths, pull_request_paths = _event_paths()
+def test_platform_workflow_runs_once_for_python_core_only_changes() -> None:
+    triggers = _triggers()
+    pull_request_paths = set(triggers["pull_request"]["paths"])
 
-    assert push_paths == pull_request_paths
-    assert REQUIRED_PLATFORM_TRIGGER_PATHS <= push_paths
+    assert "push" not in triggers
+    assert REQUIRED_PLATFORM_TRIGGER_PATHS <= pull_request_paths
 
 
 def test_native_platform_contract_tests_are_serialized() -> None:
