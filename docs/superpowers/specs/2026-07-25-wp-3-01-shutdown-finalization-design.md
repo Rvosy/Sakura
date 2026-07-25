@@ -223,11 +223,13 @@ credential、API key、prompt、endpoint 或异常 repr。
 completion 已确认、pipe owner 已关闭、平台 tree owner 已消费。若任一后置条件未证明，返回失败，
 并禁止调用者把 generation 视为 stopped 或启动下一 generation。
 
-`CoreHostRuntime` 不得把 tree failure 立即格式化为 `String` 后丢弃 owner。Task 5D 使用 typed
-`CoreHostShutdownFailure`，其中诊断保持脱敏，并在 tree 未归零时携带不可复制的 recovery capsule。
-第一次 `shutdown()` 不自动重试；调用者要么继续持有 capsule，要么显式以新的 recovery operation
-调用其 tree owner 的 `finalize_until`。只有 recovery 成功并完成剩余 owner cleanup 后，capsule 才
-能产生 stopped/resource-zero 结果。WP-3-01 不借此修改 Supervisor restart 语义。
+`CoreHostRuntime` 不得把 tree failure 立即格式化为 `String` 后丢弃 owner。Task 5D 使用统一 typed
+`CoreHostLifecycleFailure` 作为 `launch` 与 `shutdown` 的错误边界：spawn 前的校验/定位失败携带
+`recovery=None`；spawn 后若 tree 未归零则携带不可复制的 recovery capsule。诊断始终脱敏，
+`Display`/`Debug` 不格式化 native owner。第一次 cleanup 不自动重试；调用者要么继续持有 capsule，
+要么显式以新的 recovery operation 调用其 tree owner 的 `finalize_until`。只有 recovery 成功并完成
+剩余 owner cleanup 后，capsule 才能产生 stopped/resource-zero 结果。WP-3-01 不借此修改 Supervisor
+restart 语义。
 
 Core Host 当前没有生产 filesystem temp owner；因此正常 Task 5 路径的 temp 集合为空。若测试或
 后续调用为 generation 注册临时资源，它必须在同一 cleanup tail 中使用 remaining budget 清除。

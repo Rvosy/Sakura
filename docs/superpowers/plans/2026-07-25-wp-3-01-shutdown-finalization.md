@@ -466,7 +466,7 @@ success result before Job/group/guardian zero, secret/native identity exposure, 
 
 **Interfaces:**
 - Consumes: `ManagedPipeReader`, scheme C `ProcessTreeFinalizationResult`, explicit `assistant_root`.
-- Produces: production `CoreHostRuntime::shutdown(self)` with fixed `ShutdownPolicy { graceful: 3000ms, total: 5000ms }`, no segmented timeout, a fully consumed successful exit, or a typed `CoreHostShutdownFailure` that retains the tree recovery capsule.
+- Produces: production `CoreHostRuntime::launch(...)` and `shutdown(self)` with a unified typed `CoreHostLifecycleFailure`; shutdown uses fixed `ShutdownPolicy { graceful: 3000ms, total: 5000ms }`, no segmented timeout, and returns either a fully consumed successful exit or a failure retaining the tree recovery capsule.
 
 - [ ] **Step 1: Write RED policy, timing, and cleanup-order tests**
 
@@ -488,7 +488,7 @@ const PRODUCTION_SHUTDOWN_POLICY: ShutdownPolicy = ShutdownPolicy {
 Freeze the typed failure boundary before implementation:
 
 ```rust
-pub struct CoreHostShutdownFailure {
+pub struct CoreHostLifecycleFailure {
     diagnostic: String,
     recovery: Option<CoreHostRecovery>,
 }
@@ -502,6 +502,11 @@ Only expose a redacted diagnostic accessor and consuming `into_recovery`; never 
 format the native owner. A fake finalizer error must return a capsule, record exactly one shutdown deadline,
 and prove no automatic second `finalize_until` call occurs. A test-only explicit recovery call supplies a new
 deadline, succeeds, and only then permits the stopped/resource-zero assertion.
+
+`CoreHostRuntime::launch` and `launch_with_backend` return the same failure type. Validation/spawn errors before
+an owner exists use `recovery=None`; credential bootstrap or initialization failures after spawn must build the
+same cleanup tail and retain `recovery=Some(...)` if finalization cannot prove zero. No spawn-owned error may be
+collapsed to `String` before the recovery field is inspected.
 
 Add tests for: cooperative exit; slow host consuming 2900-3000ms before exit; ignore shutdown; root-first
 descendant; trailing stdout; stderr flood; reader timeout; tree finalizer error; stderr completion error. The
@@ -550,7 +555,7 @@ fn finish_exit_until(
     mut self,
     absolute_deadline: Instant,
     primary: Option<String>,
-) -> Result<CoreHostExit, CoreHostShutdownFailure> {
+) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
     self.stdin.take();
     let tree_result = self.tree.take().expect("tree owner").finalize_until(
         absolute_deadline,
@@ -572,7 +577,7 @@ fn finish_exit_until(
 The real implementation must not use `expect` on recoverable state; missing owners become stable cleanup
 failures while later cleanup continues. Aggregation preserves the first protocol/transport error and adds only
 stable operation/type notes. If tree finalization failed, later pipe/thread cleanup still runs, but the returned
-`CoreHostShutdownFailure` retains the recovery owner and does not claim stopped. Success requires a finalization
+`CoreHostLifecycleFailure` retains the recovery owner and does not claim stopped. Success requires a finalization
 result, stdout EOF with no pollution, stderr completion, and all owners consumed before `absolute_deadline`.
 
 - [ ] **Step 5: Cover non-shutdown failure cleanup and explicit recovery ownership**
