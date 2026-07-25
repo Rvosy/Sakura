@@ -117,6 +117,7 @@ pub struct RuntimeLocationRequest {
     pub executable_directory: PathBuf,
     pub resource_directory: PathBuf,
     pub explicit_development_root: Option<PathBuf>,
+    pub assistant_root: PathBuf,
 }
 
 impl RuntimeLocationRequest {
@@ -154,8 +155,8 @@ pub struct RuntimeLayout {
     pub python_executable: PathBuf,
     /// Root containing the Python Core resources approved by RuntimeLocator.
     pub resource_root: PathBuf,
-    /// Compatibility name retained for the Phase 1P acceptance wiring.
-    pub application_root: PathBuf,
+    /// Canonical configuration and data root supplied to the Assistant.
+    pub assistant_root: PathBuf,
     pub core_entry: PathBuf,
     pub core_module: String,
     pub working_directory: PathBuf,
@@ -324,6 +325,7 @@ mod tests {
             executable_directory: PathBuf::from("bin"),
             resource_directory: PathBuf::from("resources"),
             explicit_development_root: None,
+            assistant_root: PathBuf::from("assistant-root"),
         };
         let error = request
             .validate()

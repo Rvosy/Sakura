@@ -80,7 +80,8 @@ impl AcceptanceSession {
                 target,
                 executable_directory,
                 resource_directory: repo_root.clone(),
-                explicit_development_root: Some(repo_root),
+                explicit_development_root: Some(repo_root.clone()),
+                assistant_root: repo_root,
             })
             .map_err(|error| format!("Phase 1C RuntimeLocator failed: {error}"))?;
 
@@ -194,7 +195,7 @@ fn run_scenario(
             "mode": layout.mode,
             "sourceId": layout.source_id,
             "pythonExecutable": layout.python_executable,
-            "applicationRoot": layout.application_root,
+            "assistantRoot": layout.assistant_root,
             "coreModule": layout.core_module,
         }))
         .map_err(|error| format!("failed to encode Runtime layout evidence: {error}"))?,

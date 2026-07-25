@@ -1047,7 +1047,7 @@ fn core_host_process_request(
         .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
     // Official Windows embeddable Python runs with `isolated=1` and its
     // `_pth` file intentionally ignores PYTHONPATH/current-directory
-    // discovery. Insert the RuntimeLocator-approved application root
+    // discovery. Insert the RuntimeLocator-approved resource root
     // explicitly before importing the Qt-free Core Host module.
     let bootstrap = format!(
         "import runpy,sys;sys.path.insert(0,{resource_root});sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
@@ -1062,7 +1062,7 @@ fn core_host_process_request(
             "-c".into(),
             bootstrap.into(),
             "--app-root".into(),
-            layout.application_root.as_os_str().to_owned(),
+            layout.assistant_root.as_os_str().to_owned(),
             "--generation-id".into(),
             generation_id.into(),
             "--generation-number".into(),
@@ -1253,7 +1253,8 @@ mod tests {
                     .unwrap()
                     .to_path_buf(),
                 resource_directory: root.clone(),
-                explicit_development_root: Some(root),
+                explicit_development_root: Some(root.clone()),
+                assistant_root: root,
             })
             .expect("repository Runtime should resolve explicitly")
     }
@@ -1303,8 +1304,9 @@ mod tests {
     }
 
     #[test]
-    fn launch_command_uses_only_the_runtime_locator_approved_application_root() {
-        let layout = development_layout();
+    fn launch_command_uses_only_the_runtime_locator_approved_assistant_root() {
+        let mut layout = development_layout();
+        layout.assistant_root = std::env::temp_dir().canonicalize().unwrap();
         let request = core_host_process_request(&layout, GENERATION_ID)
             .expect("approved launch command should build");
         let app_root_index = request
@@ -1314,8 +1316,9 @@ mod tests {
             .expect("launch command must include --app-root");
         assert_eq!(
             request.args[app_root_index + 1].as_os_str(),
-            layout.application_root.as_os_str()
+            layout.assistant_root.as_os_str()
         );
+        assert_ne!(layout.assistant_root, layout.resource_root);
         assert_eq!(
             request
                 .args
@@ -1787,6 +1790,7 @@ mod tests {
                     .to_path_buf(),
                 resource_directory,
                 explicit_development_root: None,
+                assistant_root: repo_root(),
             })
             .expect("staged packaged Runtime should resolve")
     }
@@ -2233,7 +2237,7 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
         &layout.runtime_root,
         &layout.python_executable,
         &layout.resource_root,
-        &layout.application_root,
+        &layout.assistant_root,
         &layout.core_entry,
         &layout.working_directory,
     ] {
@@ -2247,9 +2251,9 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
     if !layout.runtime_root.is_dir()
         || !layout.python_executable.is_file()
         || !layout.resource_root.is_dir()
+        || !layout.assistant_root.is_dir()
         || !layout.core_entry.is_file()
         || !layout.working_directory.is_dir()
-        || layout.application_root != layout.resource_root
         || !layout.python_executable.starts_with(&layout.runtime_root)
         || !layout.resource_root.starts_with(&layout.runtime_root)
         || !layout.core_entry.starts_with(&layout.resource_root)

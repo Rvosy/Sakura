@@ -138,7 +138,7 @@ impl FilesystemRuntimeLocator {
 
         let expected = expected_manifest(request.target)?;
         expected.validate(request.target)?;
-        let (runtime_root, python_relative, application_relative, core_entry_relative) =
+        let (runtime_root, python_relative, resource_relative, core_entry_relative) =
             match request.mode {
                 RuntimeMode::Packaged => {
                     let root = request
@@ -187,19 +187,37 @@ impl FilesystemRuntimeLocator {
         }
         let python_executable =
             canonical_child(&runtime_root, &python_relative, "resolve_python_executable")?;
-        let application_root = canonical_child(
-            &runtime_root,
-            &application_relative,
-            "resolve_application_root",
-        )?;
+        let resource_root =
+            canonical_child(&runtime_root, &resource_relative, "resolve_resource_root")?;
+        let assistant_root = canonical_existing(&request.assistant_root, "resolve_assistant_root")
+            .map_err(|error| {
+                if error.category == PlatformErrorCategory::NotFound {
+                    locator_error(
+                        PlatformErrorCategory::NotFound,
+                        "resolve_assistant_root",
+                        RetryAdvice::Never,
+                        "Assistant root does not exist",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        if !assistant_root.is_dir() {
+            return Err(locator_error(
+                PlatformErrorCategory::NotFound,
+                "resolve_assistant_root",
+                RetryAdvice::Never,
+                "Assistant root is not an existing directory",
+            ));
+        }
         let core_entry =
             canonical_child(&runtime_root, &core_entry_relative, "resolve_core_entry")?;
-        if !python_executable.is_file() || !core_entry.is_file() || !application_root.is_dir() {
+        if !python_executable.is_file() || !core_entry.is_file() || !resource_root.is_dir() {
             return Err(locator_error(
                 PlatformErrorCategory::NotFound,
                 "validate_layout_entries",
                 RetryAdvice::AfterExternalChange,
-                "runtime layout is missing its Python executable, application root, or Core entry",
+                "runtime layout is missing its Python executable, resource root, or Core entry",
             ));
         }
         validate_executable_permission(&python_executable)?;
@@ -211,11 +229,11 @@ impl FilesystemRuntimeLocator {
             mode: request.mode,
             runtime_root,
             python_executable,
-            resource_root: application_root.clone(),
-            application_root: application_root.clone(),
+            resource_root: resource_root.clone(),
+            assistant_root,
             core_entry,
             core_module: expected.core_module,
-            working_directory: application_root,
+            working_directory: resource_root,
             source_id: expected.source_id,
         })
     }
@@ -257,12 +275,15 @@ fn read_packaged_manifest(runtime_root: &Path) -> PlatformResult<RuntimeManifest
 }
 
 fn validate_request_roots(request: &RuntimeLocationRequest) -> PlatformResult<()> {
-    if !request.executable_directory.is_absolute() || !request.resource_directory.is_absolute() {
+    if !request.executable_directory.is_absolute()
+        || !request.resource_directory.is_absolute()
+        || !request.assistant_root.is_absolute()
+    {
         return Err(locator_error(
             PlatformErrorCategory::InvalidInput,
             "validate_location_request",
             RetryAdvice::Never,
-            "executable and resource directories must be absolute",
+            "executable, resource, and Assistant directories must be absolute",
         ));
     }
     if request.mode == RuntimeMode::ExplicitDevelopment
@@ -564,12 +585,14 @@ mod tests {
         let core_entry = runtime_root.join(&manifest.packaged_core_entry_relative_path);
         fs::create_dir_all(core_entry.parent().unwrap()).unwrap();
         fs::write(core_entry, b"# golden Core entry\n").unwrap();
+        fs::create_dir_all(fixture.path().join("assistant-root")).unwrap();
         RuntimeLocationRequest {
             mode: RuntimeMode::Packaged,
             target,
             executable_directory: fixture.path().join("bin"),
             resource_directory,
             explicit_development_root: None,
+            assistant_root: fixture.path().join("assistant-root"),
         }
     }
 
@@ -663,7 +686,7 @@ mod tests {
             assert_eq!(layout.architecture, target.architecture());
             assert_eq!(layout.mode, RuntimeMode::Packaged);
             assert!(layout.python_executable.is_file());
-            assert_eq!(layout.resource_root, layout.application_root);
+            assert_ne!(layout.assistant_root, layout.resource_root);
             assert_eq!(layout.working_directory, layout.resource_root);
             assert!(layout.core_entry.is_file());
             assert!(layout
@@ -686,6 +709,43 @@ mod tests {
         assert!(layout
             .runtime_root
             .starts_with(request.resource_directory.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn assistant_root_is_independent_from_the_runtime_code_root() {
+        let fixture = FixtureDirectory::new("separated-assistant-root");
+        let assistant_root = fixture.path().join("assistant-root");
+        fs::create_dir_all(&assistant_root).unwrap();
+        let mut request = create_packaged_layout(&fixture, PlatformTarget::WindowsX64);
+        request.assistant_root = assistant_root.clone();
+
+        let layout = FilesystemRuntimeLocator.locate_fixture(&request).unwrap();
+        assert_eq!(
+            layout.assistant_root,
+            assistant_root.canonicalize().unwrap()
+        );
+        assert_ne!(layout.assistant_root, layout.resource_root);
+        assert_eq!(layout.working_directory, layout.resource_root);
+    }
+
+    #[test]
+    fn assistant_root_must_be_an_existing_absolute_directory() {
+        let fixture = FixtureDirectory::new("invalid-assistant-root");
+        for assistant_root in [
+            PathBuf::from("relative"),
+            fixture.path().join("missing-assistant-root"),
+        ] {
+            let mut request = create_packaged_layout(&fixture, PlatformTarget::WindowsX64);
+            request.assistant_root = assistant_root;
+            let error = FilesystemRuntimeLocator
+                .locate_fixture(&request)
+                .expect_err("invalid assistant root must fail before Core spawn");
+            assert!(matches!(
+                error.category,
+                PlatformErrorCategory::InvalidInput | PlatformErrorCategory::NotFound
+            ));
+            assert_eq!(error.retry, RetryAdvice::Never);
+        }
     }
 
     #[test]
@@ -863,11 +923,12 @@ mod tests {
                 .to_path_buf(),
             resource_directory: repo_root.clone(),
             explicit_development_root: Some(repo_root.clone()),
+            assistant_root: repo_root.clone(),
         };
         let layout = FilesystemRuntimeLocator.locate(&request).unwrap();
         let manifest = expected_manifest(target).unwrap();
-        assert_eq!(layout.application_root, repo_root);
         assert_eq!(layout.resource_root, repo_root);
+        assert_eq!(layout.assistant_root, repo_root);
         assert_eq!(layout.working_directory, repo_root);
         assert_eq!(layout.architecture, target.architecture());
         assert_eq!(
