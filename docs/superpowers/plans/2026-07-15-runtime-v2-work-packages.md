@@ -81,7 +81,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-03 | 协议协商、stderr 排水和故障 transport | WP-1P-06 | accepted |
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
-| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | planned |
+| WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | active |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
@@ -118,8 +118,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
-accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。当前没有
-`active` 或 `stabilizing` Work Package；依赖已满足的下一个启动点是仍为 `planned` 的 WP-1D-01。
+accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
+已于 2026-07-26 激活，是当前唯一 `active` 或 `stabilizing` Work Package；后续 WP 保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1737,6 +1737,22 @@ CI：设计 SHA b6f343a 的 PR platform run 30122282238 与 Unit/UI run 30122282
 ## 10. Phase 1D：最小开发与故障可见性
 
 ### WP-1D-01：最小生命周期可见性与安全重试
+
+激活记录（2026-07-26）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置：WP-3-01 accepted；激活基线 291a859a7558bc43fa52c1df85c4dd82d75d1af2
+允许生产目录：desktop/frontend/；desktop/src-tauri/src/（仅 Shell lifecycle 投影、既有 Supervisor 意图接线和有界退出）
+允许测试/文档：desktop/frontend/tests/；desktop/src-tauri/src/ 内联 Rust 测试；tests/unit/ 中仅 Runtime v2 lifecycle/secret 定向测试；本总表
+明确禁止目录：.superpowers/；main.py；legacy_qt_main.py；data/；characters/；runtime/；third_party/；tools/mcp/；app/；plugins/；desktop/src-tauri/Cargo.toml；desktop/src-tauri/Cargo.lock；desktop/frontend/package.json；.github/workflows/
+验收环境：当前 Windows x64 开发机；仓库既有 bundled Runtime、Node/npm 与锁定 Cargo 依赖；不安装或更新依赖；不修改 manifest/lockfile；platform workflow 仅在生产提交命中既有 paths 且同 SHA 已存在远端 job 时跟踪
+状态边界：Shell 只消费 SupervisorState、当前 generation 与既有 Core readiness/Snapshot；不拥有、不改写且不创建第二真相源；旧 generation 与非递增 revision 事件默认忽略
+故障矩阵：缺 Runtime、spawn 失败、initialize 卡死、setup_required/degraded/failed、Core crash、自动 backoff/restarting、重复 retry、旧 generation/revision、退出/窗口关闭竞态、秘密扫描与完整资源归零
+退出条件：全部 lifecycle/readiness 组合有表驱动投影；失败路径无空白窗口；retry 只提交 LifecycleIntent::Retry 并由既有串行 Supervisor 合并，旧 generation 完整清理前不创建新 generation；setup_required/degraded/failed 不新增自动 retry；diagnostics 只含稳定状态/code、必要版本和批准日志位置；正常/失败/retry/exit 后 Shell/Core/后代/pipe/thread/temp 残留为零
+计划提交：docs(runtime): 激活 WP-1D-01 最小生命周期可见性；feat(runtime): 增加最小生命周期状态与安全重试
+独立回退：先退出 Shell 并验证全部 generation、受控进程树、pipe/thread/temp 归零；单独 revert 实现提交以恢复 WP-3-01/WP-1C-04 底层 lifecycle 与原 fatal exit，再单独 revert 本激活提交；不清理、恢复或改写用户数据
+```
 
 主要结果：在第一条真实聊天前，开发者和用户能理解 lifecycle 失败并安全 retry 或 exit；本 WP 不建设完整 Runtime Repair。
 
