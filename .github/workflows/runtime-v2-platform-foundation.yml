@@ -14,6 +14,8 @@ on:
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
+      - "tests/integration/test_chat_pipeline.py"
+      - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
@@ -33,6 +35,8 @@ on:
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
+      - "tests/integration/test_chat_pipeline.py"
+      - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
@@ -170,6 +174,17 @@ jobs:
             --manifest "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json" \
             --output "$RUNNER_TEMP/${{ matrix.archive }}"
 
+      - name: Download and verify the frozen Assistant dependency artifact
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          dependency_path="$(python -c 'import json,pathlib,sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["assistantDependency"]["developmentRelativePath"])' "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json")"
+          python scripts/runtime_v2_archive.py \
+            --manifest "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json" \
+            --selector assistantDependency \
+            --output "$GITHUB_WORKSPACE/$dependency_path"
+
       - name: Stage exact Windows development Runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -194,45 +209,13 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
-      - name: Install Runtime v2 Python dependencies
-        shell: bash
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          set -euo pipefail
-          runtime_dir="$GITHUB_WORKSPACE/runtime"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            python -m pip install \
-              --disable-pip-version-check \
-              --no-compile \
-              --no-deps \
-              --only-binary=:all: \
-              --platform win_amd64 \
-              --python-version 3.12 \
-              --target "$runtime_dir/Lib/site-packages" \
-              --requirement requirements-runtime-v2.txt
-            pth_file="$runtime_dir/python312._pth"
-            test -f "$pth_file"
-            if ! grep -Fqx 'Lib/site-packages' "$pth_file"; then
-              printf '\nLib/site-packages\n' >> "$pth_file"
-            fi
-            "$runtime_dir/python.exe" -I -B -X utf8 -c 'import yaml'
-          else
-            "$runtime_dir/bin/python3" -m pip install \
-              --disable-pip-version-check \
-              --no-compile \
-              --no-deps \
-              --requirement requirements-runtime-v2.txt
-            "$runtime_dir/bin/python3" -I -B -X utf8 -c 'import yaml'
-          fi
-
       - name: Install Python Core Host test dependencies
         timeout-minutes: 6
         shell: bash
         run: >-
           python -m pip install --disable-pip-version-check
           --requirement requirements-dev.txt
-          --requirement requirements-runtime-v2.txt
+          "PyYAML==6.0.2"
           "PySide6>=6.7"
 
       - name: Run Python Core Host acceptance

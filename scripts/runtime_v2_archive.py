@@ -23,10 +23,12 @@ class ArchiveVerificationError(RuntimeError):
     pass
 
 
-def load_archive_manifest(path: Path) -> dict[str, object]:
+def load_archive_manifest(
+    path: Path, selector: str = "archive"
+) -> dict[str, object]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-        archive = document["archive"]
+        archive = document[selector]
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ArchiveVerificationError(f"invalid runtime manifest: {exc}") from exc
     if not isinstance(archive, dict):
@@ -77,8 +79,12 @@ def verify_archive(archive: dict[str, object], path: Path) -> tuple[int, str]:
     return size, actual_hash
 
 
-def download_and_verify(manifest_path: Path, output_path: Path) -> tuple[int, str]:
-    archive = load_archive_manifest(manifest_path)
+def download_and_verify(
+    manifest_path: Path,
+    output_path: Path,
+    selector: str = "archive",
+) -> tuple[int, str]:
+    archive = load_archive_manifest(manifest_path, selector)
     if output_path.exists():
         raise ArchiveVerificationError("archive output already exists")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,13 +114,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--selector", choices=("archive", "assistantDependency"), default="archive"
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        size, sha256 = download_and_verify(args.manifest, args.output)
+        size, sha256 = download_and_verify(args.manifest, args.output, args.selector)
     except ArchiveVerificationError as exc:
         print(f"runtime archive verification failed: {exc}", file=sys.stderr)
         return 2

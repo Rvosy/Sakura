@@ -11,6 +11,16 @@
     "archiveRoot": "python",
     "stripComponents": 1
   },
+  "assistantDependency": {
+    "package": "PyYAML",
+    "version": "6.0.2",
+    "fileName": "PyYAML-6.0.2-cp312-cp312-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/a8/0c/38374f5bb272c051e2a69281d71cba6fdb983413e6758b84482905e29a5d/PyYAML-6.0.2-cp312-cp312-macosx_11_0_arm64.whl",
+    "size": 173302,
+    "sha256": "ce826d6ef20b1bc864f0a68340c8b3287705cae2f8b4b1d932177dcc76721725",
+    "developmentRelativePath": "runtime-v2-dependencies/macos-arm64/PyYAML-6.0.2-cp312-cp312-macosx_11_0_arm64.whl",
+    "packagedRelativePath": "core/python-dependencies/PyYAML-6.0.2-cp312-cp312-macosx_11_0_arm64.whl"
+  },
   "packagedPythonRelativePath": "python/bin/python3",
   "packagedApplicationRootRelativePath": "core",
   "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",

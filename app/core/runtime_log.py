@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import hashlib
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ DEBUG_BODY_KEY = "SAKURA_DEBUG_BODY"
 DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
 LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
 RAW_TTS_SERVICE_KEY = "SAKURA_RAW_TTS_SERVICE_LOG"
+RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 LOG_LEVEL_ERROR = "error"
 LOG_LEVEL_WARN = "warn"
@@ -82,7 +84,16 @@ _MAX_LIST_ITEMS = 8
 _MAX_DICT_ITEMS = 24
 FILE_LOG_MAX_BYTES = 10 * 1024 * 1024
 FILE_LOG_BACKUP_COUNT = 5
-_FILE_LOG_PATH = StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
+
+
+def _resolve_runtime_log_path() -> Path:
+    configured_path = os.environ.get(RUNTIME_LOG_PATH_KEY, "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
+
+
+_FILE_LOG_PATH = _resolve_runtime_log_path()
 
 _ERROR_MARKERS = (
     "error",

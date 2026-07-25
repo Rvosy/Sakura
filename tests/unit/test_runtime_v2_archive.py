@@ -64,3 +64,18 @@ def test_load_manifest_rejects_ambiguous_or_untrusted_sources(tmp_path: Path) ->
     manifest.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="missing"):
         runtime_v2_archive.load_archive_manifest(manifest)
+
+
+def test_load_manifest_selects_the_frozen_assistant_dependency(tmp_path: Path) -> None:
+    payload = b"assistant-dependency-wheel"
+    dependency = archive_manifest(payload)
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps({"archive": archive_manifest(b"runtime"), "assistantDependency": dependency}),
+        encoding="utf-8",
+    )
+
+    assert (
+        runtime_v2_archive.load_archive_manifest(manifest, "assistantDependency")
+        == dependency
+    )

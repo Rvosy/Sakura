@@ -224,6 +224,8 @@ pub struct RuntimeLayout {
     pub mode: RuntimeMode,
     pub runtime_root: PathBuf,
     pub python_executable: PathBuf,
+    /// Canonical immutable import artifacts approved and integrity-checked by RuntimeLocator.
+    pub python_path_entries: Vec<PathBuf>,
     /// Root containing the Python Core resources approved by RuntimeLocator.
     pub resource_root: PathBuf,
     /// Canonical configuration and data root supplied to the Assistant.

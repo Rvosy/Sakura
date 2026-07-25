@@ -31,6 +31,8 @@
 
 校验值来自 2026-07-22 对三个固定 HTTPS 工件的完整下载和 SHA-256 计算；临时归档计算后已删除，没有进入工作区。build/CI 下载器要求 HTTPS、精确 byte length 和 SHA-256 同时匹配，使用 `.partial-<pid>` 后再原子改名；失败不留下可被误用的目标归档。
 
+Assistant Core 既有的 PyYAML 依赖不安装进上述冻结 CPython，也不另建 requirements manifest。三个 target 的 `runtime-manifest.json` 另行固定 PyYAML 6.0.2 原生 wheel 的 PyPI HTTPS URL、文件名、byte length、SHA-256，以及 development/packaged 相对路径。build/CI 只下载并校验该不可变 import artifact；`RuntimeLocator` 在 Core spawn 前再次校验 regular-file、size 和 SHA-256，并把 canonical wheel 路径作为只读 Python path entry 交给 bootstrap。packaged staging 复制同一已校验 wheel，验收阶段不得执行 pip、改写 Runtime site-packages 或 `_pth`。
+
 禁止用 release API 中“名称包含 `cpython-3.12`”的第一个结果、`latest` tag 或可漂移 URL 替代 manifest。更新任一 source 必须单独审查三个 target，并同时更新 manifest、本规范和 CI evidence。
 
 ## 3. 两种唯一布局

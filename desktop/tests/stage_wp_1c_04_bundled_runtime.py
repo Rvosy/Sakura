@@ -68,13 +68,28 @@ def stage(repo: Path, target: str, development_runtime: Path, resources: Path) -
             packaged_resource_root / "app" / "core_host",
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
         )
+        dependency = manifest["assistantDependency"]
+        development_dependency = repo / _relative(
+            Path(dependency["developmentRelativePath"])
+        )
+        packaged_dependency = runtime_root / _relative(
+            Path(dependency["packagedRelativePath"])
+        )
+        if not development_dependency.is_file():
+            raise ValueError("frozen Assistant dependency artifact is missing")
+        packaged_dependency.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(development_dependency, packaged_dependency)
         shutil.copy2(manifest_path, runtime_root / "runtime-manifest.json")
 
         expected_python = runtime_root / packaged_python
         expected_entry = runtime_root / _relative(
             Path(manifest["packagedCoreEntryRelativePath"])
         )
-        if not expected_python.is_file() or not expected_entry.is_file():
+        if (
+            not expected_python.is_file()
+            or not expected_entry.is_file()
+            or not packaged_dependency.is_file()
+        ):
             raise RuntimeError("staged packaged Runtime is incomplete")
     except BaseException:
         shutil.rmtree(resources, ignore_errors=True)

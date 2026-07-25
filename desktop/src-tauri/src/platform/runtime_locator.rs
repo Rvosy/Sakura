@@ -34,12 +34,26 @@ pub struct RuntimeArchiveManifest {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AssistantDependencyManifest {
+    pub package: String,
+    pub version: String,
+    pub file_name: String,
+    pub url: String,
+    pub size: u64,
+    pub sha256: String,
+    pub development_relative_path: PathBuf,
+    pub packaged_relative_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeManifest {
     pub schema_version: u32,
     pub target: PlatformTarget,
     pub python_version: String,
     pub source_id: String,
     pub archive: RuntimeArchiveManifest,
+    pub assistant_dependency: AssistantDependencyManifest,
     pub packaged_python_relative_path: PathBuf,
     pub packaged_application_root_relative_path: PathBuf,
     pub packaged_core_entry_relative_path: PathBuf,
@@ -65,6 +79,30 @@ impl RuntimeManifest {
                 .sha256
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || self.assistant_dependency.package != "PyYAML"
+            || self.assistant_dependency.version != "6.0.2"
+            || self.assistant_dependency.file_name.trim().is_empty()
+            || !self
+                .assistant_dependency
+                .url
+                .starts_with("https://files.pythonhosted.org/")
+            || self.assistant_dependency.size == 0
+            || self.assistant_dependency.sha256.len() != 64
+            || !self
+                .assistant_dependency
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || self
+                .assistant_dependency
+                .development_relative_path
+                .file_name()
+                .is_none_or(|name| name != self.assistant_dependency.file_name.as_str())
+            || self
+                .assistant_dependency
+                .packaged_relative_path
+                .file_name()
+                .is_none_or(|name| name != self.assistant_dependency.file_name.as_str())
             || self.core_module != "app.core_host"
         {
             return Err(locator_error(
@@ -76,6 +114,8 @@ impl RuntimeManifest {
         }
         ensure_safe_relative(Path::new(&self.archive.archive_root))?;
         for path in [
+            &self.assistant_dependency.development_relative_path,
+            &self.assistant_dependency.packaged_relative_path,
             &self.packaged_python_relative_path,
             &self.packaged_application_root_relative_path,
             &self.packaged_core_entry_relative_path,
@@ -138,39 +178,49 @@ impl FilesystemRuntimeLocator {
 
         let expected = expected_manifest(request.target)?;
         expected.validate(request.target)?;
-        let (runtime_root, python_relative, resource_relative, core_entry_relative) =
-            match request.mode {
-                RuntimeMode::Packaged => {
-                    let root = request
-                        .resource_directory
-                        .join(PACKAGED_RUNTIME_DIRECTORY)
-                        .join(request.target.platform_id());
-                    let actual = read_packaged_manifest(&root)?;
-                    if actual != expected {
-                        return Err(locator_error(
-                            PlatformErrorCategory::IntegrityMismatch,
-                            "compare_manifest",
-                            RetryAdvice::AfterUserAction,
-                            "packaged runtime manifest differs from the compiled source manifest",
-                        ));
-                    }
-                    (
-                        root,
-                        expected.packaged_python_relative_path.clone(),
-                        expected.packaged_application_root_relative_path.clone(),
-                        expected.packaged_core_entry_relative_path.clone(),
-                    )
+        let (
+            runtime_root,
+            python_relative,
+            resource_relative,
+            core_entry_relative,
+            dependency_relative,
+        ) = match request.mode {
+            RuntimeMode::Packaged => {
+                let root = request
+                    .resource_directory
+                    .join(PACKAGED_RUNTIME_DIRECTORY)
+                    .join(request.target.platform_id());
+                let actual = read_packaged_manifest(&root)?;
+                if actual != expected {
+                    return Err(locator_error(
+                        PlatformErrorCategory::IntegrityMismatch,
+                        "compare_manifest",
+                        RetryAdvice::AfterUserAction,
+                        "packaged runtime manifest differs from the compiled source manifest",
+                    ));
                 }
-                RuntimeMode::ExplicitDevelopment => (
-                    request
-                        .explicit_development_root
-                        .clone()
-                        .expect("validated development request has a root"),
-                    expected.development_python_relative_path.clone(),
-                    expected.development_application_root_relative_path.clone(),
-                    expected.development_core_entry_relative_path.clone(),
-                ),
-            };
+                (
+                    root,
+                    expected.packaged_python_relative_path.clone(),
+                    expected.packaged_application_root_relative_path.clone(),
+                    expected.packaged_core_entry_relative_path.clone(),
+                    expected.assistant_dependency.packaged_relative_path.clone(),
+                )
+            }
+            RuntimeMode::ExplicitDevelopment => (
+                request
+                    .explicit_development_root
+                    .clone()
+                    .expect("validated development request has a root"),
+                expected.development_python_relative_path.clone(),
+                expected.development_application_root_relative_path.clone(),
+                expected.development_core_entry_relative_path.clone(),
+                expected
+                    .assistant_dependency
+                    .development_relative_path
+                    .clone(),
+            ),
+        };
 
         let runtime_root = canonical_existing(&runtime_root, "resolve_runtime_root")?;
         if request.mode == RuntimeMode::Packaged {
@@ -189,19 +239,21 @@ impl FilesystemRuntimeLocator {
             canonical_child(&runtime_root, &python_relative, "resolve_python_executable")?;
         let resource_root =
             canonical_child(&runtime_root, &resource_relative, "resolve_resource_root")?;
-        let assistant_root = canonical_existing(&request.assistant_root, "resolve_assistant_root")
-            .map_err(|error| {
-                if error.category == PlatformErrorCategory::NotFound {
-                    locator_error(
-                        PlatformErrorCategory::NotFound,
-                        "resolve_assistant_root",
-                        RetryAdvice::Never,
-                        "Assistant root does not exist",
-                    )
-                } else {
-                    error
-                }
-            })?;
+        let assistant_dependency = canonical_child(
+            &runtime_root,
+            &dependency_relative,
+            "resolve_assistant_dependency",
+        )?;
+        validate_assistant_dependency(
+            &assistant_dependency,
+            &expected.assistant_dependency,
+            enforce_current_target,
+        )?;
+        let assistant_root = canonical_request_root(
+            &request.assistant_root,
+            "resolve_assistant_root",
+            "Assistant root",
+        )?;
         if !assistant_root.is_dir() {
             return Err(locator_error(
                 PlatformErrorCategory::NotFound,
@@ -229,6 +281,7 @@ impl FilesystemRuntimeLocator {
             mode: request.mode,
             runtime_root,
             python_executable,
+            python_path_entries: vec![assistant_dependency],
             resource_root: resource_root.clone(),
             assistant_root,
             core_entry,
@@ -326,6 +379,70 @@ fn canonical_existing(path: &Path, operation: &'static str) -> PlatformResult<Pa
     fs::canonicalize(path).map_err(|error| io_locator_error(operation, path, error))
 }
 
+fn canonical_request_root(
+    requested: &Path,
+    operation: &'static str,
+    label: &'static str,
+) -> PlatformResult<PathBuf> {
+    if requested
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(locator_error(
+            PlatformErrorCategory::InvalidInput,
+            operation,
+            RetryAdvice::Never,
+            format!("{label} must already be canonical"),
+        ));
+    }
+    let canonical = canonical_existing(requested, operation).map_err(|error| {
+        if error.category == PlatformErrorCategory::NotFound {
+            locator_error(
+                PlatformErrorCategory::NotFound,
+                operation,
+                RetryAdvice::Never,
+                format!("{label} does not exist"),
+            )
+        } else {
+            error
+        }
+    })?;
+    if !canonical_paths_equivalent(requested, &canonical) {
+        return Err(locator_error(
+            PlatformErrorCategory::InvalidInput,
+            operation,
+            RetryAdvice::Never,
+            format!("{label} must already be canonical"),
+        ));
+    }
+    Ok(canonical)
+}
+
+#[cfg(not(windows))]
+fn canonical_paths_equivalent(requested: &Path, canonical: &Path) -> bool {
+    requested == canonical
+}
+
+#[cfg(windows)]
+fn canonical_paths_equivalent(requested: &Path, canonical: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    fn without_verbatim_prefix(path: &Path) -> PathBuf {
+        const VERBATIM: &str = r"\\?\";
+        let text = path.as_os_str().to_string_lossy();
+        if let Some(stripped) = text.strip_prefix(VERBATIM) {
+            PathBuf::from(stripped)
+        } else {
+            path.to_path_buf()
+        }
+    }
+
+    without_verbatim_prefix(requested)
+        .as_os_str()
+        .encode_wide()
+        .eq(without_verbatim_prefix(canonical).as_os_str().encode_wide())
+}
+
 fn canonical_child(
     root: &Path,
     relative: &Path,
@@ -342,6 +459,106 @@ fn canonical_child(
         ));
     }
     Ok(child)
+}
+
+fn validate_assistant_dependency(
+    path: &Path,
+    expected: &AssistantDependencyManifest,
+    verify_content: bool,
+) -> PlatformResult<()> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| io_locator_error("inspect_assistant_dependency", path, error))?;
+    if !metadata.is_file() {
+        return Err(locator_error(
+            PlatformErrorCategory::IntegrityMismatch,
+            "inspect_assistant_dependency",
+            RetryAdvice::AfterUserAction,
+            "Assistant dependency artifact is not a regular file",
+        ));
+    }
+    if verify_content {
+        let bytes = fs::read(path)
+            .map_err(|error| io_locator_error("read_assistant_dependency", path, error))?;
+        if metadata.len() != expected.size || sha256_hex(&bytes) != expected.sha256 {
+            return Err(locator_error(
+                PlatformErrorCategory::IntegrityMismatch,
+                "verify_assistant_dependency",
+                RetryAdvice::AfterUserAction,
+                "Assistant dependency artifact failed size or SHA-256 verification",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sha256_hex(input: &[u8]) -> String {
+    const INITIAL: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    const ROUND: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let bit_len = (input.len() as u64).wrapping_mul(8);
+    let mut padded = input.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    let mut state = INITIAL;
+    for chunk in padded.chunks_exact(64) {
+        let mut words = [0_u32; 64];
+        for (index, word) in words[..16].iter_mut().enumerate() {
+            *word = u32::from_be_bytes(chunk[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        for index in 16..64 {
+            let s0 = words[index - 15].rotate_right(7)
+                ^ words[index - 15].rotate_right(18)
+                ^ (words[index - 15] >> 3);
+            let s1 = words[index - 2].rotate_right(17)
+                ^ words[index - 2].rotate_right(19)
+                ^ (words[index - 2] >> 10);
+            words[index] = words[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(words[index - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
+        for index in 0..64 {
+            let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choice = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(sum1)
+                .wrapping_add(choice)
+                .wrapping_add(ROUND[index])
+                .wrapping_add(words[index]);
+            let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = sum0.wrapping_add(majority);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+            *slot = slot.wrapping_add(value);
+        }
+    }
+    state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
 fn validate_executable_permission(path: &Path) -> PlatformResult<()> {
@@ -585,6 +802,9 @@ mod tests {
         let core_entry = runtime_root.join(&manifest.packaged_core_entry_relative_path);
         fs::create_dir_all(core_entry.parent().unwrap()).unwrap();
         fs::write(core_entry, b"# golden Core entry\n").unwrap();
+        let dependency = runtime_root.join(&manifest.assistant_dependency.packaged_relative_path);
+        fs::create_dir_all(dependency.parent().unwrap()).unwrap();
+        fs::write(dependency, b"fixture dependency").unwrap();
         fs::create_dir_all(fixture.path().join("assistant-root")).unwrap();
         RuntimeLocationRequest {
             mode: RuntimeMode::Packaged,
@@ -624,6 +844,26 @@ mod tests {
         hashes.dedup();
         assert_eq!(source_ids.len(), PlatformTarget::ALL.len());
         assert_eq!(hashes.len(), PlatformTarget::ALL.len());
+    }
+
+    #[test]
+    fn assistant_dependency_integrity_rejects_any_content_change() {
+        let fixture = FixtureDirectory::new("assistant-dependency-integrity");
+        let path = fixture.path().join("PyYAML.test.whl");
+        fs::write(&path, b"abc").unwrap();
+        let mut expected = expected_manifest(PlatformTarget::WindowsX64)
+            .unwrap()
+            .assistant_dependency;
+        expected.size = 3;
+        expected.sha256 =
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string();
+        validate_assistant_dependency(&path, &expected, true)
+            .expect("exact dependency artifact should pass");
+
+        fs::write(&path, b"abd").unwrap();
+        let error = validate_assistant_dependency(&path, &expected, true)
+            .expect_err("modified dependency artifact must fail closed");
+        assert_eq!(error.category, PlatformErrorCategory::IntegrityMismatch);
     }
 
     #[test]
@@ -745,6 +985,70 @@ mod tests {
                 PlatformErrorCategory::InvalidInput | PlatformErrorCategory::NotFound
             ));
             assert_eq!(error.retry, RetryAdvice::Never);
+        }
+    }
+
+    #[test]
+    fn assistant_root_rejects_absolute_dot_and_parent_components() {
+        let fixture = FixtureDirectory::new("non-canonical-assistant-root");
+        let canonical = fixture.path().join("assistant-root");
+        fs::create_dir_all(&canonical).unwrap();
+        let parent = canonical.parent().unwrap();
+        for assistant_root in [
+            PathBuf::from(format!(r"{}\.\assistant-root", parent.display())),
+            PathBuf::from(format!(r"{}\..\assistant-root", canonical.display())),
+        ] {
+            let mut request = create_packaged_layout(&fixture, PlatformTarget::WindowsX64);
+            request.assistant_root = assistant_root;
+            let error = FilesystemRuntimeLocator
+                .locate_fixture(&request)
+                .expect_err("non-canonical Assistant root must fail closed");
+            assert_eq!(error.category, PlatformErrorCategory::InvalidInput);
+            assert_eq!(error.retry, RetryAdvice::Never);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assistant_root_rejects_a_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = FixtureDirectory::new("assistant-root-symlink");
+        let target = fixture.path().join("assistant-root-target");
+        let link = fixture.path().join("assistant-root-link");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &link).unwrap();
+        let mut request = create_packaged_layout(&fixture, PlatformTarget::LinuxX64);
+        request.assistant_root = link;
+
+        let error = FilesystemRuntimeLocator
+            .locate_fixture(&request)
+            .expect_err("directory symlink Assistant root must fail closed");
+        assert_eq!(error.category, PlatformErrorCategory::InvalidInput);
+        assert_eq!(error.retry, RetryAdvice::Never);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_prefix_is_the_only_canonical_spelling_difference_allowed() {
+        let fixture = FixtureDirectory::new("windows-canonical-prefix");
+        let canonical = fixture.path().canonicalize().unwrap();
+        let ordinary = PathBuf::from(
+            canonical
+                .as_os_str()
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .expect("Windows canonical path should use a verbatim prefix"),
+        );
+        assert!(canonical_paths_equivalent(&ordinary, &canonical));
+
+        let mut changed_case = ordinary.as_os_str().to_string_lossy().into_owned();
+        changed_case.replace_range(0..1, &changed_case[0..1].to_ascii_lowercase());
+        if changed_case != ordinary.as_os_str().to_string_lossy() {
+            assert!(!canonical_paths_equivalent(
+                Path::new(&changed_case),
+                &canonical
+            ));
         }
     }
 

@@ -14,6 +14,7 @@ __pycache__/
 .venv/
 venv/
 runtime/
+runtime-v2-dependencies/
 /tts/
 env/
 node_modules/

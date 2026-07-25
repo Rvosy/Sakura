@@ -7,8 +7,6 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "runtime-v2-platform-foundation.yml"
-RUNTIME_REQUIREMENTS = REPO_ROOT / "requirements-runtime-v2.txt"
-
 REQUIRED_PLATFORM_TRIGGER_PATHS = {
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "desktop/src-tauri/**",
@@ -17,6 +15,8 @@ REQUIRED_PLATFORM_TRIGGER_PATHS = {
     "requirements*.txt",
     "tests/fixtures/runtime_v2/**",
     "tests/integration/test_core_host_*.py",
+    "tests/integration/test_chat_pipeline.py",
+    "tests/unit/test_agent_runtime.py",
     "tests/unit/test_core_host_*.py",
     "tests/unit/test_runtime_v2_platform_workflow.py",
 }
@@ -61,7 +61,7 @@ def test_each_native_platform_runs_the_explicit_core_host_pytest_gate() -> None:
     assert python_step["with"] == {"python-version": "3.12"}
     dependency_step = matrix_job["steps"][dependency_index]
     assert "requirements-dev.txt" in dependency_step["run"]
-    assert "requirements-runtime-v2.txt" in dependency_step["run"]
+    assert "PyYAML==6.0.2" in dependency_step["run"]
     assert "PySide6>=6.7" in dependency_step["run"]
     assert step.get("if") is None
     assert "working-directory" not in step
@@ -85,28 +85,32 @@ def test_native_platform_contract_tests_are_serialized() -> None:
     assert step["run"].split()[-2:] == ["--", "--test-threads=1"]
 
 
-def test_exact_runtime_installs_the_minimal_assistant_dependency_closure() -> None:
-    requirements = [
-        line.strip()
-        for line in RUNTIME_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert requirements == ["PyYAML>=6.0"]
-
+def test_platform_acceptance_never_mutates_the_frozen_runtime() -> None:
     document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     jobs = document["jobs"]
     matrix_job = next(job for job in jobs.values() if "strategy" in job)
-    steps = matrix_job["steps"]
-    names = [item.get("name") for item in steps]
-    install_index = names.index("Install Runtime v2 Python dependencies")
-    packaged_index = names.index("Stage the frozen packaged Runtime and Core resource layout")
-    assert install_index < packaged_index
-
-    install = steps[install_index]
-    command = install["run"]
-    assert "requirements-runtime-v2.txt" in command
-    assert "--python-version 3.12" in command
-    assert "--platform win_amd64" in command
-    assert "Lib/site-packages" in command
-    assert "bin/python3" in command
-    assert "requirements.txt" not in command.replace("requirements-runtime-v2.txt", "")
+    acceptance_steps = matrix_job["steps"]
+    staged_index = next(
+        index
+        for index, step in enumerate(acceptance_steps)
+        if step.get("name") == "Stage exact Windows development Runtime"
+    )
+    commands_after_staging = "\n".join(
+        str(step.get("run", "")) for step in acceptance_steps[staged_index + 1 :]
+    )
+    assert "requirements-runtime-v2.txt" not in WORKFLOW.read_text(encoding="utf-8")
+    assert "Install Runtime v2 Python dependencies" not in {
+        step.get("name") for step in acceptance_steps
+    }
+    assert "--target \"$runtime_dir" not in commands_after_staging
+    assert '"$runtime_dir/bin/python3" -m pip' not in commands_after_staging
+    assert "Lib/site-packages" not in commands_after_staging
+    assert "python312._pth" not in commands_after_staging
+    dependency_step = next(
+        step
+        for step in acceptance_steps
+        if step.get("name") == "Download and verify the frozen Assistant dependency artifact"
+    )
+    assert "--selector assistantDependency" in dependency_step["run"]
+    assert "developmentRelativePath" in dependency_step["run"]
+    assert "$GITHUB_WORKSPACE/$dependency_path" in dependency_step["run"]

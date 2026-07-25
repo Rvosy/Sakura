@@ -187,6 +187,50 @@ def assert_lifecycle_evidence(directory: Path, repo: Path) -> None:
     snapshot = json.loads((directory / "snapshot.json").read_text(encoding="utf-8"))
     if snapshot.get("readiness") != "ready":
         raise RuntimeError("Shell lifecycle Snapshot did not reach ready")
+    matrix = json.loads((directory / "native-fault-matrix.json").read_text(encoding="utf-8"))
+    rows = matrix.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError("native real-host fault matrix omitted its rows")
+    expected_labels = {
+        "close-throw",
+        "close-block",
+        "crash-one-descendant",
+        "forced-recovery-multi-descendant",
+        "generation-1",
+        "generation-2",
+    }
+    by_label = {row.get("label"): row for row in rows if isinstance(row, dict)}
+    if set(by_label) != expected_labels:
+        raise RuntimeError("native real-host fault matrix labels are incomplete")
+    for label, row in by_label.items():
+        if (
+            row.get("treeEmpty") is not True
+            or row.get("nativeIdentityPresent") is not False
+            or row.get("pipesReleased") is not True
+            or row.get("threadsReleased") is not True
+            or row.get("handlesReleased") is not True
+            or row.get("tempReleased") is not True
+            or row.get("coreLockOwned") is not False
+        ):
+            raise RuntimeError(f"native fault row {label} did not release every resource")
+        identities = [*row.get("descendantPids", [])]
+        if isinstance(row.get("rootPid"), int):
+            identities.append(row["rootPid"])
+        for pid in identities:
+            if not isinstance(pid, int) or pid_is_alive(pid):
+                raise RuntimeError(f"native fault row {label} retained descendant identity {pid}")
+    recovery = by_label["forced-recovery-multi-descendant"]
+    if not isinstance(recovery.get("shutdownElapsedMs"), int) or not isinstance(
+        recovery.get("recoveryElapsedMs"), int
+    ):
+        raise RuntimeError("forced recovery row omitted independent elapsed evidence")
+    generations = [by_label["generation-1"], by_label["generation-2"]]
+    if len({row.get("generationId") for row in generations}) != 2 or not all(
+        row.get("staleSnapshotRejected") is True for row in generations
+    ):
+        raise RuntimeError("consecutive native generations accepted a stale Snapshot")
+    if generations[1].get("staleCredentialRejected") is not True:
+        raise RuntimeError("second native generation accepted a stale credential")
 
 
 def controlled_round(binary: Path, repo: Path, label: str, check_conflict: bool) -> None:

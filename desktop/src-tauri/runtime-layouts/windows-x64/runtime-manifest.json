@@ -11,6 +11,16 @@
     "archiveRoot": ".",
     "stripComponents": 0
   },
+  "assistantDependency": {
+    "package": "PyYAML",
+    "version": "6.0.2",
+    "fileName": "PyYAML-6.0.2-cp312-cp312-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/0c/e8/4f648c598b17c3d06e8753d7d13d57542b30d56e6c2dedf9c331ae56312e/PyYAML-6.0.2-cp312-cp312-win_amd64.whl",
+    "size": 156338,
+    "sha256": "7e7401d0de89a9a855c839bc697c079a4af81cf878373abd7dc625847d25cbd8",
+    "developmentRelativePath": "runtime-v2-dependencies/windows-x64/PyYAML-6.0.2-cp312-cp312-win_amd64.whl",
+    "packagedRelativePath": "core/python-dependencies/PyYAML-6.0.2-cp312-cp312-win_amd64.whl"
+  },
   "packagedPythonRelativePath": "python/python.exe",
   "packagedApplicationRootRelativePath": "core",
   "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",

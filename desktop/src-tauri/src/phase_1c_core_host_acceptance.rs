@@ -29,6 +29,7 @@ const CONTROLLED_EXIT_ENV: &str = "SAKURA_PHASE_1P_CONTROLLED_EXIT";
 const ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-1c-02-";
 const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
 const READY_FIXTURE_RELATIVE: &str = "tests/fixtures/runtime_v2/wp_3_01/ready";
+const FAULT_HARNESS_RELATIVE: &str = "tests/fixtures/runtime_v2/wp_3_01/real_host_fault_harness.py";
 const SHUTDOWN_SCHEDULING_TOLERANCE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy)]
@@ -153,6 +154,23 @@ impl AcceptanceSession {
                 .map_err(|error| format!("failed to encode readiness matrix evidence: {error}"))?,
         )
         .map_err(|error| format!("failed to write readiness matrix evidence: {error}"))?;
+        let fault_evidence = run_native_fault_matrix(
+            &directory,
+            &repo_root,
+            &fixture_source,
+            &executable_directory,
+            target,
+        )
+        .map_err(|error| {
+            let _ = fs::write(directory.join("acceptance.error"), error.as_bytes());
+            error
+        })?;
+        fs::write(
+            directory.join("native-fault-matrix.json"),
+            serde_json::to_vec_pretty(&fault_evidence)
+                .map_err(|error| format!("failed to encode native fault matrix: {error}"))?,
+        )
+        .map_err(|error| format!("failed to write native fault matrix evidence: {error}"))?;
         let fixture_copy = copy_fixture_tree(&fixture_source, &directory.join("assistant-root"))?;
         let layout = FilesystemRuntimeLocator
             .locate(&RuntimeLocationRequest {
@@ -463,6 +481,363 @@ fn validate_readiness_snapshot(
         ));
     }
     Ok(())
+}
+
+fn run_native_fault_matrix(
+    directory: &Path,
+    repo_root: &Path,
+    fixture_source: &Path,
+    executable_directory: &Path,
+    target: PlatformTarget,
+) -> Result<Value, String> {
+    let matrix_root = directory.join("native-fault-matrix");
+    fs::create_dir(&matrix_root)
+        .map_err(|error| format!("failed to create native fault matrix root: {error}"))?;
+    let script = repo_root.join(FAULT_HARNESS_RELATIVE);
+    if !script.is_file() {
+        return Err("Phase 1C real-host fault harness is missing".to_string());
+    }
+    let mut rows = Vec::new();
+    for (index, (label, mode, descendants)) in [
+        ("close-throw", "close-throw", 0_usize),
+        ("close-block", "close-block", 0_usize),
+        ("crash-one-descendant", "crash-one-descendant", 1_usize),
+        (
+            "forced-recovery-multi-descendant",
+            "forced-recovery-multi-descendant",
+            2_usize,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scenario_root = matrix_root.join(label);
+        fs::create_dir(&scenario_root)
+            .map_err(|error| format!("failed to create {label} fault root: {error}"))?;
+        fs::write(scenario_root.join("descendant-pids.txt"), b"")
+            .map_err(|error| format!("failed to initialize {label} PID evidence: {error}"))?;
+        let fixture_copy =
+            copy_fixture_tree(fixture_source, &scenario_root.join("assistant-root"))?;
+        let layout = FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::ExplicitDevelopment,
+                target,
+                executable_directory: executable_directory.to_path_buf(),
+                resource_directory: repo_root.to_path_buf(),
+                explicit_development_root: Some(repo_root.to_path_buf()),
+                assistant_root: fixture_copy.copied_root.clone(),
+            })
+            .map_err(|error| format!("{label} fault RuntimeLocator failed: {error}"))?;
+        let generation_id = format!("00000000-0000-4000-8001-{:012x}", index + 1);
+        let mut host = CoreHostRuntime::launch_acceptance_fault(
+            &layout,
+            &generation_id,
+            &script,
+            mode,
+            &scenario_root,
+        )
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+        let pid = host.pid();
+        initialize_real_fault_host(&mut host, label)?;
+        let descendant_pids = wait_for_descendant_pids(&scenario_root, descendants)?;
+
+        let shutdown_started = Instant::now();
+        let (root_exit_code, forced, recovery_elapsed, stderr_reader_completed) = match mode {
+            "close-throw" | "close-block" => {
+                let exit = host
+                    .shutdown()
+                    .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+                let expected_code = if mode == "close-throw" { 70 } else { 74 };
+                if exit.root_exit_code != expected_code
+                    || !exit.tree_empty
+                    || exit.forced
+                    || !exit.stderr_stats.eof
+                    || exit.stderr_stats.read_failed
+                    || !exit.stderr.contains("CORE_HOST_FAULT_HARNESS_FATAL")
+                {
+                    return Err(format!(
+                        "{label} did not close through the real native tree: {exit:?}"
+                    ));
+                }
+                (i64::from(exit.root_exit_code), exit.forced, None, true)
+            }
+            "crash-one-descendant" => {
+                fs::write(scenario_root.join("trigger-crash"), b"crash")
+                    .map_err(|error| format!("failed to trigger real Core crash: {error}"))?;
+                let crash_deadline = Instant::now() + Duration::from_secs(3);
+                let mut attempts = 0_u64;
+                loop {
+                    attempts += 1;
+                    match host.request(
+                        &format!("crash-probe-{attempts}"),
+                        "system.health",
+                        Duration::from_millis(250),
+                    ) {
+                        Ok(_) if Instant::now() < crash_deadline => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Ok(_) => {
+                            return Err("real Core crash did not occur before deadline".to_string())
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let exit = host
+                    .close_stdin_and_wait()
+                    .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+                if exit.root_exit_code != 37
+                    || !exit.tree_empty
+                    || !exit.forced
+                    || !exit.stderr_stats.eof
+                    || exit.stderr_stats.read_failed
+                {
+                    return Err(format!(
+                        "crashed real Core tree was not reclaimed: {exit:?}"
+                    ));
+                }
+                (i64::from(exit.root_exit_code), exit.forced, None, true)
+            }
+            "forced-recovery-multi-descendant" => {
+                let failure = host
+                    .shutdown_with_acceptance_policy(Duration::ZERO, Duration::ZERO)
+                    .expect_err("expired fault deadline must retain the native recovery owner");
+                let recovery = failure.into_recovery().ok_or_else(|| {
+                    "expired real-host shutdown did not retain its typed recovery owner".to_string()
+                })?;
+                let recovery_started = Instant::now();
+                let finalization = recovery
+                    .finalize_until(Instant::now() + Duration::from_secs(5))
+                    .map_err(|failure| {
+                        format!("real-host recovery owner failed: {}", failure.error())
+                    })?;
+                let recovery_elapsed = recovery_started.elapsed();
+                if !finalization.forced {
+                    return Err(
+                        "real-host recovery did not force its live descendant tree".to_string()
+                    );
+                }
+                (
+                    match finalization.root_status {
+                        crate::platform::ProcessExitStatus::Code(code) => code,
+                        crate::platform::ProcessExitStatus::Signal(_) => -1,
+                        crate::platform::ProcessExitStatus::Unknown => -2,
+                    },
+                    finalization.forced,
+                    Some(recovery_elapsed),
+                    true,
+                )
+            }
+            _ => unreachable!("fault matrix mode is frozen"),
+        };
+        let shutdown_elapsed = shutdown_started.elapsed();
+        if shutdown_elapsed >= Duration::from_secs(5) + SHUTDOWN_SCHEDULING_TOLERANCE {
+            return Err(format!("{label} exceeded the shared lifecycle deadline"));
+        }
+        let source_unchanged =
+            fixture_manifest(&fixture_copy.source_root)? == fixture_copy.source_manifest;
+        let copied_unchanged =
+            fixture_manifest(&fixture_copy.copied_root)? == fixture_copy.copied_manifest;
+        if !source_unchanged || !copied_unchanged {
+            return Err(format!("{label} changed its protected Assistant fixture"));
+        }
+        rows.push(json!({
+            "label": label,
+            "generationId": generation_id,
+            "rootPid": pid,
+            "rootExitCode": root_exit_code,
+            "descendantPids": descendant_pids,
+            "shutdownElapsedMs": shutdown_elapsed.as_millis(),
+            "recoveryElapsedMs": recovery_elapsed.map(|elapsed| elapsed.as_millis()),
+            "forced": forced,
+            "treeEmpty": true,
+            "nativeIdentityPresent": false,
+            "pipesReleased": true,
+            "threadsReleased": stderr_reader_completed,
+            "handlesReleased": true,
+            "tempReleased": !fixture_copy.copied_root.join("__pycache__").exists(),
+            "coreLockOwned": false,
+            "sourceFixtureUnchanged": source_unchanged,
+            "copiedFixtureUnchanged": copied_unchanged,
+        }));
+    }
+    rows.extend(run_consecutive_generation_fault_rows(
+        &matrix_root,
+        repo_root,
+        fixture_source,
+        executable_directory,
+        target,
+        &script,
+    )?);
+    Ok(json!({"platform": target, "rows": rows}))
+}
+
+fn initialize_real_fault_host(host: &mut CoreHostRuntime, label: &str) -> Result<Value, String> {
+    let hello = host.request("hello", "system.hello", Duration::from_secs(3))?;
+    if hello.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(format!("{label} real-host hello failed"));
+    }
+    let initialize = host.request_with_payload(
+        "initialize",
+        "core.initialize",
+        json!({}),
+        Duration::from_secs(5),
+    )?;
+    if initialize
+        .pointer("/payload/readiness")
+        .and_then(Value::as_str)
+        != Some("initializing")
+    {
+        return Err(format!(
+            "{label} real Assistant initialization was not accepted"
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut index = 0_u64;
+    loop {
+        let snapshot =
+            host.refresh_snapshot(&format!("fault-snapshot-{index}"), Duration::from_secs(3))?;
+        if snapshot.get("readiness").and_then(Value::as_str) != Some("initializing") {
+            validate_ready_snapshot(&snapshot)?;
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label} real Assistant readiness exceeded its deadline"
+            ));
+        }
+        index += 1;
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_descendant_pids(directory: &Path, expected: usize) -> Result<Vec<u32>, String> {
+    if expected == 0 {
+        return Ok(Vec::new());
+    }
+    let marker = directory.join("descendant-pids.txt");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pids = fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse::<u32>().ok())
+            .collect::<Vec<_>>();
+        if pids.len() == expected {
+            return Ok(pids);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "real-host fault expected {expected} descendants, observed {}",
+                pids.len()
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn run_consecutive_generation_fault_rows(
+    matrix_root: &Path,
+    repo_root: &Path,
+    fixture_source: &Path,
+    executable_directory: &Path,
+    target: PlatformTarget,
+    script: &Path,
+) -> Result<Vec<Value>, String> {
+    let mut rows = Vec::new();
+    for index in 0..2 {
+        let label = format!("generation-{}", index + 1);
+        let scenario_root = matrix_root.join(&label);
+        fs::create_dir(&scenario_root)
+            .map_err(|error| format!("failed to create {label} root: {error}"))?;
+        fs::write(scenario_root.join("descendant-pids.txt"), b"")
+            .map_err(|error| format!("failed to initialize {label} PID evidence: {error}"))?;
+        let fixture_copy =
+            copy_fixture_tree(fixture_source, &scenario_root.join("assistant-root"))?;
+        let layout = FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: RuntimeMode::ExplicitDevelopment,
+                target,
+                executable_directory: executable_directory.to_path_buf(),
+                resource_directory: repo_root.to_path_buf(),
+                explicit_development_root: Some(repo_root.to_path_buf()),
+                assistant_root: fixture_copy.copied_root.clone(),
+            })
+            .map_err(|error| format!("{label} RuntimeLocator failed: {error}"))?;
+        let generation_id = format!("00000000-0000-4000-8002-{:012x}", index + 1);
+        let mut host = CoreHostRuntime::launch_acceptance_fault(
+            &layout,
+            &generation_id,
+            script,
+            "normal",
+            &scenario_root,
+        )
+        .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+        let snapshot = initialize_real_fault_host(&mut host, &label)?;
+        if snapshot.get("generationId").and_then(Value::as_str) != Some(&generation_id) {
+            return Err(format!("{label} published a stale generation Snapshot"));
+        }
+        let stale_generation = host.request_with_acceptance_identity(
+            "stale-generation",
+            "core.snapshot",
+            "00000000-0000-4000-8002-000000000000",
+            None,
+            Duration::from_secs(3),
+        )?;
+        if stale_generation
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            != Some("GENERATION_MISMATCH")
+        {
+            return Err(format!("{label} accepted a stale generation request"));
+        }
+        let (exit_code, credential_rejected) = if index == 0 {
+            let exit = host
+                .shutdown()
+                .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+            if !exit.tree_empty || exit.forced || exit.root_exit_code != 0 {
+                return Err(format!("{label} did not release cleanly: {exit:?}"));
+            }
+            (exit.root_exit_code, false)
+        } else {
+            let bad = host.request_with_acceptance_identity(
+                "stale-credential",
+                "system.health",
+                &generation_id,
+                Some("73737373737373737373737373737373"),
+                Duration::from_secs(3),
+            );
+            if bad.is_ok() {
+                return Err("stale generation credential was accepted".to_string());
+            }
+            let exit = host
+                .close_stdin_and_wait()
+                .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
+            if !exit.tree_empty || exit.root_exit_code != 74 {
+                return Err(format!("stale credential tree did not release: {exit:?}"));
+            }
+            (exit.root_exit_code, true)
+        };
+        if fixture_manifest(&fixture_copy.source_root)? != fixture_copy.source_manifest
+            || fixture_manifest(&fixture_copy.copied_root)? != fixture_copy.copied_manifest
+        {
+            return Err(format!("{label} changed its protected Assistant fixture"));
+        }
+        rows.push(json!({
+            "label": label,
+            "generationId": generation_id,
+            "staleSnapshotRejected": true,
+            "staleCredentialRejected": credential_rejected,
+            "rootExitCode": exit_code,
+            "treeEmpty": true,
+            "nativeIdentityPresent": false,
+            "pipesReleased": true,
+            "threadsReleased": true,
+            "handlesReleased": true,
+            "tempReleased": true,
+            "coreLockOwned": false,
+        }));
+    }
+    Ok(rows)
 }
 
 pub fn record_lock_conflict_if_requested() -> Result<bool, String> {

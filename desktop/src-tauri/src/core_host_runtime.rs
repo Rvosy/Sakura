@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 use std::path::Path;
 
 #[cfg(unix)]
@@ -933,6 +933,53 @@ impl CoreHostRuntime {
         Self::launch_with_backend(&NativeManagedProcessTreeBackend, request, generation_id)
     }
 
+    #[cfg(debug_assertions)]
+    pub(crate) fn launch_acceptance_fault(
+        layout: &RuntimeLayout,
+        generation_id: &str,
+        script: &Path,
+        fault_mode: &str,
+        fault_directory: &Path,
+    ) -> Result<Self, CoreHostLifecycleFailure> {
+        validate_runtime_layout(layout).map_err(CoreHostLifecycleFailure::without_recovery)?;
+        let script = fs::canonicalize(script).map_err(|error| {
+            CoreHostLifecycleFailure::without_recovery(format!(
+                "Phase 1C fault harness script could not be resolved: {error}"
+            ))
+        })?;
+        if !script.starts_with(&layout.resource_root) || !fault_directory.is_absolute() {
+            return Err(CoreHostLifecycleFailure::without_recovery(
+                "Phase 1C fault harness paths escaped their approved roots",
+            ));
+        }
+        let request = ManagedProcessRequest {
+            program: layout.python_executable.clone(),
+            args: vec![
+                "-I".into(),
+                "-B".into(),
+                "-X".into(),
+                "utf8".into(),
+                script.into_os_string(),
+                "--repo-root".into(),
+                layout.resource_root.as_os_str().to_owned(),
+                "--app-root".into(),
+                layout.assistant_root.as_os_str().to_owned(),
+                "--generation-id".into(),
+                generation_id.into(),
+                "--fault-mode".into(),
+                fault_mode.into(),
+                "--fault-directory".into(),
+                fault_directory.as_os_str().to_owned(),
+                "--python-path-entry".into(),
+                layout.python_path_entries[0].as_os_str().to_owned(),
+            ],
+            current_directory: Some(layout.resource_root.clone()),
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        };
+        Self::launch_with_backend(&NativeManagedProcessTreeBackend, request, generation_id)
+    }
+
     fn launch_with_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
@@ -1101,6 +1148,54 @@ impl CoreHostRuntime {
         self.validate_response(response, expectation)
     }
 
+    #[cfg(debug_assertions)]
+    pub(crate) fn request_with_acceptance_identity(
+        &mut self,
+        request_id: &str,
+        name: &str,
+        supplied_generation_id: &str,
+        supplied_generation_credential: Option<&str>,
+        deadline: Duration,
+    ) -> Result<Value, String> {
+        let supplied_generation_credential = supplied_generation_credential
+            .unwrap_or(self.generation_credential.as_str())
+            .to_string();
+        let protocol_minor = self
+            .negotiation
+            .as_ref()
+            .map_or(PROTOCOL_MINOR, |negotiation| negotiation.minor);
+        let request = json!({
+            "protocolMajor": PROTOCOL_MAJOR,
+            "protocolMinor": protocol_minor,
+            "kind": "request",
+            "generationId": supplied_generation_id,
+            "generationCredential": supplied_generation_credential,
+            "id": request_id,
+            "name": name,
+            "payload": {},
+            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
+            "priority": CONTROL_PRIORITY,
+        });
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
+        write_frame(stdin, &request).map_err(|error| error.to_string())?;
+        stdin
+            .flush()
+            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
+        let response = self.read_response_until(Instant::now() + deadline)?;
+        self.validate_response(
+            response,
+            RequestExpectation {
+                id: request_id.to_string(),
+                name: name.to_string(),
+                protocol_minor,
+                is_hello: false,
+            },
+        )
+    }
+
     fn write_request_frame(
         &mut self,
         request_id: &str,
@@ -1251,6 +1346,15 @@ impl CoreHostRuntime {
 
     pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn shutdown_with_acceptance_policy(
+        self,
+        graceful: Duration,
+        total: Duration,
+    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        self.shutdown_using_policy(ShutdownPolicy { graceful, total })
     }
 
     #[cfg(test)]
@@ -1560,12 +1664,19 @@ fn core_host_process_request(
         .map_err(|error| format!("Core Host resource root encoding failed: {error}"))?;
     let core_main = serde_json::to_string(&format!("{}.__main__", layout.core_module))
         .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
+    let python_path_entries = layout
+        .python_path_entries
+        .iter()
+        .map(|path| serde_json::to_string(&path.to_string_lossy().replace('\\', "/")))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Core Host Python path encoding failed: {error}"))?
+        .join(",");
     // Official Windows embeddable Python runs with `isolated=1` and its
     // `_pth` file intentionally ignores PYTHONPATH/current-directory
     // discovery. Insert the RuntimeLocator-approved resource root
     // explicitly before importing the Qt-free Core Host module.
     let bootstrap = format!(
-        "import runpy,sys;sys.path.insert(0,{resource_root});sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
+        "import runpy,sys;sys.path[:0]=[{resource_root},{python_path_entries}];sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
     );
     Ok(ManagedProcessRequest {
         program: layout.python_executable.clone(),
@@ -3621,6 +3732,16 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
         || !layout.working_directory.starts_with(&layout.resource_root)
     {
         return Err("Core Host Runtime layout resources are invalid".to_string());
+    }
+    if layout.python_path_entries.is_empty()
+        || layout.python_path_entries.iter().any(|path| {
+            !path.is_absolute()
+                || fs::canonicalize(path).ok().as_ref() != Some(path)
+                || !path.is_file()
+                || !path.starts_with(&layout.runtime_root)
+        })
+    {
+        return Err("Core Host Python import artifacts are invalid".to_string());
     }
     let located_entry = layout
         .resource_root

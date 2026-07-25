@@ -24,6 +24,16 @@ def test_runtime_log_has_one_persisted_config_source() -> None:
     assert not hasattr(runtime_log_module, "gui_log_enabled")
 
 
+def test_runtime_log_path_can_be_redirected_for_child_processes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    isolated_path = tmp_path / "child-process" / "runtime.log"
+    monkeypatch.setenv(runtime_log_module.RUNTIME_LOG_PATH_KEY, str(isolated_path))
+
+    assert runtime_log_module._resolve_runtime_log_path() == isolated_path
+
+
 def test_legacy_debug_log_facades_are_removed() -> None:
     root = Path(__file__).resolve().parents[2]
     assert not (root / "app/core/debug_log.py").exists()

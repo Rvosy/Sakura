@@ -65,6 +65,38 @@ def tmp_path() -> Iterable[Path]:
         shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def isolate_runtime_log_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterable[None]:
+    """Keep in-process tests from appending to the user's runtime log."""
+    from app.core import runtime_log
+
+    real_path = runtime_log._FILE_LOG_PATH
+    before = (
+        (real_path.stat().st_size, real_path.stat().st_mtime_ns)
+        if real_path.exists()
+        else None
+    )
+    isolated_path = tmp_path / "logs" / "sakura-runtime.log"
+    monkeypatch.setenv(runtime_log.RUNTIME_LOG_PATH_KEY, str(isolated_path))
+    monkeypatch.setattr(
+        runtime_log,
+        "_FILE_LOG_PATH",
+        isolated_path,
+    )
+
+    yield
+
+    after = (
+        (real_path.stat().st_size, real_path.stat().st_mtime_ns)
+        if real_path.exists()
+        else None
+    )
+    assert after == before, "test wrote to the user's real runtime log"
+
+
 class _LocalQtBot:
     def __init__(self) -> None:
         self._widgets: list[Any] = []

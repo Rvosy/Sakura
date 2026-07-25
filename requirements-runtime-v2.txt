@@ -1,4 +1,0 @@
-# Minimal third-party closure imported by the Runtime v2 Core Assistant boundary.
-# Keep this as a subset of requirements.txt; platform CI installs it into the
-# exact pinned Runtime before exercising native Shell/Core readiness.
-PyYAML>=6.0
