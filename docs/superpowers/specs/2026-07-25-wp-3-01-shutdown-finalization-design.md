@@ -119,7 +119,10 @@ stdout frame 读取在调用线程上直接使用 deadline-aware reader，因此
 stderr 仍可有一个持续 drainer 以避免子进程因 pipe backpressure 阻塞，但必须持有 cancellation、
 completion channel 和唯一 `JoinHandle`。`finish_until` 先等待 tree finalization 造成的 EOF；需要
 强制停止时设置 cancellation。只有 completion 已确认后才 join，且 join 使用同一 absolute
-deadline 的剩余预算。reader panic、redaction failure 或 backlog 超限都不能跳过 tree cleanup。
+deadline 的剩余预算。正常 cleanup 后 Drop 观察到的 handle 必须为空；保险 Drop 若仍持有 handle，
+先设置 cancellation，再依赖 reader 的单个有限 poll quantum 完成并 join。它不得创建新的完整
+timeout，也不能把该保险路径记为成功终结。reader panic、redaction failure 或 backlog 超限都
+不能跳过 tree cleanup。
 
 ## 5. 平台终结语义
 
