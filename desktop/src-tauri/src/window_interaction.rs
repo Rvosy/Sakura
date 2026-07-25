@@ -4,7 +4,11 @@ use crate::window_geometry::{LayoutContract, PresentationState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDragCompletion {
+    // Each variant is constructed only by its platform-specific implementation;
+    // both remain in the shared enum so callers can handle one stable contract.
+    #[cfg_attr(not(windows), allow(dead_code))]
     SynchronousMoveLoop,
+    #[cfg_attr(windows, allow(dead_code))]
     DeferredWindowMoved,
 }
 
@@ -36,6 +40,7 @@ pub struct LogicalHitRect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub corner_radius: u32,
 }
 
 impl LogicalHitRect {
@@ -45,7 +50,13 @@ impl LogicalHitRect {
             y,
             width,
             height,
+            corner_radius: 0,
         }
+    }
+
+    const fn with_corner_radius(mut self, corner_radius: u32) -> Self {
+        self.corner_radius = corner_radius;
+        self
     }
 
     pub fn checked(
@@ -71,10 +82,33 @@ impl LogicalHitRect {
 
     #[cfg(test)]
     fn contains(self, point: [i32; 2]) -> bool {
-        i64::from(point[0]) >= i64::from(self.x)
+        let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < i64::from(self.x) + i64::from(self.width)
             && i64::from(point[1]) >= i64::from(self.y)
-            && i64::from(point[1]) < i64::from(self.y) + i64::from(self.height)
+            && i64::from(point[1]) < i64::from(self.y) + i64::from(self.height);
+        if !inside_bounds || self.corner_radius == 0 {
+            return inside_bounds;
+        }
+        let radius = f64::from(self.corner_radius.min(self.width / 2).min(self.height / 2));
+        let local_x = f64::from(point[0] - self.x) + 0.5;
+        let local_y = f64::from(point[1] - self.y) + 0.5;
+        let width = f64::from(self.width);
+        let height = f64::from(self.height);
+        let dx = if local_x < radius {
+            radius - local_x
+        } else if local_x > width - radius {
+            local_x - (width - radius)
+        } else {
+            0.0
+        };
+        let dy = if local_y < radius {
+            radius - local_y
+        } else if local_y > height - radius {
+            local_y - (height - radius)
+        } else {
+            0.0
+        };
+        dx == 0.0 || dy == 0.0 || dx * dx + dy * dy <= radius * radius
     }
 }
 
@@ -94,6 +128,7 @@ pub struct PhysicalHitRect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub corner_radius: u32,
 }
 
 impl PhysicalHitRect {
@@ -136,13 +171,19 @@ fn translate_rect(
     rect: [u32; 4],
     offset: [u32; 2],
     envelope: [u32; 2],
+    corner_radius: u32,
 ) -> Result<LogicalHitRect, String> {
     let x = i32::try_from(u64::from(rect[0]) + u64::from(offset[0]))
         .map_err(|_| "hit rectangle x coordinate overflow".to_string())?;
     let y = i32::try_from(u64::from(rect[1]) + u64::from(offset[1]))
         .map_err(|_| "hit rectangle y coordinate overflow".to_string())?;
     LogicalHitRect::checked(x, y, rect[2], rect[3], envelope)
+        .map(|rect| rect.with_corner_radius(corner_radius))
 }
+
+const BUBBLE_CORNER_RADIUS: u32 = 26;
+const INPUT_CORNER_RADIUS: u32 = 18;
+const CONTROLS_CORNER_RADIUS: u32 = 19;
 
 pub fn logical_hit_regions(
     contract: &LayoutContract,
@@ -163,20 +204,32 @@ pub fn logical_hit_regions(
     ];
     let mut interactive = Vec::with_capacity(2);
     if let Some(rect) = layout.input_rect {
-        interactive.push(translate_rect(rect, offset, contract.viewport.window_size)?);
+        interactive.push(translate_rect(
+            rect,
+            offset,
+            contract.viewport.window_size,
+            INPUT_CORNER_RADIUS,
+        )?);
     }
     interactive.push(translate_rect(
         layout.controls_rect,
         offset,
         contract.viewport.window_size,
+        CONTROLS_CORNER_RADIUS,
     )?);
     let mut drag = vec![translate_rect(
         layout.portrait_rect,
         offset,
         contract.viewport.window_size,
+        0,
     )?];
     if let Some(rect) = layout.bubble_rect {
-        drag.push(translate_rect(rect, offset, contract.viewport.window_size)?);
+        drag.push(translate_rect(
+            rect,
+            offset,
+            contract.viewport.window_size,
+            BUBBLE_CORNER_RADIUS,
+        )?);
     }
     Ok(LogicalHitRegions {
         state,
@@ -222,6 +275,39 @@ fn scale_rect(rect: LogicalHitRect, scale: f64) -> Result<PhysicalHitRect, Strin
         y: top as i32,
         width: (right - left) as u32,
         height: (bottom - top) as u32,
+        corner_radius: (f64::from(rect.corner_radius) * scale).ceil() as u32,
+    })
+}
+
+const NATIVE_ANTIALIAS_BLEED_LOGICAL_PX: f64 = 2.0;
+
+fn expand_rounded_clip_for_antialiasing(
+    rect: PhysicalHitRect,
+    scale: f64,
+    envelope: [u32; 2],
+) -> Result<PhysicalHitRect, String> {
+    if rect.corner_radius == 0 {
+        return Ok(rect);
+    }
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("native antialias bleed scale must be positive and finite".to_string());
+    }
+    let bleed = (NATIVE_ANTIALIAS_BLEED_LOGICAL_PX * scale).ceil() as i64;
+    let left = (i64::from(rect.x) - bleed).max(0);
+    let top = (i64::from(rect.y) - bleed).max(0);
+    let right = (rect.right() + bleed).min(i64::from(envelope[0]));
+    let bottom = (rect.bottom() + bleed).min(i64::from(envelope[1]));
+    if right <= left || bottom <= top {
+        return Err("native rounded clip is empty".to_string());
+    }
+    Ok(PhysicalHitRect {
+        x: i32::try_from(left).map_err(|_| "native rounded clip x overflow".to_string())?,
+        y: i32::try_from(top).map_err(|_| "native rounded clip y overflow".to_string())?,
+        width: u32::try_from(right - left)
+            .map_err(|_| "native rounded clip width overflow".to_string())?,
+        height: u32::try_from(bottom - top)
+            .map_err(|_| "native rounded clip height overflow".to_string())?,
+        corner_radius: rect.corner_radius.saturating_add(bleed as u32),
     })
 }
 
@@ -255,12 +341,16 @@ pub fn apply_native_hit_regions(
 ) -> Result<(), String> {
     use windows::Win32::Graphics::Gdi::SetWindowRgn;
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, ERROR, HGDIOBJ, RGN_OR,
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, ERROR, HGDIOBJ, RGN_OR,
     };
 
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    let inner_size = window
+        .inner_size()
+        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
+    let envelope = [inner_size.width, inner_size.height];
     let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
     if combined.is_invalid() {
         return Err("failed to create native hit region".to_string());
@@ -271,11 +361,18 @@ pub fn apply_native_hit_regions(
         .chain(&model.drag)
         .chain(&model.neutral)
     {
+        let rect = expand_rounded_clip_for_antialiasing(*rect, model.scale, envelope)?;
         let right = i32::try_from(rect.right())
             .map_err(|_| "native hit region right edge overflow".to_string())?;
         let bottom = i32::try_from(rect.bottom())
             .map_err(|_| "native hit region bottom edge overflow".to_string())?;
-        let part = unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) };
+        let part = if rect.corner_radius == 0 {
+            unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) }
+        } else {
+            let diameter = i32::try_from(rect.corner_radius.saturating_mul(2))
+                .map_err(|_| "native rounded clip radius overflow".to_string())?;
+            unsafe { CreateRoundRectRgn(rect.x, rect.y, right, bottom, diameter, diameter) }
+        };
         if part.is_invalid() {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ::from(combined));
@@ -435,6 +532,13 @@ mod tests {
         );
         assert_eq!(classify_logical_point(&model, [0, 0]), HitKind::Transparent);
 
+        let bubble = logical_hit_regions(&contract(), PresentationState::Bubble).unwrap();
+        assert_eq!(
+            classify_logical_point(&bubble, [184, 450]),
+            HitKind::Transparent
+        );
+        assert_eq!(classify_logical_point(&bubble, [210, 450]), HitKind::Drag);
+
         let composer = logical_hit_regions(&contract(), PresentationState::Composer).unwrap();
         assert_eq!(classify_logical_point(&composer, [300, 420]), HitKind::Drag);
         assert_eq!(
@@ -466,6 +570,35 @@ mod tests {
         assert!(scale_hit_regions(&model, 0.0).is_err());
         assert!(scale_hit_regions(&model, f64::INFINITY).is_err());
         assert!(LogicalHitRect::checked(i32::MAX, 0, 2, 2, [816, 680]).is_err());
+    }
+
+    #[test]
+    fn rounded_native_clip_has_only_a_two_pixel_antialias_guard() {
+        let exact = PhysicalHitRect {
+            x: 184,
+            y: 450,
+            width: 592,
+            height: 164,
+            corner_radius: 26,
+        };
+        let guarded = expand_rounded_clip_for_antialiasing(exact, 1.0, [816, 680]).unwrap();
+        assert_eq!(guarded.x, 182);
+        assert_eq!(guarded.y, 448);
+        assert_eq!(guarded.width, 596);
+        assert_eq!(guarded.height, 168);
+        assert_eq!(guarded.corner_radius, 28);
+
+        let portrait = PhysicalHitRect {
+            x: 360,
+            y: 332,
+            width: 240,
+            height: 336,
+            corner_radius: 0,
+        };
+        assert_eq!(
+            expand_rounded_clip_for_antialiasing(portrait, 1.0, [816, 680]).unwrap(),
+            portrait
+        );
     }
 
     #[test]

@@ -312,6 +312,8 @@ try {
     $bubblePoint = Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 300 -Y 500
     Assert-HitOwnership -WindowHandle $windowHandle -Point $bubblePoint -ExpectedOwned $true -Name "bubble"
     Assert-HitOwnership -WindowHandle $windowHandle -Point (Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 20 -Y 20) -ExpectedOwned $false -Name "bubble transparent"
+    Assert-HitOwnership -WindowHandle $windowHandle -Point (Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 184 -Y 450) -ExpectedOwned $false -Name "bubble rounded corner transparent"
+    Assert-HitOwnership -WindowHandle $windowHandle -Point (Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 210 -Y 450) -ExpectedOwned $true -Name "bubble rounded edge owned"
 
     $beforeBubbleDrag = Get-WindowBounds -WindowHandle $windowHandle
     Drag-Point -StartX $bubblePoint.X -StartY $bubblePoint.Y -EndX ($bubblePoint.X - 90) -EndY ($bubblePoint.Y - 50)
@@ -326,6 +328,8 @@ try {
     $inputPoint = Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 260 -Y 572
     $sendPoint = Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 745 -Y 572
     $controlsPoint = Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 65 -Y 649
+    Assert-HitOwnership -WindowHandle $windowHandle -Point (Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 184 -Y 546) -ExpectedOwned $false -Name "input rounded corner transparent"
+    Assert-HitOwnership -WindowHandle $windowHandle -Point (Convert-LogicalPoint -Bounds $bounds -Scale $scale -X 202 -Y 546) -ExpectedOwned $true -Name "input rounded edge owned"
     Assert-HitOwnership -WindowHandle $windowHandle -Point $inputPoint -ExpectedOwned $true -Name "composer input"
     Assert-HitOwnership -WindowHandle $windowHandle -Point $sendPoint -ExpectedOwned $true -Name "composer send"
     Assert-HitOwnership -WindowHandle $windowHandle -Point $controlsPoint -ExpectedOwned $true -Name "composer controls"

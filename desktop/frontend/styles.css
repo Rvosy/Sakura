@@ -132,7 +132,6 @@ body {
   top: var(--portrait-y);
   width: var(--portrait-width);
   height: var(--portrait-height);
-  filter: drop-shadow(0 14px 16px var(--shadow));
   cursor: grab;
   touch-action: none;
 }
@@ -248,7 +247,6 @@ figcaption {
   border: 1px solid var(--line);
   border-radius: 26px;
   background: #fffafcf2;
-  box-shadow: 0 16px 34px var(--shadow);
 }
 
 .bubble-kicker {
@@ -288,7 +286,6 @@ figcaption {
   border-radius: 18px;
   color: var(--muted);
   background: #fffafcf5;
-  box-shadow: 0 12px 28px #4c263a1f;
   font-size: 14px;
 }
 
@@ -340,7 +337,6 @@ figcaption {
   border: 1px solid #d5b5c5;
   border-radius: 999px;
   background: #fffafce8;
-  box-shadow: 0 8px 20px #4c263a20;
 }
 
 .state-rail button {

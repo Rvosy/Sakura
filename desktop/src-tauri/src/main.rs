@@ -45,6 +45,7 @@ const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-c
 const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
 const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
+const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
@@ -329,21 +330,37 @@ fn probe_pet_visibility(window: WebviewWindow) -> Result<(), String> {
         .set_visible(&window, false)
         .map_err(|error| error.to_string())?;
 
-    let restore_window = window.clone();
-    if let Err(error) = window.run_on_main_thread(move || {
-        if let Err(error) = NativeWindowInteractionBackend.set_visible(&restore_window, true) {
-            eprintln!("failed to restore pet visibility probe: {error}");
-        }
-    }) {
-        return match NativeWindowInteractionBackend.set_visible(&window, true) {
-            Ok(()) => Err(format!(
-                "failed to schedule pet visibility restoration: {error}"
-            )),
-            Err(recovery_error) => Err(format!(
-                "failed to schedule pet visibility restoration ({error}) and immediate recovery failed ({recovery_error})"
-            )),
-        };
-    }
+    let delayed_window = window.clone();
+    std::thread::Builder::new()
+        .name("pet-visibility-probe".to_string())
+        .spawn(move || {
+            std::thread::sleep(VISIBILITY_PROBE_HIDDEN_DURATION);
+            let restore_window = delayed_window.clone();
+            if let Err(error) = delayed_window.run_on_main_thread(move || {
+                if let Err(error) = NativeWindowInteractionBackend.set_visible(&restore_window, true)
+                {
+                    eprintln!("failed to restore pet visibility probe: {error}");
+                }
+            }) {
+                eprintln!("failed to schedule pet visibility restoration: {error}");
+                if let Err(recovery_error) =
+                    NativeWindowInteractionBackend.set_visible(&delayed_window, true)
+                {
+                    eprintln!(
+                        "failed to recover pet visibility after scheduling error: {recovery_error}"
+                    );
+                }
+            }
+        })
+        .map_err(|error| {
+            let recovery = NativeWindowInteractionBackend.set_visible(&window, true);
+            match recovery {
+                Ok(()) => format!("failed to start pet visibility timer: {error}"),
+                Err(recovery_error) => format!(
+                    "failed to start pet visibility timer ({error}) and immediate recovery failed ({recovery_error})"
+                ),
+            }
+        })?;
     Ok(())
 }
 
@@ -658,6 +675,11 @@ mod tests {
         assert!(session.is_deferred_drag_pending());
         session.finish_deferred_drag();
         assert!(!session.is_deferred_drag_pending());
+    }
+
+    #[test]
+    fn visibility_probe_keeps_a_perceptible_native_owned_hidden_interval() {
+        assert_eq!(VISIBILITY_PROBE_HIDDEN_DURATION.as_millis(), 220);
     }
 
     #[test]
