@@ -1383,7 +1383,8 @@ mod tests {
         platform::{
             FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
             ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
-            ManagedProcessTree, ManagedProcessTreeBackend, PlatformResult, ProcessStdio,
+            ManagedProcessTree, ManagedProcessTreeBackend, PlatformResult, ProcessExitStatus,
+            ProcessStdio, ProcessTreeFinalization, ProcessTreeFinalizationResult,
             ProcessWaitOutcome, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
             SpawnedProcessTree, SHARED_INSTANCE_ID,
         },
@@ -1480,6 +1481,17 @@ mod tests {
 
         fn release_exited(self: Box<Self>) -> PlatformResult<()> {
             Ok(())
+        }
+
+        fn finalize_until(
+            self: Box<Self>,
+            _deadline: Instant,
+            _reason_code: u32,
+        ) -> ProcessTreeFinalizationResult {
+            Ok(ProcessTreeFinalization {
+                root_status: ProcessExitStatus::Unknown,
+                forced: false,
+            })
         }
     }
 

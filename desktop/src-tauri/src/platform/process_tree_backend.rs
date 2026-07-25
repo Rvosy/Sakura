@@ -11,7 +11,8 @@ use super::{
     ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
     ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
     PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio, ProcessTreeFinalization,
-    ProcessWaitOutcome, RetryAdvice, SpawnedProcessTree,
+    ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult, ProcessWaitOutcome, RetryAdvice,
+    SpawnedProcessTree,
 };
 
 const PIPE_POLL_QUANTUM: Duration = Duration::from_millis(10);
@@ -264,17 +265,20 @@ mod native {
         }
 
         fn finalize_until(
-            self: Box<Self>,
+            mut self: Box<Self>,
             deadline: Instant,
             reason_code: u32,
-        ) -> PlatformResult<ProcessTreeFinalization> {
-            self.inner
-                .finalize_until(deadline, reason_code)
-                .map(|result| ProcessTreeFinalization {
+        ) -> ProcessTreeFinalizationResult {
+            match self.inner.finalize_until(deadline, reason_code) {
+                Ok(result) => Ok(ProcessTreeFinalization {
                     root_status: ProcessExitStatus::Code(i64::from(result.exit_code)),
                     forced: result.forced,
-                })
-                .map_err(|error| native_error("finalize_until", error))
+                }),
+                Err(error) => Err(ProcessTreeFinalizationFailure::new(
+                    native_error("finalize_until", error),
+                    self,
+                )),
+            }
         }
     }
 
@@ -402,6 +406,7 @@ mod native {
         tree_exited: bool,
         released: bool,
         cleanup_deadline: Option<Instant>,
+        cleanup_forced: bool,
     }
 
     impl ManagedProcessTree for NativeTree {
@@ -509,8 +514,14 @@ mod native {
             self: Box<Self>,
             deadline: Instant,
             _reason_code: u32,
-        ) -> PlatformResult<ProcessTreeFinalization> {
-            finalize_posix_tree(&self, deadline)
+        ) -> ProcessTreeFinalizationResult {
+            match finalize_posix_tree(&self, deadline) {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    best_effort_posix_cleanup(&self);
+                    Err(ProcessTreeFinalizationFailure::new(error, self))
+                }
+            }
         }
     }
 
@@ -539,14 +550,43 @@ mod native {
         deadline: Instant,
     ) -> PlatformResult<ProcessTreeFinalization> {
         let mut state = lock_state(&tree.state)?;
-        state.cleanup_deadline = Some(deadline);
+        let recovering = state.cleanup_deadline.replace(deadline).is_some();
         let expired_on_entry = Instant::now() >= deadline;
 
         pump_until_deadline(&mut state, Instant::now(), |_| false)
             .map_err(finalizer_platform_error)?;
-        let forced = process_group_exists(tree.process_group_id)
+
+        if recovering {
+            if expired_on_entry {
+                immediate_posix_cleanup(&mut state, tree.process_group_id);
+                return Err(finalization_timeout());
+            }
+            if !wait_for_process_group_exit_until(tree.process_group_id, deadline)
+                .map_err(finalizer_io_error)?
+            {
+                immediate_posix_cleanup(&mut state, tree.process_group_id);
+                return Err(finalization_timeout());
+            }
+            let Some(_guardian_status) =
+                reap_guardian_until(&mut state.guardian, deadline).map_err(finalizer_io_error)?
+            else {
+                immediate_posix_cleanup(&mut state, tree.process_group_id);
+                return Err(finalization_timeout());
+            };
+            state.tree_exited = true;
+            let root_status = state.root_status.unwrap_or(ProcessExitStatus::Unknown);
+            state.control.take();
+            state.released = true;
+            return Ok(ProcessTreeFinalization {
+                root_status,
+                forced: state.cleanup_forced,
+            });
+        }
+
+        let forced_now = process_group_exists(tree.process_group_id)
             .map_err(|error| finalizer_io_error(error))?;
-        if forced {
+        state.cleanup_forced |= forced_now;
+        if forced_now {
             arm_explicit_cleanup(&mut state, deadline)?;
             signal_group(tree.process_group_id, libc::SIGTERM).map_err(finalizer_io_error)?;
             if !expired_on_entry {
@@ -630,7 +670,7 @@ mod native {
         state.released = true;
         Ok(ProcessTreeFinalization {
             root_status,
-            forced,
+            forced: state.cleanup_forced,
         })
     }
 
@@ -703,11 +743,37 @@ mod native {
 
     fn immediate_posix_cleanup(state: &mut TreeState, process_group_id: libc::pid_t) {
         state.control.take();
+        state.cleanup_forced = true;
         unsafe {
             libc::kill(-process_group_id, libc::SIGKILL);
         }
         let _ = state.guardian.kill();
-        state.released = true;
+    }
+
+    fn best_effort_posix_cleanup(tree: &NativeTree) {
+        if let Ok(mut state) = tree.state.lock() {
+            immediate_posix_cleanup(&mut state, tree.process_group_id);
+        } else {
+            unsafe {
+                libc::kill(-tree.process_group_id, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn wait_for_process_group_exit_until(
+        process_group_id: libc::pid_t,
+        deadline: Instant,
+    ) -> io::Result<bool> {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            if !process_group_exists(process_group_id)? {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(10).min(remaining));
+        }
     }
 
     fn reap_guardian_until(
@@ -847,6 +913,7 @@ mod native {
             tree_exited: false,
             released: false,
             cleanup_deadline: None,
+            cleanup_forced: false,
         };
         let ready = read_status_line(&mut state, GUARDIAN_READY_TIMEOUT)?.ok_or_else(|| {
             platform_error(
@@ -1710,6 +1777,7 @@ mod native {
                     tree_exited: false,
                     released: false,
                     cleanup_deadline: None,
+                    cleanup_forced: false,
                 }),
             });
             let mut observed_conservative_poll = false;
@@ -1775,6 +1843,7 @@ mod native {
                     tree_exited: false,
                     released: false,
                     cleanup_deadline: None,
+                    cleanup_forced: false,
                 }),
             });
 
@@ -1857,6 +1926,7 @@ mod native {
                     tree_exited: true,
                     released: true,
                     cleanup_deadline: None,
+                    cleanup_forced: false,
                 }),
             });
 
@@ -1908,6 +1978,7 @@ mod native {
                     tree_exited: false,
                     released: false,
                     cleanup_deadline: None,
+                    cleanup_forced: false,
                 }),
             });
 
@@ -1933,7 +2004,10 @@ pub(crate) use native::run_guardian_if_requested;
 mod tests {
     use std::{
         path::PathBuf,
-        sync::atomic::AtomicBool,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        },
         time::{Duration, Instant},
     };
 
@@ -2019,6 +2093,56 @@ mod tests {
         assert!(result.forced);
         assert!(started.elapsed() < Duration::from_secs(2));
         result
+    }
+
+    struct CountingFailureTree {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ManagedProcessTree for CountingFailureTree {
+        fn root_pid(&self) -> u32 {
+            42
+        }
+
+        fn wait_root(&mut self, _timeout: Duration) -> PlatformResult<ProcessWaitOutcome> {
+            Ok(ProcessWaitOutcome::TimedOut)
+        }
+
+        fn terminate_tree(&mut self, _reason_code: u32) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn wait_tree_exited(&self, _timeout: Duration) -> PlatformResult<bool> {
+            Ok(false)
+        }
+
+        fn release_exited(self: Box<Self>) -> PlatformResult<()> {
+            Err(PlatformError::new(
+                PlatformService::ManagedProcessTree,
+                PlatformErrorCategory::ResourceBusy,
+                "release_exited",
+                RetryAdvice::AfterExternalChange,
+                "counting recovery owner has not finalized",
+            ))
+        }
+
+        fn finalize_until(
+            self: Box<Self>,
+            _deadline: Instant,
+            _reason_code: u32,
+        ) -> ProcessTreeFinalizationResult {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProcessTreeFinalizationFailure::new(
+                PlatformError::new(
+                    PlatformService::ManagedProcessTree,
+                    PlatformErrorCategory::TimedOut,
+                    "finalize_until",
+                    RetryAdvice::Never,
+                    "counting finalizer exhausted its caller deadline",
+                ),
+                self,
+            ))
+        }
     }
 
     #[test]
@@ -2119,7 +2243,9 @@ mod tests {
     }
 
     #[test]
-    fn expired_finalizer_deadline_still_closes_and_kills_owned_resources() {
+    fn expired_finalizer_returns_same_owner_for_explicit_recovery() {
+        #[cfg(windows)]
+        let handles_before = native_resource_count();
         let ObservedTree {
             tree,
             #[cfg(unix)]
@@ -2129,13 +2255,60 @@ mod tests {
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond should fit before the current instant");
 
-        let error = tree
+        let failure = tree
             .finalize_until(deadline, 97)
-            .expect_err("expired finalization must report its exhausted budget");
+            .expect_err("expired finalization must return the recovery owner");
+        assert_eq!(failure.error().category, PlatformErrorCategory::TimedOut);
+        assert_eq!(failure.error().operation, "finalize_until");
+        let (error, recovery) = failure.into_parts();
         assert_eq!(error.category, PlatformErrorCategory::TimedOut);
         assert_eq!(error.operation, "finalize_until");
         #[cfg(unix)]
-        assert_posix_group_gone(identity.process_group_id);
+        assert_eq!(
+            recovery.native_owner_pid_for_test(),
+            Some(identity.guardian_pid as u32),
+            "failure must retain the exact guardian owner"
+        );
+        #[cfg(windows)]
+        let handles_retained = native_resource_count();
+        #[cfg(windows)]
+        assert!(
+            handles_retained >= handles_before + 2,
+            "expired failure must retain process and Job handles"
+        );
+
+        let result = recovery
+            .finalize_until(Instant::now() + Duration::from_secs(2), 97)
+            .expect("explicit recovery must reap the same native owner");
+        assert!(result.forced);
+        #[cfg(unix)]
+        assert_posix_identity_gone(identity);
+        #[cfg(windows)]
+        assert!(
+            native_resource_count() + 2 <= handles_retained,
+            "successful recovery must release retained process and Job handles"
+        );
+    }
+
+    #[test]
+    fn expired_finalizer_failure_does_not_automatically_retry_recovery_owner() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tree: Box<dyn ManagedProcessTree> = Box::new(CountingFailureTree {
+            calls: Arc::clone(&calls),
+        });
+
+        let failure = tree
+            .finalize_until(Instant::now(), 97)
+            .expect_err("counting finalizer must return its recovery owner");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(failure.error().category, PlatformErrorCategory::TimedOut);
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("has_recovery_owner"));
+        assert!(!debug.contains("CountingFailureTree"));
+        let (_error, recovery) = failure.into_parts();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(recovery);
     }
 
     #[test]

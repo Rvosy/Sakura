@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fmt,
     fs::File,
     path::PathBuf,
     sync::atomic::AtomicBool,
@@ -89,6 +90,38 @@ pub struct ProcessTreeFinalization {
     pub forced: bool,
 }
 
+pub struct ProcessTreeFinalizationFailure {
+    error: PlatformError,
+    recovery: Box<dyn ManagedProcessTree>,
+}
+
+impl ProcessTreeFinalizationFailure {
+    pub fn new(error: PlatformError, recovery: Box<dyn ManagedProcessTree>) -> Self {
+        Self { error, recovery }
+    }
+
+    pub fn error(&self) -> &PlatformError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (PlatformError, Box<dyn ManagedProcessTree>) {
+        (self.error, self.recovery)
+    }
+}
+
+impl fmt::Debug for ProcessTreeFinalizationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessTreeFinalizationFailure")
+            .field("error", &self.error)
+            .field("has_recovery_owner", &true)
+            .finish()
+    }
+}
+
+pub type ProcessTreeFinalizationResult =
+    Result<ProcessTreeFinalization, ProcessTreeFinalizationFailure>;
+
 pub trait ManagedProcessTree: Send {
     fn root_pid(&self) -> u32;
     #[cfg(test)]
@@ -101,17 +134,9 @@ pub trait ManagedProcessTree: Send {
     fn release_exited(self: Box<Self>) -> PlatformResult<()>;
     fn finalize_until(
         self: Box<Self>,
-        _deadline: Instant,
-        _reason_code: u32,
-    ) -> PlatformResult<ProcessTreeFinalization> {
-        Err(PlatformError::new(
-            PlatformService::ManagedProcessTree,
-            PlatformErrorCategory::UnsupportedEnvironment,
-            "finalize_until",
-            RetryAdvice::Never,
-            "managed process tree finalization is unavailable for this backend",
-        ))
-    }
+        deadline: Instant,
+        reason_code: u32,
+    ) -> ProcessTreeFinalizationResult;
 }
 
 pub struct SpawnedProcessTree {

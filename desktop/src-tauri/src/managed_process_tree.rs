@@ -235,6 +235,8 @@ pub struct ManagedProcessTree {
     pid: u32,
     exit_code: Option<u32>,
     #[cfg(windows)]
+    cleanup_forced: bool,
+    #[cfg(windows)]
     job: Option<OwnedHandle>,
     #[cfg(windows)]
     process: Option<OwnedHandle>,
@@ -385,6 +387,7 @@ impl ManagedProcessTree {
             Self {
                 pid: process_info.dwProcessId,
                 exit_code: None,
+                cleanup_forced: false,
                 job: Some(job),
                 process: Some(process),
             },
@@ -492,7 +495,7 @@ impl ManagedProcessTree {
 
     #[cfg(windows)]
     pub fn finalize_until(
-        mut self,
+        &mut self,
         deadline: Instant,
         reason_code: u32,
     ) -> ManagedProcessResult<FinalizationOutcome> {
@@ -518,10 +521,10 @@ impl ManagedProcessTree {
             }
 
             let active = active_processes(job)?;
-            let forced = active != 0;
-            if forced {
+            if active != 0 {
                 unsafe { TerminateJobObject(job.raw(), reason_code) }
                     .map_err(|error| windows_error("TerminateJobObject", error))?;
+                self.cleanup_forced = true;
             }
 
             let root_wait = unsafe {
@@ -551,11 +554,16 @@ impl ManagedProcessTree {
             if expired_on_entry {
                 return Err(ManagedProcessError::TimedOut);
             }
-            Ok(FinalizationOutcome { exit_code, forced })
+            Ok(FinalizationOutcome {
+                exit_code,
+                forced: self.cleanup_forced,
+            })
         })();
 
-        self.process.take();
-        self.job.take();
+        if result.is_ok() {
+            self.process.take();
+            self.job.take();
+        }
         result
     }
 
