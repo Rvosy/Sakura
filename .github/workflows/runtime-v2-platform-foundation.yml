@@ -211,7 +211,7 @@ jobs:
         working-directory: desktop
         timeout-minutes: 4
         run: >-
-          cargo test --manifest-path src-tauri/Cargo.toml --locked platform::
+          cargo test --manifest-path src-tauri/Cargo.toml --locked platform:: -- --test-threads=1
 
       - name: Run native shared instance lock tests
         working-directory: desktop

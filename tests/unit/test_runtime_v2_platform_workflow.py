@@ -32,3 +32,16 @@ def test_platform_workflow_cannot_skip_python_core_only_changes() -> None:
 
     assert push_paths == pull_request_paths
     assert REQUIRED_PLATFORM_TRIGGER_PATHS <= push_paths
+
+
+def test_native_platform_contract_tests_are_serialized() -> None:
+    document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    jobs = document["jobs"]
+    matrix_job = next(job for job in jobs.values() if "strategy" in job)
+    step = next(
+        item
+        for item in matrix_job["steps"]
+        if item.get("name") == "Run platform contract and golden layout tests"
+    )
+
+    assert step["run"].split()[-2:] == ["--", "--test-threads=1"]
