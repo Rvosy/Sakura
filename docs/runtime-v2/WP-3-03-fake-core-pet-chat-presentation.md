@@ -49,7 +49,8 @@ WebView 自带的测试 SVG，不复制或改写 `characters/**`。唯一强调�
 允许修改：`desktop/frontend/index.html`、`desktop/frontend/app.js`、`desktop/frontend/styles.css`、
 `desktop/frontend/pet/**`、`desktop/frontend/chat/**`、`desktop/frontend/core/**`、
 `desktop/frontend/assets/**`、`desktop/frontend/tests/**`、本文件、Work Package 总计划及仅用于接入新增
-确定性前端门禁的 platform workflow/测试断言。
+确定性前端门禁的 platform workflow、`tests/unit/test_runtime_v2_platform_workflow.py` 与
+`tests/integration/test_wp_1p_05a_macos_corrective.py` 中已漂移的 frontend 启动标记断言。
 
 明确禁止：真实 `chat.send/chat.cancel` Gateway 接线、Python Assistant/Provider/history、Rust 通用
 Operation、streaming、TTS、Tools/确认、Memory、MCP、插件、截图、Live2D/Canvas、高级动画引擎、

@@ -15,7 +15,7 @@ function harness(initialText = "hello") {
   return { controller, focusReasons, submissions, setText: (value) => (text = value) };
 }
 
-test("composer accepts ordinary text and submits only local technical feedback", () => {
+test("composer accepts ordinary text and submits only to the injected local presentation consumer", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("  hello Sakura  ");
   controller.setPresentation("composer");

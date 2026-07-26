@@ -8,6 +8,7 @@ on:
       - ".github/workflows/runtime-v2-platform-foundation.yml"
       - "desktop/rust-toolchain.toml"
       - "desktop/src-tauri/**"
+      - "desktop/frontend/**"
       - "desktop/tests/**"
       - "app/**"
       - "legacy_qt_main.py"
@@ -32,6 +33,7 @@ on:
       - ".github/workflows/runtime-v2-platform-foundation.yml"
       - "desktop/rust-toolchain.toml"
       - "desktop/src-tauri/**"
+      - "desktop/frontend/**"
       - "desktop/tests/**"
       - "app/**"
       - "legacy_qt_main.py"
@@ -82,6 +84,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Select the frozen frontend test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run deterministic WebView presentation tests
+        working-directory: desktop/frontend
+        timeout-minutes: 2
+        run: node --test tests/*.test.js
 
       - name: Select the frozen Python test interpreter
         uses: actions/setup-python@v6

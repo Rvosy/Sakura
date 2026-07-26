@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 336" role="img" aria-label="Sakura 测试立绘，担忧表情">
+  <path fill="#3b2636" d="M120 8c56 0 94 46 94 108v194H26V116C26 54 64 8 120 8Z"/>
+  <path fill="#6f3c59" d="M38 117c7-56 35-91 82-91 48 0 79 38 84 95l-20-19-17 22-22-30-30 24-26-20-24 24-27-5Z"/>
+  <path fill="#f6dfe6" d="M65 105c5-42 28-65 55-65 31 0 54 27 56 69l-6 65c-4 39-22 66-50 66-29 0-48-28-51-67l-4-68Z"/>
+  <path d="m81 119 28-7m22 0 28 7" fill="none" stroke="#553246" stroke-width="5" stroke-linecap="round"/>
+  <ellipse cx="96" cy="139" rx="6" ry="8" fill="#553246"/><ellipse cx="145" cy="139" rx="6" ry="8" fill="#553246"/>
+  <path d="M106 192c9-7 19-7 29 0" fill="none" stroke="#9a526f" stroke-width="4" stroke-linecap="round"/>
+  <path fill="#fff8fb" d="M79 238h82l33 72H46l33-72Z"/><path fill="#b95882" d="m94 238 26 31 27-31 15 72H78l16-72Z"/>
+  <path fill="#83a5bb" d="M184 55c9 14 12 21 12 27a12 12 0 0 1-24 0c0-6 4-13 12-27Z"/>
+</svg>

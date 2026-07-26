@@ -538,8 +538,8 @@ def test_tauri_config_enables_required_macos_transparent_window_support() -> Non
     assert config["app"]["windows"][0]["transparent"] is True
     assert config["app"]["windows"][0]["visible"] is True
     assert 'tauri = { version = "=2.11.3", features = ["macos-private-api"] }' in cargo_toml
-    assert "body {\n  opacity: 1;\n}" in styles
-    assert 'data-shell-state="pet-geometry-loading"' in (
+    assert "background: transparent" in styles
+    assert 'data-shell-state="loading"' in (
         ROOT / "desktop" / "frontend" / "index.html"
     ).read_text("utf-8")
 

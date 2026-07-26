@@ -10,6 +10,7 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "runtime-v2-platform-foundation
 REQUIRED_PLATFORM_TRIGGER_PATHS = {
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "desktop/src-tauri/**",
+    "desktop/frontend/**",
     "desktop/tests/**",
     "app/**",
     "requirements*.txt",
@@ -76,6 +77,26 @@ def test_each_native_platform_runs_the_explicit_core_host_pytest_gate() -> None:
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
     }
     assert " ".join(step["run"].split()) == CORE_HOST_PYTEST_COMMAND
+
+
+def test_each_native_platform_runs_the_deterministic_frontend_gate() -> None:
+    document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    matrix_job = next(job for job in document["jobs"].values() if "strategy" in job)
+    steps = matrix_job["steps"]
+    node_index = next(
+        index for index, step in enumerate(steps)
+        if step.get("name") == "Select the frozen frontend test runtime"
+    )
+    test_index = next(
+        index for index, step in enumerate(steps)
+        if step.get("name") == "Run deterministic WebView presentation tests"
+    )
+
+    assert node_index < test_index
+    assert steps[node_index]["uses"] == "actions/setup-node@v4"
+    assert steps[node_index]["with"] == {"node-version": "22"}
+    assert steps[test_index]["working-directory"] == "desktop/frontend"
+    assert steps[test_index]["run"] == "node --test tests/*.test.js"
 
 
 def test_native_platform_contract_tests_are_serialized() -> None:

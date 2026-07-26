@@ -534,10 +534,10 @@ mod tests {
 
         let bubble = logical_hit_regions(&contract(), PresentationState::Bubble).unwrap();
         assert_eq!(
-            classify_logical_point(&bubble, [184, 450]),
+            classify_logical_point(&bubble, [39, 450]),
             HitKind::Transparent
         );
-        assert_eq!(classify_logical_point(&bubble, [210, 450]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&bubble, [70, 450]), HitKind::Drag);
 
         let composer = logical_hit_regions(&contract(), PresentationState::Composer).unwrap();
         assert_eq!(classify_logical_point(&composer, [300, 420]), HitKind::Drag);
@@ -575,16 +575,16 @@ mod tests {
     #[test]
     fn rounded_native_clip_has_only_a_two_pixel_antialias_guard() {
         let exact = PhysicalHitRect {
-            x: 184,
+            x: 40,
             y: 450,
-            width: 592,
+            width: 440,
             height: 164,
             corner_radius: 26,
         };
         let guarded = expand_rounded_clip_for_antialiasing(exact, 1.0, [816, 680]).unwrap();
-        assert_eq!(guarded.x, 182);
+        assert_eq!(guarded.x, 38);
         assert_eq!(guarded.y, 448);
-        assert_eq!(guarded.width, 596);
+        assert_eq!(guarded.width, 444);
         assert_eq!(guarded.height, 168);
         assert_eq!(guarded.corner_radius, 28);
 

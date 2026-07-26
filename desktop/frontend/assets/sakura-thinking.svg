@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 336" role="img" aria-label="Sakura 测试立绘，思考表情">
+  <path fill="#3b2636" d="M120 8c56 0 94 46 94 108v194H26V116C26 54 64 8 120 8Z"/>
+  <path fill="#6f3c59" d="M38 117c7-56 35-91 82-91 48 0 79 38 84 95l-20-19-17 22-22-30-30 24-26-20-24 24-27-5Z"/>
+  <path fill="#f6dfe6" d="M65 105c5-42 28-65 55-65 31 0 54 27 56 69l-6 65c-4 39-22 66-50 66-29 0-48-28-51-67l-4-68Z"/>
+  <path fill="#2c202b" d="M80 116c10-9 21-9 32-2l-3 5c-9-4-17-3-26 2l-3-5Zm47 2c11-3 22 0 31 8l-4 4c-8-6-16-8-26-6l-1-6Z"/>
+  <ellipse cx="96" cy="138" rx="6" ry="8" fill="#553246"/><path d="M134 141c7-4 14-3 20 2" fill="none" stroke="#553246" stroke-width="4" stroke-linecap="round"/>
+  <path d="M109 188c8-3 16-2 24 2" fill="none" stroke="#9a526f" stroke-width="4" stroke-linecap="round"/>
+  <path fill="#fff8fb" d="M79 238h82l33 72H46l33-72Z"/><path fill="#b95882" d="m94 238 26 31 27-31 15 72H78l16-72Z"/>
+  <circle cx="190" cy="49" r="6" fill="#efb4cc"/><circle cx="207" cy="34" r="4" fill="#efb4cc"/><circle cx="216" cy="16" r="3" fill="#efb4cc"/>
+</svg>

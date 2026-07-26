@@ -1,66 +1,53 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="blossom">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <title>Sakura Runtime v2 · Pet interaction gate</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>Sakura Runtime v2 · Fake Core chat presentation</title>
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="./app.js"></script>
   </head>
-  <body data-shell-state="pet-geometry-loading">
-    <main id="pet-stage" class="pet-stage" aria-label="透明桌宠窗口交互技术门">
-      <section id="lifecycle-panel" class="lifecycle-panel" data-interactive="true" aria-live="polite">
-        <div>
-          <span id="lifecycle-label" class="lifecycle-label">startup</span>
-          <strong id="lifecycle-headline">Sakura 正在启动</strong>
-        </div>
-        <dl class="lifecycle-diagnostics" aria-label="脱敏生命周期诊断">
-          <div><dt>Code</dt><dd id="lifecycle-code">SHELL_STARTUP</dd></div>
-          <div><dt>Desktop / Core</dt><dd id="lifecycle-versions">0.1.0 / unavailable</dd></div>
-          <div><dt>Protocol</dt><dd id="lifecycle-protocol">2.1</dd></div>
-          <div><dt>Logs</dt><dd id="lifecycle-logs">Sakura application logs</dd></div>
-        </dl>
-        <div class="lifecycle-actions">
-          <button type="button" id="lifecycle-retry" disabled>Retry</button>
-          <button type="button" id="lifecycle-exit">Exit</button>
-        </div>
+  <body data-shell-state="loading" data-chat-state="booting">
+    <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠聊天表现层">
+      <section id="chat-bubble" class="bubble" data-drag-region="true" aria-live="polite" aria-label="角色回复，可拖动窗口">
+        <header class="bubble-header">
+          <span class="bubble-kicker"><i aria-hidden="true"></i> FAKE CORE // <b id="chat-phase">BOOT</b></span>
+          <button type="button" id="typewriter-skip" class="text-action" hidden>立即显示</button>
+        </header>
+        <p id="bubble-copy">正在准备本地测试会话……</p>
+        <span class="bubble-corner" aria-hidden="true">桜</span>
       </section>
 
-      <section class="bubble" data-drag-region="true" aria-live="polite" aria-label="气泡正文，可拖动窗口">
-        <span class="bubble-kicker">Interaction gate</span>
-        <p id="bubble-copy">
-          这是一段只用于边界验证的占位内容。无论文字多长，原生窗口都由布局契约限定。
-        </p>
-      </section>
-
-      <div class="composer" data-interactive="true" aria-label="输入与中文输入法技术门">
+      <div id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
         <textarea
           id="composer-input"
           rows="1"
           maxlength="4096"
-          aria-label="技术门文本输入"
-          placeholder="输入英文或中文…"
+          aria-label="发送给本地 Fake Core 的消息"
+          placeholder="写点什么，或输入 /slow…"
         ></textarea>
-        <button type="button" id="composer-send" aria-label="本地发送技术反馈">发送</button>
+        <button type="button" id="composer-send">发送</button>
       </div>
 
-      <figure class="portrait" data-drag-region="true" aria-label="占位立绘，可拖动窗口">
-        <div class="portrait-paper">
-          <span class="sakura-mark" aria-hidden="true">✦</span>
-          <div class="portrait-face" aria-hidden="true"></div>
-          <div class="portrait-collar" aria-hidden="true"></div>
-          <figcaption>SAKURA / PLACEHOLDER</figcaption>
+      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="Sakura 测试立绘，可拖动窗口">
+        <div class="portrait-frame">
+          <img id="portrait-current" class="portrait-image portrait-image--current" alt="Sakura 测试立绘" />
+          <img id="portrait-next" class="portrait-image portrait-image--next" alt="" aria-hidden="true" />
+          <div id="portrait-fallback" class="portrait-fallback" hidden>
+            <span>SAKURA</span>
+            <small>PORTRAIT UNAVAILABLE</small>
+          </div>
+          <figcaption><span>SAKURA</span><small>LOCAL SESSION</small></figcaption>
         </div>
       </figure>
 
-      <nav class="state-rail" data-interactive="true" aria-label="表现状态技术门">
-        <button type="button" data-state="idle" aria-label="切换 idle 状态">I</button>
-        <button type="button" data-state="bubble" aria-label="切换 bubble 状态">B</button>
-        <button type="button" data-state="composer" aria-label="切换 composer 状态">C</button>
-        <button type="button" data-state="expanded" aria-label="切换 expanded 状态">E</button>
-        <button type="button" id="visibility-probe" aria-label="验证隐藏和显示">V</button>
-        <button type="button" id="close-window" aria-label="关闭技术门窗口">×</button>
+      <nav class="state-rail" data-interactive="true" aria-label="桌宠控制">
+        <button type="button" id="composer-toggle" aria-label="打开或收起输入框" aria-pressed="false">聊</button>
+        <button type="button" id="theme-toggle" aria-label="切换明暗主题">月</button>
+        <button type="button" id="fake-restart" aria-label="模拟 Fake Core 重启">↻</button>
+        <button type="button" id="visibility-probe" aria-label="验证隐藏和显示">隐</button>
+        <button type="button" id="close-window" aria-label="退出并关闭桌宠窗口">×</button>
       </nav>
 
       <output id="geometry-readout" class="geometry-readout" aria-live="polite">initializing</output>
