@@ -84,7 +84,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
-| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
+| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | active |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -122,7 +122,9 @@ accepted；其设计、实施计划、允许列表、接受证据和回退见对
 已于 2026-07-26 accepted，随后完成的窗口交互/可见性纠正记录见第 10 节。WP-2-01 已按第 11 节
 和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；WP-2-02
 已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
-lifecycle 候选验收并 accepted；当前下一启动点为 WP-3-02，其余后续项保持 `planned`。
+lifecycle 候选验收并 accepted；WP-3-02 已按
+`docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成边界取证并激活，是当前唯一
+`active/stabilizing` Work Package，其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1934,6 +1936,18 @@ CI：6c36a1a 的 PR platform run 30190007246 捕获三平台临时根 canonical/
 ### WP-3-02：无 UI 的真实聊天 Core 垂直链
 
 主要结果：让真实 Sakura Assistant 成为 Router、取消、Snapshot 和 generation 边界的首个真实消费者；通过 Rust acceptance harness 完成无 UI 聊天链。
+
+激活记录（2026-07-26）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-01 accepted；WP-2-02 accepted
+独立设计：docs/runtime-v2/WP-3-02-headless-real-chat-core.md
+允许边界：AssistantSession.pipeline、确定性 Provider、角色级 ChatHistoryStore、WP-2-02 RealChatBoundary/Gateway/取消/Snapshot、Rust 无 UI acceptance
+明确禁止：desktop/frontend、聊天 UI、TTS、Tools/确认、Memory、MCP、插件、截图/视觉、主动事件、streaming、通用 Operation/resource token、第二 Core 或第二生命周期根
+数据政策：history 是本 WP 允许的 append-only 产品写入；破坏性故障仅使用隔离临时根，回退不得删除或改写用户 history
+回退：停止并确认当前 generation/operation/Provider/Router/进程树/IPC 资源归零，逆序 revert WP-3-02，恢复 WP-2-02 fixture-only 与 WP-3-01 readiness
+```
 
 允许能力：
 
