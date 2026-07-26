@@ -179,6 +179,25 @@ class ReadinessController:
                 "coreConfigRevision": 0,
             }
 
+    def minimal_snapshot(self, chat_boundary: object | None) -> dict[str, Any]:
+        with self._lock:
+            readiness = self._readiness
+            revision = self._revision
+            summary = self._copy_summary(self._current_character_summary)
+        if chat_boundary is None:
+            return {
+                "generationId": self._config.generation_id,
+                "revision": revision,
+                "readiness": readiness,
+                "currentCharacterSummary": summary,
+                "activeInteractionSummary": None,
+            }
+        return getattr(chat_boundary, "snapshot_fields")(
+            readiness,
+            summary,
+            base_revision=revision,
+        )
+
     def close(self) -> None:
         deadline = monotonic() + _READINESS_CLOSE_TIMEOUT_SECONDS
         with self._lock:
@@ -409,12 +428,14 @@ class ControlDispatcher:
         config: HostConfig,
         *,
         initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+        chat_boundary: object | None = None,
     ) -> None:
         self._config = config
         self._readiness = ReadinessController(
             config,
             initializer_factory=initializer_factory,
         )
+        self._chat_boundary = chat_boundary
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
@@ -422,12 +443,37 @@ class ControlDispatcher:
         self._close_lock = threading.Lock()
         self._closed = False
 
+    def attach_chat_boundary(self, chat_boundary: object) -> None:
+        if self._chat_boundary is not None:
+            raise RuntimeError("chat boundary is already configured")
+        self._chat_boundary = chat_boundary
+
+    def invalidate_chat_generation(self) -> None:
+        if self._chat_boundary is not None:
+            cancel_all = getattr(self._chat_boundary, "cancel_all", None)
+            if callable(cancel_all):
+                cancel_all()
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
                 return
             self._closed = True
-        self._readiness.close()
+        primary: BaseException | None = None
+        try:
+            self._readiness.close()
+        except BaseException as error:  # noqa: BLE001
+            primary = error
+        if self._chat_boundary is not None:
+            try:
+                getattr(self._chat_boundary, "close")()
+            except BaseException as error:  # noqa: BLE001
+                if primary is None:
+                    primary = error
+                else:
+                    primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
+        if primary is not None:
+            raise primary
 
     def dispatch(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         supplied_credential = request.get("generationCredential")
@@ -504,7 +550,22 @@ class ControlDispatcher:
                     False,
                 )
         elif name == "core.snapshot":
-            payload = self._readiness.snapshot()
+            payload = (
+                self._readiness.minimal_snapshot(self._chat_boundary)
+                if self._protocol_minor >= 2
+                else self._readiness.snapshot()
+            )
+        elif name == "chat.cancel":
+            if not self._events_enabled or self._chat_boundary is None:
+                return self._error_response(
+                    request,
+                    "CAPABILITY_NEGOTIATION_FAILED",
+                    "chat cancellation requires the concurrent router",
+                ), False
+            try:
+                return getattr(self._chat_boundary, "handle_cancel")(request), False
+            except ValueError as error:
+                return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
         elif name == "system.shutdown":
             payload = {"accepted": True}
         else:
@@ -634,6 +695,7 @@ def _capability_list(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 
 def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig) -> None:
+    from .chat_fixture import ChatFixtureBoundary
     from .router import ConcurrentHostRouter
 
     writer: ResponseWriter | None = None
@@ -643,13 +705,23 @@ def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig
     primary_traceback = None
     try:
         writer = ResponseWriter(output_stream)
+        chat_boundary = ChatFixtureBoundary(
+            config.generation_id,
+            config.generation_credential,
+        )
         dispatcher = ControlDispatcher(config)
+        attach_chat_boundary = getattr(dispatcher, "attach_chat_boundary", None)
+        if callable(attach_chat_boundary):
+            attach_chat_boundary(chat_boundary)
         router = ConcurrentHostRouter(
             input_stream,
             writer,
             dispatcher,
+            fixture_handler=chat_boundary.handle_send,
+            fixture_names=frozenset({"chat.send"}),
             read_frame_fn=read_frame,
         )
+        chat_boundary.set_event_publisher(router.publish_event)
         router.run()
     except BaseException as error:  # noqa: BLE001 - preserve process-boundary failure
         primary_error = error

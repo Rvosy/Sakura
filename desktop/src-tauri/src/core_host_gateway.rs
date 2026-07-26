@@ -1,0 +1,590 @@
+//! Generation-scoped allowlisted Gateway for the WP-2-02 fake chat boundary.
+
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use serde_json::{json, Value};
+
+use crate::{core_host_protocol::validate_envelope, core_host_runtime::ConcurrentRequestHandle};
+
+pub const CHAT_REGISTRY_LIMIT: usize = 32;
+pub const CHAT_PAYLOAD_LIMIT: usize = 64 * 1024;
+pub const CHAT_SEND_DEADLINE: Duration = Duration::from_secs(30);
+pub const CHAT_CANCEL_DEADLINE: Duration = Duration::from_secs(1);
+const ALLOWED_WINDOW: &str = "main";
+const CHAT_TERMINALS: [&str; 3] = ["chat.completed", "chat.failed", "chat.cancelled"];
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) trait GatewayTransport: Send + Sync {
+    fn request(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+        scheduling: &'static str,
+    ) -> Result<Value, String>;
+}
+
+impl GatewayTransport for ConcurrentRequestHandle {
+    fn request(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+        scheduling: &'static str,
+    ) -> Result<Value, String> {
+        self.request_with_scheduling(request_id, name, payload, deadline, scheduling)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ChatCancelHandle {
+    opaque: String,
+}
+
+impl fmt::Debug for ChatCancelHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChatCancelHandle")
+            .field("opaque", &"[OPAQUE]")
+            .finish()
+    }
+}
+
+impl ChatCancelHandle {
+    pub fn as_str(&self) -> &str {
+        &self.opaque
+    }
+}
+
+#[derive(Debug)]
+pub struct ChatSubmission {
+    pub cancel_handle: ChatCancelHandle,
+    pub completion: Receiver<Result<Value, String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventDisposition {
+    Accepted,
+    Ignored,
+}
+
+#[derive(Debug, Clone)]
+struct ChatEntry {
+    cancel_requested: bool,
+    started: bool,
+    terminal: Option<String>,
+}
+
+struct GatewayState {
+    generation_id: String,
+    valid: bool,
+    entries: HashMap<String, ChatEntry>,
+    handles: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+#[derive(Clone)]
+pub struct CoreHostGateway {
+    transport: Arc<dyn GatewayTransport>,
+    state: Arc<Mutex<GatewayState>>,
+}
+
+impl fmt::Debug for CoreHostGateway {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (generation_id, valid, len) = self.state.lock().map_or_else(
+            |_| ("[UNAVAILABLE]".to_string(), false, 0),
+            |state| {
+                (
+                    state.generation_id.clone(),
+                    state.valid,
+                    state.entries.len(),
+                )
+            },
+        );
+        formatter
+            .debug_struct("CoreHostGateway")
+            .field("generation_id", &generation_id)
+            .field("valid", &valid)
+            .field("registry_len", &len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CoreHostGateway {
+    pub(crate) fn new(
+        generation_id: impl Into<String>,
+        transport: Arc<dyn GatewayTransport>,
+    ) -> Result<Self, String> {
+        let generation_id = generation_id.into();
+        if generation_id.trim().is_empty() {
+            return Err("INVALID_GENERATION: Gateway generation is empty".to_string());
+        }
+        Ok(Self {
+            transport,
+            state: Arc::new(Mutex::new(GatewayState {
+                generation_id,
+                valid: true,
+                entries: HashMap::new(),
+                handles: HashMap::new(),
+                order: VecDeque::new(),
+            })),
+        })
+    }
+
+    pub fn dispatch(
+        &self,
+        window_label: &str,
+        command: &str,
+        payload: Value,
+        cancel_handle: Option<&ChatCancelHandle>,
+    ) -> Result<Option<ChatSubmission>, String> {
+        match command {
+            "chat.send" => self.send(window_label, payload).map(Some),
+            "chat.cancel" => {
+                if !payload.as_object().is_some_and(|object| object.is_empty()) {
+                    return Err("INVALID_CHAT_CANCEL: cancel payload must be empty".to_string());
+                }
+                let handle = cancel_handle.ok_or_else(|| {
+                    "INVALID_CHAT_CANCEL: Rust-issued cancel handle required".to_string()
+                })?;
+                self.cancel(window_label, handle)?;
+                Ok(None)
+            }
+            _ => Err("GATEWAY_COMMAND_DENIED: command is not allowlisted".to_string()),
+        }
+    }
+
+    pub fn send(&self, window_label: &str, payload: Value) -> Result<ChatSubmission, String> {
+        authorize_window(window_label)?;
+        validate_chat_payload(&payload)?;
+        let operation_id = new_identity("chat");
+        let opaque = new_identity("chat-cancel");
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "CHAT_REGISTRY_UNAVAILABLE: registry lock failed".to_string())?;
+            ensure_valid(&state)?;
+            prune_terminal(&mut state);
+            if state.entries.len() >= CHAT_REGISTRY_LIMIT {
+                return Err("CHAT_REGISTRY_FULL: chat registry is full".to_string());
+            }
+            state.entries.insert(
+                operation_id.clone(),
+                ChatEntry {
+                    cancel_requested: false,
+                    started: false,
+                    terminal: None,
+                },
+            );
+            state.handles.insert(opaque.clone(), operation_id.clone());
+            state.order.push_back(operation_id.clone());
+        }
+        let mut core_payload = payload;
+        core_payload
+            .as_object_mut()
+            .expect("validated chat payload")
+            .insert(
+                "operationId".to_string(),
+                Value::String(operation_id.clone()),
+            );
+        let transport = Arc::clone(&self.transport);
+        let (completion_sender, completion) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name(format!("sakura-chat-request-{operation_id}"))
+            .spawn(move || {
+                let result = transport.request(
+                    &operation_id,
+                    "chat.send",
+                    core_payload,
+                    CHAT_SEND_DEADLINE,
+                    "interactive",
+                );
+                let _ = completion_sender.send(result);
+            })
+            .map_err(|error| format!("CHAT_DISPATCH_FAILED: {error}"))?;
+        Ok(ChatSubmission {
+            cancel_handle: ChatCancelHandle { opaque },
+            completion,
+        })
+    }
+
+    pub fn cancel(&self, window_label: &str, handle: &ChatCancelHandle) -> Result<Value, String> {
+        authorize_window(window_label)?;
+        let operation_id = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "CHAT_REGISTRY_UNAVAILABLE: registry lock failed".to_string())?;
+            ensure_valid(&state)?;
+            let operation_id = state.handles.get(handle.as_str()).cloned().ok_or_else(|| {
+                "STALE_CANCEL_HANDLE: cancel handle is unknown or stale".to_string()
+            })?;
+            let entry = state.entries.get_mut(&operation_id).ok_or_else(|| {
+                "STALE_CANCEL_HANDLE: chat operation is not registered".to_string()
+            })?;
+            if entry.terminal.is_some() || entry.cancel_requested {
+                return Ok(json!({"accepted": false, "operationId": operation_id}));
+            }
+            entry.cancel_requested = true;
+            operation_id
+        };
+        self.transport.request(
+            &new_identity("chat-cancel-request"),
+            "chat.cancel",
+            json!({"operationId": operation_id}),
+            CHAT_CANCEL_DEADLINE,
+            "control",
+        )
+    }
+
+    pub fn observe_event(&self, message: &Value) -> Result<EventDisposition, String> {
+        validate_envelope(message).map_err(|error| error.to_string())?;
+        let object = message
+            .as_object()
+            .ok_or_else(|| "INVALID_CHAT_EVENT: event must be an object".to_string())?;
+        if object.get("kind").and_then(Value::as_str) != Some("event") {
+            return Err("INVALID_CHAT_EVENT: Gateway accepts events only".to_string());
+        }
+        let event_name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "INVALID_CHAT_EVENT: event name missing".to_string())?;
+        if event_name != "chat.started" && !CHAT_TERMINALS.contains(&event_name) {
+            return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
+        }
+        let operation_id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "INVALID_CHAT_EVENT: event identity missing".to_string())?;
+        if object
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|payload| payload.get("operationId"))
+            .and_then(Value::as_str)
+            != Some(operation_id)
+        {
+            return Err("INVALID_CHAT_EVENT: payload identity mismatch".to_string());
+        }
+        validate_chat_event_payload(
+            event_name,
+            object.get("payload").expect("validated payload"),
+        )?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "CHAT_REGISTRY_UNAVAILABLE: registry lock failed".to_string())?;
+        ensure_valid(&state)?;
+        if object.get("generationId").and_then(Value::as_str) != Some(state.generation_id.as_str())
+        {
+            return Err("GENERATION_MISMATCH: chat event is stale".to_string());
+        }
+        let Some(entry) = state.entries.get_mut(operation_id) else {
+            return Err("UNKNOWN_CHAT_IDENTITY: event operation is unknown".to_string());
+        };
+        if event_name == "chat.started" {
+            if entry.started || entry.terminal.is_some() {
+                return Ok(EventDisposition::Ignored);
+            }
+            entry.started = true;
+            return Ok(EventDisposition::Accepted);
+        }
+        if entry.terminal.is_some() {
+            return Ok(EventDisposition::Ignored);
+        }
+        if !entry.started {
+            return Err("INVALID_CHAT_EVENT: terminal preceded chat.started".to_string());
+        }
+        entry.terminal = Some(event_name.to_string());
+        Ok(EventDisposition::Accepted)
+    }
+
+    pub fn invalidate_generation(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.valid = false;
+            state.entries.clear();
+            state.handles.clear();
+            state.order.clear();
+        }
+    }
+
+    pub fn registry_len(&self) -> usize {
+        self.state.lock().map_or(0, |state| state.entries.len())
+    }
+}
+
+fn authorize_window(window_label: &str) -> Result<(), String> {
+    (window_label == ALLOWED_WINDOW)
+        .then_some(())
+        .ok_or_else(|| "GATEWAY_WINDOW_DENIED: caller window is not authorized".to_string())
+}
+
+fn ensure_valid(state: &GatewayState) -> Result<(), String> {
+    state
+        .valid
+        .then_some(())
+        .ok_or_else(|| "GENERATION_INVALIDATED: Gateway generation is closed".to_string())
+}
+
+fn prune_terminal(state: &mut GatewayState) {
+    while state.entries.len() >= CHAT_REGISTRY_LIMIT {
+        let Some(oldest) = state.order.front().cloned() else {
+            break;
+        };
+        if !state
+            .entries
+            .get(&oldest)
+            .is_some_and(|entry| entry.terminal.is_some())
+        {
+            break;
+        }
+        state.order.pop_front();
+        state.entries.remove(&oldest);
+        state
+            .handles
+            .retain(|_, operation_id| operation_id != &oldest);
+    }
+}
+
+fn validate_chat_payload(payload: &Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "INVALID_CHAT_PAYLOAD: payload must be an object".to_string())?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "message" | "fixture"))
+    {
+        return Err("INVALID_CHAT_PAYLOAD: payload contains forbidden fields".to_string());
+    }
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .ok_or_else(|| "INVALID_CHAT_PAYLOAD: message must be non-empty".to_string())?;
+    if message.len() > CHAT_PAYLOAD_LIMIT
+        || serde_json::to_vec(payload).map_or(true, |encoded| encoded.len() > CHAT_PAYLOAD_LIMIT)
+    {
+        return Err("CHAT_PAYLOAD_TOO_LARGE: payload exceeds its limit".to_string());
+    }
+    if let Some(fixture) = object.get("fixture") {
+        let fixture = fixture
+            .as_object()
+            .ok_or_else(|| "INVALID_CHAT_PAYLOAD: fixture must be an object".to_string())?;
+        if fixture
+            .keys()
+            .any(|key| !matches!(key.as_str(), "kind" | "delayMs" | "outcome" | "name"))
+        {
+            return Err("INVALID_CHAT_PAYLOAD: fixture contains forbidden fields".to_string());
+        }
+        if !matches!(
+            fixture.get("kind").and_then(Value::as_str),
+            Some("sleep" | "file")
+        ) {
+            return Err("INVALID_CHAT_PAYLOAD: fixture kind is unsupported".to_string());
+        }
+        if fixture
+            .get("delayMs")
+            .is_some_and(|value| value.as_u64().is_none_or(|delay| delay > 30_000))
+        {
+            return Err("INVALID_CHAT_PAYLOAD: fixture delay is invalid".to_string());
+        }
+        if fixture
+            .get("outcome")
+            .is_some_and(|value| !matches!(value.as_str(), Some("complete" | "fail")))
+        {
+            return Err("INVALID_CHAT_PAYLOAD: fixture outcome is invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String> {
+    let payload = payload
+        .as_object()
+        .ok_or_else(|| "INVALID_CHAT_EVENT: payload must be an object".to_string())?;
+    match name {
+        "chat.started" | "chat.cancelled" if payload.len() == 1 => Ok(()),
+        "chat.completed"
+            if payload.len() == 2 && payload.get("reply").is_some_and(Value::is_string) =>
+        {
+            Ok(())
+        }
+        "chat.failed" if payload.len() == 2 => {
+            let error = payload
+                .get("error")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "INVALID_CHAT_EVENT: failed event error is invalid".to_string())?;
+            if error.len() == 4
+                && error.get("code").is_some_and(Value::is_string)
+                && error.get("message").is_some_and(Value::is_string)
+                && error.get("retryable").is_some_and(Value::is_boolean)
+                && error.get("details").is_some_and(Value::is_object)
+            {
+                Ok(())
+            } else {
+                Err("INVALID_CHAT_EVENT: failed event error shape is invalid".to_string())
+            }
+        }
+        _ => Err("INVALID_CHAT_EVENT: event payload shape is invalid".to_string()),
+    }
+}
+
+fn new_identity(prefix: &str) -> String {
+    let counter = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!("{prefix}-{nanos:032x}-{counter:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GENERATION: &str = "00000000-0000-4000-8000-000000002202";
+
+    #[derive(Default)]
+    struct FakeTransport {
+        requests: Mutex<Vec<(String, String, Value, Duration, &'static str)>>,
+    }
+
+    impl GatewayTransport for FakeTransport {
+        fn request(
+            &self,
+            request_id: &str,
+            name: &str,
+            payload: Value,
+            deadline: Duration,
+            scheduling: &'static str,
+        ) -> Result<Value, String> {
+            self.requests.lock().unwrap().push((
+                request_id.into(),
+                name.into(),
+                payload,
+                deadline,
+                scheduling,
+            ));
+            Ok(json!({"ok": true, "payload": {"accepted": true}}))
+        }
+    }
+
+    fn gateway() -> (CoreHostGateway, Arc<FakeTransport>) {
+        let transport = Arc::new(FakeTransport::default());
+        (
+            CoreHostGateway::new(GENERATION, transport.clone()).unwrap(),
+            transport,
+        )
+    }
+
+    fn chat_event(operation_id: &str, name: &str) -> Value {
+        let payload = if name == "chat.completed" {
+            json!({"operationId": operation_id, "reply": "hello"})
+        } else {
+            json!({"operationId": operation_id})
+        };
+        json!({
+            "protocolMajor": 2, "protocolMinor": 2, "kind": "event",
+            "generationId": GENERATION,
+            "generationCredential": "22222222222222222222222222222222",
+            "id": operation_id, "name": name,
+            "payload": payload
+        })
+    }
+
+    #[test]
+    fn unknown_window_command_and_transport_fields_are_denied() {
+        let (gateway, _) = gateway();
+        assert!(gateway
+            .dispatch("main", "future.command", json!({}), None)
+            .unwrap_err()
+            .starts_with("GATEWAY_COMMAND_DENIED:"));
+        assert!(gateway.send("settings", json!({"message": "x"})).is_err());
+        for field in [
+            "protocolMajor",
+            "generationId",
+            "generationCredential",
+            "id",
+            "deadlineMs",
+            "priority",
+        ] {
+            let mut payload = json!({"message": "hello"});
+            payload[field] = json!("forged");
+            assert!(gateway.send("main", payload).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn handle_is_opaque_and_cancel_uses_reserved_control_scheduling() {
+        let (gateway, transport) = gateway();
+        let submission = gateway
+            .send(
+                "main",
+                json!({"message": "hello", "fixture": {"kind": "sleep", "delayMs": 1}}),
+            )
+            .unwrap();
+        assert!(!format!("{:?}", submission.cancel_handle).contains(GENERATION));
+        submission
+            .completion
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gateway.cancel("main", &submission.cancel_handle).unwrap()["ok"],
+            true
+        );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            (requests[0].1.as_str(), requests[0].4),
+            ("chat.send", "interactive")
+        );
+        assert_eq!(
+            (requests[1].1.as_str(), requests[1].3, requests[1].4),
+            ("chat.cancel", CHAT_CANCEL_DEADLINE, "control")
+        );
+    }
+
+    #[test]
+    fn started_has_one_terminal_and_invalidation_clears_handles() {
+        let (gateway, transport) = gateway();
+        let submission = gateway.send("main", json!({"message": "hello"})).unwrap();
+        submission
+            .completion
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        let operation_id = transport.requests.lock().unwrap()[0].0.clone();
+        assert_eq!(
+            gateway
+                .observe_event(&chat_event(&operation_id, "chat.started"))
+                .unwrap(),
+            EventDisposition::Accepted
+        );
+        assert_eq!(
+            gateway
+                .observe_event(&chat_event(&operation_id, "chat.completed"))
+                .unwrap(),
+            EventDisposition::Accepted
+        );
+        assert_eq!(
+            gateway
+                .observe_event(&chat_event(&operation_id, "chat.cancelled"))
+                .unwrap(),
+            EventDisposition::Ignored
+        );
+        gateway.invalidate_generation();
+        assert_eq!(gateway.registry_len(), 0);
+        assert!(gateway.cancel("main", &submission.cancel_handle).is_err());
+    }
+}

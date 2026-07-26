@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
+mod core_host_gateway;
 #[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
 mod core_host_protocol;
 #[allow(dead_code)] // WP-2-01 generation-scoped concurrent transport owner.

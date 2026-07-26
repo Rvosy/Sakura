@@ -26,6 +26,7 @@ use crate::{
 pub const PENDING_LIMIT: usize = 64;
 pub const WRITER_QUEUE_LIMIT: usize = 32;
 pub const EVENT_QUEUE_LIMIT: usize = 32;
+pub const CRITICAL_EVENT_QUEUE_LIMIT: usize = 8;
 const READ_SLICE: Duration = Duration::from_millis(25);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -47,6 +48,7 @@ struct Shared {
     pending: Mutex<HashMap<String, Pending>>,
     writer: SyncSender<WriterCommand>,
     events: SyncSender<Value>,
+    critical_events: SyncSender<Value>,
     stopped: AtomicBool,
     event_capable: AtomicBool,
     fatal: Mutex<Option<String>>,
@@ -55,6 +57,7 @@ struct Shared {
 pub struct CoreHostRouter {
     shared: Arc<Shared>,
     event_receiver: Receiver<Value>,
+    critical_event_receiver: Receiver<Value>,
     writer_thread: Option<JoinHandle<()>>,
     reader_thread: Option<JoinHandle<()>>,
 }
@@ -78,12 +81,15 @@ impl CoreHostRouter {
         }
         let (writer, writer_rx) = mpsc::sync_channel(WRITER_QUEUE_LIMIT);
         let (events, event_receiver) = mpsc::sync_channel(EVENT_QUEUE_LIMIT);
+        let (critical_events, critical_event_receiver) =
+            mpsc::sync_channel(CRITICAL_EVENT_QUEUE_LIMIT);
         let shared = Arc::new(Shared {
             generation_id,
             generation_credential,
             pending: Mutex::new(HashMap::new()),
             writer,
             events,
+            critical_events,
             stopped: AtomicBool::new(false),
             event_capable: AtomicBool::new(false),
             fatal: Mutex::new(None),
@@ -101,6 +107,7 @@ impl CoreHostRouter {
         Ok(Self {
             shared,
             event_receiver,
+            critical_event_receiver,
             writer_thread: Some(writer_thread),
             reader_thread: Some(reader_thread),
         })
@@ -117,14 +124,27 @@ impl CoreHostRouter {
     }
 
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<Option<Value>, String> {
-        match self.event_receiver.recv_timeout(timeout) {
-            Ok(event) => Ok(Some(event)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => {
-                if let Some(error) = self.fatal() {
-                    Err(error)
-                } else {
-                    Ok(None)
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.critical_event_receiver.try_recv() {
+                Ok(event) => return Ok(Some(event)),
+                Err(mpsc::TryRecvError::Disconnected | mpsc::TryRecvError::Empty) => {}
+            }
+            match self.event_receiver.recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(READ_SLICE),
+            ) {
+                Ok(event) => return Ok(Some(event)),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+                Err(RecvTimeoutError::Timeout) => return Ok(None),
+                Err(RecvTimeoutError::Disconnected) => {
+                    if let Some(error) = self.fatal() {
+                        return Err(error);
+                    }
+                    if Instant::now() >= deadline {
+                        return Ok(None);
+                    }
                 }
             }
         }
@@ -385,8 +405,16 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             {
                 return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
             }
-            shared
-                .events
+            let critical = matches!(
+                object.get("name").and_then(Value::as_str),
+                Some("chat.completed" | "chat.failed" | "chat.cancelled")
+            );
+            let target = if critical {
+                &shared.critical_events
+            } else {
+                &shared.events
+            };
+            target
                 .try_send(message)
                 .map_err(|_| "EVENT_QUEUE_FULL: event queue is full".to_string())?;
             Ok(())

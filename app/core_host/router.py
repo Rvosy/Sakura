@@ -41,6 +41,13 @@ class _Ticket:
     error: BaseException | None = None
 
 
+@dataclass
+class _EventTicket:
+    message: dict[str, Any]
+    done: threading.Event = dataclass_field(default_factory=threading.Event)
+    error: BaseException | None = None
+
+
 class RouterFailure(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
@@ -82,6 +89,27 @@ class ConcurrentHostRouter:
         with self._lock:
             return self._fatal
 
+    def publish_event(self, message: Mapping[str, Any]) -> None:
+        """Publish a bounded event; an unrecoverable full queue fails closed."""
+        if self._stop.is_set():
+            raise RouterFailure("GENERATION_INVALIDATED", "router is closing")
+        ticket = _EventTicket(dict(message))
+        try:
+            self._events.put(ticket, timeout=ROUTER_CLOSE_TIMEOUT_SECONDS)
+        except queue.Full as error:
+            failure = RouterFailure("EVENT_QUEUE_FULL", "event queue is full")
+            self._set_fatal(failure)
+            raise failure from error
+        if not ticket.done.wait(ROUTER_CLOSE_TIMEOUT_SECONDS):
+            failure = RouterFailure(
+                "TRANSPORT_WRITE_FAILED",
+                "chat event was not acknowledged before its deadline",
+            )
+            self._set_fatal(failure)
+            raise failure
+        if ticket.error is not None:
+            raise ticket.error
+
     def run(self) -> None:
         self._start_threads()
         try:
@@ -115,6 +143,9 @@ class ConcurrentHostRouter:
             self.close()
 
     def close(self) -> None:
+        invalidate = getattr(self._dispatcher, "invalidate_chat_generation", None)
+        if callable(invalidate):
+            invalidate()
         with self._lock:
             if self._closed:
                 return
@@ -177,9 +208,21 @@ class ConcurrentHostRouter:
                     if not self._fixture_slots.acquire(blocking=False):
                         self._send_overload(request, item)
                         continue
+                    fixture_owner = getattr(self._fixture_handler, "__self__", None)
+                    reserve = getattr(fixture_owner, "reserve_send", None)
+                    abandon = getattr(fixture_owner, "abandon_send", None)
                     try:
+                        if callable(reserve):
+                            reserve(request)
                         self._fixtures.put_nowait(item)
+                    except (ValueError, RuntimeError) as error:
+                        if callable(abandon):
+                            abandon(request)
+                        self._fixture_slots.release()
+                        self._send_fixture_rejection(request, item, error)
                     except queue.Full:
+                        if callable(abandon):
+                            abandon(request)
                         self._fixture_slots.release()
                         self._send_overload(request, item)
                     continue
@@ -246,7 +289,16 @@ class ConcurrentHostRouter:
             try:
                 if item is _STOP:
                     return
-                self._send(item)
+                if isinstance(item, _EventTicket):
+                    try:
+                        self._send(item.message)
+                    except BaseException as error:  # noqa: BLE001
+                        item.error = error
+                        raise
+                    finally:
+                        item.done.set()
+                else:
+                    self._send(item)
             except BaseException as error:  # noqa: BLE001 - transferred to owner
                 self._set_fatal(error)
                 return
@@ -273,6 +325,32 @@ class ConcurrentHostRouter:
                 "code": "ROUTER_QUEUE_FULL",
                 "message": "bounded fixture execution capacity is full",
                 "retryable": True,
+                "details": {},
+            },
+        )
+        self._send(message)
+        ticket.done.set()
+
+    def _send_fixture_rejection(
+        self,
+        request: dict[str, Any],
+        ticket: _Ticket,
+        error: BaseException,
+    ) -> None:
+        code = (
+            "CHAT_EXECUTION_LIMIT_EXCEEDED"
+            if str(error) == "CHAT_EXECUTION_LIMIT_EXCEEDED"
+            else "INVALID_CHAT_PAYLOAD"
+        )
+        message = response(
+            request,
+            generation_id=str(request["generationId"]),
+            generation_credential=str(request["generationCredential"]),
+            protocol_minor=int(request["protocolMinor"]),
+            error={
+                "code": code,
+                "message": "chat fixture request was rejected",
+                "retryable": code == "CHAT_EXECUTION_LIMIT_EXCEEDED",
                 "details": {},
             },
         )

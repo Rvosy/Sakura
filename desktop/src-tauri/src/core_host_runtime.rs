@@ -19,6 +19,7 @@ use std::io::Read;
 use serde_json::{json, Value};
 
 use crate::{
+    core_host_gateway::CoreHostGateway,
     core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_router::{CoreHostRouter, CoreHostRouterHandle},
     platform::{
@@ -160,9 +161,79 @@ impl CoreSnapshotCache {
         Ok(())
     }
 
+    pub fn store_minimal_python_snapshot(&mut self, snapshot: &Value) -> Result<(), String> {
+        let object = snapshot
+            .as_object()
+            .ok_or_else(|| "Core Snapshot must be an object".to_string())?;
+        let expected = [
+            "generationId",
+            "revision",
+            "readiness",
+            "currentCharacterSummary",
+            "activeInteractionSummary",
+        ];
+        if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+            return Err("Core Snapshot fields do not match the WP-2-02 shape".to_string());
+        }
+        if object.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str()) {
+            return Err("Core Snapshot belongs to another generation".to_string());
+        }
+        let revision = object
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "Core Snapshot revision is invalid".to_string())?;
+        if let Some(current) = self.snapshot.as_ref() {
+            let current_revision = current
+                .get("revision")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            if revision < current_revision || (revision == current_revision && current != snapshot)
+            {
+                return Err("Core Snapshot revision is stale or reused".to_string());
+            }
+        }
+        let readiness = object
+            .get("readiness")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Core Snapshot readiness is invalid".to_string())?;
+        if !SNAPSHOT_READINESS.contains(&readiness) {
+            return Err("Core Snapshot readiness is unsupported".to_string());
+        }
+        validate_character_summary(object.get("currentCharacterSummary"))?;
+        validate_active_interaction_summary(object.get("activeInteractionSummary"))?;
+        reject_sensitive_snapshot_fields(snapshot)?;
+        self.snapshot = Some(snapshot.clone());
+        Ok(())
+    }
+
     pub fn current(&self) -> Option<&Value> {
         self.snapshot.as_ref()
     }
+}
+
+fn validate_active_interaction_summary(summary: Option<&Value>) -> Result<(), String> {
+    let Some(summary) = summary else {
+        return Err("Core Snapshot activeInteractionSummary is missing".to_string());
+    };
+    if summary.is_null() {
+        return Ok(());
+    }
+    let object = summary
+        .as_object()
+        .ok_or_else(|| "Core Snapshot activeInteractionSummary is invalid".to_string())?;
+    if object.len() != 2
+        || object
+            .get("operationId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || !matches!(
+            object.get("state").and_then(Value::as_str),
+            Some("started" | "cancelling")
+        )
+    {
+        return Err("Core Snapshot activeInteractionSummary fields are invalid".to_string());
+    }
+    Ok(())
 }
 
 fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
@@ -929,10 +1000,22 @@ impl ConcurrentRequestHandle {
         payload: Value,
         deadline: Duration,
     ) -> Result<Value, String> {
+        self.request_with_scheduling(request_id, name, payload, deadline, "interactive")
+    }
+
+    pub(crate) fn request_with_scheduling(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+        scheduling: &'static str,
+    ) -> Result<Value, String> {
         if request_id.trim().is_empty()
             || name.trim().is_empty()
             || deadline.is_zero()
             || !payload.is_object()
+            || !matches!(scheduling, "control" | "interactive")
         {
             return Err("Core Host concurrent request is invalid".to_string());
         }
@@ -947,7 +1030,7 @@ impl ConcurrentRequestHandle {
                 "name": name,
                 "payload": payload,
                 "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
-                "priority": "interactive",
+                "priority": scheduling,
             }),
             deadline,
         )
@@ -1511,6 +1594,11 @@ impl CoreHostRuntime {
         })
     }
 
+    pub fn chat_gateway(&self) -> Result<CoreHostGateway, String> {
+        let handle = self.concurrent_request_handle()?;
+        CoreHostGateway::new(self.generation_id.clone(), Arc::new(handle))
+    }
+
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<Option<Value>, String> {
         let router = self
             .router
@@ -1532,7 +1620,16 @@ impl CoreHostRuntime {
             .get("payload")
             .ok_or_else(|| "Core Host snapshot response has no payload".to_string())?
             .clone();
-        self.snapshot_cache.store_python_snapshot(&snapshot)?;
+        if self
+            .negotiation
+            .as_ref()
+            .is_some_and(|negotiation| negotiation.minor >= 2)
+        {
+            self.snapshot_cache
+                .store_minimal_python_snapshot(&snapshot)?;
+        } else {
+            self.snapshot_cache.store_python_snapshot(&snapshot)?;
+        }
         Ok(snapshot)
     }
 
@@ -2957,6 +3054,38 @@ mod tests {
     }
 
     #[test]
+    fn wp_2_02_snapshot_is_exact_monotonic_and_generation_scoped() {
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+        let first = json!({
+            "generationId": GENERATION_ID,
+            "revision": 1,
+            "readiness": "ready",
+            "currentCharacterSummary": valid_character_summary(),
+            "activeInteractionSummary": {
+                "operationId": "chat-1",
+                "state": "started"
+            }
+        });
+        cache
+            .store_minimal_python_snapshot(&first)
+            .expect("five-field snapshot validates");
+        let mut extra = first.clone();
+        extra["schemaVersion"] = json!(1);
+        assert!(cache.store_minimal_python_snapshot(&extra).is_err());
+        let mut stale = first.clone();
+        stale["revision"] = json!(0);
+        assert!(cache.store_minimal_python_snapshot(&stale).is_err());
+        let mut reused = first.clone();
+        reused["activeInteractionSummary"] = Value::Null;
+        assert!(cache.store_minimal_python_snapshot(&reused).is_err());
+        cache
+            .begin_generation("00000000-0000-4000-8000-000000002203")
+            .expect("new generation clears cache");
+        assert!(cache.current().is_none());
+        assert!(cache.store_minimal_python_snapshot(&first).is_err());
+    }
+
+    #[test]
     fn launch_command_uses_only_the_runtime_locator_approved_assistant_root() {
         let mut layout = development_layout();
         layout.assistant_root = std::env::temp_dir().canonicalize().unwrap();
@@ -3503,6 +3632,84 @@ mod tests {
             "router-health-b"
         );
         host.shutdown().expect("router host shutdown");
+    }
+
+    #[test]
+    fn wp_2_02_real_fake_core_chat_cancel_has_one_terminal_and_control_deadline() {
+        let _test_lock = lifecycle_test_lock();
+        let layout = development_layout();
+        let mut host =
+            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
+        host.request("chat-hello", "system.hello", Duration::from_secs(3))
+            .expect("router hello should negotiate");
+        let gateway = host
+            .chat_gateway()
+            .expect("chat Gateway should be available");
+        let submission = gateway
+            .send(
+                "main",
+                json!({
+                    "message": "hello",
+                    "fixture": {"kind": "sleep", "delayMs": 10_000}
+                }),
+            )
+            .expect("chat send should return an opaque handle immediately");
+        let started = host
+            .recv_event_timeout(Duration::from_secs(3))
+            .expect("event reader should remain responsive")
+            .expect("chat.started event");
+        assert_eq!(started["name"], "chat.started");
+        assert_eq!(
+            gateway
+                .observe_event(&started)
+                .expect("started event identity"),
+            crate::core_host_gateway::EventDisposition::Accepted
+        );
+        let active_snapshot = host
+            .refresh_snapshot("chat-active-snapshot", Duration::from_secs(3))
+            .expect("Python should construct the active chat Snapshot");
+        assert_eq!(
+            active_snapshot.as_object().expect("Snapshot object").len(),
+            5
+        );
+        assert_eq!(
+            active_snapshot["activeInteractionSummary"]["operationId"],
+            started["id"]
+        );
+        assert_eq!(
+            active_snapshot["activeInteractionSummary"]["state"],
+            "started"
+        );
+        let active_revision = active_snapshot["revision"].as_u64().expect("revision");
+        let cancel_started = Instant::now();
+        let cancel = gateway
+            .cancel("main", &submission.cancel_handle)
+            .expect("chat.cancel response");
+        assert!(cancel_started.elapsed() < Duration::from_secs(1));
+        assert_eq!(cancel["ok"], true);
+        let terminal = host
+            .recv_event_timeout(Duration::from_secs(3))
+            .expect("terminal event reader")
+            .expect("chat terminal event");
+        assert_eq!(terminal["name"], "chat.cancelled");
+        assert_eq!(
+            gateway
+                .observe_event(&terminal)
+                .expect("terminal event identity"),
+            crate::core_host_gateway::EventDisposition::Accepted
+        );
+        let completed = submission
+            .completion
+            .recv_timeout(Duration::from_secs(3))
+            .expect("chat response should arrive")
+            .expect("chat response should be framed");
+        assert_eq!(completed["ok"], true);
+        let settled_snapshot = host
+            .refresh_snapshot("chat-settled-snapshot", Duration::from_secs(3))
+            .expect("settled Snapshot should fully rehydrate");
+        assert!(settled_snapshot["activeInteractionSummary"].is_null());
+        assert!(settled_snapshot["revision"].as_u64().unwrap() > active_revision);
+        host.shutdown().expect("chat host shutdown");
     }
 
     #[test]

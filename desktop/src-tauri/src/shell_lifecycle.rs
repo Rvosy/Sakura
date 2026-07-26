@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{
+    core_host_gateway::CoreHostGateway,
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::CoreHostRuntime,
     core_supervisor::{
@@ -159,6 +160,7 @@ struct WorkerState {
     request: RuntimeLocationRequest,
     supervisor: CoreSupervisor,
     host: Option<CoreHostRuntime>,
+    chat_gateway: Option<CoreHostGateway>,
     snapshot: Option<Value>,
     identity: Option<(GenerationId, u64)>,
     core_version: String,
@@ -179,6 +181,7 @@ fn run_worker(
         request,
         supervisor: CoreSupervisor::new(nonce),
         host: None,
+        chat_gateway: None,
         snapshot: None,
         identity: None,
         core_version: "unavailable".to_string(),
@@ -197,6 +200,7 @@ fn run_worker(
                     ..
                 } => {
                     state.identity = Some((generation_id, generation_number));
+                    state.chat_gateway = None;
                     state.snapshot = None;
                     state.core_version = "unavailable".to_string();
                     publish(&state, &publication);
@@ -267,6 +271,7 @@ fn run_worker(
                 actions.extend(state.supervisor.submit(LifecycleIntent::AppShutdown))
             }
             Err(RecvTimeoutError::Timeout) => {
+                drain_chat_events(&mut state);
                 if state.supervisor.snapshot().state == SupervisorState::Running {
                     match refresh_snapshot(&mut state) {
                         Ok(()) => publish(&state, &publication),
@@ -281,6 +286,27 @@ fn run_worker(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+fn drain_chat_events(state: &mut WorkerState) {
+    let Some(host) = state.host.as_ref() else {
+        return;
+    };
+    loop {
+        let event = match host.recv_event_timeout(Duration::ZERO) {
+            Ok(Some(event)) => event,
+            Ok(None) | Err(_) => return,
+        };
+        if event
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.starts_with("chat."))
+        {
+            if let Some(gateway) = state.chat_gateway.as_ref() {
+                let _ = gateway.observe_event(&event);
             }
         }
     }
@@ -366,6 +392,10 @@ fn spawn_and_initialize(
     }
 
     let readiness_deadline = Instant::now() + READINESS_DEADLINE;
+    state.chat_gateway = state
+        .host
+        .as_ref()
+        .and_then(|host| host.chat_gateway().ok());
     loop {
         match commands.try_recv() {
             Ok(command) => {
@@ -412,6 +442,9 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
 }
 
 fn stop_generation(state: &mut WorkerState) -> bool {
+    if let Some(gateway) = state.chat_gateway.take() {
+        gateway.invalidate_generation();
+    }
     let Some(host) = state.host.take() else {
         return true;
     };
