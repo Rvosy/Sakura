@@ -82,7 +82,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
-| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | planned |
+| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | stabilizing |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
@@ -119,8 +119,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
 accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
-已于 2026-07-26 accepted；当前没有 `active` 或 `stabilizing` Work Package，依赖已满足的下一个
-启动点是仍为 `planned` 的 WP-2-01。
+已于 2026-07-26 accepted，随后完成的窗口交互/可见性纠正记录见第 10 节。WP-2-01 已按第 11 节
+和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 激活并进入稳定化，是当前唯一 `stabilizing` Work Package；
+WP-2-02 及后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1773,6 +1774,18 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 回退：先请求 Exit 并确认 Shell/Core/后代/pipe/thread/temp 归零；单独 revert 7a52a2dd 恢复 WP-3-01/WP-1C-04 底层 lifecycle 和 fatal exit，再单独 revert be770c73 恢复 planned；不清理、恢复或改写用户数据
 ```
 
+接受后纠正记录（2026-07-26）：
+
+```text
+状态：accepted（不重新打开功能范围）
+关联提交：fd62aa7bd
+纠正范围：Windows 原生命中区域为气泡、输入栏和状态条使用带 2px 抗锯齿保护的圆角 region，移除会被 region 硬裁剪的外投影；最小可见性探测改为 220ms 可感知隐藏间隔，并在 timer 创建/主线程调度失败时恢复可见
+验证：Windows 圆角透明点/命中点实机断言通过；窗口交互定向测试 7 passed；frontend 22 passed；release build、cargo check、cargo fmt --check 与 git diff --check 通过
+边界：未修改 Core、Supervisor、IPC、角色资源、用户数据、Python Runtime、立绘矩形命中或 WP-2 生产能力；因此 WP-1D-01 accepted 结论保持有效
+继承测试债务：desktop/tests/windows_pet_interaction_acceptance.ps1 仍有 WP-1A 时期“Shell 不得启动 Python”的过时断言；当前 Shell 按 WP-1C/3-01 正常启动受控 Core，该断言不能作为 WP-2-01 失败证据。WP-2-01 生产实现前必须用单独 test-only 提交移除该旧断言，同时保留 Core/Python 后代身份登记、退出后全部后代归零和 data 预期/禁止写审计
+回退：revert fd62aa7bd 可恢复矩形 region、外投影和即时可见性恢复；若回退重新引入已复现的真实交互/可见性缺陷，应将拥有该缺陷的前置 WP 重新置为 stabilizing，而不是用 WP-2 实现掩盖
+```
+
 主要结果：在第一条真实聊天前，开发者和用户能理解 lifecycle 失败并安全 retry 或 exit；本 WP 不建设完整 Runtime Repair。
 
 允许能力：
@@ -1799,6 +1812,37 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 ## 11. Phase 2：最小可靠聊天 IPC 基础链
 
 ### WP-2-01：最小并发 request/response/event Router
+
+激活记录（2026-07-26）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置：WP-1D-01 accepted；激活基线 fd62aa7bd39dcb2a0a40367667d03abb14595196
+独立规范：docs/runtime-v2/WP-2-01-minimal-concurrent-router.md
+允许生产目录：desktop/src-tauri/src/core_host_protocol.rs；desktop/src-tauri/src/core_host_runtime.rs；可新增 desktop/src-tauri/src/core_host_router.rs；desktop/src-tauri/src/main.rs 仅允许模块声明/现有 lifecycle owner 接线；desktop/src-tauri/src/shell_lifecycle.rs 仅允许 generation Router 所有权、失效和清理接线；app/core_host/protocol.py；app/core_host/server.py；可新增 app/core_host/router.py
+允许测试/夹具：上述 Rust/Python 模块内联测试；tests/unit/test_core_host_protocol.py；tests/unit 中新增 Router 定向测试；tests/integration/test_core_host_lifecycle.py；tests/integration 中新增 Router 真实 Host 测试；tests/fixtures/runtime_v2/wp_2_01/；desktop/tests/windows_pet_interaction_acceptance.ps1 只允许纠正过时的 no-Python 断言，不改变窗口交互步骤和通过阈值；本总表、独立规范和 ADR-0002 的 WP-2-01 验证记录
+明确禁止：desktop/frontend/；app/core_host/assistant_adapter.py；app/agent/；app/memory/；app/plugins/；plugins/；main.py；legacy_qt_main.py；data/；characters/；runtime/；third_party/；tools/mcp/；Cargo.toml/Cargo.lock；package.json/lockfile；.github/workflows/；WP-2-02 Gateway/cancel/Snapshot 扩展及任何真实 chat.send/chat.cancel 生产接线
+协议边界：新增 event wire kind 必须使用新的 protocol minor/capability 协商，不能静默改写已冻结的 2.1 语义；不增加 sequence、通用 Operation、resource token、通用 priority 注册表或完整 progress 模型
+资源边界：Rust/Python reader、writer、pending/event registry 和领域 fixture 执行槽全部有界；容量为命名常量并有饱和测试；任何 pipe I/O 不得持有 pending/owner 全局锁；response 和 terminal-shaped fixture event 不得被可丢消息挤出
+故障矩阵：并发乱序 response、event/response 交错、重复/未知 identity、旧 generation/credential、pending 上限、writer/event queue 饱和、慢/失败 writer、半帧/EOF/stdout pollution、阻塞 sleep/文件 I/O fixture、health/shutdown 抢占、deadline、窗口退出/retry/Core crash 和完整资源归零
+验收环境：本机 Windows x64 使用仓库锁定 Node/Cargo/runtime Python；不安装/更新依赖。Rust/Python golden 和真实 Host 定向门本地执行；生产路径命中既有 platform workflow 时，只有推送后同 SHA 的 Windows/macOS/Linux 结果可作为原生平台证据
+提交顺序：先单独修正继承验收脚本，再按 TDD 完成协议 minor/event、Rust Router、Python Router、真实故障门；生产实现完成后登记 stabilizing，候选验收通过再登记 accepted；不得在本 WP 内开始 WP-2-02
+独立回退：先使当前 generation 失效并请求 AppShutdown，确认 Shell/Core/后代、reader/writer/dispatcher、pending waiter、pipe/fd/handle 和 temp 全部归零；按相反顺序回退 Router/协议/测试提交，恢复 WP-1D-01 的串行 lifecycle transport；不清理、恢复或改写用户数据
+```
+
+稳定化记录（2026-07-26）：
+
+```text
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
+实施提交：8f1cca3a9（更新窗口验收 Core 预期）；b7c405923（protocol 2.2/event 与 Python Router）；213b2af85（Rust Router）；0d7c5e751（并发 handle、故障与资源门禁）
+协议与并发：2.1 lifecycle request/response 保持兼容；2.2 event 仅在 transport.concurrent-router capability 协商后启用；共享 Rust/Python fixture 同结论；真实 Python Host 同 generation 两个并发 in-flight health waiter 均按 id 返回
+有界与故障：Rust pending/writer/event、Python dispatch/writer/event/fixture 队列和 4 个 fixture 槽均为命名有限容量；覆盖反向 response、event/response 交错、重复/未知 id、错 name、旧 credential、pending/event/writer/fixture 饱和、慢/失败 writer、半帧、EOF、stdout pollution 和关闭竞态
+控制隔离：注入式 sleep 与阻塞文件读取 fixture 期间 health 先返回；shutdown 走既有 3000ms graceful/5000ms total deadline，非协作任务仍由受控进程树强制回收
+自动测试：.\runtime\python.exe Core Host 定向 181 passed；cargo test --locked 172 passed/23 ignored；frontend 22 passed；cargo build --locked、cargo fmt --check、git diff --check 和 Windows 验收脚本 PowerShell parser 通过
+资源与安全：原有真实 Core crash、Retry、连续 generation、Exit、stderr flood、stale credential、stdout pollution、慢/忽略 shutdown 和完整树 finalization 门禁全绿；reader/writer/pending/pipe/thread/handle/temp 由同一 generation owner 清理；credential、私有异常内容和路径不进入公共 response/event
+已知问题：本地 Windows 候选已完成；未推送当前 SHA，因此没有同 SHA Windows/macOS/Linux platform workflow 结果，本记录不把该非失败型证据缺口冒充三平台证据
+回退：先使当前 generation 失效并执行 AppShutdown，确认完整树和 Router 资源归零；按 0d7c5e751、213b2af85、b7c405923、8f1cca3a9 逆序 revert；不触碰用户数据
+```
 
 主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
 

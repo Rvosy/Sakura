@@ -374,3 +374,28 @@ Stabilizing 文档 HEAD `18a3cab` 的 push/pull_request platform runs `300919107
 均通过，WP-1C-04 accepted。该结论完成 ADR-0002 所要求的 Phase 1C bundled lifecycle 技术验证，
 ADR 本身仍保持 `Technically Validated for Phase 1C transport foundation`；Router、cancel 和真实
 Assistant 消费验证仍是后续门禁，不因本 WP 提前 Accepted。
+
+## WP-2-01 激活决策（2026-07-26）
+
+当前 protocol 2.1 的 Rust/Python validator 只接受 `request` 和 `response`。WP-2-01 需要用真实 wire
+event 验证 response/event 交错，因此该能力按兼容扩展登记为 protocol minor 2.2，并通过
+`transport.concurrent-router` capability 协商；不得在不变更 minor 的情况下重新解释 2.1。
+
+2.0/2.1 peer 继续允许完成已经冻结的 hello/health/initialize/snapshot/shutdown lifecycle。2.2 event
+只包含公共 Envelope identity、generation credential、关联 request id、name 和 payload，不携带 request
+deadline/priority 或 response ok/error；本 WP 不增加 sequence 或通用 operationId。具体允许目录、故障矩阵、
+兼容门和回退见 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md`。本激活决策不改变 ADR 当前状态；
+只有总表定义的 WP-2-01/02 与 WP-3V-01 验证全部完成后才可更新为 Accepted。
+
+## WP-2-01 stabilizing 验证记录（2026-07-26）
+
+候选实现已把 Rust production Core generation 接到单 stdin writer、单 stdout reader、64 个 pending
+上限和 32 个 event 上限，并提供 capability 门控的并发 handle；Python Host 使用独立 reader role、
+dispatcher、单 writer、32 个 dispatch/writer/event 上限、8 个 fixture 排队上限和 4 个执行槽。Rust/Python
+共享 2.1 request 与 2.2 event fixture，真实 Host 已验证两个并发 in-flight waiter 不串线；注入式 sleep/
+阻塞文件读取期间 health 先返回，shutdown 保留既有 3000ms/5000ms deadline。
+
+本地候选证据为 Core Host Python 181 passed、locked Rust 172 passed/23 ignored、frontend 22 passed，
+并覆盖乱序、event/response 交错、未知/重复/错 name/stale identity、各有界队列饱和、慢/失败 writer、
+半帧/EOF/stdout pollution、Core crash、Retry/Exit 和连续 generation 清理。ADR 状态仍只保持 Phase 1C
+transport foundation 的 Technically Validated；WP-2-02 与 WP-3V-01 尚未发生，不能提前改为 Accepted。
