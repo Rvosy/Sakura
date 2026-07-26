@@ -32,8 +32,11 @@ def _triggers() -> dict[str, object]:
     return document["on"]
 
 
-def test_platform_workflow_runs_once_for_python_core_only_changes() -> None:
+def test_platform_workflow_avoids_duplicate_feature_branch_runs() -> None:
     triggers = _triggers()
+    assert triggers["push"]["branches"] == ["main", "dev"]
+    assert triggers["pull_request"]["branches"] == ["main", "dev"]
+
     push_paths = set(triggers["push"]["paths"])
     pull_request_paths = set(triggers["pull_request"]["paths"])
 
