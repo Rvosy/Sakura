@@ -84,7 +84,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
-| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | stabilizing |
+| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -123,9 +123,9 @@ accepted；其设计、实施计划、允许列表、接受证据和回退见对
 和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；WP-2-02
 已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
 lifecycle 候选验收并 accepted；WP-3-02 已按
-`docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成实现、本地完整回归和真实 Windows
-Shell/Core 候选验收，进入 `stabilizing`，是当前唯一 `active/stabilizing` Work Package；其余后续项
-保持 `planned`。
+`docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成实现、故障与资源回收门禁、本地完整回归和
+同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。当前没有
+`active/stabilizing` Work Package；WP-3-03 是第一个依赖已满足的 `planned` 启动点，但本次不激活。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1960,6 +1960,21 @@ CI：6c36a1a 的 PR platform run 30190007246 捕获三平台临时根 canonical/
 已知问题：无可复现 P0/P1；等待本候选同 SHA Windows/macOS/Linux platform workflow
 回退步骤：停止并确认 generation/operation/Provider/Router/进程树/IPC 资源归零，按 7c691962、116e64f7、452343e9 逆序 revert；不删除或改写 history
 关联提交：452343e9、116e64f7、7402b9d7、7c691962
+```
+
+验收记录（2026-07-26）：
+
+```text
+状态：accepted
+实现候选：b835ef2ca66a33f98eb0b4339c1ccb51abcd5e91
+自动测试：完整 Python 1718 passed/15 skipped；Core Host 平台门禁 220 passed；frontend 22 passed；locked Rust 179 passed/23 ignored；py_compile、fmt、diff-check 通过
+故障与资源回收：Provider/格式/取消/history/shutdown/EOF/唯一终态全矩阵通过；纯净打包 Core lifecycle/fault matrix 与资源树只读摘要通过；Windows/macOS/Linux 原生 Shell + bundled Core、受控进程树、pipe、共享锁和 RuntimeLocator 全部归零/通过
+CI：同一候选 SHA 的 Runtime v2 platform foundation run 30200669759 成功，Windows x64、macOS arm64、Linux x64 三 job 全绿；Test run 30200669763 成功
+缺陷关闭：30194387837 捕获执行期 PySide6 泄漏，30200020224 捕获打包 hello 前业务启动图泄漏；55913158 与 b835ef2c 分别修复，最终三平台运行覆盖并关闭
+P0/P1：零；无剩余可复现退出条件缺陷、数据污染或范围扩张
+非目标：未接聊天 UI、TTS、Tools/确认、Memory、MCP、插件、截图、主动事件、streaming 或通用 Operation/resource token；WP-3-03 保持 planned
+回退：确认 generation/operation/Provider/Router/writer/Core 进程树/IPC/锁资源归零后，按 b835ef2c、55913158、7c691962、116e64f7、452343e9 逆序 revert；不删除、截断、恢复或改写 history
+关联提交：452343e9、116e64f7、7402b9d7、7c691962、793d3ea9、c1387d44、55913158、b835ef2c
 ```
 
 允许能力：

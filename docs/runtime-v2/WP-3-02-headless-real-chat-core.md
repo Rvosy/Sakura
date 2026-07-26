@@ -1,5 +1,9 @@
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
 
+> 当前状态唯一真相源见
+> `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md`。本 WP 已于 2026-07-26
+> 完成正式验收；以下 active/stabilizing 内容保留为历史实施记录。
+
 ## 激活记录（2026-07-26）
 
 ```text
@@ -24,6 +28,22 @@
 关联提交：452343e9、116e64f7、7402b9d7、7c691962
 ```
 
+## 最终 accepted 记录（2026-07-26）
+
+```text
+状态：accepted
+实现候选：b835ef2ca66a33f98eb0b4339c1ccb51abcd5e91
+自动测试：完整 Python 1718 passed、15 skipped；CI 同款 Core Host/故障门禁 220 passed；前端 22 passed；locked Rust 179 passed、23 ignored；py_compile、Rust fmt、diff-check 全绿
+故障测试：Provider 400/401/429/500、连接/timeout/坏 JSON/坏结构、兼容回退、queued/running/retry/HTTP-read cancel、shutdown/EOF、history rotate/降级、Router terminal 排空、打包启动图与执行期 Qt/plugin 泄漏门禁全绿
+真实应用验收：纯净 Windows embedded Python 返回 chat.completed/historyStatus=saved；隔离打包 Runtime lifecycle/fault matrix 通过且资源树摘要不变；Windows/macOS/Linux 原生 Shell + bundled Core、进程树/pipe/lock/RuntimeLocator 门禁全部通过
+CI：Runtime v2 platform foundation run 30200669759 在同一 SHA 上成功，Windows x64、macOS arm64、Linux x64 三个 job 全绿；Test run 30200669763 同 SHA 成功
+缺陷关闭：run 30194387837 捕获真实聊天执行期 app.plugins→PySide6 泄漏；55913158 修复后 run 30200020224 又捕获打包 Core hello 前 app.core 启动图泄漏；b835ef2c 延迟业务图后两类缺陷均由最终三平台运行关闭
+P0/P1：零；没有剩余可复现退出条件缺陷、数据污染或范围扩张
+已知限制：本机 npm 启动器缺少 npm-cli.js，使用 package.json 完全等价的 node --test；Windows 无 symlink privilege 场景明确 skip，正式三平台 CI 已在各原生平台执行对应门禁；UI、TTS、Tools、Memory、MCP、插件与 streaming 仍为后续 WP 非目标
+回退步骤：先停止并确认 generation、chat operation、Provider、Router、writer、Core/后代、pipe/fd/handle/thread/temp 和共享锁资源归零；按 b835ef2c、55913158、7c691962、116e64f7、452343e9 逆序 revert；history 只允许旧版本忽略，不删除、截断、恢复或改写
+关联提交：452343e9、116e64f7、7402b9d7、7c691962、793d3ea9、c1387d44、55913158、b835ef2c
+```
+
 - 生产 `run_host` 已从隐式 WP-2-02 fixture 切换为 `RealChatBoundary`；fixture 仅能由测试显式注入。
 - readiness 发布的单一 `AssistantSession`、角色级 recent history、严格 Provider/结构错误、exact reply
   projector、operation cancel/close 和唯一终态仲裁已经接通。
@@ -31,7 +51,8 @@
   落盘纵向验收均已通过；Gateway 在写前拒绝 fixture/transport/history/private 字段，并校验
   `segments`/`historyStatus` exact terminal shape。
 - HTTP response close-lock 取消阻塞和 Router shutdown/EOF 终态排空竞态已修复；故障矩阵与本地资源
-  回收门禁全绿。候选保持 `stabilizing`，等待同一提交的正式三平台 platform workflow。
+  回收门禁全绿。候选 `b835ef2c` 已通过同一 SHA 的正式三平台 platform workflow，WP-3-02
+  已迁移为 `accepted`。
 
 本 WP 不创建第二套 Assistant application、worker pool、stdout writer 或生命周期根。旧迁移提交
 `190dfafd24f5c5226bff8b4347837b6e45d9a331` 仅允许逐文件取证；禁止 cherry-pick、整包复制或恢复
