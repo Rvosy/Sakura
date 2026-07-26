@@ -1,11 +1,25 @@
 # WP-3-03：使用 Fake Core 的桌宠聊天表现层
 
 ```text
-状态：active
+状态：stabilizing
 激活日期：2026-07-26
 前置依赖：WP-3-02 accepted
 唯一产品边界：WebView 表现层 + 确定性进程内 Fake Core；不调用真实 chat Gateway、Provider 或 Python Assistant
 回退边界：回退本 WP 的 frontend 表现模块、markup、styles 和测试，保留 Phase 1A Shell、窗口技术门与既有 Core lifecycle
+```
+
+## 稳定化候选记录（2026-07-26）
+
+```text
+候选提交：27bad4d5（激活提交 cb348249）
+自动测试：frontend 44 passed；Python 全量 1719 passed、15 skipped；locked Rust 179 passed、23 ignored
+构建与静态门禁：cargo fmt --check、cargo build --locked、Node syntax/source/CSP boundary、git diff --check 全绿
+Windows 实机冒烟：真实 Tauri WebView 启动；透明窗口、初始气泡、composer 展开、立绘 decode、布局锚点和 restart/reconnect 可见
+本机捕获并关闭：首次截图发现横向气泡遮挡主要表情，已缩窄为左侧纸签并同步 WebView/Rust 命中区域；测试应用占用共享锁导致的 3 个 Rust 失败在正常退出后消失
+P0/P1：零；自动矩阵无剩余失败
+待负责人实机门禁：中文 IME、100%/150% DPI、reduced motion、长文本滚动、慢响应取消、打字机 skip、动画期间拖动/关闭
+已知限制：Windows UIA 可识别 textarea，但自动化助手无法读取该 WebView 的实际输入焦点缓存，故不伪造 IME/连续键入通过；macOS/Linux 真实 WebView 保留至 WP-7-02
+回退：先关闭窗口并确认 Fake Core/typewriter/bubble/portrait timers 清理，再 revert 27bad4d5；随后可 revert cb348249 恢复 planned，不改写任何用户数据
 ```
 
 ## 目标与设计冻结
