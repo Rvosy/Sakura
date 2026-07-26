@@ -59,6 +59,25 @@ test("interactive reply text overrides its enclosing bubble drag region", () => 
   assert.equal(hitRegions.shouldStartNativeDrag({ hitKind, button: 0, isPrimary: true }), false);
 });
 
+test("product menu opens only for a portrait right click", () => {
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2, inPortrait: true }),
+    true,
+  );
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 0, inPortrait: true }),
+    false,
+  );
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "interactive", button: 2, inPortrait: true }),
+    false,
+  );
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2, inPortrait: false }),
+    false,
+  );
+});
+
 test("invalid, ambiguous, or out-of-envelope rectangles fail closed", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   assert.throws(

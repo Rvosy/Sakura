@@ -10,6 +10,9 @@ const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_inter
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
 const nativeWindowBackend = readFileSync(new URL("../../src-tauri/src/platform/window_backend.rs", import.meta.url), "utf8");
 const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+const legacySettingsConfig = JSON.parse(
+  readFileSync(new URL("../../../tools/settings-tauri/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+);
 
 function declarationBlock(selector, requiredDeclaration = null) {
   const blocks = [...styles.matchAll(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`, "g"))].map((match) => match[1]);
@@ -106,4 +109,19 @@ test("CSP admits only controlled character URLs and keeps network/media sources 
   assert.match(csp, /media-src 'none'/);
   assert.equal(csp.includes("data:"), false);
   assert.equal(csp.includes("https:"), false);
+});
+
+test("the runtime and legacy host consume one canonical settings frontend", () => {
+  assert.equal(legacySettingsConfig.build.frontendDist, "../../../desktop/frontend/settings");
+  assert.match(nativeMain, /frontend\/settings\/index\.html/);
+  assert.match(nativeMain, /frontend\/settings\/settings\.js/);
+  assert.match(nativeMain, /frontend\/settings\/capability-shell\.js/);
+});
+
+test("product menu is native-owned and the settings window is a decorated singleton", () => {
+  assert.match(app, /invoke\("show_pet_context_menu"/);
+  assert.doesNotMatch(index, /context-menu|menu-popover/);
+  assert.match(nativeMain, /ProductMenuAction::from_id/);
+  assert.match(nativeMain, /show_or_focus_settings/);
+  assert.match(nativeMain, /SETTINGS_WINDOW_LABEL/);
 });

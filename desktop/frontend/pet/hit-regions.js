@@ -58,6 +58,10 @@ export function shouldStartNativeDrag({ hitKind, button, isPrimary }) {
   return hitKind === "drag" && button === 0 && isPrimary === true;
 }
 
+export function shouldOpenProductMenu({ hitKind, button, inPortrait }) {
+  return hitKind === "drag" && button === 2 && inPortrait === true;
+}
+
 export function classifyPointerHit({ model, point, interactiveTarget = false }) {
   return interactiveTarget ? "interactive" : classifyHitPoint(model, point);
 }

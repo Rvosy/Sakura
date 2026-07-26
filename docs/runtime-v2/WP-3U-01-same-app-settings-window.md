@@ -1,7 +1,9 @@
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
 
 ```text
-状态：planned
+状态：stabilizing
+激活日期：2026-07-27
+进入稳定化日期：2026-07-27
 前置依赖：WP-3-03 accepted
 主要结果：用桌宠右键菜单打开同一 Tauri App 内唯一的普通设置窗口
 数据边界：本 WP 不保存业务或用户配置
@@ -13,6 +15,17 @@
 在真实聊天接入产品 UI 前先冻结最终桌面交互入口：用户右键桌宠得到与 legacy Qt 语义相近的菜单，
 选择“设置”后打开新版主程序拥有的 `settings` WebViewWindow。设置不再以独立 `sakura-settings`
 Tauri App 作为 Runtime v2 产品路径，也不创建第二生命周期根。
+
+## 激活与实现记录（2026-07-27）
+
+- 前置 WP-3-03 已由项目负责人验收并标记 `accepted`，本 WP 随即激活。
+- 单一规范源冻结为方案 1：`desktop/frontend/settings/**` 是 canonical source；legacy
+  `tools/settings-tauri` 直接从该目录构建，不保留第二份完整资产。
+- Rust 已拥有原生产品菜单、封闭 menu item allowlist、唯一 `settings` 窗口、重复打开聚焦、
+  CloseRequested/放弃确认和 5 秒有界主应用退出协调。
+- capability manifest 当前不开放任何可写 section；未迁移页面稳定禁用，前端不读取或保存用户配置。
+- 本地 frontend 与 Rust 全量自动测试通过，进入 `stabilizing`；Windows 真实菜单位置、100%/150% DPI、
+  最小化/聚焦、中文 IME、重复打开和退出仍需形成候选验收证据后才能 `accepted`。
 
 本 WP 只迁移窗口宿主、菜单入口、设置前端外壳和能力门控。角色/外观配置的真实读取与保存属于
 WP-3U-02；其他设置功能仍跟随对应能力 WP。

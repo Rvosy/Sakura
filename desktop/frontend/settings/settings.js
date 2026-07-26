@@ -125,6 +125,7 @@ const fields = {
 };
 
 let request = null;
+let runtimeSettingsHost = false;
 let lastTtsProvider = "";
 let themeChanged = false;
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
@@ -294,6 +295,10 @@ async function confirmDiscard() {
 
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
+  if (runtimeSettingsHost) {
+    await invoke("resolve_settings_close", { discard: true });
+    return;
+  }
   try {
     await invoke("cancel_settings");
     return;
@@ -315,6 +320,9 @@ async function requestCancelClose() {
   closeRequestInFlight = true;
   try {
     if (!(await confirmDiscard())) {
+      if (runtimeSettingsHost) {
+        await invoke("resolve_settings_close", { discard: false });
+      }
       return;
     }
     await closeSettingsWindow();
@@ -323,6 +331,22 @@ async function requestCancelClose() {
     setError(String(error));
   } finally {
     closeRequestInFlight = false;
+  }
+}
+
+let exitRequestInFlight = false;
+async function requestAppExitClose() {
+  if (exitRequestInFlight) {
+    return;
+  }
+  exitRequestInFlight = true;
+  try {
+    const discard = await confirmDiscard();
+    await invoke("resolve_settings_exit", { discard });
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    exitRequestInFlight = false;
   }
 }
 
@@ -4573,6 +4597,10 @@ detailCard?.addEventListener("input", (event) => {
 (function guardWindowClose() {
   try {
     window.__TAURI__?.event?.listen?.("sakura://settings-close-requested", requestCancelClose);
+    window.__TAURI__?.event?.listen?.("sakura://settings-exit-requested", requestAppExitClose);
+    window.__TAURI__?.event?.listen?.("sakura://settings-exit-timeout", () => {
+      notify("退出请求已取消：设置窗口未在 5 秒内响应。", "info");
+    });
     const current = window.__TAURI__?.window?.getCurrentWindow?.();
     if (!current?.onCloseRequested) {
       return;
@@ -4589,4 +4617,19 @@ detailCard?.addEventListener("input", (event) => {
   }
 })();
 
-load().catch((error) => setError(String(error)));
+async function startSettingsFrontend() {
+  let manifest;
+  try {
+    manifest = await invoke("settings_capability_manifest");
+  } catch {
+    await load();
+    return;
+  }
+  runtimeSettingsHost = true;
+  const { applyCapabilityManifest } = await import("./capability-shell.js");
+  applyCapabilityManifest(document, manifest);
+  settingsBaseline = null;
+  refreshDirty();
+}
+
+startSettingsFrontend().catch((error) => setError(String(error)));

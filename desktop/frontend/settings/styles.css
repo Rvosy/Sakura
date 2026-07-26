@@ -1760,6 +1760,41 @@ input[type="checkbox"]:disabled + span {
   font-size: 13px;
 }
 
+.capability-shell {
+  align-content: center;
+  justify-items: center;
+  min-height: 100%;
+  padding: 48px;
+  color: var(--sakura-secondary-text);
+  text-align: center;
+}
+
+.capability-shell:not([hidden]) {
+  display: grid;
+}
+
+.capability-shell-mark {
+  color: var(--sakura-primary);
+  font-size: 42px;
+}
+
+.capability-shell h2 {
+  margin: 12px 0 6px;
+  color: var(--sakura-text);
+  font-size: 22px;
+}
+
+.capability-shell p {
+  max-width: 470px;
+  margin: 0;
+  line-height: 1.7;
+}
+
+body[data-settings-host="runtime-v2"] .nav-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 /* ---------- 供应商主从页 ---------- */
 
 .provider-card {

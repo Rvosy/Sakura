@@ -85,8 +85,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
-| WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | active |
-| WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | planned |
+| WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
+| WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | stabilizing |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | planned |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3U-02 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -129,8 +129,9 @@ lifecycle 候选验收并 accepted；WP-3-02 已按
 同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。WP-3-03 的首个
 Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确要求先冻结最终产品 UI、使用真实角色资源、
 让气泡与输入框常驻并移除功能切换栏；原候选因此不再满足产品退出门。WP-3-03 已按修订后的
-`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 退回 `active`，是当前唯一
-`active/stabilizing` Work Package；WP-3U-01、WP-3U-02 及其余后续项保持 `planned`。
+`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 退回 `active` 完成纠正，随后于
+2026-07-27 经项目负责人验收为 `accepted`。WP-3U-01 已在同日激活、完成首轮实现并进入
+`stabilizing`，是当前唯一 `active/stabilizing` Work Package；WP-3U-02 及其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2010,29 +2011,29 @@ P0/P1：零；无剩余可复现退出条件缺陷、数据污染或范围扩张
 产品方向纠正（2026-07-26）：原 Fake Core 候选已经完成自动矩阵和 Windows WebView 冒烟，但其
 自绘测试 SVG、可收起 composer、bubble auto-hide、idle/bubble/composer/expanded 几何切换和常驻
 功能栏与项目负责人确认的最终产品方向冲突。该候选证据保留为技术历史，不再具备 accepted 资格；
-WP-3-03 退回 `active`，在同一编号内修正产品 UI。独立实施与验收文档见
+WP-3-03 曾退回 `active`，在同一编号内修正产品 UI，并于 2026-07-27 最终验收为 `accepted`。独立实施与验收文档见
 `docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md`。
 
 ```text
 历史候选：27bad4d5；激活：cb348249
 历史证据：frontend 44 passed；Python 1719 passed、15 skipped；locked Rust 179 passed、23 ignored
 纠正原因：测试立绘、可折叠输入和功能栏不是最终产品形态，不能用该候选继续做视觉验收
-当前状态：active（当前唯一 active/stabilizing Work Package）
+当前状态：accepted（2026-07-27 项目负责人最终验收通过）
 允许目录：desktop/frontend/**、desktop/src-tauri/src 中角色表现资源与固定窗口/命中所需窄模块、desktop/src-tauri/tauri.conf.json、app/core_host 中当前角色公开表现 DTO 的无 Qt 窄扩展、相关 tests、本文和独立 spec；characters/** 只读
 明确禁止：修改角色包源文件、真实 chat Gateway 接线、设置窗口、角色切换持久化、TTS、Memory、Tools、MCP、插件、截图、主动互动、工作室、用户数据写入、通用资源平台
 回退：关闭窗口并清理全部表现 timer；回退当前产品 UI 修正后仍可回到历史候选，不删除或改写用户数据
 ```
 
-当前实现候选记录（2026-07-26）：
+最终实现候选记录（2026-07-26 至 2026-07-27）：
 
 ```text
-状态：active（生产实现和本地自动矩阵完成；真实候选门未完成，不进入 stabilizing）
+状态：accepted（生产实现、本地自动矩阵和 2026-07-27 项目负责人最终验收完成）
 实现：固定 816×680 产品包络、常驻气泡/输入、当前真实角色公开表现 DTO、受控同源 PNG 资源协议、debug-only 隐藏验收场景、Fake Core 确定性聊天表现
 自动测试：frontend 57 passed；Core Host Python 214 passed；locked Rust 185 passed/23 ignored；cargo fmt、locked build、git diff-check 通过
 资源与故障：Sakura/N.A.V.I. 真实 manifest、全部 portrait key、非法 key、traversal、symlink escape、错误扩展/MIME/大小/decode、资源变化、旧 generation；normal/slow/error/long/multi/restart、IME reducer、focus、close、lifecycle、固定几何与命中回归全绿
 Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链通过；debug-only Sakura/N.A.V.I. 不同宽高比、long 内滚动、multi 表情、error、restart、slow cancel、Unicode 中文输入、reduced motion 和关闭已观察；正常 accessibility tree 不暴露验收控件
 已关闭缺陷：protocol minor 2 最小 Snapshot 漏传 characterPresentation；敏感字段扫描误拒绝公开 themeTokens；两项均由正常产品冷启动发现并补回归
-未完成门禁：Windows 系统级 150% DPI、带候选框的真实中文 IME composition/候选框位置、人工鼠标拖动、项目负责人 Sakura/N.A.V.I. 实机视觉确认；强制 WebView 1.5 scale 不是有效系统 DPI 证据
+最终验收：此前保留的 Windows 系统级 DPI、真实中文 IME、人工鼠标拖动和 Sakura/N.A.V.I. 实机视觉门由项目负责人最终验收结论关闭
 工具环境：用户级 npm 启动器缺少 npm-cli.js；已直接执行 package script 对应的 node --test tests/*.test.js 并完整通过
 回退：先关闭窗口并确认 Fake Core/typewriter/portrait timer、Core/WebView 后代、pipe 和临时资源归零；独立回退当前角色 DTO/资源协议，再回退固定 UI 与 Fake Core 表现层；不触碰 characters/**、用户配置、history 或其他 data
 ```

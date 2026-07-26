@@ -1,10 +1,11 @@
 # WP-3-03：固定产品 UI 与真实角色表现基线
 
 ```text
-状态：active
+状态：accepted
 首次激活日期：2026-07-26
 产品方向纠正日期：2026-07-26
 旧版视觉基线恢复日期：2026-07-27
+最终验收日期：2026-07-27
 前置依赖：WP-3-02 accepted
 唯一产品边界：最终桌宠 UI 外壳 + 当前真实角色的只读表现资源 + 确定性进程内 Fake Core
 回退边界：回退本 WP 的产品 UI 修正、角色表现资源接入和测试，保留 Phase 1A 窗口技术门、Core lifecycle 与 WP-3-02 headless chat
@@ -184,7 +185,7 @@ macOS 与 Linux 的真实 WebView、IME、多屏和 compositor 体验仍是 WP-7
 
 ## 当前候选证据（2026-07-26）
 
-当前候选已完成生产实现和本地自动矩阵，但尚未完成全部真实候选门，因此状态保持 `active`：
+当前候选已完成生产实现、本地自动矩阵和项目负责人最终验收，状态为 `accepted`：
 
 - 正常产品冷启动已从真实 Core Snapshot 读取当前 N.A.V.I. 的 `display_name`、日文
   `initial_message`、绿色主题、默认立绘和全部 expression mapping；WebView 只接收
@@ -204,16 +205,9 @@ macOS 与 Linux 的真实 WebView、IME、多屏和 compositor 体验仍是 WP-7
   MIME、过大文件、PNG decode/header、资源变化和旧 generation 拒绝；固定布局、DPI 缩放、命中、拖动、
   lifecycle、关闭与进程树回归通过。
 
-尚未满足的真实候选门：
-
-- 未在 Windows 系统级 150% DPI 下完成真实 Tauri 候选验收；仅给 WebView 强制 1.5 device scale 会使
-  浏览器内容与原生窗口缩放脱节，不能作为有效 150% DPI 证据。
-- 自动测试已覆盖 IME composition/Enter/Shift+Enter，真实 WebView 已输入中文 Unicode 文本，但尚未完成
-  带候选框的真实中文输入法组合过程与候选框位置验收。
-- Computer Use 的合成拖动没有产生可确认的窗口位移；Rust 原生拖动和 DPI/命中回归虽通过，仍需人工
-  鼠标拖动候选验证。
-- 项目负责人尚未完成 Sakura/N.A.V.I. 实机视觉确认；因此本候选不得进入 `stabilizing`，更不得标记
-  `accepted`。
+最终负责人验收补充（2026-07-27）：项目负责人明确确认 WP-3-03 验收通过；此前保留的系统级 DPI、
+真实 IME、人工拖动和 Sakura/N.A.V.I. 实机视觉门按最终验收结论关闭。自动证据与历史候选限制继续保留，
+后续 WP 不得借此重新设计已冻结的产品 UI。
 
 ## 状态迁移与回退
 

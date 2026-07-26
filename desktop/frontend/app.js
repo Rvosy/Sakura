@@ -3,7 +3,12 @@ import { createFakeChatCore } from "./chat/fake-chat-core.js";
 import { applyTheme } from "./core/theme.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
-import { classifyPointerHit, computeHitRegions, shouldStartNativeDrag } from "./pet/hit-regions.js";
+import {
+  classifyPointerHit,
+  computeHitRegions,
+  shouldOpenProductMenu,
+  shouldStartNativeDrag,
+} from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
 import { createLayoutController } from "./pet/layout-controller.js";
 import { applyPetLayout, computePetLayout, PRODUCT_LAYOUT_STATE, validateLayoutContract } from "./pet/layout.js";
@@ -259,6 +264,40 @@ for (const dragRegion of dragRegions) {
     }
   });
 }
+
+document.addEventListener("contextmenu", async (event) => {
+  if (!currentHitRegions) return;
+  const point = [event.clientX / contentScale, event.clientY / contentScale];
+  const hitKind = classifyPointerHit({
+    model: currentHitRegions,
+    point,
+    interactiveTarget: Boolean(event.target.closest("[data-interactive]")),
+  });
+  if (
+    !shouldOpenProductMenu({
+      hitKind,
+      button: event.button,
+      inPortrait: Boolean(event.target.closest("#portrait")),
+    })
+  ) {
+    return;
+  }
+  event.preventDefault();
+  try {
+    await invoke("show_pet_context_menu", {
+      surfaceX: point[0],
+      surfaceY: point[1],
+      popupX: event.clientX,
+      popupY: event.clientY,
+    });
+  } catch {
+    showRecoverableError("桌宠菜单暂时无法打开，请稍后重试。");
+  }
+});
+
+window.__TAURI__?.event?.listen?.("sakura://product-menu-error", () => {
+  showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
+});
 
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.rvosy.sakura.settings",
   "build": {
-    "frontendDist": "../frontend"
+    "frontendDist": "../../../desktop/frontend/settings"
   },
   "app": {
     "withGlobalTauri": true,

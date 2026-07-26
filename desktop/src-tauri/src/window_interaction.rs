@@ -80,8 +80,7 @@ impl LogicalHitRect {
         Ok(Self::new(x, y, width, height))
     }
 
-    #[cfg(test)]
-    fn contains(self, point: [i32; 2]) -> bool {
+    pub fn contains(self, point: [i32; 2]) -> bool {
         let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < i64::from(self.x) + i64::from(self.width)
             && i64::from(point[1]) >= i64::from(self.y)
