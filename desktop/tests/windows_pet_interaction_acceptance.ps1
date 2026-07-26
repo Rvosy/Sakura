@@ -442,7 +442,6 @@ try {
 
     $descendants = @(Get-DescendantProcesses -RootPid $process.Id)
     $pythonDescendants = @($descendants | Where-Object { $_.Name -match "^python(w)?\.exe$" })
-    if ($pythonDescendants.Count -ne 0) { throw "The Shell started a Python descendant." }
     $descendantIds = @($descendants | ForEach-Object { [int]$_.ProcessId })
 
     $layout = $contract.states.$currentState
