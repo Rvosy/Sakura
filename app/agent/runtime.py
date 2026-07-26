@@ -100,12 +100,14 @@ class AgentRuntime:
         vision_api_client: OpenAICompatibleClient | None = None,
         character_id: str = "",
         character_name: str = "",
+        strict_provider_errors: bool = False,
     ) -> None:
         self.api_client = api_client
         self._vision_api_client = vision_api_client
         self.system_prompt = system_prompt
         self.character_id = character_id.strip()
         self.character_name = character_name.strip()
+        self.strict_provider_errors = strict_provider_errors
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
@@ -356,12 +358,16 @@ class AgentRuntime:
                 cancel_checker=cancel_checker,
             )
         except ApiRequestError as exc:
+            if self.strict_provider_errors:
+                raise
             log_event("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
             return parsed.reply
 
         check_cancelled(cancel_checker)
         repaired = parse_chat_reply_result(repaired_turn.content)
         if repaired.needs_retry:
+            if self.strict_provider_errors:
+                raise ApiRequestError("Provider reply remained invalid after repair")
             log_event(
                 "AgentRuntime",
                 "最终回复修复后仍不合格，使用安全兜底",
@@ -1064,6 +1070,8 @@ class AgentRuntime:
                 except OperationCancelled:
                     raise
                 except Exception as retry_exc:
+                    if self.strict_provider_errors:
+                        raise
                     log_event(
                         "AgentRuntime",
                         "工具结果文本总结失败，使用本地兜底回复",
@@ -1072,6 +1080,8 @@ class AgentRuntime:
                     final_reply = _build_fallback_tool_reply(execution_results)
                     final_visual_observation = None
             else:
+                if self.strict_provider_errors:
+                    raise
                 log_event("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
                 final_reply = _build_fallback_tool_reply(execution_results)
                 final_visual_observation = None

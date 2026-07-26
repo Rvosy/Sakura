@@ -4,6 +4,8 @@ import json
 import os
 import re
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,10 @@ LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
 RAW_TTS_SERVICE_KEY = "SAKURA_RAW_TTS_SERVICE_LOG"
 RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_LOGGING_SUPPRESSED: ContextVar[bool] = ContextVar(
+    "sakura_runtime_logging_suppressed",
+    default=False,
+)
 LOG_LEVEL_ERROR = "error"
 LOG_LEVEL_WARN = "warn"
 LOG_LEVEL_INFO = "info"
@@ -258,6 +264,8 @@ def log_event(
     当前调用链存在交互 ID 时自动附加 interaction_id 字段，
     使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
     """
+    if _LOGGING_SUPPRESSED.get():
+        return
     channel_key = _channel_key(channel)
     if (channel_key, str(message)) in _SUPPRESSED_MESSAGES:
         return
@@ -297,6 +305,16 @@ def log_event(
         print(format_console_event(record))
     if file_log_enabled() and _event_visible(record, sink="file"):
         _write_file_log(record)
+
+
+@contextmanager
+def suppress_runtime_logs():
+    """Suppress all sinks for a scoped headless operation."""
+    token = _LOGGING_SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _LOGGING_SUPPRESSED.reset(token)
 
 
 def log_tts_service_output(provider: str, line: str) -> bool:

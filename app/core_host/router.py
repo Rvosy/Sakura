@@ -1,8 +1,8 @@
-"""Bounded concurrent transport router for the Runtime v2 fixture surface.
+"""Bounded concurrent transport router for the Runtime v2 chat surface.
 
 The router deliberately owns no Assistant objects.  It only separates frame
 reading, control dispatch, bounded fixture execution, event publication and
-the single stdout writer.  Real chat commands are intentionally absent.
+the single stdout writer. Assistant domain objects stay behind the injected boundary.
 """
 
 from __future__ import annotations
@@ -337,11 +337,13 @@ class ConcurrentHostRouter:
         ticket: _Ticket,
         error: BaseException,
     ) -> None:
-        code = (
+        code = str(getattr(error, "code", "")) or (
             "CHAT_EXECUTION_LIMIT_EXCEEDED"
             if str(error) == "CHAT_EXECUTION_LIMIT_EXCEEDED"
             else "INVALID_CHAT_PAYLOAD"
         )
+        public_message = str(getattr(error, "public_message", "")) or "chat request was rejected"
+        retryable = bool(getattr(error, "retryable", code == "CHAT_EXECUTION_LIMIT_EXCEEDED"))
         message = response(
             request,
             generation_id=str(request["generationId"]),
@@ -349,8 +351,8 @@ class ConcurrentHostRouter:
             protocol_minor=int(request["protocolMinor"]),
             error={
                 "code": code,
-                "message": "chat fixture request was rejected",
-                "retryable": code == "CHAT_EXECUTION_LIMIT_EXCEEDED",
+                "message": public_message,
+                "retryable": retryable,
                 "details": {},
             },
         )

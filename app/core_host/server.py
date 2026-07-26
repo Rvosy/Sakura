@@ -120,6 +120,7 @@ class ReadinessController:
         self._revision = 0
         self._component: dict[str, object] | None = None
         self._current_character_summary: dict[str, object] | None = None
+        self._session: object | None = None
         self._initializer: object | None = None
         self._initializer_close_claimed = False
         self._initializer_close_thread: threading.Thread | None = None
@@ -158,6 +159,13 @@ class ReadinessController:
     def readiness(self) -> str:
         with self._lock:
             return self._readiness
+
+    def published_session(self) -> object | None:
+        """Return the generation's fully initialized Assistant session, if any."""
+        with self._lock:
+            if self._closed or self._readiness not in {"ready", "degraded"}:
+                return None
+            return self._session
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -206,6 +214,7 @@ class ReadinessController:
             self._close_called = True
             self._closed = True
             self._cancel.set()
+            self._session = None
             worker = self._worker
             initializer = self._claim_initializer_close_locked()
         if initializer is not None:
@@ -264,6 +273,7 @@ class ReadinessController:
                         "retryable": result.retryable,
                     }
                     self._current_character_summary = summary
+                    self._session = result.session
                     self._revision = 2
                     claimed = None
             if claimed is not None:
@@ -280,6 +290,7 @@ class ReadinessController:
                         "retryable": False,
                     }
                     self._current_character_summary = None
+                    self._session = None
                     self._revision = 2
                     claimed = None
             if claimed is not None:
@@ -454,16 +465,15 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
+    def published_session(self) -> object | None:
+        return self._readiness.published_session()
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
                 return
             self._closed = True
         primary: BaseException | None = None
-        try:
-            self._readiness.close()
-        except BaseException as error:  # noqa: BLE001
-            primary = error
         if self._chat_boundary is not None:
             try:
                 getattr(self._chat_boundary, "close")()
@@ -472,6 +482,13 @@ class ControlDispatcher:
                     primary = error
                 else:
                     primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
+        try:
+            self._readiness.close()
+        except BaseException as error:  # noqa: BLE001
+            if primary is None:
+                primary = error
+            else:
+                primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
         if primary is not None:
             raise primary
 
@@ -694,8 +711,14 @@ def _capability_list(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
     return tuple(capabilities)
 
 
-def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig) -> None:
-    from .chat_fixture import ChatFixtureBoundary
+def run_host(
+    input_stream: BinaryIO,
+    output_stream: BinaryIO,
+    config: HostConfig,
+    *,
+    chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
+) -> None:
+    from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
 
     writer: ResponseWriter | None = None
@@ -705,11 +728,17 @@ def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig
     primary_traceback = None
     try:
         writer = ResponseWriter(output_stream)
-        chat_boundary = ChatFixtureBoundary(
-            config.generation_id,
-            config.generation_credential,
-        )
         dispatcher = ControlDispatcher(config)
+        chat_boundary = (
+            chat_boundary_factory(dispatcher)
+            if chat_boundary_factory is not None
+            else RealChatBoundary(
+                config.generation_id,
+                config.generation_credential,
+                config.app_root,
+                session_provider=getattr(dispatcher, "published_session", lambda: None),
+            )
+        )
         attach_chat_boundary = getattr(dispatcher, "attach_chat_boundary", None)
         if callable(attach_chat_boundary):
             attach_chat_boundary(chat_boundary)

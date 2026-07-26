@@ -1,4 +1,4 @@
-//! Generation-scoped allowlisted Gateway for the WP-2-02 fake chat boundary.
+//! Generation-scoped allowlisted Gateway for the headless real chat boundary.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -362,50 +362,18 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
     let object = payload
         .as_object()
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: payload must be an object".to_string())?;
-    if object
-        .keys()
-        .any(|key| !matches!(key.as_str(), "message" | "fixture"))
-    {
+    if object.keys().any(|key| key != "message") {
         return Err("INVALID_CHAT_PAYLOAD: payload contains forbidden fields".to_string());
     }
     let message = object
         .get("message")
         .and_then(Value::as_str)
-        .filter(|message| !message.is_empty())
+        .filter(|message| !message.trim().is_empty())
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: message must be non-empty".to_string())?;
     if message.len() > CHAT_PAYLOAD_LIMIT
         || serde_json::to_vec(payload).map_or(true, |encoded| encoded.len() > CHAT_PAYLOAD_LIMIT)
     {
         return Err("CHAT_PAYLOAD_TOO_LARGE: payload exceeds its limit".to_string());
-    }
-    if let Some(fixture) = object.get("fixture") {
-        let fixture = fixture
-            .as_object()
-            .ok_or_else(|| "INVALID_CHAT_PAYLOAD: fixture must be an object".to_string())?;
-        if fixture
-            .keys()
-            .any(|key| !matches!(key.as_str(), "kind" | "delayMs" | "outcome" | "name"))
-        {
-            return Err("INVALID_CHAT_PAYLOAD: fixture contains forbidden fields".to_string());
-        }
-        if !matches!(
-            fixture.get("kind").and_then(Value::as_str),
-            Some("sleep" | "file")
-        ) {
-            return Err("INVALID_CHAT_PAYLOAD: fixture kind is unsupported".to_string());
-        }
-        if fixture
-            .get("delayMs")
-            .is_some_and(|value| value.as_u64().is_none_or(|delay| delay > 30_000))
-        {
-            return Err("INVALID_CHAT_PAYLOAD: fixture delay is invalid".to_string());
-        }
-        if fixture
-            .get("outcome")
-            .is_some_and(|value| !matches!(value.as_str(), Some("complete" | "fail")))
-        {
-            return Err("INVALID_CHAT_PAYLOAD: fixture outcome is invalid".to_string());
-        }
     }
     Ok(())
 }
@@ -415,13 +383,14 @@ fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String
         .as_object()
         .ok_or_else(|| "INVALID_CHAT_EVENT: payload must be an object".to_string())?;
     match name {
-        "chat.started" | "chat.cancelled" if payload.len() == 1 => Ok(()),
-        "chat.completed"
-            if payload.len() == 2 && payload.get("reply").is_some_and(Value::is_string) =>
-        {
-            Ok(())
+        "chat.started" if payload.len() == 1 => Ok(()),
+        "chat.cancelled" if payload.len() == 2 => validate_history_status(payload),
+        "chat.completed" if payload.len() == 3 => {
+            validate_history_status(payload)?;
+            validate_chat_reply(payload.get("reply"))
         }
-        "chat.failed" if payload.len() == 2 => {
+        "chat.failed" if payload.len() == 3 => {
+            validate_history_status(payload)?;
             let error = payload
                 .get("error")
                 .and_then(Value::as_object)
@@ -439,6 +408,44 @@ fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String
         }
         _ => Err("INVALID_CHAT_EVENT: event payload shape is invalid".to_string()),
     }
+}
+
+fn validate_history_status(payload: &serde_json::Map<String, Value>) -> Result<(), String> {
+    if matches!(
+        payload.get("historyStatus").and_then(Value::as_str),
+        Some("saved" | "degraded")
+    ) {
+        Ok(())
+    } else {
+        Err("INVALID_CHAT_EVENT: history status is invalid".to_string())
+    }
+}
+
+fn validate_chat_reply(reply: Option<&Value>) -> Result<(), String> {
+    let reply = reply
+        .and_then(Value::as_object)
+        .ok_or_else(|| "INVALID_CHAT_EVENT: completed reply is invalid".to_string())?;
+    if reply.len() != 1 {
+        return Err("INVALID_CHAT_EVENT: completed reply shape is invalid".to_string());
+    }
+    let segments = reply
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "INVALID_CHAT_EVENT: completed segments are invalid".to_string())?;
+    for segment in segments {
+        let segment = segment
+            .as_object()
+            .ok_or_else(|| "INVALID_CHAT_EVENT: completed segment is invalid".to_string())?;
+        if segment.len() != 5
+            || !["text", "translation", "tone", "portrait"]
+                .iter()
+                .all(|key| segment.get(*key).is_some_and(Value::is_string))
+            || !segment.get("suppressTts").is_some_and(Value::is_boolean)
+        {
+            return Err("INVALID_CHAT_EVENT: completed segment shape is invalid".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn new_identity(prefix: &str) -> String {
@@ -490,7 +497,16 @@ mod tests {
 
     fn chat_event(operation_id: &str, name: &str) -> Value {
         let payload = if name == "chat.completed" {
-            json!({"operationId": operation_id, "reply": "hello"})
+            json!({
+                "operationId": operation_id,
+                "reply": {"segments": [{
+                    "text": "hello", "translation": "", "tone": "neutral",
+                    "portrait": "", "suppressTts": false
+                }]},
+                "historyStatus": "saved"
+            })
+        } else if name == "chat.cancelled" {
+            json!({"operationId": operation_id, "historyStatus": "saved"})
         } else {
             json!({"operationId": operation_id})
         };
@@ -528,12 +544,7 @@ mod tests {
     #[test]
     fn handle_is_opaque_and_cancel_uses_reserved_control_scheduling() {
         let (gateway, transport) = gateway();
-        let submission = gateway
-            .send(
-                "main",
-                json!({"message": "hello", "fixture": {"kind": "sleep", "delayMs": 1}}),
-            )
-            .unwrap();
+        let submission = gateway.send("main", json!({"message": "hello"})).unwrap();
         assert!(!format!("{:?}", submission.cancel_handle).contains(GENERATION));
         submission
             .completion

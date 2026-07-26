@@ -3637,7 +3637,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_2_02_real_fake_core_chat_cancel_has_one_terminal_and_control_deadline() {
+    fn wp_3_02_production_gateway_rejects_fixture_fields_before_core_write() {
         let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
         let mut host =
@@ -3647,7 +3647,7 @@ mod tests {
         let gateway = host
             .chat_gateway()
             .expect("chat Gateway should be available");
-        let submission = gateway
+        let error = gateway
             .send(
                 "main",
                 json!({
@@ -3655,62 +3655,17 @@ mod tests {
                     "fixture": {"kind": "sleep", "delayMs": 10_000}
                 }),
             )
-            .expect("chat send should return an opaque handle immediately");
-        let started = host
-            .recv_event_timeout(Duration::from_secs(3))
-            .expect("event reader should remain responsive")
-            .expect("chat.started event");
-        assert_eq!(started["name"], "chat.started");
-        assert_eq!(
-            gateway
-                .observe_event(&started)
-                .expect("started event identity"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
-        let active_snapshot = host
-            .refresh_snapshot("chat-active-snapshot", Duration::from_secs(3))
-            .expect("Python should construct the active chat Snapshot");
-        assert_eq!(
-            active_snapshot.as_object().expect("Snapshot object").len(),
-            5
-        );
-        assert_eq!(
-            active_snapshot["activeInteractionSummary"]["operationId"],
-            started["id"]
-        );
-        assert_eq!(
-            active_snapshot["activeInteractionSummary"]["state"],
-            "started"
-        );
-        let active_revision = active_snapshot["revision"].as_u64().expect("revision");
-        let cancel_started = Instant::now();
-        let cancel = gateway
-            .cancel("main", &submission.cancel_handle)
-            .expect("chat.cancel response");
-        assert!(cancel_started.elapsed() < Duration::from_secs(1));
-        assert_eq!(cancel["ok"], true);
-        let terminal = host
-            .recv_event_timeout(Duration::from_secs(3))
-            .expect("terminal event reader")
-            .expect("chat terminal event");
-        assert_eq!(terminal["name"], "chat.cancelled");
-        assert_eq!(
-            gateway
-                .observe_event(&terminal)
-                .expect("terminal event identity"),
-            crate::core_host_gateway::EventDisposition::Accepted
-        );
-        let completed = submission
-            .completion
-            .recv_timeout(Duration::from_secs(3))
-            .expect("chat response should arrive")
-            .expect("chat response should be framed");
-        assert_eq!(completed["ok"], true);
-        let settled_snapshot = host
-            .refresh_snapshot("chat-settled-snapshot", Duration::from_secs(3))
-            .expect("settled Snapshot should fully rehydrate");
-        assert!(settled_snapshot["activeInteractionSummary"].is_null());
-        assert!(settled_snapshot["revision"].as_u64().unwrap() > active_revision);
+            .expect_err("fixture-only fields must not reach the production Core");
+        assert!(error.starts_with("INVALID_CHAT_PAYLOAD:"));
+        assert_eq!(gateway.registry_len(), 0);
+        let health = host
+            .request(
+                "post-rejection-health",
+                "system.health",
+                Duration::from_secs(3),
+            )
+            .expect("local rejection must not affect Core health");
+        assert_eq!(health["ok"], true);
         host.shutdown().expect("chat host shutdown");
     }
 

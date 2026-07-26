@@ -159,6 +159,7 @@ class AssistantAdapter:
                 memory=memory,
                 character_id=profile.id,
                 character_name=profile.display_name,
+                strict_provider_errors=True,
             )
             owned.append(runtime)
             self._check_active(cancel)
