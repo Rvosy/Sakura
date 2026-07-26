@@ -59,6 +59,31 @@ def test_exact_and_downward_minor_negotiation_are_deterministic() -> None:
             dispatcher.close()
 
 
+def test_concurrent_router_capability_requires_minor_22_and_is_optional() -> None:
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
+    try:
+        payload = hello_payload(maximum=2)
+        payload["requiredCapabilities"] = [*CAPABILITIES, "transport.concurrent-router"]
+        payload["optionalCapabilities"] = []
+        negotiated, _ = dispatcher.dispatch(request("system.hello", payload))
+        assert negotiated["ok"] is True
+        assert negotiated["protocolMinor"] == 2
+        assert "transport.concurrent-router" in negotiated["payload"]["capabilities"]
+        assert dispatcher.events_enabled()
+    finally:
+        dispatcher.close()
+
+    legacy = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, CREDENTIAL))
+    try:
+        payload = hello_payload(maximum=1)
+        payload["requiredCapabilities"] = [*CAPABILITIES, "transport.concurrent-router"]
+        failed, _ = legacy.dispatch(request("system.hello", payload))
+        assert failed["ok"] is False
+        assert failed["error"]["code"] == "CAPABILITY_NEGOTIATION_FAILED"
+    finally:
+        legacy.close()
+
+
 @pytest.mark.parametrize(
     ("mutate", "code"),
     [

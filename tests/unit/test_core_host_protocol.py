@@ -15,6 +15,7 @@ from app.core_host.protocol import (
     ProtocolError,
     decode_frame,
     encode_frame,
+    event,
     read_frame,
 )
 from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError, run_host
@@ -118,6 +119,38 @@ def test_envelope_and_error_shape_are_strict_and_json_safe() -> None:
     payload_length = struct.unpack(">I", encoded[:4])[0]
     decoded_json = json.loads(encoded[4 : 4 + payload_length].decode("utf-8"))
     assert decoded_json == request("unicode")
+
+
+def test_protocol_22_event_is_distinct_from_21_request_response() -> None:
+    source = request("event-source", "fixture.blocking")
+    source["protocolMinor"] = 2
+    message = event(
+        source,
+        generation_id=GENERATION_ID,
+        generation_credential=GENERATION_CREDENTIAL,
+        name="fixture.completed",
+        payload={"state": "completed"},
+    )
+    assert decode_frame(encode_frame(message)) == message
+    assert "ok" not in message
+    assert "deadlineMs" not in message
+    assert "priority" not in message
+
+    for key, value in (
+        ("protocolMinor", 1),
+        ("ok", True),
+        ("deadlineMs", 3000),
+        ("priority", "interactive"),
+    ):
+        invalid = dict(message)
+        invalid[key] = value
+        with pytest.raises(ProtocolError) as raised:
+            encode_frame(invalid)
+        assert raised.value.code == "INVALID_ENVELOPE"
+
+    legacy = request("legacy-health", "system.health")
+    legacy["protocolMinor"] = 1
+    assert decode_frame(encode_frame(legacy)) == legacy
 
 
 def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:

@@ -6,10 +6,13 @@ use std::{
 use serde_json::{Map, Value};
 
 pub const PROTOCOL_MAJOR: u64 = 2;
-pub const PROTOCOL_MINOR: u64 = 1;
+/// Latest wire minor.  Minor 2 adds the generation-scoped event envelope;
+/// 2.0/2.1 request/response lifecycle messages remain valid unchanged.
+pub const PROTOCOL_MINOR: u64 = 2;
+pub const EVENT_PROTOCOL_MINOR: u64 = 2;
 pub const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
 const HEADER_SIZE: usize = 4;
-const MESSAGE_KINDS: [&str; 2] = ["request", "response"];
+const MESSAGE_KINDS: [&str; 3] = ["request", "response", "event"];
 const PRIORITIES: [&str; 3] = ["control", "interactive", "background"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +74,7 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
         return Err(IpcError::new("INVALID_ENVELOPE", "unknown message kind"));
     }
     non_empty_string(message, "generationId")?;
-    if kind == "response" || message.contains_key("generationCredential") {
+    if kind == "response" || kind == "event" || message.contains_key("generationCredential") {
         non_empty_string(message, "generationCredential")?;
     }
     non_empty_string(message, "id")?;
@@ -94,7 +97,7 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
         if !PRIORITIES.contains(&priority) {
             return Err(IpcError::new("INVALID_ENVELOPE", "unknown priority"));
         }
-    } else {
+    } else if kind == "response" {
         let ok = message
             .get("ok")
             .and_then(Value::as_bool)
@@ -118,6 +121,22 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
                 return Err(IpcError::new(
                     "INVALID_ENVELOPE",
                     "error details must be an object",
+                ));
+            }
+        }
+    } else {
+        let minor = non_negative_integer(message, "protocolMinor")?;
+        if minor < EVENT_PROTOCOL_MINOR {
+            return Err(IpcError::new(
+                "INVALID_ENVELOPE",
+                "event requires protocol minor 2.2",
+            ));
+        }
+        for forbidden in ["deadlineMs", "priority", "ok", "error"] {
+            if message.contains_key(forbidden) {
+                return Err(IpcError::new(
+                    "INVALID_ENVELOPE",
+                    format!("event must not include {forbidden}"),
                 ));
             }
         }
@@ -416,6 +435,47 @@ mod tests {
                 .expect_err("oversized payload must fail")
                 .code,
             "FRAME_TOO_LARGE"
+        );
+    }
+
+    #[test]
+    fn protocol_22_event_is_distinct_from_21_request_response() {
+        let message = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "event",
+            "generationId": GENERATION_ID,
+            "generationCredential": "11111111111111111111111111111111",
+            "id": "event-source",
+            "name": "fixture.completed",
+            "payload": {"state": "completed"}
+        });
+        assert_eq!(
+            decode_frame(&encode_frame(&message).unwrap()).unwrap(),
+            message
+        );
+
+        for (key, value) in [
+            ("protocolMinor", json!(1)),
+            ("ok", json!(true)),
+            ("deadlineMs", json!(3000)),
+            ("priority", json!("interactive")),
+        ] {
+            let mut invalid = message.clone();
+            invalid[key] = value;
+            assert_eq!(
+                encode_frame(&invalid)
+                    .expect_err("invalid event must fail")
+                    .code,
+                "INVALID_ENVELOPE"
+            );
+        }
+
+        let mut legacy = request("legacy-health", "system.health");
+        legacy["protocolMinor"] = json!(1);
+        assert_eq!(
+            decode_frame(&encode_frame(&legacy).unwrap()).unwrap(),
+            legacy
         );
     }
 }

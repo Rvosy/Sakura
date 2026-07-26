@@ -182,7 +182,7 @@ def test_real_host_answers_hello_repeated_health_unknown_and_shutdown(tmp_path: 
             "capabilities": CAPABILITIES,
             "coreVersion": "0.1.0",
             "hostState": "transport_ready",
-            "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+            "protocol": {"major": 2, "minMinor": 0, "maxMinor": 2},
             "negotiated": {
                 "major": 2,
                 "minor": 1,

@@ -22,9 +22,12 @@ CAPABILITIES = (
     "core.initialize",
     "core.snapshot",
 )
+ROUTER_CAPABILITY = "transport.concurrent-router"
+SUPPORTED_CAPABILITIES = (*CAPABILITIES, ROUTER_CAPABILITY)
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
+WRITER_QUEUE_LIMIT = 32
 _READINESS_CLOSE_TIMEOUT_SECONDS = 1.0
 _WRITER_OPERATION_TIMEOUT_SECONDS = 3.0
 _SUMMARY_KEYS = (
@@ -330,7 +333,9 @@ class ResponseWriter:
 
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
-        self._queue: queue.Queue[_WriteRequest | object] = queue.Queue(maxsize=32)
+        self._queue: queue.Queue[_WriteRequest | object] = queue.Queue(
+            maxsize=WRITER_QUEUE_LIMIT
+        )
         self._error: BaseException | None = None
         self._closed = False
         self._thread = threading.Thread(
@@ -339,7 +344,7 @@ class ResponseWriter:
         )
         self._thread.start()
 
-    def send(self, message: dict[str, Any]) -> None:
+    def send(self, message: dict[str, Any], *, wait: bool = True) -> None:
         deadline = monotonic() + _WRITER_OPERATION_TIMEOUT_SECONDS
         if self._closed:
             raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is closed")
@@ -353,6 +358,8 @@ class ResponseWriter:
             )
         except queue.Full as error:
             raise WriterError("WRITER_QUEUE_CLOSED", "writer queue is unavailable") from error
+        if not wait:
+            return
         if not request.completed.wait(timeout=max(0.0, deadline - monotonic())):
             raise WriterError(
                 "TRANSPORT_WRITE_FAILED",
@@ -411,6 +418,7 @@ class ControlDispatcher:
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
+        self._events_enabled = False
         self._close_lock = threading.Lock()
         self._closed = False
 
@@ -556,15 +564,33 @@ class ControlDispatcher:
             raise NegotiationError(
                 "CAPABILITY_NEGOTIATION_FAILED", "protocol minor ranges do not overlap"
             )
-        missing = [capability for capability in required if capability not in REQUIRED_CAPABILITIES]
+        missing = [
+            capability
+            for capability in required
+            if capability not in REQUIRED_CAPABILITIES
+            and capability != ROUTER_CAPABILITY
+        ]
         if missing:
             raise NegotiationError(
                 "CAPABILITY_NEGOTIATION_FAILED", "a required capability is unavailable"
             )
         requested = set(required) | set(optional)
-        selected = tuple(capability for capability in CAPABILITIES if capability in requested)
+        selected = tuple(
+            capability
+            for capability in SUPPORTED_CAPABILITIES
+            if capability in requested
+            and (capability != ROUTER_CAPABILITY or selected_maximum >= 2)
+        )
+        if ROUTER_CAPABILITY in required and ROUTER_CAPABILITY not in selected:
+            raise NegotiationError(
+                "CAPABILITY_NEGOTIATION_FAILED",
+                "concurrent router requires protocol minor 2.2",
+            )
         self._protocol_minor = selected_maximum
         self._negotiated_capabilities = selected
+        self._events_enabled = (
+            selected_maximum >= 2 and ROUTER_CAPABILITY in selected
+        )
         self._handshake = "complete"
         return {
             "capabilities": list(selected),
@@ -581,6 +607,9 @@ class ControlDispatcher:
                 "capabilities": list(selected),
             },
         }
+
+    def events_enabled(self) -> bool:
+        return self._events_enabled
 
 
 def _negotiation_integer(mapping: Mapping[str, Any], key: str) -> int:
@@ -605,26 +634,28 @@ def _capability_list(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
 
 
 def run_host(input_stream: BinaryIO, output_stream: BinaryIO, config: HostConfig) -> None:
+    from .router import ConcurrentHostRouter
+
     writer: ResponseWriter | None = None
     dispatcher: ControlDispatcher | None = None
+    router: ConcurrentHostRouter | None = None
     primary_error: BaseException | None = None
     primary_traceback = None
     try:
         writer = ResponseWriter(output_stream)
         dispatcher = ControlDispatcher(config)
-        while True:
-            request = read_frame(input_stream)
-            if request is None:
-                break
-            message, should_stop = dispatcher.dispatch(request)
-            writer.send(message)
-            if should_stop:
-                break
+        router = ConcurrentHostRouter(
+            input_stream,
+            writer,
+            dispatcher,
+            read_frame_fn=read_frame,
+        )
+        router.run()
     except BaseException as error:  # noqa: BLE001 - preserve process-boundary failure
         primary_error = error
         primary_traceback = error.__traceback__
 
-    for owner in (dispatcher, writer):
+    for owner in (router, dispatcher, writer):
         if owner is None:
             continue
         try:

@@ -9,10 +9,11 @@ from typing import Any, BinaryIO
 
 
 PROTOCOL_MAJOR = 2
-PROTOCOL_MINOR = 1
+PROTOCOL_MINOR = 2
+EVENT_PROTOCOL_MINOR = 2
 HEADER_SIZE = 4
 MAX_FRAME_SIZE = 8 * 1024 * 1024
-MESSAGE_KINDS = frozenset({"request", "response"})
+MESSAGE_KINDS = frozenset({"request", "response", "event"})
 PRIORITIES = frozenset({"control", "interactive", "background"})
 
 
@@ -55,7 +56,7 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
     if kind not in MESSAGE_KINDS:
         raise ProtocolError("INVALID_ENVELOPE", "unknown message kind")
     _require_string(message, "generationId")
-    if kind == "response" or "generationCredential" in message:
+    if kind in {"response", "event"} or "generationCredential" in message:
         _require_string(message, "generationCredential")
     _require_string(message, "id")
     _require_string(message, "name")
@@ -68,7 +69,7 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
             raise ProtocolError("INVALID_ENVELOPE", "deadlineMs must be positive")
         if _require_string(message, "priority") not in PRIORITIES:
             raise ProtocolError("INVALID_ENVELOPE", "unknown priority")
-    else:
+    elif kind == "response":
         ok = message.get("ok")
         if not isinstance(ok, bool):
             raise ProtocolError("INVALID_ENVELOPE", "response must include boolean ok")
@@ -82,6 +83,13 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
                 raise ProtocolError("INVALID_ENVELOPE", "error retryable must be boolean")
             if not isinstance(error.get("details", {}), Mapping):
                 raise ProtocolError("INVALID_ENVELOPE", "error details must be an object")
+    else:
+        minor = _require_non_negative_int(message, "protocolMinor")
+        if minor < EVENT_PROTOCOL_MINOR:
+            raise ProtocolError("INVALID_ENVELOPE", "event requires protocol minor 2.2")
+        for forbidden in ("deadlineMs", "priority", "ok", "error"):
+            if forbidden in message:
+                raise ProtocolError("INVALID_ENVELOPE", f"event must not include {forbidden}")
 
 
 def encode_frame(message: Mapping[str, Any]) -> bytes:
@@ -245,6 +253,34 @@ def response(
     }
     if error is not None:
         message["error"] = dict(error)
+    validate_envelope(message)
+    return message
+
+
+def event(
+    request: Mapping[str, Any],
+    *,
+    generation_id: str,
+    generation_credential: str,
+    name: str | None = None,
+    payload: Mapping[str, Any] | None = None,
+    protocol_minor: int = EVENT_PROTOCOL_MINOR,
+) -> dict[str, Any]:
+    """Build the deliberately small 2.2 event envelope.
+
+    Events carry only the identity of the request that produced them.  They
+    never masquerade as responses and therefore cannot complete a waiter.
+    """
+    message: dict[str, Any] = {
+        "protocolMajor": PROTOCOL_MAJOR,
+        "protocolMinor": protocol_minor,
+        "kind": "event",
+        "generationId": generation_id,
+        "generationCredential": generation_credential,
+        "id": str(request.get("id", "unknown")),
+        "name": name or str(request.get("name", "unknown")),
+        "payload": dict(payload or {}),
+    }
     validate_envelope(message)
     return message
 
