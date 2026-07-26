@@ -12,6 +12,17 @@
 计划提交：先测试/fixture，再真实 Python chat boundary 与 history 接线，再 Rust/真实 Core acceptance，最后独立稳定化与验收文档；每个提交均可单独回退
 ```
 
+## 实施进展（2026-07-26）
+
+- 已将生产 `run_host` 从隐式 WP-2-02 fixture 切换为 `RealChatBoundary`；fixture 仅能由测试显式注入。
+- 已接通 readiness 发布的单一 `AssistantSession`、角色级 recent history、严格 Provider/结构错误、
+  exact reply projector、operation cancel/close 和唯一终态仲裁。
+- 已增加 Windows 本地确定性 Provider subprocess 验收，覆盖 completed、坏 JSON failed、HTTP read
+  cancelled、history 顺序与 Core health；Rust Gateway 已在写前拒绝 fixture/transport/history 等调用方字段，
+  并校验 `segments`/`historyStatus` exact terminal shape。
+- 当前仍保持 `active`：尚未完成三平台同 SHA platform CI、扩展 fault matrix 与独立 stabilizing 审查，
+  不提前标记 accepted。
+
 本 WP 不创建第二套 Assistant application、worker pool、stdout writer 或生命周期根。旧迁移提交
 `190dfafd24f5c5226bff8b4347837b6e45d9a331` 仅允许逐文件取证；禁止 cherry-pick、整包复制或恢复
 `brain_host` 架构。当前实现的唯一数据流如下：
@@ -84,8 +95,10 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
   `app/core_host/real_chat.py`（新增）；仅确有边界复用需要时修改 `app/core_host/router.py`、
   `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。
 - 既有业务与存储：`app/core/chat_pipeline.py`、`app/agent/runtime.py`、`app/core/cancellation.py`、
-  `app/llm/api_client.py`、`app/storage/chat_history.py`、`app/storage/paths.py`；只允许取消贯穿、纯投影、
-  history 绑定和已证明的 headless import blocker，不重写工具循环或 Provider 协议。
+  `app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、
+  `app/storage/paths.py`；只允许取消贯穿、纯投影、history 绑定和已证明的 headless import/stdout
+  blocker，不重写工具循环或 Provider 协议。`runtime_log` 仅允许增加 operation-scoped sink suppression，
+  防止 legacy console/file sink 污染 Core stdout 或把消息写到错误的应用根。
 - Rust Gateway/验收：`desktop/src-tauri/src/core_host_gateway.rs`、
   `desktop/src-tauri/src/core_host_router.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、
   `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/tests/**`；只扩展真实 chat consumer
