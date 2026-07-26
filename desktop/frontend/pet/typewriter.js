@@ -9,6 +9,7 @@ export function createTypewriter({
   segmentPauseMs = 160,
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
+  onStart = () => {},
   onText = () => {},
   onSegment = () => {},
   onComplete = () => {},
@@ -39,7 +40,7 @@ export function createTypewriter({
     const prefix = run.segmentIndex === 0 ? "" : "\n";
     if (prefix) {
       run.visible += prefix;
-      onText(run.visible);
+      onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
     }
     const characters = Array.from(segment.text);
     let characterIndex = 0;
@@ -47,7 +48,7 @@ export function createTypewriter({
       if (run.sequence !== sequence) return;
       if (characterIndex < characters.length) {
         run.visible += characters[characterIndex++];
-        onText(run.visible);
+        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
         timer = setTimer(tick, typingDelay);
         return;
       }
@@ -63,7 +64,8 @@ export function createTypewriter({
       sequence += 1;
       clearActiveTimer();
       const normalized = normalizeSegments(segments);
-      onText("");
+      onStart();
+      onText("", Object.freeze({ reason: "start", forceEnd: true }));
       if (!normalized.length) {
         active = null;
         onComplete(Object.freeze({ skipped: false }));
@@ -81,7 +83,7 @@ export function createTypewriter({
       const fullText = run.segments.map((segment) => segment.text).join("\n");
       const last = run.segments.at(-1);
       onSegment(last, run.segments.length - 1);
-      onText(fullText);
+      onText(fullText, Object.freeze({ reason: "skip", forceEnd: true }));
       active = null;
       onComplete(Object.freeze({ skipped: true }));
       return true;
@@ -90,7 +92,7 @@ export function createTypewriter({
       sequence += 1;
       clearActiveTimer();
       active = null;
-      onText(String(replacement ?? ""));
+      onText(String(replacement ?? ""), Object.freeze({ reason: "cancel", forceEnd: false }));
     },
     dispose() {
       sequence += 1;

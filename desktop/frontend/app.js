@@ -1,12 +1,14 @@
 import { createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createFakeChatCore } from "./chat/fake-chat-core.js";
 import { applyTheme } from "./core/theme.js";
-import { createBubbleAutoHide } from "./pet/bubble-auto-hide.js";
-import { classifyHitPoint, computeHitRegions, shouldStartNativeDrag } from "./pet/hit-regions.js";
+import { createBubbleScroll } from "./pet/bubble-scroll.js";
+import { classifyPointerHit, computeHitRegions, shouldStartNativeDrag } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
 import { createLayoutController } from "./pet/layout-controller.js";
 import { applyPetLayout, computePetLayout, validateLayoutContract } from "./pet/layout.js";
+import { renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
+import { createPresentationVisibility } from "./pet/presentation-visibility.js";
 import { createTypewriter } from "./pet/typewriter.js";
 
 const invoke = window.__TAURI__.core.invoke;
@@ -100,17 +102,21 @@ const portraitController = createPortraitController({
 
 const presentation = createChatPresentationReducer();
 const fakeCore = createFakeChatCore();
+const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
 
-const bubbleAutoHide = createBubbleAutoHide({
-  onHidden: () => {
-    bubble.classList.add("is-auto-hidden");
-    transition("idle");
+const presentationVisibility = createPresentationVisibility({
+  autoHideEnabled: true,
+  onBubbleHidden: () => bubble.classList.add("is-auto-hidden"),
+  onBubbleShown: () => bubble.classList.remove("is-auto-hidden"),
+  onComposerChanged: (open) => {
+    composerOpen = open;
+    composerToggle.setAttribute("aria-pressed", String(open));
   },
-  onShown: () => bubble.classList.remove("is-auto-hidden"),
+  onIdle: () => transition("idle"),
 });
 
 function desiredLayout(state) {
-  if (bubbleAutoHide.snapshot().hidden) return "idle";
+  if (presentationVisibility.snapshot().autoHide.hidden) return "idle";
   if (!composerOpen) return "bubble";
   const expectedLength = state.segments.reduce((total, segment) => total + segment.text.length, 0);
   return expectedLength > 220 ? "expanded" : "composer";
@@ -127,9 +133,9 @@ const phaseLabels = Object.freeze({
   reconnecting: "RECONNECT",
 });
 
-function render(state, { updateLayout = true } = {}) {
+function render(state, { updateLayout = true, bubbleUpdate = {} } = {}) {
   chatPhase.textContent = phaseLabels[state.phase] || "IDLE";
-  bubbleCopy.textContent = state.bubbleText;
+  bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
   typewriterSkip.hidden = !state.canSkip;
   send.dataset.action = state.canCancel ? "cancel" : "send";
   send.textContent = state.canCancel ? "取消" : "发送";
@@ -138,8 +144,7 @@ function render(state, { updateLayout = true } = {}) {
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
 
-  if (state.phase === "settled") bubbleAutoHide.notifySettled();
-  else if (["thinking", "typing", "reconnecting", "booting"].includes(state.phase)) bubbleAutoHide.notifyBusy();
+  presentationVisibility.syncPhase(state.phase);
 
   if (renderedPortrait !== state.portrait) {
     renderedPortrait = state.portrait;
@@ -149,9 +154,10 @@ function render(state, { updateLayout = true } = {}) {
 }
 
 const typewriter = createTypewriter({
-  onText: (text) => {
+  onStart: () => bubbleScroll.beginReply(),
+  onText: (text, bubbleUpdate) => {
     const result = presentation.setTypingText(text);
-    if (result.applied) render(result.state, { updateLayout: false });
+    if (result.applied) render(result.state, { updateLayout: false, bubbleUpdate });
   },
   onSegment: (segment) => {
     const result = presentation.setTypingSegment(segment);
@@ -180,9 +186,10 @@ function submitMessage({ text }) {
   const state = presentation.current();
   if (state.canCancel || state.lifecycle !== "ready") return;
   typewriter.cancel("");
-  bubbleAutoHide.show();
-  composerOpen = true;
+  presentationVisibility.showBubble();
+  presentationVisibility.revealComposer();
   input.value = "";
+  presentationVisibility.setInputState({ draft: "", composing: false });
   try {
     fakeCore.send({ message: text });
   } catch (error) {
@@ -200,7 +207,11 @@ for (const dragRegion of dragRegions) {
   dragRegion.addEventListener("pointerdown", async (event) => {
     if (!currentHitRegions) return;
     const point = [event.clientX / contentScale, event.clientY / contentScale];
-    const hitKind = event.target.closest("[data-interactive]") ? "interactive" : classifyHitPoint(currentHitRegions, point);
+    const hitKind = classifyPointerHit({
+      model: currentHitRegions,
+      point,
+      interactiveTarget: Boolean(event.target.closest("[data-interactive]")),
+    });
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     event.preventDefault();
     try {
@@ -214,13 +225,19 @@ for (const dragRegion of dragRegions) {
 
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
+  presentationVisibility.setInputState({ draft: input.value, composing: true });
   stage.dataset.composing = "true";
 });
-input.addEventListener("compositionupdate", (event) => inputFocus.handleCompositionUpdate(event.data));
+input.addEventListener("compositionupdate", (event) => {
+  inputFocus.handleCompositionUpdate(event.data);
+  presentationVisibility.setInputState({ draft: input.value, composing: true });
+});
 input.addEventListener("compositionend", (event) => {
   inputFocus.handleCompositionEnd(event.data);
+  presentationVisibility.setInputState({ draft: input.value, composing: false });
   stage.dataset.composing = "false";
 });
+input.addEventListener("input", () => presentationVisibility.setInputState({ draft: input.value }));
 input.addEventListener("focus", () => inputFocus.handleInputFocus());
 input.addEventListener("blur", () => inputFocus.handleInputBlur());
 input.addEventListener("keydown", (event) => {
@@ -234,27 +251,21 @@ send.addEventListener("click", () => {
 });
 
 typewriterSkip.addEventListener("click", () => typewriter.skip());
-bubble.addEventListener("pointerenter", () => bubbleAutoHide.setHovered(true));
-bubble.addEventListener("pointerleave", () => bubbleAutoHide.setHovered(false));
+bubble.addEventListener("pointerenter", () => presentationVisibility.setHovered(true));
+bubble.addEventListener("pointerleave", () => presentationVisibility.setHovered(false));
 bubble.addEventListener("dblclick", async () => {
-  composerOpen = true;
-  bubbleAutoHide.show();
-  bubbleAutoHide.configure(false);
+  presentationVisibility.revealComposer();
   await render(presentation.current());
   window.requestAnimationFrame(() => input.focus({ preventScroll: true }));
 });
 portrait.addEventListener("dblclick", async () => {
-  composerOpen = true;
-  bubbleAutoHide.show();
-  bubbleAutoHide.configure(false);
+  presentationVisibility.revealComposer();
   await render(presentation.current());
   window.requestAnimationFrame(() => input.focus({ preventScroll: true }));
 });
 
 composerToggle.addEventListener("click", async () => {
-  composerOpen = !composerOpen;
-  bubbleAutoHide.show();
-  bubbleAutoHide.configure(!composerOpen);
+  presentationVisibility.toggleComposer();
   await render(presentation.current());
   if (composerOpen) window.requestAnimationFrame(() => input.focus({ preventScroll: true }));
 });
@@ -262,7 +273,10 @@ composerToggle.addEventListener("click", async () => {
 document.querySelector("#theme-toggle").addEventListener("click", () => {
   currentTheme = applyTheme(currentTheme === "blossom" ? "moon" : "blossom");
 });
-document.querySelector("#fake-restart").addEventListener("click", () => fakeCore.restart());
+document.querySelector("#fake-restart").addEventListener("click", () => {
+  presentationVisibility.restart();
+  fakeCore.restart();
+});
 
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => inputFocus.handleWindowBlur());
@@ -283,7 +297,8 @@ function dispose() {
   if (disposed) return;
   disposed = true;
   typewriter.dispose();
-  bubbleAutoHide.dispose();
+  bubbleScroll.dispose();
+  presentationVisibility.dispose();
   portraitController.dispose();
   fakeCore.dispose();
 }

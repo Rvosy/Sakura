@@ -57,3 +57,7 @@ export function classifyHitPoint(model, point) {
 export function shouldStartNativeDrag({ hitKind, button, isPrimary }) {
   return hitKind === "drag" && button === 0 && isPrimary === true;
 }
+
+export function classifyPointerHit({ model, point, interactiveTarget = false }) {
+  return interactiveTarget ? "interactive" : classifyHitPoint(model, point);
+}

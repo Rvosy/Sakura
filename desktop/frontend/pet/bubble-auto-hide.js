@@ -10,19 +10,25 @@ export function createBubbleAutoHide({
   let enabled = true;
   let settled = false;
   let hovered = false;
+  let deferred = false;
   let hidden = false;
+  let revision = 0;
+  let disposed = false;
 
   function clear() {
+    revision += 1;
     if (timer != null) clearTimer(timer);
     timer = null;
   }
 
   function schedule() {
     clear();
-    if (!enabled || !settled || hovered || hidden) return;
+    if (disposed || !enabled || !settled || hovered || deferred || hidden) return;
+    const scheduledRevision = revision;
     timer = setTimer(() => {
+      if (scheduledRevision !== revision || disposed) return;
       timer = null;
-      if (!enabled || !settled || hovered) return;
+      if (!enabled || !settled || hovered || deferred) return;
       hidden = true;
       onHidden();
     }, delay);
@@ -30,6 +36,7 @@ export function createBubbleAutoHide({
 
   return Object.freeze({
     configure(nextEnabled) {
+      if (disposed) return;
       enabled = Boolean(nextEnabled);
       if (!enabled && hidden) {
         hidden = false;
@@ -38,6 +45,7 @@ export function createBubbleAutoHide({
       schedule();
     },
     notifyBusy() {
+      if (disposed) return;
       settled = false;
       clear();
       if (hidden) {
@@ -46,14 +54,22 @@ export function createBubbleAutoHide({
       }
     },
     notifySettled() {
+      if (disposed) return;
       settled = true;
       schedule();
     },
     setHovered(value) {
+      if (disposed) return;
       hovered = Boolean(value);
       schedule();
     },
+    setDeferred(value) {
+      if (disposed) return;
+      deferred = Boolean(value);
+      schedule();
+    },
     show() {
+      if (disposed) return;
       clear();
       if (hidden) {
         hidden = false;
@@ -62,10 +78,12 @@ export function createBubbleAutoHide({
       schedule();
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       clear();
     },
     snapshot() {
-      return Object.freeze({ enabled, settled, hovered, hidden, scheduled: timer != null });
+      return Object.freeze({ enabled, settled, hovered, deferred, hidden, scheduled: timer != null, disposed });
     },
   });
 }

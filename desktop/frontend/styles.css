@@ -1,7 +1,7 @@
 :root {
   color: #2d202b;
   background: transparent;
-  font-family: "Yu Gothic UI", "Microsoft YaHei UI", sans-serif;
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Yu Gothic UI", sans-serif;
   font-synthesis: none;
   --ink: #2d202b;
   --muted: #766571;
@@ -42,6 +42,7 @@ textarea:focus-visible {
   width: var(--stage-width);
   height: var(--stage-height);
   overflow: hidden;
+  background: transparent;
   transform: scale(var(--content-scale));
   transform-origin: top left;
 }
@@ -65,21 +66,12 @@ textarea:focus-visible {
   height: var(--portrait-height);
   cursor: grab;
   touch-action: none;
-  filter: drop-shadow(0 18px 22px var(--shadow));
+  background: transparent;
 }
 .portrait:active,
 .bubble:active { cursor: grabbing; }
-.portrait-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
-.portrait-frame::after {
-  position: absolute;
-  right: 5px;
-  bottom: 7px;
-  left: 5px;
-  height: 34px;
-  border-top: 1px solid #fff8fb66;
-  content: "";
-}
-.portrait-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.portrait-frame { position: relative; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+.portrait-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: transparent; }
 .portrait-image--current { opacity: 1; transform: translateY(0); transition: opacity 180ms ease, transform 180ms ease; }
 .portrait-image--next { opacity: 0; transform: translateY(7px); transition: opacity 180ms ease, transform 180ms ease; }
 .portrait.is-transitioning .portrait-image--current { opacity: 0; transform: translateY(-5px); }
@@ -116,28 +108,15 @@ figcaption small { font: 7px/1 "Cascadia Mono", monospace; letter-spacing: .08em
   height: var(--bubble-height);
   padding: 22px 27px 25px;
   border: 1px solid var(--line);
-  border-radius: 24px 7px 24px 24px;
+  border-radius: 26px;
   color: var(--ink);
   background:
     repeating-linear-gradient(0deg, transparent 0 25px, color-mix(in srgb, var(--line), transparent 83%) 25px 26px),
     color-mix(in srgb, var(--paper), transparent 2%);
-  box-shadow: 0 16px 34px var(--shadow);
   cursor: grab;
   touch-action: none;
   transition: opacity 180ms ease, transform 180ms ease;
 }
-.bubble::after {
-  position: absolute;
-  right: -28px;
-  bottom: 28px;
-  width: 28px;
-  height: 1px;
-  background: var(--sakura);
-  content: "";
-  transform-origin: left;
-}
-body[data-chat-state="thinking"] .bubble::after,
-body[data-chat-state="typing"] .bubble::after { animation: signal-pulse 1.15s ease-in-out infinite; }
 .bubble.is-auto-hidden { opacity: 0; pointer-events: none; transform: translateY(8px); }
 .bubble-header { display: flex; min-height: 16px; align-items: center; justify-content: space-between; gap: 12px; }
 .bubble-kicker {
@@ -160,15 +139,31 @@ body[data-chat-state="typing"] .bubble::after { animation: signal-pulse 1.15s ea
   margin: 10px 0 0;
   overflow: auto;
   color: var(--ink);
-  font-family: "Yu Mincho", "Source Han Serif SC", "SimSun", serif;
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Yu Gothic UI", sans-serif;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.72;
   overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  cursor: text;
+  touch-action: pan-y;
   user-select: text;
   white-space: pre-wrap;
   scrollbar-color: var(--line) transparent;
   scrollbar-width: thin;
+}
+.bubble p [lang|="zh"] {
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+.bubble p [lang|="ja"] {
+  font-family: "Segoe UI", "Yu Gothic UI", "Yu Gothic", Meiryo, "Noto Sans CJK JP", sans-serif;
+}
+.bubble p [lang|="ko"] {
+  font-family: "Segoe UI", "Malgun Gothic", "Noto Sans CJK KR", sans-serif;
+}
+.bubble p [lang="en"],
+.bubble p [lang="ru"] {
+  font-family: "Segoe UI", Arial, sans-serif;
 }
 body[data-chat-state="thinking"] .bubble p::after {
   display: inline-block;
@@ -198,10 +193,9 @@ body[data-chat-state="thinking"] .bubble p::after {
   gap: 8px;
   padding: 6px 7px 6px 16px;
   border: 1px solid var(--line);
-  border-radius: 9px 20px 20px 20px;
+  border-radius: 18px;
   color: var(--ink);
   background: color-mix(in srgb, var(--paper), transparent 2%);
-  box-shadow: 0 12px 26px var(--shadow);
 }
 .composer textarea {
   width: 100%;
@@ -245,9 +239,8 @@ body[data-chat-state="thinking"] .bubble p::after {
   gap: 4px;
   padding: 5px;
   border: 1px solid var(--line);
-  border-radius: 8px 18px 18px 8px;
+  border-radius: 19px;
   background: color-mix(in srgb, var(--paper), transparent 4%);
-  box-shadow: 0 10px 22px var(--shadow);
 }
 .state-rail button {
   display: grid;
@@ -280,10 +273,6 @@ body[data-chat-state="thinking"] .bubble p::after {
 [data-presentation-state="idle"] .composer,
 [data-presentation-state="bubble"] .composer { visibility: hidden; }
 
-@keyframes signal-pulse {
-  0%, 100% { opacity: .28; transform: scaleX(.25); }
-  50% { opacity: 1; transform: scaleX(1); }
-}
 @keyframes thinking-dots { 0% { clip-path: inset(0 100% 0 0); } 100% { clip-path: inset(0); } }
 
 @media (prefers-reduced-motion: reduce) {

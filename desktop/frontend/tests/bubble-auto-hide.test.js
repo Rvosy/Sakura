@@ -33,3 +33,24 @@ test("disabling auto hide reveals a hidden bubble and clears its timer", () => {
   assert.equal(shown, 1);
   assert.equal(controller.snapshot().scheduled, false);
 });
+
+test("draft or IME deferral pauses settled countdown and stale timer callbacks cannot hide", () => {
+  let timer = null;
+  const captured = [];
+  let hidden = 0;
+  const controller = createBubbleAutoHide({
+    setTimer: (callback) => { captured.push(callback); timer = callback; return captured.length; },
+    clearTimer: () => { timer = null; },
+    onHidden: () => hidden++,
+  });
+  controller.notifySettled();
+  const stale = captured[0];
+  controller.setDeferred(true);
+  assert.equal(timer, null);
+  stale();
+  assert.equal(hidden, 0);
+  controller.setDeferred(false);
+  assert.equal(typeof timer, "function");
+  timer();
+  assert.equal(hidden, 1);
+});

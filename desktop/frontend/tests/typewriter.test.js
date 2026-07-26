@@ -41,6 +41,23 @@ test("skip reveals the full reply without invoking a Core cancellation path", ()
   assert.equal(writer.skip(), false);
 });
 
+test("start enters end-follow mode and skip marks its update as forced to the end", () => {
+  const scheduler = clock();
+  const starts = [];
+  const updates = [];
+  const writer = createTypewriter({
+    setTimer: scheduler.setTimer,
+    clearTimer: scheduler.clearTimer,
+    onStart: () => starts.push("follow-end"),
+    onText: (text, context) => updates.push({ text, ...context }),
+  });
+  writer.start([{ text: "long reply" }]);
+  assert.deepEqual(starts, ["follow-end"]);
+  assert.deepEqual(updates[0], { text: "", reason: "start", forceEnd: true });
+  writer.skip();
+  assert.deepEqual(updates.at(-1), { text: "long reply", reason: "skip", forceEnd: true });
+});
+
 test("cancel invalidates a captured late callback", () => {
   const scheduler = clock();
   const texts = [];
@@ -50,4 +67,17 @@ test("cancel invalidates a captured late callback", () => {
   writer.cancel("已取消");
   late();
   assert.equal(texts.at(-1), "已取消");
+});
+
+test("starting a newer reply invalidates the older timer callback", () => {
+  const scheduler = clock();
+  const texts = [];
+  const writer = createTypewriter({ setTimer: scheduler.setTimer, clearTimer: scheduler.clearTimer, onText: (value) => texts.push(value) });
+  writer.start([{ text: "old" }]);
+  const late = scheduler.takeFirst();
+  writer.start([{ text: "new" }]);
+  late();
+  scheduler.runAll();
+  assert.equal(texts.at(-1), "new");
+  assert.equal(texts.includes("o"), false);
 });

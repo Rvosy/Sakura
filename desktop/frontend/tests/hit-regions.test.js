@@ -53,6 +53,17 @@ test("interactive controls win over an overlapping portrait drag region", () => 
   );
 });
 
+test("interactive reply text overrides its enclosing bubble drag region", () => {
+  const model = hitRegions.computeHitRegions(computePetLayout(contract, "expanded"));
+  const hitKind = hitRegions.classifyPointerHit({
+    model,
+    point: [200, 400],
+    interactiveTarget: true,
+  });
+  assert.equal(hitKind, "interactive");
+  assert.equal(hitRegions.shouldStartNativeDrag({ hitKind, button: 0, isPrimary: true }), false);
+});
+
 test("invalid, ambiguous, or out-of-envelope rectangles fail closed", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   assert.throws(
