@@ -402,4 +402,5 @@ transport foundation 的 Technically Validated；WP-2-02 与 WP-3V-01 尚未发�
 
 候选验收已于同日完成并登记为 accepted（总表为唯一状态真相源）。这只表示 WP-2-01 的最小 Router
 边界和本地 Windows 候选证据已通过，不改变 ADR 对 WP-2-02 聊天边界或 WP-3V-01 真实 Assistant
-纵向验证的 Accepted 门禁；当前 SHA 未推送，三平台同 SHA 原生结果仍是后续发布监控证据。
+纵向验证的 Accepted 门禁；writer 内部编码失败也已显式 fail closed 并复跑完整 locked Rust 测试。
+当前 SHA 未推送，三平台同 SHA 原生结果仍是后续发布监控证据。

@@ -1848,11 +1848,11 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 
 ```text
 状态：accepted
-关联提交：8f1cca3a9、b7c405923、213b2af85、0d7c5e751、e8c27bd1
+关联提交：8f1cca3a9、b7c405923、213b2af85、0d7c5e751、e8c27bd1、75ecf205
 自动测试：.\runtime\python.exe Core Host 定向 181 passed；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked 172 passed/23 ignored；npm test --prefix desktop/frontend 22 passed；cargo build --locked、cargo fmt --check、git diff --check、PowerShell parser 全部通过
 故障测试：反向 response、event/response 交错、重复/未知 id、错 name、旧 generation/credential、pending/event/writer/fixture 饱和、慢/失败 writer、半帧、EOF、stdout pollution、阻塞 sleep/文件读取、health/shutdown 抢占、Core crash、Retry、Exit 和连续 generation 全部有界通过
 真实应用验收：真实 Python Host 通过 2.2 capability hello、两个并发 in-flight health waiter、shutdown；既有 Shell lifecycle/Retry/Exit、受控进程树、stderr 排水、完整 generation 资源清理回归全绿；Windows 窗口脚本完成语法检查，保留 Core/Python 后代登记、退出归零和 data 审计
-安全与范围：未接入真实聊天、Assistant、Gateway、cancel、Snapshot 扩展、UI、第二 Core、第二 writer、无限队列或用户数据；credential、API Key、Prompt、异常 repr 和私有路径不进入公共 envelope/事件
+安全与范围：writer 内部编码失败显式 fail closed 且清理 pending；未接入真实聊天、Assistant、Gateway、cancel、Snapshot 扩展、UI、第二 Core、第二 writer、无限队列或用户数据；credential、API Key、Prompt、异常 repr 和私有路径不进入公共 envelope/事件
 已知问题：当前 SHA 未推送，未产生同 SHA Windows/macOS/Linux platform workflow 结果；这是非失败型原生平台证据缺口，不改变本地候选 accepted 结论，推送后仅跟踪同 SHA 可归因失败
 回退：先使当前 generation 失效并执行 AppShutdown，确认 Shell/Core/后代、reader/writer/dispatcher、pending waiter、pipe/fd/handle 和 temp 归零；按 0d7c5e751、213b2af85、b7c405923、8f1cca3a9 逆序 revert；不触碰用户数据
 ```
