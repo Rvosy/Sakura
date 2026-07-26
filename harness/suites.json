@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "smoke": {
+      "description": "快速验证 Harness 自身与 Runtime v2 核心协议边界",
+      "cases": [
+        "harness-self-test",
+        "core-host-protocol"
+      ]
+    },
+    "unit": {
+      "description": "运行完整 Python 单元测试集",
+      "cases": [
+        "python-unit-tests"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "harness-self-test",
+      "description": "验证 Harness 清单、执行器和报告契约",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_harness_runner.py",
+        "-q"
+      ],
+      "timeout_seconds": 60,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "id": "core-host-protocol",
+      "description": "验证 Runtime v2 Core Host 帧协议与控制边界",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_core_host_protocol.py",
+        "-q"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "id": "python-unit-tests",
+      "description": "运行 tests/unit 下的完整 Python 单元测试",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit",
+        "-q"
+      ],
+      "timeout_seconds": 600,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  ]
+}

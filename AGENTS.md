@@ -29,6 +29,14 @@ python -m pytest
 python -m pytest tests/unit
 ```
 
+## Harness
+
+- 仓库级验证入口位于 `harness/`，用于把已有检查组织为稳定 profile，并生成机器可读 JSON 报告。
+- 修改前可运行 `runtime\python.exe -m harness list` 查看可用 profile。
+- 最小回归运行 `runtime\python.exe -m harness run smoke`。
+- 完整 Python 单元测试运行 `runtime\python.exe -m harness run unit`。
+- 默认报告写入已忽略的 `temp/harness/`；新增检查时，测试断言仍放在 `tests/`，只在 `harness/suites.json` 中注册执行入口。
+
 ## 验证要求
 
 - 涉及 Python 代码修改时，优先运行与改动范围最相关的 pytest。
