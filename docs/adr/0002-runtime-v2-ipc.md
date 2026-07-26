@@ -404,3 +404,17 @@ transport foundation 的 Technically Validated；WP-2-02 与 WP-3V-01 尚未发�
 边界和本地 Windows 候选证据已通过，不改变 ADR 对 WP-2-02 聊天边界或 WP-3V-01 真实 Assistant
 纵向验证的 Accepted 门禁；writer 内部编码失败也已显式 fail closed 并复跑完整 locked Rust 测试。
 当前 SHA 未推送，三平台同 SHA 原生结果仍是后续发布监控证据。
+
+## WP-2-02 激活决策（2026-07-26）
+
+WP-2-02 复用 protocol 2.2 的 generation-scoped event envelope 和
+`transport.concurrent-router` capability；新增 `chat.started`、`chat.completed`、`chat.failed`、
+`chat.cancelled` 业务 event name 本身不改变 Envelope 语义，因此不升级 protocol minor、不增加
+sequence。protocol 2.0/2.1 lifecycle 继续保持原义。
+
+Rust Gateway 的首个固定 allowlist 仅为 `chat.send`/`chat.cancel`，并独占 generation credential、
+request identity、受控 deadline 和内部调度类别的注入权。Snapshot 收窄为 Python 构造的五字段完整
+快照，Rust 只读校验和缓存；不实现通用 Operation、三级 priority、patch/component model、resource
+token、streaming 或真实 Assistant/UI 接线。允许目录、故障矩阵、验收环境和回退命令见
+`docs/runtime-v2/WP-2-02-minimal-chat-boundary.md`。本激活不改变 ADR 当前技术验证状态；仍须 WP-2-02
+候选验收和后续 WP-3V-01 真实纵向验证后，才能按本 ADR 状态门禁更新。

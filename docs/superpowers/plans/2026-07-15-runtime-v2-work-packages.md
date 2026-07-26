@@ -83,7 +83,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
-| WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
+| WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | active |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
@@ -120,8 +120,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
 accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
 已于 2026-07-26 accepted，随后完成的窗口交互/可见性纠正记录见第 10 节。WP-2-01 已按第 11 节
-和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；当前无
-active/stabilizing Work Package，WP-2-02 及后续项保持 `planned`。
+和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；WP-2-02
+已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 补齐允许目录、验收环境、故障矩阵和回退命令，
+当前进入 `active`；其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
