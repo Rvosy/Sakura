@@ -68,6 +68,9 @@ struct WindowGeometrySession {
     state: Option<PresentationState>,
     applied_revision: u64,
     deferred_drag_pending: bool,
+    portrait_source_size: Option<[u32; 2]>,
+    portrait_hit_generation: Option<String>,
+    portrait_hit_revision: u64,
 }
 
 struct ShellLifecycleState {
@@ -195,7 +198,12 @@ fn apply_pet_layout(
     if session.is_deferred_drag_pending() {
         session.finish_deferred_drag();
     }
-    let hit_regions = apply_native_pet_surface(&window, &contract, &application)?;
+    let hit_regions = apply_native_pet_surface(
+        &window,
+        &contract,
+        &application,
+        session.portrait_source_size,
+    )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
     session.applied_revision = revision;
@@ -209,8 +217,13 @@ fn apply_native_interaction_region(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
+    portrait_source_size: Option<[u32; 2]>,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
-    let logical = window_interaction::logical_hit_regions(contract, application.state)?;
+    let logical = window_interaction::logical_hit_regions_with_portrait_size(
+        contract,
+        application.state,
+        portrait_source_size,
+    )?;
     let physical = window_interaction::scale_hit_regions(
         &logical,
         application.scale_factor * application.content_scale,
@@ -233,6 +246,7 @@ fn apply_native_pet_surface(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
+    portrait_source_size: Option<[u32; 2]>,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let backend = NativeWindowInteractionBackend;
     backend
@@ -241,7 +255,8 @@ fn apply_native_pet_surface(
     backend
         .apply_bounds(window, &application.physical_placement)
         .map_err(|error| error.to_string())?;
-    let hit_regions = apply_native_interaction_region(window, contract, application)?;
+    let hit_regions =
+        apply_native_interaction_region(window, contract, application, portrait_source_size)?;
     window
         .show()
         .map_err(|error| format!("failed to show pet window: {error}"))?;
@@ -255,7 +270,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     // and the first committed WindowGeometrySession state after WebView startup.
     let application =
         apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
-    apply_native_pet_surface(window, &contract, &application)?;
+    apply_native_pet_surface(window, &contract, &application, None)?;
     Ok(())
 }
 
@@ -281,7 +296,12 @@ fn commit_dragged_window_position(
     NativeWindowInteractionBackend
         .apply_bounds(&window, &application.physical_placement)
         .map_err(|error| error.to_string())?;
-    let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
+    let hit_regions = apply_native_interaction_region(
+        &window,
+        &contract,
+        &application,
+        session.portrait_source_size,
+    )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     Ok(PetLayoutApplication {
         layout: application,
@@ -366,12 +386,20 @@ fn show_pet_context_menu(
     surface_y: f64,
     popup_x: f64,
     popup_y: f64,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<(), String> {
     if !surface_x.is_finite() || !surface_y.is_finite() {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
     }
-    let regions =
-        window_interaction::logical_hit_regions(&layout_contract()?, PresentationState::Product)?;
+    let portrait_source_size = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?
+        .portrait_source_size;
+    let regions = window_interaction::logical_hit_regions_with_portrait_size(
+        &layout_contract()?,
+        PresentationState::Product,
+        portrait_source_size,
+    )?;
     let point = [surface_x.floor() as i32, surface_y.floor() as i32];
     let allowed = window_interaction::contains_visible_point(&regions, point);
     if !allowed {
@@ -476,6 +504,55 @@ fn current_character_presentation(
     let presentation =
         character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
     resources.activate(presentation, &generation_id)
+}
+
+#[tauri::command]
+fn activate_portrait_hit_test(
+    window: WebviewWindow,
+    portrait_key: String,
+    revision: u64,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    geometry: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
+        .current_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let metadata = resources.active_portrait_metadata(&portrait_key, &generation_id)?;
+    let source_size = [metadata.width, metadata.height];
+
+    let mut geometry = geometry
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str())
+        && revision <= geometry.portrait_hit_revision
+    {
+        return Ok(());
+    }
+    let state = geometry
+        .state
+        .ok_or_else(|| "pet layout is not ready for portrait hit testing".to_string())?;
+    let contract = layout_contract()?;
+    let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+    let application = apply_window_layout(
+        &contract,
+        state,
+        geometry.applied_revision,
+        &monitor,
+        geometry.portrait_anchor,
+    )?;
+    apply_native_interaction_region(&window, &contract, &application, Some(source_size))?;
+    geometry.portrait_source_size = Some(source_size);
+    geometry.portrait_hit_generation = Some(generation_id);
+    geometry.portrait_hit_revision = revision;
+    Ok(())
 }
 
 #[tauri::command]
@@ -865,6 +942,7 @@ fn main() {
             collect_native_diagnostics,
             runtime_lifecycle_snapshot,
             current_character_presentation,
+            activate_portrait_hit_test,
             wp_3_03_acceptance_enabled,
             retry_core,
             exit_runtime,

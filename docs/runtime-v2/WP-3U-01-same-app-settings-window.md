@@ -23,6 +23,8 @@ Tauri App 作为 Runtime v2 产品路径，也不创建第二生命周期根。
   `tools/settings-tauri` 直接从该目录构建，不保留第二份完整资产。
 - Rust 已拥有原生产品菜单、封闭 menu item allowlist、唯一 `settings` 窗口、重复打开聚焦、
   CloseRequested/放弃确认和 5 秒有界主应用退出协调。
+- Windows 原生命中区域在立绘解码后按 `object-fit: contain` 的真实外框收紧；图片外侧透明留白不再
+  被大尺寸 portrait 布局框拦截，气泡、输入框、按钮与实际立绘仍保持可交互和可右键。
 - capability manifest 当前不开放任何可写 section；未迁移页面稳定禁用，前端不读取或保存用户配置。
 - 本地 frontend 与 Rust 全量自动测试通过，进入 `stabilizing`；Windows 真实菜单位置、100%/150% DPI、
   最小化/聚焦、中文 IME、重复打开和退出仍需形成候选验收证据后才能 `accepted`。

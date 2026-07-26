@@ -136,6 +136,15 @@ function loadImage(source) {
   });
 }
 
+let portraitHitRevision = 0;
+
+function activatePortraitHitTest(key) {
+  const revision = ++portraitHitRevision;
+  invoke("activate_portrait_hit_test", { portraitKey: key, revision }).catch(() => {
+    showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+  });
+}
+
 const portraitController = createPortraitController({
   assets: characterPresentation.portraitResourceUrls,
   defaultKey: characterPresentation.defaultPortraitKey,
@@ -145,11 +154,12 @@ const portraitController = createPortraitController({
     portraitNext.src = source;
     portrait.classList.add("is-transitioning");
   },
-  commit: ({ source }) => {
+  commit: ({ key, source }) => {
     portraitCurrent.src = source;
     portraitNext.removeAttribute("src");
     portrait.classList.remove("is-transitioning");
     portraitFallback.hidden = true;
+    activatePortraitHitTest(key);
     if (!presentationUnavailable) clearRecoverableError();
   },
   showFallback: () => {

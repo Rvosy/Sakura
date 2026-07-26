@@ -161,6 +161,25 @@ impl CharacterPresentationState {
             metadata: actual,
         })
     }
+
+    pub fn active_portrait_metadata(
+        &self,
+        portrait_key: &str,
+        current_generation: &str,
+    ) -> Result<PortraitMetadata, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .clone()
+            .ok_or_else(|| "CHARACTER_RESOURCE_NOT_READY".to_string())?;
+        active.presentation.validate(current_generation)?;
+        active
+            .portrait_metadata
+            .get(portrait_key)
+            .copied()
+            .ok_or_else(|| "CHARACTER_RESOURCE_KEY_UNKNOWN".to_string())
+    }
 }
 
 impl CharacterPresentation {

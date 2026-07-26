@@ -188,6 +188,14 @@ pub fn logical_hit_regions(
     contract: &LayoutContract,
     state: PresentationState,
 ) -> Result<LogicalHitRegions, String> {
+    logical_hit_regions_with_portrait_size(contract, state, None)
+}
+
+pub fn logical_hit_regions_with_portrait_size(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_source_size: Option<[u32; 2]>,
+) -> Result<LogicalHitRegions, String> {
     contract.validate()?;
     let layout = contract
         .states
@@ -216,12 +224,17 @@ pub fn logical_hit_regions(
         contract.viewport.window_size,
         CONTROLS_CORNER_RADIUS,
     )?);
-    let mut drag = vec![translate_rect(
+    let portrait_rect = translate_rect(
         layout.portrait_rect,
         offset,
         contract.viewport.window_size,
         0,
-    )?];
+    )?;
+    let portrait_rect = match portrait_source_size {
+        Some(source_size) => contained_portrait_rect(portrait_rect, source_size)?,
+        None => portrait_rect,
+    };
+    let mut drag = vec![portrait_rect];
     if let Some(rect) = layout.bubble_rect {
         drag.push(translate_rect(
             rect,
@@ -236,6 +249,26 @@ pub fn logical_hit_regions(
         drag,
         neutral: Vec::new(),
     })
+}
+
+fn contained_portrait_rect(
+    target: LogicalHitRect,
+    source_size: [u32; 2],
+) -> Result<LogicalHitRect, String> {
+    let [source_width, source_height] = source_size;
+    if source_width == 0 || source_height == 0 {
+        return Err("portrait hit-test source dimensions must be non-zero".to_string());
+    }
+    let scale = (f64::from(target.width) / f64::from(source_width))
+        .min(f64::from(target.height) / f64::from(source_height));
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("portrait hit-test scale must be positive and finite".to_string());
+    }
+    let width = ((f64::from(source_width) * scale).ceil() as u32).min(target.width);
+    let height = ((f64::from(source_height) * scale).ceil() as u32).min(target.height);
+    let x = target.x + i32::try_from((target.width - width) / 2).unwrap_or(0);
+    let y = target.y + i32::try_from(target.height - height).unwrap_or(0);
+    Ok(LogicalHitRect::new(x, y, width, height))
 }
 
 #[cfg(test)]
@@ -540,6 +573,41 @@ mod tests {
         }
         assert!(!contains_visible_point(&model, [0, 0]));
         assert!(!contains_visible_point(&model, [815, 679]));
+    }
+
+    #[test]
+    fn portrait_hit_region_matches_contain_bounds_and_excludes_outer_letterbox() {
+        let contract = contract();
+        let tall = logical_hit_regions_with_portrait_size(
+            &contract,
+            PresentationState::Product,
+            Some([300, 600]),
+        )
+        .unwrap();
+        assert_eq!(tall.drag[0], LogicalHitRect::new(244, 12, 328, 656));
+        assert_eq!(
+            classify_logical_point(&tall, [120, 100]),
+            HitKind::Transparent
+        );
+        assert_eq!(classify_logical_point(&tall, [400, 100]), HitKind::Drag);
+
+        let wide = logical_hit_regions_with_portrait_size(
+            &contract,
+            PresentationState::Product,
+            Some([1200, 300]),
+        )
+        .unwrap();
+        assert_eq!(wide.drag[0], LogicalHitRect::new(108, 518, 600, 150));
+        assert_eq!(
+            classify_logical_point(&wide, [400, 100]),
+            HitKind::Transparent
+        );
+        assert!(logical_hit_regions_with_portrait_size(
+            &contract,
+            PresentationState::Product,
+            Some([0, 300]),
+        )
+        .is_err());
     }
 
     #[test]

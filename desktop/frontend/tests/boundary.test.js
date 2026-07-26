@@ -125,3 +125,10 @@ test("product menu is native-owned and the settings window is a decorated single
   assert.match(nativeMain, /show_or_focus_settings/);
   assert.match(nativeMain, /SETTINGS_WINDOW_LABEL/);
 });
+
+test("portrait click-through is tightened after the decoded contain size is known", () => {
+  assert.match(app, /invoke\("activate_portrait_hit_test"/);
+  assert.match(nativeMain, /fn activate_portrait_hit_test/);
+  assert.match(nativeInteraction, /logical_hit_regions_with_portrait_size/);
+  assert.match(nativeInteraction, /contained_portrait_rect/);
+});
