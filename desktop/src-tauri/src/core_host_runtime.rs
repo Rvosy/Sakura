@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use crate::{
     core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
+    core_host_router::CoreHostRouter,
     platform::{
         ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessRequest, ManagedProcessTree,
         ManagedProcessTreeBackend, NativeManagedProcessTreeBackend, ProcessExitStatus,
@@ -49,6 +50,7 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
+const OPTIONAL_CAPABILITIES: [&str; 1] = ["transport.concurrent-router"];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
     "initializing",
@@ -880,6 +882,7 @@ pub struct CoreHostRuntime {
     tree: Option<Box<dyn ManagedProcessTree>>,
     stdin: Option<File>,
     stdout: Option<Box<dyn ManagedPipeReader>>,
+    router: Option<CoreHostRouter>,
     stdout_frames: ResponseFrameReader,
     stderr_drain: Option<StderrDrainer>,
     generation_id: String,
@@ -1005,6 +1008,7 @@ impl CoreHostRuntime {
                 tree: Some(spawned.tree),
                 stdin: None,
                 stdout: None,
+                router: None,
                 stdout_frames: ResponseFrameReader::default(),
                 stderr_drain: None,
                 generation_id: generation_id.to_string(),
@@ -1032,6 +1036,7 @@ impl CoreHostRuntime {
             tree: Some(spawned.tree),
             stdin: Some(pipes.stdin),
             stdout: Some(pipes.stdout),
+            router: None,
             stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
@@ -1055,6 +1060,25 @@ impl CoreHostRuntime {
             return Err(runtime.fail_after_spawn(
                 "TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed".to_string(),
             ));
+        }
+        #[cfg(not(test))]
+        {
+            let Some(stdin) = runtime.stdin.take() else {
+                return Err(
+                    runtime.fail_after_spawn("Core Host stdin owner was unavailable".to_string())
+                );
+            };
+            let Some(stdout) = runtime.stdout.take() else {
+                return Err(
+                    runtime.fail_after_spawn("Core Host stdout owner was unavailable".to_string())
+                );
+            };
+            let router =
+                CoreHostRouter::new(stdin, stdout, generation_id, &runtime.generation_credential);
+            runtime.router = match router {
+                Ok(router) => Some(router),
+                Err(error) => return Err(runtime.fail_after_spawn(error)),
+            };
         }
         Ok(runtime)
     }
@@ -1100,12 +1124,20 @@ impl CoreHostRuntime {
             tree: Some(tree),
             stdin: Some(stdin),
             stdout: Some(stdout),
+            router: None,
             stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
             generation_credential: generation_credential.to_string(),
-            handshake: HandshakeState::Pending,
-            negotiation: None,
+            handshake: HandshakeState::Complete,
+            negotiation: Some(ProtocolNegotiation {
+                major: PROTOCOL_MAJOR,
+                minor: 1,
+                capabilities: REQUIRED_CAPABILITIES
+                    .iter()
+                    .map(|capability| (*capability).to_string())
+                    .collect(),
+            }),
             deadline_forced: false,
             snapshot_cache: CoreSnapshotCache::new(generation_id)
                 .expect("test generation ID is valid"),
@@ -1139,6 +1171,17 @@ impl CoreHostRuntime {
         payload: Value,
         deadline: Duration,
     ) -> Result<Value, String> {
+        if self.router.is_some() {
+            let (request, expectation, _) =
+                self.build_request_frame(request_id, name, payload, deadline)?;
+            let response = self
+                .router
+                .as_ref()
+                .expect("router is present")
+                .handle()
+                .request(request, deadline)?;
+            return self.validate_response(response, expectation);
+        }
         let (expectation, written_at) =
             self.write_request_frame(request_id, name, payload, deadline)?;
         let response_deadline = written_at
@@ -1176,6 +1219,18 @@ impl CoreHostRuntime {
             "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
             "priority": CONTROL_PRIORITY,
         });
+        if let Some(router) = self.router.as_ref() {
+            let response = router.handle().request(request, deadline)?;
+            return self.validate_response(
+                response,
+                RequestExpectation {
+                    id: request_id.to_string(),
+                    name: name.to_string(),
+                    protocol_minor,
+                    is_hello: false,
+                },
+            );
+        }
         let stdin = self
             .stdin
             .as_mut()
@@ -1203,6 +1258,38 @@ impl CoreHostRuntime {
         payload: Value,
         deadline: Duration,
     ) -> Result<(RequestExpectation, Instant), String> {
+        let (request, expectation, written_at) =
+            self.build_request_frame(request_id, name, payload, deadline)?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
+        write_frame(stdin, &request).map_err(|error| error.to_string())?;
+        stdin
+            .flush()
+            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
+        #[cfg(test)]
+        if name == "system.shutdown" {
+            if let Some(events) = &self.cleanup_events {
+                events
+                    .lock()
+                    .expect("cleanup events")
+                    .push("shutdown_written");
+            }
+            if let Some(observed) = &self.shutdown_written_at {
+                *observed.lock().expect("shutdown write instant") = Some(written_at);
+            }
+        }
+        Ok((expectation, written_at))
+    }
+
+    fn build_request_frame(
+        &self,
+        request_id: &str,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<(Value, RequestExpectation, Instant), String> {
         if request_id.trim().is_empty() || name.trim().is_empty() || deadline.is_zero() {
             return Err("Core Host control request is invalid".to_string());
         }
@@ -1240,28 +1327,9 @@ impl CoreHostRuntime {
             "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
             "priority": CONTROL_PRIORITY,
         });
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
-        write_frame(stdin, &request).map_err(|error| error.to_string())?;
-        stdin
-            .flush()
-            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
         let written_at = Instant::now();
-        #[cfg(test)]
-        if name == "system.shutdown" {
-            if let Some(events) = &self.cleanup_events {
-                events
-                    .lock()
-                    .expect("cleanup events")
-                    .push("shutdown_written");
-            }
-            if let Some(observed) = &self.shutdown_written_at {
-                *observed.lock().expect("shutdown write instant") = Some(written_at);
-            }
-        }
         Ok((
+            request,
             RequestExpectation {
                 id: request_id.to_string(),
                 name: name.to_string(),
@@ -1300,6 +1368,14 @@ impl CoreHostRuntime {
             if response.get("ok").and_then(Value::as_bool) == Some(true) {
                 match parse_negotiation(&response) {
                     Ok(negotiation) => {
+                        if let Some(router) = self.router.as_ref() {
+                            router.enable_events(
+                                negotiation.minor >= 2
+                                    && negotiation.capabilities.iter().any(|capability| {
+                                        capability == "transport.concurrent-router"
+                                    }),
+                            );
+                        }
                         self.handshake = HandshakeState::Complete;
                         self.negotiation = Some(negotiation);
                     }
@@ -1369,6 +1445,48 @@ impl CoreHostRuntime {
         mut self,
         policy: ShutdownPolicy,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
+        if self.router.is_some() {
+            let started = Instant::now();
+            let request =
+                self.build_request_frame("shutdown", "system.shutdown", json!({}), policy.graceful);
+            let (primary, graceful_deadline, absolute_deadline) = match request {
+                Ok((message, expectation, written_at)) => {
+                    let absolute_deadline =
+                        written_at.checked_add(policy.total).unwrap_or(written_at);
+                    let graceful_deadline = written_at
+                        .checked_add(policy.graceful)
+                        .unwrap_or(absolute_deadline)
+                        .min(absolute_deadline);
+                    let response = self
+                        .router
+                        .as_ref()
+                        .expect("router is present")
+                        .handle()
+                        .request(message, policy.graceful);
+                    let primary = match response
+                        .and_then(|response| self.validate_response(response, expectation))
+                    {
+                        Ok(response)
+                            if response.get("ok").and_then(Value::as_bool) == Some(true) =>
+                        {
+                            None
+                        }
+                        Ok(_) => Some("Core Host rejected system.shutdown".to_string()),
+                        Err(error) => Some(error),
+                    };
+                    (primary, graceful_deadline, absolute_deadline)
+                }
+                Err(error) => {
+                    let absolute_deadline = started.checked_add(policy.total).unwrap_or(started);
+                    let graceful_deadline = started
+                        .checked_add(policy.graceful)
+                        .unwrap_or(absolute_deadline)
+                        .min(absolute_deadline);
+                    (Some(error), graceful_deadline, absolute_deadline)
+                }
+            };
+            return self.finish_exit_until(absolute_deadline, graceful_deadline, primary);
+        }
         let write_result =
             self.write_request_frame("shutdown", "system.shutdown", json!({}), policy.graceful);
         let (primary, graceful_deadline, absolute_deadline) = match write_result {
@@ -1484,6 +1602,7 @@ impl CoreHostRuntime {
         mut primary: Option<String>,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         self.stdin.take();
+        let router_result = self.router.as_mut().map(|router| router.close());
         #[cfg(test)]
         if let Some(events) = &self.cleanup_events {
             events.lock().expect("cleanup events").push("stdin_closed");
@@ -1543,6 +1662,7 @@ impl CoreHostRuntime {
             self.deadline_forced,
             tree_result,
             stdout_result,
+            router_result,
             stdout_incomplete,
             stderr_result,
         )
@@ -1581,6 +1701,7 @@ fn aggregate_exit_or_retain_recovery(
     deadline_forced: bool,
     tree_result: Option<ProcessTreeFinalizationResult>,
     stdout_result: Option<Result<bool, String>>,
+    router_result: Option<Result<(), String>>,
     stdout_incomplete: bool,
     stderr_result: Option<Result<(String, StderrDrainStats), String>>,
 ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
@@ -1601,6 +1722,12 @@ fn aggregate_exit_or_retain_recovery(
         None => diagnostics.push("Core Host process tree owner was unavailable".to_string()),
     }
 
+    let router_owned_stdout = router_result.is_some();
+    if let Some(router_result) = router_result.as_ref() {
+        if let Err(error) = router_result {
+            diagnostics.push(error.clone());
+        }
+    }
     match stdout_result {
         Some(Ok(saw_trailing_bytes)) => {
             if stdout_incomplete || saw_trailing_bytes {
@@ -1610,9 +1737,10 @@ fn aggregate_exit_or_retain_recovery(
             }
         }
         Some(Err(error)) => diagnostics.push(error),
-        None => {
+        None if !router_owned_stdout => {
             diagnostics.push("TRANSPORT_READ_FAILED: Core Host stdout is unavailable".to_string())
         }
+        None => {}
     }
 
     let mut stderr = None;
@@ -1708,7 +1836,7 @@ fn hello_payload() -> Value {
             "maxMinor": PROTOCOL_MINOR,
         },
         "requiredCapabilities": REQUIRED_CAPABILITIES,
-        "optionalCapabilities": [],
+        "optionalCapabilities": OPTIONAL_CAPABILITIES,
     })
 }
 
@@ -1755,6 +1883,16 @@ fn parse_negotiation(response: &Value) -> Result<ProtocolNegotiation, String> {
     {
         return Err(
             "CAPABILITY_NEGOTIATION_FAILED: Core Host omitted a required capability".to_string(),
+        );
+    }
+    if capabilities
+        .iter()
+        .any(|capability| capability == "transport.concurrent-router")
+        && minor < 2
+    {
+        return Err(
+            "INVALID_NEGOTIATION: concurrent router capability requires protocol minor 2.2"
+                .to_string(),
         );
     }
     Ok(ProtocolNegotiation {

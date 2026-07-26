@@ -2,6 +2,8 @@
 
 #[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
 mod core_host_protocol;
+#[allow(dead_code)] // WP-2-01 generation-scoped concurrent transport owner.
+mod core_host_router;
 #[allow(dead_code)] // Exercised by WP-1C tests and debug acceptance before release wiring.
 mod core_host_runtime;
 #[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
