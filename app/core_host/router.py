@@ -287,6 +287,8 @@ class ConcurrentHostRouter:
             self._writer.send(dict(message))
 
     def _set_fatal(self, error: BaseException) -> None:
+        if not isinstance(error, RouterFailure) and not hasattr(error, "code"):
+            error = RouterFailure("ROUTER_WORKER_FAILED", "router worker failed")
         with self._lock:
             if self._fatal is None:
                 self._fatal = error

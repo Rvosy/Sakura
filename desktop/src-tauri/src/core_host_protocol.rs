@@ -478,4 +478,19 @@ mod tests {
             legacy
         );
     }
+
+    #[test]
+    fn wp_2_01_shared_envelopes_validate_in_rust() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/runtime_v2/wp_2_01/envelopes.json"
+        ))
+        .expect("WP-2-01 fixture JSON");
+        for key in ["request", "event"] {
+            let message = fixture.get(key).expect("fixture envelope");
+            assert_eq!(
+                decode_frame(&encode_frame(message).expect("fixture frame")).expect("decoded"),
+                *message
+            );
+        }
+    }
 }

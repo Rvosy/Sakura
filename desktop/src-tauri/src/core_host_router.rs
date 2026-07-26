@@ -27,7 +27,7 @@ pub const PENDING_LIMIT: usize = 64;
 pub const WRITER_QUEUE_LIMIT: usize = 32;
 pub const EVENT_QUEUE_LIMIT: usize = 32;
 const READ_SLICE: Duration = Duration::from_millis(25);
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
 enum WriterCommand {
     Frame(Value),
@@ -36,6 +36,7 @@ enum WriterCommand {
 
 struct Pending {
     name: String,
+    is_hello: bool,
     protocol_minor: u64,
     waiter: mpsc::Sender<Result<Value, String>>,
 }
@@ -139,6 +140,7 @@ impl CoreHostRouter {
 
     pub fn close(&mut self) -> Result<(), String> {
         if self.shared.stopped.swap(true, Ordering::AcqRel) {
+            let _ = self.shared.writer.try_send(WriterCommand::Stop);
             return self.join_threads();
         }
         invalidate_all(&self.shared, "GENERATION_INVALIDATED: Router closed");
@@ -157,7 +159,11 @@ impl CoreHostRouter {
                 thread::sleep(Duration::from_millis(1));
             }
             if !handle.is_finished() {
-                error = Some("ROUTER_CLOSE_TIMEOUT: router thread deadline elapsed".to_string());
+                error = Some(format!(
+                    "ROUTER_CLOSE_TIMEOUT: {} did not stop",
+                    handle.thread().name().unwrap_or("router thread")
+                ));
+                *thread = Some(handle);
                 continue;
             }
             if handle.join().is_err() && error.is_none() {
@@ -224,6 +230,7 @@ impl CoreHostRouterHandle {
                 id.clone(),
                 Pending {
                     name,
+                    is_hello: object.get("name").and_then(Value::as_str) == Some("system.hello"),
                     protocol_minor,
                     waiter,
                 },
@@ -385,18 +392,35 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "INVALID_ENVELOPE: response id is missing".to_string())?;
-            let pending = remove_pending_entry(shared, id)
+            let (expected_name, expected_minor, is_hello) = shared
+                .pending
+                .lock()
+                .map_err(|_| {
+                    "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+                })?
+                .get(id)
+                .map(|pending| {
+                    (
+                        pending.name.clone(),
+                        pending.protocol_minor,
+                        pending.is_hello,
+                    )
+                })
                 .ok_or_else(|| "UNKNOWN_REQUEST_ID: response id is not pending".to_string())?;
-            if object.get("name").and_then(Value::as_str) != Some(pending.name.as_str()) {
+            if object.get("name").and_then(Value::as_str) != Some(expected_name.as_str()) {
                 return Err(
                     "INVALID_RESPONSE_NAME: response name did not match request".to_string()
                 );
             }
-            if object.get("protocolMinor").and_then(Value::as_u64) != Some(pending.protocol_minor) {
+            if !is_hello
+                && object.get("protocolMinor").and_then(Value::as_u64) != Some(expected_minor)
+            {
                 return Err(
                     "INVALID_NEGOTIATION: response minor changed after handshake".to_string(),
                 );
             }
+            let pending = remove_pending_entry(shared, id)
+                .ok_or_else(|| "UNKNOWN_REQUEST_ID: response id is not pending".to_string())?;
             let _ = pending.waiter.send(Ok(message));
             Ok(())
         }
@@ -418,6 +442,7 @@ fn remove_pending_entry(shared: &Arc<Shared>, id: &str) -> Option<Pending> {
 
 fn fail_all(shared: &Arc<Shared>, error: impl Into<String>) {
     shared.stopped.store(true, Ordering::Release);
+    let _ = shared.writer.try_send(WriterCommand::Stop);
     let error = error.into();
     if let Ok(mut fatal) = shared.fatal.lock() {
         if fatal.is_none() {
@@ -676,9 +701,136 @@ mod tests {
     }
 
     #[test]
+    fn unknown_response_id_fails_all_pending_waiters() {
+        let (mut router, released) =
+            router_with_messages(vec![response("unknown", "fixture.blocking")]);
+        let handle = router.handle();
+        let waiter = thread::spawn(move || {
+            handle.request(request("known", "fixture.blocking"), Duration::from_secs(1))
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        released.store(true, std::sync::atomic::Ordering::Release);
+        assert!(waiter
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .starts_with("UNKNOWN_REQUEST_ID:"));
+        assert!(router
+            .close()
+            .unwrap_err()
+            .starts_with("UNKNOWN_REQUEST_ID:"));
+    }
+
+    #[test]
+    fn wrong_response_name_fails_closed_without_completing_waiter() {
+        let (mut router, released) = router_with_messages(vec![response("known", "fixture.wrong")]);
+        let handle = router.handle();
+        let waiter = thread::spawn(move || {
+            handle.request(request("known", "fixture.blocking"), Duration::from_secs(1))
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        released.store(true, std::sync::atomic::Ordering::Release);
+        assert!(waiter
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .starts_with("INVALID_RESPONSE_NAME:"));
+        assert!(router
+            .close()
+            .unwrap_err()
+            .starts_with("INVALID_RESPONSE_NAME:"));
+    }
+
+    #[test]
     fn all_router_capacities_are_named_and_finite() {
         assert!(PENDING_LIMIT > 0);
         assert!(WRITER_QUEUE_LIMIT > 0);
         assert!(EVENT_QUEUE_LIMIT > 0);
+    }
+
+    #[test]
+    fn pending_limit_rejects_overload_without_leaving_an_orphan_waiter() {
+        let (mut router, _released) = router_with_messages(Vec::new());
+        {
+            let mut pending = router.shared.pending.lock().expect("pending registry");
+            for index in 0..PENDING_LIMIT {
+                let (waiter, _receiver) = std::sync::mpsc::channel();
+                pending.insert(
+                    format!("occupied-{index}"),
+                    super::Pending {
+                        name: "fixture.blocking".to_string(),
+                        is_hello: false,
+                        protocol_minor: 2,
+                        waiter,
+                    },
+                );
+            }
+        }
+        let error = router
+            .handle()
+            .request(
+                request("overflow", "fixture.blocking"),
+                Duration::from_millis(10),
+            )
+            .expect_err("pending overload must fail");
+        assert!(error.starts_with("PENDING_LIMIT_EXCEEDED:"));
+        assert_eq!(router.handle().pending_len(), PENDING_LIMIT);
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .clear();
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn event_queue_saturation_fails_closed_instead_of_dropping_terminal_events() {
+        let (mut router, _released) = router_with_messages(Vec::new());
+        router.enable_events(true);
+        let (waiter, _receiver) = std::sync::mpsc::channel();
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .insert(
+                "event-source".to_string(),
+                super::Pending {
+                    name: "fixture.blocking".to_string(),
+                    is_hello: false,
+                    protocol_minor: 2,
+                    waiter,
+                },
+            );
+        let terminal = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "event",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "event-source",
+            "name": "fixture.completed",
+            "payload": {"state": "completed"}
+        });
+        for _ in 0..EVENT_QUEUE_LIMIT {
+            super::route_message(&router.shared, terminal.clone()).expect("reserved event slot");
+        }
+        assert!(super::route_message(&router.shared, terminal)
+            .expect_err("full event queue must fail")
+            .starts_with("EVENT_QUEUE_FULL:"));
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .clear();
+        router.close().expect("clean router close");
     }
 }

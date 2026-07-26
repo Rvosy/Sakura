@@ -24,6 +24,10 @@ from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
 GENERATION_CREDENTIAL = "11" * 16
 APP_ROOT = Path("/isolated/not-read/core-host-protocol")
+WP_2_01_ENVELOPES = json.loads(
+    (Path(__file__).resolve().parents[2] / "tests/fixtures/runtime_v2/wp_2_01/envelopes.json")
+    .read_text(encoding="utf-8")
+)
 
 
 def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
@@ -153,6 +157,15 @@ def test_protocol_22_event_is_distinct_from_21_request_response() -> None:
     assert decode_frame(encode_frame(legacy)) == legacy
 
 
+def test_wp_2_01_shared_envelopes_validate_in_python() -> None:
+    assert decode_frame(encode_frame(WP_2_01_ENVELOPES["request"])) == WP_2_01_ENVELOPES[
+        "request"
+    ]
+    assert decode_frame(encode_frame(WP_2_01_ENVELOPES["event"])) == WP_2_01_ENVELOPES[
+        "event"
+    ]
+
+
 def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:
     output = io.BytesIO()
     writer = ResponseWriter(output)
@@ -188,6 +201,68 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
         writer.send(first)
     except WriterError as error:
         assert error.code == "WRITER_QUEUE_CLOSED"
+
+
+def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server_module, "_WRITER_OPERATION_TIMEOUT_SECONDS", 0.05)
+
+    class BlockingOutput:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def write(self, data: bytes) -> int:
+            self.entered.set()
+            assert self.release.wait(2)
+            return len(data)
+
+        def flush(self) -> None:
+            return None
+
+    output = BlockingOutput()
+    writer = ResponseWriter(output)
+    first = request("writer-slow")
+    first["kind"] = "response"
+    first.pop("deadlineMs")
+    first.pop("priority")
+    first["ok"] = True
+
+    failures: list[BaseException] = []
+    sender = threading.Thread(
+        target=lambda: _capture_writer_failure(writer, first, failures)
+    )
+    sender.start()
+    assert output.entered.wait(1)
+    sender.join(1)
+    assert len(failures) == 1
+    assert getattr(failures[0], "code", None) == "TRANSPORT_WRITE_FAILED"
+
+    saturated = None
+    for index in range(server_module.WRITER_QUEUE_LIMIT + 2):
+        message = dict(first)
+        message["id"] = f"queued-{index}"
+        try:
+            writer.send(message, wait=False)
+        except WriterError as error:
+            saturated = error
+            break
+    assert saturated is not None
+    assert saturated.code == "WRITER_QUEUE_CLOSED"
+    output.release.set()
+    writer.close()
+
+
+def _capture_writer_failure(
+    writer: ResponseWriter,
+    message: dict[str, object],
+    failures: list[BaseException],
+) -> None:
+    try:
+        writer.send(message)
+    except BaseException as error:  # noqa: BLE001 - asserted by the test owner
+        failures.append(error)
 
 
 def test_run_host_raises_first_cleanup_failure_and_attaches_sanitized_later_notes(
