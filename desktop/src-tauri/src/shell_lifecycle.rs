@@ -612,6 +612,7 @@ mod tests {
 
     #[test]
     fn missing_runtime_stays_visible_and_repeated_retry_exit_are_bounded() {
+        let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let root = std::env::temp_dir().join(format!(
             "sakura-runtime-v2-wp-1d-01-missing-{}-{}",
             std::process::id(),
