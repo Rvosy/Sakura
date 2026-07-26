@@ -568,7 +568,10 @@ mod tests {
         handle: &ShellLifecycleHandle,
         expected_generation: u64,
     ) -> ShellLifecyclePublication {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // The default Windows suite intentionally runs process-heavy tests in
+        // parallel.  This is observation headroom for scheduling the lifecycle
+        // worker, not a product startup or shutdown deadline.
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let publication = handle.snapshot().expect("lifecycle publication");
             if publication.supervisor.state == "failed"
@@ -578,7 +581,10 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "lifecycle failure was not bounded"
+                "lifecycle failure was not bounded: state={}, generation={}, last_failure={:?}",
+                publication.supervisor.state,
+                publication.supervisor.generation_number,
+                publication.supervisor.last_failure
             );
             thread::sleep(Duration::from_millis(10));
         }
