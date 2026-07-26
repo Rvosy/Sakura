@@ -59,21 +59,25 @@ test("interactive reply text overrides its enclosing bubble drag region", () => 
   assert.equal(hitRegions.shouldStartNativeDrag({ hitKind, button: 0, isPrimary: true }), false);
 });
 
-test("product menu opens only for a portrait right click", () => {
+test("product menu opens from every visible pet region but not transparent space", () => {
   assert.equal(
-    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2, inPortrait: true }),
+    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2 }),
     true,
   );
   assert.equal(
-    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 0, inPortrait: true }),
+    hitRegions.shouldOpenProductMenu({ hitKind: "interactive", button: 2 }),
+    true,
+  );
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "neutral", button: 2 }),
+    true,
+  );
+  assert.equal(
+    hitRegions.shouldOpenProductMenu({ hitKind: "transparent", button: 2 }),
     false,
   );
   assert.equal(
-    hitRegions.shouldOpenProductMenu({ hitKind: "interactive", button: 2, inPortrait: true }),
-    false,
-  );
-  assert.equal(
-    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2, inPortrait: false }),
+    hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 0 }),
     false,
   );
 });

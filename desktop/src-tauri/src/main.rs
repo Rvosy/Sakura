@@ -373,10 +373,7 @@ fn show_pet_context_menu(
     let regions =
         window_interaction::logical_hit_regions(&layout_contract()?, PresentationState::Product)?;
     let point = [surface_x.floor() as i32, surface_y.floor() as i32];
-    let allowed = regions
-        .drag
-        .first()
-        .is_some_and(|portrait| portrait.contains(point));
+    let allowed = window_interaction::contains_visible_point(&regions, point);
     if !allowed {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }

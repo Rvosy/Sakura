@@ -277,7 +277,6 @@ document.addEventListener("contextmenu", async (event) => {
     !shouldOpenProductMenu({
       hitKind,
       button: event.button,
-      inPortrait: Boolean(event.target.closest("#portrait")),
     })
   ) {
     return;

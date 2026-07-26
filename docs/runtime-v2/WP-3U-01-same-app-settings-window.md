@@ -133,7 +133,7 @@ unavailableReasons
 
 自动测试：
 
-- 右键仅在立绘/允许区域触发，不破坏左键拖动、输入框选择和点击穿透。
+- 右键在桌宠全部可见命中区域触发，包括立绘、气泡、输入框和按钮区域；透明空白继续穿透，且不破坏左键拖动和输入框选择。
 - 菜单 item ID allowlist，未知/伪造 ID 无效果。
 - settings create/focus/close 状态机；快速重复打开只产生一个窗口。
 - CloseRequested、取消关闭、确认放弃、WebView 创建失败和崩溃恢复。

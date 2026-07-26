@@ -252,6 +252,15 @@ pub fn classify_logical_point(model: &LogicalHitRegions, point: [i32; 2]) -> Hit
     HitKind::Transparent
 }
 
+pub fn contains_visible_point(model: &LogicalHitRegions, point: [i32; 2]) -> bool {
+    model
+        .interactive
+        .iter()
+        .chain(&model.drag)
+        .chain(&model.neutral)
+        .any(|region| region.contains(point))
+}
+
 fn scale_rect(rect: LogicalHitRect, scale: f64) -> Result<PhysicalHitRect, String> {
     let left = (f64::from(rect.x) * scale).floor();
     let top = (f64::from(rect.y) * scale).floor();
@@ -521,6 +530,16 @@ mod tests {
             classify_logical_point(&model, [200, 520]),
             HitKind::Interactive
         );
+    }
+
+    #[test]
+    fn product_menu_surface_covers_every_visible_region_and_rejects_transparent_space() {
+        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
+        for point in [[300, 200], [100, 400], [200, 520], [700, 380]] {
+            assert!(contains_visible_point(&model, point), "{point:?}");
+        }
+        assert!(!contains_visible_point(&model, [0, 0]));
+        assert!(!contains_visible_point(&model, [815, 679]));
     }
 
     #[test]
