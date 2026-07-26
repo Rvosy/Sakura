@@ -726,7 +726,10 @@ mod tests {
                 fs::remove_dir_all(&path).expect("stale locator fixture should remove");
             }
             fs::create_dir_all(&path).expect("locator fixture should create");
-            Self(path)
+            Self(
+                path.canonicalize()
+                    .expect("locator fixture root should be canonical"),
+            )
         }
 
         fn path(&self) -> &Path {
@@ -994,9 +997,16 @@ mod tests {
         let canonical = fixture.path().join("assistant-root");
         fs::create_dir_all(&canonical).unwrap();
         let parent = canonical.parent().unwrap();
+        let separator = std::path::MAIN_SEPARATOR;
         for assistant_root in [
-            PathBuf::from(format!(r"{}\.\assistant-root", parent.display())),
-            PathBuf::from(format!(r"{}\..\assistant-root", canonical.display())),
+            PathBuf::from(format!(
+                "{}{separator}.{separator}assistant-root",
+                parent.display()
+            )),
+            PathBuf::from(format!(
+                "{}{separator}..{separator}assistant-root",
+                canonical.display()
+            )),
         ] {
             let mut request = create_packaged_layout(&fixture, PlatformTarget::WindowsX64);
             request.assistant_root = assistant_root;

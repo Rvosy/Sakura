@@ -353,7 +353,22 @@ fn run_readiness_preflight_case(
     let mut host = CoreHostRuntime::launch(layout, generation_id)
         .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
     let pid = host.pid();
-    let hello = host.request("hello", "system.hello", Duration::from_secs(3))?;
+    let hello = host.request_with_payload(
+        "hello",
+        "system.hello",
+        json!({
+            "protocol": {"major": 2, "minMinor": 1, "maxMinor": 1},
+            "requiredCapabilities": [
+                "system.hello",
+                "system.health",
+                "system.shutdown",
+                "core.initialize",
+                "core.snapshot"
+            ],
+            "optionalCapabilities": []
+        }),
+        Duration::from_secs(3),
+    )?;
     if hello.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(format!("{} scenario hello failed", expectation.label));
     }
@@ -782,12 +797,15 @@ fn run_consecutive_generation_fault_rows(
             "00000000-0000-4000-8002-000000000000",
             None,
             Duration::from_secs(3),
-        )?;
-        if stale_generation
-            .pointer("/error/code")
-            .and_then(Value::as_str)
-            != Some("GENERATION_MISMATCH")
-        {
+        );
+        let stale_generation_rejected = match stale_generation {
+            Ok(response) => {
+                response.pointer("/error/code").and_then(Value::as_str)
+                    == Some("GENERATION_MISMATCH")
+            }
+            Err(error) => error.starts_with("GENERATION_CREDENTIAL_MISMATCH:"),
+        };
+        if !stale_generation_rejected {
             return Err(format!("{label} accepted a stale generation request"));
         }
         let (exit_code, credential_rejected) = if index == 0 {
@@ -806,13 +824,16 @@ fn run_consecutive_generation_fault_rows(
                 Some("73737373737373737373737373737373"),
                 Duration::from_secs(3),
             );
-            if bad.is_ok() {
+            if !matches!(
+                bad,
+                Err(ref error) if error.starts_with("GENERATION_CREDENTIAL_MISMATCH:")
+            ) {
                 return Err("stale generation credential was accepted".to_string());
             }
             let exit = host
-                .close_stdin_and_wait()
+                .shutdown()
                 .map_err(CoreHostLifecycleFailure::into_terminal_diagnostic)?;
-            if !exit.tree_empty || exit.root_exit_code != 74 {
+            if !exit.tree_empty || exit.forced || exit.root_exit_code != 0 {
                 return Err(format!("stale credential tree did not release: {exit:?}"));
             }
             (exit.root_exit_code, true)
@@ -1011,36 +1032,32 @@ fn run_scenario(
 }
 
 fn validate_ready_snapshot(snapshot: &Value) -> Result<(), String> {
+    let object = snapshot
+        .as_object()
+        .ok_or_else(|| "real Core Host Snapshot was not an object".to_string())?;
+    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
     let readiness = snapshot.get("readiness").and_then(Value::as_str);
-    let assistant_state = snapshot
-        .pointer("/components/assistant/state")
-        .and_then(Value::as_str);
-    let assistant_code = snapshot
-        .pointer("/components/assistant/code")
-        .and_then(Value::as_str);
-    let retryable = snapshot
-        .pointer("/components/assistant/retryable")
-        .and_then(Value::as_bool);
-    if readiness != Some("ready")
-        || assistant_state != Some("ready")
-        || assistant_code != Some("READY")
-        || retryable != Some(false)
+    if keys
+        != BTreeSet::from([
+            "activeInteractionSummary",
+            "currentCharacterSummary",
+            "generationId",
+            "readiness",
+            "revision",
+        ])
+        || readiness != Some("ready")
+        || snapshot
+            .get("generationId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || snapshot.get("revision").and_then(Value::as_u64).is_none()
+        || snapshot
+            .get("activeInteractionSummary")
+            .is_none_or(|value| !value.is_null())
     {
         return Err(format!(
-            "real Core Host did not produce the exact ready Assistant state: readiness={readiness:?}, assistantState={assistant_state:?}, assistantCode={assistant_code:?}, retryable={retryable:?}"
+            "real Core Host did not produce the exact ready WP-2-02 Snapshot: readiness={readiness:?}"
         ));
-    }
-    let assistant = snapshot
-        .pointer("/components/assistant")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "real Core Host Snapshot omitted the Assistant component".to_string())?;
-    if assistant
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>()
-        != BTreeSet::from(["code", "retryable", "state"])
-    {
-        return Err("real Core Host Assistant component exposed unexpected fields".to_string());
     }
     let summary = snapshot
         .get("currentCharacterSummary")
@@ -1431,23 +1448,19 @@ mod tests {
     }
 
     #[test]
-    fn real_ready_snapshot_requires_the_exact_public_assistant_shape() {
+    fn real_ready_snapshot_requires_the_exact_wp_2_02_shape() {
         let snapshot = json!({
+            "generationId": "00000000-0000-4000-8000-000000001c01",
+            "revision": 2,
             "readiness": "ready",
-            "components": {
-                "assistant": {
-                    "state": "ready",
-                    "code": "READY",
-                    "retryable": false
-                }
-            },
             "currentCharacterSummary": {
                 "displayName": "Sakura",
                 "id": "sakura",
                 "initialMessage": "hello",
                 "portraitChoices": ["neutral"],
                 "replyTones": ["gentle"]
-            }
+            },
+            "activeInteractionSummary": null
         });
         validate_ready_snapshot(&snapshot).expect("exact ready Snapshot should pass");
 
@@ -1459,19 +1472,14 @@ mod tests {
     #[test]
     fn readiness_failure_diagnostic_exposes_only_public_state_classification() {
         let snapshot = json!({
+            "generationId": "00000000-0000-4000-8000-000000001c01",
+            "revision": 2,
             "readiness": "failed",
-            "components": {
-                "assistant": {
-                    "state": "failed",
-                    "code": "ASSISTANT_INITIALIZATION_FAILED",
-                    "retryable": false,
-                    "privatePath": "/private/assistant/root"
-                }
-            },
             "currentCharacterSummary": {
                 "apiKey": "must-not-leak",
                 "initialMessage": "private prompt"
-            }
+            },
+            "activeInteractionSummary": null
         });
 
         let diagnostic =
@@ -1479,7 +1487,7 @@ mod tests {
 
         assert_eq!(
             diagnostic,
-            "real Core Host did not produce the exact ready Assistant state: readiness=Some(\"failed\"), assistantState=Some(\"failed\"), assistantCode=Some(\"ASSISTANT_INITIALIZATION_FAILED\"), retryable=Some(false)"
+            "real Core Host did not produce the exact ready WP-2-02 Snapshot: readiness=Some(\"failed\")"
         );
         for private in ["/private/assistant/root", "must-not-leak", "private prompt"] {
             assert!(!diagnostic.contains(private));
