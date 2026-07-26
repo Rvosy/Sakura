@@ -61,6 +61,17 @@ const SNAPSHOT_READINESS: [&str; 6] = [
     "failed",
 ];
 
+#[cfg(test)]
+static LIFECYCLE_TEST_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn lifecycle_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    LIFECYCLE_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Clone, Copy)]
 struct ShutdownPolicy {
     graceful: Duration,
@@ -2205,7 +2216,7 @@ mod tests {
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
-            mpsc, Arc, Mutex, OnceLock,
+            mpsc, Arc, Mutex,
         },
         thread,
         time::{Duration, Instant},
@@ -2236,23 +2247,14 @@ mod tests {
     };
 
     use super::{
-        core_host_process_request, drain_stderr, CoreHostRuntime, CoreSnapshotCache,
-        ShutdownPolicy, StderrDrainState, StderrDrainStats, StderrDrainer, StderrRedactor,
-        PRODUCTION_SHUTDOWN_POLICY, STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, lifecycle_test_lock, CoreHostRuntime,
+        CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats, StderrDrainer,
+        StderrRedactor, PRODUCTION_SHUTDOWN_POLICY, STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
     const WP_1C_04_LIFECYCLE_GOLDEN: &str =
         include_str!("../../../tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json");
-
-    static LIFECYCLE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn lifecycle_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        LIFECYCLE_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -666,6 +666,7 @@ mod tests {
 
     #[test]
     fn real_core_retry_waits_for_cleanup_and_exit_releases_the_generation() {
+        let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
             .join("../..")

@@ -420,7 +420,7 @@ fn canonical_request_root(
 
 #[cfg(not(windows))]
 fn canonical_paths_equivalent(requested: &Path, canonical: &Path) -> bool {
-    requested == canonical
+    requested.as_os_str() == canonical.as_os_str()
 }
 
 #[cfg(windows)]
