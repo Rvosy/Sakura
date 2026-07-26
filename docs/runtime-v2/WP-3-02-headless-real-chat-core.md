@@ -105,11 +105,14 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
   `app/core_host/real_chat.py`（新增）；仅确有边界复用需要时修改 `app/core_host/router.py`、
   `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。
 - 既有业务与存储：`app/core/chat_pipeline.py`、`app/agent/runtime.py`、`app/core/cancellation.py`、
+  `app/agent/context_orchestrator.py`、
   `app/core/http_client.py`、`app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、
   `app/storage/paths.py`；只允许取消贯穿、纯投影、history 绑定和已证明的 headless import/stdout
   blocker，不重写工具循环或 Provider 协议。`runtime_log` 仅允许增加 operation-scoped sink suppression，
   防止 legacy console/file sink 污染 Core stdout 或把消息写到错误的应用根；`http_client` 仅允许修正
   cancel 时关闭活动响应的阻塞行为，不改变 Provider 请求协议。
+  `context_orchestrator` 仅允许把 `ContextProviderContribution` 收窄为 `TYPE_CHECKING` 类型依赖，
+  防止真实聊天执行阶段经 `app.plugins.__init__` 意外加载 PluginManager/PySide6；不得接入插件行为。
 - Rust Gateway/验收：`desktop/src-tauri/src/core_host_gateway.rs`、
   `desktop/src-tauri/src/core_host_router.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、
   `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/tests/**`；只扩展真实 chat consumer

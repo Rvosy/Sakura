@@ -126,6 +126,12 @@ def forbidden():
         or (name.startswith('app.ui.') and name != 'app.ui.theme')
     )
 
+def qt_or_plugin_forbidden():
+    return sorted(
+        name for name in sys.modules
+        if name.startswith(('PySide6', 'app.plugins'))
+    )
+
 before = forbidden()
 result = pipeline.run_user_message([{'role': 'user', 'content': '本轮问题'}])
 after = sorted(
@@ -135,6 +141,7 @@ after = sorted(
 print(json.dumps({
     'before': before,
     'after': after,
+    'after_qt_or_plugin_forbidden': qt_or_plugin_forbidden(),
     'reply': result.reply.text,
     'runtime_context': runtime.api_client.last_runtime_context,
     'theme_type': type(profile.theme_settings).__name__,
@@ -158,6 +165,7 @@ print(json.dumps({
         "app.agent.session_state_context",
         "app.storage.chat_history",
     ]
+    assert result["after_qt_or_plugin_forbidden"] == []
     assert result["reply"] == "続けるよ。"
     assert "最近会话状态" in result["runtime_context"]
     assert "继续旧计划" in result["runtime_context"]

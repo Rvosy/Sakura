@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage
@@ -13,7 +13,9 @@ from app.llm.prompts.types import (
     ContextRequest,
     ContextSnapshot,
 )
-from app.plugins.models import ContextProviderContribution
+
+if TYPE_CHECKING:
+    from app.plugins.models import ContextProviderContribution
 
 
 MAX_CONTEXT_INPUT_CHARS = 4000
