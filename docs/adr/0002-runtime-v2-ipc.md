@@ -399,3 +399,7 @@ dispatcher、单 writer、32 个 dispatch/writer/event 上限、8 个 fixture �
 并覆盖乱序、event/response 交错、未知/重复/错 name/stale identity、各有界队列饱和、慢/失败 writer、
 半帧/EOF/stdout pollution、Core crash、Retry/Exit 和连续 generation 清理。ADR 状态仍只保持 Phase 1C
 transport foundation 的 Technically Validated；WP-2-02 与 WP-3V-01 尚未发生，不能提前改为 Accepted。
+
+候选验收已于同日完成并登记为 accepted（总表为唯一状态真相源）。这只表示 WP-2-01 的最小 Router
+边界和本地 Windows 候选证据已通过，不改变 ADR 对 WP-2-02 聊天边界或 WP-3V-01 真实 Assistant
+纵向验证的 Accepted 门禁；当前 SHA 未推送，三平台同 SHA 原生结果仍是后续发布监控证据。

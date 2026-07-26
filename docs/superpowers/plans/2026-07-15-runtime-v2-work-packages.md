@@ -82,7 +82,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
-| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | stabilizing |
+| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | planned |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
@@ -120,8 +120,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 `docs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
 accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
 已于 2026-07-26 accepted，随后完成的窗口交互/可见性纠正记录见第 10 节。WP-2-01 已按第 11 节
-和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 激活并进入稳定化，是当前唯一 `stabilizing` Work Package；
-WP-2-02 及后续项保持 `planned`。
+和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；当前无
+active/stabilizing Work Package，WP-2-02 及后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1842,6 +1842,19 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 资源与安全：原有真实 Core crash、Retry、连续 generation、Exit、stderr flood、stale credential、stdout pollution、慢/忽略 shutdown 和完整树 finalization 门禁全绿；reader/writer/pending/pipe/thread/handle/temp 由同一 generation owner 清理；credential、私有异常内容和路径不进入公共 response/event
 已知问题：本地 Windows 候选已完成；未推送当前 SHA，因此没有同 SHA Windows/macOS/Linux platform workflow 结果，本记录不把该非失败型证据缺口冒充三平台证据
 回退：先使当前 generation 失效并执行 AppShutdown，确认完整树和 Router 资源归零；按 0d7c5e751、213b2af85、b7c405923、8f1cca3a9 逆序 revert；不触碰用户数据
+```
+
+验收记录（2026-07-26）：
+
+```text
+状态：accepted
+关联提交：8f1cca3a9、b7c405923、213b2af85、0d7c5e751、e8c27bd1
+自动测试：.\runtime\python.exe Core Host 定向 181 passed；cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked 172 passed/23 ignored；npm test --prefix desktop/frontend 22 passed；cargo build --locked、cargo fmt --check、git diff --check、PowerShell parser 全部通过
+故障测试：反向 response、event/response 交错、重复/未知 id、错 name、旧 generation/credential、pending/event/writer/fixture 饱和、慢/失败 writer、半帧、EOF、stdout pollution、阻塞 sleep/文件读取、health/shutdown 抢占、Core crash、Retry、Exit 和连续 generation 全部有界通过
+真实应用验收：真实 Python Host 通过 2.2 capability hello、两个并发 in-flight health waiter、shutdown；既有 Shell lifecycle/Retry/Exit、受控进程树、stderr 排水、完整 generation 资源清理回归全绿；Windows 窗口脚本完成语法检查，保留 Core/Python 后代登记、退出归零和 data 审计
+安全与范围：未接入真实聊天、Assistant、Gateway、cancel、Snapshot 扩展、UI、第二 Core、第二 writer、无限队列或用户数据；credential、API Key、Prompt、异常 repr 和私有路径不进入公共 envelope/事件
+已知问题：当前 SHA 未推送，未产生同 SHA Windows/macOS/Linux platform workflow 结果；这是非失败型原生平台证据缺口，不改变本地候选 accepted 结论，推送后仅跟踪同 SHA 可归因失败
+回退：先使当前 generation 失效并执行 AppShutdown，确认 Shell/Core/后代、reader/writer/dispatcher、pending waiter、pipe/fd/handle 和 temp 归零；按 0d7c5e751、213b2af85、b7c405923、8f1cca3a9 逆序 revert；不触碰用户数据
 ```
 
 主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
