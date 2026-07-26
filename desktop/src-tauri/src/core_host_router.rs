@@ -282,11 +282,15 @@ fn writer_loop(mut stdin: File, receiver: mpsc::Receiver<WriterCommand>, shared:
         }
         match command {
             WriterCommand::Frame(message) => {
-                if let Err(error) = std::io::Write::write_all(
-                    &mut stdin,
-                    &encode_frame(&message).unwrap_or_default(),
-                )
-                .and_then(|_| std::io::Write::flush(&mut stdin))
+                let frame = match encode_frame(&message) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        fail_all(&shared, error.to_string());
+                        return;
+                    }
+                };
+                if let Err(error) = std::io::Write::write_all(&mut stdin, &frame)
+                    .and_then(|_| std::io::Write::flush(&mut stdin))
                 {
                     fail_all(&shared, format!("TRANSPORT_WRITE_FAILED: {error}"));
                     return;
