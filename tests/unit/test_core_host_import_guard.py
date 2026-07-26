@@ -57,6 +57,73 @@ print(json.dumps(forbidden))
     )
 
 
+def test_real_chat_control_boundary_constructs_without_business_modules() -> None:
+    probe = """
+import builtins
+import json
+import sys
+from pathlib import Path
+
+original_import = builtins.__import__
+blocked_attempts = []
+
+def is_business_module(name):
+    return (
+        name == 'app.core'
+        or name.startswith('app.core.')
+        or name.startswith((
+            'app.agent', 'app.config', 'app.llm', 'app.plugins', 'app.storage',
+            'app.ui', 'app.voice', 'PySide6',
+        ))
+    )
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level == 0 and is_business_module(name):
+        blocked_attempts.append(name)
+        raise ModuleNotFoundError(name)
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+from app.core_host.real_chat import RealChatBoundary
+
+boundary = RealChatBoundary(
+    '00000000-0000-4000-8000-000000003002',
+    '30' * 16,
+    Path('.'),
+    session_provider=lambda: None,
+)
+snapshot = boundary.snapshot_fields('initializing', None)
+boundary.close()
+loaded_business_modules = sorted(name for name in sys.modules if is_business_module(name))
+print(json.dumps({
+    'blocked_attempts': blocked_attempts,
+    'loaded_business_modules': loaded_business_modules,
+    'snapshot': snapshot,
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["blocked_attempts"] == []
+    assert result["loaded_business_modules"] == []
+    assert result["snapshot"] == {
+        "generationId": "00000000-0000-4000-8000-000000003002",
+        "revision": 0,
+        "readiness": "initializing",
+        "currentCharacterSummary": None,
+        "activeInteractionSummary": None,
+    }
+
+
 def test_approved_session_construction_is_qt_and_optional_domain_free() -> None:
     probe = """
 import json

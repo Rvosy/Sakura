@@ -103,7 +103,9 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
 
 - Core 消费者：`app/core_host/assistant_adapter.py`、`app/core_host/server.py`、
   `app/core_host/real_chat.py`（新增）；仅确有边界复用需要时修改 `app/core_host/router.py`、
-  `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。
+  `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。`real_chat` 的 operation/Gateway 控制面必须
+  能在仅含 `app/core_host` 的打包 Core 中导入和构造；Pipeline、Provider、history、runtime log 与取消
+  异常类型等业务依赖只允许在首个已接受的真实聊天执行时加载，禁止在 `system.hello` 前扩大启动图。
 - 既有业务与存储：`app/core/chat_pipeline.py`、`app/agent/runtime.py`、`app/core/cancellation.py`、
   `app/agent/context_orchestrator.py`、
   `app/core/http_client.py`、`app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、

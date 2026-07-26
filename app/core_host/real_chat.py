@@ -10,17 +10,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
-
-from app.core.cancellation import CancellationToken, OperationCancelled
-from app.core.runtime_log import suppress_runtime_logs
-from app.llm.api_client import ApiConfigError, ApiRequestError
-from app.llm.context_trimming import MAX_MODEL_CONTEXT_MESSAGES, trim_messages_for_model
-from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
-from app.storage.paths import StoragePaths
+from typing import TYPE_CHECKING, Any
 
 from .chat_fixture import CHAT_CLOSE_TIMEOUT_SECONDS, CHAT_MESSAGE_LIMIT
 from .protocol import event, response
+
+if TYPE_CHECKING:
+    from app.core.cancellation import CancellationToken
+    from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
@@ -34,10 +31,16 @@ class RealChatRejection(ValueError):
         self.retryable = retryable
 
 
+def _new_cancellation_token() -> CancellationToken:
+    from app.core.cancellation import CancellationToken
+
+    return CancellationToken()
+
+
 @dataclass
 class _Execution:
     operation_id: str
-    cancel: CancellationToken = field(default_factory=CancellationToken)
+    cancel: CancellationToken = field(default_factory=_new_cancellation_token)
     started: bool = False
     cancel_requested: bool = False
     terminal: str | None = None
@@ -54,7 +57,7 @@ class RealChatBoundary:
         *,
         session_provider: Callable[[], object | None],
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
-        history_factory: Callable[[Path, str], ChatHistoryStore] = ChatHistoryStore,
+        history_factory: Callable[[Path, str], ChatHistoryStore] | None = None,
     ) -> None:
         if not generation_id.strip() or not generation_credential.strip():
             raise ValueError("real chat generation identity must not be empty")
@@ -126,12 +129,24 @@ class RealChatBoundary:
         terminal = "chat.failed"
         terminal_payload: dict[str, Any]
         try:
+            from app.core.runtime_log import suppress_runtime_logs
+            from app.llm.context_trimming import (
+                MAX_MODEL_CONTEXT_MESSAGES,
+                trim_messages_for_model,
+            )
+            from app.storage.paths import StoragePaths
+
             execution.cancel.throw_if_cancelled()
             session = self._session_provider()
             if session is None:
                 raise _BoundaryFailure("ASSISTANT_NOT_READY", "Assistant is not ready", False)
             character = getattr(session, "character")
-            history = self._history_factory(
+            history_factory = self._history_factory
+            if history_factory is None:
+                from app.storage.chat_history import ChatHistoryStore
+
+                history_factory = ChatHistoryStore
+            history = history_factory(
                 StoragePaths(self._app_root).chat_history_for(str(character.id)),
                 str(character.display_name),
             )
@@ -184,25 +199,26 @@ class RealChatBoundary:
                 "reply": {"segments": segments},
                 "historyStatus": history_status,
             }
-        except OperationCancelled:
-            terminal = "chat.cancelled"
-            terminal_payload = {
-                "operationId": operation_id,
-                "historyStatus": history_status,
-            }
         except BaseException as error:  # noqa: BLE001 - sanitize at the process boundary
-            _safe_diagnostic(error)
-            code, message, retryable = _classify_error(error)
-            terminal_payload = {
-                "operationId": operation_id,
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "retryable": retryable,
-                    "details": {},
-                },
-                "historyStatus": history_status,
-            }
+            if _is_operation_cancelled(error):
+                terminal = "chat.cancelled"
+                terminal_payload = {
+                    "operationId": operation_id,
+                    "historyStatus": history_status,
+                }
+            else:
+                _safe_diagnostic(error)
+                code, message, retryable = _classify_error(error)
+                terminal_payload = {
+                    "operationId": operation_id,
+                    "error": {
+                        "code": code,
+                        "message": message,
+                        "retryable": retryable,
+                        "details": {},
+                    },
+                    "historyStatus": history_status,
+                }
 
         resolved_terminal = self._finish(operation_id, terminal)
         if resolved_terminal is not None:
@@ -407,6 +423,8 @@ def _project_reply(reply: object) -> list[dict[str, object]]:
 def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     if isinstance(error, _BoundaryFailure):
         return error.code, error.public_message, error.retryable
+    from app.llm.api_client import ApiConfigError, ApiRequestError
+
     if isinstance(error, ApiConfigError):
         return "PROVIDER_CONFIGURATION_INVALID", "Provider configuration is invalid", False
     if isinstance(error, ApiRequestError):
@@ -438,6 +456,12 @@ def _safe_diagnostic(error: BaseException) -> None:
         print(f"Real chat failed: {type(error).__name__}", file=sys.stderr)
     except Exception:
         pass
+
+
+def _is_operation_cancelled(error: BaseException) -> bool:
+    from app.core.cancellation import OperationCancelled
+
+    return isinstance(error, OperationCancelled)
 
 
 __all__ = ["REAL_CHAT_EXECUTION_LIMIT", "RealChatBoundary", "RealChatRejection"]
