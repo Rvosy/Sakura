@@ -181,8 +181,8 @@ fn translate_rect(
         .map(|rect| rect.with_corner_radius(corner_radius))
 }
 
-const BUBBLE_CORNER_RADIUS: u32 = 26;
-const INPUT_CORNER_RADIUS: u32 = 18;
+const BUBBLE_CORNER_RADIUS: u32 = 20;
+const INPUT_CORNER_RADIUS: u32 = 26;
 const CONTROLS_CORNER_RADIUS: u32 = 15;
 
 pub fn logical_hit_regions(
@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(model.interactive.len(), 2);
         assert_eq!(model.drag.len(), 2);
         assert!(model.neutral.is_empty());
-        assert_eq!(model.drag[0], LogicalHitRect::new(384, 88, 416, 580));
+        assert_eq!(model.drag[0], LogicalHitRect::new(108, 12, 600, 656));
     }
 
     #[test]
@@ -507,19 +507,19 @@ mod tests {
     fn interactive_regions_take_priority_over_drag_and_edges_are_half_open() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         assert_eq!(
-            classify_logical_point(&model, [400, 400]),
+            classify_logical_point(&model, [700, 380]),
             HitKind::Interactive
         );
         assert_eq!(classify_logical_point(&model, [384, 120]), HitKind::Drag);
-        assert_eq!(classify_logical_point(&model, [799, 667]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&model, [707, 667]), HitKind::Drag);
         assert_eq!(
-            classify_logical_point(&model, [600, 668]),
+            classify_logical_point(&model, [708, 668]),
             HitKind::Transparent
         );
         assert_eq!(classify_logical_point(&model, [0, 0]), HitKind::Transparent);
 
         assert_eq!(
-            classify_logical_point(&model, [200, 390]),
+            classify_logical_point(&model, [200, 520]),
             HitKind::Interactive
         );
     }

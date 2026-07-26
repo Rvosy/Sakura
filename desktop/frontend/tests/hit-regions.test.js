@@ -13,8 +13,8 @@ test("the product layout exposes deterministic ordered hit regions", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(model.state, "product");
-  assert.deepEqual(model.interactive, [[20, 356, 410, 78], [388, 86, 30, 30]]);
-  assert.deepEqual(model.drag, [[384, 88, 416, 580], [20, 70, 410, 272]]);
+  assert.deepEqual(model.interactive, [[88, 502, 640, 52], [688, 374, 30, 30]]);
+  assert.deepEqual(model.drag, [[108, 12, 600, 656], [88, 364, 640, 128]]);
   assert.deepEqual(model.neutral, []);
 });
 
@@ -23,16 +23,16 @@ test("transparent complement and half-open region boundaries are explicit", () =
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(hitRegions.classifyHitPoint(model, [0, 0]), "transparent");
   assert.equal(hitRegions.classifyHitPoint(model, [384, 120]), "drag");
-  assert.equal(hitRegions.classifyHitPoint(model, [799, 667]), "drag");
-  assert.equal(hitRegions.classifyHitPoint(model, [800, 668]), "transparent");
+  assert.equal(hitRegions.classifyHitPoint(model, [707, 667]), "drag");
+  assert.equal(hitRegions.classifyHitPoint(model, [708, 668]), "transparent");
 });
 
 test("interactive controls win over an overlapping portrait drag region", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   const product = hitRegions.computeHitRegions(computePetLayout(contract));
-  assert.equal(hitRegions.classifyHitPoint(product, [400, 100]), "interactive");
-  assert.equal(hitRegions.classifyHitPoint(product, [200, 390]), "interactive");
-  assert.notEqual(hitRegions.classifyHitPoint(product, [200, 390]), "drag");
+  assert.equal(hitRegions.classifyHitPoint(product, [700, 380]), "interactive");
+  assert.equal(hitRegions.classifyHitPoint(product, [200, 520]), "interactive");
+  assert.notEqual(hitRegions.classifyHitPoint(product, [200, 520]), "drag");
   assert.equal(hitRegions.classifyHitPoint(product, [300, 200]), "drag");
   assert.equal(
     hitRegions.shouldStartNativeDrag({ hitKind: "interactive", button: 0, isPrimary: true }),
@@ -76,5 +76,5 @@ test("repeated product computation is stateless", () => {
     hitRegions.computeHitRegions(computePetLayout(contract, state)),
   );
   assert.deepEqual(models.map((model) => model.state), states);
-  assert.deepEqual(models.at(-1).interactive.at(-1), [388, 86, 30, 30]);
+  assert.deepEqual(models.at(-1).interactive.at(-1), [688, 374, 30, 30]);
 });

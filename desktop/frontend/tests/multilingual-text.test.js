@@ -13,6 +13,13 @@ test("CJK scripts select deterministic locale-specific font language tags", () =
 test("mixed-language replies preserve text and classify each sentence independently", () => {
   const text = "中文段落。日本語の段落。\nEnglish paragraph.";
   const runs = multilingualTextRuns(text);
-  assert.deepEqual(runs.map(({ lang }) => lang), ["zh-CN", "ja-JP", "zh-CN", "en"]);
+  assert.deepEqual(runs.map(({ lang }) => lang), ["zh-CN", "ja-JP", "en"]);
+  assert.equal(runs.map(({ value }) => value).join(""), text);
+});
+
+test("mixed scripts inside one sentence keep their own stable font language", () => {
+  const text = "这里是中文、English、かな、数字0123。";
+  const runs = multilingualTextRuns(text);
+  assert.deepEqual(runs.map(({ lang }) => lang), ["zh-CN", "en", "ja-JP", "zh-CN"]);
   assert.equal(runs.map(({ value }) => value).join(""), text);
 });

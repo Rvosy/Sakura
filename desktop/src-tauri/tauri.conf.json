@@ -21,7 +21,7 @@
         "decorations": false,
         "transparent": true,
         "shadow": false,
-        "visible": true
+        "visible": false
       }
     ],
     "withGlobalTauri": true,

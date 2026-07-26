@@ -189,16 +189,10 @@ fn apply_pet_layout(
     if session.is_deferred_drag_pending() {
         session.finish_deferred_drag();
     }
-    NativeWindowInteractionBackend
-        .apply_bounds(&window, &application.physical_placement)
-        .map_err(|error| error.to_string())?;
-    let hit_regions = apply_native_interaction_region(&window, &contract, &application)?;
+    let hit_regions = apply_native_pet_surface(&window, &contract, &application)?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
     session.applied_revision = revision;
-    window
-        .show()
-        .map_err(|error| format!("failed to show pet window: {error}"))?;
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
@@ -227,6 +221,36 @@ fn apply_native_interaction_region(
         };
     }
     Ok(physical)
+}
+
+fn apply_native_pet_surface(
+    window: &WebviewWindow,
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let backend = NativeWindowInteractionBackend;
+    backend
+        .prepare_window(window)
+        .map_err(|error| error.to_string())?;
+    backend
+        .apply_bounds(window, &application.physical_placement)
+        .map_err(|error| error.to_string())?;
+    let hit_regions = apply_native_interaction_region(window, contract, application)?;
+    window
+        .show()
+        .map_err(|error| format!("failed to show pet window: {error}"))?;
+    Ok(hit_regions)
+}
+
+fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
+    let contract = layout_contract()?;
+    let monitor = target_monitor(window, None)?;
+    // Revision zero is a native bootstrap only. The frontend owns revision one
+    // and the first committed WindowGeometrySession state after WebView startup.
+    let application =
+        apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
+    apply_native_pet_surface(window, &contract, &application)?;
+    Ok(())
 }
 
 fn commit_dragged_window_position(
@@ -672,6 +696,13 @@ fn main() {
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
         )
+        .setup(|app| {
+            let window = app
+                .get_webview_window("main")
+                .ok_or("main pet window was not created")?;
+            prepare_initial_pet_window(&window)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
             start_pet_drag,

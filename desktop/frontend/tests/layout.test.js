@@ -14,10 +14,46 @@ test("one fixed product envelope defines every visible surface", () => {
   assert.deepEqual(layout.windowSize, [816, 680]);
   assert.deepEqual(layout.activeWindowSize, [816, 680]);
   assert.deepEqual(layout.activeOffset, [0, 0]);
-  assert.deepEqual(layout.portraitRect, [384, 88, 416, 580]);
-  assert.deepEqual(layout.bubbleRect, [20, 70, 410, 272]);
-  assert.deepEqual(layout.inputRect, [20, 356, 410, 78]);
-  assert.deepEqual(layout.portraitAnchor, [592, 668]);
+  assert.deepEqual(layout.portraitRect, [108, 12, 600, 656]);
+  assert.deepEqual(layout.bubbleRect, [88, 364, 640, 128]);
+  assert.deepEqual(layout.inputRect, [88, 502, 640, 52]);
+  assert.deepEqual(layout.portraitAnchor, [408, 668]);
+  assert.deepEqual(layout.layoutAdjustments, {
+    controlPanelWidth: 640,
+    bubbleHeight: 128,
+    verticalOffset: 0,
+    inputBarOffset: 0,
+  });
+});
+
+test("reserved appearance settings preserve the centered legacy control-panel semantics", () => {
+  const layout = computePetLayout(contract, "product", "", {
+    controlPanelWidth: 553,
+    bubbleHeight: 139,
+    verticalOffset: -26,
+    inputBarOffset: 12,
+  });
+  assert.deepEqual(layout.bubbleRect, [132, 379, 553, 139]);
+  assert.deepEqual(layout.inputRect, [132, 540, 553, 52]);
+  assert.equal(layout.bubbleRect[0], layout.inputRect[0]);
+  assert.equal(layout.bubbleRect[2], layout.inputRect[2]);
+});
+
+test("appearance settings are normalized to the fixed product envelope", () => {
+  const layout = computePetLayout(contract, "product", "", {
+    controlPanelWidth: 9999,
+    bubbleHeight: -1,
+    verticalOffset: 9999,
+    inputBarOffset: -80,
+  });
+  assert.deepEqual(layout.layoutAdjustments, {
+    controlPanelWidth: 760,
+    bubbleHeight: 96,
+    verticalOffset: 160,
+    inputBarOffset: 0,
+  });
+  assert.deepEqual(layout.bubbleRect, [28, 236, 760, 96]);
+  assert.deepEqual(layout.inputRect, [28, 342, 760, 52]);
 });
 
 test("every chat lifecycle reuses the identical product geometry", () => {
@@ -42,7 +78,7 @@ test("unknown states and malformed fixed envelopes fail closed", () => {
   assert.throws(() => computePetLayout(contract, "thinking"), /unknown pet state/);
   assert.throws(() => validateLayoutContract({ schemaVersion: 99, states: {} }));
   const moved = structuredClone(contract);
-  moved.states.product.portraitAnchor = [591, 668];
+  moved.states.product.portraitAnchor = [407, 668];
   assert.throws(() => validateLayoutContract(moved), /fixed product viewport/);
   const escaped = structuredClone(contract);
   escaped.states.product.inputRect = [800, 650, 40, 40];

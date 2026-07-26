@@ -7,7 +7,7 @@ import { classifyPointerHit, computeHitRegions, shouldStartNativeDrag } from "./
 import { createInputFocusController } from "./pet/input-focus.js";
 import { createLayoutController } from "./pet/layout-controller.js";
 import { applyPetLayout, computePetLayout, PRODUCT_LAYOUT_STATE, validateLayoutContract } from "./pet/layout.js";
-import { renderMultilingualText } from "./pet/multilingual-text.js";
+import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter } from "./pet/typewriter.js";
 
@@ -93,6 +93,7 @@ try {
 const portraits = portraitSequence(characterPresentation);
 applyTheme(characterPresentation.themeTokens);
 characterName.textContent = characterPresentation.displayName;
+input.placeholder = `和${characterPresentation.displayName}说点什么……`;
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
 portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
@@ -233,6 +234,7 @@ function submitMessage({ text }) {
   if (presentationUnavailable || state.canCancel || state.lifecycle !== "ready") return;
   typewriter.cancel("");
   input.value = "";
+  input.lang = "zh-CN";
   try {
     fakeCore.send({ message: text });
   } catch {
@@ -266,6 +268,9 @@ input.addEventListener("compositionupdate", (event) => inputFocus.handleComposit
 input.addEventListener("compositionend", (event) => {
   inputFocus.handleCompositionEnd(event.data);
   stage.dataset.composing = "false";
+});
+input.addEventListener("input", () => {
+  input.lang = inferTextLanguage(input.value);
 });
 input.addEventListener("focus", () => inputFocus.handleInputFocus());
 input.addEventListener("blur", () => inputFocus.handleInputBlur());

@@ -149,6 +149,8 @@ pub trait ManagedProcessTreeBackend: Send + Sync {
 }
 
 pub trait WindowInteractionBackend: Send + Sync {
+    fn prepare_window(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+
     fn apply_bounds(
         &self,
         window: &tauri::WebviewWindow,
@@ -302,6 +304,13 @@ mod tests {
     }
 
     impl WindowInteractionBackend for ContractOnlyBackend {
+        fn prepare_window(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "prepare_window",
+            ))
+        }
+
         fn apply_bounds(
             &self,
             _window: &tauri::WebviewWindow,

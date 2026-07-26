@@ -4,6 +4,7 @@
 状态：active
 首次激活日期：2026-07-26
 产品方向纠正日期：2026-07-26
+旧版视觉基线恢复日期：2026-07-27
 前置依赖：WP-3-02 accepted
 唯一产品边界：最终桌宠 UI 外壳 + 当前真实角色的只读表现资源 + 确定性进程内 Fake Core
 回退边界：回退本 WP 的产品 UI 修正、角色表现资源接入和测试，保留 Phase 1A 窗口技术门、Core lifecycle 与 WP-3-02 headless chat
@@ -51,12 +52,25 @@ WP-3-03；状态由 `stabilizing` 退回 `active`。
 硬约束：
 
 - 气泡和输入框在桌宠可见期间始终存在，不提供产品级打开、收起或自动隐藏。
+- 组合关系沿用重构前桌宠：立绘水平居中，气泡与输入栏同宽并居中覆盖在角色中下方；不得改成
+  立绘与聊天区左右分栏。默认气泡宽 640、高 128，输入栏高 52，间距 10。
+- 气泡沿用角色主题的浅色半透明卡片、20px 圆角、左上角色名与正文层级；输入栏沿用独立胶囊外框、
+  内层半透明输入胶囊和主题色发送按钮。输入背景模糊不属于本 WP 的接受门禁，可先使用普通半透明背景。
 - 所有聊天与生命周期状态使用同一窗口大小、立绘锚点、气泡矩形和输入框矩形。
 - 长文本只在气泡内部滚动，不能扩大原生窗口、移动立绘或切换布局状态。
 - 输入框可在等待回复期间继续编辑；主按钮在发送与取消之间切换。
 - 正常产品 DOM 不存在 composer toggle、常驻功能栏、`FAKE CORE` 标签或 geometry readout。
 - Fake restart、visibility probe、场景选择等只能位于默认隐藏且 release 不可见的验收入口。
 - 视觉保持克制：只允许立绘交叉淡入、轻量状态反馈和打字机；`prefers-reduced-motion` 下关闭非必要动画。
+- 原生窗口必须隐藏创建，由 `WindowInteractionBackend` 依次建立无边框样式、bounds 和 hit region 后才能
+  首次显示；Windows 必须在 `SetWindowRgn` 前回读确认 caption/frame 位已清除，不得用清空标题掩盖非客户区。
+- 正文按实际脚本选择字体：中文沿用微软雅黑优先，日文沿用旧版 Meiryo 圆润字体优先，拉丁文使用
+  Segoe UI；正文只使用真实 regular 字重，角色名、输入与按钮只使用真实 bold 字重，不使用 500/650
+  等会在系统字体间产生不一致映射的中间值。
+
+布局契约必须为后续外观设置保留 `controlPanelWidth`、`bubbleHeight`、`verticalOffset` 和
+`inputBarOffset` 四个经范围归一化的参数。WP-3-03 只消费契约默认值，不提前读写设置；WP-3U-02 接线时
+复用这些参数，不得再次改变气泡、输入栏与立绘的居中覆盖关系。
 
 ## 真实角色表现契约
 
@@ -142,6 +156,7 @@ portraitResourceIds
 自动测试必须覆盖：
 
 - 固定布局契约只有一个产品窗口包络，所有表现状态返回相同窗口/锚点/气泡/输入矩形。
+- 默认布局逐像素验证居中覆盖关系，并验证预留宽度、高度和偏移参数的归一化、同宽同轴与窗口边界。
 - markup/source 不包含 composer toggle、state rail、bubble auto-hide 产品接线、`FAKE CORE` 或 geometry readout。
 - 气泡和输入框在 ready/thinking/typing/settled/error/reconnecting 下始终存在且可命中。
 - 长文本只改变内部 scroll state，不触发原生 resize。
@@ -181,7 +196,7 @@ macOS 与 Linux 的真实 WebView、IME、多屏和 compositor 体验仍是 WP-7
 - Windows 100% DPI 候选已观察 normal、long、multi、error、restart、slow cancel、中文 Unicode 输入、
   reduced motion 和关闭；长文本只出现气泡内部滚动条，气泡、输入框、立绘锚点和窗口包络未改变；
   正常产品 accessibility tree 未暴露隐藏验收控件。
-- frontend 全量以 `node --test tests/*.test.js` 执行，57 passed；本机 `npm test` 启动器因用户级
+- frontend 全量以 `node --test tests/*.test.js` 执行，62 passed；本机 `npm test` 启动器因用户级
   `%APPDATA%/npm` 缺少 `npm-cli.js` 无法启动，但 package script 对应的同一 Node test 命令已完整通过。
 - Core Host 扩大 Python 矩阵 214 passed；`cargo test --locked -- --test-threads=1` 为
   185 passed、23 ignored；`cargo fmt --check`、`cargo build --locked`、`git diff --check` 均通过。

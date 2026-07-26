@@ -7,6 +7,8 @@ const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
+const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
+const nativeWindowBackend = readFileSync(new URL("../../src-tauri/src/platform/window_backend.rs", import.meta.url), "utf8");
 const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 
 function declarationBlock(selector, requiredDeclaration = null) {
@@ -28,7 +30,7 @@ test("markup exposes fixed product chat, portrait, status, and accessible contro
 test("rounded WebView surfaces preserve the native clip contract without external effects", () => {
   assert.doesNotMatch(styles, /filter\s*:\s*drop-shadow/i);
   assert.doesNotMatch(styles, /\.portrait-frame::after/);
-  for (const [selector, radius] of [["bubble", 26], ["composer", 18]]) {
+  for (const [selector, radius] of [["bubble", 20], ["composer", 26]]) {
     const block = declarationBlock(selector, "border-radius");
     assert.match(block, new RegExp(`border-radius:\\s*${radius}px`), selector);
   }
@@ -36,11 +38,32 @@ test("rounded WebView surfaces preserve the native clip contract without externa
     const block = declarationBlock(selector, "background");
     assert.match(block, /background:\s*transparent/, selector);
   }
-  assert.match(nativeInteraction, /const BUBBLE_CORNER_RADIUS: u32 = 26;/);
-  assert.match(nativeInteraction, /const INPUT_CORNER_RADIUS: u32 = 18;/);
+  assert.match(nativeInteraction, /const BUBBLE_CORNER_RADIUS: u32 = 20;/);
+  assert.match(nativeInteraction, /const INPUT_CORNER_RADIUS: u32 = 26;/);
   assert.match(nativeInteraction, /const CONTROLS_CORNER_RADIUS: u32 = 15;/);
   assert.match(nativeInteraction, /const NATIVE_ANTIALIAS_BLEED_LOGICAL_PX: f64 = 2\.0;/);
   assert.match(nativeInteraction, /portrait_rect,[\s\S]*?0,[\s\S]*?\)\?/);
+});
+
+test("the pet window stays hidden until the native borderless surface and regions are ready", () => {
+  const mainWindow = tauriConfig.app.windows.find((window) => window.label === "main");
+  assert.equal(mainWindow.decorations, false);
+  assert.equal(mainWindow.transparent, true);
+  assert.equal(mainWindow.shadow, false);
+  assert.equal(mainWindow.visible, false);
+  assert.doesNotMatch(nativeMain, /set_title\(""\)/);
+  assert.match(nativeMain, /\.setup\(\|app\|[\s\S]*?prepare_initial_pet_window\(&window\)/);
+  const nativeSurface = nativeMain.match(/fn apply_native_pet_surface[\s\S]*?\n}\n\nfn prepare_initial_pet_window/)?.[0] || "";
+  const prepareIndex = nativeSurface.indexOf(".prepare_window(window)");
+  const boundsIndex = nativeSurface.indexOf(".apply_bounds(window");
+  const regionsIndex = nativeSurface.indexOf("apply_native_interaction_region(window");
+  const showIndex = nativeSurface.indexOf(".show()");
+  assert.ok(prepareIndex >= 0);
+  assert.ok(prepareIndex < boundsIndex && boundsIndex < regionsIndex && regionsIndex < showIndex);
+  assert.match(nativeWindowBackend, /WS_CAPTION/);
+  assert.match(nativeWindowBackend, /SWP_FRAMECHANGED/);
+  assert.match(nativeWindowBackend, /GetWindowLongW/);
+  assert.match(nativeWindowBackend, /native frame bits survived style refresh/);
 });
 
 test("empty portrait layers stay hidden instead of painting WebView2 broken-image frames", () => {
@@ -50,14 +73,20 @@ test("empty portrait layers stay hidden instead of painting WebView2 broken-imag
   assert.match(imageBlock, /border:\s*0/);
 });
 
-test("bubble typography uses language-aware sans-serif stacks instead of mixed CJK serif fallback", () => {
+test("bubble typography uses language-owned families and only real product weights", () => {
   const bubbleCopyBlock = styles.match(/\.bubble-copy\s*\{([^}]*)\}/)?.[1] || "";
   assert.doesNotMatch(bubbleCopyBlock, /Yu Mincho|SimSun|(^|[^-])\bserif\b/);
+  assert.match(bubbleCopyBlock, /font-weight:\s*400/);
   assert.match(styles, /\.bubble-copy \[lang\|="zh"\]/);
   assert.match(styles, /\.bubble-copy \[lang\|="ja"\]/);
-  assert.match(styles, /Microsoft YaHei UI/);
-  assert.match(styles, /Yu Gothic UI/);
+  assert.match(styles, /\.bubble-copy \[lang\|="ko"\]/);
+  assert.match(styles, /\.bubble-copy \[lang="en"\]/);
+  assert.match(styles, /--font-zh:\s*"Microsoft YaHei UI",\s*"Microsoft YaHei"/);
+  assert.match(styles, /--font-ja:\s*Meiryo,\s*"Meiryo UI"/);
+  assert.doesNotMatch(styles, /font-weight:\s*(?:500|650)\b/);
   assert.match(app, /renderMultilingualText/);
+  assert.match(app, /input\.lang = inferTextLanguage\(input\.value\)/);
+  assert.match(index, /id="composer-input"[\s\S]*?lang="zh-CN"/);
 });
 
 test("WP-3-03 presentation never invokes the real chat Gateway or reads network and product data", () => {

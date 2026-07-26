@@ -14,7 +14,7 @@
         <header class="bubble-header">
           <div class="identity">
             <strong id="character-name">Sakura</strong>
-            <span id="chat-phase" role="status">正在准备</span>
+            <span id="chat-phase" class="visually-hidden" role="status">正在准备</span>
           </div>
           <div class="bubble-actions" data-interactive="true">
             <button type="button" id="typewriter-skip" class="text-action" hidden>立即显示</button>
@@ -30,10 +30,11 @@
       <form id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
         <textarea
           id="composer-input"
-          rows="2"
+          rows="1"
           maxlength="4096"
+          lang="zh-CN"
           aria-label="发送给当前角色的消息"
-          placeholder="写点什么……"
+          placeholder="和当前角色说点什么……"
         ></textarea>
         <button type="submit" id="composer-send">发送</button>
       </form>

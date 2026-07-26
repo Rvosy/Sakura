@@ -1,7 +1,12 @@
 :root {
   color: #3d2b35;
   background: transparent;
-  font-family: "Segoe UI", "Microsoft YaHei UI", "Yu Gothic UI", sans-serif;
+  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-zh: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --font-ja: Meiryo, "Meiryo UI", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", "Yu Gothic UI", "Noto Sans CJK JP", sans-serif;
+  --font-ko: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif;
+  --font-latin: "Segoe UI", Arial, sans-serif;
+  font-family: var(--font-ui);
   font-synthesis: none;
   --primary: #d55b91;
   --primary-hover: #bf3f7a;
@@ -37,6 +42,18 @@ textarea:focus-visible,
 .bubble-copy:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .pet-stage {
@@ -136,71 +153,39 @@ textarea:focus-visible,
   top: var(--bubble-y);
   width: var(--bubble-width);
   height: var(--bubble-height);
-  padding: 20px 22px 18px;
-  border: 1px solid color-mix(in srgb, var(--border), transparent 10%);
-  border-radius: 26px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 28px 14px;
+  border: 1px solid color-mix(in srgb, var(--border), transparent 22%);
+  border-radius: 20px;
   color: var(--text);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--bubble-background), white 12%), var(--bubble-background));
-  box-shadow: 0 14px 34px rgb(54 24 43 / 16%);
+  background: color-mix(in srgb, var(--bubble-background), transparent 6%);
+  box-shadow: 0 8px 20px rgb(36 49 58 / 12%);
   touch-action: none;
-}
-
-.bubble::after {
-  content: "";
-  position: absolute;
-  right: -18px;
-  bottom: 42px;
-  width: 36px;
-  height: 36px;
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  background: var(--bubble-background);
-  transform: rotate(-45deg) skew(8deg, 8deg);
-  clip-path: polygon(48% 48%, 100% 0, 100% 100%);
 }
 
 .bubble-header {
   position: relative;
   z-index: 2;
   display: flex;
-  min-height: 30px;
-  align-items: flex-start;
+  min-height: 18px;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
   cursor: grab;
 }
 
-.identity { display: grid; gap: 4px; min-width: 0; }
+.identity { display: flex; align-items: center; min-width: 0; }
 .identity strong {
   overflow: hidden;
-  color: var(--text);
-  font: 650 16px/1.15 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: var(--primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.identity span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--secondary-text);
-  font-size: 11px;
-}
-
-.identity span::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary), transparent 80%);
-}
-
-body[data-chat-state="thinking"] .identity span::before,
-body[data-chat-state="typing"] .identity span::before,
-body[data-chat-state="reconnecting"] .identity span::before {
-  animation: status-pulse 1.1s ease-in-out infinite;
 }
 
 .bubble-actions { display: flex; align-items: center; gap: 10px; }
@@ -209,7 +194,7 @@ body[data-chat-state="reconnecting"] .identity span::before {
   padding: 5px 0;
   color: var(--secondary-text);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -221,21 +206,27 @@ body[data-chat-state="reconnecting"] .identity span::before {
   color: var(--muted-text);
   font-size: 19px;
   line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
 }
 
+.bubble:hover .close-action,
+.close-action:focus-visible { opacity: .62; }
 .close-action:hover { color: var(--text); background: color-mix(in srgb, var(--primary), transparent 88%); }
 
 .bubble-copy {
   position: relative;
   z-index: 2;
-  height: 188px;
-  margin-top: 12px;
-  padding-right: 7px;
+  flex: 1;
+  min-height: 0;
+  margin-top: 5px;
+  padding-right: 18px;
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--text);
-  font-size: 15px;
-  line-height: 1.72;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.42;
   overflow-wrap: anywhere;
   user-select: text;
   scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
@@ -245,15 +236,26 @@ body[data-chat-state="reconnecting"] .identity span::before {
 .bubble-copy p { margin: 0 0 10px; }
 .bubble-copy p:last-child { margin-bottom: 0; }
 .bubble-copy .translation { margin-top: 5px; color: var(--secondary-text); font-size: 12px; }
-.bubble-copy [lang|="zh"] { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
-.bubble-copy [lang|="ja"] { font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif; }
+.bubble-copy [lang|="zh"] {
+  font-family: var(--font-zh);
+}
+.bubble-copy [lang|="ja"] {
+  font-family: var(--font-ja);
+}
+.bubble-copy [lang|="ko"] {
+  font-family: var(--font-ko);
+}
+.bubble-copy [lang="en"],
+.bubble-copy [lang="ru"] {
+  font-family: var(--font-latin);
+}
 
 .presentation-error {
   position: absolute;
   z-index: 3;
-  right: 22px;
-  bottom: 13px;
-  left: 22px;
+  right: 28px;
+  bottom: 7px;
+  left: 28px;
   margin: 0;
   overflow: hidden;
   color: var(--muted-text);
@@ -269,37 +271,51 @@ body[data-chat-state="reconnecting"] .identity span::before {
   display: grid;
   width: var(--input-width);
   height: var(--input-height);
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 82px;
   align-items: stretch;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--border), transparent 8%);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--input-background), transparent 3%);
-  box-shadow: 0 12px 28px rgb(54 24 43 / 14%);
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--border), transparent 22%);
+  border-radius: 26px;
+  background: color-mix(in srgb, var(--bubble-background), transparent 22%);
+  box-shadow: 0 7px 18px rgb(36 49 58 / 11%);
 }
 
 .composer textarea {
   min-width: 0;
+  padding: 7px 15px;
   resize: none;
-  border: 0;
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 19px;
   color: var(--text);
-  background: transparent;
+  background: color-mix(in srgb, var(--input-background), transparent 58%);
+  font-size: 15px;
+  font-family: var(--font-zh);
+  font-weight: 700;
   line-height: 1.35;
   outline: 0;
   user-select: text;
 }
 
+.composer textarea:lang(ja) { font-family: var(--font-ja); }
+.composer textarea:lang(ko) { font-family: var(--font-ko); }
+.composer textarea:lang(en),
+.composer textarea:lang(ru) { font-family: var(--font-latin); }
+
 .composer textarea::placeholder { color: var(--muted-text); }
+.composer textarea:focus {
+  border-color: color-mix(in srgb, var(--primary), transparent 18%);
+  background: color-mix(in srgb, var(--input-background), transparent 38%);
+}
 
 .composer button {
   border: 0;
-  border-radius: 12px;
+  border-radius: 19px;
   color: white;
   background: var(--primary);
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 15px;
+  font-weight: 700;
   transition: background 120ms ease, transform 120ms ease;
 }
 
@@ -321,11 +337,6 @@ body[data-chat-state="reconnecting"] .identity span::before {
 
 .acceptance-entry[hidden] { display: none; }
 .acceptance-entry button { border: 0; color: white; background: transparent; font: 9px/1 monospace; cursor: pointer; }
-
-@keyframes status-pulse {
-  0%, 100% { opacity: .55; transform: scale(.82); }
-  50% { opacity: 1; transform: scale(1); }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
