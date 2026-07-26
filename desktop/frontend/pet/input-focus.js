@@ -1,7 +1,7 @@
-const FOCUSABLE_STATES = new Set(["composer", "expanded"]);
+const FOCUSABLE_STATES = new Set(["product"]);
 
 export function createInputFocusController({ focusInput, readText, localSubmit }) {
-  let presentation = "idle";
+  let presentation = "product";
   let composing = false;
   let compositionText = "";
   let wantsFocus = false;

@@ -19,6 +19,7 @@ use std::io::Read;
 use serde_json::{json, Value};
 
 use crate::{
+    character_presentation::CharacterPresentation,
     core_host_gateway::CoreHostGateway,
     core_host_protocol::{write_frame, FrameDecoder, PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_router::{CoreHostRouter, CoreHostRouterHandle},
@@ -167,6 +168,27 @@ impl CoreSnapshotCache {
         }
         reject_sensitive_snapshot_fields(snapshot)?;
         validate_character_summary(object.get("currentCharacterSummary"))?;
+        if let Some(presentation) = object
+            .get("characterPresentation")
+            .filter(|value| !value.is_null())
+        {
+            let parsed = CharacterPresentation::from_value(presentation, &self.generation_id)?;
+            if let Some(summary) = object
+                .get("currentCharacterSummary")
+                .and_then(Value::as_object)
+            {
+                if summary.get("id").and_then(Value::as_str) != Some(parsed.character_id.as_str())
+                    || summary.get("displayName").and_then(Value::as_str)
+                        != Some(parsed.display_name.as_str())
+                    || summary.get("initialMessage").and_then(Value::as_str)
+                        != Some(parsed.initial_message.as_str())
+                {
+                    return Err(
+                        "Core Snapshot character presentation conflicts with summary".to_string(),
+                    );
+                }
+            }
+        }
         validate_assistant_readiness(object, readiness)?;
         self.snapshot = Some(snapshot.clone());
         Ok(())
@@ -181,6 +203,7 @@ impl CoreSnapshotCache {
             "revision",
             "readiness",
             "currentCharacterSummary",
+            "characterPresentation",
             "activeInteractionSummary",
         ];
         if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
@@ -211,6 +234,27 @@ impl CoreSnapshotCache {
             return Err("Core Snapshot readiness is unsupported".to_string());
         }
         validate_character_summary(object.get("currentCharacterSummary"))?;
+        if let Some(presentation) = object
+            .get("characterPresentation")
+            .filter(|value| !value.is_null())
+        {
+            let parsed = CharacterPresentation::from_value(presentation, &self.generation_id)?;
+            if let Some(summary) = object
+                .get("currentCharacterSummary")
+                .and_then(Value::as_object)
+            {
+                if summary.get("id").and_then(Value::as_str) != Some(parsed.character_id.as_str())
+                    || summary.get("displayName").and_then(Value::as_str)
+                        != Some(parsed.display_name.as_str())
+                    || summary.get("initialMessage").and_then(Value::as_str)
+                        != Some(parsed.initial_message.as_str())
+                {
+                    return Err(
+                        "Core Snapshot character presentation conflicts with summary".to_string(),
+                    );
+                }
+            }
+        }
         validate_active_interaction_summary(object.get("activeInteractionSummary"))?;
         reject_sensitive_snapshot_fields(snapshot)?;
         self.snapshot = Some(snapshot.clone());
@@ -256,18 +300,20 @@ fn reject_sensitive_snapshot_fields(value: &Value) -> Result<(), String> {
                     .filter(|character| character.is_ascii_alphanumeric())
                     .flat_map(char::to_lowercase)
                     .collect::<String>();
-                if [
-                    "apikey",
-                    "authorization",
-                    "cookie",
-                    "credential",
-                    "private",
-                    "prompt",
-                    "secret",
-                    "token",
-                ]
-                .iter()
-                .any(|forbidden| normalized.contains(forbidden))
+                let approved_public_token_field = key == "themeTokens";
+                if !approved_public_token_field
+                    && [
+                        "apikey",
+                        "authorization",
+                        "cookie",
+                        "credential",
+                        "private",
+                        "prompt",
+                        "secret",
+                        "token",
+                    ]
+                    .iter()
+                    .any(|forbidden| normalized.contains(forbidden))
                 {
                     return Err("Core Snapshot contains a forbidden private field".to_string());
                 }
@@ -3134,6 +3180,34 @@ mod tests {
         })
     }
 
+    fn valid_character_presentation() -> Value {
+        json!({
+            "schemaVersion": 1,
+            "generationId": GENERATION_ID,
+            "characterId": "sakura",
+            "displayName": "Sakura",
+            "initialMessage": "hello",
+            "themeTokens": {
+                "primary": "#d55b91",
+                "primaryHover": "#bd477c",
+                "accent": "#7f67c9",
+                "text": "#332631",
+                "secondaryText": "#684e63",
+                "mutedText": "#92768b",
+                "pageBackground": "#fff5fa",
+                "panelBackground": "#fdebf4",
+                "inputBackground": "#ffffff",
+                "bubbleBackground": "#fff0f7",
+                "border": "#efbfd6"
+            },
+            "defaultPortraitKey": "__default__",
+            "portraitKeys": ["__default__"],
+            "portraitResourceIds": {
+                "__default__": "character-v1-73616b757261-portrait-5f5f64656661756c745f5f"
+            }
+        })
+    }
+
     #[test]
     fn wp_2_02_snapshot_is_exact_monotonic_and_generation_scoped() {
         let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
@@ -3142,6 +3216,7 @@ mod tests {
             "revision": 1,
             "readiness": "ready",
             "currentCharacterSummary": valid_character_summary(),
+            "characterPresentation": valid_character_presentation(),
             "activeInteractionSummary": {
                 "operationId": "chat-1",
                 "state": "started"
@@ -3149,7 +3224,7 @@ mod tests {
         });
         cache
             .store_minimal_python_snapshot(&first)
-            .expect("five-field snapshot validates");
+            .expect("six-field snapshot validates");
         let mut extra = first.clone();
         extra["schemaVersion"] = json!(1);
         assert!(cache.store_minimal_python_snapshot(&extra).is_err());

@@ -2,40 +2,16 @@
   "schemaVersion": 1,
   "viewport": {
     "windowSize": [816, 680],
-    "portraitAnchor": [480, 668]
+    "portraitAnchor": [592, 668]
   },
   "states": {
-    "idle": {
-      "windowSize": [320, 420],
-      "portraitRect": [56, 72, 240, 336],
-      "bubbleRect": null,
-      "inputRect": null,
-      "controlsRect": [8, 370, 193, 38],
-      "portraitAnchor": [176, 408]
-    },
-    "bubble": {
-      "windowSize": [736, 500],
-      "portraitRect": [320, 152, 240, 336],
-      "bubbleRect": [0, 270, 440, 164],
-      "inputRect": null,
-      "controlsRect": [8, 450, 193, 38],
-      "portraitAnchor": [440, 488]
-    },
-    "composer": {
-      "windowSize": [736, 592],
-      "portraitRect": [320, 244, 240, 336],
-      "bubbleRect": [0, 270, 440, 176],
-      "inputRect": [0, 458, 440, 52],
-      "controlsRect": [8, 542, 193, 38],
-      "portraitAnchor": [440, 580]
-    },
-    "expanded": {
+    "product": {
       "windowSize": [816, 680],
-      "portraitRect": [360, 332, 240, 336],
-      "bubbleRect": [0, 300, 480, 236],
-      "inputRect": [0, 548, 480, 52],
-      "controlsRect": [8, 630, 193, 38],
-      "portraitAnchor": [480, 668]
+      "portraitRect": [384, 88, 416, 580],
+      "bubbleRect": [20, 70, 410, 272],
+      "inputRect": [20, 356, 410, 78],
+      "controlsRect": [388, 86, 30, 30],
+      "portraitAnchor": [592, 668]
     }
   }
 }

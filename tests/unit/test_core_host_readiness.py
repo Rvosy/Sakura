@@ -27,6 +27,19 @@ SUMMARY = {
     "replyTones": ["warm"],
     "portraitChoices": ["default"],
 }
+PRESENTATION = {
+    "schemaVersion": 1,
+    "characterId": "Sakura",
+    "displayName": "夜乃桜",
+    "initialMessage": "你好。",
+    "themeTokens": {"primary": "#d55b91"},
+    "defaultPortraitKey": "__default__",
+    "portraitKeys": ["__default__", "开心"],
+    "portraitResourceIds": {
+        "__default__": "character-v1-53616b757261-portrait-5f5f64656661756c745f5f",
+        "开心": "character-v1-53616b757261-portrait-e5bc80e5bf83",
+    },
+}
 
 
 def readiness_result(
@@ -34,6 +47,7 @@ def readiness_result(
     *,
     code: str = "READY",
     summary: dict[str, object] | None = SUMMARY,
+    presentation: dict[str, object] | None = None,
 ) -> ReadinessResult:
     return ReadinessResult(
         state=state,  # type: ignore[arg-type]
@@ -41,6 +55,7 @@ def readiness_result(
         message="sanitized",
         retryable=False,
         current_character_summary=summary,
+        current_character_presentation=presentation,
     )
 
 
@@ -170,6 +185,7 @@ def test_empty_initialize_is_single_start_and_publishes_exact_atomic_snapshots(
             "capabilities": CAPABILITIES,
             "components": {},
             "coreConfigRevision": 0,
+            "characterPresentation": None,
             "currentCharacterSummary": None,
             "generationId": GENERATION_ID,
             "generationNumber": 7,
@@ -201,6 +217,7 @@ def test_empty_initialize_is_single_start_and_publishes_exact_atomic_snapshots(
                 "assistant": {"state": "ready", "code": "READY", "retryable": False}
             },
             "coreConfigRevision": 0,
+            "characterPresentation": None,
             "currentCharacterSummary": SUMMARY,
             "generationId": GENERATION_ID,
             "generationNumber": 7,
@@ -454,6 +471,51 @@ def test_summary_is_copied_through_exact_five_field_allowlist(tmp_path: Path) ->
     assert set(snapshot["currentCharacterSummary"]) == set(SUMMARY)
     assert "secret" not in repr(snapshot)
     controller.close()
+
+
+def test_character_presentation_is_generation_bound_copied_and_rejects_private_fields(
+    tmp_path: Path,
+) -> None:
+    initializer = FakeInitializer(readiness_result(presentation=PRESENTATION))
+    controller = ReadinessController(config(tmp_path), initializer_factory=lambda _root: initializer)
+    controller.begin({})
+    deadline = time.monotonic() + 1
+    while controller.snapshot()["readiness"] == "initializing":
+        assert time.monotonic() < deadline
+    first = controller.snapshot()["characterPresentation"]
+    assert first == {**PRESENTATION, "generationId": GENERATION_ID}
+    first["themeTokens"]["primary"] = "#000000"
+    assert controller.snapshot()["characterPresentation"]["themeTokens"]["primary"] == "#d55b91"
+    minimal = controller.minimal_snapshot(None)
+    assert set(minimal) == {
+        "generationId",
+        "revision",
+        "readiness",
+        "currentCharacterSummary",
+        "characterPresentation",
+        "activeInteractionSummary",
+    }
+    assert minimal["characterPresentation"] == {
+        **PRESENTATION,
+        "generationId": GENERATION_ID,
+    }
+    controller.close()
+
+    unsafe = {**PRESENTATION, "absolutePath": str(tmp_path)}
+    rejected = ReadinessController(
+        config(tmp_path),
+        initializer_factory=lambda _root: FakeInitializer(
+            readiness_result(presentation=unsafe)
+        ),
+    )
+    rejected.begin({})
+    deadline = time.monotonic() + 1
+    while rejected.snapshot()["readiness"] == "initializing":
+        assert time.monotonic() < deadline
+    assert rejected.snapshot()["readiness"] == "failed"
+    assert rejected.snapshot()["characterPresentation"] is None
+    assert str(tmp_path) not in repr(rejected.snapshot())
+    rejected.close()
 
 
 def test_control_dispatcher_closes_readiness_owner_once(tmp_path: Path) -> None:

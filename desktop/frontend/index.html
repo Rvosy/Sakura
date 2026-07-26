@@ -1,56 +1,62 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="blossom">
+<html lang="zh-CN" data-theme="character">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
-    <title>Sakura Runtime v2 · Fake Core chat presentation</title>
+    <meta name="color-scheme" content="light" />
+    <title>Sakura Runtime v2</title>
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="./app.js"></script>
   </head>
-  <body data-shell-state="loading" data-chat-state="booting">
-    <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠聊天表现层">
-      <section id="chat-bubble" class="bubble" data-drag-region="true" aria-live="polite" aria-label="角色回复，可拖动窗口">
+  <body data-shell-state="loading" data-chat-state="ready">
+    <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠">
+      <section id="chat-bubble" class="bubble" data-drag-region="true" aria-label="角色回复">
         <header class="bubble-header">
-          <span class="bubble-kicker"><i aria-hidden="true"></i> FAKE CORE // <b id="chat-phase">BOOT</b></span>
-          <button type="button" id="typewriter-skip" class="text-action" hidden>立即显示</button>
+          <div class="identity">
+            <strong id="character-name">Sakura</strong>
+            <span id="chat-phase" role="status">正在准备</span>
+          </div>
+          <div class="bubble-actions" data-interactive="true">
+            <button type="button" id="typewriter-skip" class="text-action" hidden>立即显示</button>
+            <button type="button" id="close-window" class="close-action" aria-label="关闭 Sakura">×</button>
+          </div>
         </header>
-        <p id="bubble-copy" data-interactive="true">正在准备本地测试会话……</p>
-        <span class="bubble-corner" aria-hidden="true">桜</span>
+        <div id="bubble-copy" class="bubble-copy" data-interactive="true" tabindex="0" aria-live="polite">
+          正在读取当前角色……
+        </div>
+        <p id="presentation-error" class="presentation-error" role="status" hidden></p>
       </section>
 
-      <div id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
+      <form id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
         <textarea
           id="composer-input"
-          rows="1"
+          rows="2"
           maxlength="4096"
-          aria-label="发送给本地 Fake Core 的消息"
-          placeholder="写点什么，或输入 /slow…"
+          aria-label="发送给当前角色的消息"
+          placeholder="写点什么……"
         ></textarea>
-        <button type="button" id="composer-send">发送</button>
-      </div>
+        <button type="submit" id="composer-send">发送</button>
+      </form>
 
-      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="Sakura 测试立绘，可拖动窗口">
+      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">
         <div class="portrait-frame">
-          <img id="portrait-current" class="portrait-image portrait-image--current" alt="Sakura 测试立绘" />
+          <img id="portrait-current" class="portrait-image portrait-image--current" alt="" />
           <img id="portrait-next" class="portrait-image portrait-image--next" alt="" aria-hidden="true" />
           <div id="portrait-fallback" class="portrait-fallback" hidden>
-            <span>SAKURA</span>
-            <small>PORTRAIT UNAVAILABLE</small>
+            <strong id="portrait-fallback-name">Sakura</strong>
+            <span>立绘暂时无法显示</span>
           </div>
-          <figcaption><span>SAKURA</span><small>LOCAL SESSION</small></figcaption>
         </div>
       </figure>
 
-      <nav class="state-rail" data-interactive="true" aria-label="桌宠控制">
-        <button type="button" id="composer-toggle" aria-label="打开或收起输入框" aria-pressed="false">聊</button>
-        <button type="button" id="theme-toggle" aria-label="切换明暗主题">月</button>
-        <button type="button" id="fake-restart" aria-label="模拟 Fake Core 重启">↻</button>
-        <button type="button" id="visibility-probe" aria-label="验证隐藏和显示">隐</button>
-        <button type="button" id="close-window" aria-label="退出并关闭桌宠窗口">×</button>
-      </nav>
-
-      <output id="geometry-readout" class="geometry-readout" aria-live="polite">initializing</output>
+      <section id="acceptance-entry" class="acceptance-entry" data-interactive="true" hidden aria-hidden="true">
+        <button type="button" data-scenario="普通消息">normal</button>
+        <button type="button" data-scenario="/slow">slow</button>
+        <button type="button" data-scenario="/error">error</button>
+        <button type="button" data-scenario="/long">long</button>
+        <button type="button" data-scenario="/multi">multi</button>
+        <button type="button" data-scenario="/restart">restart</button>
+      </section>
     </main>
   </body>
 </html>

@@ -87,10 +87,15 @@ control 隔离、有界队列、聊天取消/唯一终态、固定 Gateway allow
 禁止迁移设置、TTS、Tools、工作室和其他产品功能。
 
 Phase 3：
-允许基础聊天、立绘、气泡、输入框、打字机、Core 恢复和
-legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁；必须以真实 Sakura Assistant
-完成 Architecture Validation Slice，不得用 Fake Core 代替。
-禁止 TTS、截图、主动观察、设置和工作室。
+允许先冻结最终产品 UI 外壳，再迁移基础聊天：真实角色立绘、常驻气泡与输入框、
+打字机、右键菜单、同一 Tauri App 内的普通设置窗口宿主、角色包可见表现能力、
+Core 恢复和 legacy Qt → Tauri v2 → legacy Qt 数据兼容门禁；必须以真实 Sakura
+Assistant 完成 Architecture Validation Slice，不得用 Fake Core 代替。
+WP-3-03 可以使用确定性 Fake Core 驱动表现状态，但正常验收必须读取真实角色包，
+不能继续使用自绘测试立绘或把可折叠工具栏当作产品 UI。
+WP-3U-01/02 只允许提前接入设置窗口宿主、角色与外观相关的窄配置；未迁移能力的
+设置页必须隐藏或明确禁用，不能伪装为已经可用。禁止借此提前迁移 TTS、Memory、
+Tools、MCP、插件、截图、主动观察、完整首次设置或工作室。
 ```
 
 显式顺序例外：WP-3-01 在 WP-1C-04 后立即执行，早于 Phase 1D/2。其允许范围只有无 Qt Assistant Adapter、当前角色/Session/基础 Provider 构造和真实 readiness；不得借提前执行接入聊天、Operation、Tools、Memory、MCP、插件或 TTS。这样先产生真实产品消费者，再由后续最小 IPC WP 服务它。

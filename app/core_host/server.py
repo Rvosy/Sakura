@@ -37,6 +37,17 @@ _SUMMARY_KEYS = (
     "replyTones",
     "portraitChoices",
 )
+_PRESENTATION_KEYS = (
+    "schemaVersion",
+    "generationId",
+    "characterId",
+    "displayName",
+    "initialMessage",
+    "themeTokens",
+    "defaultPortraitKey",
+    "portraitKeys",
+    "portraitResourceIds",
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +131,7 @@ class ReadinessController:
         self._revision = 0
         self._component: dict[str, object] | None = None
         self._current_character_summary: dict[str, object] | None = None
+        self._current_character_presentation: dict[str, object] | None = None
         self._session: object | None = None
         self._initializer: object | None = None
         self._initializer_close_claimed = False
@@ -183,6 +195,9 @@ class ReadinessController:
                 "currentCharacterSummary": self._copy_summary(
                     self._current_character_summary
                 ),
+                "characterPresentation": self._copy_presentation(
+                    self._current_character_presentation
+                ),
                 "activeInteractionSummary": None,
                 "coreConfigRevision": 0,
             }
@@ -192,19 +207,25 @@ class ReadinessController:
             readiness = self._readiness
             revision = self._revision
             summary = self._copy_summary(self._current_character_summary)
+            presentation = self._copy_presentation(
+                self._current_character_presentation
+            )
         if chat_boundary is None:
             return {
                 "generationId": self._config.generation_id,
                 "revision": revision,
                 "readiness": readiness,
                 "currentCharacterSummary": summary,
+                "characterPresentation": presentation,
                 "activeInteractionSummary": None,
             }
-        return getattr(chat_boundary, "snapshot_fields")(
+        snapshot = getattr(chat_boundary, "snapshot_fields")(
             readiness,
             summary,
             base_revision=revision,
         )
+        snapshot["characterPresentation"] = presentation
+        return snapshot
 
     def close(self) -> None:
         deadline = monotonic() + _READINESS_CLOSE_TIMEOUT_SECONDS
@@ -262,6 +283,9 @@ class ReadinessController:
             initialize = getattr(initializer, "initialize")
             result = initialize(self._cancel)
             summary = self._project_summary(result.current_character_summary)
+            presentation = self._project_presentation(
+                result.current_character_presentation
+            )
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
@@ -273,6 +297,7 @@ class ReadinessController:
                         "retryable": result.retryable,
                     }
                     self._current_character_summary = summary
+                    self._current_character_presentation = presentation
                     self._session = result.session
                     self._revision = 2
                     claimed = None
@@ -290,6 +315,7 @@ class ReadinessController:
                         "retryable": False,
                     }
                     self._current_character_summary = None
+                    self._current_character_presentation = None
                     self._session = None
                     self._revision = 2
                     claimed = None
@@ -351,6 +377,61 @@ class ReadinessController:
         copied = dict(summary)
         copied["replyTones"] = [*summary["replyTones"]]  # type: ignore[misc]
         copied["portraitChoices"] = [*summary["portraitChoices"]]  # type: ignore[misc]
+        return copied
+
+    def _project_presentation(self, presentation: object) -> dict[str, object] | None:
+        if presentation is None:
+            return None
+        if not isinstance(presentation, Mapping):
+            raise TypeError("character presentation must be a mapping")
+        projected = dict(presentation)
+        projected["generationId"] = self._config.generation_id
+        if set(projected) != set(_PRESENTATION_KEYS):
+            raise TypeError("character presentation fields are invalid")
+        if projected["schemaVersion"] != 1:
+            raise TypeError("character presentation schema is invalid")
+        for key in (
+            "generationId",
+            "characterId",
+            "displayName",
+            "initialMessage",
+            "defaultPortraitKey",
+        ):
+            if not isinstance(projected[key], str) or not str(projected[key]).strip():
+                raise TypeError("character presentation strings are invalid")
+        theme = projected["themeTokens"]
+        resource_ids = projected["portraitResourceIds"]
+        portrait_keys = projected["portraitKeys"]
+        if not isinstance(theme, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in theme.items()
+        ):
+            raise TypeError("character presentation theme is invalid")
+        if not isinstance(portrait_keys, list) or any(
+            not isinstance(value, str) or not value for value in portrait_keys
+        ):
+            raise TypeError("character presentation portrait keys are invalid")
+        if not isinstance(resource_ids, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in resource_ids.items()
+        ):
+            raise TypeError("character presentation resource IDs are invalid")
+        if set(portrait_keys) != set(resource_ids):
+            raise TypeError("character presentation portrait mapping is invalid")
+        return self._copy_presentation(projected)
+
+    @staticmethod
+    def _copy_presentation(
+        presentation: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if presentation is None:
+            return None
+        copied = dict(presentation)
+        copied["themeTokens"] = dict(presentation["themeTokens"])  # type: ignore[arg-type]
+        copied["portraitKeys"] = [*presentation["portraitKeys"]]  # type: ignore[misc]
+        copied["portraitResourceIds"] = dict(
+            presentation["portraitResourceIds"]  # type: ignore[arg-type]
+        )
         return copied
 
     @staticmethod

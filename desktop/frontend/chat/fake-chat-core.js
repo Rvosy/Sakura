@@ -1,4 +1,4 @@
-const DEFAULT_DELAYS = Object.freeze({ boot: 80, normal: 420, slow: 3200, restart: 520 });
+const DEFAULT_DELAYS = Object.freeze({ boot: 80, normal: 420, slow: 8000, restart: 520 });
 
 const LONG_REPLY =
   "夜色把桌面压得很安静，消息仍然应该待在它自己的边界里。这里是一段用于检查长文本布局的确定性回复：中文、English、かな、数字 0123456789 与一个不会自然换行的标识 SakuraRuntimeV2PresentationBoundaryMustRemainInsideTheWindow。继续向下阅读时，气泡可以滚动，立绘、输入框和窗口锚点都不应跳动。动画只负责表现，不应夺走键盘焦点，也不应阻止取消、拖动或关闭。最后一段用于确认末尾仍可见：如果你读到了这里，长文本边界工作正常。";
@@ -14,38 +14,43 @@ function scenarioFor(message) {
     : "normal";
 }
 
-function normalReply(message) {
+function normalReply(message, portraits) {
   const visible = message.replace(/^\/slow\s*/i, "").trim() || "这是一条慢响应测试。";
   return [
     {
-      text: `收到。Fake Core 只在本地回应这条测试消息：${visible.slice(0, 180)}`,
+      text: `收到。这里先用确定性本地回复呈现这条消息：${visible.slice(0, 180)}`,
       translation: "",
       tone: "calm",
-      portrait: "idle",
+      portrait: portraits.default,
       suppressTts: true,
     },
   ];
 }
 
-function replyFor(scenario, message) {
+function replyFor(scenario, message, portraits) {
   if (scenario === "long") {
-    return [{ text: LONG_REPLY, translation: "", tone: "calm", portrait: "idle", suppressTts: true }];
+    return [{ text: LONG_REPLY, translation: "", tone: "calm", portrait: portraits.default, suppressTts: true }];
   }
   if (scenario === "multi") {
+    const sequence = portraits.multi.length ? portraits.multi : [portraits.default];
     return [
-      { text: "第一段：我正在确认消息边界。", translation: "", tone: "calm", portrait: "idle", suppressTts: true },
-      { text: "第二段：立绘会随这一段切换，但输入仍然可用。", translation: "", tone: "bright", portrait: "smile", suppressTts: true },
-      { text: "第三段：完整回复结束，且没有使用 token streaming。", translation: "", tone: "calm", portrait: "idle", suppressTts: true },
+      { text: "第一段：我正在确认消息边界。", translation: "", tone: "calm", portrait: sequence[0], suppressTts: true },
+      { text: "第二段：立绘会随这一段切换，但输入仍然可用。", translation: "", tone: "bright", portrait: sequence[1 % sequence.length], suppressTts: true },
+      { text: "第三段：完整回复结束，且没有使用 token streaming。", translation: "", tone: "calm", portrait: sequence[2 % sequence.length], suppressTts: true },
     ];
   }
-  return normalReply(message);
+  return normalReply(message, portraits);
 }
 
 export function createFakeChatCore({
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
   delays = {},
+  portraits,
 } = {}) {
+  if (!portraits?.default || !Array.isArray(portraits?.multi)) {
+    throw new Error("Fake Core requires caller-owned portrait keys");
+  }
   const timing = { ...DEFAULT_DELAYS, ...delays };
   const listeners = new Set();
   const timers = new Set();
@@ -130,7 +135,7 @@ export function createFakeChatCore({
             terminal(operation, "chat.failed", {
               error: {
                 code: "FAKE_PROVIDER_UNREACHABLE",
-                message: "Fake Core 模拟了网络不可达。请直接重新发送。",
+                message: "暂时无法完成回复。你可以直接重新发送。",
                 retryable: true,
                 details: {},
               },
@@ -139,7 +144,7 @@ export function createFakeChatCore({
         );
       } else {
         operation.timer = schedule(
-          () => terminal(operation, "chat.completed", { reply: { segments: replyFor(scenario, text) } }),
+          () => terminal(operation, "chat.completed", { reply: { segments: replyFor(scenario, text, portraits) } }),
           scenario === "slow" ? timing.slow : timing.normal,
         );
       }
@@ -165,6 +170,3 @@ export function createFakeChatCore({
     },
   });
 }
-
-export const FAKE_CORE_INITIAL_MESSAGE =
-  "晚上好。这里是不会访问网络的表现层测试。输入消息，或用 /slow、/error、/long、/multi、/restart 检查各个状态。";

@@ -1,48 +1,56 @@
-const SAFE_COLOR = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([\d\s.,%+-]+\))$/i;
+const SAFE_HEX = /^#[0-9a-f]{6}$/i;
 
-export const THEMES = Object.freeze({
-  blossom: Object.freeze({
-    ink: "#2d202b",
-    muted: "#766571",
-    accent: "#b95882",
-    accentDeep: "#71364f",
-    paper: "#fff8fb",
-    line: "#d8afc1",
-  }),
-  moon: Object.freeze({
-    ink: "#f7edf3",
-    muted: "#c6afbd",
-    accent: "#ef8ab3",
-    accentDeep: "#f5bad1",
-    paper: "#2b202b",
-    line: "#705064",
-  }),
+export const FALLBACK_THEME_TOKENS = Object.freeze({
+  primary: "#d55b91",
+  primaryHover: "#bf3f7a",
+  accent: "#b13e73",
+  text: "#3d2b35",
+  secondaryText: "#7a3656",
+  mutedText: "#9b4f72",
+  pageBackground: "#fff6fa",
+  panelBackground: "#ffe8f1",
+  inputBackground: "#ffffff",
+  bubbleBackground: "#ffe8f1",
+  border: "#eeacc8",
 });
 
 const VARIABLES = Object.freeze({
-  ink: "--ink",
-  muted: "--muted",
-  accent: "--sakura",
-  accentDeep: "--sakura-deep",
-  paper: "--paper",
-  line: "--line",
+  primary: "--primary",
+  primaryHover: "--primary-hover",
+  accent: "--accent",
+  text: "--text",
+  secondaryText: "--secondary-text",
+  mutedText: "--muted-text",
+  pageBackground: "--page-background",
+  panelBackground: "--panel-background",
+  inputBackground: "--input-background",
+  bubbleBackground: "--bubble-background",
+  border: "--border",
 });
 
-export function themeToCssVariables(theme) {
-  const source = theme && typeof theme === "object" ? theme : THEMES.blossom;
+export function normalizeThemeTokens(tokens) {
+  const source = tokens && typeof tokens === "object" ? tokens : {};
   return Object.freeze(
     Object.fromEntries(
-      Object.entries(VARIABLES).map(([field, variable]) => [
-        variable,
-        typeof source[field] === "string" && SAFE_COLOR.test(source[field]) ? source[field] : THEMES.blossom[field],
+      Object.keys(VARIABLES).map((key) => [
+        key,
+        typeof source[key] === "string" && SAFE_HEX.test(source[key])
+          ? source[key].toLowerCase()
+          : FALLBACK_THEME_TOKENS[key],
       ]),
     ),
   );
 }
 
-export function applyTheme(name, root = document.documentElement) {
-  const selected = Object.hasOwn(THEMES, name) ? name : "blossom";
-  for (const [variable, value] of Object.entries(themeToCssVariables(THEMES[selected]))) root.style.setProperty(variable, value);
-  root.dataset.theme = selected;
-  return selected;
+export function themeToCssVariables(tokens) {
+  const normalized = normalizeThemeTokens(tokens);
+  return Object.freeze(
+    Object.fromEntries(Object.entries(VARIABLES).map(([key, variable]) => [variable, normalized[key]])),
+  );
+}
+
+export function applyTheme(tokens, root = document.documentElement) {
+  for (const [variable, value] of Object.entries(themeToCssVariables(tokens))) root.style.setProperty(variable, value);
+  root.dataset.theme = "character";
+  return normalizeThemeTokens(tokens);
 }

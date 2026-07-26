@@ -251,6 +251,12 @@ def test_real_host_assistant_readiness_matrix_is_read_only_and_bounded(
             "assistant": {"state": state, "code": code, "retryable": False}
         }
         assert (final.get("currentCharacterSummary") is not None) is has_summary
+        assert (final.get("characterPresentation") is not None) is has_summary
+        if has_summary:
+            assert final["characterPresentation"]["generationId"] == generation_id
+            assert final["characterPresentation"]["characterId"] == final[
+                "currentCharacterSummary"
+            ]["id"]
         assert all(
             later["revision"] >= earlier["revision"]
             for earlier, later in zip(snapshots, snapshots[1:])

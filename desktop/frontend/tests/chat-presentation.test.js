@@ -12,7 +12,12 @@ const lifecycle = (status, generationNumber = 1, revision = 1) => ({
 });
 
 function readyReducer() {
-  const reducer = createChatPresentationReducer();
+  const reducer = createChatPresentationReducer({
+    initialMessage: "你好，我是当前角色。",
+    defaultPortraitKey: "__default__",
+    thinkingPortraitKey: "thinking",
+    concernedPortraitKey: "concerned",
+  });
   reducer.reduce(lifecycle("ready"));
   return reducer;
 }
@@ -20,7 +25,7 @@ function readyReducer() {
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
   assert.equal(reducer.current().phase, "ready");
-  assert.match(reducer.current().bubbleText, /\/slow/);
+  assert.equal(reducer.current().bubbleText, "你好，我是当前角色。");
   assert.equal(reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-1" }).applied, true);
   assert.equal(reducer.current().canCancel, true);
   assert.equal(
@@ -61,7 +66,7 @@ test("failed and cancelled terminals are operation-scoped and immediately retrya
     const event = { type: terminal, generationId: "generation-1", generationNumber: 1, operationId: "op" };
     if (terminal === "chat.failed") event.error = { code: "OFFLINE", message: "网络不可达", retryable: true };
     assert.equal(reducer.reduce(event).applied, true);
-    assert.equal(reducer.current().phase, terminal === "chat.failed" ? "error" : "cancelled");
+    assert.equal(reducer.current().phase, terminal === "chat.failed" ? "error" : "settled");
     assert.equal(reducer.current().operationId, null);
     assert.equal(reducer.current().canCancel, false);
   }

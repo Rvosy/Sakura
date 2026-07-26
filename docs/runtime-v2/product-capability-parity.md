@@ -44,11 +44,11 @@ legacy 行为与数据
 | ID | 现有能力 | Runtime v2 目标 | 目标 WP | 平台敏感点 | 当前状态 |
 |---|---|---|---|---|---|
 | CAP-001 | 默认启动、单实例、显式 legacy Qt 回退 | Tauri 为默认根；Qt/Tauri 共用锁；安全切换 | WP-1P-02、WP-1P-03、WP-1P-06、WP-3-06 | 可执行/Runtime 定位、锁、退出 | implemented |
-| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 同一 Tauri App 下连续组合体验 | WP-1P-05、WP-3-03、WP-3-04 | 透明窗口、scale、多屏 | implemented |
+| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定窗口包络内的真实立绘、常驻气泡与常驻输入框；功能状态不改变几何 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏 | implemented |
 | CAP-003 | 点击穿透、拖动、焦点、IME、显示隐藏 | 平台 backend 保持相同用户语义 | WP-1P-05、WP-3-03 | Win32、NSWindow、X11/Wayland | implemented |
 | CAP-004 | 真实聊天、思考、完成与错误 | WP-3-01 先验证无 Qt Adapter/readiness，再由最小 IPC/Gateway/Snapshot 承载聊天 | WP-3-01、WP-2-01、WP-2-02、WP-3-02、WP-3-04、WP-3V-01 | Provider/网络失败不阻塞 Shell | planned |
 | CAP-005 | 取消、跳过打字机、请求唯一终态 | 最小聊天 cancel 与 UI 表现动作分离；不以前置通用 Operation 为条件 | WP-2-02、WP-3-02、WP-3-03、WP-3-04、WP-3V-01 | 旧 generation、晚到事件 | planned |
-| CAP-006 | 角色、初始消息、立绘/表情切换 | 最小 Snapshot + WebView 状态；资源平台按真实消费者后移 | WP-2-02、WP-3-03、WP-3-04、WP-3-05、WP-5-03 | 资源路径、scale、编码 | planned |
+| CAP-006 | 角色、初始消息、主题、立绘/表情切换 | WP-3-03 先用真实角色冻结表现，WP-3U-02 完成可见能力与外观设置，真实聊天随后只投影 portrait/tone | WP-2-02、WP-3-03、WP-3U-02、WP-3-04、WP-3-05、WP-5-03 | 资源路径、scale、编码 | planned |
 | CAP-007 | 聊天历史读取、追加和分页 | Python 数据真相源；Rust 只读 DTO | WP-3-02、WP-3-06、WP-3V-01、WP-5-03 | 文件锁、原子写、路径 | planned |
 | CAP-008 | Memory 检索、写入、整理和外部存储 | 无 Qt Memory Adapter；错误降级不破坏聊天 | WP-4-01 | 本地模型、Qdrant、SQLite、子进程 | planned |
 | CAP-009 | 内置 Tools 与工具结果 | Core ToolRegistry + Operation | WP-4-02 | 权限、长任务、路径 | planned |
@@ -61,10 +61,10 @@ legacy 行为与数据
 | CAP-016 | 屏幕感知、自动观察和主动互动 | Scheduler/Backchannel 通过 Operation 和事件路由 | WP-4-07 | 截图权限、休眠、计时器 | planned |
 | CAP-017 | 提醒、任务和定时调度 | Core 持久化，Tauri 生命周期与唤醒状态可诊断 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | `core.*` validate/change plan/原子保存 | WP-5-01 | 密钥存储、文件权限 | planned |
-| CAP-019 | 桌面、主题、气泡、字体和音频配置 | `desktop.*`/`ui.*`/`audio.*` 独立仓库 | WP-5-01、WP-5-02 | 平台默认值、字体、scale | planned |
-| CAP-020 | 设置窗口和首次设置 | Tauri 普通窗口，逐域保存和可恢复错误 | WP-5-02 | 窗口管理、IME、密钥输入 | planned |
+| CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；Phase 5 补齐 `desktop.*`/`ui.*`/`audio.*` 独立仓库 | WP-3U-02、WP-5-01、WP-5-02 | 平台默认值、字体、scale | planned |
+| CAP-020 | 设置窗口和首次设置 | WP-3U-01 先接同 App 设置窗口宿主和能力门控；WP-5-02 补齐全部页面与首次设置 | WP-3U-01、WP-3U-02、WP-5-02 | 窗口管理、IME、密钥输入 | planned |
 | CAP-021 | 角色切换与运行中 Session | 受控 Core restart；旧 generation 全失效 | WP-5-03 | 资源、历史、TTS 状态 | planned |
-| CAP-022 | 托盘、置顶、快捷键、开机启动 | Tauri 原生平台服务 | WP-5-04 | 三平台 API 和权限 | planned |
+| CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 先接桌宠右键菜单；其余由 Tauri 原生平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
 | CAP-024 | 移动端/本地桥接插件能力 | 保留现有协议和安全边界，不另建生命周期根 | WP-5-05 | 端口、网络权限、防火墙 | planned |
 | CAP-025 | 诊断、日志、手动修复和安全重试 | 基础聊天前只有最小可见性；完整 Runtime Repair 后移 | WP-1D-01、WP-5-06 | 路径、日志、权限 | planned |
@@ -78,6 +78,11 @@ legacy 行为与数据
 它只修正默认入口、透明 Shell 和拖动后的固定立绘锚点，不改变本表任何能力状态，也不接入
 CAP-004 及之后的 Assistant、聊天、Memory、Tools、TTS 或设置能力。它的真实单显示器证据不替代
 WP-7-02 的 Spaces、多屏、IME、Retina、签名和发布门禁。
+
+2026-07-26 的产品方向调整把“设置窗口宿主”和“角色包可见表现”提前到 Phase 3，但没有把完整设置
+能力整体前移。WP-3U-01 只建立同一 Tauri App 的右键菜单、唯一 settings 窗口和页面能力门控；
+WP-3U-02 只开放当前角色的名称、初始消息、主题、立绘/表情和外观设置。TTS、Memory、Tools、MCP、
+插件、首次设置、角色选择和完整配置等价仍由各自后续 WP 负责，不能因旧设置页面已经存在而标记完成。
 
 ## 早期 Architecture Validation 门禁
 

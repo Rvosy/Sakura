@@ -18,6 +18,7 @@ from app.config.character_loader import (
 from app.config.core_config_reader import CoreConfigReader
 from app.core.cancellation import OperationCancelled
 from app.core.chat_pipeline import ChatPipeline
+from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
 
 
@@ -36,6 +37,7 @@ class ReadinessResult:
     message: str
     retryable: bool
     current_character_summary: dict[str, object] | None
+    current_character_presentation: dict[str, object] | None = None
     session: AssistantSession | None = field(default=None, repr=False)
 
 
@@ -193,6 +195,7 @@ class AssistantAdapter:
                 message=message,
                 retryable=False,
                 current_character_summary=project_current_character_summary(profile),
+                current_character_presentation=project_character_presentation(profile),
                 session=session,
             )
             self._check_active(cancel)

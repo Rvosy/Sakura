@@ -37,7 +37,12 @@ function scheduler() {
 
 function readyCore() {
   const clock = scheduler();
-  const core = createFakeChatCore({ setTimer: clock.setTimer, clearTimer: clock.clearTimer, delays: { boot: 2, normal: 4, slow: 20, restart: 3 } });
+  const core = createFakeChatCore({
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    delays: { boot: 2, normal: 4, slow: 20, restart: 3 },
+    portraits: { default: "__default__", multi: ["happy", "thinking", "concerned"] },
+  });
   const events = [];
   core.subscribe((event) => events.push(event));
   core.start();

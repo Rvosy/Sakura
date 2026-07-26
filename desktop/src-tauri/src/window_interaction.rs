@@ -183,7 +183,7 @@ fn translate_rect(
 
 const BUBBLE_CORNER_RADIUS: u32 = 26;
 const INPUT_CORNER_RADIUS: u32 = 18;
-const CONTROLS_CORNER_RADIUS: u32 = 19;
+const CONTROLS_CORNER_RADIUS: u32 = 15;
 
 pub fn logical_hit_regions(
     contract: &LayoutContract,
@@ -481,26 +481,12 @@ mod tests {
     }
 
     #[test]
-    fn all_four_states_share_deterministic_ordered_hit_regions() {
-        for (state, interactive_count) in [
-            (PresentationState::Idle, 1),
-            (PresentationState::Bubble, 1),
-            (PresentationState::Composer, 2),
-            (PresentationState::Expanded, 2),
-        ] {
-            let model = logical_hit_regions(&contract(), state).unwrap();
-            assert_eq!(model.interactive.len(), interactive_count);
-            assert_eq!(
-                model.drag.len(),
-                if state == PresentationState::Idle {
-                    1
-                } else {
-                    2
-                }
-            );
-            assert!(model.neutral.is_empty());
-            assert_eq!(model.drag[0], LogicalHitRect::new(360, 332, 240, 336));
-        }
+    fn product_layout_has_deterministic_ordered_hit_regions() {
+        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
+        assert_eq!(model.interactive.len(), 2);
+        assert_eq!(model.drag.len(), 2);
+        assert!(model.neutral.is_empty());
+        assert_eq!(model.drag[0], LogicalHitRect::new(384, 88, 416, 580));
     }
 
     #[test]
@@ -519,37 +505,28 @@ mod tests {
 
     #[test]
     fn interactive_regions_take_priority_over_drag_and_edges_are_half_open() {
-        let model = logical_hit_regions(&contract(), PresentationState::Idle).unwrap();
+        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         assert_eq!(
-            classify_logical_point(&model, [400, 640]),
+            classify_logical_point(&model, [400, 400]),
             HitKind::Interactive
         );
-        assert_eq!(classify_logical_point(&model, [360, 332]), HitKind::Drag);
-        assert_eq!(classify_logical_point(&model, [599, 667]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&model, [384, 120]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&model, [799, 667]), HitKind::Drag);
         assert_eq!(
             classify_logical_point(&model, [600, 668]),
             HitKind::Transparent
         );
         assert_eq!(classify_logical_point(&model, [0, 0]), HitKind::Transparent);
 
-        let bubble = logical_hit_regions(&contract(), PresentationState::Bubble).unwrap();
         assert_eq!(
-            classify_logical_point(&bubble, [39, 450]),
-            HitKind::Transparent
-        );
-        assert_eq!(classify_logical_point(&bubble, [70, 450]), HitKind::Drag);
-
-        let composer = logical_hit_regions(&contract(), PresentationState::Composer).unwrap();
-        assert_eq!(classify_logical_point(&composer, [300, 420]), HitKind::Drag);
-        assert_eq!(
-            classify_logical_point(&composer, [200, 560]),
+            classify_logical_point(&model, [200, 390]),
             HitKind::Interactive
         );
     }
 
     #[test]
     fn hit_regions_scale_outward_at_all_target_dpis() {
-        let model = logical_hit_regions(&contract(), PresentationState::Expanded).unwrap();
+        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         for (scale, expected) in [(1.0, 816), (1.25, 1020), (1.5, 1224)] {
             let physical = scale_hit_regions(&model, scale).unwrap();
             let right = physical
@@ -566,7 +543,7 @@ mod tests {
 
     #[test]
     fn invalid_scale_and_extreme_rectangles_fail_closed() {
-        let model = logical_hit_regions(&contract(), PresentationState::Idle).unwrap();
+        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         assert!(scale_hit_regions(&model, 0.0).is_err());
         assert!(scale_hit_regions(&model, f64::INFINITY).is_err());
         assert!(LogicalHitRect::checked(i32::MAX, 0, 2, 2, [816, 680]).is_err());

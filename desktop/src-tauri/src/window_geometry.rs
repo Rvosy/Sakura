@@ -5,25 +5,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentationState {
-    Idle,
-    Bubble,
-    Composer,
-    Expanded,
+    Product,
 }
 
 impl PresentationState {
     pub(crate) fn key(self) -> &'static str {
         match self {
-            Self::Idle => "idle",
-            Self::Bubble => "bubble",
-            Self::Composer => "composer",
-            Self::Expanded => "expanded",
+            Self::Product => "product",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 4] {
-        [Self::Idle, Self::Bubble, Self::Composer, Self::Expanded]
+    fn all() -> [Self; 1] {
+        [Self::Product]
     }
 }
 
@@ -136,18 +130,13 @@ impl LayoutContract {
             .ok_or_else(|| format!("missing layout state: {}", state.key()))
     }
 
-    fn all_values() -> [PresentationState; 4] {
-        [
-            PresentationState::Idle,
-            PresentationState::Bubble,
-            PresentationState::Composer,
-            PresentationState::Expanded,
-        ]
+    fn all_values() -> [PresentationState; 1] {
+        [PresentationState::Product]
     }
 }
 
 impl PresentationState {
-    fn all_values() -> [Self; 4] {
+    fn all_values() -> [Self; 1] {
         LayoutContract::all_values()
     }
 }
@@ -522,18 +511,16 @@ mod tests {
     }
 
     #[test]
-    fn shared_contract_defines_all_four_bounded_state_layouts() {
+    fn shared_contract_defines_one_fixed_bounded_product_layout() {
         let contract = contract();
         contract.validate().expect("contract should validate");
-        let expected = [
-            (PresentationState::Idle, [320, 420]),
-            (PresentationState::Bubble, [736, 500]),
-            (PresentationState::Composer, [736, 592]),
-            (PresentationState::Expanded, [816, 680]),
-        ];
-        for (state, size) in expected {
-            assert_eq!(contract.layout(state).unwrap().window_size, size);
-        }
+        assert_eq!(
+            contract
+                .layout(PresentationState::Product)
+                .unwrap()
+                .window_size,
+            [816, 680]
+        );
     }
 
     #[test]
@@ -594,7 +581,7 @@ mod tests {
         assert_eq!(select_target_monitor(&monitors, anchor), Some(1));
         let result = apply_window_layout(
             &contract(),
-            PresentationState::Expanded,
+            PresentationState::Product,
             1,
             &monitors[1],
             Some(anchor),
@@ -652,7 +639,7 @@ mod tests {
         ] {
             let first = apply_window_layout(
                 &contract,
-                PresentationState::Idle,
+                PresentationState::Product,
                 1,
                 &monitor,
                 Some(requested),
@@ -735,7 +722,7 @@ mod tests {
         ] {
             assert!(apply_window_layout(
                 &contract,
-                PresentationState::Idle,
+                PresentationState::Product,
                 1,
                 &monitor(work_area, scale_factor),
                 None,
@@ -771,7 +758,7 @@ mod tests {
             let anchor = anchor_from_window_position(&contract, &monitor, position).unwrap();
             let result = apply_window_layout(
                 &contract,
-                PresentationState::Composer,
+                PresentationState::Product,
                 1,
                 &monitor,
                 Some(anchor),
@@ -810,7 +797,7 @@ mod tests {
         .unwrap();
         let result = apply_window_layout(
             &contract,
-            PresentationState::Expanded,
+            PresentationState::Product,
             1,
             &monitor,
             Some(requested),

@@ -85,8 +85,10 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
-| WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | stabilizing |
-| WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
+| WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | active |
+| WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | planned |
+| WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | planned |
+| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3U-02 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
@@ -124,9 +126,11 @@ accepted；其设计、实施计划、允许列表、接受证据和回退见对
 已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
 lifecycle 候选验收并 accepted；WP-3-02 已按
 `docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成实现、故障与资源回收门禁、本地完整回归和
-同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。WP-3-03 已按
-`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 于 2026-07-26 激活并完成本地候选，是当前唯一
-`active/stabilizing` Work Package；其余后续项保持 `planned`。
+同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。WP-3-03 的首个
+Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确要求先冻结最终产品 UI、使用真实角色资源、
+让气泡与输入框常驻并移除功能切换栏；原候选因此不再满足产品退出门。WP-3-03 已按修订后的
+`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 退回 `active`，是当前唯一
+`active/stabilizing` Work Package；WP-3U-01、WP-3U-02 及其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -147,6 +151,9 @@ WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/
 | WP-2-05 | WP-2-02 的最小聊天 Snapshot；资源 token 移至 WP-4-06，完整 component model 移至对应消费者 | 截图、音频、导入和所有未来 component 不阻塞聊天 |
 | WP-2-06 | WP-2-01/02 的有界队列、terminal 不丢和安全断开；完整 progress/多等级背压移至 WP-4-08 或 WP-6-05 | Envelope 只冻结真实聊天已证明需要的字段 |
 | WP-3-02 至 WP-3-06 | 编号保留，前置改为已提前的 Adapter 和最小 IPC 链 | 真实聊天不再等待完整 Phase 1D/2 |
+| 无 | WP-3U-01 | 在真实聊天接 UI 前，把右键菜单和旧设置前端迁入同一 Tauri App；只建立窗口宿主和能力门控 |
+| WP-5-02 的设置窗口宿主 | WP-3U-01 | 窗口生命周期和入口提前；完整页面、首次设置和全部配置等价仍留在 WP-5-01/02 |
+| WP-5-02 的角色外观子集 | WP-3U-02 | 角色名、初始消息、主题、立绘映射/切换和窄外观设置提前；角色选择、历史分页与完整 Session 等价仍留在 WP-5-03 |
 | 无 | WP-3V-01 | 新增组合架构验证门；通过后 CAP-004 才可标记 `architecture-validated` |
 
 ## 3. Phase 0：冻结与基线
@@ -1933,7 +1940,7 @@ CI：6c36a1a 的 PR platform run 30190007246 捕获三平台临时根 canonical/
 回退：停止并清空当前 generation 全部 Router/Gateway/进程资源后，按 96787830、157dcc11、f8c9cd22 逆序 revert；17d296a6 独立回退；不触碰用户数据
 ```
 
-## 12. Phase 3：基础聊天垂直链
+## 12. Phase 3：产品 UI 外壳与基础聊天垂直链
 
 ### WP-3-02：无 UI 的真实聊天 Core 垂直链
 
@@ -1998,58 +2005,134 @@ P0/P1：零；无剩余可复现退出条件缺陷、数据污染或范围扩张
 
 独立回退：关闭真实 chat command，保留 Assistant readiness 和 Core Host。
 
-### WP-3-03：使用 Fake Core 的桌宠聊天表现层
+### WP-3-03：固定产品 UI 与真实角色表现基线
 
-稳定化候选（2026-07-26）：已完成依赖复核、旧迁移资产逐文件取证、所有权/场景/白名单/回退冻结、
-生产表现实现、自动故障矩阵和 Windows Tauri WebView 冒烟，并迁移为 `stabilizing`；独立实施与验收文档见
+产品方向纠正（2026-07-26）：原 Fake Core 候选已经完成自动矩阵和 Windows WebView 冒烟，但其
+自绘测试 SVG、可收起 composer、bubble auto-hide、idle/bubble/composer/expanded 几何切换和常驻
+功能栏与项目负责人确认的最终产品方向冲突。该候选证据保留为技术历史，不再具备 accepted 资格；
+WP-3-03 退回 `active`，在同一编号内修正产品 UI。独立实施与验收文档见
 `docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md`。
 
 ```text
-候选：27bad4d5；激活：cb348249
-自动测试：frontend 44 passed；Python 1719 passed、15 skipped；locked Rust 179 passed、23 ignored
-构建门禁：cargo fmt、debug build、CSP/source boundary、diff-check 全绿
-Windows 实机：透明窗口、初始气泡、composer 展开、立绘和 restart/reconnect 可见；首轮立绘遮挡缺陷已关闭
-P0/P1：零
-待验收：负责人完成中文 IME、100%/150% DPI、reduced motion、长文本/取消/skip/拖动/关闭实机清单后再决定 accepted
-回退：关闭窗口并清理全部表现 timer，revert 27bad4d5；不接真实 chat、不删除或改写用户数据
+历史候选：27bad4d5；激活：cb348249
+历史证据：frontend 44 passed；Python 1719 passed、15 skipped；locked Rust 179 passed、23 ignored
+纠正原因：测试立绘、可折叠输入和功能栏不是最终产品形态，不能用该候选继续做视觉验收
+当前状态：active（当前唯一 active/stabilizing Work Package）
+允许目录：desktop/frontend/**、desktop/src-tauri/src 中角色表现资源与固定窗口/命中所需窄模块、desktop/src-tauri/tauri.conf.json、app/core_host 中当前角色公开表现 DTO 的无 Qt 窄扩展、相关 tests、本文和独立 spec；characters/** 只读
+明确禁止：修改角色包源文件、真实 chat Gateway 接线、设置窗口、角色切换持久化、TTS、Memory、Tools、MCP、插件、截图、主动互动、工作室、用户数据写入、通用资源平台
+回退：关闭窗口并清理全部表现 timer；回退当前产品 UI 修正后仍可回到历史候选，不删除或改写用户数据
 ```
 
-主要结果：使用确定性 Fake Core 完成立绘、初始消息、气泡、输入框、思考、错误、取消和完整回复打字机展示。
+当前实现候选记录（2026-07-26）：
+
+```text
+状态：active（生产实现和本地自动矩阵完成；真实候选门未完成，不进入 stabilizing）
+实现：固定 816×680 产品包络、常驻气泡/输入、当前真实角色公开表现 DTO、受控同源 PNG 资源协议、debug-only 隐藏验收场景、Fake Core 确定性聊天表现
+自动测试：frontend 57 passed；Core Host Python 214 passed；locked Rust 185 passed/23 ignored；cargo fmt、locked build、git diff-check 通过
+资源与故障：Sakura/N.A.V.I. 真实 manifest、全部 portrait key、非法 key、traversal、symlink escape、错误扩展/MIME/大小/decode、资源变化、旧 generation；normal/slow/error/long/multi/restart、IME reducer、focus、close、lifecycle、固定几何与命中回归全绿
+Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链通过；debug-only Sakura/N.A.V.I. 不同宽高比、long 内滚动、multi 表情、error、restart、slow cancel、Unicode 中文输入、reduced motion 和关闭已观察；正常 accessibility tree 不暴露验收控件
+已关闭缺陷：protocol minor 2 最小 Snapshot 漏传 characterPresentation；敏感字段扫描误拒绝公开 themeTokens；两项均由正常产品冷启动发现并补回归
+未完成门禁：Windows 系统级 150% DPI、带候选框的真实中文 IME composition/候选框位置、人工鼠标拖动、项目负责人 Sakura/N.A.V.I. 实机视觉确认；强制 WebView 1.5 scale 不是有效系统 DPI 证据
+工具环境：用户级 npm 启动器缺少 npm-cli.js；已直接执行 package script 对应的 node --test tests/*.test.js 并完整通过
+回退：先关闭窗口并确认 Fake Core/typewriter/portrait timer、Core/WebView 后代、pipe 和临时资源归零；独立回退当前角色 DTO/资源协议，再回退固定 UI 与 Fake Core 表现层；不触碰 characters/**、用户配置、history 或其他 data
+```
+
+主要结果：在一个固定透明窗口包络内，使用当前真实角色包展示常驻气泡、常驻输入框、默认立绘、
+初始消息和主题；确定性 Fake Core 只驱动思考、错误、取消、重连、打字机和真实表情立绘切换。
 
 允许能力：
 
-- 立绘加载和简单淡入淡出/位移。
-- composer 打开/关闭、发送、取消、错误和重连状态。
+- 当前真实角色的公开表现摘要和受控立绘资源读取。
+- 真实立绘加载、表情切换和简单交叉淡入。
+- 常驻 composer 的发送/取消，以及错误和重连状态。
 - WP-1D-01 的 startup/initializing/ready/failed/Core crashed/retry/exit 表现。
 - 完整回复后的 WebView 打字机和立即跳过动画。
-- 长文本边界、主题、DPI、IME 和固定锚点视觉验收。
+- 固定窗口包络、气泡内部有界滚动、真实主题、DPI、IME 和固定锚点视觉验收。
 
 明确禁止：
 
 - 不接入真实 Provider 或修改 Python Assistant。
+- 不接入右键菜单或设置窗口；它们属于 WP-3U-01。
+- 不保存角色、主题或布局配置；它们属于 WP-3U-02/Phase 5。
 - 不实现 Live2D、复杂 Canvas、局部模糊或高级动画引擎。
 
 退出证据：
 
 - Fake Core 可以稳定驱动成功、慢响应、错误、取消和重启 UI 状态。
-- 跳过打字机不发送 Core cancel。
-- CSS 动画不阻塞输入、取消或关闭。
+- 默认画面使用真实角色资源；气泡和输入框始终可见，产品 DOM 不存在 composer toggle 或常驻功能栏。
+- 所有聊天/生命周期状态保持同一原生窗口包络、立绘锚点、气泡和输入框位置。
+- 长文本只在气泡内部滚动；正常画面不显示 Fake Core 标签、几何读数或测试按钮。
+- 跳过打字机不发送 Core cancel，CSS 动画不阻塞输入、取消或关闭。
 
-独立回退：回退聊天表现模块，保留 Phase 1A Shell 和窗口技术门。
+独立回退：回退当前产品 UI 修正，保留 Phase 1A Shell、窗口技术门和历史 Fake Core 表现代码；
+不触碰角色源资源或用户数据。
 
-### WP-3-04：真实聊天与桌宠 UI 端到端接通
+### WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
 
-主要结果：把 WP-3-02 的真实聊天 Core 链接入 WP-3-03 的桌宠表现层，形成第一条真实产品垂直链。
+主要结果：移除桌宠常驻功能栏，通过右键桌宠打开由 Rust 管理的产品菜单，并把现有设置前端迁为
+同一 Tauri App 内唯一的 `settings` 普通窗口；独立设计见
+`docs/runtime-v2/WP-3U-01-same-app-settings-window.md`。
 
 允许能力：
 
-- 真实角色立绘、初始消息、输入、发送、思考、完成、错误和取消。
-- 根据回复段或表情状态切换立绘。
+- 右键菜单中的显示/隐藏、设置和退出等已具备生命周期所有者的项目。
+- 唯一 settings 窗口的创建、聚焦、关闭、未保存拦截和主应用退出联动。
+- 复用 `tools/settings-tauri/frontend/**` 的视觉与页面结构，并建立单一规范源。
+- 设置能力清单；未迁移页面隐藏或明确禁用。
+
+明确禁止：
+
+- 不再启动 `sakura-settings` 独立进程，不引入第二 Tauri 生命周期根。
+- 不把旧设置 Rust stdio HostRpc 或 `app/ui/tauri_settings.py` 的 PySide6 运行时带入 Core。
+- 不在本 WP 保存角色、Provider、TTS、Memory、MCP、插件或其他业务配置。
+
+退出证据：右键菜单可重复打开；设置窗口重复打开只聚焦已有实例；设置窗口关闭不退出桌宠/Core；
+主应用退出统一关闭设置窗口和 Core；三平台构建和 Windows 真实焦点/IME/最小化门通过。
+
+独立回退：移除右键菜单和 settings 窗口注册，恢复 WP-3-03 固定产品 UI；不恢复常驻功能栏，
+不删除旧独立设置工具或修改用户配置。
+
+### WP-3U-02：角色包可见能力与外观设置联动
+
+主要结果：优先迁移角色包中用户直接可见的能力，并让 Phase 3 设置窗口的角色与外观页真实可用；
+独立设计见 `docs/runtime-v2/WP-3U-02-character-visible-capabilities.md`。
+
+允许能力：
+
+- 角色名、初始消息、角色主题、默认立绘、表情映射和立绘切换。
+- 当前角色外观页的读取、校验、预览、应用/保存和取消回滚。
+- 角色选择控件在本 WP 必须隐藏或明确禁用；运行中角色切换仍由 WP-5-03 完成。
+- 复用并抽取旧设置中无 Qt 的 DTO、校验与兼容保存语义。
+
+明确禁止：
+
+- 不提前开放 TTS、Memory、Tools、MCP、插件、截图、主动互动、完整首次设置或 Studio。
+- 不保存 `current_character_id`，不实现角色切换或 Session 重建。
+- 不直接从 WebView 写 `data/**` 或 `characters/**`，不向 WebView 暴露裸本地路径。
+- 不在旧 Assistant 对象图上逐字段修改角色。
+
+退出证据：至少使用 Sakura 与 N.A.V.I 两个真实角色包验证不同宽高比、主题、初始消息和表情切换；
+设置保存失败原子回滚；取消恢复打开前预览；旧 generation 的立绘资源/回调不能覆盖当前 UI；legacy Qt
+仍可读取批准的兼容外观配置。
+
+独立回退：关闭角色外观页的保存命令，设置窗口退回能力门控壳；保留 WP-3-03 的
+当前角色只读展示，不删除或恢复用户数据。
+
+### WP-3-04：真实聊天接入已冻结桌宠 UI
+
+主要结果：把 WP-3-02 的真实聊天 Core 链接入已经由 WP-3-03/3U-01/3U-02 冻结的产品 UI，形成
+第一条真实产品垂直链；本 WP 只替换聊天数据源，不重新设计桌宠 DOM、布局或视觉语言。
+
+允许能力：
+
+- 真实输入、发送、思考、完成、错误和取消。
+- 真实回复段的 portrait/tone 投影到 WP-3U-02 已完成的立绘表现。
 - 最小受控 Gateway、聊天 identity/取消和 UI 状态映射。
 
 明确禁止：
 
-- 不加入 TTS、Tools、截图、主动互动、设置、历史窗口和工作室。
+- 不加入 TTS、Tools、截图、主动互动、历史窗口和工作室。
+- 不新增设置页或改变 WP-3U-01/02 已冻结的窗口与角色表现语义。
 - 不为 UI 便利破坏 lifecycle 或基础 Envelope。
 
 退出证据：
@@ -2057,8 +2140,9 @@ P0/P1：零
 - 使用已有开发配置完成真实聊天和取消。
 - UI 与 Core 的终态一致，晚到旧 generation 事件不改变当前界面。
 - 真实主题、长文本、IME 和目标 DPI 验收通过。
+- 除真实数据暴露的缺陷修复外，WP-3-03 的截图与几何基线保持不变。
 
-独立回退：切回 Fake Core UI 演示路径，保留真实 headless chat 能力。
+独立回退：切回 Fake Core UI 演示路径，保留真实 headless chat、固定产品 UI、设置窗口宿主和角色表现能力。
 
 ### WP-3-05：Core 崩溃恢复与 UI 重新水合
 
@@ -2121,7 +2205,8 @@ legacy Qt 创建/修改数据并退出
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
-强制前置：WP-3-01 至 WP-3-06 全部 accepted；WP-2-01/02 的最小 Router、聊天边界和 Snapshot 已由这些真实消费者使用。
+强制前置：WP-3-01 至 WP-3-06 以及 WP-3U-01/02 全部 accepted；WP-2-01/02 的最小 Router、
+聊天边界和 Snapshot 已由这些真实消费者使用。
 
 必须执行的单一纵向场景：
 
@@ -2189,10 +2274,10 @@ Tauri/Rust 启动 bundled Python Core
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
 |---|---|---|---|
-| WP-5-01 | CAP-018/019 | `core.*`/`desktop.*`/`ui.*`/`audio.*` 仓库、validate、change plan、原子保存 | 失败不产生半更新；Qt 可读数据不破坏；三平台路径/权限通过 |
-| WP-5-02 | CAP-020 | 设置窗口、逐域结果和首次设置 | 键盘/IME/焦点、密钥输入、失败恢复和重新打开状态一致 |
-| WP-5-03 | CAP-006/007/021 | 角色切换、Session、历史分页与受控重启 | 旧 generation/资源失效；角色、历史、Memory/TTS scope 不串线 |
-| WP-5-04 | CAP-022 | 托盘、置顶、快捷键、显示隐藏、开机启动 | Windows/macOS/Linux 原生行为、权限和重复注册/卸载通过 |
+| WP-5-01 | CAP-018/019 | 在 WP-3U-02 窄配置基础上补齐 `core.*`/`desktop.*`/`ui.*`/`audio.*` 仓库、validate、change plan、原子保存 | 失败不产生半更新；Qt 可读数据不破坏；三平台路径/权限通过 |
+| WP-5-02 | CAP-020 | 在 WP-3U-01 同 App 设置窗口中补齐全部页面、逐域结果和首次设置 | 键盘/IME/焦点、密钥输入、失败恢复和重新打开状态一致 |
+| WP-5-03 | CAP-006/007/021 | 补齐运行中 Session 切换优化、历史分页与完整角色切换等价 | 旧 generation/资源失效；角色、历史、Memory/TTS scope 不串线 |
+| WP-5-04 | CAP-022 | 在 WP-3U-01 右键菜单基础上补齐托盘、置顶、快捷键、显示隐藏和开机启动 | Windows/macOS/Linux 原生行为、权限和重复注册/卸载通过 |
 | WP-5-05 | CAP-023/024 | 浏览器自动化与移动/本地桥接 | 浏览器树受控；端口/防火墙/鉴权安全；插件不拥有第二生命周期根 |
 | WP-5-06 | CAP-025 | 扩展诊断、Runtime Repair、安全重试和更新前置检查 | 三平台路径/日志/权限诊断；任何自动下载/替换须单独批准且可回退；失败后仍可退出 |
 

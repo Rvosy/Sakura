@@ -11,9 +11,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sakura Runtime v2 · Fake Core chat presentation",
-        "width": 320,
-        "height": 420,
+        "title": "Sakura Runtime v2",
+        "width": 816,
+        "height": 680,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -26,7 +26,7 @@
     ],
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "csp": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' http://sakura-character.localhost sakura-character:; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "capabilities": ["default"]
     }
   },

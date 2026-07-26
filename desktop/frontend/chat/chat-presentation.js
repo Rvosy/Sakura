@@ -1,15 +1,13 @@
-import { FAKE_CORE_INITIAL_MESSAGE } from "./fake-chat-core.js";
-
 const LIFECYCLE_COPY = Object.freeze({
-  startup: ["startup", "Sakura 正在启动"],
-  initializing: ["initializing", "Fake Core 正在初始化"],
-  ready: ["ready", "Fake Core 已就绪"],
-  failed: ["failed", "Fake Core 启动失败"],
-  core_crashed: ["Core crashed", "Fake Core 已断开"],
-  restarting: ["restarting", "Fake Core 正在重连"],
+  startup: ["正在启动", "正在启动"],
+  initializing: ["正在准备", "正在准备会话"],
+  ready: ["在线", "可以开始对话"],
+  failed: ["不可用", "会话启动失败"],
+  core_crashed: ["连接中断", "连接已中断"],
+  restarting: ["正在重连", "正在重新连接"],
 });
 
-function initialState() {
+function initialState(initialMessage, defaultPortraitKey) {
   return Object.freeze({
     generationId: null,
     generationNumber: 0,
@@ -19,10 +17,10 @@ function initialState() {
     lifecycleHeadline: "Sakura 正在启动",
     phase: "booting",
     operationId: null,
-    bubbleText: "正在准备本地测试会话……",
+    bubbleText: initialMessage,
     segments: Object.freeze([]),
     error: null,
-    portrait: "idle",
+    portrait: defaultPortraitKey,
     canCancel: false,
     canSkip: false,
   });
@@ -45,8 +43,11 @@ function normalizedSegments(reply) {
   );
 }
 
-export function createChatPresentationReducer() {
-  let state = initialState();
+export function createChatPresentationReducer({ initialMessage, defaultPortraitKey, thinkingPortraitKey, concernedPortraitKey } = {}) {
+  if (!initialMessage || !defaultPortraitKey) throw new Error("character presentation is required");
+  const thinkingPortrait = thinkingPortraitKey || defaultPortraitKey;
+  const concernedPortrait = concernedPortraitKey || defaultPortraitKey;
+  let state = initialState(initialMessage, defaultPortraitKey);
 
   function acceptGeneration(event) {
     if (!Number.isSafeInteger(event?.generationNumber) || event.generationNumber < 1) return false;
@@ -82,16 +83,16 @@ export function createChatPresentationReducer() {
           operationId: ready ? state.operationId : null,
           bubbleText: ready
             ? generationChanged || ["booting", "reconnecting"].includes(state.phase)
-              ? FAKE_CORE_INITIAL_MESSAGE
+              ? initialMessage
               : state.bubbleText
             : event.status === "core_crashed"
               ? "连接已断开，正在回收旧回复……"
               : event.status === "restarting"
-                ? "正在建立新的本地测试会话……"
-                : "正在准备本地测试会话……",
+              ? "正在重新连接……"
+                : "正在准备会话……",
           segments: ready ? state.segments : Object.freeze([]),
           error: null,
-          portrait: ready ? state.portrait : "concerned",
+          portrait: ready ? state.portrait : concernedPortrait,
           canCancel: false,
           canSkip: false,
         });
@@ -109,7 +110,7 @@ export function createChatPresentationReducer() {
           bubbleText: "正在组织完整回复……",
           segments: Object.freeze([]),
           error: null,
-          portrait: "thinking",
+          portrait: thinkingPortrait,
           canCancel: true,
           canSkip: false,
         });
@@ -132,7 +133,7 @@ export function createChatPresentationReducer() {
         return result(true);
       }
       if (event.type === "chat.failed" && state.phase === "thinking") {
-        const message = typeof event.error?.message === "string" ? event.error.message : "Fake Core 请求失败。";
+        const message = typeof event.error?.message === "string" ? event.error.message : "暂时无法完成回复。";
         state = Object.freeze({
           ...state,
           phase: "error",
@@ -140,7 +141,7 @@ export function createChatPresentationReducer() {
           bubbleText: message,
           segments: Object.freeze([]),
           error: Object.freeze({ code: String(event.error?.code || "FAKE_CORE_FAILED"), retryable: Boolean(event.error?.retryable) }),
-          portrait: "concerned",
+          portrait: concernedPortrait,
           canCancel: false,
           canSkip: false,
         });
@@ -149,12 +150,12 @@ export function createChatPresentationReducer() {
       if (event.type === "chat.cancelled" && state.phase === "thinking") {
         state = Object.freeze({
           ...state,
-          phase: "cancelled",
+          phase: "settled",
           operationId: null,
           bubbleText: event.reason === "core_restart" ? "旧回复已随连接关闭。" : "已取消当前回复。",
           segments: Object.freeze([]),
           error: null,
-          portrait: "idle",
+          portrait: defaultPortraitKey,
           canCancel: false,
           canSkip: false,
         });
@@ -169,7 +170,7 @@ export function createChatPresentationReducer() {
     },
     setTypingSegment(segment) {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, portrait: segment?.portrait || segment?.tone || "idle" });
+      state = Object.freeze({ ...state, portrait: segment?.portrait || defaultPortraitKey });
       return result(true);
     },
     finishTyping() {

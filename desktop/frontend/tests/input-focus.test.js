@@ -18,7 +18,7 @@ function harness(initialText = "hello") {
 test("composer accepts ordinary text and submits only to the injected local presentation consumer", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("  hello Sakura  ");
-  controller.setPresentation("composer");
+  controller.setPresentation("product");
   const result = controller.handleKeyDown({ key: "Enter", isComposing: false, shiftKey: false });
   assert.deepEqual(result, { handled: true, submitted: true });
   assert.deepEqual(submissions, [{ text: "hello Sakura", source: "keyboard" }]);
@@ -27,7 +27,7 @@ test("composer accepts ordinary text and submits only to the injected local pres
 test("IME composition updates never become a submit action", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("樱花");
-  controller.setPresentation("composer");
+  controller.setPresentation("product");
   controller.handleCompositionStart("y");
   controller.handleCompositionUpdate("ying hua");
   assert.deepEqual(
@@ -36,7 +36,7 @@ test("IME composition updates never become a submit action", () => {
   );
   assert.equal(controller.submit("button"), false);
   controller.handleWindowBlur();
-  controller.setPresentation("idle");
+  controller.setPresentation("hidden");
   assert.deepEqual(submissions, []);
   assert.equal(controller.snapshot().composing, false);
 });
@@ -44,7 +44,7 @@ test("IME composition updates never become a submit action", () => {
 test("composition end permits a later explicit submit", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("中文");
-  controller.setPresentation("composer");
+  controller.setPresentation("product");
   controller.handleCompositionStart("zhong");
   controller.handleCompositionUpdate("中文");
   controller.handleCompositionEnd("中文");
@@ -55,15 +55,15 @@ test("composition end permits a later explicit submit", () => {
 test("Alt+Tab, hide/show, and state round-trips restore focus deterministically", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, focusReasons } = harness();
-  controller.setPresentation("composer");
+  controller.setPresentation("product");
   controller.handleInputFocus();
   controller.handleWindowBlur();
   controller.handleInputBlur();
   controller.handleWindowFocus();
   controller.handleVisibility(false);
   controller.handleVisibility(true);
-  controller.setPresentation("idle");
-  controller.setPresentation("expanded");
+  controller.setPresentation("hidden");
+  controller.setPresentation("product");
   assert.deepEqual(focusReasons, ["presentation", "window-focus", "visibility", "presentation"]);
 });
 
@@ -71,7 +71,7 @@ test("empty text, inactive states, and Shift+Enter do not submit", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions, setText } = harness("");
   assert.equal(controller.submit("button"), false);
-  controller.setPresentation("composer");
+  controller.setPresentation("product");
   setText("   ");
   assert.equal(controller.submit("button"), false);
   assert.deepEqual(

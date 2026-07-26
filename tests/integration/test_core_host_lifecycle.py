@@ -332,7 +332,8 @@ def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
 
 
 def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_path: Path) -> None:
-    process = start_host(isolated_app_root(tmp_path, ready=True))
+    app_root = isolated_app_root(tmp_path, ready=True)
+    process = start_host(app_root)
     try:
         assert exchange(process, request("hello", "system.hello"))["ok"] is True
         started = time.monotonic()
@@ -361,6 +362,24 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
             "replyTones",
             "portraitChoices",
         }
+        presentation = snapshot["characterPresentation"]
+        assert presentation["generationId"] == GENERATION_ID
+        assert presentation["characterId"] == snapshot["currentCharacterSummary"]["id"]
+        assert set(presentation) == {
+            "schemaVersion",
+            "generationId",
+            "characterId",
+            "displayName",
+            "initialMessage",
+            "themeTokens",
+            "defaultPortraitKey",
+            "portraitKeys",
+            "portraitResourceIds",
+        }
+        assert set(presentation["portraitKeys"]) == set(
+            presentation["portraitResourceIds"]
+        )
+        assert str(app_root) not in repr(presentation)
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
     finally:

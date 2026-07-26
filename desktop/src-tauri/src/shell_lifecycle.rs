@@ -61,6 +61,7 @@ pub struct VersionPublication {
 pub struct ShellLifecyclePublication {
     supervisor: SupervisorPublication,
     snapshot: Option<SnapshotPublication>,
+    character_presentation: Option<Value>,
     versions: VersionPublication,
 }
 
@@ -81,6 +82,20 @@ impl ShellLifecycleHandle {
         self.publication
             .lock()
             .map(|publication| publication.clone())
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
+    pub fn character_presentation(&self) -> Result<Option<Value>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| publication.character_presentation.clone())
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
+    pub fn current_generation_id(&self) -> Result<Option<String>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| publication.supervisor.generation_id.clone())
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
@@ -115,6 +130,7 @@ impl ShellLifecycleSession {
                 last_failure: None,
             },
             snapshot: None,
+            character_presentation: None,
             versions: VersionPublication {
                 desktop_version: env!("CARGO_PKG_VERSION"),
                 core_version: "unavailable".to_string(),
@@ -492,6 +508,17 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
     let next = ShellLifecyclePublication {
         supervisor: supervisor_publication(supervisor, identity),
         snapshot,
+        character_presentation: state.snapshot.as_ref().and_then(|snapshot| {
+            let (generation_id, _) = identity?;
+            let generation_id = generation_text(generation_id);
+            let presentation = snapshot.get("characterPresentation")?;
+            if presentation.get("generationId").and_then(Value::as_str)
+                != Some(generation_id.as_str())
+            {
+                return None;
+            }
+            Some(presentation.clone())
+        }),
         versions: VersionPublication {
             desktop_version: env!("CARGO_PKG_VERSION"),
             core_version: state.core_version.clone(),
@@ -735,6 +762,7 @@ mod tests {
                 last_failure: Some("deterministic_runtime"),
             },
             snapshot: None,
+            character_presentation: None,
             versions: VersionPublication {
                 desktop_version: "0.1.0",
                 core_version: "2.1.0".to_string(),
@@ -746,7 +774,12 @@ mod tests {
         let object = encoded.as_object().expect("publication is an object");
         assert_eq!(
             object.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["snapshot", "supervisor", "versions"]
+            [
+                "characterPresentation",
+                "snapshot",
+                "supervisor",
+                "versions"
+            ]
         );
         let text = encoded.to_string().to_ascii_lowercase();
         for forbidden in [

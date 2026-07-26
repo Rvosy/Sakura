@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod character_presentation;
 #[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
 mod core_host_gateway;
 #[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
@@ -34,7 +35,7 @@ use platform::{
 };
 use serde::Serialize;
 use shared_instance::NativeInstanceLockBackend;
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 use window_geometry::{
     apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
     PhysicalRect, PresentationState,
@@ -389,6 +390,122 @@ fn runtime_lifecycle_snapshot(
 }
 
 #[tauri::command]
+fn current_character_presentation(
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<character_presentation::FrontendCharacterPresentation, String> {
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
+    let generation_id = handle
+        .current_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+
+    #[cfg(debug_assertions)]
+    if std::env::var("SAKURA_WP_3_03_ACCEPTANCE").ok().as_deref() == Some("1") {
+        if let Ok(character_id) = std::env::var("SAKURA_WP_3_03_ACCEPTANCE_CHARACTER") {
+            if matches!(character_id.as_str(), "Sakura" | "N.A.V.I.") {
+                let presentation =
+                    character_presentation::presentation_from_manifest_for_acceptance(
+                        &development_runtime_request().assistant_root,
+                        &character_id,
+                        &generation_id,
+                    )?;
+                return resources.activate(presentation, &generation_id);
+            }
+        }
+    }
+
+    let value = handle
+        .character_presentation()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let presentation =
+        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
+    resources.activate(presentation, &generation_id)
+}
+
+#[tauri::command]
+fn wp_3_03_acceptance_enabled() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("SAKURA_WP_3_03_ACCEPTANCE").ok().as_deref() == Some("1")
+}
+
+fn character_protocol_response(
+    context: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{header, Method, StatusCode};
+
+    let fail = |status: StatusCode, code: &str| {
+        tauri::http::Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-store")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(code.as_bytes().to_vec())
+            .expect("static character protocol response")
+    };
+    if request.method() != Method::GET || request.uri().query().is_some() {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "CHARACTER_RESOURCE_REQUEST_REJECTED",
+        );
+    }
+    let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
+    if segments.len() != 3
+        || segments[0] != "v1"
+        || segments[1].is_empty()
+        || segments[2].is_empty()
+        || segments.iter().any(|segment| segment.contains('%'))
+    {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "CHARACTER_RESOURCE_REQUEST_REJECTED",
+        );
+    }
+    let lifecycle = context.app_handle().state::<ShellLifecycleState>();
+    let Some(handle) = lifecycle.handle.as_ref() else {
+        return fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CHARACTER_RESOURCE_NOT_READY",
+        );
+    };
+    let current_generation = match handle.current_generation_id() {
+        Ok(Some(value)) => value,
+        _ => return fail(StatusCode::GONE, "CHARACTER_RESOURCE_GENERATION_STALE"),
+    };
+    let resources = context
+        .app_handle()
+        .state::<character_presentation::CharacterPresentationState>();
+    match resources.load_active_resource(segments[1], segments[2], &current_generation) {
+        Ok(resource) => tauri::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "image/png")
+            .header(
+                header::CONTENT_LENGTH,
+                resource.metadata.byte_length.to_string(),
+            )
+            .header(header::CACHE_CONTROL, "no-store, max-age=0")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(resource.bytes)
+            .expect("validated character resource response"),
+        Err(code) => {
+            let status = if code.contains("GENERATION") {
+                StatusCode::GONE
+            } else if code.contains("UNKNOWN") || code.contains("NOT_FOUND") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            fail(status, &code)
+        }
+    }
+}
+
+#[tauri::command]
 fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), &'static str> {
     lifecycle
         .handle
@@ -535,8 +652,10 @@ fn main() {
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
         || std::env::var_os("SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY").is_some();
-    let shell_lifecycle_session = (!acceptance_mode)
-        .then(|| shell_lifecycle::ShellLifecycleSession::start(development_runtime_request()));
+    let runtime_request = development_runtime_request();
+    let character_resource_root = runtime_request.assistant_root.clone();
+    let shell_lifecycle_session =
+        (!acceptance_mode).then(|| shell_lifecycle::ShellLifecycleSession::start(runtime_request));
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
@@ -546,6 +665,13 @@ fn main() {
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
         })
+        .manage(character_presentation::CharacterPresentationState::new(
+            character_resource_root,
+        ))
+        .register_uri_scheme_protocol(
+            character_presentation::CHARACTER_PROTOCOL,
+            character_protocol_response,
+        )
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
             start_pet_drag,
@@ -553,6 +679,8 @@ fn main() {
             close_pet_window,
             collect_native_diagnostics,
             runtime_lifecycle_snapshot,
+            current_character_presentation,
+            wp_3_03_acceptance_enabled,
             retry_core,
             exit_runtime
         ])

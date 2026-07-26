@@ -127,6 +127,9 @@ def test_initialize_builds_exact_real_session_without_calls_or_fixture_writes(
     assert result.session.runtime.memory_recall.memory is result.session.runtime.memory
     assert result.session.runtime.character_id == result.session.character.id
     assert result.session.runtime.character_name == result.session.character.display_name
+    assert result.current_character_presentation is not None
+    assert result.current_character_presentation["characterId"] == result.session.character.id
+    assert "defaultPortraitPath" not in result.current_character_presentation
     assert result.session.runtime.strict_provider_errors is True
     assert _file_snapshot(root) == before
 
