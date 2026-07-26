@@ -85,7 +85,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
-| WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
+| WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | active |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
@@ -124,8 +124,9 @@ accepted；其设计、实施计划、允许列表、接受证据和回退见对
 已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
 lifecycle 候选验收并 accepted；WP-3-02 已按
 `docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成实现、故障与资源回收门禁、本地完整回归和
-同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。当前没有
-`active/stabilizing` Work Package；WP-3-03 是第一个依赖已满足的 `planned` 启动点，但本次不激活。
+同一 SHA 的 Windows/macOS/Linux platform workflow，并于 2026-07-26 accepted。WP-3-03 已按
+`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 于 2026-07-26 激活，是当前唯一
+`active/stabilizing` Work Package；其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1998,6 +1999,10 @@ P0/P1：零；无剩余可复现退出条件缺陷、数据污染或范围扩张
 独立回退：关闭真实 chat command，保留 Assistant readiness 和 Core Host。
 
 ### WP-3-03：使用 Fake Core 的桌宠聊天表现层
+
+执行记录（2026-07-26）：已完成依赖复核、旧迁移资产逐文件取证、所有权/场景/白名单/回退冻结并
+迁移为 `active`；独立实施与验收文档见
+`docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md`。
 
 主要结果：使用确定性 Fake Core 完成立绘、初始消息、气泡、输入框、思考、错误、取消和完整回复打字机展示。
 
