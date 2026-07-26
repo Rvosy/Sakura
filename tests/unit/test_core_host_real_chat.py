@@ -233,6 +233,58 @@ def test_cancel_wins_and_duplicate_cancel_is_rejected(tmp_path: Path) -> None:
     assert published[-1]["payload"]["historyStatus"] == "saved"
 
 
+def test_queued_cancel_still_publishes_started_then_one_cancelled(tmp_path: Path) -> None:
+    pipeline = _Pipeline(AgentResult(ChatReply([ChatSegment("must not run")])))
+    published: list[dict[str, object]] = []
+    boundary = _boundary(tmp_path, _Session(pipeline), _History(), published)
+    request = _request("chat-queued")
+    boundary.reserve_send(request)
+
+    cancelled = boundary.handle_cancel(
+        {**_request("cancel-queued"), "payload": {"operationId": "chat-queued"}}
+    )
+    boundary.handle_send(request)
+
+    assert cancelled["payload"]["accepted"] is True
+    assert [item["name"] for item in published] == ["chat.started", "chat.cancelled"]
+    assert pipeline.messages == []
+    assert boundary.snapshot_fields("ready", None)["activeInteractionSummary"] is None
+
+
+def test_single_active_interaction_and_publisher_failure_release_reservation(
+    tmp_path: Path,
+) -> None:
+    pipeline = _Pipeline(AgentResult(ChatReply([ChatSegment("ok")])))
+    session = _Session(pipeline)
+    first = _request("chat-first")
+    second = _request("chat-second")
+    boundary = _boundary(tmp_path, session, _History(), [])
+    boundary.reserve_send(first)
+    with pytest.raises(RealChatRejection, match="CHAT_EXECUTION_LIMIT_EXCEEDED") as raised:
+        boundary.reserve_send(second)
+    assert raised.value.retryable is True
+    boundary.abandon_send(first)
+    boundary.reserve_send(second)
+    boundary.abandon_send(second)
+
+    def fail_publish(_message: dict[str, object]) -> None:
+        raise OSError("PRIVATE_TRANSPORT")
+
+    failing = RealChatBoundary(
+        GENERATION_ID,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        event_publisher=fail_publish,
+        history_factory=lambda _path, _name: _History(),  # type: ignore[arg-type]
+    )
+    failing.reserve_send(first)
+    with pytest.raises(OSError, match="PRIVATE_TRANSPORT"):
+        failing.handle_send(first)
+    assert failing.snapshot_fields("ready", None)["activeInteractionSummary"] is None
+    failing.close()
+
+
 def test_not_ready_and_caller_owned_fields_fail_closed(tmp_path: Path) -> None:
     boundary = _boundary(tmp_path, None, _History(), [])
     with pytest.raises(RealChatRejection, match="ASSISTANT_NOT_READY"):
@@ -274,4 +326,15 @@ def test_http_failure_retryability_is_stable(status: int, retryable: bool) -> No
             "PROVIDER_REQUEST_FAILED",
             "Provider request failed",
             retryable,
+        )
+
+
+def test_timeout_failure_is_retryable_without_exposing_exception_text() -> None:
+    try:
+        raise ApiRequestError("PRIVATE_TIMEOUT_DETAILS") from TimeoutError("PRIVATE_SOCKET")
+    except ApiRequestError as error:
+        assert _classify_error(error) == (
+            "PROVIDER_REQUEST_FAILED",
+            "Provider request failed",
+            True,
         )

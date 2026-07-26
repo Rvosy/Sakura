@@ -104,12 +104,7 @@ def read_url_cancellable(
         abort.set()
         with state_lock:
             response = state.get("response")
-        close = getattr(response, "close", None)
-        if callable(close):
-            try:
-                close()
-            except OSError:
-                pass
+        _abort_response(response)
         raise
     error = state.get("error")
     if isinstance(error, BaseException):
@@ -122,3 +117,37 @@ def _request_url(url: str | urllib.request.Request) -> str:
     if isinstance(full_url, str):
         return full_url
     return str(url)
+
+
+def _abort_response(response: Any) -> None:
+    """Abort a concurrent urllib read without waiting on its buffered-reader lock."""
+    if response is None:
+        return
+    file_object = getattr(response, "fp", None)
+    raw = getattr(file_object, "raw", None)
+    active_socket = getattr(raw, "_sock", None)
+    if isinstance(active_socket, socket.socket):
+        try:
+            active_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            active_socket.close()
+        except OSError:
+            pass
+
+    close = getattr(response, "close", None)
+    if not callable(close):
+        return
+
+    def close_response() -> None:
+        try:
+            close()
+        except OSError:
+            pass
+
+    threading.Thread(
+        target=close_response,
+        name="sakura-http-close",
+        daemon=True,
+    ).start()

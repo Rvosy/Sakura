@@ -534,10 +534,34 @@ mod tests {
             "id",
             "deadlineMs",
             "priority",
+            "history",
+            "messages",
+            "model",
+            "apiKey",
+            "operationId",
         ] {
             let mut payload = json!({"message": "hello"});
             payload[field] = json!("forged");
             assert!(gateway.send("main", payload).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn completed_reply_and_history_status_require_the_exact_public_shape() {
+        let operation_id = "chat-exact";
+        let mut valid = chat_event(operation_id, "chat.completed");
+        assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_ok());
+        for field in ["_debug", "actions", "prompt", "model", "apiKey"] {
+            valid["payload"]["reply"][field] = json!("PRIVATE");
+            assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_err());
+            valid["payload"]["reply"]
+                .as_object_mut()
+                .expect("reply object")
+                .remove(field);
+        }
+        for invalid in [json!(null), json!("saved-ish"), json!(true)] {
+            valid["payload"]["historyStatus"] = invalid;
+            assert!(validate_chat_event_payload("chat.completed", &valid["payload"]).is_err());
         }
     }
 

@@ -2211,15 +2211,16 @@ fn process_exit_code(status: ProcessExitStatus) -> u32 {
 mod tests {
     use std::{
         collections::{BTreeSet, VecDeque},
-        fs::File,
-        io::{self, Cursor, Read},
+        fs::{self, File},
+        io::{self, Cursor, Read, Write},
+        net::TcpListener,
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc, Arc, Mutex,
         },
         thread,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use serde_json::{json, Value};
@@ -2280,6 +2281,84 @@ mod tests {
                 assistant_root: root,
             })
             .expect("repository Runtime should resolve explicitly")
+    }
+
+    fn copy_fixture_tree(source: &std::path::Path, destination: &std::path::Path) {
+        fs::create_dir_all(destination).expect("fixture directory should create");
+        for entry in fs::read_dir(source).expect("fixture directory should read") {
+            let entry = entry.expect("fixture entry should read");
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if entry.file_type().expect("fixture type").is_dir() {
+                copy_fixture_tree(&source_path, &destination_path);
+            } else {
+                fs::copy(&source_path, &destination_path).expect("fixture file should copy");
+            }
+        }
+    }
+
+    fn wp_3_02_local_provider() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("local Provider should bind");
+        let address = listener.local_addr().expect("local Provider address");
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("local Provider request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("Provider read timeout");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let expected_length = loop {
+                let read = stream
+                    .read(&mut chunk)
+                    .expect("Provider request should read");
+                assert!(read > 0, "Provider request ended before headers");
+                request.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .expect("Provider Content-Length");
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_length {
+                let read = stream.read(&mut chunk).expect("Provider body should read");
+                assert!(read > 0, "Provider request ended before body");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            assert!(request_text.contains("chat/completions"));
+            assert!(!request_text.contains("generationCredential"));
+            let content = serde_json::to_string(&json!({
+                "segments": [{
+                    "ja": "おかえり。", "zh": "欢迎回来。", "tone": "中性",
+                    "portrait": "neutral"
+                }]
+            }))
+            .expect("Provider content JSON");
+            let body = serde_json::to_vec(&json!({
+                "choices": [{"message": {"role": "assistant", "content": content}}]
+            }))
+            .expect("Provider response JSON");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("Provider response headers");
+            stream.write_all(&body).expect("Provider response body");
+            stream.flush().expect("Provider response flush");
+        });
+        (format!("http://{address}/v1"), worker)
     }
 
     fn stderr_state() -> Arc<Mutex<StderrDrainState>> {
@@ -3667,6 +3746,101 @@ mod tests {
             .expect("local rejection must not affect Core health");
         assert_eq!(health["ok"], true);
         host.shutdown().expect("chat host shutdown");
+    }
+
+    #[test]
+    fn wp_3_02_rust_gateway_drives_real_core_local_provider_and_history() {
+        let _test_lock = lifecycle_test_lock();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos();
+        let app_root =
+            std::env::temp_dir().join(format!("sakura-wp-3-02-{}-{unique}", std::process::id()));
+        let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
+        copy_fixture_tree(&source, &app_root);
+        let (provider_url, provider) = wp_3_02_local_provider();
+        fs::write(
+            app_root.join("data/config/api.yaml"),
+            format!(
+                "api_profiles:\n  - id: fixture\n    alias: Fixture Provider\n    base_url: {provider_url}\n    api_key: LOCAL_TEST_KEY\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\nconfig_version: 4\n"
+            ),
+        )
+        .expect("local Provider config should write");
+        let mut layout = development_layout();
+        layout.assistant_root = app_root
+            .canonicalize()
+            .expect("Assistant fixture should resolve");
+        let generation = "00000000-0000-4000-8000-000000003002";
+        let mut host =
+            CoreHostRuntime::launch(&layout, generation).expect("real Core should launch");
+        host.request("real-chat-hello", "system.hello", Duration::from_secs(3))
+            .expect("real chat hello");
+        host.request_with_payload(
+            "real-chat-initialize",
+            "core.initialize",
+            json!({}),
+            Duration::from_secs(3),
+        )
+        .expect("real chat initialize");
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = host
+                .refresh_snapshot("real-chat-ready", Duration::from_secs(3))
+                .expect("real chat readiness Snapshot");
+            if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
+                break;
+            }
+            assert!(
+                Instant::now() < ready_deadline,
+                "Assistant readiness timed out"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let gateway = host.chat_gateway().expect("real chat Gateway");
+        let submission = gateway
+            .send("main", json!({"message": "ただいま"}))
+            .expect("real chat should submit");
+        let started = host
+            .recv_event_timeout(Duration::from_secs(3))
+            .expect("real chat started read")
+            .expect("real chat started event");
+        assert_eq!(started["name"], "chat.started");
+        assert_eq!(
+            gateway.observe_event(&started).expect("started validation"),
+            crate::core_host_gateway::EventDisposition::Accepted
+        );
+        let terminal = host
+            .recv_event_timeout(Duration::from_secs(10))
+            .expect("real chat terminal read")
+            .expect("real chat terminal event");
+        assert_eq!(terminal["name"], "chat.completed");
+        assert_eq!(terminal["payload"]["historyStatus"], "saved");
+        assert_eq!(
+            terminal["payload"]["reply"]["segments"][0]["text"],
+            "おかえり。"
+        );
+        assert_eq!(
+            gateway
+                .observe_event(&terminal)
+                .expect("terminal validation"),
+            crate::core_host_gateway::EventDisposition::Accepted
+        );
+        let accepted = submission
+            .completion
+            .recv_timeout(Duration::from_secs(3))
+            .expect("real chat response channel")
+            .expect("real chat response");
+        assert_eq!(accepted["payload"]["accepted"], true);
+        let history = fs::read_to_string(app_root.join("data/chat_history/sakura.jsonl"))
+            .expect("real chat history should exist");
+        assert!(history.contains("ただいま"));
+        assert!(history.contains("おかえり。"));
+        assert!(!history.contains("LOCAL_TEST_KEY"));
+        host.shutdown().expect("real chat shutdown");
+        provider.join().expect("local Provider should stop");
+        fs::remove_dir_all(&app_root).expect("isolated Assistant fixture should remove");
     }
 
     #[test]

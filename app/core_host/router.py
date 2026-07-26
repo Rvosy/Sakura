@@ -8,6 +8,7 @@ the single stdout writer. Assistant domain objects stay behind the injected boun
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
@@ -79,6 +80,7 @@ class ConcurrentHostRouter:
         self._events: queue.Queue[Mapping[str, Any] | object] = queue.Queue(maxsize=EVENT_QUEUE_LIMIT)
         self._fixture_slots = threading.BoundedSemaphore(FIXTURE_WORKER_COUNT)
         self._stop = threading.Event()
+        self._events_closing = threading.Event()
         self._closed = False
         self._lock = threading.Lock()
         self._fatal: BaseException | None = None
@@ -91,7 +93,7 @@ class ConcurrentHostRouter:
 
     def publish_event(self, message: Mapping[str, Any]) -> None:
         """Publish a bounded event; an unrecoverable full queue fails closed."""
-        if self._stop.is_set():
+        if self._events_closing.is_set():
             raise RouterFailure("GENERATION_INVALIDATED", "router is closing")
         ticket = _EventTicket(dict(message))
         try:
@@ -158,6 +160,7 @@ class ConcurrentHostRouter:
         worker_threads = [thread for thread in self._threads if thread not in event_threads]
         for thread in worker_threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
+        self._events_closing.set()
         try:
             self._events.put(_STOP, timeout=max(0.0, deadline - monotonic()))
         except queue.Full:
@@ -166,6 +169,10 @@ class ConcurrentHostRouter:
             thread.join(timeout=max(0.0, deadline - monotonic()))
         alive = [thread.name for thread in self._threads if thread.is_alive()]
         if alive and self.fatal_error is None:
+            try:
+                print(f"Core router workers still alive: {','.join(alive)}", file=sys.stderr)
+            except Exception:
+                pass
             self._set_fatal(RouterFailure("ROUTER_CLOSE_TIMEOUT", "router workers did not stop"))
         if self.fatal_error is not None:
             raise self.fatal_error
@@ -372,6 +379,13 @@ class ConcurrentHostRouter:
         with self._lock:
             if self._fatal is None:
                 self._fatal = error
+                try:
+                    print(
+                        f"Core router failed: {getattr(error, 'code', 'ROUTER_FAILURE')}",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
             self._stop.set()
 
 

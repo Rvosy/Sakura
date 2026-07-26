@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO
 
+import pytest
+
 from app.core_host.protocol import encode_frame, read_frame
 from app.storage.chat_history import ChatHistoryStore
 
@@ -38,6 +40,24 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
         type(self).requests.append(body)
+        if type(self).outcome == "compatibility" and len(type(self).requests) == 1:
+            assert "response_format" in body
+            response = b'{"error":{"message":"response_format unsupported"}}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+            return
+        if type(self).outcome.startswith("http-"):
+            status = int(type(self).outcome.removeprefix("http-"))
+            response = b'{"error":{"message":"PRIVATE_PROVIDER_FAILURE"}}'
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+            return
         if type(self).outcome == "invalid-json":
             response = b"not-json"
             self.send_response(200)
@@ -46,18 +66,22 @@ class _ProviderHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
             return
-        content = json.dumps(
-            {
-                "segments": [
-                    {
-                        "ja": "おかえり。",
-                        "zh": "欢迎回来。",
-                        "tone": "中性",
-                        "portrait": "neutral",
-                    }
-                ]
-            },
-            ensure_ascii=False,
+        content = (
+            "{"
+            if type(self).outcome == "invalid-content"
+            else json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ja": "おかえり。",
+                            "zh": "欢迎回来。",
+                            "tone": "中性",
+                            "portrait": "neutral",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
         )
         response = json.dumps(
             {
@@ -168,6 +192,16 @@ def _read(process: subprocess.Popen[bytes], timeout: float = 10) -> dict[str, ob
     value = result.get_nowait()
     if isinstance(value, BaseException):
         raise value
+    if value is None:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        if process.poll() is not None and process.stderr is not None:
+            raise AssertionError(
+                f"Core Host exited {process.returncode}: "
+                + process.stderr.read().decode("utf-8", errors="replace")
+            )
     assert isinstance(value, dict)
     return value
 
@@ -398,7 +432,9 @@ def test_cancel_interrupts_blocked_provider_read_with_one_terminal(tmp_path: Pat
                 {"operationId": "chat-cancel"},
             ),
         )
+        cancel_started = time.monotonic()
         frames = [_read(process), _read(process), _read(process)]
+        assert time.monotonic() - cancel_started < 1.0
         names = [frame.get("name") for frame in frames]
         assert names.count("chat.cancelled") == 1
         assert "chat.completed" not in names
@@ -426,6 +462,260 @@ def test_cancel_interrupts_blocked_provider_read_with_one_terminal(tmp_path: Pat
         assert health["payload"]["status"] == "healthy"
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_cancel_interrupts_provider_retry_sleep(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("http-500")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-retry-cancel",
+                "chat.send",
+                {"message": "retry", "operationId": "chat-retry-cancel"},
+            ),
+        )
+        assert _read(process)["name"] == "chat.started"
+        deadline = time.monotonic() + 3
+        while not _ProviderHandler.requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(_ProviderHandler.requests) == 1
+        _send(
+            process,
+            _request(
+                "cancel-retry",
+                "chat.cancel",
+                {"operationId": "chat-retry-cancel"},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert sum(frame.get("name") == "chat.cancelled" for frame in frames) == 1
+        assert not any(
+            frame.get("name") in {"chat.completed", "chat.failed"} for frame in frames
+        )
+        assert len(_ProviderHandler.requests) == 1
+        _exchange(process, _request("shutdown", "system.shutdown", {}))
+        assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("invalid-content")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-invalid-content",
+                "chat.send",
+                {"message": "bad content", "operationId": "chat-invalid-content"},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert [frame.get("name") for frame in frames] == [
+            "chat.started",
+            "chat.failed",
+            "chat.send",
+        ]
+        assert frames[1]["payload"]["error"] == {
+            "code": "PROVIDER_RESPONSE_INVALID",
+            "message": "Provider response was invalid",
+            "retryable": False,
+            "details": {},
+        }
+        assert len(_ProviderHandler.requests) == 2
+        _exchange(process, _request("shutdown", "system.shutdown", {}))
+        assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable", "request_count"),
+    [(400, False, 1), (401, False, 1), (429, True, 3), (500, True, 3)],
+)
+def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
+    tmp_path: Path,
+    status: int,
+    retryable: bool,
+    request_count: int,
+) -> None:
+    server, provider_thread = _start_provider(f"http-{status}")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        operation_id = f"chat-http-{status}"
+        _send(
+            process,
+            _request(
+                operation_id,
+                "chat.send",
+                {"message": "status", "operationId": operation_id},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        terminal = frames[1]
+        assert terminal["name"] == "chat.failed"
+        assert terminal["payload"]["error"] == {
+            "code": "PROVIDER_REQUEST_FAILED",
+            "message": "Provider request failed",
+            "retryable": retryable,
+            "details": {},
+        }
+        assert "PRIVATE_PROVIDER_FAILURE" not in json.dumps(terminal)
+        assert len(_ProviderHandler.requests) == request_count
+        assert _exchange(process, _request("health", "system.health", {}))["ok"] is True
+        _exchange(process, _request("shutdown", "system.shutdown", {}))
+        assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_provider_parameter_compatibility_fallback_completes(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("compatibility")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-compatibility",
+                "chat.send",
+                {"message": "compatibility", "operationId": "chat-compatibility"},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert frames[1]["name"] == "chat.completed"
+        assert len(_ProviderHandler.requests) == 2
+        assert "response_format" in _ProviderHandler.requests[0]
+        assert "response_format" not in _ProviderHandler.requests[1]
+        _exchange(process, _request("shutdown", "system.shutdown", {}))
+        assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_connection_refused_is_retryable_and_does_not_change_readiness(tmp_path: Path) -> None:
+    probe = ThreadingHTTPServer(("127.0.0.1", 0), _ProviderHandler)
+    port = probe.server_address[1]
+    probe.server_close()
+    app_root = _configure_app_root(tmp_path, port)
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-connection-refused",
+                "chat.send",
+                {"message": "connect", "operationId": "chat-connection-refused"},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert frames[1]["name"] == "chat.failed"
+        assert frames[1]["payload"]["error"] == {
+            "code": "PROVIDER_REQUEST_FAILED",
+            "message": "Provider request failed",
+            "retryable": True,
+            "details": {},
+        }
+        snapshot = _exchange(process, _request("snapshot", "core.snapshot", {}))
+        assert snapshot["payload"]["readiness"] == "ready"
+        _exchange(process, _request("shutdown", "system.shutdown", {}))
+        assert process.wait(timeout=5) == 0
+    finally:
+        _stop(process)
+
+
+
+
+def test_shutdown_during_blocked_provider_read_drains_terminal_and_process(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("blocked-read")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-shutdown",
+                "chat.send",
+                {"message": "wait", "operationId": "chat-shutdown"},
+            ),
+        )
+        assert _read(process)["name"] == "chat.started"
+        deadline = time.monotonic() + 3
+        while not _ProviderHandler.requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert _ProviderHandler.requests
+
+        _send(process, _request("shutdown-active", "system.shutdown", {}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert sum(frame.get("name") == "chat.cancelled" for frame in frames) == 1
+        assert sum(
+            frame.get("kind") == "response" and frame.get("id") == "shutdown-active"
+            for frame in frames
+        ) == 1
+        assert sum(
+            frame.get("kind") == "response" and frame.get("id") == "chat-shutdown"
+            for frame in frames
+        ) == 1
+        assert process.wait(timeout=5) == 0
+        assert process.stdout is not None and process.stdout.read() == b""
+        assert process.stderr is not None
+        stderr = process.stderr.read().decode("utf-8", errors="replace")
+        assert "LOCAL_TEST_KEY" not in stderr
+        assert "PRIVATE_PROVIDER" not in stderr
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_eof_during_blocked_provider_read_drains_terminal_and_process(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("blocked-read")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-eof",
+                "chat.send",
+                {"message": "wait", "operationId": "chat-eof"},
+            ),
+        )
+        assert _read(process)["name"] == "chat.started"
+        deadline = time.monotonic() + 3
+        while not _ProviderHandler.requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert _ProviderHandler.requests
+        assert process.stdin is not None
+        process.stdin.close()
+
+        frames = [_read(process), _read(process)]
+        assert sum(frame.get("name") == "chat.cancelled" for frame in frames) == 1
+        assert sum(
+            frame.get("kind") == "response" and frame.get("id") == "chat-eof"
+            for frame in frames
+        ) == 1
+        assert process.wait(timeout=5) == 0
+        assert process.stdout is not None and process.stdout.read() == b""
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

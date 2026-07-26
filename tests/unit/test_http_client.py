@@ -93,3 +93,52 @@ def test_read_url_cancellable_returns_without_waiting_for_blocked_read() -> None
         )
 
     assert time.monotonic() - started < 1
+
+
+def test_cancel_does_not_wait_for_a_response_close_lock() -> None:
+    token = CancellationToken()
+    entered = threading.Event()
+    close_entered = threading.Event()
+    released = threading.Event()
+
+    class LockedResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self, _size=-1):  # type: ignore[no-untyped-def]
+            entered.set()
+            released.wait(5)
+            return b""
+
+        def close(self) -> None:
+            close_entered.set()
+            released.wait(5)
+
+    threading.Thread(target=lambda: (entered.wait(1), token.cancel()), daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(OperationCancelled):
+        http_client.read_url_cancellable(
+            lambda *_args, **_kwargs: LockedResponse(),
+            "https://example.test",
+            timeout=60,
+            cancel_checker=token.throw_if_cancelled,
+        )
+
+    assert time.monotonic() - started < 1
+    assert close_entered.wait(1)
+    released.set()
+    deadline = time.monotonic() + 1
+    while any(
+        thread.name == "sakura-http-close" and thread.is_alive()
+        for thread in threading.enumerate()
+    ) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not any(
+        thread.name == "sakura-http-close" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
