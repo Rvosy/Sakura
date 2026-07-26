@@ -48,14 +48,14 @@ Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段
 
 在停止当前 generation 并确认 reader/writer/dispatcher/fixture/pending/cancel registry、进程树和临时目录归零后，按逆序回退本 WP 提交：先回退 Python fixture/Router，再回退 Rust Gateway/Router/protocol 和 lifecycle 接线，最后恢复 WP-2-01 accepted 状态与文档。不得清理、恢复、截断或改写用户数据。
 
-## 稳定化/验收记录
+## 稳定化记录（2026-07-26）
 
 ```text
-状态：stabilizing / accepted（待候选验收）
-自动测试：待执行
-故障测试：待执行
+状态：stabilizing
+自动测试：Core Host Python 187 passed；locked Rust 177 passed/23 ignored；cargo fmt --check、git diff --check 通过
+故障测试：真实 Rust↔Python 窄 fixture 已验证 started/cancelled/response 顺序、cancel 小于 1 秒、health/shutdown 不排在 10 秒 sleep 后、重复取消唯一终态、旧 handle/generation 失效、关键 event 预留容量、五字段 active/settled Snapshot 与 revision 单调
 真实应用验收：不适用；本 WP 仅允许窄 Fake Core/fixture
-已知问题：当前 HEAD 尚无聊天边界实现；同一 SHA 三平台 workflow 证据未授权且不执行 push
+已知问题：build、frontend lifecycle、Windows acceptance 脚本语法与适用 lifecycle 候选验收尚待执行；同一 SHA 三平台 workflow 证据未授权且不执行 push
 回退步骤：见上文；保持 WP-2-01 accepted，不启动 WP-3-02
-关联提交：待实现与候选验收
+关联提交：157dcc11（feat(runtime): 建立受控聊天 Gateway 与取消边界）
 ```

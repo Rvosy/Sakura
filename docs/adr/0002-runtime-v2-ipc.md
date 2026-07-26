@@ -418,3 +418,16 @@ request identity、受控 deadline 和内部调度类别的注入权。Snapshot 
 token、streaming 或真实 Assistant/UI 接线。允许目录、故障矩阵、验收环境和回退命令见
 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md`。本激活不改变 ADR 当前技术验证状态；仍须 WP-2-02
 候选验收和后续 WP-3V-01 真实纵向验证后，才能按本 ADR 状态门禁更新。
+
+## WP-2-02 stabilizing 验证记录（2026-07-26）
+
+候选实现已建立 Rust 固定 `chat.send`/`chat.cancel` Gateway、opaque cancel handle、Rust-owned identity/
+deadline/调度类别、有界 terminal registry 与 generation 失效；Python Host 只增加 sleep/隔离文件读取
+fixture、即时 cancel 仲裁、terminal-before-response single-writer 确认和五字段完整 Snapshot。2.1 lifecycle
+继续返回既有 shape，2.2 Snapshot 才启用 WP-2-02 exact shape；未升级协议、未增加 sequence。
+
+本地候选前证据为 Core Host Python 187 passed、locked Rust 177 passed/23 ignored，并含真实
+Rust↔Python chat started/cancelled/response、cancel 小于 1 秒、active/settled Snapshot、revision 单调、
+旧 generation/handle 清理和关键 terminal event 预留容量。实现提交为 `157dcc11`。ADR 状态仍保持
+Phase 1C transport foundation 的 Technically Validated；完整候选验收与 WP-3V-01 尚未完成，不能提前
+更新为 Accepted。
