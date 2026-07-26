@@ -12,16 +12,26 @@
 计划提交：先测试/fixture，再真实 Python chat boundary 与 history 接线，再 Rust/真实 Core acceptance，最后独立稳定化与验收文档；每个提交均可单独回退
 ```
 
-## 实施进展（2026-07-26）
+## 稳定化候选记录（2026-07-26）
 
-- 已将生产 `run_host` 从隐式 WP-2-02 fixture 切换为 `RealChatBoundary`；fixture 仅能由测试显式注入。
-- 已接通 readiness 发布的单一 `AssistantSession`、角色级 recent history、严格 Provider/结构错误、
-  exact reply projector、operation cancel/close 和唯一终态仲裁。
-- 已增加 Windows 本地确定性 Provider subprocess 验收，覆盖 completed、坏 JSON failed、HTTP read
-  cancelled、history 顺序与 Core health；Rust Gateway 已在写前拒绝 fixture/transport/history 等调用方字段，
-  并校验 `segments`/`historyStatus` exact terminal shape。
-- 当前仍保持 `active`：尚未完成三平台同 SHA platform CI、扩展 fault matrix 与独立 stabilizing 审查，
-  不提前标记 accepted。
+```text
+状态：stabilizing 候选；正式 accepted 仍以本候选提交的 Windows/macOS/Linux 同 SHA CI 全绿为准
+自动测试：完整 Python 1717 passed、15 skipped；前端 22 passed；locked Rust 179 passed、23 ignored；Rust debug build、fmt、diff-check 全绿
+故障测试：Provider 400/401/429/500、连接失败、坏 JSON/坏结构、兼容回退、queued/running/retry-sleep/HTTP-read cancel、shutdown/EOF、history rotate 全覆盖
+真实应用验收：Windows debug Shell + bundled Python Core lifecycle harness 通过；受保护 characters/data/runtime 内容摘要前后不变
+已知问题：本机 npm 启动器缺少 npm-cli.js，已执行 package.json 中完全等价的 node --test；Windows 无 symlink privilege 项明确 skip，三平台 CI 仍实际执行平台门禁
+回退步骤：先停止并确认 operation、Router、Provider、Core/后代和 IPC 资源归零，再按 7c691962、116e64f7、452343e9 逆序 revert；history 不删除、不截断
+关联提交：452343e9、116e64f7、7402b9d7、7c691962
+```
+
+- 生产 `run_host` 已从隐式 WP-2-02 fixture 切换为 `RealChatBoundary`；fixture 仅能由测试显式注入。
+- readiness 发布的单一 `AssistantSession`、角色级 recent history、严格 Provider/结构错误、exact reply
+  projector、operation cancel/close 和唯一终态仲裁已经接通。
+- Windows 本地确定性 Provider subprocess 与 Rust Gateway → 真实 Python Core → local Provider → history
+  落盘纵向验收均已通过；Gateway 在写前拒绝 fixture/transport/history/private 字段，并校验
+  `segments`/`historyStatus` exact terminal shape。
+- HTTP response close-lock 取消阻塞和 Router shutdown/EOF 终态排空竞态已修复；故障矩阵与本地资源
+  回收门禁全绿。候选保持 `stabilizing`，等待同一提交的正式三平台 platform workflow。
 
 本 WP 不创建第二套 Assistant application、worker pool、stdout writer 或生命周期根。旧迁移提交
 `190dfafd24f5c5226bff8b4347837b6e45d9a331` 仅允许逐文件取证；禁止 cherry-pick、整包复制或恢复
@@ -95,17 +105,19 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
   `app/core_host/real_chat.py`（新增）；仅确有边界复用需要时修改 `app/core_host/router.py`、
   `app/core_host/protocol.py`、`app/core_host/chat_fixture.py`。
 - 既有业务与存储：`app/core/chat_pipeline.py`、`app/agent/runtime.py`、`app/core/cancellation.py`、
-  `app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、
+  `app/core/http_client.py`、`app/core/runtime_log.py`、`app/llm/api_client.py`、`app/storage/chat_history.py`、
   `app/storage/paths.py`；只允许取消贯穿、纯投影、history 绑定和已证明的 headless import/stdout
   blocker，不重写工具循环或 Provider 协议。`runtime_log` 仅允许增加 operation-scoped sink suppression，
-  防止 legacy console/file sink 污染 Core stdout 或把消息写到错误的应用根。
+  防止 legacy console/file sink 污染 Core stdout 或把消息写到错误的应用根；`http_client` 仅允许修正
+  cancel 时关闭活动响应的阻塞行为，不改变 Provider 请求协议。
 - Rust Gateway/验收：`desktop/src-tauri/src/core_host_gateway.rs`、
   `desktop/src-tauri/src/core_host_router.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、
   `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/tests/**`；只扩展真实 chat consumer
   acceptance，不增加 UI command 或通用 Operation。
 - 测试与 fixture：`tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、
   `tests/integration/test_chat_pipeline.py`、`tests/unit/test_agent_runtime.py`、
-  `tests/unit/test_hardening_regressions.py`、`tests/fixtures/runtime_v2/wp_3_02/**`、
+  `tests/unit/test_hardening_regressions.py`、`tests/integration/test_wp_1p_05a_macos_corrective.py`
+  （仅校正全量回归中已漂移的平台等价断言与无权限 skip）、`tests/fixtures/runtime_v2/wp_3_02/**`、
   `tests/unit/test_runtime_v2_platform_workflow.py`。
 - 文档与 CI：本文件、Work Package 总计划、ADR-0002、
   `.github/workflows/runtime-v2-platform-foundation.yml`；workflow 仅可接入新增确定性门禁，不恢复功能

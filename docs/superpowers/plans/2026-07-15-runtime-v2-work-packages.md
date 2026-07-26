@@ -84,7 +84,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
-| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | active |
+| WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | stabilizing |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -123,8 +123,9 @@ accepted；其设计、实施计划、允许列表、接受证据和回退见对
 和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；WP-2-02
 已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
 lifecycle 候选验收并 accepted；WP-3-02 已按
-`docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成边界取证并激活，是当前唯一
-`active/stabilizing` Work Package，其余后续项保持 `planned`。
+`docs/runtime-v2/WP-3-02-headless-real-chat-core.md` 完成实现、本地完整回归和真实 Windows
+Shell/Core 候选验收，进入 `stabilizing`，是当前唯一 `active/stabilizing` Work Package；其余后续项
+保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1947,6 +1948,18 @@ CI：6c36a1a 的 PR platform run 30190007246 捕获三平台临时根 canonical/
 明确禁止：desktop/frontend、聊天 UI、TTS、Tools/确认、Memory、MCP、插件、截图/视觉、主动事件、streaming、通用 Operation/resource token、第二 Core 或第二生命周期根
 数据政策：history 是本 WP 允许的 append-only 产品写入；破坏性故障仅使用隔离临时根，回退不得删除或改写用户 history
 回退：停止并确认当前 generation/operation/Provider/Router/进程树/IPC 资源归零，逆序 revert WP-3-02，恢复 WP-2-02 fixture-only 与 WP-3-01 readiness
+```
+
+稳定化候选记录（2026-07-26）：
+
+```text
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
+自动测试：Python 全量 1717 passed、15 skipped；前端 22 passed；locked Rust 179 passed、23 ignored；Rust debug build、fmt、diff-check 通过
+故障测试：Provider 状态/连接/格式/兼容回退、取消竞态、history、shutdown/EOF 与唯一终态矩阵通过
+真实应用验收：Windows Shell + bundled Python Core lifecycle harness 通过，受保护 characters/data/runtime 摘要不变
+已知问题：无可复现 P0/P1；等待本候选同 SHA Windows/macOS/Linux platform workflow
+回退步骤：停止并确认 generation/operation/Provider/Router/进程树/IPC 资源归零，按 7c691962、116e64f7、452343e9 逆序 revert；不删除或改写 history
+关联提交：452343e9、116e64f7、7402b9d7、7c691962
 ```
 
 允许能力：

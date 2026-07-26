@@ -87,8 +87,13 @@ def test_stable_symlink_snapshot_retries_an_atomic_replacement(
 ) -> None:
     link = tmp_path / "wrapper-link"
     replacement = tmp_path / "wrapper-link.replacement"
-    link.symlink_to("old-target")
-    replacement.symlink_to("new-target")
+    try:
+        link.symlink_to("old-target")
+        replacement.symlink_to("new-target")
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires Developer Mode or elevated privilege")
+        raise
     original_readlink = os.readlink
     read_attempts = 0
 
@@ -533,8 +538,10 @@ def test_tauri_config_enables_required_macos_transparent_window_support() -> Non
     assert config["app"]["windows"][0]["transparent"] is True
     assert config["app"]["windows"][0]["visible"] is True
     assert 'tauri = { version = "=2.11.3", features = ["macos-private-api"] }' in cargo_toml
-    assert 'body[data-shell-state="pet-geometry-loading"]' in styles
-    assert "opacity: 0;" in styles
+    assert "body {\n  opacity: 1;\n}" in styles
+    assert 'data-shell-state="pet-geometry-loading"' in (
+        ROOT / "desktop" / "frontend" / "index.html"
+    ).read_text("utf-8")
 
 
 def test_deferred_drag_does_not_depend_on_webview_event_registration() -> None:
@@ -593,5 +600,7 @@ def test_deferred_drag_session_is_reserved_before_native_drag_starts() -> None:
 def test_shell_close_releases_the_process_lifecycle_not_just_its_window() -> None:
     source = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text("utf-8")
 
-    assert "fn close_pet_window(window: WebviewWindow, app_handle: tauri::AppHandle)" in source
-    assert "app_handle.exit(0);" in source
+    close_command = source[source.index("fn close_pet_window(") : source.index("fn development_runtime_request(")]
+    assert "lifecycle: State<'_, ShellLifecycleState>" in close_command
+    assert close_command.index("handle.request_shutdown()") < close_command.index("window.close()")
+    assert close_command.index("window.close()") < close_command.index("app_handle.exit(0)")
