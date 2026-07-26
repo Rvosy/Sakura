@@ -18,6 +18,8 @@ on:
       - "tests/integration/test_chat_pipeline.py"
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
+      - "tests/unit/test_hardening_regressions.py"
+      - "tests/unit/test_http_client.py"
       - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "tests/unit/test_runtime_v2_archive.py"
@@ -40,6 +42,8 @@ on:
       - "tests/integration/test_chat_pipeline.py"
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
+      - "tests/unit/test_hardening_regressions.py"
+      - "tests/unit/test_http_client.py"
       - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "tests/unit/test_runtime_v2_archive.py"
@@ -226,7 +230,12 @@ jobs:
         env:
           PYTHONIOENCODING: 'utf-8'
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-        run: PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/unit/test_core_host_*.py tests/integration/test_core_host_*.py
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python -m pytest
+          tests/unit/test_core_host_*.py
+          tests/integration/test_core_host_*.py
+          tests/unit/test_hardening_regressions.py
+          tests/unit/test_http_client.py
 
       - name: Stage the frozen packaged Runtime and Core resource layout
         timeout-minutes: 2

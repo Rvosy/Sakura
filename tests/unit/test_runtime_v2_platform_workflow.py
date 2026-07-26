@@ -18,12 +18,15 @@ REQUIRED_PLATFORM_TRIGGER_PATHS = {
     "tests/integration/test_chat_pipeline.py",
     "tests/unit/test_agent_runtime.py",
     "tests/unit/test_core_host_*.py",
+    "tests/unit/test_hardening_regressions.py",
+    "tests/unit/test_http_client.py",
     "tests/unit/test_runtime_v2_platform_workflow.py",
 }
 
 CORE_HOST_PYTEST_COMMAND = (
     "PYTHONDONTWRITEBYTECODE=1 python -m pytest "
-    "tests/unit/test_core_host_*.py tests/integration/test_core_host_*.py"
+    "tests/unit/test_core_host_*.py tests/integration/test_core_host_*.py "
+    "tests/unit/test_hardening_regressions.py tests/unit/test_http_client.py"
 )
 
 
