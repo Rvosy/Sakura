@@ -196,6 +196,14 @@ def _capture_run_host(
     failures: list[BaseException],
 ) -> None:
     try:
-        run_host(input_stream, output_stream, HostConfig(ROOT, GENERATION_ID, CREDENTIAL))
+        run_host(
+            input_stream,
+            output_stream,
+            HostConfig(ROOT, GENERATION_ID, CREDENTIAL),
+            chat_boundary_factory=lambda _dispatcher: ChatFixtureBoundary(
+                GENERATION_ID,
+                CREDENTIAL,
+            ),
+        )
     except BaseException as error:  # noqa: BLE001
         failures.append(error)
