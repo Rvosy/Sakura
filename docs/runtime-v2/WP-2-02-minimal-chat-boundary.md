@@ -59,3 +59,17 @@ Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段
 回退步骤：见上文；保持 WP-2-01 accepted，不启动 WP-3-02
 关联提交：157dcc11（feat(runtime): 建立受控聊天 Gateway 与取消边界）
 ```
+
+## 验收记录（2026-07-26）
+
+```text
+状态：accepted
+自动测试：Core Host/Python 定向 190 passed；locked Rust 177 passed/23 ignored；frontend 22 passed；cargo build、cargo fmt --check、git diff --check 和 workflow 契约 4 passed
+故障测试：send/cancel 唯一终态、terminal-before-response、旧 handle/generation、队列压力、五字段 Snapshot、health/shutdown 抢占继续全绿；旧 generation/credential 在 Rust Router 写前 fail-closed 后，健康 Core 正常 shutdown 且完整资源归零
+真实应用验收：Windows Shell + bundled Python Core 的 normal、crash、reacquire、共享锁冲突、readiness 2.1 兼容矩阵、2.2 五字段 Snapshot 与 native fault matrix 在 115.9 秒内通过；characters/data/runtime 前后内容摘要一致
+CI 纠正：原候选 6c36a1a 的 PR platform run 30190007246 在三平台均暴露非 canonical 临时根与 Unix 路径分隔夹具问题；96787830 修复跨平台夹具及 Router/Snapshot 迁移后的过时验收断言，17d296a6 将功能分支平台门禁收敛为单一 pull_request 运行
+已知问题：96787830/17d296a6 尚待推送后的同 HEAD Windows/macOS/Linux PR workflow 复验；它们不改变聊天产品边界。仅可复现且可归因的 P0/P1 或退出条件回归重新打开 WP-2-02
+范围：未接入真实 Assistant 聊天、Provider 网络、历史、UI、streaming、通用 Operation、三级 priority、resource token 或第二生命周期根
+回退步骤：先停止当前 generation 并确认 reader/writer/dispatcher/fixture/pending/cancel registry、完整进程树和临时目录归零；按 96787830、157dcc11、f8c9cd22 逆序回退 WP-2-02，CI 去重 17d296a6 可独立回退；不触碰用户数据
+关联提交：f8c9cd22、157dcc11、6c36a1a、96787830、17d296a6
+```

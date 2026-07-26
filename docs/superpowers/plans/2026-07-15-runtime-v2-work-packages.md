@@ -83,7 +83,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
 | WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
-| WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | stabilizing |
+| WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | planned |
 | WP-3-03 | 使用 Fake Core 的桌宠聊天表现层 | WP-3-02 | planned |
 | WP-3-04 | 真实聊天与桌宠 UI 端到端接通 | WP-3-03 | planned |
@@ -121,8 +121,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 accepted；其设计、实施计划、允许列表、接受证据和回退见对应独立文档及第 9 节记录。WP-1D-01
 已于 2026-07-26 accepted，随后完成的窗口交互/可见性纠正记录见第 10 节。WP-2-01 已按第 11 节
 和 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md` 完成实现、稳定化和候选验收；WP-2-02
-已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 补齐允许目录、验收环境、故障矩阵和回退命令，
-生产实现与定向回归已完成，当前进入 `stabilizing` 候选验收；其余后续项保持 `planned`。
+已按 `docs/runtime-v2/WP-2-02-minimal-chat-boundary.md` 完成实现、跨平台 CI 纠正、真实 Windows
+lifecycle 候选验收并 accepted；当前下一启动点为 WP-3-02，其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -1914,6 +1914,20 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 - 队列压力下 chat 终态、cancel response、health 和 shutdown 不丢失。
 
 独立回退：禁用聊天 Gateway/取消/Snapshot 扩展，保留 WP-2-01 Router 和只读 lifecycle 状态。
+
+验收记录（2026-07-26）：
+
+```text
+状态：accepted
+关联提交：f8c9cd22、157dcc11、6c36a1a、96787830、17d296a6
+自动测试：Core Host/Python 定向 190 passed；locked Rust 177 passed/23 ignored；frontend 22 passed；build、fmt、diff-check 和 workflow 契约通过
+故障测试：聊天取消/完成/失败竞态、唯一终态、terminal 顺序、generation/handle 失效、队列压力和五字段 Snapshot 全绿；Rust Router 写前拒绝旧 generation/credential 后健康 Core 可正常关闭
+真实应用验收：Windows Shell + bundled Core normal/crash/reacquire、锁冲突、readiness 2.1 兼容矩阵、2.2 Snapshot 和 native fault matrix 115.9 秒通过；characters/data/runtime 摘要零变化
+CI：6c36a1a 的 PR platform run 30190007246 捕获三平台临时根 canonical/分隔夹具问题；96787830 修复，17d296a6 取消功能分支 push 与 PR 的重复平台运行；新 HEAD 三平台结果作为推送后监控
+已知风险：新 HEAD 尚无同 SHA 三平台结果；若出现可归因 P0/P1 或退出条件回归则重新打开本 WP，不以本地 Windows 结果冒充其他平台
+非目标：未接真实 Assistant 聊天、历史、UI、streaming、Tools、Memory、MCP、插件、TTS 或通用 Operation
+回退：停止并清空当前 generation 全部 Router/Gateway/进程资源后，按 96787830、157dcc11、f8c9cd22 逆序 revert；17d296a6 独立回退；不触碰用户数据
+```
 
 ## 12. Phase 3：基础聊天垂直链
 

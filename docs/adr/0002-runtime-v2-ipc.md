@@ -431,3 +431,22 @@ Rust↔Python chat started/cancelled/response、cancel 小于 1 秒、active/set
 旧 generation/handle 清理和关键 terminal event 预留容量。实现提交为 `157dcc11`。ADR 状态仍保持
 Phase 1C transport foundation 的 Technically Validated；完整候选验收与 WP-3V-01 尚未完成，不能提前
 更新为 Accepted。
+
+## WP-2-02 验收记录（2026-07-26）
+
+WP-2-02 已完成固定 `chat.send`/`chat.cancel` Gateway、opaque handle、唯一终态、generation 清理和
+五字段 Snapshot 的本地候选验收。Core Host/Python 定向 190 passed、locked Rust 177 passed/23 ignored、
+frontend 22 passed；Windows Shell + bundled Core 的 normal/crash/reacquire、共享锁、readiness 2.1
+兼容矩阵、2.2 Snapshot 与 native fault matrix 在 115.9 秒内通过，受保护的 characters/data/runtime
+前后摘要一致。
+
+候选 `6c36a1a` 的 PR platform run `30190007246` 在 Windows/macOS/Linux 同时捕获 RuntimeLocator 测试
+临时根非 canonical 与 Unix 分隔负例问题；`96787830` 已把夹具冻结为 canonical 根，并纠正 Router
+写前拒绝旧 generation/credential 后仍沿用旧 transport 预期的验收债务。`17d296a6` 让功能分支只经
+pull_request 执行一次平台矩阵，main/dev 仍保留 push 门禁。新 HEAD 三平台结果在推送后跟踪；可归因
+P0/P1 或退出条件回归会重新打开 WP-2-02。
+
+这使 WP-2-02 本身进入 accepted，但 ADR 顶层状态仍保持
+`Technically Validated for Phase 1C transport foundation`：只有 WP-3V-01 使用真实 Sakura Assistant
+完成聊天、取消、历史、Core 强杀、新 generation 水合和资源归零的组合纵向验证后，ADR 才能更新为
+Accepted；通用 Operation、resource token、三级 priority 和 component model 仍不是当前前置。
