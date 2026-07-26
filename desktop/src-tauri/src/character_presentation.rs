@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::Read,
+    io::{Cursor, Read},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -48,6 +48,19 @@ pub struct PortraitMetadata {
     pub width: u32,
     pub height: u32,
     pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortraitAlphaMask {
+    pub width: u32,
+    pub height: u32,
+    pub alpha: Vec<u8>,
+}
+
+impl PortraitAlphaMask {
+    pub fn source_size(&self) -> [u32; 2] {
+        [self.width, self.height]
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -162,11 +175,11 @@ impl CharacterPresentationState {
         })
     }
 
-    pub fn active_portrait_metadata(
+    pub fn active_portrait_alpha_mask(
         &self,
         portrait_key: &str,
         current_generation: &str,
-    ) -> Result<PortraitMetadata, String> {
+    ) -> Result<PortraitAlphaMask, String> {
         let active = self
             .active
             .lock()
@@ -174,11 +187,26 @@ impl CharacterPresentationState {
             .clone()
             .ok_or_else(|| "CHARACTER_RESOURCE_NOT_READY".to_string())?;
         active.presentation.validate(current_generation)?;
-        active
+        let resource_id = active
+            .presentation
+            .portrait_resource_ids
+            .get(portrait_key)
+            .ok_or_else(|| "CHARACTER_RESOURCE_KEY_UNKNOWN".to_string())?;
+        let expected = active
             .portrait_metadata
             .get(portrait_key)
             .copied()
-            .ok_or_else(|| "CHARACTER_RESOURCE_KEY_UNKNOWN".to_string())
+            .ok_or_else(|| "CHARACTER_RESOURCE_CHANGED".to_string())?;
+        let (path, resolved) =
+            resolve_portrait_path(&self.app_root, &active.presentation, resource_id)?;
+        if resolved != expected {
+            return Err("CHARACTER_RESOURCE_CHANGED".to_string());
+        }
+        let bytes = fs::read(path).map_err(|_| "CHARACTER_RESOURCE_READ_FAILED".to_string())?;
+        if png_metadata(&bytes, expected.byte_length)? != expected {
+            return Err("CHARACTER_RESOURCE_CHANGED".to_string());
+        }
+        decode_png_alpha_mask(&bytes, expected)
     }
 }
 
@@ -424,6 +452,57 @@ fn png_metadata(bytes: &[u8], byte_length: u64) -> Result<PortraitMetadata, Stri
     })
 }
 
+fn decode_png_alpha_mask(
+    bytes: &[u8],
+    expected: PortraitMetadata,
+) -> Result<PortraitAlphaMask, String> {
+    const MAX_DECODE_BYTES: usize = 192 * 1024 * 1024;
+    let mut decoder = png::Decoder::new_with_limits(
+        Cursor::new(bytes),
+        png::Limits {
+            bytes: MAX_DECODE_BYTES,
+        },
+    );
+    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+    let output_size = reader
+        .output_buffer_size()
+        .filter(|size| *size <= MAX_DECODE_BYTES)
+        .ok_or_else(|| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+    let mut decoded = vec![0_u8; output_size];
+    let info = reader
+        .next_frame(&mut decoded)
+        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+    if info.width != expected.width
+        || info.height != expected.height
+        || info.bit_depth != png::BitDepth::Eight
+        || !matches!(
+            info.color_type,
+            png::ColorType::GrayscaleAlpha | png::ColorType::Rgba
+        )
+    {
+        return Err("CHARACTER_RESOURCE_DECODE_REJECTED".to_string());
+    }
+    let channels = info.color_type.samples();
+    let pixel_count = usize::try_from(u64::from(info.width) * u64::from(info.height))
+        .map_err(|_| "CHARACTER_RESOURCE_DECODE_REJECTED".to_string())?;
+    let frame = &decoded[..info.buffer_size()];
+    if frame.len() != pixel_count.saturating_mul(channels) {
+        return Err("CHARACTER_RESOURCE_DECODE_REJECTED".to_string());
+    }
+    let alpha = frame
+        .chunks_exact(channels)
+        .map(|pixel| pixel[channels - 1])
+        .collect();
+    Ok(PortraitAlphaMask {
+        width: info.width,
+        height: info.height,
+        alpha,
+    })
+}
+
 #[cfg(any(test, debug_assertions))]
 pub fn presentation_from_manifest_for_acceptance(
     app_root: &Path,
@@ -556,6 +635,36 @@ mod tests {
         bytes
     }
 
+    fn rgba_png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("PNG header should encode");
+            writer
+                .write_image_data(pixels)
+                .expect("PNG pixels should encode");
+        }
+        bytes
+    }
+
+    #[test]
+    fn png_alpha_mask_preserves_fully_transparent_pixels() {
+        let pixels = [
+            255, 0, 0, 0, 0, 255, 0, 1, 0, 0, 255, 127, 255, 255, 255, 255,
+        ];
+        let bytes = rgba_png(2, 2, &pixels);
+        let metadata = PortraitMetadata {
+            width: 2,
+            height: 2,
+            byte_length: bytes.len() as u64,
+        };
+        let mask = decode_png_alpha_mask(&bytes, metadata).expect("RGBA PNG should decode");
+        assert_eq!(mask.source_size(), [2, 2]);
+        assert_eq!(mask.alpha, vec![0, 1, 127, 255]);
+    }
+
     fn write_manifest(root: &FixtureRoot, default_path: &str) {
         let manifest = serde_json::json!({
             "id": "Fixture",
@@ -608,6 +717,11 @@ mod tests {
         );
         let sakura_default = sakura_frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
         assert!(sakura_default.width > sakura_default.height);
+        let sakura_mask = state
+            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "gen-s")
+            .expect("Sakura alpha mask should decode");
+        assert!(sakura_mask.alpha.iter().any(|alpha| *alpha == 0));
+        assert!(sakura_mask.alpha.iter().any(|alpha| *alpha > 0));
         for resource_id in sakura.portrait_resource_ids.values() {
             let resource = state
                 .load_active_resource(&hex_text("gen-s"), resource_id, "gen-s")
@@ -623,6 +737,11 @@ mod tests {
         assert_eq!(navi_frontend.presentation.display_name, "N.A.V.I.");
         let navi_default = navi_frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
         assert!(navi_default.width < navi_default.height);
+        let navi_mask = state
+            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "gen-n")
+            .expect("N.A.V.I. alpha mask should decode");
+        assert!(navi_mask.alpha.iter().any(|alpha| *alpha == 0));
+        assert!(navi_mask.alpha.iter().any(|alpha| *alpha > 0));
         assert_ne!(
             (sakura_default.width, sakura_default.height),
             (navi_default.width, navi_default.height)

@@ -68,7 +68,7 @@ struct WindowGeometrySession {
     state: Option<PresentationState>,
     applied_revision: u64,
     deferred_drag_pending: bool,
-    portrait_source_size: Option<[u32; 2]>,
+    portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_hit_generation: Option<String>,
     portrait_hit_revision: u64,
 }
@@ -202,7 +202,7 @@ fn apply_pet_layout(
         &window,
         &contract,
         &application,
-        session.portrait_source_size,
+        session.portrait_alpha_mask.as_ref(),
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
@@ -217,17 +217,18 @@ fn apply_native_interaction_region(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
-    portrait_source_size: Option<[u32; 2]>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let logical = window_interaction::logical_hit_regions_with_portrait_size(
         contract,
         application.state,
-        portrait_source_size,
+        portrait_alpha_mask.map(character_presentation::PortraitAlphaMask::source_size),
     )?;
-    let physical = window_interaction::scale_hit_regions(
+    let mut physical = window_interaction::scale_hit_regions(
         &logical,
         application.scale_factor * application.content_scale,
     )?;
+    physical.portrait_alpha_mask = portrait_alpha_mask.cloned();
     let backend = NativeWindowInteractionBackend;
     if let Err(error) = backend.apply_hit_regions(window, &physical) {
         return match backend.restore_full_hit_region(window) {
@@ -246,7 +247,7 @@ fn apply_native_pet_surface(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
-    portrait_source_size: Option<[u32; 2]>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let backend = NativeWindowInteractionBackend;
     backend
@@ -256,7 +257,7 @@ fn apply_native_pet_surface(
         .apply_bounds(window, &application.physical_placement)
         .map_err(|error| error.to_string())?;
     let hit_regions =
-        apply_native_interaction_region(window, contract, application, portrait_source_size)?;
+        apply_native_interaction_region(window, contract, application, portrait_alpha_mask)?;
     window
         .show()
         .map_err(|error| format!("failed to show pet window: {error}"))?;
@@ -300,7 +301,7 @@ fn commit_dragged_window_position(
         &window,
         &contract,
         &application,
-        session.portrait_source_size,
+        session.portrait_alpha_mask.as_ref(),
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     Ok(PetLayoutApplication {
@@ -394,7 +395,9 @@ fn show_pet_context_menu(
     let portrait_source_size = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?
-        .portrait_source_size;
+        .portrait_alpha_mask
+        .as_ref()
+        .map(character_presentation::PortraitAlphaMask::source_size);
     let regions = window_interaction::logical_hit_regions_with_portrait_size(
         &layout_contract()?,
         PresentationState::Product,
@@ -525,8 +528,7 @@ fn activate_portrait_hit_test(
         .current_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let metadata = resources.active_portrait_metadata(&portrait_key, &generation_id)?;
-    let source_size = [metadata.width, metadata.height];
+    let alpha_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
 
     let mut geometry = geometry
         .lock()
@@ -548,8 +550,8 @@ fn activate_portrait_hit_test(
         &monitor,
         geometry.portrait_anchor,
     )?;
-    apply_native_interaction_region(&window, &contract, &application, Some(source_size))?;
-    geometry.portrait_source_size = Some(source_size);
+    apply_native_interaction_region(&window, &contract, &application, Some(&alpha_mask))?;
+    geometry.portrait_alpha_mask = Some(alpha_mask);
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_revision = revision;
     Ok(())

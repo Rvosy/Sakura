@@ -131,4 +131,7 @@ test("portrait click-through is tightened after the decoded contain size is know
   assert.match(nativeMain, /fn activate_portrait_hit_test/);
   assert.match(nativeInteraction, /logical_hit_regions_with_portrait_size/);
   assert.match(nativeInteraction, /contained_portrait_rect/);
+  assert.match(nativeMain, /active_portrait_alpha_mask/);
+  assert.match(nativeInteraction, /alpha_hit_rectangles/);
+  assert.match(nativeInteraction, /portrait_alpha_mask/);
 });

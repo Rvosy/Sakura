@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
-use crate::window_geometry::{LayoutContract, PresentationState};
+use crate::{
+    character_presentation::PortraitAlphaMask,
+    window_geometry::{LayoutContract, PresentationState},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDragCompletion {
@@ -148,6 +153,8 @@ pub struct PhysicalHitRegions {
     pub interactive: Vec<PhysicalHitRect>,
     pub drag: Vec<PhysicalHitRect>,
     pub neutral: Vec<PhysicalHitRect>,
+    #[serde(skip)]
+    pub portrait_alpha_mask: Option<PortraitAlphaMask>,
 }
 
 #[cfg(test)]
@@ -184,6 +191,7 @@ const BUBBLE_CORNER_RADIUS: u32 = 20;
 const INPUT_CORNER_RADIUS: u32 = 26;
 const CONTROLS_CORNER_RADIUS: u32 = 15;
 
+#[cfg(test)]
 pub fn logical_hit_regions(
     contract: &LayoutContract,
     state: PresentationState,
@@ -372,6 +380,136 @@ pub fn scale_hit_regions(
         interactive: scale_all(&model.interactive)?,
         drag: scale_all(&model.drag)?,
         neutral: scale_all(&model.neutral)?,
+        portrait_alpha_mask: None,
+    })
+}
+
+const MAX_ALPHA_REGION_RECTS: usize = 4_096;
+
+fn alpha_hit_rectangles(
+    mask: &PortraitAlphaMask,
+    target: PhysicalHitRect,
+) -> Result<Vec<PhysicalHitRect>, String> {
+    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
+        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+    if mask.width == 0
+        || mask.height == 0
+        || mask.alpha.len() != expected_len
+        || target.width == 0
+        || target.height == 0
+    {
+        return Err("portrait alpha mask is invalid".to_string());
+    }
+
+    let mut rectangles: Vec<PhysicalHitRect> = Vec::new();
+    let mut previous: HashMap<(i32, u32), usize> = HashMap::new();
+    for target_y in 0..target.height {
+        let source_top = u64::from(target_y) * u64::from(mask.height) / u64::from(target.height);
+        let source_bottom =
+            ((u64::from(target_y + 1) * u64::from(mask.height) + u64::from(target.height) - 1)
+                / u64::from(target.height))
+            .max(source_top + 1)
+            .min(u64::from(mask.height));
+        let mut runs = Vec::new();
+        let mut run_start = None;
+        for target_x in 0..target.width {
+            let source_left = u64::from(target_x) * u64::from(mask.width) / u64::from(target.width);
+            let source_right =
+                ((u64::from(target_x + 1) * u64::from(mask.width) + u64::from(target.width) - 1)
+                    / u64::from(target.width))
+                .max(source_left + 1)
+                .min(u64::from(mask.width));
+            let visible = (source_top..source_bottom).any(|source_y| {
+                (source_left..source_right).any(|source_x| {
+                    let index = source_y * u64::from(mask.width) + source_x;
+                    mask.alpha[index as usize] > 0
+                })
+            });
+            match (run_start, visible) {
+                (None, true) => run_start = Some(target_x),
+                (Some(start), false) => {
+                    runs.push((start, target_x - start));
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = run_start {
+            runs.push((start, target.width - start));
+        }
+
+        let row_y = target
+            .y
+            .checked_add(i32::try_from(target_y).map_err(|_| "portrait alpha row overflow")?)
+            .ok_or_else(|| "portrait alpha row overflow".to_string())?;
+        let mut current = HashMap::new();
+        for (run_x, run_width) in runs {
+            let x = target
+                .x
+                .checked_add(i32::try_from(run_x).map_err(|_| "portrait alpha run overflow")?)
+                .ok_or_else(|| "portrait alpha run overflow".to_string())?;
+            let key = (x, run_width);
+            let index = if let Some(index) = previous.get(&key).copied() {
+                rectangles[index].height = rectangles[index].height.saturating_add(1);
+                index
+            } else {
+                rectangles.push(PhysicalHitRect {
+                    x,
+                    y: row_y,
+                    width: run_width,
+                    height: 1,
+                    corner_radius: 0,
+                });
+                rectangles.len() - 1
+            };
+            current.insert(key, index);
+        }
+        previous = current;
+        if rectangles.len() > MAX_ALPHA_REGION_RECTS {
+            return Ok(alpha_bounding_rectangle(mask, target).into_iter().collect());
+        }
+    }
+    Ok(rectangles)
+}
+
+fn alpha_bounding_rectangle(
+    mask: &PortraitAlphaMask,
+    target: PhysicalHitRect,
+) -> Option<PhysicalHitRect> {
+    let mut min_x = mask.width;
+    let mut min_y = mask.height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut visible = false;
+    for (index, alpha) in mask.alpha.iter().copied().enumerate() {
+        if alpha == 0 {
+            continue;
+        }
+        let source_x = u32::try_from(index % mask.width as usize).ok()?;
+        let source_y = u32::try_from(index / mask.width as usize).ok()?;
+        min_x = min_x.min(source_x);
+        min_y = min_y.min(source_y);
+        max_x = max_x.max(source_x);
+        max_y = max_y.max(source_y);
+        visible = true;
+    }
+    if !visible {
+        return None;
+    }
+    let left = u64::from(min_x) * u64::from(target.width) / u64::from(mask.width);
+    let top = u64::from(min_y) * u64::from(target.height) / u64::from(mask.height);
+    let right = ((u64::from(max_x + 1) * u64::from(target.width) + u64::from(mask.width) - 1)
+        / u64::from(mask.width))
+    .min(u64::from(target.width));
+    let bottom = ((u64::from(max_y + 1) * u64::from(target.height) + u64::from(mask.height) - 1)
+        / u64::from(mask.height))
+    .min(u64::from(target.height));
+    Some(PhysicalHitRect {
+        x: target.x.checked_add(i32::try_from(left).ok()?)?,
+        y: target.y.checked_add(i32::try_from(top).ok()?)?,
+        width: u32::try_from(right - left).ok()?,
+        height: u32::try_from(bottom - top).ok()?,
+        corner_radius: 0,
     })
 }
 
@@ -392,17 +530,28 @@ pub fn apply_native_hit_regions(
         .inner_size()
         .map_err(|error| format!("failed to read native pet window size: {error}"))?;
     let envelope = [inner_size.width, inner_size.height];
+    let mut native_rectangles = model.interactive.clone();
+    if let Some(mask) = model.portrait_alpha_mask.as_ref() {
+        let portrait = model
+            .drag
+            .first()
+            .copied()
+            .ok_or_else(|| "portrait hit region is unavailable".to_string())?;
+        native_rectangles.extend(alpha_hit_rectangles(mask, portrait)?);
+        native_rectangles.extend(model.drag.iter().skip(1).copied());
+    } else {
+        native_rectangles.extend(model.drag.iter().copied());
+    }
+    native_rectangles.extend(model.neutral.iter().copied());
+    let native_rectangles = native_rectangles
+        .into_iter()
+        .map(|rect| expand_rounded_clip_for_antialiasing(rect, model.scale, envelope))
+        .collect::<Result<Vec<_>, _>>()?;
     let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
     if combined.is_invalid() {
         return Err("failed to create native hit region".to_string());
     }
-    for rect in model
-        .interactive
-        .iter()
-        .chain(&model.drag)
-        .chain(&model.neutral)
-    {
-        let rect = expand_rounded_clip_for_antialiasing(*rect, model.scale, envelope)?;
+    for rect in &native_rectangles {
         let right = i32::try_from(rect.right())
             .map_err(|_| "native hit region right edge overflow".to_string())?;
         let bottom = i32::try_from(rect.bottom())
@@ -608,6 +757,76 @@ mod tests {
             Some([0, 300]),
         )
         .is_err());
+    }
+
+    #[test]
+    fn portrait_alpha_mask_excludes_png_canvas_transparency_and_internal_holes() {
+        let centered = PortraitAlphaMask {
+            width: 4,
+            height: 4,
+            alpha: vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 0, //
+                0, 255, 255, 0, //
+                0, 0, 0, 0,
+            ],
+        };
+        assert_eq!(
+            alpha_hit_rectangles(
+                &centered,
+                PhysicalHitRect {
+                    x: 10,
+                    y: 20,
+                    width: 40,
+                    height: 40,
+                    corner_radius: 0,
+                }
+            )
+            .unwrap(),
+            vec![PhysicalHitRect {
+                x: 20,
+                y: 30,
+                width: 20,
+                height: 20,
+                corner_radius: 0,
+            }]
+        );
+
+        let hole = PortraitAlphaMask {
+            width: 3,
+            height: 3,
+            alpha: vec![255, 255, 255, 255, 0, 255, 255, 255, 255],
+        };
+        let rectangles = alpha_hit_rectangles(
+            &hole,
+            PhysicalHitRect {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 3,
+                corner_radius: 0,
+            },
+        )
+        .unwrap();
+        assert!(!rectangles.iter().any(|rect| rect.x == 1 && rect.y == 1));
+
+        let transparent = PortraitAlphaMask {
+            width: 2,
+            height: 2,
+            alpha: vec![0; 4],
+        };
+        assert!(alpha_hit_rectangles(
+            &transparent,
+            PhysicalHitRect {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                corner_radius: 0,
+            }
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
