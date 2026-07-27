@@ -7,6 +7,7 @@ from typing import Any
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
+from app.config.appearance_settings import load_runtime_v2_appearance
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.config.defaults import (
     DEFAULT_BASE_URL,
@@ -155,7 +156,7 @@ class BackchannelSettings:
 
 @dataclass(frozen=True)
 class AppSettingsService:
-    """集中管理运行配置；唯一持久化来源是 data/config/*.yaml。"""
+    """集中管理 legacy YAML，并兼容读取 Runtime v2 已批准的窄 UI 覆盖。"""
 
     base_dir: Path
 
@@ -793,7 +794,12 @@ class AppSettingsService:
         return _mapping(load_yaml_mapping(self.api_config_path).get(name))
 
     def _system_section(self, name: str) -> dict[str, Any]:
-        return _mapping(load_yaml_mapping(self.system_config_path).get(name))
+        values = _mapping(load_yaml_mapping(self.system_config_path).get(name))
+        if name == "ui":
+            appearance = load_runtime_v2_appearance(self.base_dir)
+            if appearance is not None:
+                values.update(appearance.ui_overlay())
+        return values
 
 
 def _mapping(value: Any) -> dict[str, Any]:
