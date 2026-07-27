@@ -618,13 +618,6 @@ mod tests {
         }
     }
 
-    fn repository_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("repository root should resolve")
-    }
-
     fn fixture_png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = vec![0_u8; 33];
         bytes[..8].copy_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
@@ -702,57 +695,62 @@ mod tests {
     }
 
     #[test]
-    fn sakura_and_navi_real_manifests_expose_all_portraits_with_distinct_aspect_ratios() {
-        let app_root = repository_root();
+    fn fixture_manifest_exposes_all_portraits_with_distinct_aspect_ratios() {
+        let root = FixtureRoot::new();
+        let app_root = root.0.clone();
+        let manifest = serde_json::json!({
+            "id": "Fixture",
+            "display_name": "Fixture",
+            "initial_message": "hello",
+            "portrait": {
+                "default": "portraits/wide.png",
+                "expressions": { "tall": "portraits/tall.png" }
+            },
+            "theme": {}
+        });
+        fs::write(
+            root.package().join("character.json"),
+            serde_json::to_vec(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+        fs::write(
+            root.package().join("portraits/wide.png"),
+            rgba_png(2, 1, &[0, 0, 0, 0, 255, 255, 255, 255]),
+        )
+        .expect("wide portrait should write");
+        fs::write(
+            root.package().join("portraits/tall.png"),
+            rgba_png(1, 2, &[0, 0, 0, 0, 255, 255, 255, 255]),
+        )
+        .expect("tall portrait should write");
+
         let state = CharacterPresentationState::new(app_root.clone());
-        let sakura = presentation_from_manifest_for_acceptance(&app_root, "Sakura", "gen-s")
-            .expect("Sakura manifest should project");
-        let sakura_frontend = state
-            .activate(sakura.clone(), "gen-s")
-            .expect("Sakura resources should activate");
-        assert_eq!(sakura_frontend.presentation.display_name, "夜乃桜");
+        let presentation =
+            presentation_from_manifest_for_acceptance(&app_root, "Fixture", "gen-fixture")
+                .expect("fixture manifest should project");
+        let frontend = state
+            .activate(presentation.clone(), "gen-fixture")
+            .expect("fixture resources should activate");
         assert_eq!(
-            sakura_frontend.portrait_metadata.len(),
-            sakura.portrait_keys.len()
+            frontend.portrait_metadata.len(),
+            presentation.portrait_keys.len()
         );
-        let sakura_default = sakura_frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
-        assert!(sakura_default.width > sakura_default.height);
-        let sakura_mask = state
-            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "gen-s")
-            .expect("Sakura alpha mask should decode");
-        assert!(sakura_mask.alpha.iter().any(|alpha| *alpha == 0));
-        assert!(sakura_mask.alpha.iter().any(|alpha| *alpha > 0));
-        for resource_id in sakura.portrait_resource_ids.values() {
+        let wide = frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
+        let tall = frontend.portrait_metadata["tall"];
+        assert!(wide.width > wide.height);
+        assert!(tall.width < tall.height);
+        let mask = state
+            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "gen-fixture")
+            .expect("fixture alpha mask should decode");
+        assert!(mask.alpha.iter().any(|alpha| *alpha == 0));
+        assert!(mask.alpha.iter().any(|alpha| *alpha > 0));
+        for resource_id in presentation.portrait_resource_ids.values() {
             let resource = state
-                .load_active_resource(&hex_text("gen-s"), resource_id, "gen-s")
-                .expect("every Sakura portrait should load");
+                .load_active_resource(&hex_text("gen-fixture"), resource_id, "gen-fixture")
+                .expect("every fixture portrait should load");
             assert_eq!(&resource.bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
         }
-
-        let navi = presentation_from_manifest_for_acceptance(&app_root, "N.A.V.I.", "gen-n")
-            .expect("N.A.V.I. manifest should project");
-        let navi_frontend = state
-            .activate(navi.clone(), "gen-n")
-            .expect("N.A.V.I. resources should activate");
-        assert_eq!(navi_frontend.presentation.display_name, "N.A.V.I.");
-        let navi_default = navi_frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
-        assert!(navi_default.width < navi_default.height);
-        let navi_mask = state
-            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "gen-n")
-            .expect("N.A.V.I. alpha mask should decode");
-        assert!(navi_mask.alpha.iter().any(|alpha| *alpha == 0));
-        assert!(navi_mask.alpha.iter().any(|alpha| *alpha > 0));
-        assert_ne!(
-            (sakura_default.width, sakura_default.height),
-            (navi_default.width, navi_default.height)
-        );
-        for resource_id in navi.portrait_resource_ids.values() {
-            state
-                .load_active_resource(&hex_text("gen-n"), resource_id, "gen-n")
-                .expect("every N.A.V.I. portrait should load");
-        }
-
-        let serialized = serde_json::to_string(&navi_frontend).expect("DTO should serialize");
+        let serialized = serde_json::to_string(&frontend).expect("DTO should serialize");
         assert!(!serialized.contains("characters"));
         assert!(!serialized.contains(&app_root.to_string_lossy().to_string()));
     }

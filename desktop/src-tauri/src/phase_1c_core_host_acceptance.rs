@@ -1040,6 +1040,7 @@ fn validate_ready_snapshot(snapshot: &Value) -> Result<(), String> {
     if keys
         != BTreeSet::from([
             "activeInteractionSummary",
+            "characterPresentation",
             "currentCharacterSummary",
             "generationId",
             "readiness",
@@ -1460,6 +1461,7 @@ mod tests {
                 "portraitChoices": ["neutral"],
                 "replyTones": ["gentle"]
             },
+            "characterPresentation": null,
             "activeInteractionSummary": null
         });
         validate_ready_snapshot(&snapshot).expect("exact ready Snapshot should pass");
@@ -1479,6 +1481,7 @@ mod tests {
                 "apiKey": "must-not-leak",
                 "initialMessage": "private prompt"
             },
+            "characterPresentation": null,
             "activeInteractionSummary": null
         });
 
