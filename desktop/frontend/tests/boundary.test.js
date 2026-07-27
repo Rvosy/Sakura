@@ -59,7 +59,7 @@ test("the pet window stays hidden until the native borderless surface and region
   const nativeSurface = nativeMain.match(/fn apply_native_pet_surface[\s\S]*?\r?\n}\r?\n\r?\nfn prepare_initial_pet_window/)?.[0] || "";
   const prepareIndex = nativeSurface.indexOf(".prepare_window(window)");
   const boundsIndex = nativeSurface.indexOf(".apply_bounds(window");
-  const regionsIndex = nativeSurface.indexOf("apply_native_interaction_region(window");
+  const regionsIndex = nativeSurface.indexOf("apply_native_interaction_region(");
   const showIndex = nativeSurface.indexOf(".show()");
   assert.ok(prepareIndex >= 0);
   assert.ok(prepareIndex < boundsIndex && boundsIndex < regionsIndex && regionsIndex < showIndex);

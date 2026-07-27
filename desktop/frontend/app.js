@@ -1,6 +1,7 @@
 import { createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createFakeChatCore } from "./chat/fake-chat-core.js";
 import { applyTheme } from "./core/theme.js";
+import { applyAppearanceVariables, constrainedPortraitScale, validateAppearancePublication } from "./pet/appearance.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
 import {
@@ -96,7 +97,24 @@ try {
 }
 
 const portraits = portraitSequence(characterPresentation);
-applyTheme(characterPresentation.themeTokens);
+let activeAppearance = Object.freeze({
+  portraitScalePercent: 100,
+  speechFontSize: 19,
+  nameFontSize: 13,
+  inputFontSize: 15,
+  buttonFontSize: 15,
+  themeTokens: characterPresentation.themeTokens,
+});
+try {
+  activeAppearance = validateAppearancePublication(
+    await invoke("current_character_appearance"),
+    characterPresentation,
+  );
+} catch {
+  // Package theme/default sizes remain a complete safe baseline.
+}
+applyTheme(activeAppearance.themeTokens);
+applyAppearanceVariables(activeAppearance);
 characterName.textContent = characterPresentation.displayName;
 input.placeholder = `和${characterPresentation.displayName}说点什么……`;
 portraitFallbackName.textContent = characterPresentation.displayName;
@@ -138,9 +156,25 @@ function loadImage(source) {
 
 let portraitHitRevision = 0;
 
+function syncPortraitAppearance(key) {
+  const metadata = characterPresentation.portraitMetadata[key]
+    || characterPresentation.portraitMetadata[characterPresentation.defaultPortraitKey];
+  const scale = constrainedPortraitScale({
+    requestedPercent: activeAppearance.portraitScalePercent,
+    sourceSize: [metadata.width, metadata.height],
+    portraitRect: productLayout.portraitRect,
+    windowSize: productLayout.windowSize,
+  });
+  stage.style.setProperty("--portrait-render-scale", String(scale));
+}
+
 function activatePortraitHitTest(key) {
   const revision = ++portraitHitRevision;
-  invoke("activate_portrait_hit_test", { portraitKey: key, revision }).catch(() => {
+  invoke("activate_portrait_hit_test", {
+    portraitKey: key,
+    revision,
+    portraitScalePercent: activeAppearance.portraitScalePercent,
+  }).catch(() => {
     showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
   });
 }
@@ -159,6 +193,7 @@ const portraitController = createPortraitController({
     portraitNext.removeAttribute("src");
     portrait.classList.remove("is-transitioning");
     portraitFallback.hidden = true;
+    syncPortraitAppearance(key);
     activatePortraitHitTest(key);
     if (!presentationUnavailable) clearRecoverableError();
   },
@@ -306,6 +341,21 @@ document.addEventListener("contextmenu", async (event) => {
 
 window.__TAURI__?.event?.listen?.("sakura://product-menu-error", () => {
   showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
+});
+
+window.__TAURI__?.event?.listen?.("sakura://character-appearance-changed", (event) => {
+  try {
+    activeAppearance = validateAppearancePublication(event.payload, characterPresentation);
+    applyTheme(activeAppearance.themeTokens);
+    applyAppearanceVariables(activeAppearance);
+    const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
+      ? renderedPortrait
+      : characterPresentation.defaultPortraitKey;
+    syncPortraitAppearance(key);
+    activatePortraitHitTest(key);
+  } catch {
+    // Old generation, forged fields, and stale callbacks are ignored deterministically.
+  }
 });
 
 input.addEventListener("compositionstart", (event) => {

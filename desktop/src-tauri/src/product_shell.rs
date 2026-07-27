@@ -59,7 +59,7 @@ impl ProductShellState {
         Ok(session.generation)
     }
 
-    fn generation(&self) -> Result<u64, String> {
+    pub fn generation(&self) -> Result<u64, String> {
         self.settings
             .lock()
             .map(|session| session.generation)
@@ -182,9 +182,18 @@ impl SettingsCapabilityManifest {
             unavailable_reasons,
         }
     }
+
+    fn character_appearance(window_generation: u64) -> Self {
+        let mut manifest = Self::shell_only(window_generation);
+        for section in ["character", "appearance"] {
+            manifest.available_sections.push(section.to_string());
+            manifest.unavailable_reasons.remove(section);
+        }
+        manifest
+    }
 }
 
-fn validate_settings_window(window: &WebviewWindow) -> Result<(), String> {
+pub(crate) fn validate_settings_window(window: &WebviewWindow) -> Result<(), String> {
     if window.label() != SETTINGS_WINDOW_LABEL {
         return Err("SETTINGS_WINDOW_REQUIRED".to_string());
     }
@@ -197,7 +206,9 @@ pub fn settings_capability_manifest(
     state: tauri::State<'_, ProductShellState>,
 ) -> Result<SettingsCapabilityManifest, String> {
     validate_settings_window(&window)?;
-    Ok(SettingsCapabilityManifest::shell_only(state.generation()?))
+    Ok(SettingsCapabilityManifest::character_appearance(
+        state.generation()?,
+    ))
 }
 
 #[tauri::command]
@@ -205,12 +216,23 @@ pub fn resolve_settings_close(
     window: WebviewWindow,
     discard: bool,
     state: tauri::State<'_, ProductShellState>,
+    appearance: tauri::State<'_, crate::character_appearance::CharacterAppearanceState>,
+    app_handle: AppHandle,
 ) -> Result<(), String> {
     validate_settings_window(&window)?;
     if !discard {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
+    }
+    if let Some(publication) = appearance.close_session()? {
+        app_handle
+            .emit_to(
+                "main",
+                crate::character_appearance::APPEARANCE_CHANGED_EVENT,
+                publication,
+            )
+            .map_err(|error| error.to_string())?;
     }
     state.authorize_close()?;
     window.close().map_err(|error| error.to_string())
@@ -335,11 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn capability_shell_exposes_no_writable_section_or_secret_shaped_field() {
-        let manifest = SettingsCapabilityManifest::shell_only(7);
+    fn capability_manifest_exposes_only_wp_3u_02_sections_without_secrets() {
+        let manifest = SettingsCapabilityManifest::character_appearance(7);
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.window_generation, 7);
-        assert!(manifest.available_sections.is_empty());
+        assert_eq!(manifest.available_sections, ["character", "appearance"]);
         assert!(manifest.read_only_sections.is_empty());
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in [

@@ -20,6 +20,11 @@
   --bubble-background: #ffe8f1;
   --border: #eeacc8;
   --content-scale: 1;
+  --portrait-render-scale: 1;
+  --speech-font-size: 19px;
+  --name-font-size: 13px;
+  --input-font-size: 15px;
+  --button-font-size: 15px;
 }
 
 * { box-sizing: border-box; }
@@ -104,6 +109,8 @@ textarea:focus-visible,
   background: transparent;
   border: 0;
   outline: 0;
+  transform: scale(var(--portrait-render-scale));
+  transform-origin: center bottom;
 }
 
 /*
@@ -181,7 +188,7 @@ textarea:focus-visible,
   overflow: hidden;
   color: var(--primary);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--name-font-size);
   font-weight: 700;
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -224,7 +231,7 @@ textarea:focus-visible,
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--text);
-  font-size: 18px;
+  font-size: var(--speech-font-size);
   font-weight: 400;
   line-height: 1.42;
   overflow-wrap: anywhere;
@@ -289,7 +296,7 @@ textarea:focus-visible,
   border-radius: 19px;
   color: var(--text);
   background: color-mix(in srgb, var(--input-background), transparent 58%);
-  font-size: 15px;
+  font-size: var(--input-font-size);
   font-family: var(--font-zh);
   font-weight: 700;
   line-height: 1.35;
@@ -314,7 +321,7 @@ textarea:focus-visible,
   color: white;
   background: var(--primary);
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--button-font-size);
   font-weight: 700;
   transition: background 120ms ease, transform 120ms ease;
 }

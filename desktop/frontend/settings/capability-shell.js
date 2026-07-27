@@ -94,9 +94,19 @@ export function applyCapabilityManifest(document, input) {
     }
   }
 
-  document.getElementById("applyButton").hidden = true;
-  document.getElementById("saveButton").hidden = true;
+  for (const item of document.querySelectorAll(".nav-item[data-page]")) {
+    if (!enabled.has(item.dataset.page)) continue;
+    item.addEventListener("click", () => {
+      for (const page of document.querySelectorAll(".settings-page")) {
+        page.hidden = page.id !== `page-${item.dataset.page}`;
+      }
+    });
+  }
+
+  const writable = available.has("character") || available.has("appearance");
+  document.getElementById("applyButton").hidden = !writable;
+  document.getElementById("saveButton").hidden = !writable;
   const cancel = document.getElementById("cancelButton");
-  cancel.textContent = "关闭";
+  cancel.textContent = writable ? "取消" : "关闭";
   return manifest;
 }

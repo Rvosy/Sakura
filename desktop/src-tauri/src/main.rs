@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod character_appearance;
 mod character_presentation;
 #[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
 mod core_host_gateway;
@@ -50,18 +51,20 @@ const LAYOUT_SCRIPT: &str = include_str!("../../frontend/pet/layout.js");
 const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-controller.js");
 const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
 const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
+const APPEARANCE_SCRIPT: &str = include_str!("../../frontend/pet/appearance.js");
 const SETTINGS_HTML: &str = include_str!("../../frontend/settings/index.html");
 const SETTINGS_STYLES: &str = include_str!("../../frontend/settings/styles.css");
 const SETTINGS_SCRIPT: &str = include_str!("../../frontend/settings/settings.js");
 const SETTINGS_CAPABILITY_SCRIPT: &str =
     include_str!("../../frontend/settings/capability-shell.js");
+const SETTINGS_APPEARANCE_SCRIPT: &str =
+    include_str!("../../frontend/settings/appearance-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
 
-#[derive(Default)]
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
@@ -71,6 +74,23 @@ struct WindowGeometrySession {
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_hit_generation: Option<String>,
     portrait_hit_revision: u64,
+    portrait_scale_percent: u16,
+}
+
+impl Default for WindowGeometrySession {
+    fn default() -> Self {
+        Self {
+            revision: LayoutRevisionGuard::default(),
+            portrait_anchor: None,
+            state: None,
+            applied_revision: 0,
+            deferred_drag_pending: false,
+            portrait_alpha_mask: None,
+            portrait_hit_generation: None,
+            portrait_hit_revision: 0,
+            portrait_scale_percent: 100,
+        }
+    }
 }
 
 struct ShellLifecycleState {
@@ -203,6 +223,7 @@ fn apply_pet_layout(
         &contract,
         &application,
         session.portrait_alpha_mask.as_ref(),
+        session.portrait_scale_percent,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
@@ -218,11 +239,13 @@ fn apply_native_interaction_region(
     contract: &LayoutContract,
     application: &LayoutApplication,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
-    let logical = window_interaction::logical_hit_regions_with_portrait_size(
+    let logical = window_interaction::logical_hit_regions_with_portrait_transform(
         contract,
         application.state,
         portrait_alpha_mask.map(character_presentation::PortraitAlphaMask::source_size),
+        portrait_scale_percent,
     )?;
     let mut physical = window_interaction::scale_hit_regions(
         &logical,
@@ -248,6 +271,7 @@ fn apply_native_pet_surface(
     contract: &LayoutContract,
     application: &LayoutApplication,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let backend = NativeWindowInteractionBackend;
     backend
@@ -256,8 +280,13 @@ fn apply_native_pet_surface(
     backend
         .apply_bounds(window, &application.physical_placement)
         .map_err(|error| error.to_string())?;
-    let hit_regions =
-        apply_native_interaction_region(window, contract, application, portrait_alpha_mask)?;
+    let hit_regions = apply_native_interaction_region(
+        window,
+        contract,
+        application,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
     window
         .show()
         .map_err(|error| format!("failed to show pet window: {error}"))?;
@@ -271,7 +300,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     // and the first committed WindowGeometrySession state after WebView startup.
     let application =
         apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
-    apply_native_pet_surface(window, &contract, &application, None)?;
+    apply_native_pet_surface(window, &contract, &application, None, 100)?;
     Ok(())
 }
 
@@ -302,6 +331,7 @@ fn commit_dragged_window_position(
         &contract,
         &application,
         session.portrait_alpha_mask.as_ref(),
+        session.portrait_scale_percent,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     Ok(PetLayoutApplication {
@@ -463,18 +493,36 @@ fn collect_native_diagnostics(
 #[tauri::command]
 fn runtime_lifecycle_snapshot(
     lifecycle: State<'_, ShellLifecycleState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<shell_lifecycle::ShellLifecyclePublication, &'static str> {
-    lifecycle
+    let handle = lifecycle
         .handle
         .as_ref()
-        .ok_or("LIFECYCLE_COMMAND_UNAVAILABLE")?
-        .snapshot()
+        .ok_or("LIFECYCLE_COMMAND_UNAVAILABLE")?;
+    let publication = handle.snapshot()?;
+    let generation_id = handle.current_generation_id()?;
+    if let Some(rollback) = appearance
+        .cancel_if_generation_changed(generation_id.as_deref())
+        .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?
+    {
+        emit_appearance(&app_handle, rollback)
+            .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?;
+    }
+    Ok(publication)
 }
 
 #[tauri::command]
 fn current_character_presentation(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<character_presentation::FrontendCharacterPresentation, String> {
+    load_current_character_presentation(&lifecycle, &resources)
+}
+
+fn load_current_character_presentation(
+    lifecycle: &ShellLifecycleState,
+    resources: &character_presentation::CharacterPresentationState,
 ) -> Result<character_presentation::FrontendCharacterPresentation, String> {
     let handle = lifecycle
         .handle
@@ -509,11 +557,132 @@ fn current_character_presentation(
     resources.activate(presentation, &generation_id)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsCharacterAppearanceSnapshot {
+    schema_version: u32,
+    window_generation: u64,
+    presentation: character_presentation::FrontendCharacterPresentation,
+    appearance: character_appearance::AppearancePublication,
+    limits: character_appearance::AppearanceLimits,
+}
+
+fn emit_appearance(
+    app_handle: &tauri::AppHandle,
+    publication: character_appearance::AppearancePublication,
+) -> Result<(), String> {
+    app_handle
+        .emit_to(
+            "main",
+            character_appearance::APPEARANCE_CHANGED_EVENT,
+            publication,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn current_character_appearance(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<character_appearance::AppearancePublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    appearance.persisted(&presentation.presentation)
+}
+
+#[tauri::command]
+fn settings_character_appearance_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<SettingsCharacterAppearanceSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let window_generation = shell.generation()?;
+    let (publication, cancelled) =
+        appearance.open(window_generation, &presentation.presentation)?;
+    if let Some(cancelled) = cancelled {
+        emit_appearance(&app_handle, cancelled)?;
+    }
+    Ok(SettingsCharacterAppearanceSnapshot {
+        schema_version: 1,
+        window_generation,
+        presentation,
+        appearance: publication,
+        limits: character_appearance::AppearanceLimits::default(),
+    })
+}
+
+#[tauri::command]
+fn settings_character_appearance_preview(
+    window: WebviewWindow,
+    values: character_appearance::AppearanceValues,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<character_appearance::AppearancePublication, String> {
+    product_shell::validate_settings_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let publication =
+        appearance.preview(shell.generation()?, &presentation.presentation, values)?;
+    emit_appearance(&app_handle, publication.clone())?;
+    Ok(publication)
+}
+
+#[tauri::command]
+fn settings_character_appearance_save(
+    window: WebviewWindow,
+    values: character_appearance::AppearanceValues,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<character_appearance::AppearancePublication, String> {
+    product_shell::validate_settings_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let publication = match appearance.save(shell.generation()?, &presentation.presentation, values)
+    {
+        Ok(publication) => publication,
+        Err(error) => {
+            if let Some(rollback) = appearance.cancel()? {
+                emit_appearance(&app_handle, rollback)?;
+            }
+            return Err(error);
+        }
+    };
+    emit_appearance(&app_handle, publication.clone())?;
+    Ok(publication)
+}
+
+#[tauri::command]
+fn settings_character_appearance_cancel_preview(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    if let Some(publication) = appearance.cancel()? {
+        emit_appearance(&app_handle, publication)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn activate_portrait_hit_test(
     window: WebviewWindow,
     portrait_key: String,
     revision: u64,
+    portrait_scale_percent: u16,
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry: State<'_, Mutex<WindowGeometrySession>>,
@@ -550,10 +719,17 @@ fn activate_portrait_hit_test(
         &monitor,
         geometry.portrait_anchor,
     )?;
-    apply_native_interaction_region(&window, &contract, &application, Some(&alpha_mask))?;
+    apply_native_interaction_region(
+        &window,
+        &contract,
+        &application,
+        Some(&alpha_mask),
+        portrait_scale_percent,
+    )?;
     geometry.portrait_alpha_mask = Some(alpha_mask);
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_revision = revision;
+    geometry.portrait_scale_percent = portrait_scale_percent;
     Ok(())
 }
 
@@ -668,6 +844,10 @@ fn finish_app_exit(
     app_handle: &tauri::AppHandle,
     lifecycle: &ShellLifecycleState,
 ) -> Result<(), String> {
+    let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
+    if let Some(publication) = appearance.close_session()? {
+        emit_appearance(app_handle, publication)?;
+    }
     if let Some(handle) = &lifecycle.handle {
         handle.request_shutdown().map_err(str::to_string)?;
     }
@@ -723,6 +903,7 @@ fn resolve_settings_exit(
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     shell: State<'_, product_shell::ProductShellState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
 ) -> Result<(), String> {
     if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
         return Err("SETTINGS_WINDOW_REQUIRED".to_string());
@@ -734,6 +915,9 @@ fn resolve_settings_exit(
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
+    }
+    if let Some(publication) = appearance.close_session()? {
+        emit_appearance(&app_handle, publication)?;
     }
     shell.authorize_close()?;
     window.close().map_err(|error| error.to_string())?;
@@ -850,11 +1034,13 @@ fn main() {
         LAYOUT_CONTROLLER_SCRIPT.len(),
         HIT_REGIONS_SCRIPT.len(),
         INPUT_FOCUS_SCRIPT.len(),
+        APPEARANCE_SCRIPT.len(),
         LAYOUT_CONTRACT_JSON.len(),
         SETTINGS_HTML.len(),
         SETTINGS_STYLES.len(),
         SETTINGS_SCRIPT.len(),
         SETTINGS_CAPABILITY_SCRIPT.len(),
+        SETTINGS_APPEARANCE_SCRIPT.len(),
     );
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
@@ -874,6 +1060,9 @@ fn main() {
             handle: shell_lifecycle_handle.clone(),
         })
         .manage(character_presentation::CharacterPresentationState::new(
+            character_resource_root.clone(),
+        ))
+        .manage(character_appearance::CharacterAppearanceState::new(
             character_resource_root,
         ))
         .register_uri_scheme_protocol(
@@ -930,6 +1119,11 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    let appearance =
+                        window.state::<character_appearance::CharacterAppearanceState>();
+                    if let Ok(Some(publication)) = appearance.close_session() {
+                        let _ = emit_appearance(window.app_handle(), publication);
+                    }
                     let _ = state.window_destroyed();
                 }
                 _ => {}
@@ -944,11 +1138,16 @@ fn main() {
             collect_native_diagnostics,
             runtime_lifecycle_snapshot,
             current_character_presentation,
+            current_character_appearance,
             activate_portrait_hit_test,
             wp_3_03_acceptance_enabled,
             retry_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
+            settings_character_appearance_get,
+            settings_character_appearance_preview,
+            settings_character_appearance_save,
+            settings_character_appearance_cancel_preview,
             product_shell::resolve_settings_close,
             resolve_settings_exit
         ])
@@ -1025,6 +1224,8 @@ fn main() {
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
+            let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
+            let _ = appearance.close_session();
             if let Some(handle) = &shell_lifecycle_handle {
                 let _ = handle.request_shutdown();
             }

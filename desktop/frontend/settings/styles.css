@@ -1790,6 +1790,30 @@ input[type="checkbox"]:disabled + span {
   line-height: 1.7;
 }
 
+body[data-settings-host="runtime-v2"] #page-character > :not(#runtimeCharacterPanel),
+body[data-settings-host="runtime-v2"] #page-appearance > :not(#runtimeAppearancePanel) {
+  display: none !important;
+}
+
+.runtime-settings-panel { display: grid; gap: 18px; }
+.runtime-character-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.runtime-character-heading div { display: grid; gap: 4px; }
+.runtime-character-heading strong { color: var(--sakura-primary); font-size: 24px; }
+.runtime-character-heading code { color: var(--sakura-muted-text); }
+.runtime-scope-note { margin: 12px 0; color: var(--sakura-secondary-text); line-height: 1.6; }
+.runtime-initial-message { margin: 12px 0 0; padding: 14px 16px; border-left: 3px solid var(--sakura-primary); border-radius: 8px; background: var(--sakura-input-bg); white-space: pre-wrap; }
+.runtime-portraits { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
+.runtime-portrait-card { margin: 0; padding: 10px; border: 1px solid var(--sakura-border); border-radius: 12px; background: var(--sakura-input-bg); }
+.runtime-portrait-card img { display: block; width: 100%; height: 150px; object-fit: contain; object-position: center bottom; }
+.runtime-portrait-card figcaption { margin-top: 8px; overflow-wrap: anywhere; color: var(--sakura-secondary-text); font-size: 12px; text-align: center; }
+.runtime-slider-grid { display: grid; gap: 14px; }
+.runtime-slider-grid label { display: grid; grid-template-columns: 120px minmax(180px, 1fr) 56px; align-items: center; gap: 14px; }
+.runtime-slider-grid output { color: var(--sakura-secondary-text); font-variant-numeric: tabular-nums; text-align: right; }
+.runtime-theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin-bottom: 16px; }
+.runtime-theme-field { display: grid; grid-template-columns: minmax(90px, 1fr) 42px 74px; align-items: center; gap: 8px; }
+.runtime-theme-field input { width: 42px; height: 32px; padding: 2px; }
+.runtime-theme-field code { color: var(--sakura-muted-text); font-size: 11px; }
+
 body[data-settings-host="runtime-v2"] .nav-item:disabled {
   cursor: not-allowed;
   opacity: 0.48;

@@ -126,6 +126,7 @@ const fields = {
 
 let request = null;
 let runtimeSettingsHost = false;
+let runtimeAppearanceController = null;
 let lastTtsProvider = "";
 let themeChanged = false;
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
@@ -241,6 +242,9 @@ function settingsSnapshot() {
 }
 
 function computeDirty() {
+  if (runtimeAppearanceController) {
+    return runtimeAppearanceController.isDirty();
+  }
   return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
 }
 
@@ -296,6 +300,7 @@ async function confirmDiscard() {
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
   if (runtimeSettingsHost) {
+    await runtimeAppearanceController?.cancelPreview();
     await invoke("resolve_settings_close", { discard: true });
     return;
   }
@@ -4493,6 +4498,24 @@ fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
 fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
 fields.saveButton.addEventListener("click", async () => {
+  if (runtimeAppearanceController) {
+    const original = fields.saveButton.textContent;
+    setError("");
+    setSubmissionBusy(true);
+    fields.saveButton.textContent = "保存中…";
+    try {
+      await runtimeAppearanceController.save();
+      notify("已保存。", "success");
+      await closeSettingsWindow();
+    } catch (error) {
+      bypassCloseGuard = false;
+      setError(String(error));
+    } finally {
+      setSubmissionBusy(false);
+      fields.saveButton.textContent = original;
+    }
+    return;
+  }
   if (!request) {
     return;
   }
@@ -4532,6 +4555,19 @@ fields.saveButton.addEventListener("click", async () => {
 });
 
 fields.applyButton.addEventListener("click", async () => {
+  if (runtimeAppearanceController) {
+    setError("");
+    setSubmissionBusy(true);
+    try {
+      await runtimeAppearanceController.save();
+      notify("已应用。", "success");
+    } catch (error) {
+      setError(String(error));
+    } finally {
+      setSubmissionBusy(false);
+    }
+    return;
+  }
   if (!request) {
     return;
   }
@@ -4617,6 +4653,8 @@ detailCard?.addEventListener("input", (event) => {
   }
 })();
 
+window.addEventListener("beforeunload", () => runtimeAppearanceController?.dispose(), { once: true });
+
 async function startSettingsFrontend() {
   let manifest;
   try {
@@ -4628,6 +4666,17 @@ async function startSettingsFrontend() {
   runtimeSettingsHost = true;
   const { applyCapabilityManifest } = await import("./capability-shell.js");
   applyCapabilityManifest(document, manifest);
+  if (manifest.availableSections.includes("character") || manifest.availableSections.includes("appearance")) {
+    const { createRuntimeAppearanceController } = await import("./appearance-runtime.js");
+    runtimeAppearanceController = createRuntimeAppearanceController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+      onError: setError,
+    });
+    const snapshot = await invoke("settings_character_appearance_get");
+    await runtimeAppearanceController.initialize(snapshot);
+  }
   settingsBaseline = null;
   refreshDirty();
 }

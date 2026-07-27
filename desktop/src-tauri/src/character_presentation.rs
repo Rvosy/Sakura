@@ -756,6 +756,37 @@ mod tests {
     }
 
     #[test]
+    fn real_sakura_and_navi_manifests_expose_every_safe_portrait_resource() {
+        let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let state = CharacterPresentationState::new(app_root.clone());
+        let mut default_ratios = Vec::new();
+        for character_id in ["Sakura", "N.A.V.I."] {
+            let generation = format!("real-{character_id}");
+            let presentation =
+                presentation_from_manifest_for_acceptance(&app_root, character_id, &generation)
+                    .unwrap();
+            let frontend = state.activate(presentation, &generation).unwrap();
+            assert_eq!(
+                frontend.presentation.portrait_keys.len(),
+                frontend.portrait_metadata.len()
+            );
+            assert_eq!(
+                frontend.presentation.portrait_keys.len(),
+                frontend.portrait_resource_urls.len()
+            );
+            for key in &frontend.presentation.portrait_keys {
+                let url = &frontend.portrait_resource_urls[key];
+                assert!(url.contains("sakura-character"));
+                assert!(!url.contains("characters"));
+                assert!(frontend.portrait_metadata[key].byte_length > 0);
+            }
+            let default = frontend.portrait_metadata[DEFAULT_PORTRAIT_KEY];
+            default_ratios.push(f64::from(default.width) / f64::from(default.height));
+        }
+        assert!((default_ratios[0] - default_ratios[1]).abs() > 0.05);
+    }
+
+    #[test]
     fn unknown_resource_and_old_generation_are_rejected() {
         let root = FixtureRoot::new();
         write_manifest(&root, "portraits/default.png");

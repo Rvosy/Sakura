@@ -207,6 +207,15 @@ pub fn logical_hit_regions_with_portrait_size(
     state: PresentationState,
     portrait_source_size: Option<[u32; 2]>,
 ) -> Result<LogicalHitRegions, String> {
+    logical_hit_regions_with_portrait_transform(contract, state, portrait_source_size, 100)
+}
+
+pub fn logical_hit_regions_with_portrait_transform(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_source_size: Option<[u32; 2]>,
+    portrait_scale_percent: u16,
+) -> Result<LogicalHitRegions, String> {
     contract.validate()?;
     let layout = contract
         .states
@@ -242,7 +251,11 @@ pub fn logical_hit_regions_with_portrait_size(
         0,
     )?;
     let portrait_rect = match portrait_source_size {
-        Some(source_size) => contained_portrait_rect(portrait_rect, source_size)?,
+        Some(source_size) => constrained_portrait_rect(
+            contained_portrait_rect(portrait_rect, source_size)?,
+            portrait_scale_percent,
+            contract.viewport.window_size,
+        )?,
         None => portrait_rect,
     };
     let mut drag = vec![portrait_rect];
@@ -260,6 +273,32 @@ pub fn logical_hit_regions_with_portrait_size(
         drag,
         neutral: Vec::new(),
     })
+}
+
+fn constrained_portrait_rect(
+    base: LogicalHitRect,
+    scale_percent: u16,
+    envelope: [u32; 2],
+) -> Result<LogicalHitRect, String> {
+    if !(50..=150).contains(&scale_percent) {
+        return Err("portrait appearance scale is out of range".to_string());
+    }
+    let center_x = f64::from(base.x) + f64::from(base.width) / 2.0;
+    let bottom = f64::from(base.y) + f64::from(base.height);
+    let max_width = 2.0 * center_x.min(f64::from(envelope[0]) - center_x);
+    let max_height = bottom;
+    let requested = f64::from(scale_percent) / 100.0;
+    let effective = requested
+        .min(max_width / f64::from(base.width))
+        .min(max_height / f64::from(base.height));
+    if !effective.is_finite() || effective <= 0.0 {
+        return Err("portrait appearance scale cannot fit the fixed envelope".to_string());
+    }
+    let width = (f64::from(base.width) * effective).ceil() as u32;
+    let height = (f64::from(base.height) * effective).ceil() as u32;
+    let x = (center_x - f64::from(width) / 2.0).floor() as i32;
+    let y = (bottom - f64::from(height)).floor() as i32;
+    LogicalHitRect::checked(x, y, width, height, envelope)
 }
 
 fn contained_portrait_rect(
@@ -810,6 +849,43 @@ mod tests {
             Some([0, 300]),
         )
         .is_err());
+    }
+
+    #[test]
+    fn portrait_appearance_scale_preserves_anchor_and_fixed_window_envelope() {
+        let contract = contract();
+        let base = logical_hit_regions_with_portrait_transform(
+            &contract,
+            PresentationState::Product,
+            Some([400, 800]),
+            100,
+        )
+        .unwrap();
+        let small = logical_hit_regions_with_portrait_transform(
+            &contract,
+            PresentationState::Product,
+            Some([400, 800]),
+            50,
+        )
+        .unwrap();
+        let requested_large = logical_hit_regions_with_portrait_transform(
+            &contract,
+            PresentationState::Product,
+            Some([400, 800]),
+            150,
+        )
+        .unwrap();
+        let [base_rect, small_rect, large_rect] =
+            [&base.drag[0], &small.drag[0], &requested_large.drag[0]];
+        for rect in [base_rect, small_rect, large_rect] {
+            assert_eq!(rect.x + i32::try_from(rect.width / 2).unwrap(), 408);
+            assert_eq!(rect.y + i32::try_from(rect.height).unwrap(), 668);
+            assert!(rect.x >= 0 && rect.y >= 0);
+            assert!(rect.x as u32 + rect.width <= contract.viewport.window_size[0]);
+            assert!(rect.y as u32 + rect.height <= contract.viewport.window_size[1]);
+        }
+        assert!(small_rect.height < base_rect.height);
+        assert!(large_rect.height >= base_rect.height);
     }
 
     #[test]
