@@ -5192,7 +5192,7 @@ def test_tauri_settings_request_preserves_empty_api_for_onboarding() -> None:
 
 
 def test_tauri_settings_frontend_has_two_step_onboarding() -> None:
-    root = Path(__file__).resolve().parents[2] / "tools" / "settings-tauri" / "frontend"
+    root = Path(__file__).resolve().parents[2] / "desktop" / "frontend" / "settings"
     html = (root / "index.html").read_text(encoding="utf-8")
     script = (root / "settings.js").read_text(encoding="utf-8")
     styles = (root / "styles.css").read_text(encoding="utf-8")
@@ -5540,7 +5540,7 @@ def test_tauri_settings_request_includes_per_character_theme() -> None:
 
 
 def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
-    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    source = Path("desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
 
     assert "function selectedCharacterThemeDefaults()" in source
     assert "function selectedCharacterTheme()" in source
@@ -5563,8 +5563,8 @@ def test_tauri_settings_frontend_uses_character_theme_for_reset() -> None:
 
 
 def test_tauri_settings_frontend_disables_dependent_controls() -> None:
-    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
-    styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
+    source = Path("desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
+    styles = Path("desktop/frontend/settings/styles.css").read_text(encoding="utf-8")
 
     assert "function setControlDisabled" in source
     assert "function syncDesktopMcpControl" in source
@@ -5583,7 +5583,7 @@ def test_tauri_settings_frontend_disables_dependent_controls() -> None:
 
 
 def test_tauri_settings_uses_dot_checkbox_style() -> None:
-    styles = Path("tools/settings-tauri/frontend/styles.css").read_text(encoding="utf-8")
+    styles = Path("desktop/frontend/settings/styles.css").read_text(encoding="utf-8")
 
     assert 'input[type="checkbox"] {' in styles
     assert "appearance: none;" in styles
@@ -5612,21 +5612,21 @@ def test_tauri_settings_round_trips_hidden_log_profile() -> None:
         debug_log_settings=DebugLogSettings(profile="trace"),
         nonce="nonce",
     )
-    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    source = Path("desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
 
     assert request["system_basic"]["debug_log"]["profile"] == "trace"
     assert "profile: request.system_basic.debug_log.profile" in source
 
 
 def test_tauri_settings_labels_body_log_as_model_reply_only() -> None:
-    index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
+    index = Path("desktop/frontend/settings/index.html").read_text(encoding="utf-8")
 
     assert "完整模型回复正文" in index
     assert "完整请求 / 回复正文" not in index
 
 
 def test_tauri_settings_frontend_locks_submission_and_uses_submitted_baseline() -> None:
-    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    source = Path("desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
 
     assert "function setSubmissionBusy(busy)" in source
     assert "document.querySelectorAll(\"input, select, textarea, button\")" in source
@@ -5799,8 +5799,8 @@ def test_tauri_settings_dispatches_studio_launch_failure() -> None:
 
 
 def test_tauri_settings_frontend_has_single_character_editor_button() -> None:
-    index = Path("tools/settings-tauri/frontend/index.html").read_text(encoding="utf-8")
-    source = Path("tools/settings-tauri/frontend/settings.js").read_text(encoding="utf-8")
+    index = Path("desktop/frontend/settings/index.html").read_text(encoding="utf-8")
+    source = Path("desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
 
     assert 'id="characterEditorButton"' in index
     assert 'class="character-select-controls"' in index

@@ -1,3 +1,4 @@
+#[cfg(any(windows, test))]
 use std::collections::HashMap;
 
 use serde::Serialize;
@@ -136,10 +137,12 @@ pub struct PhysicalHitRect {
 }
 
 impl PhysicalHitRect {
+    #[cfg(any(windows, test))]
     fn right(&self) -> i64 {
         i64::from(self.x) + i64::from(self.width)
     }
 
+    #[cfg(any(windows, test))]
     fn bottom(&self) -> i64 {
         i64::from(self.y) + i64::from(self.height)
     }
@@ -328,8 +331,10 @@ fn scale_rect(rect: LogicalHitRect, scale: f64) -> Result<PhysicalHitRect, Strin
     })
 }
 
+#[cfg(any(windows, test))]
 const NATIVE_ANTIALIAS_BLEED_LOGICAL_PX: f64 = 2.0;
 
+#[cfg(any(windows, test))]
 fn expand_rounded_clip_for_antialiasing(
     rect: PhysicalHitRect,
     scale: f64,
@@ -384,8 +389,10 @@ pub fn scale_hit_regions(
     })
 }
 
+#[cfg(any(windows, test))]
 const MAX_ALPHA_REGION_RECTS: usize = 4_096;
 
+#[cfg(any(windows, test))]
 fn alpha_hit_rectangles(
     mask: &PortraitAlphaMask,
     target: PhysicalHitRect,
@@ -472,6 +479,7 @@ fn alpha_hit_rectangles(
     Ok(rectangles)
 }
 
+#[cfg(any(windows, test))]
 fn alpha_bounding_rectangle(
     mask: &PortraitAlphaMask,
     target: PhysicalHitRect,
@@ -513,6 +521,7 @@ fn alpha_bounding_rectangle(
     })
 }
 
+#[cfg(windows)]
 fn native_hit_rectangles(
     model: &PhysicalHitRegions,
     envelope: [u32; 2],
@@ -696,27 +705,6 @@ pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragComp
         );
     }
     Ok(native_drag_completion())
-}
-
-#[cfg(not(windows))]
-pub fn apply_native_hit_regions(
-    window: &tauri::WebviewWindow,
-    model: &PhysicalHitRegions,
-) -> Result<(), String> {
-    // POSIX routing is performed by WebView pointer-events and the shared
-    // model. Keep this compatibility entry point interactive for callers that
-    // still use the pre-backend helper.
-    let _ = model;
-    window
-        .set_ignore_cursor_events(false)
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(), String> {
-    window
-        .set_ignore_cursor_events(false)
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(not(windows))]

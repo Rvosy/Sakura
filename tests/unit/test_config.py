@@ -45,7 +45,7 @@ def test_settings_stack_has_no_runtime_proactive_care_names() -> None:
         "app/config/defaults.py",
         "app/core/app_context.py",
         "app/ui/tauri_settings.py",
-        "tools/settings-tauri/frontend/settings.js",
+        "desktop/frontend/settings/settings.js",
         "app/ui/history_window.py",
         "main.py",
     )

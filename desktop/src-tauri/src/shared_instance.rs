@@ -1,3 +1,4 @@
+#[cfg(windows)]
 pub const SHARED_MUTEX_NAME: &str = r"Local\SakuraDesktop.SharedUserData.v1";
 #[cfg(unix)]
 pub const POSIX_LOCK_DIRECTORY: &str = "sakura";
@@ -189,6 +190,7 @@ fn native_lock_error(code: u32) -> PlatformError {
 #[derive(Clone, Copy)]
 enum PosixTarget {
     MacOs,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Linux,
 }
 

@@ -14,49 +14,48 @@ from app.core_host.character_presentation import (
 
 
 REPO_ROOT = Path(__file__).parents[2]
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "runtime_v2" / "wp_3_01" / "ready"
 
 
-def test_real_sakura_and_navi_project_identity_theme_and_every_portrait_without_paths() -> None:
-    registry = CharacterRegistry(REPO_ROOT)
-    for character_id in ("Sakura", "N.A.V.I."):
-        profile = registry.get(character_id)
-        projected = project_character_presentation(profile)
+def test_fixture_character_projection_has_identity_theme_and_every_portrait_without_paths() -> None:
+    profile = CharacterRegistry(FIXTURE_ROOT).get("sakura")
+    projected = project_character_presentation(profile)
 
-        assert projected["characterId"] == profile.id
-        assert projected["displayName"] == profile.display_name
-        assert projected["initialMessage"] == profile.initial_message
-        assert projected["defaultPortraitKey"] == DEFAULT_PORTRAIT_KEY
-        assert projected["portraitKeys"] == [
-            DEFAULT_PORTRAIT_KEY,
-            *sorted(profile.expression_portraits),
-        ]
-        assert set(projected["portraitResourceIds"]) == set(projected["portraitKeys"])
-        for key, resource_id in projected["portraitResourceIds"].items():
-            assert resource_id == portrait_resource_id(profile.id, key)
-            assert "/" not in resource_id
-            assert "\\" not in resource_id
+    assert projected["characterId"] == profile.id
+    assert projected["displayName"] == profile.display_name
+    assert projected["initialMessage"] == profile.initial_message
+    assert projected["defaultPortraitKey"] == DEFAULT_PORTRAIT_KEY
+    assert projected["portraitKeys"] == [
+        DEFAULT_PORTRAIT_KEY,
+        *sorted(profile.expression_portraits),
+    ]
+    assert set(projected["portraitResourceIds"]) == set(projected["portraitKeys"])
+    for key, resource_id in projected["portraitResourceIds"].items():
+        assert resource_id == portrait_resource_id(profile.id, key)
+        assert "/" not in resource_id
+        assert "\\" not in resource_id
 
-        serialized = json.dumps(projected, ensure_ascii=False)
-        assert str(REPO_ROOT) not in serialized
-        assert "characters/" not in serialized
-        assert "characters\\" not in serialized
-        assert set(projected["themeTokens"]) == {
-            "primary",
-            "primaryHover",
-            "accent",
-            "text",
-            "secondaryText",
-            "mutedText",
-            "pageBackground",
-            "panelBackground",
-            "inputBackground",
-            "bubbleBackground",
-            "border",
-        }
+    serialized = json.dumps(projected, ensure_ascii=False)
+    assert str(FIXTURE_ROOT) not in serialized
+    assert "characters/" not in serialized
+    assert "characters\\" not in serialized
+    assert set(projected["themeTokens"]) == {
+        "primary",
+        "primaryHover",
+        "accent",
+        "text",
+        "secondaryText",
+        "mutedText",
+        "pageBackground",
+        "panelBackground",
+        "inputBackground",
+        "bubbleBackground",
+        "border",
+    }
 
 
 def test_projection_is_deterministic_and_resource_ids_are_utf8_opaque() -> None:
-    profile = CharacterRegistry(REPO_ROOT).get("Sakura")
+    profile = CharacterRegistry(FIXTURE_ROOT).get("sakura")
     assert project_character_presentation(profile) == project_character_presentation(profile)
     assert portrait_resource_id("Sakura", "开心") == (
         "character-v1-53616b757261-portrait-e5bc80e5bf83"
