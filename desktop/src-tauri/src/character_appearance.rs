@@ -138,8 +138,12 @@ pub struct CharacterAppearanceState {
 
 impl CharacterAppearanceState {
     pub fn new(app_root: PathBuf) -> Self {
+        Self::new_with_repository_path(app_root.join("data/runtime_v2/config/ui.json"))
+    }
+
+    pub(crate) fn new_with_repository_path(repository_path: PathBuf) -> Self {
         Self {
-            repository: AppearanceRepository::new(app_root.join("data/runtime_v2/config/ui.json")),
+            repository: AppearanceRepository::new(repository_path),
             session: Mutex::new(None),
         }
     }

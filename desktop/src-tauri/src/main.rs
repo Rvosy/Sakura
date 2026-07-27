@@ -64,6 +64,10 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
+#[cfg(debug_assertions)]
+const WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV: &str = "SAKURA_WP_3U_02_ACCEPTANCE_FAILURE_ROOT";
+#[cfg(debug_assertions)]
+const WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-3u-02-";
 
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
@@ -956,6 +960,56 @@ fn development_runtime_request() -> platform::RuntimeLocationRequest {
     }
 }
 
+fn character_appearance_state(
+    app_root: std::path::PathBuf,
+) -> character_appearance::CharacterAppearanceState {
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os(WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV) {
+        let repository_path = wp_3u_02_acceptance_failure_repository_path(root.into())
+            .expect("WP-3U-02 acceptance failure root must be an isolated system temp directory");
+        return character_appearance::CharacterAppearanceState::new_with_repository_path(
+            repository_path,
+        );
+    }
+
+    character_appearance::CharacterAppearanceState::new(app_root)
+}
+
+#[cfg(debug_assertions)]
+fn wp_3u_02_acceptance_failure_repository_path(
+    root: std::path::PathBuf,
+) -> Result<std::path::PathBuf, String> {
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("WP-3U-02 acceptance root must be absolute and normalized".to_string());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|_| "WP-3U-02 acceptance root is unavailable".to_string())?;
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|_| "system temp root is unavailable".to_string())?;
+    let name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "WP-3U-02 acceptance root name is invalid".to_string())?;
+    if root.parent() != Some(temp.as_path())
+        || !name.starts_with(WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX)
+    {
+        return Err("WP-3U-02 acceptance root is outside its isolated temp scope".to_string());
+    }
+    let blocker = root.join("blocked");
+    let blocker_metadata = std::fs::symlink_metadata(&blocker)
+        .map_err(|_| "WP-3U-02 acceptance blocker is unavailable".to_string())?;
+    if !blocker_metadata.file_type().is_file() || blocker_metadata.file_type().is_symlink() {
+        return Err("WP-3U-02 acceptance blocker must be a regular file".to_string());
+    }
+    Ok(blocker.join("ui.json"))
+}
+
 #[cfg(windows)]
 fn show_startup_message(title: &str, body: &str, fatal: bool) {
     use windows::{
@@ -1062,9 +1116,7 @@ fn main() {
         .manage(character_presentation::CharacterPresentationState::new(
             character_resource_root.clone(),
         ))
-        .manage(character_appearance::CharacterAppearanceState::new(
-            character_resource_root,
-        ))
+        .manage(character_appearance_state(character_resource_root))
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -1262,6 +1314,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn all_runtime_assets_are_embedded_and_the_contract_is_executable() {
@@ -1308,5 +1361,35 @@ mod tests {
         assert!(root.join("app/core_host/__main__.py").is_file());
         assert!(root.join("desktop/src-tauri/runtime-layouts").is_dir());
         assert_eq!(request.assistant_root, root);
+    }
+
+    #[test]
+    fn wp_3u_02_failure_injection_is_restricted_to_a_named_system_temp_root() {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "{WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX}{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        std::fs::write(root.join("blocked"), b"not a directory").unwrap();
+
+        assert_eq!(
+            wp_3u_02_acceptance_failure_repository_path(root.clone()).unwrap(),
+            root.canonicalize().unwrap().join("blocked/ui.json")
+        );
+        assert!(
+            wp_3u_02_acceptance_failure_repository_path(std::env::current_dir().unwrap()).is_err()
+        );
     }
 }
