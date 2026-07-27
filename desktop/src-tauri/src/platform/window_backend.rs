@@ -224,8 +224,14 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
     }
 
     fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion> {
-        window_interaction::start_native_drag(window)
-            .map_err(|error| map_error("start_drag", error))
+        // A native move loop is a non-client operation even for a frameless
+        // window. Reassert the borderless invariant on both sides so a frame
+        // refresh cannot leave a caption visible after the pointer is released.
+        self.prepare_window(window)?;
+        let completion = window_interaction::start_native_drag(window)
+            .map_err(|error| map_error("start_drag", error))?;
+        self.prepare_window(window)?;
+        Ok(completion)
     }
 
     fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()> {

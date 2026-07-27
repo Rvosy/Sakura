@@ -135,3 +135,18 @@ test("portrait click-through is tightened after the decoded contain size is know
   assert.match(nativeInteraction, /alpha_hit_rectangles/);
   assert.match(nativeInteraction, /portrait_alpha_mask/);
 });
+
+test("Windows drag reasserts the borderless invariant without weakening native click-through", () => {
+  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some/);
+  assert.match(nativeInteraction, /SetWindowSubclass/);
+  assert.doesNotMatch(nativeInteraction, /GWLP_WNDPROC/);
+  assert.match(nativeInteraction, /WM_NCCALCSIZE/);
+  assert.match(nativeInteraction, /WM_NCPAINT/);
+  const dragBackend = nativeWindowBackend.slice(
+    nativeWindowBackend.indexOf("fn start_drag("),
+    nativeWindowBackend.indexOf("fn set_visible("),
+  );
+  assert.equal(dragBackend.match(/self\.prepare_window\(window\)\?/g)?.length, 2);
+  assert.ok(dragBackend.indexOf("self.prepare_window(window)?") < dragBackend.indexOf("start_native_drag"));
+  assert.ok(dragBackend.lastIndexOf("self.prepare_window(window)?") > dragBackend.indexOf("start_native_drag"));
+});

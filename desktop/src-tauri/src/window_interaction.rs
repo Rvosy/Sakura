@@ -513,14 +513,93 @@ fn alpha_bounding_rectangle(
     })
 }
 
+fn native_hit_rectangles(
+    model: &PhysicalHitRegions,
+    envelope: [u32; 2],
+) -> Result<Vec<PhysicalHitRect>, String> {
+    let mut rectangles = model.interactive.clone();
+    if let Some(mask) = model.portrait_alpha_mask.as_ref() {
+        let portrait = model
+            .drag
+            .first()
+            .copied()
+            .ok_or_else(|| "portrait hit region is unavailable".to_string())?;
+        rectangles.extend(alpha_hit_rectangles(mask, portrait)?);
+        rectangles.extend(model.drag.iter().skip(1).copied());
+    } else {
+        rectangles.extend(model.drag.iter().copied());
+    }
+    rectangles.extend(model.neutral.iter().copied());
+    rectangles
+        .into_iter()
+        .map(|rect| expand_rounded_clip_for_antialiasing(rect, model.scale, envelope))
+        .collect()
+}
+
+#[cfg(windows)]
+const PET_BORDERLESS_SUBCLASS_ID: usize = 0x5341_4b42;
+
+#[cfg(windows)]
+unsafe extern "system" fn pet_window_borderless_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    message: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT,
+    };
+
+    match message {
+        WM_NCCALCSIZE | WM_NCPAINT => return LRESULT(0),
+        WM_NCACTIVATE => return LRESULT(1),
+        _ => {}
+    }
+
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if message == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(
+            hwnd,
+            Some(pet_window_borderless_proc),
+            PET_BORDERLESS_SUBCLASS_ID,
+        );
+    }
+    result
+}
+
+#[cfg(windows)]
+fn install_native_borderless_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Result<(), String> {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+
+    unsafe {
+        if !SetWindowSubclass(
+            hwnd,
+            Some(pet_window_borderless_proc),
+            PET_BORDERLESS_SUBCLASS_ID,
+            0,
+        )
+        .as_bool()
+        {
+            return Err("failed to install native pet borderless subclass".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::SetWindowRgn;
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, ERROR, HGDIOBJ, RGN_OR,
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, ERROR, HGDIOBJ,
+        RGN_OR,
     };
 
     let hwnd = window
@@ -530,23 +609,8 @@ pub fn apply_native_hit_regions(
         .inner_size()
         .map_err(|error| format!("failed to read native pet window size: {error}"))?;
     let envelope = [inner_size.width, inner_size.height];
-    let mut native_rectangles = model.interactive.clone();
-    if let Some(mask) = model.portrait_alpha_mask.as_ref() {
-        let portrait = model
-            .drag
-            .first()
-            .copied()
-            .ok_or_else(|| "portrait hit region is unavailable".to_string())?;
-        native_rectangles.extend(alpha_hit_rectangles(mask, portrait)?);
-        native_rectangles.extend(model.drag.iter().skip(1).copied());
-    } else {
-        native_rectangles.extend(model.drag.iter().copied());
-    }
-    native_rectangles.extend(model.neutral.iter().copied());
-    let native_rectangles = native_rectangles
-        .into_iter()
-        .map(|rect| expand_rounded_clip_for_antialiasing(rect, model.scale, envelope))
-        .collect::<Result<Vec<_>, _>>()?;
+    let native_rectangles = native_hit_rectangles(model, envelope)?;
+    install_native_borderless_subclass(hwnd)?;
     let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
     if combined.is_invalid() {
         return Err("failed to create native hit region".to_string());
@@ -596,6 +660,7 @@ pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    install_native_borderless_subclass(hwnd)?;
     if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
         Err("failed to restore full native pet hit region".to_string())
     } else {
