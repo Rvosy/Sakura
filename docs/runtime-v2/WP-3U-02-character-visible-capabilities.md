@@ -226,3 +226,59 @@ N.A.V.I. 的真实 manifest、全部 portrait keys、受控 URL、资源元数�
 尚未宣告通过的退出门：最终候选的完整 Rust/frontend/Python/Harness 回归、legacy settings host locked check、
 真实 Windows WebView 候选验收，以及同一最终候选 SHA 的 Windows/macOS/Linux 公共构建证据。100%/150%
 DPI 人工证据仍按激活记录中的 G-008 决定延期，不得计作已通过，也不放宽上述其他门禁。
+
+## 2026-07-27 候选验收证据更新（保持 stabilizing）
+
+本节保存候选验收快照，不声明第二个当前状态。生产实现候选为 `078c18df`；为在不触碰真实用户数据的
+前提下完成保存失败实机复验，又增加了 debug-only、严格限制到系统临时目录的验收注入 `729c2f7c`。
+
+本地自动门禁：
+
+- `runtime\python.exe -m harness run smoke`：25 passed。
+- `runtime\python.exe -m harness run unit`：1158 passed，6 skipped；包括外观兼容读取、未来 schema、
+  legacy Qt 回读和 bundled Core PySide6 import guard。
+- `desktop/frontend` 下 `node --test tests/*.test.js`：75 passed；覆盖 portrait 正常/缺失/非法、快速切换、
+  decode 失败、fallback、reduced motion、旧 callback/generation、theme/字体/缩放预览和生命周期回滚。
+- `desktop/src-tauri` 下最终 `cargo test --locked`：206 passed，23 ignored；`cargo fmt --check`、
+  `cargo build --locked` 均通过。23 个 ignored 均为由原生 platform workflow 或父测试启动的既有夹具/分层门禁，
+  未为本 WP 扩大忽略列表。
+- legacy settings host `cargo check --locked` 通过；`git diff --check` 通过。
+
+Windows 真实 Tauri/WebView2 候选：
+
+- Sakura 正确展示夜乃桜名称、日文 initial message、粉色主题和 15 个真实 portrait 键（含
+  `__default__`）；Fake Core `/multi` 多段回复驱动了可见的真实立绘切换。
+- N.A.V.I. 正确展示名称、日文 initial message、绿色主题、不同宽高比立绘和 8 个真实 portrait 键（含
+  `__default__`）；Fake Core `/multi` 完成，读取其独立主题和持久化立绘缩放。
+- 两个角色及立绘切换、缩放预览期间，原生窗口始终为 816×680，气泡与输入框位置不变。Sakura 的
+  150% -> 137% 预览在取消确认后恢复 150%；145%“应用”保存且不关窗；150%“保存”保存并关闭，
+  重新打开仍为 150%。
+- 设置窗口最小化后重复打开复用同一窗口；设置内取消/关窗不退出桌宠或 Core；Sakura 与 N.A.V.I.
+  候选均通过原生退出菜单正常退出并释放共享锁。
+- 保存失败候选从 100% 预览至 121% 后执行“应用”，设置窗口保持打开并保留 dirty state，稳定显示
+  `APPEARANCE_PERMISSION_DENIED`，桌宠立即回滚至 100%。故障只发生在系统临时目录直属、固定前缀的
+  隔离根 `blocked/ui.json`；根中没有 `.tmp` 或部分文件，验收后已在确认进程为零和路径精确匹配后删除。
+
+数据与兼容性证据：
+
+- 真实 `data/runtime_v2/config/ui.json` 在正常“应用/保存”路径中只原子写入批准的 ui/角色外观字段；最终
+  `schema_version=1`、`domain=ui`、立绘缩放 150%，保留 Sakura/N.A.V.I. 独立主题，不含
+  `current_character_id`、credential-shaped 字段或临时兄弟文件。
+- 保存失败前后真实文件 SHA-256 均为
+  `6A1FF67606B9BA2C0D6484D65C94AD0C63A963C97780B0C8CAD427FE4059C3FD`；故障注入没有恢复、删除或
+  截断真实用户数据。legacy Qt 无 Qt reader 与未来 schema/权限失败测试均通过。
+- `characters/**` 全程只读；Sakura 与 N.A.V.I. 仅作为真实 manifest/资源验收输入，没有实现角色选择或保存
+  当前角色身份。
+
+DPI 设备证据仍按 G-008 延期：本轮没有执行 100%/150% DPI 人工复验，不能登记为通过；它是项目负责人
+明确接受的非失败型设备证据风险，不是已知产品缺陷，复验点已登记 WP-7-02。后续若发现可复现且可归因于
+本候选的 DPI 缺陷，必须重新打开 WP-3U-02，不能仅归责于 WP-7-02。
+
+当前唯一未关闭的硬退出门是同一最终候选 SHA 的 Windows 2025 x64、macOS 15 arm64、Ubuntu 24.04 x64
+原生公共构建/测试证据。本机只有 Windows 真实候选；安装交叉 target 不能替代原生 macOS/Linux Tauri runner。
+本轮未经授权不得 push，因而不能触发所需 platform workflow。此缺口不按 DPI 决定延期，也不能伪造为通过；
+WP-3U-02 保持 `stabilizing`，WP-3-04 依赖未满足并保持 `planned`。
+
+当前代码候选的独立回退顺序为：先回退 `729c2f7c` 的 debug-only 验收注入，再按新到旧回退
+`078c18df`、`1a99d5d6` 和 `c4a94510`；治理记录 `32c36ba9` 与本证据记录可分别回退。回退前取消内存预览并
+关闭角色外观保存入口；不得删除或恢复真实配置、修改 `characters/**`，也不得回退 WP-3U-01/3-03。

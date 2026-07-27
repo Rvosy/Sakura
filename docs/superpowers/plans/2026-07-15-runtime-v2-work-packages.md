@@ -134,8 +134,12 @@ Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确�
 Windows 手动验收并标记 `accepted`；100%/150% DPI 真实设备证据由项目负责人按 G-008 明确接受为
 非失败型证据风险并登记至 WP-7-02。WP-3U-02 已于 2026-07-27 在依赖满足后激活，并在同日以候选
 `078c18df` 完成生产实现后进入 `stabilizing`；其实际允许目录、故障矩阵、数据写入边界、回退命令、
-计划提交、初步自动证据和 DPI 延期决定见独立文档的同日记录。WP-3U-02 是当前唯一 `stabilizing`
-Work Package；WP-3-04 及其后续项保持 `planned`，不得提前启动。
+计划提交和 DPI 延期决定见独立文档的同日记录。本地完整 Harness/Python/frontend/Rust/legacy host 门禁、
+Sakura/N.A.V.I. Windows 真实候选以及隔离目录保存失败恢复均已通过；最终 Rust 回归为 206 passed、
+23 ignored，且没有扩大忽略列表。当前仍缺同一最终候选 SHA 的 Windows 2025 x64、macOS 15 arm64、
+Ubuntu 24.04 x64 原生 platform workflow 证据；本机交叉 target 不能替代原生 runner，未经授权也不得 push
+触发 CI。该硬门不属于获批的 DPI 延期，故 WP-3U-02 仍是当前唯一 `stabilizing` Work Package；WP-3-04
+依赖未满足并保持 `planned`，不得提前启动。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
