@@ -1,7 +1,7 @@
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
 
 ```text
-状态：stabilizing
+执行状态：见 `docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md` 第 2 节唯一状态源
 激活日期：2026-07-27
 进入稳定化日期：2026-07-27
 前置依赖：WP-3-03 accepted
@@ -155,3 +155,26 @@ macOS/Linux 真实菜单和 compositor 门保留 WP-7-02。
 
 回退时移除 Runtime v2 菜单 action、settings window 注册、capability shell 和资源暂存接线，保留
 WP-3-03 固定产品 UI。旧独立设置工具和 legacy Qt 入口保持可用；不得删除或恢复用户配置。
+
+## 接受记录（2026-07-27）
+
+- 自动测试：实现与稳定化提交依次通过 frontend 全量测试（最终 70 passed）、Runtime Rust 全量测试
+  （最终 195 passed、23 ignored）、Harness smoke（2/2）、locked debug build、`cargo fmt --check`、
+  `git diff --check`；legacy settings 宿主 `cargo check --locked` 通过，canonical frontend freshness 和
+  capability/secret 边界测试通过。最终候选 `7a58bdc0a` 的 Runtime v2 platform foundation run
+  `30236383550` 在 Windows x64、macOS arm64、Linux x64 全绿，三平台均执行 frontend 测试和 native
+  Tauri build；Test run `30236383605` 的 Unit/UI jobs 全绿。
+- Windows 手动验收：项目负责人已确认真实右键菜单位置和操作、设置窗口创建/最小化/重新聚焦、
+  中文 IME、未保存关闭确认、快速重复打开保持单实例、关闭设置不退出桌宠或 Core，以及主程序正常
+  退出和资源清理全部通过。
+- DPI 设备证据：本轮明确未执行 100%/150% DPI 人工验收，不记录为通过，也没有观察到可复现产品
+  缺陷。项目负责人按 G-008 明确接受这项非失败型设备证据风险；真实 Tauri WebView/菜单复验点已
+  登记到 WP-7-02。若后续发现可复现且可归因于本候选实现的 DPI 缺陷，必须重新打开 WP-3U-01。
+- 数据与安全：本 WP 未开放任何可写设置 section，未读取或保存角色、Provider、TTS、Memory、MCP、
+  插件、凭据或其他用户配置；设置 WebView 没有直接写入 `data/**`。未发现 P0/P1、退出条件缺陷、
+  凭据泄露或第二生命周期根。
+- 已知风险：除上述 Windows DPI 设备证据外，macOS/Linux 真实菜单、焦点、IME 和 compositor 设备
+  体验仍按既定范围留在 WP-7-02；公共 Rust/frontend 构建证据已经由同一候选三平台 CI 通过。
+- 回退：依次 revert 本 WP 的 Windows 稳定化修复和 `6058bac06`，移除 Runtime v2 product menu、
+  settings window、capability shell 与 canonical frontend 接线，恢复 WP-3-03 固定产品 UI；保留旧
+  独立设置工具和 legacy Qt 入口，不删除、恢复或改写用户配置。

@@ -86,7 +86,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
-| WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | stabilizing |
+| WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | planned |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3U-02 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
@@ -130,8 +130,10 @@ lifecycle 候选验收并 accepted；WP-3-02 已按
 Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确要求先冻结最终产品 UI、使用真实角色资源、
 让气泡与输入框常驻并移除功能切换栏；原候选因此不再满足产品退出门。WP-3-03 已按修订后的
 `docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 退回 `active` 完成纠正，随后于
-2026-07-27 经项目负责人验收为 `accepted`。WP-3U-01 已在同日激活、完成首轮实现并进入
-`stabilizing`，是当前唯一 `active/stabilizing` Work Package；WP-3U-02 及其余后续项保持 `planned`。
+2026-07-27 经项目负责人验收为 `accepted`。WP-3U-01 已在同日完成实现、稳定化和项目负责人
+Windows 手动验收并标记 `accepted`；100%/150% DPI 真实设备证据由项目负责人按 G-008 明确接受为
+非失败型证据风险并登记至 WP-7-02。当前没有 `active`/`stabilizing` Work Package；WP-3U-02 是
+第一个依赖已满足的 `planned` 项，也是唯一允许的下一启动点，其余后续项保持 `planned`。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2307,6 +2309,12 @@ WP-7-02 本身承载 Phase 1P deferred 的发布前真实设备硬门禁，不�
 Apple Silicon 覆盖透明窗口、命中、拖动、焦点、中日文 IME、Retina、Spaces、多屏；Linux X11
 覆盖透明窗口、命中、拖动、焦点、IME、多屏；Linux Wayland 覆盖透明、命中、拖动、焦点、
 IME、窗口身份与 compositor 行为。任一对应平台未完成这些设备证据时，不得正式发布。
+
+2026-07-27 deferred 设备证据登记：WP-3U-01 的 Windows 真实 Tauri WebView 设置窗口和产品右键菜单、
+WP-3U-02 的真实角色立绘/外观预览与固定窗口包络，均须在 100% 与 150% DPI 下复验菜单位置、窗口
+几何、立绘缩放、气泡/输入框位置、IME 候选窗、预览/取消和关闭行为。项目负责人明确接受本轮不执行
+这些设备组合的非失败型证据风险；这不是已知产品缺陷，也不放宽任何其他退出门。后续若发现可复现且
+可归因于 WP-3U-01 或 WP-3U-02 候选实现的 DPI 缺陷，必须重新打开相应责任 WP，不能仅归责于 WP-7-02。
 
 ## 15. 已记录但不阻塞基础聊天的未来设计
 
