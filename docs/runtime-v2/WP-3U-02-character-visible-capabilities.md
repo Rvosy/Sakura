@@ -1,7 +1,7 @@
 # WP-3U-02：角色包可见能力与外观设置联动
 
 ```text
-状态：planned
+当前状态：以 docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md 第 2 节为唯一真相源
 前置依赖：WP-3U-01 accepted
 主要结果：优先迁移当前角色包中用户可直接看到的表现能力，并让同 App 设置窗口的角色外观页真实可用
 数据边界：只允许批准的角色外观/ui 配置兼容写入；characters/** 只读
@@ -134,3 +134,71 @@ settings.characterAppearance.cancelPreview
 
 回退时禁用/移除角色外观设置命令和保存入口，取消全部预览并恢复持久化基线；设置窗口退回 WP-3U-01
 能力门控壳，桌宠保留 WP-3-03 当前角色只读表现。不得删除、恢复或改写角色包和无关用户数据。
+
+## 2026-07-27 激活记录
+
+WP-3U-01 已在唯一状态源中 accepted，WP-3U-02 因此前置依赖满足并于 2026-07-27 激活。本节保存
+当次激活快照，不作为当前状态的第二真相源。
+
+实际允许目录：
+
+- `app/core_host/**`、为兼容读取新增的 `app/config/**` 无 Qt 纯 DTO/校验，以及 legacy Qt 消费点的最小适配。
+- `desktop/src-tauri/src/**`、`desktop/frontend/settings/**`、`desktop/frontend/pet/**` 和必要的共享前端模块。
+- `tools/settings-tauri/**` 中消费 canonical settings frontend 所需的兼容改造。
+- `tests/**`、`desktop/frontend/tests/**`、`desktop/src-tauri/tests/**`、相关 fixture、harness 注册和本 WP 文档。
+
+明确禁止目录与范围：
+
+- `characters/**` 始终只读；不得修改角色资源、manifest、角色卡或对话语义。
+- 不修改 `third_party/**` 或 `tools/mcp/**`；不提前迁移 TTS、Memory、Tools、MCP、插件、截图、主动互动、
+  Studio、导入导出、完整设置平台或 WP-3-04 真实聊天 UI 接线。
+- 不保存 `current_character_id`，不实现角色选择、Session 切换、历史分页、通用 resource token、完整配置
+  框架或跨域事务抽象。
+
+验收环境：
+
+- 本地 Windows 候选：仓库自带 `runtime/python.exe`、Node test runner、locked Cargo 依赖、真实 Tauri/WebView2，
+  以 Sakura 与 N.A.V.I 角色包作为只读输入。
+- 自动门禁：相关 pytest、bundled Core PySide6 import guard、frontend `node --test tests/*.test.js`、Tauri
+  `cargo fmt --check` 与 `cargo test --locked`、legacy settings host `cargo check --locked`、Harness smoke；影响面
+  扩大后运行 Harness unit。
+- 公共 Rust/前端代码需要同一候选 SHA 的 Windows x64、macOS arm64、Linux x64 构建证据；未经项目负责人
+  授权不 push，无法取得的新 CI 证据不得伪造为通过。
+
+故障矩阵：
+
+| 故障 | 必须行为 | 证据 |
+|---|---|---|
+| portrait key 缺失、非法或资源 decode 失败 | 确定回退到 default/安全占位；旧 callback 不覆盖新状态 | frontend/Rust 测试与真实切换 |
+| 快速切换、reduced motion、旧 generation | 只提交最新 generation/revision；动画关闭时结果等价 | frontend/Rust 测试 |
+| 外观字段非法或未来 schema | 拒绝整个请求，不写盘、不半应用 UI、不泄漏凭据/裸路径 | Rust/Python 测试 |
+| 原子替换或目录权限失败 | 保留旧文件与持久化 UI 基线，不留下临时/部分文件 | 隔离临时目录故障注入 |
+| 取消、设置关窗、WebView 崩溃 | 幂等取消全部未提交预览，恢复设置打开时基线 | Rust/frontend 生命周期测试 |
+| Core generation 变化或 App 退出 | 废弃旧预览并恢复最新持久化基线 | Rust 生命周期测试 |
+| 重复打开设置 | 聚焦同一窗口；同一预览会话与 dirty state 不被重置 | Rust/frontend 测试与 Windows 验收 |
+| 保存成功后重新打开 | 持久化值、桌宠表现和 legacy Qt 兼容读取一致 | Rust/Python 集成测试与 Windows 验收 |
+
+数据写入边界：
+
+- WebView 只能调用固定 allowlist；request、generation 与当前角色 identity 由 Rust 注入，WebView 不直接写
+  `data/**`、不接触裸本地路径、credential 或角色业务对象。
+- preview 仅驻留内存，不落盘。save 只允许逐字段校验后的角色外观/ui 兼容字段，采用同目录临时文件、
+  flush/sync 与原子替换；破坏性写入测试仅使用隔离临时目录，不清理、截断、恢复或删除真实用户数据。
+- 保存格式必须能由 legacy Qt 的无 Qt 配置读取路径消费；不写 `current_character_id`，不修改 `characters/**`。
+
+独立回退命令：
+
+```powershell
+git revert <WP-3U-02-最终验收提交> <WP-3U-02-稳定化提交> <WP-3U-02-功能提交> <WP-3U-02-激活提交>
+```
+
+按从新到旧顺序仅回退本 WP 提交；回退前先取消内存预览并关闭角色外观保存入口。不得删除或恢复用户
+配置文件，不回退 WP-3U-01/3-03，也不改写角色包。
+
+计划提交保持单一目的并可独立回滚：激活治理记录；无 Qt 外观 DTO/兼容读取；Rust Gateway、原子仓库与
+生命周期；canonical settings 与 pet 预览；稳定化修复和门禁证据；最终接受记录。实际实现若需进一步拆分，
+每个生产提交仍须在正文记录 Phase/WP、背景、主要变更、明确非目标、验证、风险和回退方式。
+
+DPI 决定：项目负责人按 G-008 明确接受本轮不执行 WP-3U-02 的 100%/150% DPI 人工验收，记录为尚未
+补齐的非失败型设备证据而非已知产品缺陷；真实 DPI/WebView 复验点已登记至 WP-7-02，其他退出门不放宽。
+后续若发现可复现且可归因于本候选实现的 DPI 缺陷，必须重新打开 WP-3U-02，不能简单归责于 WP-7-02。
