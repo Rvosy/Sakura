@@ -202,3 +202,27 @@ git revert <WP-3U-02-最终验收提交> <WP-3U-02-稳定化提交> <WP-3U-02-�
 DPI 决定：项目负责人按 G-008 明确接受本轮不执行 WP-3U-02 的 100%/150% DPI 人工验收，记录为尚未
 补齐的非失败型设备证据而非已知产品缺陷；真实 DPI/WebView 复验点已登记至 WP-7-02，其他退出门不放宽。
 后续若发现可复现且可归因于本候选实现的 DPI 缺陷，必须重新打开 WP-3U-02，不能简单归责于 WP-7-02。
+
+## 2026-07-27 稳定化开始记录
+
+生产候选 `078c18df` 完成后，WP-3U-02 在唯一状态源中进入 `stabilizing`。候选实现包括：
+
+- 当前角色 display name、initial message、角色主题、default/全部 expression portrait 的受控展示。
+- 固定 allowlist 的 get/preview/save/cancelPreview，Rust 注入 settings window generation、Core generation 和
+  character identity；WebView 不持有数据路径或 credential。
+- `data/runtime_v2/config/ui.json` 中批准外观字段的逐字段校验、同目录临时文件与 Windows/POSIX 原子替换，
+  保存失败恢复预览基线；legacy Qt 通过无 Qt reader 兼容读取实际存在的批准字段。
+- canonical settings frontend 的当前角色只读页及主题、字体、立绘缩放子集；未迁移控件和角色选择被隐藏，
+  “应用”保存不关窗、“保存”保存并关闭、“取消”恢复预览。
+- 桌宠在固定 816×680 原生包络中应用主题/字体和受约束立绘缩放，同时更新 PNG alpha 原生命中区域；
+  气泡、输入框和原生窗口位置不随角色或预览改变。
+- 设置关闭、WebView 销毁/重载、Core generation 变化、主应用退出的幂等预览回滚；旧 generation 和非法
+  identity/字段由 Rust 与 WebView 双重拒绝。
+
+进入稳定化时已取得的自动证据：frontend 75 passed；Rust 最近完整回归 202 passed、23 ignored，随后新增
+的真实角色和保存失败测试单独通过；Python 外观/角色表现/PySide6 import guard 23 passed；Sakura 与
+N.A.V.I. 的真实 manifest、全部 portrait keys、受控 URL、资源元数据和不同宽高比已由 Rust 只读测试覆盖。
+
+尚未宣告通过的退出门：最终候选的完整 Rust/frontend/Python/Harness 回归、legacy settings host locked check、
+真实 Windows WebView 候选验收，以及同一最终候选 SHA 的 Windows/macOS/Linux 公共构建证据。100%/150%
+DPI 人工证据仍按激活记录中的 G-008 决定延期，不得计作已通过，也不放宽上述其他门禁。

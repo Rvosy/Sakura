@@ -87,7 +87,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
-| WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | active |
+| WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | stabilizing |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3U-02 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
@@ -132,9 +132,10 @@ Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确�
 `docs/runtime-v2/WP-3-03-fake-core-pet-chat-presentation.md` 退回 `active` 完成纠正，随后于
 2026-07-27 经项目负责人验收为 `accepted`。WP-3U-01 已在同日完成实现、稳定化和项目负责人
 Windows 手动验收并标记 `accepted`；100%/150% DPI 真实设备证据由项目负责人按 G-008 明确接受为
-非失败型证据风险并登记至 WP-7-02。WP-3U-02 已于 2026-07-27 在依赖满足后激活；其实际允许目录、
-故障矩阵、数据写入边界、回退命令、计划提交和 DPI 延期决定见独立文档的同日激活记录。WP-3U-02 是
-当前唯一 `active` Work Package；WP-3-04 及其后续项保持 `planned`，不得提前启动。
+非失败型证据风险并登记至 WP-7-02。WP-3U-02 已于 2026-07-27 在依赖满足后激活，并在同日以候选
+`078c18df` 完成生产实现后进入 `stabilizing`；其实际允许目录、故障矩阵、数据写入边界、回退命令、
+计划提交、初步自动证据和 DPI 延期决定见独立文档的同日记录。WP-3U-02 是当前唯一 `stabilizing`
+Work Package；WP-3-04 及其后续项保持 `planned`，不得提前启动。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
