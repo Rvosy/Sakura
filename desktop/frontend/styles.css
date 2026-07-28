@@ -39,6 +39,10 @@ body {
   user-select: none;
 }
 
+body[data-shell-state="loading"] .pet-stage {
+  visibility: hidden;
+}
+
 button,
 textarea { font: inherit; }
 
@@ -290,7 +294,8 @@ textarea:focus-visible,
 
 .composer textarea {
   min-width: 0;
-  padding: 7px 15px;
+  padding: 8px 15px 5px;
+  overflow-y: hidden;
   resize: none;
   border: 1px solid rgb(255 255 255 / 78%);
   border-radius: 19px;
@@ -299,7 +304,7 @@ textarea:focus-visible,
   font-size: var(--input-font-size);
   font-family: var(--font-zh);
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.25;
   outline: 0;
   user-select: text;
 }

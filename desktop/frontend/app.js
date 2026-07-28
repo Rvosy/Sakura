@@ -1,7 +1,12 @@
 import { createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createFakeChatCore } from "./chat/fake-chat-core.js";
 import { applyTheme } from "./core/theme.js";
-import { applyAppearanceVariables, constrainedPortraitScale, validateAppearancePublication } from "./pet/appearance.js";
+import {
+  appearanceChanges,
+  applyAppearanceVariables,
+  constrainedPortraitScale,
+  validateAppearancePublication,
+} from "./pet/appearance.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
 import {
@@ -38,6 +43,14 @@ let currentHitRegions = null;
 let renderedPortrait = null;
 let disposed = false;
 let presentationUnavailable = false;
+const appEventUnlisteners = [];
+
+async function listenAppEvent(eventName, handler) {
+  const eventApi = window.__TAURI__?.event;
+  if (typeof eventApi?.listen !== "function") throw new Error("TAURI_EVENT_LISTENER_UNAVAILABLE");
+  const unlisten = await eventApi.listen(eventName, handler);
+  if (typeof unlisten === "function") appEventUnlisteners.push(unlisten);
+}
 
 function showRecoverableError(message) {
   presentationError.textContent = String(message || "角色表现暂时不可用");
@@ -66,7 +79,6 @@ const layoutController = createLayoutController({
     contentScale = result.contentScale;
     applyPetLayout(stage, layout, contentScale);
     currentHitRegions = computeHitRegions(layout);
-    document.body.dataset.shellState = "product-ready";
     inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
   },
 });
@@ -77,7 +89,6 @@ try {
   characterPresentation = await loadCurrentCharacterPresentation({ invoke });
 } catch {
   presentationUnavailable = true;
-  document.body.dataset.shellState = "presentation-failed";
   showRecoverableError("当前角色表现加载失败；关闭并重新启动后可重试。");
   characterPresentation = Object.freeze({
     generationId: "unavailable",
@@ -155,6 +166,14 @@ function loadImage(source) {
 }
 
 let portraitHitRevision = 0;
+let portraitHitTimer = null;
+const PORTRAIT_HIT_SETTLE_MS = 90;
+
+function cancelPortraitHitTimer() {
+  if (portraitHitTimer === null) return;
+  window.clearTimeout(portraitHitTimer);
+  portraitHitTimer = null;
+}
 
 function syncPortraitAppearance(key) {
   const metadata = characterPresentation.portraitMetadata[key]
@@ -168,8 +187,8 @@ function syncPortraitAppearance(key) {
   stage.style.setProperty("--portrait-render-scale", String(scale));
 }
 
-function activatePortraitHitTest(key) {
-  const revision = ++portraitHitRevision;
+function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
+  cancelPortraitHitTimer();
   invoke("activate_portrait_hit_test", {
     portraitKey: key,
     revision,
@@ -177,6 +196,23 @@ function activatePortraitHitTest(key) {
   }).catch(() => {
     showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
   });
+}
+
+function schedulePortraitHitTest(key, revision) {
+  cancelPortraitHitTimer();
+  portraitHitTimer = window.setTimeout(() => {
+    portraitHitTimer = null;
+    activatePortraitHitTest(key, revision);
+  }, PORTRAIT_HIT_SETTLE_MS);
+}
+
+async function previewPortraitScale(key) {
+  cancelPortraitHitTimer();
+  const revision = ++portraitHitRevision;
+  await invoke("begin_portrait_scale_preview", { revision });
+  if (revision !== portraitHitRevision) return;
+  syncPortraitAppearance(key);
+  schedulePortraitHitTest(key, revision);
 }
 
 const portraitController = createPortraitController({
@@ -339,20 +375,23 @@ document.addEventListener("contextmenu", async (event) => {
   }
 });
 
-window.__TAURI__?.event?.listen?.("sakura://product-menu-error", () => {
+await listenAppEvent("sakura://product-menu-error", () => {
   showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
 });
 
-window.__TAURI__?.event?.listen?.("sakura://character-appearance-changed", (event) => {
+await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
-    activeAppearance = validateAppearancePublication(event.payload, characterPresentation);
-    applyTheme(activeAppearance.themeTokens);
-    applyAppearanceVariables(activeAppearance);
-    const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
-      ? renderedPortrait
-      : characterPresentation.defaultPortraitKey;
-    syncPortraitAppearance(key);
-    activatePortraitHitTest(key);
+    const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
+    const changes = appearanceChanges(activeAppearance, nextAppearance);
+    activeAppearance = nextAppearance;
+    if (changes.theme) applyTheme(activeAppearance.themeTokens);
+    if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.portrait) {
+      const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
+        ? renderedPortrait
+        : characterPresentation.defaultPortraitKey;
+      await previewPortraitScale(key);
+    }
   } catch {
     // Old generation, forged fields, and stale callbacks are ignored deterministically.
   }
@@ -404,19 +443,34 @@ async function enableAcceptanceEntry() {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  if (portraitHitTimer !== null) {
+    window.clearTimeout(portraitHitTimer);
+    portraitHitTimer = null;
+  }
+  for (const unlisten of appEventUnlisteners.splice(0)) {
+    try {
+      Promise.resolve(unlisten()).catch(() => {});
+    } catch {
+      // The native host may already be gone during WebView teardown.
+    }
+  }
   typewriter.dispose();
   bubbleScroll.dispose();
   portraitController.dispose();
   fakeCore.dispose();
 }
 
-document.querySelector("#close-window").addEventListener("click", () => {
-  dispose();
-  invoke("close_pet_window");
+document.querySelector("#close-window").addEventListener("click", async () => {
+  try {
+    await invoke("close_pet_window");
+  } catch {
+    showRecoverableError("Sakura 暂时无法退出，请稍后重试。");
+  }
 });
 window.addEventListener("beforeunload", dispose, { once: true });
 
 portraitController.beginGeneration("fake-generation-1");
+renderedPortrait = characterPresentation.defaultPortraitKey;
 await portraitController.show(characterPresentation.defaultPortraitKey, {
   immediate: true,
   generation: "fake-generation-1",
@@ -424,3 +478,5 @@ await portraitController.show(characterPresentation.defaultPortraitKey, {
 render(presentation.current());
 await enableAcceptanceEntry();
 fakeCore.start();
+document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
+await invoke("reveal_pet_window");

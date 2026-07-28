@@ -179,7 +179,18 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const previousWindow = globalThis.window;
-  globalThis.window = { setInterval: () => 1, clearInterval() {} };
+  let nextFrame = null;
+  globalThis.window = {
+    setInterval: () => 1,
+    clearInterval() {},
+    requestAnimationFrame(callback) {
+      nextFrame = callback;
+      return 2;
+    },
+    cancelAnimationFrame() {
+      nextFrame = null;
+    },
+  };
   try {
     const controller = createRuntimeAppearanceController({
       document,
@@ -194,6 +205,11 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     await controller.initialize(snapshot);
     controls.portraitScale.value = "130";
     controls.portraitScale.fire("input");
+    controls.portraitScale.value = "135";
+    controls.portraitScale.fire("input");
+    nextFrame?.();
+    nextFrame = null;
+    await Promise.resolve();
     failSave = true;
     await assert.rejects(controller.save(), /save failed/);
     assert.equal(controller.isDirty(), true);
@@ -204,7 +220,8 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     controls.themeColors.fire("input");
     await controller.cancelPreview();
     assert.equal(controller.isDirty(), false);
-    assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_preview" && args.values.portraitScalePercent === 130));
+    assert.equal(calls.filter(([command]) => command === "settings_character_appearance_preview").length, 1);
+    assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_preview" && args.values.portraitScalePercent === 135));
     assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_save" && args.values.themeTokens.accent === themeTokens.accent));
     assert.ok(calls.some(([command]) => command === "settings_character_appearance_cancel_preview"));
   } finally {

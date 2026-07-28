@@ -109,6 +109,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
   let previewQueued = false;
   let previewRunning = false;
   let previewDrainPromise = Promise.resolve();
+  let previewFrame = null;
   let disposed = false;
   let generationTimer = null;
 
@@ -154,13 +155,26 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
     }
   }
 
+  function cancelPreviewFrame() {
+    if (previewFrame === null) return;
+    window.cancelAnimationFrame(previewFrame);
+    previewFrame = null;
+  }
+
+  function schedulePreview() {
+    if (previewFrame !== null || disposed) return;
+    previewFrame = window.requestAnimationFrame(() => {
+      previewFrame = null;
+      if (!previewRunning) previewDrainPromise = drainPreview();
+    });
+  }
+
   function changed() {
     try {
       draft = read();
-      fill(draft);
       previewQueued = true;
       onDirty();
-      if (!previewRunning) previewDrainPromise = drainPreview();
+      schedulePreview();
     } catch (error) {
       onError(String(error));
     }
@@ -187,6 +201,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
         const lifecycle = await invoke("runtime_lifecycle_snapshot");
         if (lifecycle?.supervisor?.generationId === snapshot.presentation.generationId) return;
         previewQueued = false;
+        cancelPreviewFrame();
         await invoke("settings_character_appearance_cancel_preview");
         disposed = true;
         for (const control of document.querySelectorAll(
@@ -210,6 +225,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
       if (!snapshot) throw new Error("角色外观设置尚未加载");
       draft = read();
       previewQueued = false;
+      cancelPreviewFrame();
       await previewDrainPromise;
       const result = await invoke("settings_character_appearance_save", { values: clone(draft) });
       if (
@@ -225,6 +241,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
     },
     async cancelPreview() {
       previewQueued = false;
+      cancelPreviewFrame();
       await previewDrainPromise;
       await invoke("settings_character_appearance_cancel_preview");
       if (baseline) {
@@ -236,6 +253,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
     dispose() {
       disposed = true;
       previewQueued = false;
+      cancelPreviewFrame();
       window.clearInterval(generationTimer);
     },
   });

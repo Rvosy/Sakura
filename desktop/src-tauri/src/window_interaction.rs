@@ -768,7 +768,7 @@ mod tests {
         assert_eq!(model.interactive.len(), 2);
         assert_eq!(model.drag.len(), 2);
         assert!(model.neutral.is_empty());
-        assert_eq!(model.drag[0], LogicalHitRect::new(108, 12, 600, 656));
+        assert_eq!(model.drag[0], LogicalHitRect::new(150, 328, 600, 656));
     }
 
     #[test]
@@ -789,19 +789,19 @@ mod tests {
     fn interactive_regions_take_priority_over_drag_and_edges_are_half_open() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         assert_eq!(
-            classify_logical_point(&model, [700, 380]),
+            classify_logical_point(&model, [742, 696]),
             HitKind::Interactive
         );
-        assert_eq!(classify_logical_point(&model, [384, 120]), HitKind::Drag);
-        assert_eq!(classify_logical_point(&model, [707, 667]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&model, [426, 436]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&model, [749, 983]), HitKind::Drag);
         assert_eq!(
-            classify_logical_point(&model, [708, 668]),
+            classify_logical_point(&model, [750, 984]),
             HitKind::Transparent
         );
         assert_eq!(classify_logical_point(&model, [0, 0]), HitKind::Transparent);
 
         assert_eq!(
-            classify_logical_point(&model, [200, 520]),
+            classify_logical_point(&model, [242, 836]),
             HitKind::Interactive
         );
     }
@@ -809,11 +809,11 @@ mod tests {
     #[test]
     fn product_menu_surface_covers_every_visible_region_and_rejects_transparent_space() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
-        for point in [[300, 200], [100, 400], [200, 520], [700, 380]] {
+        for point in [[342, 516], [142, 716], [242, 836], [742, 696]] {
             assert!(contains_visible_point(&model, point), "{point:?}");
         }
         assert!(!contains_visible_point(&model, [0, 0]));
-        assert!(!contains_visible_point(&model, [815, 679]));
+        assert!(!contains_visible_point(&model, [899, 995]));
     }
 
     #[test]
@@ -825,12 +825,12 @@ mod tests {
             Some([300, 600]),
         )
         .unwrap();
-        assert_eq!(tall.drag[0], LogicalHitRect::new(244, 12, 328, 656));
+        assert_eq!(tall.drag[0], LogicalHitRect::new(286, 328, 328, 656));
         assert_eq!(
-            classify_logical_point(&tall, [120, 100]),
+            classify_logical_point(&tall, [162, 416]),
             HitKind::Transparent
         );
-        assert_eq!(classify_logical_point(&tall, [400, 100]), HitKind::Drag);
+        assert_eq!(classify_logical_point(&tall, [442, 416]), HitKind::Drag);
 
         let wide = logical_hit_regions_with_portrait_size(
             &contract,
@@ -838,9 +838,9 @@ mod tests {
             Some([1200, 300]),
         )
         .unwrap();
-        assert_eq!(wide.drag[0], LogicalHitRect::new(108, 518, 600, 150));
+        assert_eq!(wide.drag[0], LogicalHitRect::new(150, 834, 600, 150));
         assert_eq!(
-            classify_logical_point(&wide, [400, 100]),
+            classify_logical_point(&wide, [442, 416]),
             HitKind::Transparent
         );
         assert!(logical_hit_regions_with_portrait_size(
@@ -878,14 +878,14 @@ mod tests {
         let [base_rect, small_rect, large_rect] =
             [&base.drag[0], &small.drag[0], &requested_large.drag[0]];
         for rect in [base_rect, small_rect, large_rect] {
-            assert_eq!(rect.x + i32::try_from(rect.width / 2).unwrap(), 408);
-            assert_eq!(rect.y + i32::try_from(rect.height).unwrap(), 668);
+            assert_eq!(rect.x + i32::try_from(rect.width / 2).unwrap(), 450);
+            assert_eq!(rect.y + i32::try_from(rect.height).unwrap(), 984);
             assert!(rect.x >= 0 && rect.y >= 0);
             assert!(rect.x as u32 + rect.width <= contract.viewport.window_size[0]);
             assert!(rect.y as u32 + rect.height <= contract.viewport.window_size[1]);
         }
         assert!(small_rect.height < base_rect.height);
-        assert!(large_rect.height >= base_rect.height);
+        assert_eq!(large_rect.height, base_rect.height * 3 / 2);
     }
 
     #[test]
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn hit_regions_scale_outward_at_all_target_dpis() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
-        for (scale, expected) in [(1.0, 816), (1.25, 1020), (1.5, 1224)] {
+        for (scale, expected) in [(1.0, 900), (1.25, 1125), (1.5, 1350)] {
             let physical = scale_hit_regions(&model, scale).unwrap();
             let right = physical
                 .interactive

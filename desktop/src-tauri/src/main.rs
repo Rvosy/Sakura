@@ -59,6 +59,7 @@ const SETTINGS_CAPABILITY_SCRIPT: &str =
     include_str!("../../frontend/settings/capability-shell.js");
 const SETTINGS_APPEARANCE_SCRIPT: &str =
     include_str!("../../frontend/settings/appearance-runtime.js");
+const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
@@ -77,7 +78,9 @@ struct WindowGeometrySession {
     deferred_drag_pending: bool,
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_hit_generation: Option<String>,
+    portrait_hit_key: Option<String>,
     portrait_hit_revision: u64,
+    portrait_hit_relaxed: bool,
     portrait_scale_percent: u16,
 }
 
@@ -91,7 +94,9 @@ impl Default for WindowGeometrySession {
             deferred_drag_pending: false,
             portrait_alpha_mask: None,
             portrait_hit_generation: None,
+            portrait_hit_key: None,
             portrait_hit_revision: 0,
+            portrait_hit_relaxed: false,
             portrait_scale_percent: 100,
         }
     }
@@ -291,9 +296,6 @@ fn apply_native_pet_surface(
         portrait_alpha_mask,
         portrait_scale_percent,
     )?;
-    window
-        .show()
-        .map_err(|error| format!("failed to show pet window: {error}"))?;
     Ok(hit_regions)
 }
 
@@ -306,6 +308,28 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
         apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
     apply_native_pet_surface(window, &contract, &application, None, 100)?;
     Ok(())
+}
+
+#[tauri::command]
+fn reveal_pet_window(
+    window: WebviewWindow,
+    session: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let layout_ready = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?
+        .state
+        .is_some();
+    if !layout_ready {
+        return Err("PET_LAYOUT_NOT_READY".to_string());
+    }
+    window
+        .show()
+        .map_err(|error| format!("failed to reveal pet window: {error}"))?;
+    product_shell::sync_product_tray_visibility(window.app_handle(), true)
 }
 
 fn commit_dragged_window_position(
@@ -682,14 +706,11 @@ fn settings_character_appearance_cancel_preview(
 }
 
 #[tauri::command]
-fn activate_portrait_hit_test(
+fn begin_portrait_scale_preview(
     window: WebviewWindow,
-    portrait_key: String,
     revision: u64,
-    portrait_scale_percent: u16,
     lifecycle: State<'_, ShellLifecycleState>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-    geometry: State<'_, Mutex<WindowGeometrySession>>,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -701,15 +722,83 @@ fn activate_portrait_hit_test(
         .current_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let alpha_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
-
-    let mut geometry = geometry
+    let mut geometry = geometry_state
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
-    if geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str())
-        && revision <= geometry.portrait_hit_revision
+    let same_generation =
+        geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
+    if same_generation && revision <= geometry.portrait_hit_revision {
+        return Ok(());
+    }
+
+    // Scaling the DOM while the previous pixel-perfect Win32 region is still
+    // installed clips the portrait until the debounced mask rebuild finishes.
+    // Temporarily restoring the rectangular surface is a single cheap native
+    // operation; the precise transparent region is restored after settling.
+    NativeWindowInteractionBackend
+        .restore_full_hit_region(&window)
+        .map_err(|error| error.to_string())?;
+    if !same_generation {
+        geometry.portrait_alpha_mask = None;
+        geometry.portrait_hit_key = None;
+    }
+    geometry.portrait_hit_generation = Some(generation_id);
+    geometry.portrait_hit_revision = revision;
+    geometry.portrait_hit_relaxed = true;
+    Ok(())
+}
+
+#[tauri::command]
+fn activate_portrait_hit_test(
+    window: WebviewWindow,
+    portrait_key: String,
+    revision: u64,
+    portrait_scale_percent: u16,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
+        .current_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let same_generation =
+        geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
+    if same_generation
+        && (revision < geometry.portrait_hit_revision
+            || (revision == geometry.portrait_hit_revision && !geometry.portrait_hit_relaxed))
     {
         return Ok(());
+    }
+    let cache_matches = same_generation
+        && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
+        && geometry.portrait_alpha_mask.is_some();
+    if !cache_matches {
+        drop(geometry);
+        let alpha_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
+        geometry = geometry_state
+            .lock()
+            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        let same_generation =
+            geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
+        if same_generation
+            && (revision < geometry.portrait_hit_revision
+                || (revision == geometry.portrait_hit_revision && !geometry.portrait_hit_relaxed))
+        {
+            return Ok(());
+        }
+        geometry.portrait_alpha_mask = Some(alpha_mask);
+        geometry.portrait_hit_generation = Some(generation_id.clone());
+        geometry.portrait_hit_key = Some(portrait_key.clone());
     }
     let state = geometry
         .state
@@ -727,12 +816,13 @@ fn activate_portrait_hit_test(
         &window,
         &contract,
         &application,
-        Some(&alpha_mask),
+        geometry.portrait_alpha_mask.as_ref(),
         portrait_scale_percent,
     )?;
-    geometry.portrait_alpha_mask = Some(alpha_mask);
     geometry.portrait_hit_generation = Some(generation_id);
+    geometry.portrait_hit_key = Some(portrait_key);
     geometry.portrait_hit_revision = revision;
+    geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_percent = portrait_scale_percent;
     Ok(())
 }
@@ -844,6 +934,37 @@ fn close_pet_window(
     request_app_exit(&app_handle, &lifecycle)
 }
 
+fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())?;
+    let visible = window.is_visible().map_err(|error| error.to_string())?;
+    if visible {
+        window.hide().map_err(|error| error.to_string())?;
+        product_shell::sync_product_tray_visibility(app, false)
+    } else {
+        window.show().map_err(|error| error.to_string())?;
+        product_shell::sync_product_tray_visibility(app, true)?;
+        window.set_focus().map_err(|error| error.to_string())
+    }
+}
+
+fn handle_product_menu_action(
+    app: &tauri::AppHandle,
+    action: product_shell::ProductMenuAction,
+) -> Result<(), String> {
+    match action {
+        product_shell::ProductMenuAction::TogglePet => toggle_pet_visibility(app),
+        product_shell::ProductMenuAction::OpenSettings => {
+            product_shell::show_or_focus_settings(app)
+        }
+        product_shell::ProductMenuAction::ExitApp => {
+            let lifecycle = app.state::<ShellLifecycleState>();
+            request_app_exit(app, &lifecycle)
+        }
+    }
+}
+
 fn finish_app_exit(
     app_handle: &tauri::AppHandle,
     lifecycle: &ShellLifecycleState,
@@ -907,7 +1028,6 @@ fn resolve_settings_exit(
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     shell: State<'_, product_shell::ProductShellState>,
-    appearance: State<'_, character_appearance::CharacterAppearanceState>,
 ) -> Result<(), String> {
     if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
         return Err("SETTINGS_WINDOW_REQUIRED".to_string());
@@ -920,11 +1040,8 @@ fn resolve_settings_exit(
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
-    if let Some(publication) = appearance.close_session()? {
-        emit_appearance(&app_handle, publication)?;
-    }
     shell.authorize_close()?;
-    window.close().map_err(|error| error.to_string())?;
+    window.destroy().map_err(|error| error.to_string())?;
     if let Some(handle) = &lifecycle.handle {
         handle.request_shutdown().map_err(str::to_string)?;
     }
@@ -1095,6 +1212,7 @@ fn main() {
         SETTINGS_SCRIPT.len(),
         SETTINGS_CAPABILITY_SCRIPT.len(),
         SETTINGS_APPEARANCE_SCRIPT.len(),
+        SETTINGS_CLOSE_FLOW_SCRIPT.len(),
     );
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
@@ -1126,6 +1244,8 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
             prepare_initial_pet_window(&window)?;
+            let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
+            product_shell::install_product_tray(app, pet_visible)?;
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -1133,32 +1253,38 @@ fn main() {
             else {
                 return;
             };
-            let result = match action {
-                product_shell::ProductMenuAction::TogglePet => app
-                    .get_webview_window("main")
-                    .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())
-                    .and_then(|window| {
-                        let visible = window.is_visible().map_err(|error| error.to_string())?;
-                        if visible {
-                            window.hide()
-                        } else {
-                            window.show()
-                        }
-                        .map_err(|error| error.to_string())
-                    }),
-                product_shell::ProductMenuAction::OpenSettings => {
-                    product_shell::show_or_focus_settings(app)
-                }
-                product_shell::ProductMenuAction::ExitApp => {
-                    let lifecycle = app.state::<ShellLifecycleState>();
-                    request_app_exit(app, &lifecycle)
-                }
-            };
-            if let Err(error) = result {
+            if let Err(error) = handle_product_menu_action(app, action) {
                 product_shell::emit_product_menu_error(app, error);
             }
         })
+        .on_tray_icon_event(|app, event| {
+            if event.id().as_ref() != product_shell::PRODUCT_TRAY_ID {
+                return;
+            }
+            if matches!(
+                event,
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                if let Err(error) = toggle_pet_visibility(app) {
+                    product_shell::emit_product_menu_error(app, error);
+                }
+            }
+        })
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let lifecycle = window.state::<ShellLifecycleState>();
+                    if let Err(error) = request_app_exit(window.app_handle(), &lifecycle) {
+                        product_shell::emit_product_menu_error(window.app_handle(), error);
+                    }
+                }
+                return;
+            }
             if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
                 return;
             }
@@ -1183,6 +1309,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             apply_pet_layout,
+            reveal_pet_window,
             start_pet_drag,
             show_pet_context_menu,
             probe_pet_visibility,
@@ -1191,6 +1318,7 @@ fn main() {
             runtime_lifecycle_snapshot,
             current_character_presentation,
             current_character_appearance,
+            begin_portrait_scale_preview,
             activate_portrait_hit_test,
             wp_3_03_acceptance_enabled,
             retry_core,
@@ -1330,6 +1458,7 @@ mod tests {
         assert!(!SETTINGS_STYLES.is_empty());
         assert!(!SETTINGS_SCRIPT.is_empty());
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
+        assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract
             .validate()

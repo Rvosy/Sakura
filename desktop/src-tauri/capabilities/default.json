@@ -3,5 +3,8 @@
   "identifier": "default",
   "description": "Default-deny capability for the pet and settings window hosts.",
   "windows": ["main", "settings"],
-  "permissions": []
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

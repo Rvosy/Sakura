@@ -519,7 +519,7 @@ mod tests {
                 .layout(PresentationState::Product)
                 .unwrap()
                 .window_size,
-            [816, 680]
+            [900, 996]
         );
     }
 
@@ -577,7 +577,7 @@ mod tests {
                 1.25,
             ),
         ];
-        let anchor = PhysicalPoint { x: -520, y: 980 };
+        let anchor = PhysicalPoint { x: -600, y: 1050 };
         assert_eq!(select_target_monitor(&monitors, anchor), Some(1));
         let result = apply_window_layout(
             &contract(),

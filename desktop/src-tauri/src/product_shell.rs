@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::menu::{Menu, MenuItem};
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    App, AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
@@ -12,10 +15,12 @@ pub const SETTINGS_CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-reques
 pub const SETTINGS_EXIT_REQUESTED_EVENT: &str = "sakura://settings-exit-requested";
 pub const SETTINGS_EXIT_TIMEOUT_EVENT: &str = "sakura://settings-exit-timeout";
 pub const PRODUCT_MENU_ERROR_EVENT: &str = "sakura://product-menu-error";
+pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
+const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductMenuAction {
@@ -46,9 +51,31 @@ struct SettingsWindowSession {
 #[derive(Default)]
 pub struct ProductShellState {
     settings: Mutex<SettingsWindowSession>,
+    tray_visibility: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 impl ProductShellState {
+    fn install_tray_visibility(&self, item: MenuItem<tauri::Wry>) -> Result<(), String> {
+        let mut visibility = self
+            .tray_visibility
+            .lock()
+            .map_err(|_| "tray menu state is unavailable".to_string())?;
+        *visibility = Some(item);
+        Ok(())
+    }
+
+    fn sync_tray_visibility(&self, visible: bool) -> Result<(), String> {
+        let item = self
+            .tray_visibility
+            .lock()
+            .map_err(|_| "tray menu state is unavailable".to_string())?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "tray visibility action is unavailable".to_string())?;
+        item.set_text(pet_visibility_action_text(visible))
+            .map_err(|error| error.to_string())
+    }
+
     fn next_generation(&self) -> Result<u64, String> {
         let mut session = self
             .settings
@@ -143,6 +170,58 @@ impl ProductShellState {
     }
 }
 
+fn pet_visibility_action_text(visible: bool) -> &'static str {
+    if visible {
+        "隐藏桌宠"
+    } else {
+        "显示桌宠"
+    }
+}
+
+pub fn install_product_tray(app: &App, pet_visible: bool) -> Result<(), String> {
+    let visibility = MenuItem::with_id(
+        app,
+        MENU_TOGGLE_PET,
+        pet_visibility_action_text(pet_visible),
+        true,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let settings = MenuItem::with_id(app, MENU_OPEN_SETTINGS, "设置…", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let exit = MenuItem::with_id(app, MENU_EXIT_APP, "退出", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let first_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+    let second_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &visibility,
+            &first_separator,
+            &settings,
+            &second_separator,
+            &exit,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    let icon = Image::from_bytes(PRODUCT_TRAY_ICON).map_err(|error| error.to_string())?;
+
+    TrayIconBuilder::with_id(PRODUCT_TRAY_ID)
+        .icon(icon)
+        .tooltip("Sakura")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    app.state::<ProductShellState>()
+        .install_tray_visibility(visibility)
+}
+
+pub fn sync_product_tray_visibility(app: &AppHandle, visible: bool) -> Result<(), String> {
+    app.state::<ProductShellState>()
+        .sync_tray_visibility(visible)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsCapabilityManifest {
@@ -216,8 +295,6 @@ pub fn resolve_settings_close(
     window: WebviewWindow,
     discard: bool,
     state: tauri::State<'_, ProductShellState>,
-    appearance: tauri::State<'_, crate::character_appearance::CharacterAppearanceState>,
-    app_handle: AppHandle,
 ) -> Result<(), String> {
     validate_settings_window(&window)?;
     if !discard {
@@ -225,17 +302,8 @@ pub fn resolve_settings_close(
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
-    if let Some(publication) = appearance.close_session()? {
-        app_handle
-            .emit_to(
-                "main",
-                crate::character_appearance::APPEARANCE_CHANGED_EVENT,
-                publication,
-            )
-            .map_err(|error| error.to_string())?;
-    }
     state.authorize_close()?;
-    window.close().map_err(|error| error.to_string())
+    window.destroy().map_err(|error| error.to_string())
 }
 
 pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
@@ -283,11 +351,7 @@ pub fn show_product_menu(window: &WebviewWindow, popup_x: f64, popup_y: f64) -> 
     let visibility = MenuItem::with_id(
         window,
         MENU_TOGGLE_PET,
-        if visible {
-            "隐藏桌宠"
-        } else {
-            "显示桌宠"
-        },
+        pet_visibility_action_text(visible),
         true,
         None::<&str>,
     )
@@ -329,6 +393,12 @@ mod tests {
         );
         assert_eq!(ProductMenuAction::from_id("settings.open"), None);
         assert_eq!(ProductMenuAction::from_id("sakura.settings.save"), None);
+    }
+
+    #[test]
+    fn pet_visibility_action_text_tracks_window_state() {
+        assert_eq!(pet_visibility_action_text(true), "隐藏桌宠");
+        assert_eq!(pet_visibility_action_text(false), "显示桌宠");
     }
 
     #[test]

@@ -79,3 +79,14 @@ export function applyAppearanceVariables(values, root = document.documentElement
   root.style.setProperty("--input-font-size", `${values.inputFontSize}px`);
   root.style.setProperty("--button-font-size", `${values.buttonFontSize}px`);
 }
+
+export function appearanceChanges(previous, next) {
+  const theme = THEME_KEYS.some((key) => previous?.themeTokens?.[key] !== next?.themeTokens?.[key]);
+  const fonts = ["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"]
+    .some((field) => previous?.[field] !== next?.[field]);
+  return Object.freeze({
+    theme,
+    fonts,
+    portrait: previous?.portraitScalePercent !== next?.portraitScalePercent,
+  });
+}

@@ -8,8 +8,13 @@ const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.u
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
+const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
 const nativeWindowBackend = readFileSync(new URL("../../src-tauri/src/platform/window_backend.rs", import.meta.url), "utf8");
+const cargoManifest = readFileSync(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8");
 const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+const tauriCapability = JSON.parse(
+  readFileSync(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8"),
+);
 const legacySettingsConfig = JSON.parse(
   readFileSync(new URL("../../../tools/settings-tauri/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
@@ -48,7 +53,7 @@ test("rounded WebView surfaces preserve the native clip contract without externa
   assert.match(nativeInteraction, /portrait_rect,[\s\S]*?0,[\s\S]*?\)\?/);
 });
 
-test("the pet window stays hidden until the native borderless surface and regions are ready", () => {
+test("the pet window stays hidden until the native surface and first character frame are ready", () => {
   const mainWindow = tauriConfig.app.windows.find((window) => window.label === "main");
   assert.equal(mainWindow.decorations, false);
   assert.equal(mainWindow.transparent, true);
@@ -60,9 +65,19 @@ test("the pet window stays hidden until the native borderless surface and region
   const prepareIndex = nativeSurface.indexOf(".prepare_window(window)");
   const boundsIndex = nativeSurface.indexOf(".apply_bounds(window");
   const regionsIndex = nativeSurface.indexOf("apply_native_interaction_region(");
-  const showIndex = nativeSurface.indexOf(".show()");
   assert.ok(prepareIndex >= 0);
-  assert.ok(prepareIndex < boundsIndex && boundsIndex < regionsIndex && regionsIndex < showIndex);
+  assert.ok(prepareIndex < boundsIndex && boundsIndex < regionsIndex);
+  assert.doesNotMatch(nativeSurface, /\.show\(\)/);
+  assert.match(styles, /body\[data-shell-state="loading"\] \.pet-stage\s*\{[^}]*visibility:\s*hidden/);
+  const reveal = nativeMain.match(/fn reveal_pet_window[\s\S]*?\r?\n}/)?.[0] || "";
+  assert.match(reveal, /PET_LAYOUT_NOT_READY/);
+  assert.match(reveal, /window[\s\S]*?\.show\(\)/);
+  const presentationIndex = app.indexOf("await loadCurrentCharacterPresentation({ invoke })");
+  const portraitIndex = app.lastIndexOf("await portraitController.show(characterPresentation.defaultPortraitKey");
+  const readyIndex = app.lastIndexOf("document.body.dataset.shellState =");
+  const revealIndex = app.lastIndexOf('await invoke("reveal_pet_window")');
+  assert.ok(presentationIndex >= 0 && presentationIndex < portraitIndex);
+  assert.ok(portraitIndex < readyIndex && readyIndex < revealIndex);
   assert.match(nativeWindowBackend, /WS_CAPTION/);
   assert.match(nativeWindowBackend, /SWP_FRAMECHANGED/);
   assert.match(nativeWindowBackend, /GetWindowLongW/);
@@ -118,12 +133,92 @@ test("the runtime and legacy host consume one canonical settings frontend", () =
   assert.match(nativeMain, /frontend\/settings\/capability-shell\.js/);
 });
 
+test("appearance publications can reach the pet through the least-privilege event capability", () => {
+  assert.deepEqual(tauriCapability.windows, ["main", "settings"]);
+  assert.deepEqual(tauriCapability.permissions, [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+  ]);
+  assert.match(app, /await listenAppEvent\("sakura:\/\/character-appearance-changed"/);
+  assert.match(app, /appEventUnlisteners\.splice\(0\)/);
+});
+
+test("font previews never enter the portrait alpha-mask update path", () => {
+  assert.match(app, /const changes = appearanceChanges\(activeAppearance, nextAppearance\)/);
+  assert.match(app, /if \(changes\.fonts\) applyAppearanceVariables\(activeAppearance\)/);
+});
+
+test("portrait previews relax the stale native clip before scaling and rebuild it only after settling", () => {
+  assert.match(app, /const PORTRAIT_HIT_SETTLE_MS = 90/);
+  assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?await invoke\("begin_portrait_scale_preview"[\s\S]*?syncPortraitAppearance\(key\)[\s\S]*?schedulePortraitHitTest\(key, revision\)/);
+  assert.match(app, /function schedulePortraitHitTest\(key, revision\)[\s\S]*?window\.setTimeout/);
+  assert.match(app, /if \(changes\.portrait\) \{[\s\S]*?await previewPortraitScale\(key\)/);
+  assert.match(app, /commit: \(\{ key, source \}\)[\s\S]*?activatePortraitHitTest\(key\)/);
+  const nativePreview = nativeMain.match(/fn begin_portrait_scale_preview[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(nativePreview, /restore_full_hit_region/);
+  assert.match(nativePreview, /portrait_hit_relaxed = true/);
+  const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(nativePortraitUpdate, /let cache_matches =/);
+  assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
+  assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
+});
+
+test("the one-line composer keeps its text optically centered across configured font sizes", () => {
+  const composerInput = styles.match(/\.composer textarea\s*\{([^}]*)\}/)?.[1] || "";
+  assert.match(composerInput, /padding:\s*8px 15px 5px/);
+  assert.match(composerInput, /overflow-y:\s*hidden/);
+  assert.match(composerInput, /line-height:\s*1\.25/);
+});
+
 test("product menu is native-owned and the settings window is a decorated singleton", () => {
   assert.match(app, /invoke\("show_pet_context_menu"/);
   assert.doesNotMatch(index, /context-menu|menu-popover/);
   assert.match(nativeMain, /ProductMenuAction::from_id/);
   assert.match(nativeMain, /show_or_focus_settings/);
   assert.match(nativeMain, /SETTINGS_WINDOW_LABEL/);
+});
+
+test("the native tray keeps a hidden pet recoverable through the shared visibility action", () => {
+  assert.match(cargoManifest, /"image-png"/);
+  assert.match(cargoManifest, /"tray-icon"/);
+  assert.match(nativeProductShell, /include_bytes!\("\.\.\/icons\/icon\.png"\)/);
+  assert.match(nativeProductShell, /TrayIconBuilder::with_id\(PRODUCT_TRAY_ID\)/);
+  assert.match(nativeProductShell, /\.tooltip\("Sakura"\)/);
+  assert.match(nativeProductShell, /\.show_menu_on_left_click\(false\)/);
+  assert.match(nativeProductShell, /MENU_TOGGLE_PET[\s\S]*?MENU_OPEN_SETTINGS[\s\S]*?MENU_EXIT_APP/);
+
+  const visibilityToggle = nativeMain.match(/fn toggle_pet_visibility[\s\S]*?\n}/)?.[0] || "";
+  assert.match(visibilityToggle, /window\.hide\(\)/);
+  assert.match(visibilityToggle, /window\.show\(\)/);
+  assert.match(visibilityToggle, /sync_product_tray_visibility\(app, false\)/);
+  assert.match(visibilityToggle, /sync_product_tray_visibility\(app, true\)/);
+  assert.match(visibilityToggle, /window\.set_focus\(\)/);
+  assert.equal(nativeMain.match(/toggle_pet_visibility\(app\)/g)?.length, 2);
+  assert.match(nativeMain, /reveal_pet_window[\s\S]*?sync_product_tray_visibility\(window\.app_handle\(\), true\)/);
+
+  const trayEvents = nativeMain.match(/\.on_tray_icon_event\([\s\S]*?\.on_window_event/)?.[0] || "";
+  assert.match(trayEvents, /TrayIconEvent::Click/);
+  assert.match(trayEvents, /MouseButton::Left/);
+  assert.match(trayEvents, /MouseButtonState::Up/);
+});
+
+test("closing the pet always coordinates whole-app exit with the settings window", () => {
+  const closeHandler = app.match(/#close-window[\s\S]*?beforeunload/)?.[0] || "";
+  assert.match(closeHandler, /await invoke\("close_pet_window"\)/);
+  assert.doesNotMatch(closeHandler, /dispose\(\)[\s\S]*?invoke\("close_pet_window"\)/);
+  assert.match(app, /beforeunload", dispose/);
+
+  const nativeWindowEvents = nativeMain.match(/\.on_window_event\([\s\S]*?\.invoke_handler/)?.[0] || "";
+  assert.match(nativeWindowEvents, /window\.label\(\) == "main"/);
+  assert.match(nativeWindowEvents, /CloseRequested[\s\S]*?api\.prevent_close\(\)[\s\S]*?request_app_exit/);
+});
+
+test("confirmed settings close destroys the window before ending its appearance session", () => {
+  const resolveClose = nativeMain.match(/fn resolve_settings_exit[\s\S]*?\n}/)?.[0] || "";
+  assert.match(resolveClose, /window\.destroy\(\)/);
+  assert.doesNotMatch(resolveClose, /appearance\.close_session/);
+  const nativeWindowEvents = nativeMain.match(/\.on_window_event\([\s\S]*?\.invoke_handler/)?.[0] || "";
+  assert.match(nativeWindowEvents, /WindowEvent::Destroyed[\s\S]*?appearance\.close_session\(\)/);
 });
 
 test("portrait click-through is tightened after the decoded contain size is known", () => {

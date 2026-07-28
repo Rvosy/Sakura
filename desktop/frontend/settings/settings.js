@@ -1,4 +1,5 @@
 const invoke = window.__TAURI__.core.invoke;
+const settingsCloseFlowPromise = import("./close-flow.js");
 
 document.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -362,7 +363,7 @@ function scheduleDirty() {
   dirtyTimer = window.setTimeout(refreshDirty, 150);
 }
 
-// 关窗/取消前若有未保存改动则二次确认，返回是否放行。
+// legacy 独立宿主仍使用原有二选一确认；Runtime v2 使用保存/放弃/返回三选一。
 async function confirmDiscard() {
   if (!computeDirty()) {
     return true;
@@ -378,7 +379,6 @@ async function confirmDiscard() {
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
   if (runtimeSettingsHost) {
-    await runtimeAppearanceController?.cancelPreview();
     await invoke("resolve_settings_close", { discard: true });
     return;
   }
@@ -402,10 +402,29 @@ async function requestCancelClose() {
   }
   closeRequestInFlight = true;
   try {
+    if (runtimeSettingsHost) {
+      const { executeSettingsClose } = await settingsCloseFlowPromise;
+      setError("");
+      await executeSettingsClose({
+        dirty: computeDirty(),
+        choose: chooseUnsavedClose,
+        save: async () => {
+          setSubmissionBusy(true);
+          await runtimeAppearanceController?.save();
+          notify("已保存。", "success");
+        },
+        discard: async () => {
+          setSubmissionBusy(true);
+          await runtimeAppearanceController?.cancelPreview();
+        },
+        close: closeSettingsWindow,
+        stay: async () => {
+          await invoke("resolve_settings_close", { discard: false });
+        },
+      });
+      return;
+    }
     if (!(await confirmDiscard())) {
-      if (runtimeSettingsHost) {
-        await invoke("resolve_settings_close", { discard: false });
-      }
       return;
     }
     await closeSettingsWindow();
@@ -413,6 +432,7 @@ async function requestCancelClose() {
     bypassCloseGuard = false;
     setError(String(error));
   } finally {
+    setSubmissionBusy(false);
     closeRequestInFlight = false;
   }
 }
@@ -424,11 +444,33 @@ async function requestAppExitClose() {
   }
   exitRequestInFlight = true;
   try {
-    const discard = await confirmDiscard();
-    await invoke("resolve_settings_exit", { discard });
+    const { executeSettingsClose } = await settingsCloseFlowPromise;
+    setError("");
+    await executeSettingsClose({
+      dirty: computeDirty(),
+      choose: chooseUnsavedClose,
+      save: async () => {
+        setSubmissionBusy(true);
+        await runtimeAppearanceController?.save();
+        notify("已保存。", "success");
+      },
+      discard: async () => {
+        setSubmissionBusy(true);
+        await runtimeAppearanceController?.cancelPreview();
+      },
+      close: async () => {
+        bypassCloseGuard = true;
+        await invoke("resolve_settings_exit", { discard: true });
+      },
+      stay: async () => {
+        await invoke("resolve_settings_exit", { discard: false });
+      },
+    });
   } catch (error) {
+    bypassCloseGuard = false;
     setError(String(error));
   } finally {
+    setSubmissionBusy(false);
     exitRequestInFlight = false;
   }
 }
@@ -531,6 +573,60 @@ function confirmAction(
     document.addEventListener("keydown", onKey, true);
     document.body.append(overlay);
     confirm.focus();
+  });
+}
+
+async function chooseUnsavedClose() {
+  const { CloseDecision } = await settingsCloseFlowPromise;
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    const dialog = document.createElement("section");
+    dialog.className = "confirm-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const heading = document.createElement("h2");
+    heading.textContent = "保存改动";
+    const body = document.createElement("p");
+    body.textContent = "设置有未保存的改动，是否保存后关闭？";
+    const actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    const stay = document.createElement("button");
+    stay.type = "button";
+    stay.className = "secondary-button";
+    stay.textContent = "返回";
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.className = "danger-button";
+    discard.textContent = "不保存";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "保存";
+    actions.append(stay, discard, save);
+    dialog.append(heading, body, actions);
+    overlay.append(dialog);
+
+    function close(decision) {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      resolve(decision);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") {
+        close(CloseDecision.STAY);
+      }
+    }
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(CloseDecision.STAY);
+      }
+    });
+    stay.addEventListener("click", () => close(CloseDecision.STAY));
+    discard.addEventListener("click", () => close(CloseDecision.DISCARD));
+    save.addEventListener("click", () => close(CloseDecision.SAVE));
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    save.focus();
   });
 }
 
