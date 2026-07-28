@@ -59,5 +59,108 @@
         <button type="button" data-scenario="/restart">restart</button>
       </section>
     </main>
+
+    <div id="pet-context-menu" class="pet-context-menu" role="menu" aria-label="桌宠菜单" hidden>
+      <span id="pet-context-menu-unavailable-reason" class="visually-hidden">
+        该功能尚未迁移到 Runtime v2
+      </span>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.pet.visibility.toggle"
+        aria-disabled="false"
+      >
+        隐藏至托盘
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        tabindex="-1"
+        aria-checked="false"
+        aria-disabled="true"
+        aria-describedby="pet-context-menu-unavailable-reason"
+        data-menu-unavailable
+        disabled
+      >
+        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+        <span>显示中文字幕</span>
+      </button>
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        tabindex="-1"
+        aria-checked="false"
+        aria-disabled="true"
+        aria-describedby="pet-context-menu-unavailable-reason"
+        data-menu-unavailable
+        disabled
+      >
+        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+        <span>完整访问权限</span>
+      </button>
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        tabindex="-1"
+        aria-checked="false"
+        aria-disabled="true"
+        aria-describedby="pet-context-menu-unavailable-reason"
+        data-menu-unavailable
+        disabled
+      >
+        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+        <span>保持置顶</span>
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        aria-disabled="true"
+        aria-describedby="pet-context-menu-unavailable-reason"
+        data-menu-unavailable
+        disabled
+      >
+        历史记录
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        aria-disabled="true"
+        aria-describedby="pet-context-menu-unavailable-reason"
+        data-menu-unavailable
+        disabled
+      >
+        运行日志 / 诊断
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.settings.open"
+        aria-disabled="false"
+      >
+        设置
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.app.exit"
+        aria-disabled="false"
+      >
+        退出
+      </button>
+    </div>
   </body>
 </html>

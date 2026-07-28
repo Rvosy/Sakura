@@ -9,6 +9,7 @@ import {
 } from "./pet/appearance.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
+import { PetContextMenu } from "./pet/context_menu.js";
 import {
   classifyPointerHit,
   computeHitRegions,
@@ -37,6 +38,7 @@ const portraitCurrent = document.querySelector("#portrait-current");
 const portraitNext = document.querySelector("#portrait-next");
 const portraitFallback = document.querySelector("#portrait-fallback");
 const portraitFallbackName = document.querySelector("#portrait-fallback-name");
+const contextMenuElement = document.querySelector("#pet-context-menu");
 const dragRegions = [...document.querySelectorAll("[data-drag-region]")];
 let contentScale = 1;
 let currentHitRegions = null;
@@ -44,6 +46,12 @@ let renderedPortrait = null;
 let disposed = false;
 let presentationUnavailable = false;
 const appEventUnlisteners = [];
+
+const contextMenu = new PetContextMenu({
+  menu: contextMenuElement,
+  invoke,
+  onError: (message) => showRecoverableError(message),
+});
 
 async function listenAppEvent(eventName, handler) {
   const eventApi = window.__TAURI__?.event;
@@ -347,6 +355,10 @@ for (const dragRegion of dragRegions) {
 }
 
 document.addEventListener("contextmenu", async (event) => {
+  if (contextMenu.contains(event.target)) {
+    event.preventDefault();
+    return;
+  }
   if (!currentHitRegions) return;
   const point = [event.clientX / contentScale, event.clientY / contentScale];
   const hitKind = classifyPointerHit({
@@ -360,17 +372,22 @@ document.addEventListener("contextmenu", async (event) => {
       button: event.button,
     })
   ) {
+    if (contextMenu.isOpen()) {
+      event.preventDefault();
+      contextMenu.close().catch(() => {});
+    }
     return;
   }
   event.preventDefault();
   try {
-    await invoke("show_pet_context_menu", {
+    const manifest = await invoke("open_pet_context_menu", {
       surfaceX: point[0],
       surfaceY: point[1],
-      popupX: event.clientX,
-      popupY: event.clientY,
     });
+    contextMenu.openAt(event.clientX, event.clientY, manifest);
   } catch {
+    contextMenu.hide();
+    invoke("close_pet_context_menu").catch(() => {});
     showRecoverableError("桌宠菜单暂时无法打开，请稍后重试。");
   }
 });
@@ -458,6 +475,7 @@ function dispose() {
   bubbleScroll.dispose();
   portraitController.dispose();
   fakeCore.dispose();
+  contextMenu.dispose();
 }
 
 document.querySelector("#close-window").addEventListener("click", async () => {

@@ -5,10 +5,7 @@ use serde::Serialize;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{
-    App, AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const SETTINGS_CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
@@ -21,6 +18,7 @@ const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
+const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductMenuAction {
@@ -37,6 +35,25 @@ impl ProductMenuAction {
             MENU_EXIT_APP => Some(Self::ExitApp),
             _ => None,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductMenuCapabilityManifest {
+    pub schema_version: u32,
+    pub available_actions: Vec<String>,
+    pub unavailable_reason: String,
+}
+
+pub fn product_menu_capability_manifest() -> ProductMenuCapabilityManifest {
+    ProductMenuCapabilityManifest {
+        schema_version: 1,
+        available_actions: [MENU_TOGGLE_PET, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        unavailable_reason: PRODUCT_MENU_UNAVAILABLE_REASON.to_string(),
     }
 }
 
@@ -338,35 +355,6 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn show_product_menu(window: &WebviewWindow, popup_x: f64, popup_y: f64) -> Result<(), String> {
-    if window.label() != "main"
-        || !popup_x.is_finite()
-        || !popup_y.is_finite()
-        || popup_x < 0.0
-        || popup_y < 0.0
-    {
-        return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
-    }
-    let visible = window.is_visible().map_err(|error| error.to_string())?;
-    let visibility = MenuItem::with_id(
-        window,
-        MENU_TOGGLE_PET,
-        pet_visibility_action_text(visible),
-        true,
-        None::<&str>,
-    )
-    .map_err(|error| error.to_string())?;
-    let settings = MenuItem::with_id(window, MENU_OPEN_SETTINGS, "设置…", true, None::<&str>)
-        .map_err(|error| error.to_string())?;
-    let exit = MenuItem::with_id(window, MENU_EXIT_APP, "退出", true, None::<&str>)
-        .map_err(|error| error.to_string())?;
-    let menu = Menu::with_items(window, &[&visibility, &settings, &exit])
-        .map_err(|error| error.to_string())?;
-    window
-        .popup_menu_at(&menu, LogicalPosition::new(popup_x, popup_y))
-        .map_err(|error| format!("PRODUCT_MENU_SHOW_FAILED: {error}"))
-}
-
 pub fn emit_product_menu_error(app: &AppHandle, error: impl ToString) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit(PRODUCT_MENU_ERROR_EVENT, error.to_string());
@@ -393,6 +381,21 @@ mod tests {
         );
         assert_eq!(ProductMenuAction::from_id("settings.open"), None);
         assert_eq!(ProductMenuAction::from_id("sakura.settings.save"), None);
+    }
+
+    #[test]
+    fn product_menu_manifest_exposes_only_dispatchable_actions() {
+        let manifest = product_menu_capability_manifest();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(
+            manifest.available_actions,
+            [MENU_TOGGLE_PET, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
+        );
+        assert_eq!(manifest.unavailable_reason, PRODUCT_MENU_UNAVAILABLE_REASON);
+        assert!(manifest
+            .available_actions
+            .iter()
+            .all(|id| ProductMenuAction::from_id(id).is_some()));
     }
 
     #[test]

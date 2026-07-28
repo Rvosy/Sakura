@@ -202,6 +202,7 @@ pub fn logical_hit_regions(
     logical_hit_regions_with_portrait_size(contract, state, None)
 }
 
+#[cfg(test)]
 pub fn logical_hit_regions_with_portrait_size(
     contract: &LayoutContract,
     state: PresentationState,

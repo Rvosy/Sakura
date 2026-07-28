@@ -82,6 +82,8 @@ struct WindowGeometrySession {
     portrait_hit_revision: u64,
     portrait_hit_relaxed: bool,
     portrait_scale_percent: u16,
+    context_menu_open: bool,
+    hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
 impl Default for WindowGeometrySession {
@@ -98,6 +100,8 @@ impl Default for WindowGeometrySession {
             portrait_hit_revision: 0,
             portrait_hit_relaxed: false,
             portrait_scale_percent: 100,
+            context_menu_open: false,
+            hit_regions: None,
         }
     }
 }
@@ -233,10 +237,12 @@ fn apply_pet_layout(
         &application,
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
+        session.context_menu_open || session.portrait_hit_relaxed,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
     session.applied_revision = revision;
+    session.hit_regions = Some(hit_regions.clone());
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
@@ -249,6 +255,7 @@ fn apply_native_interaction_region(
     application: &LayoutApplication,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
+    keep_full_hit_region: bool,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let logical = window_interaction::logical_hit_regions_with_portrait_transform(
         contract,
@@ -262,7 +269,22 @@ fn apply_native_interaction_region(
     )?;
     physical.portrait_alpha_mask = portrait_alpha_mask.cloned();
     let backend = NativeWindowInteractionBackend;
-    if let Err(error) = backend.apply_hit_regions(window, &physical) {
+    if keep_full_hit_region {
+        backend
+            .restore_full_hit_region(window)
+            .map_err(|error| error.to_string())?;
+    } else {
+        apply_precise_hit_regions(window, &physical)?;
+    }
+    Ok(physical)
+}
+
+fn apply_precise_hit_regions(
+    window: &WebviewWindow,
+    physical: &window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    let backend = NativeWindowInteractionBackend;
+    if let Err(error) = backend.apply_hit_regions(window, physical) {
         return match backend.restore_full_hit_region(window) {
             Ok(()) => Err(format!(
                 "failed to apply native hit regions; restored full-window interaction: {error}"
@@ -272,7 +294,7 @@ fn apply_native_interaction_region(
             )),
         };
     }
-    Ok(physical)
+    Ok(())
 }
 
 fn apply_native_pet_surface(
@@ -281,6 +303,7 @@ fn apply_native_pet_surface(
     application: &LayoutApplication,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
+    keep_full_hit_region: bool,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let backend = NativeWindowInteractionBackend;
     backend
@@ -295,6 +318,7 @@ fn apply_native_pet_surface(
         application,
         portrait_alpha_mask,
         portrait_scale_percent,
+        keep_full_hit_region,
     )?;
     Ok(hit_regions)
 }
@@ -306,7 +330,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     // and the first committed WindowGeometrySession state after WebView startup.
     let application =
         apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
-    apply_native_pet_surface(window, &contract, &application, None, 100)?;
+    apply_native_pet_surface(window, &contract, &application, None, 100, false)?;
     Ok(())
 }
 
@@ -360,8 +384,10 @@ fn commit_dragged_window_position(
         &application,
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
+        session.context_menu_open || session.portrait_hit_relaxed,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
+    session.hit_regions = Some(hit_regions.clone());
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
@@ -439,34 +465,74 @@ fn start_pet_drag(
 }
 
 #[tauri::command]
-fn show_pet_context_menu(
+fn open_pet_context_menu(
     window: WebviewWindow,
     surface_x: f64,
     surface_y: f64,
-    popup_x: f64,
-    popup_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<(), String> {
-    if !surface_x.is_finite() || !surface_y.is_finite() {
+) -> Result<product_shell::ProductMenuCapabilityManifest, String> {
+    if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
     }
-    let portrait_source_size = session
+    let mut geometry = session
         .lock()
-        .map_err(|_| "window geometry state is unavailable".to_string())?
-        .portrait_alpha_mask
-        .as_ref()
-        .map(character_presentation::PortraitAlphaMask::source_size);
-    let regions = window_interaction::logical_hit_regions_with_portrait_size(
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let state = geometry
+        .state
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let regions = window_interaction::logical_hit_regions_with_portrait_transform(
         &layout_contract()?,
-        PresentationState::Product,
-        portrait_source_size,
+        state,
+        geometry
+            .portrait_alpha_mask
+            .as_ref()
+            .map(character_presentation::PortraitAlphaMask::source_size),
+        geometry.portrait_scale_percent,
     )?;
     let point = [surface_x.floor() as i32, surface_y.floor() as i32];
-    let allowed = window_interaction::contains_visible_point(&regions, point);
-    if !allowed {
+    if !window_interaction::contains_visible_point(&regions, point) {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
-    product_shell::show_product_menu(&window, popup_x, popup_y)
+    if !geometry.context_menu_open {
+        NativeWindowInteractionBackend
+            .restore_full_hit_region(&window)
+            .map_err(|error| error.to_string())?;
+        geometry.context_menu_open = true;
+    }
+    Ok(product_shell::product_menu_capability_manifest())
+}
+
+fn close_pet_context_menu_surface(
+    window: &WebviewWindow,
+    session: &Mutex<WindowGeometrySession>,
+) -> Result<(), String> {
+    let mut geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.context_menu_open {
+        return Ok(());
+    }
+    geometry.context_menu_open = false;
+    if geometry.portrait_hit_relaxed {
+        return Ok(());
+    }
+    let hit_regions = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    drop(geometry);
+    apply_precise_hit_regions(window, &hit_regions)
+}
+
+#[tauri::command]
+fn close_pet_context_menu(
+    window: WebviewWindow,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    close_pet_context_menu_surface(&window, session.inner())
 }
 
 #[tauri::command]
@@ -812,18 +878,20 @@ fn activate_portrait_hit_test(
         &monitor,
         geometry.portrait_anchor,
     )?;
-    apply_native_interaction_region(
+    let hit_regions = apply_native_interaction_region(
         &window,
         &contract,
         &application,
         geometry.portrait_alpha_mask.as_ref(),
         portrait_scale_percent,
+        geometry.context_menu_open,
     )?;
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_key = Some(portrait_key);
     geometry.portrait_hit_revision = revision;
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_percent = portrait_scale_percent;
+    geometry.hit_regions = Some(hit_regions);
     Ok(())
 }
 
@@ -963,6 +1031,48 @@ fn handle_product_menu_action(
             request_app_exit(app, &lifecycle)
         }
     }
+}
+
+fn dispatch_webview_product_menu_action(
+    app: tauri::AppHandle,
+    action: product_shell::ProductMenuAction,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("pet-menu-action-dispatch".to_string())
+        .spawn(move || {
+            let action_app = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || {
+                if let Err(error) = handle_product_menu_action(&action_app, action) {
+                    product_shell::emit_product_menu_error(&action_app, error);
+                }
+            }) {
+                product_shell::emit_product_menu_error(
+                    &app,
+                    format!("PRODUCT_MENU_ACTION_SCHEDULE_FAILED: {error}"),
+                );
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("PRODUCT_MENU_ACTION_DISPATCH_FAILED: {error}"))
+}
+
+#[tauri::command]
+fn activate_pet_context_menu_action(
+    window: WebviewWindow,
+    action_id: String,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let action = product_shell::ProductMenuAction::from_id(action_id.trim())
+        .ok_or_else(|| "PRODUCT_MENU_ACTION_REJECTED".to_string())?;
+    close_pet_context_menu_surface(&window, session.inner())?;
+    // A synchronous Tauri command runs inside WebView2's WebMessageReceived callback on
+    // Windows. Creating the settings WebView from that callback can leave a registered
+    // but uninitialized white window. Hop through a worker so run_on_main_thread queues
+    // the action for the next event-loop turn, after the invoke response has completed.
+    dispatch_webview_product_menu_action(window.app_handle().clone(), action)
 }
 
 fn finish_app_exit(
@@ -1311,7 +1421,9 @@ fn main() {
             apply_pet_layout,
             reveal_pet_window,
             start_pet_drag,
-            show_pet_context_menu,
+            open_pet_context_menu,
+            close_pet_context_menu,
+            activate_pet_context_menu_action,
             probe_pet_visibility,
             close_pet_window,
             collect_native_diagnostics,
@@ -1474,6 +1586,14 @@ mod tests {
         assert!(session.is_deferred_drag_pending());
         session.finish_deferred_drag();
         assert!(!session.is_deferred_drag_pending());
+    }
+
+    #[test]
+    fn product_menu_session_starts_closed_without_stale_hit_regions() {
+        let session = WindowGeometrySession::default();
+        assert!(!session.context_menu_open);
+        assert!(session.hit_regions.is_none());
+        assert!(!session.portrait_hit_relaxed);
     }
 
     #[test]

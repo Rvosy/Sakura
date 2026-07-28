@@ -4,6 +4,7 @@ import test from "node:test";
 
 const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
@@ -170,12 +171,45 @@ test("the one-line composer keeps its text optically centered across configured 
   assert.match(composerInput, /line-height:\s*1\.25/);
 });
 
-test("product menu is native-owned and the settings window is a decorated singleton", () => {
-  assert.match(app, /invoke\("show_pet_context_menu"/);
-  assert.doesNotMatch(index, /context-menu|menu-popover/);
+test("product menu presentation is themed in the WebView while Rust owns capabilities and actions", () => {
+  assert.match(index, /id="pet-context-menu"[^>]*role="menu"/);
+  assert.equal((index.match(/data-menu-unavailable/g) || []).length, 5);
+  assert.equal((index.match(/role="menuitemcheckbox"/g) || []).length, 3);
+  for (const label of ["隐藏至托盘", "显示中文字幕", "完整访问权限", "保持置顶", "历史记录", "运行日志 \/ 诊断", "设置", "退出"])
+    assert.match(index, new RegExp(label));
+  assert.match(app, /invoke\("open_pet_context_menu"/);
+  assert.match(contextMenu, /invoke\("close_pet_context_menu"/);
+  assert.match(contextMenu, /invoke\("activate_pet_context_menu_action"/);
+  assert.match(contextMenu, /ArrowDown/);
+  assert.match(contextMenu, /ArrowUp/);
+  assert.match(contextMenu, /Home/);
+  assert.match(contextMenu, /End/);
   assert.match(nativeMain, /ProductMenuAction::from_id/);
+  assert.match(nativeMain, /restore_full_hit_region/);
+  assert.match(nativeMain, /context_menu_open/);
+  assert.match(nativeProductShell, /ProductMenuCapabilityManifest/);
+  assert.doesNotMatch(nativeProductShell, /popup_menu_at/);
   assert.match(nativeMain, /show_or_focus_settings/);
+  const webviewMenuDispatch =
+    nativeMain.match(/fn dispatch_webview_product_menu_action[\s\S]*?\n}/)?.[0] || "";
+  assert.match(webviewMenuDispatch, /std::thread::Builder::new/);
+  assert.match(webviewMenuDispatch, /run_on_main_thread/);
+  assert.match(webviewMenuDispatch, /emit_product_menu_error/);
+  const webviewMenuCommand =
+    nativeMain.match(/fn activate_pet_context_menu_action[\s\S]*?\n}/)?.[0] || "";
+  assert.match(webviewMenuCommand, /dispatch_webview_product_menu_action/);
   assert.match(nativeMain, /SETTINGS_WINDOW_LABEL/);
+  for (const token of [
+    "min-width: 226px",
+    "border-radius: 14px",
+    "backdrop-filter: blur(22px)",
+    "min-height: 30px",
+    "border-radius: 8px",
+    "var(--input-background)",
+    "var(--panel-background)",
+    "var(--muted-text)",
+    "pet-context-menu-in 110ms",
+  ]) assert.ok(styles.includes(token), token);
 });
 
 test("the native tray keeps a hidden pet recoverable through the shared visibility action", () => {
