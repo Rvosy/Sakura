@@ -198,6 +198,84 @@ const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)"
 
 let activeThemeField = "";
 let themeEditor = {};
+const RUNTIME_UNAVAILABLE_REASON = "该设置能力尚未迁移到 Runtime v2";
+const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
+  controlPanelWidth: [[420, 760], 640],
+  bubbleHeight: [[96, 260], 128],
+  controlPanelOffset: [[-60, 160], 0],
+  inputBarOffset: [[0, 60], 0],
+});
+
+function disableRuntimeControl(control) {
+  if (!control) return;
+  control.disabled = true;
+  control.title = RUNTIME_UNAVAILABLE_REASON;
+  control.setAttribute("aria-disabled", "true");
+  const row = control.closest(".setting-row");
+  row?.classList.add("is-disabled");
+  if (row) row.title = RUNTIME_UNAVAILABLE_REASON;
+}
+
+function prepareRuntimeAppearance(snapshot, themeFields) {
+  const theme = Object.fromEntries(
+    themeFields.map(([field, legacyField]) => [legacyField, snapshot.appearance.values.themeTokens[field]]),
+  );
+  const themeDefaults = Object.fromEntries(
+    themeFields.map(([field, legacyField]) => [legacyField, snapshot.presentation.themeTokens[field]]),
+  );
+  request = {
+    character: {
+      current_character_id: snapshot.presentation.characterId,
+      characters: [{
+        id: snapshot.presentation.characterId,
+        display_name: snapshot.presentation.displayName,
+        theme,
+        default_theme: themeDefaults,
+      }],
+    },
+    theme: { ...theme, visual_effect_mode: "unavailable" },
+    theme_defaults: themeDefaults,
+    theme_fields: themeFields.map(([, id, label]) => ({ id, label })),
+    visual_effect_modes: [{ id: "unavailable", label: "尚未迁移" }],
+  };
+
+  fields.characterSelect.textContent = "";
+  const character = document.createElement("option");
+  character.value = snapshot.presentation.characterId;
+  character.textContent = snapshot.presentation.displayName;
+  fields.characterSelect.append(character);
+  fields.characterSelect.value = character.value;
+
+  renderThemeControls();
+  setThemeValues(theme);
+  for (const [fieldKey, [bounds, value]] of Object.entries(RUNTIME_LAYOUT_DEFAULTS)) {
+    setNumericBounds(fields[fieldKey], bounds);
+    fields[fieldKey].value = String(value);
+    updateSliderOutput(fieldKey);
+  }
+
+  for (const control of [
+    fields.characterSelect,
+    fields.characterEditorButton,
+    fields.characterImportButton,
+    fields.ttsVoiceImportButton,
+    fields.characterExportButton,
+    fields.controlPanelWidth,
+    fields.bubbleHeight,
+    fields.controlPanelOffset,
+    fields.inputBarOffset,
+    fields.visualEffectMode,
+    fields.themeAiButton,
+    themeEditor.pick,
+  ]) {
+    disableRuntimeControl(control);
+  }
+  enhanceSelect(fields.characterSelect);
+  enhanceSelect(fields.visualEffectMode);
+  refreshSelect(fields.characterSelect);
+  refreshSelect(fields.visualEffectMode);
+  upgradeSliderControls();
+}
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -1331,9 +1409,7 @@ function updateActiveThemeColor(color) {
     return;
   }
   input.value = normalized;
-  syncThemeRole(activeThemeField);
-  syncThemeEditor();
-  markThemeChanged();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function updateThemeFromRgbInputs() {
@@ -3950,7 +4026,7 @@ function updateSliderOutput(fieldKey) {
 
 let layoutPreviewPending = false;
 function requestLayoutPreview() {
-  if (!request || layoutPreviewPending) {
+  if (!request || runtimeSettingsHost || layoutPreviewPending) {
     return;
   }
   layoutPreviewPending = true;
@@ -3966,7 +4042,7 @@ function requestLayoutPreview() {
 
 let fontPreviewPending = false;
 function requestFontPreview() {
-  if (!request || fontPreviewPending) {
+  if (!request || runtimeSettingsHost || fontPreviewPending) {
     return;
   }
   fontPreviewPending = true;
@@ -4251,6 +4327,7 @@ function upgradeSliderControls() {
     output.dataset.upgraded = "true";
 
     output.addEventListener("click", () => {
+      if (slider.disabled) return;
       const min = Number(slider.min || 0);
       const max = Number(slider.max || 100);
       const editor = document.createElement("input");
@@ -4673,6 +4750,8 @@ async function startSettingsFrontend() {
       invoke,
       onDirty: refreshDirty,
       onError: setError,
+      prepare: prepareRuntimeAppearance,
+      fillTheme: (theme) => setThemeValues(theme, { updateVisualEffect: false }),
     });
     const snapshot = await invoke("settings_character_appearance_get");
     await runtimeAppearanceController.initialize(snapshot);

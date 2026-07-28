@@ -1,15 +1,15 @@
 const THEME_FIELDS = Object.freeze([
-  ["primary", "主色"],
-  ["primaryHover", "主色悬停"],
-  ["accent", "强调色"],
-  ["text", "正文"],
-  ["secondaryText", "次要文字"],
-  ["mutedText", "弱化文字"],
-  ["pageBackground", "页面背景"],
-  ["panelBackground", "面板背景"],
-  ["inputBackground", "输入框背景"],
-  ["bubbleBackground", "气泡背景"],
-  ["border", "边框"],
+  ["primary", "primary_color", "主题色"],
+  ["primaryHover", "primary_hover_color", "按钮悬停色"],
+  ["accent", "accent_color", "强调色"],
+  ["text", "text_color", "主文字色"],
+  ["secondaryText", "secondary_text_color", "次级文字色"],
+  ["mutedText", "muted_text_color", "弱提示文字色"],
+  ["pageBackground", "page_background_color", "页面背景色"],
+  ["panelBackground", "panel_background_color", "面板背景色"],
+  ["inputBackground", "input_background_color", "输入框背景色"],
+  ["bubbleBackground", "bubble_background_color", "气泡背景色"],
+  ["border", "border_color", "边框色"],
 ]);
 const VALUE_FIELDS = Object.freeze([
   "portraitScalePercent",
@@ -90,52 +90,19 @@ export function validateAppearanceSnapshot(snapshot) {
   });
 }
 
-function setRange(input, output, limit, value) {
+export function toLegacyTheme(themeTokens) {
+  return Object.fromEntries(THEME_FIELDS.map(([field, legacyField]) => [legacyField, themeTokens[field]]));
+}
+
+function setRange(input, limit, value) {
   [input.min, input.max, input.value] = [String(limit[0]), String(limit[1]), String(value)];
-  output.value = `${value}${input.dataset.unit || ""}`;
+  const output = input.parentElement?.querySelector(".slider-value");
+  if (output) output.textContent = String(value);
+  const progress = ((value - limit[0]) / (limit[1] - limit[0])) * 100;
+  input.style.setProperty("--slider-progress", `${progress}%`);
 }
 
-function renderPresentation(document, snapshot) {
-  const presentation = snapshot.presentation;
-  document.getElementById("runtimeCharacterName").textContent = presentation.displayName;
-  document.getElementById("runtimeCharacterId").textContent = presentation.characterId;
-  document.getElementById("runtimeInitialMessage").textContent = presentation.initialMessage;
-  const select = document.getElementById("runtimeCharacterSelect");
-  select.textContent = "";
-  const option = document.createElement("option");
-  option.value = presentation.characterId;
-  option.textContent = presentation.displayName;
-  select.append(option);
-  select.disabled = true;
-
-  const portraits = document.getElementById("runtimePortraits");
-  portraits.textContent = "";
-  for (const key of presentation.portraitKeys) {
-    const item = document.createElement("figure");
-    item.className = "runtime-portrait-card";
-    const image = document.createElement("img");
-    image.src = presentation.portraitResourceUrls[key];
-    image.alt = `${presentation.displayName}：${key}`;
-    image.decoding = "async";
-    const caption = document.createElement("figcaption");
-    caption.textContent = key === presentation.defaultPortraitKey ? `${key}（默认）` : key;
-    item.append(image, caption);
-    portraits.append(item);
-  }
-}
-
-function renderThemeInputs(document) {
-  const host = document.getElementById("runtimeThemeFields");
-  host.textContent = "";
-  for (const [field, label] of THEME_FIELDS) {
-    const row = document.createElement("label");
-    row.className = "runtime-theme-field";
-    row.innerHTML = `<span>${label}</span><input type="color" data-runtime-theme="${field}" /><code></code>`;
-    host.append(row);
-  }
-}
-
-export function createRuntimeAppearanceController({ document, invoke, onDirty, onError }) {
+export function createRuntimeAppearanceController({ document, invoke, onDirty, onError, prepare, fillTheme }) {
   let snapshot = null;
   let baseline = null;
   let draft = null;
@@ -146,36 +113,27 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
   let generationTimer = null;
 
   const scalarControls = Object.freeze({
-    portraitScalePercent: ["runtimePortraitScale", "runtimePortraitScaleValue"],
-    speechFontSize: ["runtimeSpeechFont", "runtimeSpeechFontValue"],
-    nameFontSize: ["runtimeNameFont", "runtimeNameFontValue"],
-    inputFontSize: ["runtimeInputFont", "runtimeInputFontValue"],
-    buttonFontSize: ["runtimeButtonFont", "runtimeButtonFontValue"],
+    portraitScalePercent: "portraitScale",
+    speechFontSize: "speechFontSize",
+    nameFontSize: "nameFontSize",
+    inputFontSize: "inputFontSize",
+    buttonFontSize: "buttonFontSize",
   });
 
   function fill(values) {
-    for (const [field, [inputId, outputId]] of Object.entries(scalarControls)) {
-      setRange(
-        document.getElementById(inputId),
-        document.getElementById(outputId),
-        snapshot.limits[field],
-        values[field],
-      );
+    for (const [field, inputId] of Object.entries(scalarControls)) {
+      setRange(document.getElementById(inputId), snapshot.limits[field], values[field]);
     }
-    for (const [field] of THEME_FIELDS) {
-      const input = document.querySelector(`[data-runtime-theme="${field}"]`);
-      input.value = values.themeTokens[field];
-      input.nextElementSibling.textContent = values.themeTokens[field];
-    }
+    fillTheme(toLegacyTheme(values.themeTokens));
   }
 
   function read() {
     const values = { themeTokens: {} };
-    for (const [field, [inputId]] of Object.entries(scalarControls)) {
+    for (const [field, inputId] of Object.entries(scalarControls)) {
       values[field] = Number.parseInt(document.getElementById(inputId).value, 10);
     }
-    for (const [field] of THEME_FIELDS) {
-      values.themeTokens[field] = document.querySelector(`[data-runtime-theme="${field}"]`).value;
+    for (const [field, legacyField] of THEME_FIELDS) {
+      values.themeTokens[field] = document.querySelector(`[data-theme-field="${legacyField}"]`).value;
     }
     return validateAppearanceValues(values, snapshot.limits);
   }
@@ -212,20 +170,17 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
     snapshot = validateAppearanceSnapshot(input);
     baseline = clone(snapshot.appearance.values);
     draft = clone(baseline);
-    renderPresentation(document, snapshot);
-    renderThemeInputs(document);
+    prepare(snapshot, THEME_FIELDS);
     fill(draft);
-    for (const [inputId] of Object.values(scalarControls)) {
+    for (const inputId of Object.values(scalarControls)) {
       document.getElementById(inputId).addEventListener("input", changed);
     }
-    document.getElementById("runtimeThemeFields").addEventListener("input", changed);
-    document.getElementById("runtimeResetTheme").addEventListener("click", () => {
+    document.getElementById("themeColors").addEventListener("input", changed);
+    document.getElementById("resetThemeButton").addEventListener("click", () => {
       draft.themeTokens = clone(snapshot.presentation.themeTokens);
       fill(draft);
       changed();
     });
-    document.getElementById("runtimeCharacterPanel").hidden = false;
-    document.getElementById("runtimeAppearancePanel").hidden = false;
     generationTimer = window.setInterval(async () => {
       if (disposed) return;
       try {
@@ -234,7 +189,9 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
         previewQueued = false;
         await invoke("settings_character_appearance_cancel_preview");
         disposed = true;
-        for (const control of document.querySelectorAll(".runtime-settings-panel input, .runtime-settings-panel button")) {
+        for (const control of document.querySelectorAll(
+          "#page-character input, #page-character select, #page-character button, #page-appearance input, #page-appearance select, #page-appearance button, #applyButton, #saveButton",
+        )) {
           control.disabled = true;
         }
         onError("Core 已更新；未提交预览已恢复。请关闭并重新打开设置。");

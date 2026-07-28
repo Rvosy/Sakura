@@ -106,21 +106,6 @@
           <p>新版设置正在分阶段迁移。尚未开放的页面会保持禁用，不会读取或改写你的配置。</p>
         </section>
         <section id="page-character" class="settings-page is-active">
-          <div id="runtimeCharacterPanel" class="runtime-settings-panel" hidden>
-            <fieldset class="settings-group">
-              <legend>当前角色</legend>
-              <div class="runtime-character-heading">
-                <div><strong id="runtimeCharacterName"></strong><code id="runtimeCharacterId"></code></div>
-                <select id="runtimeCharacterSelect" aria-label="当前角色"></select>
-              </div>
-              <p class="runtime-scope-note">Runtime v2 当前只展示正在运行的角色。角色选择将在 WP-5-03 接入。</p>
-              <blockquote id="runtimeInitialMessage" class="runtime-initial-message"></blockquote>
-            </fieldset>
-            <fieldset class="settings-group">
-              <legend>立绘资源</legend>
-              <div id="runtimePortraits" class="runtime-portraits"></div>
-            </fieldset>
-          </div>
           <fieldset class="settings-group">
             <legend>角色与桌宠布局</legend>
             <div class="setting-row">
@@ -483,24 +468,6 @@
         </section>
 
         <section id="page-appearance" class="settings-page">
-          <div id="runtimeAppearancePanel" class="runtime-settings-panel" hidden>
-            <fieldset class="settings-group">
-              <legend>固定窗口内的外观预览</legend>
-              <p class="runtime-scope-note">缩放只影响立绘图层；原生窗口、气泡和输入框位置保持不变。</p>
-              <div class="runtime-slider-grid">
-                <label>立绘大小<input id="runtimePortraitScale" data-unit="%" type="range" step="1" /><output id="runtimePortraitScaleValue"></output></label>
-                <label>回复文字<input id="runtimeSpeechFont" data-unit="px" type="range" step="1" /><output id="runtimeSpeechFontValue"></output></label>
-                <label>角色名字<input id="runtimeNameFont" data-unit="px" type="range" step="1" /><output id="runtimeNameFontValue"></output></label>
-                <label>输入框文字<input id="runtimeInputFont" data-unit="px" type="range" step="1" /><output id="runtimeInputFontValue"></output></label>
-                <label>按钮文字<input id="runtimeButtonFont" data-unit="px" type="range" step="1" /><output id="runtimeButtonFontValue"></output></label>
-              </div>
-            </fieldset>
-            <fieldset class="settings-group">
-              <legend>角色主题</legend>
-              <div id="runtimeThemeFields" class="runtime-theme-grid"></div>
-              <button id="runtimeResetTheme" class="secondary-button" type="button">恢复角色包默认主题</button>
-            </fieldset>
-          </div>
           <fieldset class="settings-group">
             <legend>配色</legend>
             <div id="themeColors" class="theme-colors"></div>
