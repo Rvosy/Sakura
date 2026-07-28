@@ -60,9 +60,9 @@ legacy 行为与数据
 | CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | planned |
 | CAP-016 | 屏幕感知、自动观察和主动互动 | Scheduler/Backchannel 通过 Operation 和事件路由 | WP-4-07 | 截图权限、休眠、计时器 | planned |
 | CAP-017 | 提醒、任务和定时调度 | Core 持久化，Tauri 生命周期与唤醒状态可诊断 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
-| CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | `core.*` validate/change plan/原子保存 | WP-5-01 | 密钥存储、文件权限 | planned |
-| CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；Phase 5 补齐 `desktop.*`/`ui.*`/`audio.*` 独立仓库 | WP-3U-02、WP-5-01、WP-5-02 | 平台默认值、字体、scale | planned |
-| CAP-020 | 设置窗口和首次设置 | WP-3U-01 先接同 App 设置窗口宿主和能力门控；WP-5-02 补齐全部页面与首次设置 | WP-3U-01、WP-3U-02、WP-5-02 | 窗口管理、IME、密钥输入 | planned |
+| CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |
+| CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
+| CAP-020 | 设置窗口和首次设置 | WP-3U-01 建同 App 宿主；后续按 feature 逐项开放；WP-5-02 执行关闭清单并编排首次设置，不集中补造领域后端 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02 | 窗口管理、IME、密钥输入 | planned |
 | CAP-021 | 角色切换与运行中 Session | 受控 Core restart；旧 generation 全失效 | WP-5-03 | 资源、历史、TTS 状态 | planned |
 | CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 先接桌宠右键菜单；其余由 Tauri 原生平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
@@ -79,10 +79,12 @@ legacy 行为与数据
 CAP-004 及之后的 Assistant、聊天、Memory、Tools、TTS 或设置能力。它的真实单显示器证据不替代
 WP-7-02 的 Spaces、多屏、IME、Retina、签名和发布门禁。
 
-2026-07-26 的产品方向调整把“设置窗口宿主”和“角色包可见表现”提前到 Phase 3，但没有把完整设置
-能力整体前移。WP-3U-01 只建立同一 Tauri App 的右键菜单、唯一 settings 窗口和页面能力门控；
-WP-3U-02 只开放当前角色的名称、初始消息、主题、立绘/表情和外观设置。TTS、Memory、Tools、MCP、
-插件、首次设置、角色选择和完整配置等价仍由各自后续 WP 负责，不能因旧设置页面已经存在而标记完成。
+2026-07-26 的产品方向调整把“设置窗口宿主”和“角色包可见表现”提前到 Phase 3；2026-07-28 又把
+设置交付从 Phase 5 集中补齐改为持续的 feature 级迁移，规范见
+`docs/runtime-v2/settings-incremental-migration.md`。WP-3U-01 只建立同一 Tauri App 的右键菜单、唯一
+settings 窗口和能力门控；WP-3U-02 只开放当前角色的名称、初始消息、主题、立绘/表情和外观设置；
+WP-3S-01 在其 accepted 后迁移供应商与模型。TTS、Memory、Tools、MCP、插件、主动互动等设置仍随各自
+领域 WP 开放，首次设置由 WP-5-02 编排，不能因旧页面或控件已经存在而标记完成。
 
 ## 早期 Architecture Validation 门禁
 

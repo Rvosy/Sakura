@@ -495,6 +495,8 @@ WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前�
 - [ ] 气泡和输入框常驻；输入框发送真实聊天请求，不存在产品级打开/收起切换栏。
 - [ ] 右键桌宠打开原生菜单，并从“设置”打开同一 Tauri App 内唯一的普通设置窗口。
 - [ ] 复用旧设置前端；先开放角色与外观页面，其他页面随能力迁移逐步开放。
+- [ ] WP-3S-01：在真实聊天接 UI 前完成供应商、密钥、模型列表/连通性和模型槽的真实读取、校验、
+  原子保存、受控 Core restart 与 Qt 回读；不整体搬迁旧设置后端。
 - [ ] 展示思考、完成、错误和取消状态。
 - [ ] 完整回复返回后由 WebView 执行打字机展示。
 - [ ] 支持立即跳过打字机动画，不影响已完成的 Core 请求。
@@ -519,21 +521,23 @@ WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前�
 
 退出条件：在已有开发配置下，直接启动 Tauri、真实聊天、打字机、取消、立绘切换、Core 强杀恢复和 Qt 双向回退兼容全部通过；完整进程树/IPC 资源残留为零，除明确允许的兼容历史追加外非预期用户数据变化为零；CAP-004 达到 `architecture-validated`。这不等于最终 `parity-accepted`。
 
-### Phase 4：TTS、工具确认、截图和主动事件
+### Phase 4：Assistant 辅助能力及其设置切片
 
-- [ ] WP-4-01：Memory 检索、写入、整理和外部存储等价。
-- [ ] WP-4-02：内置 Tools、Operation 与 Action ID 工具确认。
-- [ ] WP-4-03：MCP 配置、启动、工具调用、故障恢复与进程树清理。
-- [ ] WP-4-04：现有 Python 插件、context/event/tool 扩展等价。
-- [ ] WP-4-05：TTS 合成、播放、设备错误、audio ADR 和本地服务回收。
-- [ ] WP-4-06：手动截图、受控资源、权限和多屏/DPI/Wayland portal。
-- [ ] WP-4-07：自动观察、主动互动、提醒、任务和休眠/时区恢复。
+- [ ] WP-4-01：Memory 检索、写入、整理、外部存储及 Memory 设置/管理操作等价。
+- [ ] WP-4-02：内置 Tools、Operation、Action ID 工具确认及 Tools 设置。
+- [ ] WP-4-03：MCP 配置页面、启动、工具调用、故障恢复与进程树清理。
+- [ ] WP-4-04：现有 Python 插件、context/event/tool 及插件启停/设置/action 等价。
+- [ ] WP-4-05：TTS 合成、播放、语音设置、设备错误、audio ADR 和本地服务回收。
+- [ ] WP-4-06：手动截图、相关设置、受控资源、权限和多屏/DPI/Wayland portal。
+- [ ] WP-4-07：自动观察、主动互动、提醒、任务、对应隐私/交互设置和休眠/时区恢复。
 - [ ] WP-4-08：Phase 4 组合稳定化、背压和完整资源回收。
 
-### Phase 5：完整设置等价、历史和诊断
+### Phase 5：设置迁移收口、历史和诊断
 
-- [ ] WP-5-01：`core.*`、`desktop.*`、`ui.*`、`audio.*` 配置仓库、validate、change plan 和原子保存。
-- [ ] WP-5-02：在 Phase 3 已接入的同 App 设置窗口中补齐全部页面、逐域保存结果和首次设置流程。
+- [ ] WP-5-01：审计已逐域迁移的配置仓库、validate/change plan/原子保存，收口剩余外观/布局 feature
+  和跨域一致性缺口，不重建巨型保存事务。
+- [ ] WP-5-02：执行设置 feature 关闭清单，并用已经 accepted 的设置切片编排逐域结果和首次设置流程；
+  不在此集中补造 Memory、Tools、MCP、插件、TTS 等领域后端。
 - [ ] WP-5-03：补齐运行中 Session 切换优化、历史分页和完整角色切换等价。
 - [ ] WP-5-04：托盘、置顶、全局快捷键、显示隐藏和开机启动。
 - [ ] WP-5-05：浏览器自动化与移动/本地桥接插件的受控生命周期。
@@ -599,8 +603,8 @@ WP-1C-01/02、Phase 1P 与 WP-1C-03 的历史证据已经完成登记；当前�
 18. WP-1C-04 后立即执行 WP-3-01，让无 Qt Assistant Adapter/readiness 成为首个真实消费者；随后只完成最小故障可见性、Router、聊天取消/Gateway/Snapshot，再由 WP-3-02 验证真实聊天。
 19. 通用 Operation、完整业务优先级、worker process、resource token、完整 Snapshot/背压、schema 代码生成和自动 Runtime Repair 只在对应真实消费者出现时建设。
 20. WP-3V-01 是 Phase 4 之前的硬门禁；CAP-004 未达到 `architecture-validated` 时不得继续堆叠通用基础设施。
-21. Phase 3 先冻结产品 UI，再迁移真实功能；WP-3-04 只替换 WP-3-03 的聊天数据源，不重新设计桌宠 DOM、布局或视觉语言。
-22. 设置窗口宿主在 Phase 3 提前迁入同一 Tauri App；早期只开放角色与外观相关能力，完整设置等价和首次设置仍由 Phase 5 收口。
+21. Phase 3 先冻结产品 UI，再迁移真实功能；WP-3-04 替换 WP-3-03 的聊天数据源并只开放真实聊天直接消费的设置 feature，不重新设计桌宠 DOM、布局或视觉语言。
+22. 设置窗口宿主在 Phase 3 提前迁入同一 Tauri App；从 WP-3U-02 起按 `docs/runtime-v2/settings-incremental-migration.md` 逐 feature 交付，领域设置随对应能力 WP 开放，Phase 5 只做缺口、关闭清单和首次设置收口。
 
 ## 13. 交付治理与技术 ADR
 

@@ -31,7 +31,8 @@ Tauri App 作为 Runtime v2 产品路径，也不创建第二生命周期根。
   最小化/聚焦、中文 IME、重复打开和退出仍需形成候选验收证据后才能 `accepted`。
 
 本 WP 只迁移窗口宿主、菜单入口、设置前端外壳和能力门控。角色/外观配置的真实读取与保存属于
-WP-3U-02；其他设置功能仍跟随对应能力 WP。
+WP-3U-02；其他设置功能按 `docs/runtime-v2/settings-incremental-migration.md` 的 feature 级顺序跟随
+对应能力 WP，不能集中恢复旧 HostRpc 或无后端开放页面。
 
 ## 现有实现的复用裁定
 

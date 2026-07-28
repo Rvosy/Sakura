@@ -28,6 +28,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 - WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
 - 基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链。WP-1C-04 后立即执行 WP-3-01，让真实 Assistant Adapter/readiness 先消费 bundled Core lifecycle；随后最小 Router、Snapshot、取消和恢复继续由它驱动验证。
 - 第二个真实消费者出现前，不冻结不必要的通用 Operation、资源、业务优先级、Snapshot component 或未来消费者抽象；方向性 ADR 内容不自动成为当前实现门禁。
+- 设置功能从 WP-3U-02 起按 `docs/runtime-v2/settings-incremental-migration.md` 逐域纵向迁移；拥有用户可配置能力的后续 WP 必须同时声明对应设置 feature、保存/生效/回退边界，不再等待 WP-5-02 集中恢复全部页面。
 
 每个 Work Package 的激活记录至少包含：
 
@@ -88,7 +89,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | stabilizing |
-| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3U-02 | planned |
+| WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | planned |
+| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3S-01 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
@@ -100,8 +102,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | WP-4-07 | planned |
-| WP-5-01 | 配置仓库、校验、change plan 与原子保存 | WP-4-08 | planned |
-| WP-5-02 | 设置窗口与首次设置流程 | WP-5-01 | planned |
+| WP-5-01 | 设置仓库与剩余外观/布局缺口收口 | WP-4-08 | planned |
+| WP-5-02 | 设置迁移关闭清单与首次设置编排 | WP-5-01 | planned |
 | WP-5-03 | 角色切换、Session 与历史分页 | WP-5-02 | planned |
 | WP-5-04 | 托盘、置顶、快捷键与开机启动 | WP-5-03 | planned |
 | WP-5-05 | 浏览器与移动/本地桥接生命周期 | WP-5-04 | planned |
@@ -138,8 +140,9 @@ Windows 手动验收并标记 `accepted`；100%/150% DPI 真实设备证据由�
 Sakura/N.A.V.I. Windows 真实候选以及隔离目录保存失败恢复均已通过；最终 Rust 回归为 206 passed、
 23 ignored，且没有扩大忽略列表。当前仍缺同一最终候选 SHA 的 Windows 2025 x64、macOS 15 arm64、
 Ubuntu 24.04 x64 原生 platform workflow 证据；本机交叉 target 不能替代原生 runner，未经授权也不得 push
-触发 CI。该硬门不属于获批的 DPI 延期，故 WP-3U-02 仍是当前唯一 `stabilizing` Work Package；WP-3-04
-依赖未满足并保持 `planned`，不得提前启动。
+触发 CI。该硬门不属于获批的 DPI 延期，故 WP-3U-02 仍是当前唯一 `stabilizing` Work Package；
+WP-3S-01 是其 accepted 后的下一启动点，但依赖尚未满足并保持 `planned`。WP-3-04 改为依赖
+WP-3S-01，同样不得提前启动。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -161,8 +164,10 @@ WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/
 | WP-2-06 | WP-2-01/02 的有界队列、terminal 不丢和安全断开；完整 progress/多等级背压移至 WP-4-08 或 WP-6-05 | Envelope 只冻结真实聊天已证明需要的字段 |
 | WP-3-02 至 WP-3-06 | 编号保留，前置改为已提前的 Adapter 和最小 IPC 链 | 真实聊天不再等待完整 Phase 1D/2 |
 | 无 | WP-3U-01 | 在真实聊天接 UI 前，把右键菜单和旧设置前端迁入同一 Tauri App；只建立窗口宿主和能力门控 |
-| WP-5-02 的设置窗口宿主 | WP-3U-01 | 窗口生命周期和入口提前；完整页面、首次设置和全部配置等价仍留在 WP-5-01/02 |
+| WP-5-02 的设置窗口宿主 | WP-3U-01 | 窗口生命周期和入口提前；页面 feature 随对应能力 WP 迁移，首次设置与关闭清单仍由 WP-5-02 收口 |
 | WP-5-02 的角色外观子集 | WP-3U-02 | 角色名、初始消息、主题、立绘映射/切换和窄外观设置提前；角色选择、历史分页与完整 Session 等价仍留在 WP-5-03 |
+| WP-5-01/02 的供应商与模型子集 | WP-3S-01 | 在真实聊天接 UI 前完成 Provider/模型 get、validate、原子保存、网络探测、受控 Core restart 和 Qt 回读 |
+| WP-5-02 的页面集中迁移 | 对应能力 WP | Memory、Tools、MCP、插件、TTS、截图、主动互动等设置随 WP-4-01 至 07 逐域开放；WP-5-02 只做关闭清单和首次设置编排 |
 | 无 | WP-3V-01 | 新增组合架构验证门；通过后 CAP-004 才可标记 `architecture-validated` |
 
 ## 3. Phase 0：冻结与基线
@@ -2062,7 +2067,7 @@ Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链�
 
 - 不接入真实 Provider 或修改 Python Assistant。
 - 不接入右键菜单或设置窗口；它们属于 WP-3U-01。
-- 不保存角色、主题或布局配置；它们属于 WP-3U-02/Phase 5。
+- 不保存角色、主题或布局配置；角色外观窄子集属于 WP-3U-02，其余按设置增量迁移规范归入对应能力 WP。
 - 不实现 Live2D、复杂 Canvas、局部模糊或高级动画引擎。
 
 退出证据：
@@ -2127,6 +2132,41 @@ Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链�
 独立回退：关闭角色外观页的保存命令，设置窗口退回能力门控壳；保留 WP-3-03 的
 当前角色只读展示，不删除或恢复用户数据。
 
+### WP-3S-01：供应商与模型设置纵向链
+
+主要结果：把设置迁移从一次性 Phase 5 任务改为持续纵向交付，并首先开放真实聊天直接依赖的
+“供应商”和“模型”页面；完整设计、数据安全门、feature 级 capability、故障矩阵和回退见
+`docs/runtime-v2/settings-incremental-migration.md` 第 6 节。
+
+强制前置：WP-3U-02 accepted。激活前还必须更新 ADR-0003 与 WP-0-02 的 Phase 3 配置写入允许集合，
+冻结 `data/config/api.yaml` 当前 schema 的 unknown-field preservation、未来 schema 只读、密钥不回显和
+Qt -> v2 -> Qt 夹具；不得以当前旧设置服务“已经能写”为由绕过。
+
+允许能力：
+
+- Provider 公开配置、配置完成状态、模型目录和模型槽的最小 DTO。
+- Provider 新增/编辑/删除、密钥保持/替换/显式清除和模型槽逐字段校验。
+- 有界且可取消的模型列表/连通性操作；使用已保存密钥时不把密钥返回 WebView。
+- Python 配置领域的原子保存、明确 change plan 和 Supervisor 受控 Core restart。
+- Provider 缺失导致 `setup_required` 时聚焦对应设置页；不扩展为完整首次设置或 Studio。
+- section 级 capability 向 feature 级门控演进；未知 feature 失败安全禁用。
+
+明确禁止：
+
+- 不整体迁移 `app/ui/tauri_settings.py`、旧 Rust stdio HostRpc 或 Qt/线程/进程宿主。
+- 不提前接入 Memory、Tools、MCP、插件、TTS、截图、主动互动、角色切换、Studio 或导入导出。
+- 不建立跨 `api.yaml`、`system_config.yaml`、`characters.yaml` 和 Runtime v2 `ui.json` 的保存事务。
+- 不把密钥写入 manifest、Snapshot、event、response echo、普通日志、错误详情或证据工件。
+- 不提前冻结通用 Operation；模型列表和连通性是本设置域的窄 command。
+
+退出证据：Provider/模型完整字段矩阵、密钥语义、原子失败、权限、损坏/未来 schema、网络成功/认证
+失败/超时/取消、设置关窗、旧 generation、受控 restart 和重新打开一致性通过；legacy Qt 创建配置 ->
+v2 读取/修改 -> legacy Qt 回读通过且未知字段/未修改 secret bytes 保持；Windows 真实设置输入与同一候选
+SHA 三平台公共门禁通过；P0/P1、credential 泄漏、请求/进程/临时文件残留为零。
+
+独立回退：禁用 `providers.*`/`model.*` feature 并退回只读，停止新的 Provider 网络探测，回退
+Gateway/Core Adapter/canonical frontend 接线；不删除、恢复或重写用户现有 `api.yaml`。
+
 ### WP-3-04：真实聊天接入已冻结桌宠 UI
 
 主要结果：把 WP-3-02 的真实聊天 Core 链接入已经由 WP-3-03/3U-01/3U-02 冻结的产品 UI，形成
@@ -2137,11 +2177,14 @@ Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链�
 - 真实输入、发送、思考、完成、错误和取消。
 - 真实回复段的 portrait/tone 投影到 WP-3U-02 已完成的立绘表现。
 - 最小受控 Gateway、聊天 identity/取消和 UI 状态映射。
+- 只为真实聊天 UI 已直接消费的气泡、输入和打字机字段开放对应设置 feature，并完成读取、保存、
+  生效、失败恢复和重新打开闭环；不得改变固定窗口包络。
 
 明确禁止：
 
 - 不加入 TTS、Tools、截图、主动互动、历史窗口和工作室。
-- 不新增设置页或改变 WP-3U-01/02 已冻结的窗口与角色表现语义。
+- 不新增设置视觉体系或改变 WP-3U-01/02 已冻结的窗口与角色表现语义；未被真实聊天消费的交互控件
+  继续禁用。
 - 不为 UI 便利破坏 lifecycle 或基础 Envelope。
 
 退出证据：
@@ -2214,7 +2257,7 @@ legacy Qt 创建/修改数据并退出
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
-强制前置：WP-3-01 至 WP-3-06 以及 WP-3U-01/02 全部 accepted；WP-2-01/02 的最小 Router、
+强制前置：WP-3-01 至 WP-3-06、WP-3U-01/02 以及 WP-3S-01 全部 accepted；WP-2-01/02 的最小 Router、
 聊天边界和 Snapshot 已由这些真实消费者使用。
 
 必须执行的单一纵向场景：
@@ -2270,21 +2313,21 @@ Tauri/Rust 启动 bundled Python Core
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
 |---|---|---|---|
-| WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级；只扩展其真实需要的任务边界 | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；三平台数据兼容 |
-| WP-4-02 | CAP-009/010 | 内置 Tools、Action ID 确认，并在聊天与 Tools 两个真实消费者证明确有共性后提取 Operation | WebView 不能伪造执行参数；取消/超时唯一终态；副作用有确认证据 |
-| WP-4-03 | CAP-011 | MCP 配置、启动、工具调用与恢复 | MCP 进程属于当前 generation；崩溃/超时/退出零残留；凭据不泄漏 |
-| WP-4-04 | CAP-012 | 现有插件 context/event/tool 和私有数据等价 | 插件加载/卸载、错误隔离、反向清理和数据兼容通过 |
-| WP-4-05 | CAP-013/014 | TTS、播放、设备错误与 audio ADR | 三平台真实音频设备；服务/模型子进程回收；播放失败不拖垮聊天 |
-| WP-4-06 | CAP-015 | 手动截图及其首个 generation resource token 消费者与平台权限 | 多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
-| WP-4-07 | CAP-016/017 | 自动观察、主动互动、提醒、任务调度 | 时区/休眠恢复、重复事件、取消、数据持久化和截图权限通过 |
+| WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级；同步开放 Memory 设置和记忆管理 feature | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；设置失败与三平台数据兼容通过 |
+| WP-4-02 | CAP-009/010 | 内置 Tools、Action ID 确认和 Tools 设置；在聊天与 Tools 两个真实消费者证明确有共性后提取 Operation | WebView 不能伪造执行参数；设置/取消/超时唯一终态；副作用有确认证据 |
+| WP-4-03 | CAP-011 | MCP 配置、设置页运行状态、启动、工具调用与恢复 | MCP 进程属于当前 generation；配置/崩溃/超时/退出零残留；凭据不泄漏 |
+| WP-4-04 | CAP-012 | 现有插件 context/event/tool、插件启停/设置/action 和私有数据等价 | 插件加载/卸载、设置失败、错误隔离、反向清理和数据兼容通过 |
+| WP-4-05 | CAP-013/014 | TTS、播放、语音设置、设备错误与 audio ADR | 三平台真实音频设备；设置/服务/模型子进程回收；播放失败不拖垮聊天 |
+| WP-4-06 | CAP-015 | 手动截图、相关设置及其首个 generation resource token 消费者与平台权限 | 设置与实际捕获一致；多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
+| WP-4-07 | CAP-016/017 | 自动观察、主动互动、提醒、任务调度及其隐私/交互设置 | 设置保存/生效、时区/休眠恢复、重复事件、取消、数据持久化和截图权限通过 |
 | WP-4-08 | CAP-008–017 | Phase 4 组合稳定化；只冻结已经有多个真实消费者证明的调度/背压共性 | 长任务不阻塞 control；Memory/MCP/plugin/TTS/screenshot 全资源零残留 |
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
 |---|---|---|---|
-| WP-5-01 | CAP-018/019 | 在 WP-3U-02 窄配置基础上补齐 `core.*`/`desktop.*`/`ui.*`/`audio.*` 仓库、validate、change plan、原子保存 | 失败不产生半更新；Qt 可读数据不破坏；三平台路径/权限通过 |
-| WP-5-02 | CAP-020 | 在 WP-3U-01 同 App 设置窗口中补齐全部页面、逐域结果和首次设置 | 键盘/IME/焦点、密钥输入、失败恢复和重新打开状态一致 |
+| WP-5-01 | CAP-018/019 | 审计此前逐域完成的配置仓库和 change plan，收口剩余外观/布局 feature 与跨域一致性缺口；不重建巨型保存事务 | 逐域失败不产生半更新；冲突旧控件有等价/替代决定；Qt 可读数据、三平台路径/权限通过 |
+| WP-5-02 | CAP-020 | 执行设置 feature 关闭清单，编排已 accepted 切片的逐域结果与首次设置；不在此集中补造领域后端 | 所需 feature 均真实可用或有批准替代；键盘/IME/焦点、密钥输入、失败恢复和重新打开状态一致 |
 | WP-5-03 | CAP-006/007/021 | 补齐运行中 Session 切换优化、历史分页与完整角色切换等价 | 旧 generation/资源失效；角色、历史、Memory/TTS scope 不串线 |
 | WP-5-04 | CAP-022 | 在 WP-3U-01 右键菜单基础上补齐托盘、置顶、快捷键、显示隐藏和开机启动 | Windows/macOS/Linux 原生行为、权限和重复注册/卸载通过 |
 | WP-5-05 | CAP-023/024 | 浏览器自动化与移动/本地桥接 | 浏览器树受控；端口/防火墙/鉴权安全；插件不拥有第二生命周期根 |

@@ -277,7 +277,8 @@ DPI 设备证据仍按 G-008 延期：本轮没有执行 100%/150% DPI 人工复
 当前唯一未关闭的硬退出门是同一最终候选 SHA 的 Windows 2025 x64、macOS 15 arm64、Ubuntu 24.04 x64
 原生公共构建/测试证据。本机只有 Windows 真实候选；安装交叉 target 不能替代原生 macOS/Linux Tauri runner。
 本轮未经授权不得 push，因而不能触发所需 platform workflow。此缺口不按 DPI 决定延期，也不能伪造为通过；
-WP-3U-02 保持 `stabilizing`，WP-3-04 依赖未满足并保持 `planned`。
+WP-3U-02 保持 `stabilizing`。2026-07-28 的设置增量迁移决策在其后插入 WP-3S-01；该 WP 及其后的
+WP-3-04 依赖均未满足并保持 `planned`。
 
 当前代码候选的独立回退顺序为：先回退 `729c2f7c` 的 debug-only 验收注入，再按新到旧回退
 `078c18df`、`1a99d5d6` 和 `c4a94510`；治理记录 `32c36ba9` 与本证据记录可分别回退。回退前取消内存预览并
@@ -294,3 +295,29 @@ WP-3U-02 已迁移的立绘缩放、字体和主题字段直接复用旧控件�
 其他未迁移页面继续在导航中禁用。应用、保存、取消、失败回滚和 generation 失效语义不变，保存仍只写
 批准的窄外观字段，不保存 `current_character_id`，也不读取或改写其他配置域。WP-3U-02 状态保持
 `stabilizing`。
+
+后续设置功能不再等到 Phase 5 集中恢复，按
+`docs/runtime-v2/settings-incremental-migration.md` 逐 feature 迁移；这项排期调整不扩大本 WP 的生产
+范围，也不绕过其尚未关闭的三平台硬门。
+
+## 2026-07-28 桌宠与设置退出生命周期纠正
+
+真实使用发现桌宠窗口存在绕过统一应用退出协调的关闭路径：桌宠前端在退出获批前先执行 `dispose()`，
+且 Rust 原生窗口事件只拦截 `settings` 的 `CloseRequested`。当设置窗口仍存在或用户取消未保存确认时，
+可能表现为桌宠已经关闭/失活而设置窗口继续存在。
+
+纠正后，桌宠“×”、原生主窗口关闭和产品菜单“退出”全部进入同一个 `request_app_exit`：只要设置窗口
+存在，就先由设置处理未保存确认；确认放弃后关闭设置、请求 Core shutdown 并退出整个 App，取消则同时
+保留正常工作的桌宠和设置窗口。桌宠前端资源只在真实 `beforeunload` 时释放，不在退出请求发出前释放。
+产品菜单“显示/隐藏桌宠”仍是明确的可逆隐藏动作，设置窗口可以在隐藏期间继续存在，不等同于退出。
+
+同日继续关闭设置自身的 session 竞态：旧路径在真正关窗前先 `close_session()`，随后可拦截的
+`window.close()` 若未销毁窗口，再次保存就会得到 `APPEARANCE_SESSION_STALE`。确认关闭现在使用
+`window.destroy()`，appearance session 只在真实 `Destroyed` 事件中结束；销毁失败时 session 保持可重试。
+右上角“×”和底部“取消”共用三选一语义：无改动直接关闭；有改动时询问“保存 / 不保存 / 返回”；
+保存失败保持窗口和草稿，不继续关闭。“保存并关闭”保存成功后不再额外取消同一个 preview session。
+
+自动证据：canonical frontend 90 passed；Rust lifecycle 定向 4 passed；locked `cargo check` 通过；完整
+Rust 207 passed、23 ignored；`cargo fmt --check` 与 `git diff --check` 通过。真实 Tauri 的“有/无 dirty
+设置 + 设置 ×/取消/保存并关闭 + 保存/不保存/返回 + 桌宠 ×/原生关闭/菜单退出”组合仍须在最终候选
+实机复验中记录。
