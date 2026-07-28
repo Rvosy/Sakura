@@ -758,6 +758,12 @@ mod tests {
     #[test]
     fn real_sakura_and_navi_manifests_expose_every_safe_portrait_resource() {
         let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // Character packages are user/runtime data and are intentionally ignored by git.
+        // Keep this smoke test active for developer checkouts that have the real packages,
+        // without making a clean CI checkout depend on untracked local assets.
+        if !app_root.join("characters").is_dir() {
+            return;
+        }
         let state = CharacterPresentationState::new(app_root.clone());
         let mut default_ratios = Vec::new();
         for character_id in ["Sakura", "N.A.V.I."] {
