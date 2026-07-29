@@ -21,6 +21,7 @@
 runtime\python.exe -m harness list
 runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness run unit
+runtime\python.exe -m harness run runtime-v2-shell
 ```
 
 也可以指定报告位置：
@@ -30,6 +31,8 @@ runtime\python.exe -m harness run smoke --report temp\harness\smoke.json
 ```
 
 默认报告写入 `temp/harness/`。进程退出码为 `0` 表示全部通过，`1` 表示至少一个 case 失败，`2` 表示调用或清单错误。
+
+`runtime-v2-shell` 会运行 `desktop/frontend` 的完整 Node 测试，以及近期桌面壳改动涉及的角色外观、角色表现、产品窗口、窗口几何和原生交互 Rust 模块测试。该 profile 保持离线，并避开会与正在运行的 Sakura 实例争用共享锁的完整 Rust 生命周期测试。
 
 ## 扩展
 

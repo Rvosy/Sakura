@@ -13,6 +13,17 @@
       "cases": [
         "python-unit-tests"
       ]
+    },
+    "runtime-v2-shell": {
+      "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
+      "cases": [
+        "runtime-v2-frontend-tests",
+        "runtime-v2-character-appearance-tests",
+        "runtime-v2-character-presentation-tests",
+        "runtime-v2-product-shell-tests",
+        "runtime-v2-window-geometry-tests",
+        "runtime-v2-window-interaction-tests"
+      ]
     }
   },
   "cases": [
@@ -59,6 +70,114 @@
       "timeout_seconds": 600,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-frontend-tests",
+      "description": "验证 Runtime v2 桌宠、设置页与自绘菜单前端契约",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/*.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-character-appearance-tests",
+      "description": "验证角色外观预览、保存、回滚与代际绑定",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "character_appearance",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-character-presentation-tests",
+      "description": "验证干净检出与角色表现资源的安全加载边界",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "character_presentation",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-product-shell-tests",
+      "description": "验证设置窗口、托盘、退出协调与菜单能力清单",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "product_shell",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-window-geometry-tests",
+      "description": "验证固定桌宠窗口布局、DPI 与多显示器几何约束",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "window_geometry",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-window-interaction-tests",
+      "description": "验证命中区域、透明穿透、拖拽与菜单交互边界",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "window_interaction",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
       }
     }
   ]
