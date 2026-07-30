@@ -1,0 +1,22 @@
+@font-face {
+  font-family: "Sakura Noto Sans SC";
+  src: url("./NotoSansSC-VariableFont_wght-400-700.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Sakura Noto Sans JP";
+  src: url("./NotoSansJP-VariableFont_wght-400-700.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+:root {
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+}

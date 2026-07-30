@@ -5,6 +5,8 @@
  * 变量派生），因此用户在「外观」页实时改色时，连同卡片、阴影、导航高亮都会一起换肤。
  */
 
+@import url("../assets/fonts/fonts.css");
+
 :root {
   --sakura-primary: #d55b91;
   --sakura-primary-hover: #bf3f7a;
@@ -53,19 +55,33 @@
   --settings-button-inset: clamp(14px, calc(-11.714px + 2.857vw), 18px);
   --settings-secondary-width: clamp(104px, calc(26.857px + 8.571vw), 116px);
 
-  color: var(--sakura-text);
-  font-family:
+  --settings-font-system:
     "Microsoft YaHei UI",
     "Microsoft YaHei",
     "PingFang SC",
     "Segoe UI",
     sans-serif;
+
+  color: var(--sakura-text);
+  font-family: "Sakura Noto Sans SC", var(--settings-font-system);
   font-size: 14px;
+  font-weight: var(--font-weight-regular);
   line-height: 1.5;
+}
+
+:root[data-runtime-fonts="fallback"] {
+  font-family: var(--settings-font-system);
 }
 
 * {
   box-sizing: border-box;
+}
+
+h1,
+h2,
+h3,
+strong {
+  font-weight: var(--font-weight-semibold);
 }
 
 html,
@@ -157,7 +173,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 
 .nav-brand-text {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
   letter-spacing: 0.08em;
   color: var(--sakura-text);
 }
@@ -216,7 +232,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   margin: 0;
   padding: 2px 10px 4px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
   letter-spacing: 0.04em;
   color: var(--sakura-muted-text);
 }
@@ -235,6 +251,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   cursor: pointer;
   font-size: 14px;
   font-family: inherit;
+  font-weight: var(--font-weight-regular);
   padding: 0 12px;
   text-align: left;
   transition:
@@ -289,7 +306,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-item.is-active {
   background: var(--tint-soft);
   color: var(--sakura-primary);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   transform: translateX(1px);
 }
 
@@ -337,6 +354,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 .onboarding-head h1 {
   color: var(--sakura-text);
   font-size: 22px;
+  font-weight: var(--font-weight-bold);
 }
 
 .onboarding-head p:not(.onboarding-kicker) {
@@ -348,7 +366,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 .onboarding-kicker {
   color: var(--sakura-primary);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0.14em;
 }
 
@@ -401,7 +419,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .onboarding-step.is-static {
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
 }
 
 body.is-onboarding .settings-shell {
@@ -432,7 +450,7 @@ body.is-onboarding #page-character {
 .page-title {
   margin: 0;
   font-size: 19px;
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
   letter-spacing: 0.02em;
   color: var(--sakura-text);
 }
@@ -549,7 +567,7 @@ body.is-onboarding #page-character {
   margin-left: -2px;
   color: var(--sakura-primary);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0.02em;
   background: var(--tint-soft);
   border-radius: 999px;
@@ -564,7 +582,7 @@ body.is-onboarding #page-character {
   cursor: pointer;
   color: var(--sakura-primary);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   user-select: none;
@@ -607,7 +625,7 @@ body.is-onboarding #page-character {
   cursor: pointer;
   color: var(--sakura-secondary-text);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   user-select: none;
 }
 
@@ -658,7 +676,7 @@ body.is-onboarding #page-character {
   background: var(--surface-raised);
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   text-align: center;
 }
 
@@ -752,7 +770,7 @@ body.is-onboarding #page-character {
 
 .resource-meta dt {
   color: var(--sakura-secondary-text);
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .resource-meta dd {
@@ -773,7 +791,7 @@ body.is-onboarding #page-character {
   gap: 10px;
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .resource-select-row select {
@@ -796,7 +814,7 @@ body.is-onboarding #page-character {
   overflow: hidden;
   color: var(--sakura-text);
   font-size: 13.5px;
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -885,6 +903,7 @@ textarea {
   color: var(--sakura-text);
   font-family: inherit;
   font-size: 13.5px;
+  font-weight: var(--font-weight-regular);
   padding: 9px 11px;
   -webkit-user-select: text;
   user-select: text;
@@ -970,7 +989,7 @@ textarea:disabled {
   color: var(--sakura-text);
   font-family: inherit;
   font-size: 13.5px;
-  font-weight: 400;
+  font-weight: var(--font-weight-regular);
   text-align: left;
   padding: 9px 11px;
   cursor: pointer;
@@ -1065,7 +1084,7 @@ textarea:disabled {
 .custom-select__option.is-selected {
   background: var(--tint-soft);
   color: var(--sakura-primary);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 @keyframes menu-in {
@@ -1212,7 +1231,7 @@ input[type="range"].layout-slider::-moz-range-thumb {
   background: var(--tint-soft);
   color: var(--sakura-primary);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -1330,7 +1349,7 @@ input[type="range"].layout-slider::-moz-range-thumb {
   gap: 10px;
   align-items: center;
   color: var(--sakura-secondary-text);
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .theme-rgb-row {
@@ -1344,7 +1363,7 @@ input[type="range"].layout-slider::-moz-range-thumb {
   gap: 5px;
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .theme-rgb-row input {
@@ -1432,7 +1451,7 @@ input[type="range"].layout-slider::-moz-range-thumb {
   padding: 1px 9px;
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
   background: var(--tint-faint);
   border-radius: 999px;
 }
@@ -1543,7 +1562,7 @@ input[type="checkbox"]:disabled + span {
   background: var(--tint-faint);
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   line-height: 1.2;
   padding: 3px 9px;
   white-space: nowrap;
@@ -1575,7 +1594,7 @@ input[type="checkbox"]:disabled + span {
   gap: 6px;
   color: var(--sakura-secondary-text);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .compact-number input {
@@ -1586,7 +1605,7 @@ input[type="checkbox"]:disabled + span {
 
 .compact-number .unit {
   color: var(--sakura-muted-text);
-  font-weight: 600;
+  font-weight: var(--font-weight-regular);
 }
 
 .admin-toolbar {
@@ -1748,7 +1767,7 @@ input[type="checkbox"]:disabled + span {
   gap: 5px;
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .detail-grid input,
@@ -1768,7 +1787,7 @@ input[type="checkbox"]:disabled + span {
 
 .detail-meta dt {
   color: var(--sakura-secondary-text);
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
 }
 
 .detail-meta dd {
@@ -1855,6 +1874,7 @@ input[type="checkbox"]:disabled + span {
   margin: 12px 0 6px;
   color: var(--sakura-text);
   font-size: 22px;
+  font-weight: var(--font-weight-bold);
 }
 
 .capability-shell p {
@@ -1917,7 +1937,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 .provider-avatar.is-initial {
   color: var(--sakura-primary);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
 }
 
 .provider-avatar-img {
@@ -1935,6 +1955,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 
 .provider-card-body strong {
   font-size: 14px;
+  font-weight: var(--font-weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1950,7 +1971,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   flex: 0 0 auto;
   color: var(--sakura-secondary-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
 
@@ -2007,7 +2028,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   background: transparent;
   color: var(--sakura-muted-text);
   font-size: 15px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   line-height: 1;
 }
 
@@ -2046,7 +2067,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   color: var(--sakura-text);
   padding: 8px 12px;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   text-align: left;
 }
 
@@ -2068,7 +2089,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   gap: 9px;
   padding: 5px 4px;
   font-size: 13px;
-  font-weight: 400;
+  font-weight: var(--font-weight-regular);
 }
 
 /* ---------- 内置确认弹窗 ---------- */
@@ -2146,7 +2167,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 
 .export-kind-title {
   font-size: 13.5px;
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
 }
 
 .export-kind-desc {
@@ -2177,7 +2198,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 
 .error {
   color: var(--sakura-accent);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 /* ---------- 底栏与按钮 ---------- */
@@ -2208,7 +2229,7 @@ footer {
   flex: none;
   color: var(--sakura-primary);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   white-space: nowrap;
 }
 
@@ -2227,7 +2248,7 @@ button {
   cursor: pointer;
   font-family: inherit;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   padding: 8px var(--settings-button-inset);
   transition:
     background-color var(--motion-base) var(--ease),
@@ -2364,7 +2385,7 @@ button:focus-visible,
   overflow: hidden;
   color: var(--sakura-text);
   font-size: 13.5px;
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

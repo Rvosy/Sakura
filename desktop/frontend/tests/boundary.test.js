@@ -8,6 +8,7 @@ const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.u
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
 const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
@@ -103,17 +104,35 @@ test("empty portrait layers stay hidden instead of painting WebView2 broken-imag
 test("bubble typography uses language-owned families and only real product weights", () => {
   const bubbleCopyBlock = styles.match(/\.bubble-copy\s*\{([^}]*)\}/)?.[1] || "";
   assert.doesNotMatch(bubbleCopyBlock, /Yu Mincho|SimSun|(^|[^-])\bserif\b/);
-  assert.match(bubbleCopyBlock, /font-weight:\s*400/);
+  assert.match(bubbleCopyBlock, /font-weight:\s*var\(--font-weight-regular\)/);
   assert.match(styles, /\.bubble-copy \[lang\|="zh"\]/);
   assert.match(styles, /\.bubble-copy \[lang\|="ja"\]/);
   assert.match(styles, /\.bubble-copy \[lang\|="ko"\]/);
   assert.match(styles, /\.bubble-copy \[lang="en"\]/);
-  assert.match(styles, /--font-zh:\s*"Microsoft YaHei UI",\s*"Microsoft YaHei"/);
-  assert.match(styles, /--font-ja:\s*Meiryo,\s*"Meiryo UI"/);
-  assert.doesNotMatch(styles, /font-weight:\s*(?:500|650)\b/);
+  assert.match(styles, /--font-zh:\s*"Sakura Noto Sans SC",\s*var\(--font-zh-system\)/);
+  assert.match(styles, /--font-ja:\s*"Sakura Noto Sans JP",\s*var\(--font-ja-system\)/);
+  assert.doesNotMatch(styles, /font-weight:\s*(?:650|800|900)\b/);
   assert.match(app, /renderMultilingualText/);
   assert.match(app, /input\.lang = inferTextLanguage\(input\.value\)/);
   assert.match(index, /id="composer-input"[\s\S]*?lang="zh-CN"/);
+});
+
+test("runtime typography assigns weight by semantic role", () => {
+  const petBlock = (selector) => styles.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"))?.[1] || "";
+  const settingsBlock = (selector) => settingsStyles.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"))?.[1] || "";
+
+  assert.match(petBlock("\\.identity strong"), /font-weight:\s*var\(--font-weight-bold\)/);
+  assert.match(petBlock("\\.text-action"), /font-weight:\s*var\(--font-weight-medium\)/);
+  assert.match(petBlock("\\.composer textarea"), /font-weight:\s*var\(--font-weight-regular\)/);
+  assert.match(petBlock("\\.composer button"), /font-weight:\s*var\(--font-weight-semibold\)/);
+  assert.match(petBlock("\\.pet-context-menu button"), /font-weight:\s*var\(--font-weight-regular\)/);
+
+  assert.match(settingsBlock("\\.nav-item"), /font-weight:\s*var\(--font-weight-regular\)/);
+  assert.match(settingsBlock("\\.nav-item\\.is-active"), /font-weight:\s*var\(--font-weight-semibold\)/);
+  assert.match(settingsBlock("button"), /font-weight:\s*var\(--font-weight-medium\)/);
+  assert.match(settingsBlock("\\.page-title"), /font-weight:\s*var\(--font-weight-bold\)/);
+  assert.match(settingsBlock("\\.setting-title"), /font-weight:\s*var\(--font-weight-medium\)/);
+  assert.doesNotMatch(settingsStyles, /font-weight:\s*(?:650|800|900)\b/);
 });
 
 test("reply selection keeps copy support and uses the active character theme", () => {

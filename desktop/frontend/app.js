@@ -1,5 +1,6 @@
 import { createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createFakeChatCore } from "./chat/fake-chat-core.js";
+import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { applyTheme } from "./core/theme.js";
 import {
   appearanceChanges,
@@ -631,5 +632,6 @@ if (presentationUnavailable) {
 render(presentation.current());
 await enableAcceptanceEntry();
 fakeCore.start();
+await waitForRuntimeFonts();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
 await invoke("reveal_pet_window");

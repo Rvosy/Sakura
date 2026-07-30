@@ -1,12 +1,20 @@
+@import url("./assets/fonts/fonts.css");
+
 :root {
   color: #3d2b35;
   background: transparent;
-  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
-  --font-zh: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
-  --font-ja: Meiryo, "Meiryo UI", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", "Yu Gothic UI", "Noto Sans CJK JP", sans-serif;
-  --font-ko: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif;
-  --font-latin: "Segoe UI", Arial, sans-serif;
+  --font-ui-system: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-zh-system: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --font-ja-system: Meiryo, "Meiryo UI", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", "Yu Gothic UI", "Noto Sans CJK JP", sans-serif;
+  --font-ko-system: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif;
+  --font-latin-system: "Segoe UI", Arial, sans-serif;
+  --font-ui: "Sakura Noto Sans SC", var(--font-ui-system);
+  --font-zh: "Sakura Noto Sans SC", var(--font-zh-system);
+  --font-ja: "Sakura Noto Sans JP", var(--font-ja-system);
+  --font-ko: var(--font-ko-system);
+  --font-latin: "Sakura Noto Sans SC", var(--font-latin-system);
   font-family: var(--font-ui);
+  font-weight: var(--font-weight-regular);
   font-synthesis: none;
   --primary: #d55b91;
   --primary-hover: #bf3f7a;
@@ -25,6 +33,13 @@
   --name-font-size: 13px;
   --input-font-size: 15px;
   --button-font-size: 15px;
+}
+
+:root[data-runtime-fonts="fallback"] {
+  --font-ui: var(--font-ui-system);
+  --font-zh: var(--font-zh-system);
+  --font-ja: var(--font-ja-system);
+  --font-latin: var(--font-latin-system);
 }
 
 * { box-sizing: border-box; }
@@ -193,7 +208,7 @@ textarea:focus-visible,
   color: var(--primary);
   font-family: var(--font-ui);
   font-size: var(--name-font-size);
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -205,7 +220,7 @@ textarea:focus-visible,
   padding: 5px 0;
   color: var(--secondary-text);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -236,7 +251,7 @@ textarea:focus-visible,
   overflow-y: auto;
   color: var(--text);
   font-size: var(--speech-font-size);
-  font-weight: 400;
+  font-weight: var(--font-weight-regular);
   line-height: 1.42;
   overflow-wrap: anywhere;
   user-select: text;
@@ -312,7 +327,7 @@ textarea:focus-visible,
   background: color-mix(in srgb, var(--input-background), transparent 58%);
   font-size: var(--input-font-size);
   font-family: var(--font-zh);
-  font-weight: 700;
+  font-weight: var(--font-weight-regular);
   line-height: 1.25;
   outline: 0;
   user-select: text;
@@ -336,7 +351,7 @@ textarea:focus-visible,
   background: var(--primary);
   cursor: pointer;
   font-size: var(--button-font-size);
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
   transition: background 120ms ease, transform 120ms ease;
 }
 
@@ -392,6 +407,7 @@ textarea:focus-visible,
   color: var(--text);
   background: transparent;
   font-size: 14px;
+  font-weight: var(--font-weight-regular);
   line-height: 20px;
   text-align: left;
   cursor: default;
@@ -427,7 +443,7 @@ textarea:focus-visible,
   height: 14px;
   color: transparent;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: var(--font-weight-semibold);
   line-height: 1;
 }
 

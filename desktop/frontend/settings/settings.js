@@ -1,5 +1,11 @@
 const invoke = window.__TAURI__.core.invoke;
 const settingsCloseFlowPromise = import("./close-flow.js");
+const runtimeFontsReadyPromise = import("../core/font-loader.js")
+  .then(({ waitForRuntimeFonts }) => waitForRuntimeFonts({ families: ["sc"] }))
+  .catch(() => {
+    document.documentElement.dataset.runtimeFonts = "fallback";
+    return "fallback";
+  });
 
 document.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -5003,7 +5009,8 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_character_appearance_get");
     await runtimeAppearanceController.initialize(snapshot);
-    // Rust 先同步原生背景色，initialize 再应用页面 CSS 主题；两者都就绪后才显示窗口。
+    await runtimeFontsReadyPromise;
+    // Rust 先同步原生背景色，initialize 再应用页面 CSS 主题；字体和两者都就绪后才显示窗口。
     await invoke("reveal_settings_window");
   }
   if (
