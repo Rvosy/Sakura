@@ -35,8 +35,8 @@ use windows::{
             Pipes::CreatePipe,
             Threading::{
                 CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess,
-                WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-                STARTUPINFOW,
+                WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION,
+                STARTF_USESTDHANDLES, STARTUPINFOW,
             },
         },
     },
@@ -337,7 +337,7 @@ impl ManagedProcessTree {
                 None,
                 None,
                 pipe_setup.is_some(),
-                CREATE_SUSPENDED,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
                 None,
                 current_directory
                     .as_ref()
@@ -816,6 +816,11 @@ mod tests {
         },
     };
 
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GetConsoleWindow() -> isize;
+    }
+
     fn fixture_spec(name: &str) -> ManagedProcessSpec {
         let mut spec = ManagedProcessSpec::new(
             std::env::current_exe().expect("current Rust test executable should resolve"),
@@ -1174,6 +1179,23 @@ mod tests {
     }
 
     #[test]
+    fn managed_child_does_not_create_a_console_window() {
+        let mut tree = ManagedProcessTree::spawn(&fixture_spec("fixture_requires_no_console"))
+            .expect("managed process should spawn without a console");
+
+        assert_eq!(
+            tree.wait(Duration::from_secs(3))
+                .expect("root wait should succeed"),
+            WaitOutcome::Exited(0)
+        );
+        assert!(tree
+            .verify_tree_exited(Duration::from_secs(1))
+            .expect("job verification should succeed"));
+        tree.release_exited_handles()
+            .expect("exited handles should release");
+    }
+
+    #[test]
     #[ignore = "isolated handle-count fixture; launched by the parent test"]
     fn fixture_handle_release_loop() {
         fn current_handle_count() -> u32 {
@@ -1224,6 +1246,13 @@ mod tests {
     #[ignore = "test-process fixture; launched by ManagedProcessTree tests"]
     fn fixture_exit_23() {
         process::exit(23);
+    }
+
+    #[test]
+    #[ignore = "test-process fixture; launched by ManagedProcessTree tests"]
+    fn fixture_requires_no_console() {
+        let console_window = unsafe { GetConsoleWindow() };
+        process::exit(if console_window == 0 { 0 } else { 91 });
     }
 
     #[test]
