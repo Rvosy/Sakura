@@ -722,6 +722,7 @@ fn settings_character_appearance_get(
     if let Some(cancelled) = cancelled {
         emit_appearance(&app_handle, cancelled)?;
     }
+    sync_settings_window_appearance_background(&window, &publication)?;
     Ok(SettingsCharacterAppearanceSnapshot {
         schema_version: 1,
         window_generation,
@@ -745,6 +746,7 @@ fn settings_character_appearance_preview(
     let presentation = load_current_character_presentation(&lifecycle, &resources)?;
     let publication =
         appearance.preview(shell.generation()?, &presentation.presentation, values)?;
+    sync_settings_window_appearance_background(&window, &publication)?;
     emit_appearance(&app_handle, publication.clone())?;
     Ok(publication)
 }
@@ -771,6 +773,7 @@ fn settings_character_appearance_save(
             return Err(error);
         }
     };
+    sync_settings_window_appearance_background(&window, &publication)?;
     emit_appearance(&app_handle, publication.clone())?;
     Ok(publication)
 }
@@ -783,9 +786,22 @@ fn settings_character_appearance_cancel_preview(
 ) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
     if let Some(publication) = appearance.cancel()? {
+        sync_settings_window_appearance_background(&window, &publication)?;
         emit_appearance(&app_handle, publication)?;
     }
     Ok(())
+}
+
+fn sync_settings_window_appearance_background(
+    window: &WebviewWindow,
+    publication: &character_appearance::AppearancePublication,
+) -> Result<(), String> {
+    let background = publication
+        .values
+        .theme_tokens
+        .get("pageBackground")
+        .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
+    product_shell::set_settings_window_theme_background(window, background)
 }
 
 fn settings_core_handle(

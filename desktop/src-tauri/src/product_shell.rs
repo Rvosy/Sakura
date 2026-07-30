@@ -5,6 +5,7 @@ use serde::Serialize;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
+use tauri::webview::Color;
 use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
@@ -394,12 +395,14 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
 
     let state = app.state::<ProductShellState>();
     state.next_generation()?;
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
         WebviewUrl::App("settings/index.html".into()),
     )
     .title("Sakura 设置")
+    // WebView2 在交互式缩放时会落后一帧；用页面默认底色覆盖原生窗口，避免露出黑底。
+    .background_color(Color(255, 246, 250, 255))
     .inner_size(1040.0, 760.0)
     .min_inner_size(900.0, 640.0)
     .resizable(true)
@@ -411,7 +414,51 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| format!("SETTINGS_WINDOW_CREATE_FAILED: {error}"))?;
+    if let Err(error) = bind_settings_webview_resize(&window) {
+        let _ = window.destroy();
+        return Err(error);
+    }
     Ok(())
+}
+
+fn bind_settings_webview_resize(window: &WebviewWindow) -> Result<(), String> {
+    let initial_size = window
+        .inner_size()
+        .map_err(|error| format!("SETTINGS_WINDOW_SIZE_FAILED: {error}"))?;
+    window
+        .as_ref()
+        .set_size(initial_size)
+        .map_err(|error| format!("SETTINGS_WEBVIEW_RESIZE_FAILED: {error}"))?;
+
+    let webview = window.as_ref().clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Resized(size) = event {
+            // 事件属于该窗口自己的 WebView；窗口销毁期间的末尾事件可以安全忽略。
+            let _ = webview.set_size(*size);
+        }
+    });
+    Ok(())
+}
+
+pub(crate) fn set_settings_window_theme_background(
+    window: &WebviewWindow,
+    value: &str,
+) -> Result<(), String> {
+    window
+        .set_background_color(Some(parse_theme_color(value)?))
+        .map_err(|error| format!("SETTINGS_WINDOW_BACKGROUND_FAILED: {error}"))
+}
+
+fn parse_theme_color(value: &str) -> Result<Color, String> {
+    let hex = value
+        .strip_prefix('#')
+        .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "SETTINGS_WINDOW_BACKGROUND_INVALID".to_string())?;
+    let channel = |range: std::ops::Range<usize>| {
+        u8::from_str_radix(&hex[range], 16)
+            .map_err(|_| "SETTINGS_WINDOW_BACKGROUND_INVALID".to_string())
+    };
+    Ok(Color(channel(0..2)?, channel(2..4)?, channel(4..6)?, 255))
 }
 
 pub fn emit_product_menu_error(app: &AppHandle, error: impl ToString) {
@@ -423,6 +470,14 @@ pub fn emit_product_menu_error(app: &AppHandle, error: impl ToString) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_window_background_accepts_only_plain_hex_theme_colors() {
+        assert_eq!(parse_theme_color("#caf2f2"), Ok(Color(202, 242, 242, 255)));
+        assert_eq!(parse_theme_color("#E9FCF6"), Ok(Color(233, 252, 246, 255)));
+        assert!(parse_theme_color("caf2f2").is_err());
+        assert!(parse_theme_color("#12渐变").is_err());
+    }
 
     #[test]
     fn product_menu_ids_are_a_closed_allowlist() {

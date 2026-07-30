@@ -39,6 +39,20 @@
   --motion-theme: 0.82s;
   --motion-stagger: 42ms;
 
+  /*
+   * 设置窗口允许从 900px 拉伸到默认的 1040px。相关尺寸必须连续增长；
+   * 若在单一断点同时放大导航、间距和控件，窗口变宽时内容反而会瞬间变窄。
+   */
+  --settings-nav-width: clamp(168px, calc(116.571px + 5.714vw), 176px);
+  --settings-shell-gap: clamp(10px, calc(-15.714px + 2.857vw), 14px);
+  --settings-shell-inset: clamp(12px, calc(-0.857px + 1.429vw), 14px);
+  --settings-content-gutter: clamp(18px, calc(-7.714px + 2.857vw), 22px);
+  --settings-section-inset: clamp(14px, calc(1.143px + 1.429vw), 16px);
+  --settings-form-label-width: clamp(112px, calc(60.571px + 5.714vw), 120px);
+  --settings-form-gap: clamp(12px, calc(-13.714px + 2.857vw), 16px);
+  --settings-button-inset: clamp(14px, calc(-11.714px + 2.857vw), 18px);
+  --settings-secondary-width: clamp(104px, calc(26.857px + 8.571vw), 116px);
+
   color: var(--sakura-text);
   font-family:
     "Microsoft YaHei UI",
@@ -93,19 +107,22 @@ html.is-theme-view-transition::view-transition-new(root) {
 
 .settings-shell {
   display: grid;
-  grid-template-columns: 176px minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--settings-shell-gap);
   height: 100vh;
-  padding: 14px;
+  min-height: 0;
+  padding: var(--settings-shell-inset);
   animation: shell-in var(--motion-slow) var(--ease) both;
 }
 
 .nav-card,
 .detail-card {
+  min-height: 0;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--sakura-panel-bg) 55%, var(--surface-raised));
-  box-shadow: var(--shadow-card);
+  box-shadow: none;
 }
 
 /* ---------- 侧边导航 ---------- */
@@ -149,8 +166,37 @@ html.is-theme-view-transition::view-transition-new(root) {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sakura-border) transparent;
+}
+
+.nav-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.nav-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-list::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.nav-list::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
+}
+
+.nav-list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sakura-primary);
 }
 
 /* 分区：用小标题 + 细分隔线把 11 个页面归成 角色 / 智能 / 行为 / 系统 四组 */
@@ -266,12 +312,17 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .page-head {
-  padding: 18px 22px 14px;
+  flex: 0 0 auto;
+  padding:
+    clamp(16px, calc(3.143px + 1.429vw), 18px)
+    var(--settings-content-gutter)
+    clamp(12px, calc(-0.857px + 1.429vw), 14px);
   border-bottom: 1px solid var(--hairline);
 }
 
 .onboarding-head {
   display: grid;
+  flex: 0 0 auto;
   gap: 18px;
   padding: 22px 26px 18px;
   border-bottom: 1px solid var(--hairline);
@@ -405,7 +456,9 @@ body.is-onboarding #page-character {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 22px;
+  padding:
+    clamp(16px, calc(-9.714px + 2.857vw), 20px)
+    var(--settings-content-gutter);
   scrollbar-width: thin;
   scrollbar-color: var(--sakura-border) transparent;
 }
@@ -434,9 +487,18 @@ body.is-onboarding #page-character {
 .settings-page {
   display: none;
   gap: 14px;
-  width: min(100%, 980px);
+  width: 100%;
   min-width: 0;
-  max-width: 980px;
+  max-width: none;
+}
+
+.settings-page:not(.admin-page) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 600px), 1fr));
+  align-items: start;
+}
+
+.settings-page:not(.admin-page) > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 .settings-page.admin-page {
@@ -475,7 +537,7 @@ body.is-onboarding #page-character {
   display: grid;
   gap: 12px;
   margin: 0;
-  padding: 16px 16px 14px;
+  padding: var(--settings-section-inset) var(--settings-section-inset) 14px;
   min-width: 0;
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
@@ -722,9 +784,9 @@ body.is-onboarding #page-character {
 
 .form-row {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
+  grid-template-columns: var(--settings-form-label-width) minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
+  gap: var(--settings-form-gap);
   min-height: 36px;
   min-width: 0;
 }
@@ -1720,6 +1782,17 @@ input[type="checkbox"]:disabled + span {
   gap: 10px;
 }
 
+#providerDetail > .detail-actions {
+  flex-wrap: nowrap;
+}
+
+#providerDetail > .detail-actions > button {
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  padding-inline: 8px;
+}
+
 .danger-button {
   border-color: color-mix(in srgb, var(--sakura-accent) 55%, var(--sakura-border));
   color: var(--sakura-accent);
@@ -2111,10 +2184,13 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 
 footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  padding: 14px 22px;
+  padding:
+    clamp(12px, calc(-0.857px + 1.429vw), 14px)
+    var(--settings-content-gutter);
   border-top: 1px solid var(--hairline);
   background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
 }
@@ -2152,7 +2228,7 @@ button {
   font-family: inherit;
   font-size: 13px;
   font-weight: 700;
-  padding: 8px 18px;
+  padding: 8px var(--settings-button-inset);
   transition:
     background-color var(--motion-base) var(--ease),
     border-color var(--motion-base) var(--ease),
@@ -2188,7 +2264,7 @@ button:active:not(:disabled) {
 
 .secondary-button {
   width: fit-content;
-  min-width: 116px;
+  min-width: var(--settings-secondary-width);
 }
 
 .inline-actions {
@@ -2557,33 +2633,6 @@ input.is-invalid:hover,
 /* 窗口 minWidth=900，接近最小尺寸时只压缩间距与控件宽度，保持表单行横向布局。 */
 
 @media (max-width: 940px) {
-  .settings-shell {
-    grid-template-columns: 168px minmax(0, 1fr);
-    gap: 10px;
-    padding: 12px;
-  }
-
-  .page-head {
-    padding: 16px 18px 12px;
-  }
-
-  .page-scroll {
-    padding: 16px 18px;
-  }
-
-  footer {
-    padding: 12px 18px;
-  }
-
-  .settings-group {
-    padding: 14px;
-  }
-
-  .form-row {
-    grid-template-columns: 112px minmax(0, 1fr);
-    gap: 12px;
-  }
-
   .theme-colors {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2623,11 +2672,4 @@ input.is-invalid:hover,
     gap: 8px;
   }
 
-  button {
-    padding-inline: 14px;
-  }
-
-  .secondary-button {
-    min-width: 104px;
-  }
 }
