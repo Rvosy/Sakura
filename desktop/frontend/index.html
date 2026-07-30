@@ -37,7 +37,18 @@
           aria-label="发送给当前角色的消息"
           placeholder="和当前角色说点什么……"
         ></textarea>
-        <button type="submit" id="composer-send" tabindex="-1">发送</button>
+        <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
+          <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4.2 5.1 20 12 4.2 18.9l1.45-5.45L14.2 12l-8.55-1.45L4.2 5.1Z" />
+            </svg>
+          </span>
+          <span class="composer-action-icon composer-action-icon--cancel" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <rect x="7" y="7" width="10" height="10" rx="2.4" />
+            </svg>
+          </span>
+        </button>
       </form>
 
       <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">

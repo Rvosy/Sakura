@@ -41,7 +41,7 @@ test("markup exposes fixed product chat, portrait, status, and accessible contro
 test("rounded WebView surfaces preserve the native clip contract without external effects", () => {
   assert.doesNotMatch(styles, /filter\s*:\s*drop-shadow/i);
   assert.doesNotMatch(styles, /\.portrait-frame::after/);
-  for (const [selector, radius] of [["bubble", 20], ["composer", 26]]) {
+  for (const [selector, radius] of [["bubble", 22], ["composer", 28]]) {
     const block = declarationBlock(selector, "border-radius");
     assert.match(block, new RegExp(`border-radius:\\s*${radius}px`), selector);
   }
@@ -49,8 +49,8 @@ test("rounded WebView surfaces preserve the native clip contract without externa
     const block = declarationBlock(selector, "background");
     assert.match(block, /background:\s*transparent/, selector);
   }
-  assert.match(nativeInteraction, /const BUBBLE_CORNER_RADIUS: u32 = 20;/);
-  assert.match(nativeInteraction, /const INPUT_CORNER_RADIUS: u32 = 26;/);
+  assert.match(nativeInteraction, /const BUBBLE_CORNER_RADIUS: u32 = 22;/);
+  assert.match(nativeInteraction, /const INPUT_CORNER_RADIUS: u32 = 28;/);
   assert.match(nativeInteraction, /const CONTROLS_CORNER_RADIUS: u32 = 15;/);
   assert.match(nativeInteraction, /const NATIVE_ANTIALIAS_BLEED_LOGICAL_PX: f64 = 2\.0;/);
   assert.match(nativeInteraction, /portrait_rect,[\s\S]*?0,[\s\S]*?\)\?/);
@@ -124,7 +124,7 @@ test("runtime typography assigns weight by semantic role", () => {
   assert.match(petBlock("\\.identity strong"), /font-weight:\s*var\(--font-weight-bold\)/);
   assert.match(petBlock("\\.text-action"), /font-weight:\s*var\(--font-weight-medium\)/);
   assert.match(petBlock("\\.composer textarea"), /font-weight:\s*var\(--font-weight-regular\)/);
-  assert.match(petBlock("\\.composer button"), /font-weight:\s*var\(--font-weight-semibold\)/);
+  assert.match(petBlock("\\.composer button"), /place-items:\s*center/);
   assert.match(petBlock("\\.pet-context-menu button"), /font-weight:\s*var\(--font-weight-regular\)/);
 
   assert.match(settingsBlock("\\.nav-item"), /font-weight:\s*var\(--font-weight-regular\)/);
@@ -211,11 +211,31 @@ test("portrait previews relax the stale native clip before scaling and rebuild i
   assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
 });
 
-test("the one-line composer keeps its text optically centered across configured font sizes", () => {
+test("the adaptive composer uses semantic line metrics instead of pixel baseline offsets", () => {
   const composerInput = styles.match(/\.composer textarea\s*\{([^}]*)\}/)?.[1] || "";
-  assert.match(composerInput, /padding:\s*8px 15px 5px/);
+  assert.match(composerInput, /padding:\s*8px 0/);
   assert.match(composerInput, /overflow-y:\s*hidden/);
-  assert.match(composerInput, /line-height:\s*1\.25/);
+  assert.match(composerInput, /line-height:\s*1\.5/);
+  assert.doesNotMatch(composerInput, /padding:\s*\d+px\s+\d+px\s+\d+px/);
+  assert.match(app, /createAdaptiveControlSurface/);
+});
+
+test("the composer action is an accessible local SVG send and stop control", () => {
+  assert.match(index, /id="composer-send"[^>]*data-action="send"[^>]*aria-label="发送消息"/);
+  assert.match(index, /composer-action-icon--send[\s\S]*?<svg[\s\S]*?<path/);
+  assert.match(index, /composer-action-icon--cancel[\s\S]*?<svg[\s\S]*?<rect/);
+  assert.match(app, /send\.dataset\.action = state\.canCancel \? "cancel" : "send"/);
+  assert.match(app, /send\.setAttribute\("aria-label", state\.canCancel \? "停止回复" : "发送消息"\)/);
+  assert.doesNotMatch(styles, /--button-font-size/);
+});
+
+test("adaptive geometry settles after fonts and before the hidden window is revealed", () => {
+  const fontsIndex = app.lastIndexOf("await waitForRuntimeFonts()");
+  const adaptiveIndex = app.lastIndexOf("await adaptiveSurface.refresh()");
+  const readyIndex = app.lastIndexOf("document.body.dataset.shellState =");
+  const revealIndex = app.lastIndexOf('await invoke("reveal_pet_window")');
+  assert.ok(fontsIndex >= 0 && fontsIndex < adaptiveIndex);
+  assert.ok(adaptiveIndex < readyIndex && readyIndex < revealIndex);
 });
 
 test("product menu presentation is themed in the WebView while Rust owns capabilities and actions", () => {
@@ -249,7 +269,8 @@ test("product menu presentation is themed in the WebView while Rust owns capabil
   for (const token of [
     "min-width: 226px",
     "border-radius: 14px",
-    "backdrop-filter: blur(22px)",
+    "inset 0 1px 0",
+    "inset 0 0 0 1px",
     "min-height: 30px",
     "border-radius: 8px",
     "var(--input-background)",
@@ -257,6 +278,9 @@ test("product menu presentation is themed in the WebView while Rust owns capabil
     "var(--muted-text)",
     "pet-context-menu-in 110ms",
   ]) assert.ok(styles.includes(token), token);
+  const contextMenuStyle = styles.match(/\.pet-context-menu\s*\{([^}]*)\}/)?.[1] || "";
+  assert.doesNotMatch(contextMenuStyle, /backdrop-filter/);
+  assert.match(contextMenuStyle, /box-shadow:\s*inset[\s\S]*?,\s*inset/);
 });
 
 test("the native tray keeps a hidden pet recoverable through the shared visibility action", () => {
@@ -313,8 +337,10 @@ test("portrait click-through is tightened after the decoded contain size is know
 });
 
 test("Windows drag is borderless, click-through aware, and independent of the caption move loop", () => {
-  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some/);
+  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, None/);
   assert.match(nativeInteraction, /SetWindowSubclass/);
+  assert.match(nativeInteraction, /WM_NCHITTEST/);
+  assert.match(nativeInteraction, /HTTRANSPARENT/);
   assert.doesNotMatch(nativeInteraction, /GWLP_WNDPROC/);
   assert.match(nativeInteraction, /WM_NCCALCSIZE/);
   assert.match(nativeInteraction, /WM_NCPAINT/);

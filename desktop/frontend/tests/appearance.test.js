@@ -13,15 +13,18 @@ const themeTokens = Object.fromEntries([
 ].map((key) => [key, "#A1B2C3"]));
 const presentation = { generationId: "generation-a", characterId: "Sakura" };
 const publication = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   coreGenerationId: "generation-a",
   characterId: "Sakura",
   values: {
     portraitScalePercent: 125,
+    controlPanelWidth: 640,
+    bubbleMaxHeight: 128,
+    controlPanelVerticalOffset: 0,
+    inputBarOffset: 0,
     speechFontSize: 20,
     nameFontSize: 14,
     inputFontSize: 16,
-    buttonFontSize: 16,
     themeTokens,
   },
 };
@@ -52,13 +55,17 @@ test("font-only appearance updates do not invalidate theme or portrait hit testi
   assert.deepEqual(appearanceChanges(publication.values, {
     ...publication.values,
     speechFontSize: 22,
-  }), { theme: false, fonts: true, portrait: false });
+  }), { theme: false, fonts: true, layout: false, portrait: false });
   assert.deepEqual(appearanceChanges(publication.values, {
     ...publication.values,
     portraitScalePercent: 80,
-  }), { theme: false, fonts: false, portrait: true });
+  }), { theme: false, fonts: false, layout: false, portrait: true });
   assert.deepEqual(appearanceChanges(publication.values, {
     ...publication.values,
     themeTokens: { ...themeTokens, accent: "#ffffff" },
-  }), { theme: true, fonts: false, portrait: false });
+  }), { theme: true, fonts: false, layout: false, portrait: false });
+  assert.deepEqual(appearanceChanges(publication.values, {
+    ...publication.values,
+    bubbleMaxHeight: 180,
+  }), { theme: false, fonts: false, layout: true, portrait: false });
 });

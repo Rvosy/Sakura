@@ -13,10 +13,13 @@ const THEME_FIELDS = Object.freeze([
 ]);
 const VALUE_FIELDS = Object.freeze([
   "portraitScalePercent",
+  "controlPanelWidth",
+  "bubbleMaxHeight",
+  "controlPanelVerticalOffset",
+  "inputBarOffset",
   "speechFontSize",
   "nameFontSize",
   "inputFontSize",
-  "buttonFontSize",
 ]);
 const HEX = /^#[0-9a-f]{6}$/i;
 
@@ -72,7 +75,7 @@ export function validateAppearanceSnapshot(snapshot) {
   if (
     !presentation
     || !publication
-    || publication.schemaVersion !== 1
+    || publication.schemaVersion !== 2
     || publication.coreGenerationId !== presentation.generationId
     || publication.characterId !== presentation.characterId
     || !Array.isArray(presentation.portraitKeys)
@@ -115,10 +118,13 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
 
   const scalarControls = Object.freeze({
     portraitScalePercent: "portraitScale",
+    controlPanelWidth: "controlPanelWidth",
+    bubbleMaxHeight: "bubbleHeight",
+    controlPanelVerticalOffset: "controlPanelOffset",
+    inputBarOffset: "inputBarOffset",
     speechFontSize: "speechFontSize",
     nameFontSize: "nameFontSize",
     inputFontSize: "inputFontSize",
-    buttonFontSize: "buttonFontSize",
   });
 
   function fill(values) {

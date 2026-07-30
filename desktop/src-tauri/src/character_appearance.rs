@@ -19,6 +19,14 @@ const SCHEMA_VERSION: u64 = 1;
 const DOMAIN: &str = "ui";
 const PORTRAIT_SCALE_MIN: u16 = 50;
 const PORTRAIT_SCALE_MAX: u16 = 150;
+const CONTROL_PANEL_WIDTH_MIN: u16 = 420;
+const CONTROL_PANEL_WIDTH_MAX: u16 = 760;
+const BUBBLE_MAX_HEIGHT_MIN: u16 = 96;
+const BUBBLE_MAX_HEIGHT_MAX: u16 = 260;
+const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -60;
+const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 160;
+const INPUT_BAR_OFFSET_MIN: u16 = 0;
+const INPUT_BAR_OFFSET_MAX: u16 = 60;
 const THEME_TOKENS: [(&str, &str); 11] = [
     ("primary", "primary_color"),
     ("primaryHover", "primary_hover_color"),
@@ -38,10 +46,13 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppearanceValues {
     pub portrait_scale_percent: u16,
+    pub control_panel_width: u16,
+    pub bubble_max_height: u16,
+    pub control_panel_vertical_offset: i16,
+    pub input_bar_offset: u16,
     pub speech_font_size: u16,
     pub name_font_size: u16,
     pub input_font_size: u16,
-    pub button_font_size: u16,
     pub theme_tokens: BTreeMap<String, String>,
 }
 
@@ -55,10 +66,38 @@ impl AppearanceValues {
         .then_some(())
         .ok_or_else(|| "APPEARANCE_FIELD_INVALID:portraitScalePercent".to_string())?;
         for (name, value, minimum, maximum) in [
+            (
+                "controlPanelWidth",
+                self.control_panel_width,
+                CONTROL_PANEL_WIDTH_MIN,
+                CONTROL_PANEL_WIDTH_MAX,
+            ),
+            (
+                "bubbleMaxHeight",
+                self.bubble_max_height,
+                BUBBLE_MAX_HEIGHT_MIN,
+                BUBBLE_MAX_HEIGHT_MAX,
+            ),
+            (
+                "inputBarOffset",
+                self.input_bar_offset,
+                INPUT_BAR_OFFSET_MIN,
+                INPUT_BAR_OFFSET_MAX,
+            ),
+        ] {
+            if !bounded(value, minimum, maximum) {
+                return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
+            }
+        }
+        if !(CONTROL_PANEL_VERTICAL_OFFSET_MIN..=CONTROL_PANEL_VERTICAL_OFFSET_MAX)
+            .contains(&self.control_panel_vertical_offset)
+        {
+            return Err("APPEARANCE_FIELD_INVALID:controlPanelVerticalOffset".to_string());
+        }
+        for (name, value, minimum, maximum) in [
             ("speechFontSize", self.speech_font_size, 10, 24),
             ("nameFontSize", self.name_font_size, 10, 20),
             ("inputFontSize", self.input_font_size, 12, 20),
-            ("buttonFontSize", self.button_font_size, 12, 20),
         ] {
             if !bounded(value, minimum, maximum) {
                 return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
@@ -82,10 +121,13 @@ impl AppearanceValues {
     fn defaults(presentation: &CharacterPresentation) -> Self {
         Self {
             portrait_scale_percent: 100,
+            control_panel_width: 640,
+            bubble_max_height: 128,
+            control_panel_vertical_offset: 0,
+            input_bar_offset: 0,
             speech_font_size: 19,
             name_font_size: 13,
             input_font_size: 15,
-            button_font_size: 15,
             theme_tokens: presentation.theme_tokens.clone(),
         }
     }
@@ -104,20 +146,26 @@ pub struct AppearancePublication {
 #[serde(rename_all = "camelCase")]
 pub struct AppearanceLimits {
     pub portrait_scale_percent: [u16; 3],
+    pub control_panel_width: [u16; 3],
+    pub bubble_max_height: [u16; 3],
+    pub control_panel_vertical_offset: [i16; 3],
+    pub input_bar_offset: [u16; 3],
     pub speech_font_size: [u16; 3],
     pub name_font_size: [u16; 3],
     pub input_font_size: [u16; 3],
-    pub button_font_size: [u16; 3],
 }
 
 impl Default for AppearanceLimits {
     fn default() -> Self {
         Self {
             portrait_scale_percent: [50, 150, 100],
+            control_panel_width: [420, 760, 640],
+            bubble_max_height: [96, 260, 128],
+            control_panel_vertical_offset: [-60, 160, 0],
+            input_bar_offset: [0, 60, 0],
             speech_font_size: [10, 24, 19],
             name_font_size: [10, 20, 13],
             input_font_size: [12, 20, 15],
-            button_font_size: [12, 20, 15],
         }
     }
 }
@@ -285,7 +333,7 @@ fn publication(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 1,
+        schema_version: 2,
         core_generation_id: presentation.generation_id.clone(),
         character_id: presentation.character_id.clone(),
         values,
@@ -298,7 +346,7 @@ fn publication_from_session(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 1,
+        schema_version: 2,
         core_generation_id: session.core_generation_id.clone(),
         character_id: session.character_id.clone(),
         values,
@@ -350,10 +398,20 @@ impl AppearanceRepository {
             Value::from(values.portrait_scale_percent),
         );
         for (name, value) in [
+            ("control_panel_width", values.control_panel_width),
+            ("bubble_height", values.bubble_max_height),
+            ("input_bar_offset", values.input_bar_offset),
+        ] {
+            settings.insert(name.to_string(), Value::from(value));
+        }
+        settings.insert(
+            "control_panel_vertical_offset".to_string(),
+            Value::from(values.control_panel_vertical_offset),
+        );
+        for (name, value) in [
             ("speech_font_size", values.speech_font_size),
             ("name_font_size", values.name_font_size),
             ("input_font_size", values.input_font_size),
-            ("button_font_size", values.button_font_size),
         ] {
             settings.insert(name.to_string(), Value::from(value));
         }
@@ -386,10 +444,13 @@ fn validate_document(document: &Value) -> Result<(), String> {
         .and_then(Value::as_object)
         .ok_or_else(|| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
     validate_optional_number(settings, "portrait_scale_percent", 50, 150)?;
+    validate_optional_number(settings, "control_panel_width", 420, 760)?;
+    validate_optional_number(settings, "bubble_height", 96, 260)?;
+    validate_optional_signed_number(settings, "control_panel_vertical_offset", -60, 160)?;
+    validate_optional_number(settings, "input_bar_offset", 0, 60)?;
     validate_optional_number(settings, "speech_font_size", 10, 24)?;
     validate_optional_number(settings, "name_font_size", 10, 20)?;
     validate_optional_number(settings, "input_font_size", 12, 20)?;
-    validate_optional_number(settings, "button_font_size", 12, 20)?;
     if let Some(value) = settings.get("character_theme_overrides") {
         let overrides = value
             .as_object()
@@ -415,14 +476,20 @@ fn values_from_document(
     let mut values = AppearanceValues::defaults(presentation);
     values.portrait_scale_percent =
         optional_u16(settings, "portrait_scale_percent")?.unwrap_or(values.portrait_scale_percent);
+    values.control_panel_width =
+        optional_u16(settings, "control_panel_width")?.unwrap_or(values.control_panel_width);
+    values.bubble_max_height =
+        optional_u16(settings, "bubble_height")?.unwrap_or(values.bubble_max_height);
+    values.control_panel_vertical_offset = optional_i16(settings, "control_panel_vertical_offset")?
+        .unwrap_or(values.control_panel_vertical_offset);
+    values.input_bar_offset =
+        optional_u16(settings, "input_bar_offset")?.unwrap_or(values.input_bar_offset);
     values.speech_font_size =
         optional_u16(settings, "speech_font_size")?.unwrap_or(values.speech_font_size);
     values.name_font_size =
         optional_u16(settings, "name_font_size")?.unwrap_or(values.name_font_size);
     values.input_font_size =
         optional_u16(settings, "input_font_size")?.unwrap_or(values.input_font_size);
-    values.button_font_size =
-        optional_u16(settings, "button_font_size")?.unwrap_or(values.button_font_size);
     if let Some(theme) = settings
         .get("character_theme_overrides")
         .and_then(Value::as_object)
@@ -451,6 +518,23 @@ fn validate_optional_number(
     Ok(())
 }
 
+fn validate_optional_signed_number(
+    settings: &Map<String, Value>,
+    name: &str,
+    minimum: i64,
+    maximum: i64,
+) -> Result<(), String> {
+    if let Some(value) = settings.get(name) {
+        let Some(number) = value.as_i64() else {
+            return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
+        };
+        if number < minimum || number > maximum {
+            return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
+        }
+    }
+    Ok(())
+}
+
 fn optional_u16(settings: &Map<String, Value>, name: &str) -> Result<Option<u16>, String> {
     settings
         .get(name)
@@ -458,6 +542,18 @@ fn optional_u16(settings: &Map<String, Value>, name: &str) -> Result<Option<u16>
             value
                 .as_u64()
                 .and_then(|number| u16::try_from(number).ok())
+                .ok_or_else(|| format!("APPEARANCE_FIELD_INVALID:{name}"))
+        })
+        .transpose()
+}
+
+fn optional_i16(settings: &Map<String, Value>, name: &str) -> Result<Option<i16>, String> {
+    settings
+        .get(name)
+        .map(|value| {
+            value
+                .as_i64()
+                .and_then(|number| i16::try_from(number).ok())
                 .ok_or_else(|| format!("APPEARANCE_FIELD_INVALID:{name}"))
         })
         .transpose()
@@ -653,12 +749,16 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30}}"#,
+            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30,"control_panel_width":420,"bubble_height":260,"control_panel_vertical_offset":-60,"input_bar_offset":60,"button_font_size":19}}"#,
         )
         .unwrap();
         let repository = AppearanceRepository::new(path.clone());
         let presentation = fixture.presentation("generation-a");
         let mut values = repository.load_for(&presentation).unwrap();
+        assert_eq!(values.control_panel_width, 420);
+        assert_eq!(values.bubble_max_height, 260);
+        assert_eq!(values.control_panel_vertical_offset, -60);
+        assert_eq!(values.input_bar_offset, 60);
         values.portrait_scale_percent = 125;
         values
             .theme_tokens
@@ -667,6 +767,7 @@ mod tests {
         assert_eq!(repository.load_for(&presentation).unwrap(), values);
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["settings"]["typewriter_cps"], 30);
+        assert_eq!(document["settings"]["button_font_size"], 19);
     }
 
     #[test]
@@ -780,7 +881,7 @@ mod tests {
         let presentation = fixture.presentation("generation-a");
         let (baseline, _) = state.open(5, &presentation).unwrap();
         let mut draft = baseline.values.clone();
-        draft.button_font_size = 20;
+        draft.bubble_max_height = 180;
         state.preview(5, &presentation, draft.clone()).unwrap();
         let path = fixture.0.join("data/runtime_v2/config/ui.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();

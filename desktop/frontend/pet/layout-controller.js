@@ -11,12 +11,12 @@ export function createLayoutController({
   let currentState = null;
 
   return Object.freeze({
-    async transition(state, placeholderText = "") {
+    async transition(state, placeholderText = "", input = undefined) {
       const revision = ++requestedRevision;
       currentState = state;
-      const layout = computeLayout(state, placeholderText);
+      const layout = computeLayout(state, placeholderText, input);
 
-      const nativeResult = await applyNativeLayout({ state, revision });
+      const nativeResult = await applyNativeLayout({ state, revision, layout });
 
       if (revision !== requestedRevision || state !== currentState || !nativeResult.applied) {
         return Object.freeze({ applied: false, revision, state });

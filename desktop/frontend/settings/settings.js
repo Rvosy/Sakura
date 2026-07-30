@@ -78,7 +78,6 @@ const fields = {
   speechFontSize: document.getElementById("speechFontSize"),
   nameFontSize: document.getElementById("nameFontSize"),
   inputFontSize: document.getElementById("inputFontSize"),
-  buttonFontSize: document.getElementById("buttonFontSize"),
   memoryStatusStrip: document.getElementById("memoryStatusStrip"),
   memorySearch: document.getElementById("memorySearch"),
   memoryLayerFilter: document.getElementById("memoryLayerFilter"),
@@ -269,10 +268,6 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     fields.characterImportButton,
     fields.ttsVoiceImportButton,
     fields.characterExportButton,
-    fields.controlPanelWidth,
-    fields.bubbleHeight,
-    fields.controlPanelOffset,
-    fields.inputBarOffset,
     fields.visualEffectMode,
     fields.themeAiButton,
     themeEditor.pick,
@@ -4207,10 +4202,6 @@ function requestFontPreview() {
             fields.inputFontSize.value,
             request.limits.input_font_size,
           ),
-          button_font_size: clampInt(
-            fields.buttonFontSize.value,
-            request.limits.button_font_size,
-          ),
         },
       });
     } catch (error) {
@@ -4494,10 +4485,9 @@ function collectSystemBasicSettings() {
         fields.inputFontSize.value,
         limits.input_font_size,
       ),
-      button_font_size: clampInt(
-        fields.buttonFontSize.value,
-        limits.button_font_size,
-      ),
+      // Runtime v2 no longer exposes a text-size setting for the icon-only send control.
+      // Preserve the legacy host value while the shared settings document still carries it.
+      button_font_size: request.system_basic.ui.button_font_size,
     },
     bubble: {
       auto_hide_enabled: fields.bubbleAutoHide.checked,
@@ -4657,7 +4647,6 @@ async function load() {
   setNumericBounds(fields.speechFontSize, request.limits.speech_font_size);
   setNumericBounds(fields.nameFontSize, request.limits.name_font_size);
   setNumericBounds(fields.inputFontSize, request.limits.input_font_size);
-  setNumericBounds(fields.buttonFontSize, request.limits.button_font_size);
 
   const layout = request.character.layout;
   fields.portraitScale.value = layout.portrait_scale_percent;
@@ -4708,11 +4697,9 @@ async function load() {
   fields.speechFontSize.value = request.system_basic.ui.speech_font_size;
   fields.nameFontSize.value = request.system_basic.ui.name_font_size;
   fields.inputFontSize.value = request.system_basic.ui.input_font_size;
-  fields.buttonFontSize.value = request.system_basic.ui.button_font_size;
   updateSliderOutput("speechFontSize");
   updateSliderOutput("nameFontSize");
   updateSliderOutput("inputFontSize");
-  updateSliderOutput("buttonFontSize");
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
   fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
@@ -4765,7 +4752,7 @@ layoutSliders.forEach((fieldKey) => {
   fields[fieldKey].addEventListener("input", preview);
   fields[fieldKey].addEventListener("change", preview);
 });
-["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"].forEach((fieldKey) => {
+["speechFontSize", "nameFontSize", "inputFontSize"].forEach((fieldKey) => {
   const preview = () => {
     updateSliderOutput(fieldKey);
     requestFontPreview();

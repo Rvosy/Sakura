@@ -26,7 +26,48 @@ impl PresentationState {
 pub struct LayoutContract {
     pub schema_version: u32,
     pub viewport: ViewportLayout,
+    pub control_panel: ControlPanelLayout,
     pub states: BTreeMap<String, StateLayout>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RangeU32 {
+    pub default: u32,
+    pub minimum: u32,
+    pub maximum: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RangeI32 {
+    pub default: i32,
+    pub minimum: i32,
+    pub maximum: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControlPanelLayout {
+    pub center_x: u32,
+    pub bubble_bottom: u32,
+    pub input_gap: u32,
+    pub bubble_min_height: u32,
+    pub input_base_height: u32,
+    pub input_max_height: u32,
+    pub input_max_rows: u32,
+    pub control_panel_width: RangeU32,
+    pub bubble_max_height: RangeU32,
+    pub control_panel_vertical_offset: RangeI32,
+    pub input_bar_offset: RangeU32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControlSurfaceLayout {
+    pub bubble_rect: [u32; 4],
+    pub input_rect: [u32; 4],
+    pub controls_rect: [u32; 4],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -49,7 +90,7 @@ pub struct StateLayout {
 
 impl LayoutContract {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1 {
+        if self.schema_version != 2 {
             return Err(format!(
                 "unsupported layout contract version: {}",
                 self.schema_version
@@ -65,6 +106,27 @@ impl LayoutContract {
             || viewport_anchor_y > viewport_height
         {
             return Err("invalid native viewport envelope".to_string());
+        }
+        let panel = &self.control_panel;
+        for (name, range) in [
+            ("controlPanelWidth", panel.control_panel_width),
+            ("bubbleMaxHeight", panel.bubble_max_height),
+            ("inputBarOffset", panel.input_bar_offset),
+        ] {
+            if range.minimum > range.default || range.default > range.maximum {
+                return Err(format!("invalid control panel range: {name}"));
+            }
+        }
+        let vertical = panel.control_panel_vertical_offset;
+        if vertical.minimum > vertical.default
+            || vertical.default > vertical.maximum
+            || panel.bubble_min_height == 0
+            || panel.bubble_min_height > panel.bubble_max_height.minimum
+            || panel.input_base_height == 0
+            || panel.input_base_height > panel.input_max_height
+            || !(1..=8).contains(&panel.input_max_rows)
+        {
+            return Err("invalid adaptive control panel contract".to_string());
         }
         for state in PresentationState::all_values() {
             let layout = self
@@ -119,6 +181,56 @@ impl LayoutContract {
                     state.key()
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub fn validate_control_surface(
+        &self,
+        state: PresentationState,
+        surface: &ControlSurfaceLayout,
+    ) -> Result<(), String> {
+        self.validate()?;
+        let layout = self
+            .states
+            .get(state.key())
+            .ok_or_else(|| format!("missing layout state: {}", state.key()))?;
+        let [window_width, window_height] = layout.window_size;
+        for (name, [x, y, width, height]) in [
+            ("bubbleRect", surface.bubble_rect),
+            ("inputRect", surface.input_rect),
+            ("controlsRect", surface.controls_rect),
+        ] {
+            if width == 0
+                || height == 0
+                || x.saturating_add(width) > window_width
+                || y.saturating_add(height) > window_height
+            {
+                return Err(format!("CONTROL_SURFACE_INVALID:{name}"));
+            }
+        }
+        let [bubble_x, bubble_y, bubble_width, bubble_height] = surface.bubble_rect;
+        let [input_x, input_y, input_width, input_height] = surface.input_rect;
+        let panel = &self.control_panel;
+        if bubble_x != input_x
+            || bubble_width != input_width
+            || bubble_width < panel.control_panel_width.minimum
+            || bubble_width > panel.control_panel_width.maximum
+            || bubble_x.saturating_add(bubble_width / 2) != panel.center_x
+            || bubble_height < panel.bubble_min_height
+            || bubble_height > panel.bubble_max_height.maximum
+            || input_height < panel.input_base_height
+            || input_height > panel.input_max_height
+            || bubble_y
+                .saturating_add(bubble_height)
+                .saturating_add(panel.input_gap)
+                > input_y
+        {
+            return Err("CONTROL_SURFACE_INVALID:geometry".to_string());
+        }
+        let expected_controls = [bubble_x + bubble_width - 40, bubble_y + 10, 30, 30];
+        if surface.controls_rect != expected_controls {
+            return Err("CONTROL_SURFACE_INVALID:controlsRect".to_string());
         }
         Ok(())
     }
@@ -621,6 +733,59 @@ mod tests {
                 .unwrap()
                 .window_size,
             [900, 996]
+        );
+    }
+
+    fn control_surface(bubble_rect: [u32; 4], input_rect: [u32; 4]) -> ControlSurfaceLayout {
+        ControlSurfaceLayout {
+            bubble_rect,
+            input_rect,
+            controls_rect: [
+                bubble_rect[0] + bubble_rect[2] - 40,
+                bubble_rect[1] + 10,
+                30,
+                30,
+            ],
+        }
+    }
+
+    #[test]
+    fn adaptive_control_surface_accepts_compact_and_four_line_geometry() {
+        let contract = contract();
+        let compact = control_surface([130, 720, 640, 88], [130, 818, 640, 52]);
+        contract
+            .validate_control_surface(PresentationState::Product, &compact)
+            .expect("compact surface should validate");
+
+        let four_line = control_surface([130, 618, 640, 128], [130, 756, 640, 114]);
+        contract
+            .validate_control_surface(PresentationState::Product, &four_line)
+            .expect("four-line surface should validate");
+    }
+
+    #[test]
+    fn adaptive_control_surface_rejects_bounds_width_center_gap_and_controls_forgery() {
+        let contract = contract();
+        let cases = [
+            control_surface([130, 720, 640, 88], [130, 960, 640, 52]),
+            control_surface([70, 720, 761, 88], [70, 818, 761, 52]),
+            control_surface([120, 720, 640, 88], [120, 818, 640, 52]),
+            control_surface([130, 720, 640, 88], [131, 818, 640, 52]),
+            control_surface([130, 720, 640, 88], [130, 814, 640, 52]),
+        ];
+        for surface in cases {
+            assert!(contract
+                .validate_control_surface(PresentationState::Product, &surface)
+                .is_err());
+        }
+
+        let mut forged_controls = control_surface([130, 720, 640, 88], [130, 818, 640, 52]);
+        forged_controls.controls_rect[0] += 1;
+        assert_eq!(
+            contract
+                .validate_control_surface(PresentationState::Product, &forged_controls)
+                .unwrap_err(),
+            "CONTROL_SURFACE_INVALID:controlsRect"
         );
     }
 

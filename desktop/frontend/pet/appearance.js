@@ -15,7 +15,7 @@ const THEME_KEYS = Object.freeze([
 
 export function validateAppearancePublication(publication, presentation) {
   if (
-    publication?.schemaVersion !== 1
+    publication?.schemaVersion !== 2
     || publication.coreGenerationId !== presentation?.generationId
     || publication.characterId !== presentation?.characterId
   ) {
@@ -24,10 +24,13 @@ export function validateAppearancePublication(publication, presentation) {
   const values = publication.values;
   for (const [field, minimum, maximum] of [
     ["portraitScalePercent", 50, 150],
+    ["controlPanelWidth", 420, 760],
+    ["bubbleMaxHeight", 96, 260],
+    ["controlPanelVerticalOffset", -60, 160],
+    ["inputBarOffset", 0, 60],
     ["speechFontSize", 10, 24],
     ["nameFontSize", 10, 20],
     ["inputFontSize", 12, 20],
-    ["buttonFontSize", 12, 20],
   ]) {
     if (!Number.isSafeInteger(values?.[field]) || values[field] < minimum || values[field] > maximum) {
       throw new Error(`APPEARANCE_FIELD_INVALID:${field}`);
@@ -77,16 +80,18 @@ export function applyAppearanceVariables(values, root = document.documentElement
   root.style.setProperty("--speech-font-size", `${values.speechFontSize}px`);
   root.style.setProperty("--name-font-size", `${values.nameFontSize}px`);
   root.style.setProperty("--input-font-size", `${values.inputFontSize}px`);
-  root.style.setProperty("--button-font-size", `${values.buttonFontSize}px`);
 }
 
 export function appearanceChanges(previous, next) {
   const theme = THEME_KEYS.some((key) => previous?.themeTokens?.[key] !== next?.themeTokens?.[key]);
-  const fonts = ["speechFontSize", "nameFontSize", "inputFontSize", "buttonFontSize"]
+  const fonts = ["speechFontSize", "nameFontSize", "inputFontSize"]
+    .some((field) => previous?.[field] !== next?.[field]);
+  const layout = ["controlPanelWidth", "bubbleMaxHeight", "controlPanelVerticalOffset", "inputBarOffset"]
     .some((field) => previous?.[field] !== next?.[field]);
   return Object.freeze({
     theme,
     fonts,
+    layout,
     portrait: previous?.portraitScalePercent !== next?.portraitScalePercent,
   });
 }

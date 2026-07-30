@@ -40,8 +40,8 @@ use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
-    apply_window_layout, LayoutApplication, LayoutContract, LayoutRevisionGuard, MonitorDescriptor,
-    PhysicalRect, PresentationState,
+    apply_window_layout, ControlSurfaceLayout, LayoutApplication, LayoutContract,
+    LayoutRevisionGuard, MonitorDescriptor, PhysicalRect, PresentationState,
 };
 
 const STARTUP_HTML: &str = include_str!("../../frontend/index.html");
@@ -86,6 +86,7 @@ struct WindowGeometrySession {
     portrait_hit_relaxed: bool,
     portrait_scale_percent: u16,
     context_menu_open: bool,
+    control_surface: Option<ControlSurfaceLayout>,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
@@ -104,6 +105,7 @@ impl Default for WindowGeometrySession {
             portrait_hit_relaxed: false,
             portrait_scale_percent: 100,
             context_menu_open: false,
+            control_surface: None,
             hit_regions: None,
         }
     }
@@ -235,9 +237,13 @@ fn apply_pet_layout(
     window: WebviewWindow,
     state: PresentationState,
     revision: u64,
+    control_surface: Option<ControlSurfaceLayout>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<PetLayoutApplication, String> {
     let contract = layout_contract()?;
+    if let Some(surface) = control_surface.as_ref() {
+        contract.validate_control_surface(state, surface)?;
+    }
     let mut session = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
@@ -282,6 +288,7 @@ fn apply_pet_layout(
         &window,
         &contract,
         &application,
+        control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
         session.context_menu_open || session.portrait_hit_relaxed,
@@ -289,6 +296,7 @@ fn apply_pet_layout(
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
     session.applied_revision = revision;
+    session.control_surface = control_surface;
     session.hit_regions = Some(hit_regions.clone());
     Ok(PetLayoutApplication {
         layout: application,
@@ -300,15 +308,17 @@ fn apply_native_interaction_region(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
     keep_full_hit_region: bool,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
-    let logical = window_interaction::logical_hit_regions_with_portrait_transform(
+    let logical = window_interaction::logical_hit_regions_with_control_surface(
         contract,
         application.state,
         portrait_alpha_mask.map(character_presentation::PortraitAlphaMask::source_size),
         portrait_scale_percent,
+        control_surface,
     )?;
     let mut physical = window_interaction::scale_hit_regions(
         &logical,
@@ -348,6 +358,7 @@ fn apply_native_pet_surface(
     window: &WebviewWindow,
     contract: &LayoutContract,
     application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
     keep_full_hit_region: bool,
@@ -363,6 +374,7 @@ fn apply_native_pet_surface(
         window,
         contract,
         application,
+        control_surface,
         portrait_alpha_mask,
         portrait_scale_percent,
         keep_full_hit_region,
@@ -383,7 +395,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
         None,
         100,
     )?;
-    apply_native_pet_surface(window, &contract, &application, None, 100, false)?;
+    apply_native_pet_surface(window, &contract, &application, None, None, 100, false)?;
     Ok(())
 }
 
@@ -436,6 +448,7 @@ fn commit_dragged_window_position(
         &window,
         &contract,
         &application,
+        session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
         session.context_menu_open || session.portrait_hit_relaxed,
@@ -534,7 +547,7 @@ fn open_pet_context_menu(
     let state = geometry
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    let regions = window_interaction::logical_hit_regions_with_portrait_transform(
+    let regions = window_interaction::logical_hit_regions_with_control_surface(
         &layout_contract()?,
         state,
         geometry
@@ -542,6 +555,7 @@ fn open_pet_context_menu(
             .as_ref()
             .map(character_presentation::PortraitAlphaMask::source_size),
         geometry.portrait_scale_percent,
+        geometry.control_surface.as_ref(),
     )?;
     let point = [surface_x.floor() as i32, surface_y.floor() as i32];
     if !window_interaction::contains_visible_point(&regions, point) {
@@ -1145,6 +1159,7 @@ fn activate_portrait_hit_test(
         &window,
         &contract,
         &application,
+        geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         portrait_scale_percent,
         geometry.context_menu_open,

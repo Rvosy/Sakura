@@ -32,7 +32,6 @@
   --speech-font-size: 19px;
   --name-font-size: 13px;
   --input-font-size: 15px;
-  --button-font-size: 15px;
 }
 
 :root[data-runtime-fonts="fallback"] {
@@ -182,21 +181,69 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 12px 28px 14px;
-  border: 1px solid color-mix(in srgb, var(--border), transparent 22%);
-  border-radius: 20px;
+  padding: 12px 20px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, white 22%);
+  border-radius: 22px;
   color: var(--text);
-  background: color-mix(in srgb, var(--bubble-background), transparent 6%);
-  box-shadow: 0 8px 20px rgb(36 49 58 / 12%);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 34%), transparent 42%),
+    color-mix(in srgb, var(--bubble-background) 94%, transparent);
+  box-shadow:
+    0 18px 42px color-mix(in srgb, var(--text) 12%, transparent),
+    0 3px 10px color-mix(in srgb, var(--primary) 8%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 72%);
+  backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
   cursor: grab;
+  transition:
+    top 160ms cubic-bezier(.22, .8, .28, 1),
+    height 160ms cubic-bezier(.22, .8, .28, 1),
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.bubble::before,
+.bubble::after {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  content: "";
+}
+
+.bubble::before {
+  inset: 1px;
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 20px;
+}
+
+.bubble::after {
+  top: 0;
+  left: 16%;
+  width: 34%;
+  height: 1px;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+}
+
+body[data-chat-state="thinking"] .bubble {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+  box-shadow:
+    0 18px 42px color-mix(in srgb, var(--text) 12%, transparent),
+    0 3px 15px color-mix(in srgb, var(--primary) 16%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 72%);
+}
+
+body[data-chat-state="thinking"] .bubble::after {
+  opacity: .72;
+  animation: bubble-thinking-sheen 1.8s ease-in-out infinite;
 }
 
 .bubble-header {
   position: relative;
   z-index: 2;
   display: flex;
-  min-height: 18px;
+  min-height: 20px;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -209,12 +256,12 @@ textarea:focus-visible,
   font-family: var(--font-ui);
   font-size: var(--name-font-size);
   font-weight: var(--font-weight-bold);
-  line-height: 1.2;
+  line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bubble-actions { display: flex; align-items: center; gap: 10px; cursor: default; }
+.bubble-actions { display: flex; min-height: 28px; align-items: center; gap: 10px; cursor: default; }
 .bubble-actions button { border: 0; background: transparent; cursor: pointer; }
 .text-action {
   padding: 5px 0;
@@ -226,8 +273,8 @@ textarea:focus-visible,
 }
 
 .close-action {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 50% !important;
   color: var(--muted-text);
   font-size: 19px;
@@ -245,14 +292,14 @@ textarea:focus-visible,
   z-index: 2;
   flex: 1;
   min-height: 0;
-  margin-top: 5px;
-  padding-right: 18px;
+  margin-top: 8px;
+  padding-right: 10px;
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--text);
   font-size: var(--speech-font-size);
   font-weight: var(--font-weight-regular);
-  line-height: 1.42;
+  line-height: 1.5;
   overflow-wrap: anywhere;
   user-select: text;
   scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
@@ -288,9 +335,9 @@ textarea:focus-visible,
 .presentation-error {
   position: absolute;
   z-index: 3;
-  right: 28px;
+  right: 20px;
   bottom: 7px;
-  left: 28px;
+  left: 20px;
   margin: 0;
   overflow: hidden;
   color: var(--muted-text);
@@ -306,58 +353,113 @@ textarea:focus-visible,
   display: grid;
   width: var(--input-width);
   height: var(--input-height);
-  grid-template-columns: minmax(0, 1fr) 82px;
-  align-items: stretch;
-  gap: 8px;
-  padding: 6px 8px 6px 12px;
-  border: 1px solid color-mix(in srgb, var(--border), transparent 22%);
-  border-radius: 26px;
-  background: color-mix(in srgb, var(--bubble-background), transparent 22%);
-  box-shadow: 0 7px 18px rgb(36 49 58 / 11%);
+  grid-template-columns: minmax(0, 1fr) 40px;
+  align-items: end;
+  gap: 10px;
+  padding: 5px 6px 5px 18px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, white 32%);
+  border-radius: 28px;
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 62%), transparent 44%),
+    color-mix(in srgb, var(--input-background) 90%, var(--bubble-background));
+  box-shadow:
+    0 14px 34px color-mix(in srgb, var(--text) 11%, transparent),
+    0 2px 8px color-mix(in srgb, var(--primary) 7%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 80%);
+  backdrop-filter: blur(18px) saturate(1.08);
+  transition:
+    top 160ms cubic-bezier(.22, .8, .28, 1),
+    height 160ms cubic-bezier(.22, .8, .28, 1),
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 64%, white);
+  box-shadow:
+    0 16px 38px color-mix(in srgb, var(--text) 12%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 84%);
 }
 
 .composer textarea {
   min-width: 0;
-  padding: 8px 15px 5px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 0;
   overflow-y: hidden;
   resize: none;
-  border: 1px solid rgb(255 255 255 / 78%);
-  border-radius: 19px;
+  border: 0;
+  border-radius: 0;
   color: var(--text);
-  background: color-mix(in srgb, var(--input-background), transparent 58%);
+  background: transparent;
   font-size: var(--input-font-size);
   font-family: var(--font-zh);
   font-weight: var(--font-weight-regular);
-  line-height: 1.25;
+  line-height: 1.5;
   outline: 0;
   user-select: text;
 }
+
+.composer textarea[data-overflow="true"] { overflow-y: auto; }
 
 .composer textarea:lang(ja) { font-family: var(--font-ja); }
 .composer textarea:lang(ko) { font-family: var(--font-ko); }
 .composer textarea:lang(en),
 .composer textarea:lang(ru) { font-family: var(--font-latin); }
 
-.composer textarea::placeholder { color: var(--muted-text); }
-.composer textarea:focus {
-  border-color: color-mix(in srgb, var(--primary), transparent 18%);
-  background: color-mix(in srgb, var(--input-background), transparent 38%);
-}
+.composer textarea::placeholder { color: color-mix(in srgb, var(--muted-text) 82%, transparent); }
 
 .composer button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  align-self: end;
+  padding: 0;
   border: 0;
-  border-radius: 19px;
+  border-radius: 50%;
   color: white;
-  background: var(--primary);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 84%, white), var(--primary));
+  box-shadow:
+    0 7px 16px color-mix(in srgb, var(--primary) 30%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 38%);
   cursor: pointer;
-  font-size: var(--button-font-size);
-  font-weight: var(--font-weight-semibold);
-  transition: background 120ms ease, transform 120ms ease;
+  transition: background 140ms ease, box-shadow 140ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
-.composer button:hover { background: var(--primary-hover); }
-.composer button:active { transform: translateY(1px); }
-.composer button:disabled { cursor: default; opacity: .56; }
+.composer button:hover {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary-hover) 78%, white), var(--primary-hover));
+  box-shadow:
+    0 9px 20px color-mix(in srgb, var(--primary) 36%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 42%);
+  transform: translateY(-1px);
+}
+.composer button:active { transform: scale(.94); }
+.composer button:disabled { cursor: default; opacity: .48; transform: none; box-shadow: none; }
+
+.composer-action-icon {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  transition: opacity 120ms ease, transform 150ms cubic-bezier(.22, .8, .28, 1);
+}
+
+.composer-action-icon svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+.composer-action-icon--send { opacity: 1; transform: scale(1) rotate(0deg); }
+.composer-action-icon--cancel { opacity: 0; transform: scale(.55); }
+.composer button[data-action="cancel"] .composer-action-icon--send { opacity: 0; transform: scale(.55) rotate(12deg); }
+.composer button[data-action="cancel"] .composer-action-icon--cancel { opacity: 1; transform: scale(1); }
+
+@keyframes bubble-thinking-sheen {
+  0%, 100% { left: 12%; transform: scaleX(.72); }
+  50% { left: 54%; transform: scaleX(1); }
+}
 
 .acceptance-entry {
   position: absolute;
@@ -380,14 +482,15 @@ textarea:focus-visible,
   min-width: 226px;
   padding: 6px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 88%, white 12%);
   border-radius: 14px;
   color: var(--text);
-  background: color-mix(in srgb, var(--input-background) 92%, transparent);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 56%), transparent 46%),
+    color-mix(in srgb, var(--input-background) 96%, var(--bubble-background));
   box-shadow:
-    0 18px 48px color-mix(in srgb, var(--text) 22%, transparent),
-    0 2px 10px color-mix(in srgb, var(--primary) 10%, transparent);
-  backdrop-filter: blur(22px) saturate(1.18);
+    inset 0 1px 0 rgb(255 255 255 / 82%),
+    inset 0 0 0 1px color-mix(in srgb, white 24%, transparent);
   transform-origin: top left;
 }
 

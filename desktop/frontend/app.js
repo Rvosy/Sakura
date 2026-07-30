@@ -8,6 +8,7 @@ import {
   constrainedPortraitScale,
   validateAppearancePublication,
 } from "./pet/appearance.js";
+import { createAdaptiveControlSurface } from "./pet/adaptive-control-surface.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
@@ -28,6 +29,7 @@ import { createTypewriter } from "./pet/typewriter.js";
 const invoke = window.__TAURI__.core.invoke;
 const stage = document.querySelector("#pet-stage");
 const bubbleCopy = document.querySelector("#bubble-copy");
+const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
 const presentationError = document.querySelector("#presentation-error");
@@ -45,9 +47,11 @@ const dragRegions = [...document.querySelectorAll("[data-drag-region]")];
 const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]";
 let contentScale = 1;
 let currentHitRegions = null;
+let currentPortraitSourceSize = null;
 let renderedPortrait = null;
 let disposed = false;
 let presentationUnavailable = false;
+let activeAppearance = null;
 const appEventUnlisteners = [];
 
 const contextMenu = new PetContextMenu({
@@ -95,17 +99,39 @@ const inputFocus = createInputFocusController({
 const contractResponse = await fetch("./pet/layout-contract.json", { cache: "no-store" });
 if (!contractResponse.ok) throw new Error("failed to load pet layout contract");
 const contract = validateLayoutContract(await contractResponse.json());
-const productLayout = computePetLayout(contract, PRODUCT_LAYOUT_STATE);
+let productLayout = computePetLayout(contract, PRODUCT_LAYOUT_STATE);
 const initialLayoutRevision = await invoke("current_pet_layout_revision");
+let layoutInitialized = false;
 const layoutController = createLayoutController({
   initialRevision: initialLayoutRevision,
-  computeLayout: () => productLayout,
-  applyNativeLayout: ({ revision }) => invoke("apply_pet_layout", { state: PRODUCT_LAYOUT_STATE, revision }),
+  computeLayout: (_state, _placeholder, request = {}) => computePetLayout(
+    contract,
+    PRODUCT_LAYOUT_STATE,
+    "",
+    request.adjustments,
+    request.measurements,
+  ),
+  applyNativeLayout: ({ revision, layout }) => invoke("apply_pet_layout", {
+    state: PRODUCT_LAYOUT_STATE,
+    revision,
+    controlSurface: {
+      bubbleRect: layout.bubbleRect,
+      inputRect: layout.inputRect,
+      controlsRect: layout.controlsRect,
+    },
+  }),
   commitLayout: (layout, result) => {
     contentScale = result.contentScale;
+    productLayout = layout;
     applyPetLayout(stage, layout, contentScale);
-    currentHitRegions = computeHitRegions(layout);
-    inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
+    currentHitRegions = computeHitRegions(layout, {
+      portraitSourceSize: currentPortraitSourceSize,
+      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
+    });
+    if (!layoutInitialized) {
+      layoutInitialized = true;
+      inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
+    }
   },
 });
 await layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell");
@@ -134,12 +160,15 @@ try {
 }
 
 let portraits = portraitSequence(characterPresentation);
-let activeAppearance = Object.freeze({
+activeAppearance = Object.freeze({
   portraitScalePercent: 100,
+  controlPanelWidth: 640,
+  bubbleMaxHeight: 128,
+  controlPanelVerticalOffset: 0,
+  inputBarOffset: 0,
   speechFontSize: 19,
   nameFontSize: 13,
   inputFontSize: 15,
-  buttonFontSize: 15,
   themeTokens: characterPresentation.themeTokens,
 });
 try {
@@ -207,6 +236,7 @@ function syncPortraitAppearance(key, presentation = characterPresentation) {
   const metadata = presentation.portraitMetadata[key]
     || presentation.portraitMetadata[presentation.defaultPortraitKey];
   const portraitSourceSize = [metadata.width, metadata.height];
+  currentPortraitSourceSize = portraitSourceSize;
   const scale = constrainedPortraitScale({
     requestedPercent: activeAppearance.portraitScalePercent,
     sourceSize: portraitSourceSize,
@@ -291,6 +321,22 @@ const presentation = createChatPresentationReducer({
 });
 const fakeCore = createFakeChatCore({ portraits });
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
+const adaptiveSurface = createAdaptiveControlSurface({
+  root: stage,
+  bubble: document.querySelector("#chat-bubble"),
+  bubbleHeader,
+  bubbleCopy,
+  composer,
+  input,
+  contract,
+  layoutController,
+  readAdjustments: () => ({
+    controlPanelWidth: activeAppearance.controlPanelWidth,
+    bubbleMaxHeight: activeAppearance.bubbleMaxHeight,
+    controlPanelVerticalOffset: activeAppearance.controlPanelVerticalOffset,
+    inputBarOffset: activeAppearance.inputBarOffset,
+  }),
+});
 
 const phaseLabels = Object.freeze({
   booting: "正在准备",
@@ -323,11 +369,12 @@ function render(state, bubbleUpdate = {}) {
   bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
   typewriterSkip.hidden = !state.canSkip;
   send.dataset.action = state.canCancel ? "cancel" : "send";
-  send.textContent = state.canCancel ? "取消" : "发送";
+  send.setAttribute("aria-label", state.canCancel ? "停止回复" : "发送消息");
   input.disabled = presentationUnavailable;
   send.disabled = presentationUnavailable || state.lifecycle !== "ready" || state.phase === "reconnecting";
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
+  adaptiveSurface.schedule();
   if (renderedPortrait !== state.portrait) {
     renderedPortrait = state.portrait;
     portraitController.show(state.portrait, {
@@ -360,6 +407,7 @@ function submitMessage({ text }) {
   typewriter.cancel("");
   input.value = "";
   input.lang = "zh-CN";
+  adaptiveSurface.resetInput();
   try {
     fakeCore.send({ message: text });
   } catch {
@@ -498,6 +546,7 @@ async function rebindCoreGeneration(generationId) {
     portraitCurrent.alt = `${nextPresentation.displayName} 立绘`;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
     syncPortraitAppearance(renderedPortrait, nextPresentation);
     previousController.dispose();
     clearRecoverableError();
@@ -532,6 +581,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     activeAppearance = nextAppearance;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
       const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
         ? renderedPortrait
@@ -554,6 +604,7 @@ input.addEventListener("compositionend", (event) => {
 });
 input.addEventListener("input", () => {
   input.lang = inferTextLanguage(input.value);
+  adaptiveSurface.schedule();
 });
 input.addEventListener("focus", () => inputFocus.handleInputFocus());
 input.addEventListener("blur", () => inputFocus.handleInputBlur());
@@ -604,6 +655,7 @@ function dispose() {
   }
   typewriter.dispose();
   bubbleScroll.dispose();
+  adaptiveSurface.dispose();
   portraitController.dispose();
   fakeCore.dispose();
   contextMenu.dispose();
@@ -633,5 +685,6 @@ render(presentation.current());
 await enableAcceptanceEntry();
 fakeCore.start();
 await waitForRuntimeFonts();
+await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
 await invoke("reveal_pet_window");

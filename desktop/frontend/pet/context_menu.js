@@ -6,7 +6,7 @@ export const PRODUCT_MENU_ACTIONS = Object.freeze({
 
 const KNOWN_ACTIONS = Object.freeze(Object.values(PRODUCT_MENU_ACTIONS));
 
-export function clampMenuPosition(clientX, clientY, menuWidth, menuHeight, viewport, margin = 8) {
+export function clampMenuPosition(clientX, clientY, menuWidth, menuHeight, viewport, margin = 20) {
   const width = Math.max(0, Number(menuWidth) || 0);
   const height = Math.max(0, Number(menuHeight) || 0);
   const viewportWidth = Math.max(0, Number(viewport?.width) || 0);

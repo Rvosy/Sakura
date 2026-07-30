@@ -11,10 +11,13 @@ import {
 
 const limits = Object.freeze({
   portraitScalePercent: [50, 150, 100],
+  controlPanelWidth: [420, 760, 640],
+  bubbleMaxHeight: [96, 260, 128],
+  controlPanelVerticalOffset: [-60, 160, 0],
+  inputBarOffset: [0, 60, 0],
   speechFontSize: [10, 24, 19],
   nameFontSize: [10, 20, 13],
   inputFontSize: [12, 20, 15],
-  buttonFontSize: [12, 20, 15],
 });
 const themeTokens = Object.freeze({
   primary: "#112233",
@@ -31,10 +34,13 @@ const themeTokens = Object.freeze({
 });
 const values = Object.freeze({
   portraitScalePercent: 125,
+  controlPanelWidth: 640,
+  bubbleMaxHeight: 128,
+  controlPanelVerticalOffset: 0,
+  inputBarOffset: 0,
   speechFontSize: 20,
   nameFontSize: 14,
   inputFontSize: 16,
-  buttonFontSize: 16,
   themeTokens,
 });
 
@@ -77,7 +83,7 @@ test("settings snapshot binds Rust-injected window core and character identity",
       portraitResourceUrls: { __default__: "sakura-character://default", happy: "sakura-character://happy" },
     },
     appearance: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       coreGenerationId: "generation-a",
       characterId: "Sakura",
       values,
@@ -103,12 +109,12 @@ test("runtime settings frontend owns no data path, character selection, or forge
     "speechFontSize",
     "nameFontSize",
     "inputFontSize",
-    "buttonFontSize",
     "themeColors",
     "visualEffectMode",
     "themeAiButton",
     "resetThemeButton",
   ]) assert.match(markup, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(markup, /id="buttonFontSize"/);
   assert.doesNotMatch(markup, /runtime(Character|Appearance|Portrait|Theme|Initial)/);
   assert.doesNotMatch(styles, /runtime-settings-panel|runtime-theme-grid|runtime-portrait-card/);
   assert.doesNotMatch(styles, /#page-character\s*>\s*:not|#page-appearance\s*>\s*:not/);
@@ -141,10 +147,13 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
 
   const controls = Object.fromEntries([
     "portraitScale",
+    "controlPanelWidth",
+    "bubbleHeight",
+    "controlPanelOffset",
+    "inputBarOffset",
     "speechFontSize",
     "nameFontSize",
     "inputFontSize",
-    "buttonFontSize",
     "themeColors",
     "resetThemeButton",
   ].map((id) => [id, new Control()]));
@@ -176,7 +185,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const previousWindow = globalThis.window;
   let nextFrame = null;

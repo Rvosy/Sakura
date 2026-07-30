@@ -19,11 +19,11 @@ test("the custom product menu uses the existing Rust action IDs", () => {
 test("menu positioning remains inside every viewport edge", () => {
   assert.deepEqual(
     clampMenuPosition(899, 995, 226, 330, { width: 900, height: 996 }),
-    { x: 666, y: 658 },
+    { x: 654, y: 646 },
   );
   assert.deepEqual(
     clampMenuPosition(-20, -10, 226, 330, { width: 900, height: 996 }),
-    { x: 8, y: 8 },
+    { x: 20, y: 20 },
   );
 });
 
