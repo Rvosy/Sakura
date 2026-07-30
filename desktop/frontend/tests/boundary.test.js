@@ -6,6 +6,7 @@ const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
+const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
@@ -30,7 +31,7 @@ test("markup exposes fixed product chat, portrait, status, and accessible contro
     assert.match(index, new RegExp(`id="${id}"`), id);
   assert.match(index, /aria-live="polite"/);
   assert.match(index, /maxlength="4096"/);
-  assert.match(index, /id="bubble-copy"[^>]*data-interactive="true"/);
+  assert.doesNotMatch(index, /id="bubble-copy"[^>]*data-interactive/);
   assert.match(index, /id="acceptance-entry"[^>]*hidden[^>]*aria-hidden="true"/);
   for (const forbidden of ["state-rail", "FAKE CORE", "geometry-readout", "theme-button", "composer-toggle", "visibility-probe"])
     assert.equal(index.includes(forbidden), false, forbidden);
@@ -113,6 +114,23 @@ test("bubble typography uses language-owned families and only real product weigh
   assert.match(app, /renderMultilingualText/);
   assert.match(app, /input\.lang = inferTextLanguage\(input\.value\)/);
   assert.match(index, /id="composer-input"[\s\S]*?lang="zh-CN"/);
+});
+
+test("reply selection keeps copy support and uses the active character theme", () => {
+  const bubbleCopyBlock = styles.match(/\.bubble-copy\s*\{([^}]*)\}/)?.[1] || "";
+  assert.match(bubbleCopyBlock, /user-select:\s*text/);
+  assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
+});
+
+test("only rendered reply text overrides bubble dragging while the scrollbar remains interactive", () => {
+  assert.match(multilingualText, /span\.dataset\.selectableText\s*=\s*"true"/);
+  assert.match(app, /POINTER_INTERACTIVE_SELECTOR\s*=\s*"\[data-interactive\], \[data-selectable-text\]"/);
+  assert.match(app, /scrollHeight\s*<=\s*viewport\.clientHeight/);
+  assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*grab/s);
+  assert.match(styles, /\.bubble:active\s*\{\s*cursor:\s*grabbing/);
+  assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
+  assert.match(styles, /\.bubble-actions\s*\{[^}]*cursor:\s*default/);
+  assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag"\)/);
 });
 
 test("WP-3-03 presentation never invokes the real chat Gateway or reads network and product data", () => {

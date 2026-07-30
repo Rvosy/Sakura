@@ -102,6 +102,19 @@ export function shouldStartNativeDrag({ hitKind, button, isPrimary }) {
   return hitKind === "drag" && button === 0 && isPrimary === true;
 }
 
+export function clearTextSelection(selection) {
+  if (
+    !selection
+    || selection.rangeCount === 0
+    || selection.isCollapsed === true
+    || typeof selection.removeAllRanges !== "function"
+  ) {
+    return false;
+  }
+  selection.removeAllRanges();
+  return true;
+}
+
 export function shouldOpenProductMenu({ hitKind, button }) {
   return HIT_KINDS.includes(hitKind) && button === 2;
 }

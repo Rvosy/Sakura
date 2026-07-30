@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { inferTextLanguage, multilingualTextRuns } from "../pet/multilingual-text.js";
+import { inferTextLanguage, multilingualTextRuns, renderMultilingualText } from "../pet/multilingual-text.js";
+
+function renderFixture(text) {
+  const viewport = {
+    children: [],
+    ownerDocument: {
+      createDocumentFragment: () => ({
+        children: [],
+        append(node) { this.children.push(node); },
+      }),
+      createElement: () => ({ dataset: {}, lang: "", textContent: "" }),
+    },
+    replaceChildren(fragment) { this.children = [...fragment.children]; },
+  };
+  renderMultilingualText(viewport, text);
+  return viewport.children;
+}
 
 test("CJK scripts select deterministic locale-specific font language tags", () => {
   assert.equal(inferTextLanguage("这是一段中文。"), "zh-CN");
@@ -22,4 +38,11 @@ test("mixed scripts inside one sentence keep their own stable font language", ()
   const runs = multilingualTextRuns(text);
   assert.deepEqual(runs.map(({ lang }) => lang), ["zh-CN", "en", "ja-JP", "zh-CN"]);
   assert.equal(runs.map(({ value }) => value).join(""), text);
+});
+
+test("rendered text runs expose only their painted inline boxes as selectable hit targets", () => {
+  const spans = renderFixture("中文。English.");
+  assert.equal(spans.length, 2);
+  assert.ok(spans.every((span) => span.dataset.selectableText === "true"));
+  assert.equal(spans.map((span) => span.textContent).join(""), "中文。English.");
 });

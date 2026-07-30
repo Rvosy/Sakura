@@ -12,6 +12,7 @@ import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/charac
 import { PetContextMenu } from "./pet/context_menu.js";
 import {
   classifyPointerHit,
+  clearTextSelection,
   computeHitRegions,
   shouldOpenProductMenu,
   shouldStartNativeDrag,
@@ -40,6 +41,7 @@ const portraitFallback = document.querySelector("#portrait-fallback");
 const portraitFallbackName = document.querySelector("#portrait-fallback-name");
 const contextMenuElement = document.querySelector("#pet-context-menu");
 const dragRegions = [...document.querySelectorAll("[data-drag-region]")];
+const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]";
 let contentScale = 1;
 let currentHitRegions = null;
 let renderedPortrait = null;
@@ -68,6 +70,19 @@ function showRecoverableError(message) {
 function clearRecoverableError() {
   presentationError.hidden = true;
   presentationError.textContent = "";
+}
+
+function isBubbleScrollbarHit(event) {
+  const viewport = event.target.closest?.(".bubble-copy");
+  if (!viewport || viewport.scrollHeight <= viewport.clientHeight) return false;
+  const bounds = viewport.getBoundingClientRect();
+  const renderedScale = viewport.offsetWidth > 0 ? bounds.width / viewport.offsetWidth : 1;
+  const scrollbarWidth = Math.max(viewport.offsetWidth - viewport.clientWidth, 10) * renderedScale;
+  return event.clientX >= bounds.right - scrollbarWidth;
+}
+
+function isInteractivePointerEvent(event) {
+  return Boolean(event.target.closest?.(POINTER_INTERACTIVE_SELECTOR)) || isBubbleScrollbarHit(event);
 }
 
 const inputFocus = createInputFocusController({
@@ -357,9 +372,10 @@ for (const dragRegion of dragRegions) {
     const hitKind = classifyPointerHit({
       model: currentHitRegions,
       point: [event.clientX / contentScale, event.clientY / contentScale],
-      interactiveTarget: Boolean(event.target.closest("[data-interactive]")),
+      interactiveTarget: isInteractivePointerEvent(event),
     });
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
+    clearTextSelection(window.getSelection?.());
     event.preventDefault();
     try {
       await invoke("start_pet_drag");
@@ -379,7 +395,7 @@ document.addEventListener("contextmenu", async (event) => {
   const hitKind = classifyPointerHit({
     model: currentHitRegions,
     point,
-    interactiveTarget: Boolean(event.target.closest("[data-interactive]")),
+    interactiveTarget: isInteractivePointerEvent(event),
   });
   if (
     !shouldOpenProductMenu({

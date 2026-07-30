@@ -90,6 +90,30 @@ test("interactive reply text overrides its enclosing bubble drag region", () => 
   assert.equal(hitRegions.shouldStartNativeDrag({ hitKind, button: 0, isPrimary: true }), false);
 });
 
+test("starting a native drag clears an existing document text selection", () => {
+  let removeCount = 0;
+  const selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    removeAllRanges() { removeCount += 1; },
+  };
+  assert.equal(hitRegions.clearTextSelection(selection), true);
+  assert.equal(removeCount, 1);
+});
+
+test("missing and collapsed selections remain untouched", () => {
+  let removeCount = 0;
+  const collapsed = {
+    rangeCount: 1,
+    isCollapsed: true,
+    removeAllRanges() { removeCount += 1; },
+  };
+  assert.equal(hitRegions.clearTextSelection(null), false);
+  assert.equal(hitRegions.clearTextSelection({ ...collapsed, rangeCount: 0 }), false);
+  assert.equal(hitRegions.clearTextSelection(collapsed), false);
+  assert.equal(removeCount, 0);
+});
+
 test("product menu opens from every visible pet region but not transparent space", () => {
   assert.equal(
     hitRegions.shouldOpenProductMenu({ hitKind: "drag", button: 2 }),

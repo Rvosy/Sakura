@@ -87,6 +87,7 @@ export function renderMultilingualText(viewport, text, fallback = "zh-CN") {
   runs.forEach((run) => {
     const span = documentRef.createElement("span");
     span.lang = run.lang;
+    span.dataset.selectableText = "true";
     span.textContent = run.value;
     fragment.append(span);
   });
