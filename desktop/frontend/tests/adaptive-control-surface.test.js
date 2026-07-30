@@ -102,6 +102,7 @@ test("resize work is coalesced and reset restores the one-line composer", async 
   assert.equal(input.style.height, "39px");
   assert.equal(input.dataset.overflow, "false");
   assert.deepEqual(transitions.at(-1)[2].measurements, { bubbleHeight: 88, inputHeight: 52 });
+  assert.equal(transitions.at(-1)[2].visualPreview, false);
 
   input.scrollHeight = 180;
   surface.schedule();
@@ -110,6 +111,11 @@ test("resize work is coalesced and reset restores the one-line composer", async 
   assert.equal(input.style.height, "106px");
   assert.equal(input.dataset.overflow, "true");
   assert.equal(transitions.at(-1)[2].measurements.inputHeight, 118);
+
+  surface.invalidate({ visualPreview: true });
+  frames.shift()();
+  await surface.settle();
+  assert.equal(transitions.at(-1)[2].visualPreview, true);
 
   surface.resetInput();
   assert.equal(input.style.height, "");

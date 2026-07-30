@@ -84,6 +84,8 @@ struct WindowGeometrySession {
     portrait_hit_key: Option<String>,
     portrait_hit_revision: u64,
     portrait_hit_relaxed: bool,
+    control_surface_preview_active: bool,
+    control_surface_preview_revision: u64,
     portrait_scale_percent: u16,
     context_menu_open: bool,
     control_surface: Option<ControlSurfaceLayout>,
@@ -103,6 +105,8 @@ impl Default for WindowGeometrySession {
             portrait_hit_key: None,
             portrait_hit_revision: 0,
             portrait_hit_relaxed: false,
+            control_surface_preview_active: false,
+            control_surface_preview_revision: 0,
             portrait_scale_percent: 100,
             context_menu_open: false,
             control_surface: None,
@@ -130,6 +134,30 @@ impl WindowGeometrySession {
 
     fn finish_deferred_drag(&mut self) {
         self.deferred_drag_pending = false;
+    }
+
+    /// Returns true only when the caller must expand the native region before activating preview.
+    fn request_control_surface_preview(&mut self, revision: u64) -> bool {
+        if revision < self.control_surface_preview_revision
+            || (!self.control_surface_preview_active
+                && revision == self.control_surface_preview_revision)
+        {
+            return false;
+        }
+        if self.control_surface_preview_active {
+            self.control_surface_preview_revision = revision;
+            return false;
+        }
+        true
+    }
+
+    fn activate_control_surface_preview(&mut self, revision: u64) {
+        self.control_surface_preview_active = true;
+        self.control_surface_preview_revision = revision;
+    }
+
+    fn can_end_control_surface_preview(&self, revision: u64) -> bool {
+        self.control_surface_preview_active && revision == self.control_surface_preview_revision
     }
 }
 
@@ -291,7 +319,9 @@ fn apply_pet_layout(
         control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
-        session.context_menu_open || session.portrait_hit_relaxed,
+        session.context_menu_open
+            || session.portrait_hit_relaxed
+            || session.control_surface_preview_active,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.state = Some(state);
@@ -325,12 +355,7 @@ fn apply_native_interaction_region(
         application.scale_factor * application.content_scale,
     )?;
     physical.portrait_alpha_mask = portrait_alpha_mask.cloned();
-    let backend = NativeWindowInteractionBackend;
-    if keep_full_hit_region {
-        backend
-            .restore_full_hit_region(window)
-            .map_err(|error| error.to_string())?;
-    } else {
+    if !keep_full_hit_region {
         apply_precise_hit_regions(window, &physical)?;
     }
     Ok(physical)
@@ -451,7 +476,9 @@ fn commit_dragged_window_position(
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
-        session.context_menu_open || session.portrait_hit_relaxed,
+        session.context_menu_open
+            || session.portrait_hit_relaxed
+            || session.control_surface_preview_active,
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
     session.hit_regions = Some(hit_regions.clone());
@@ -581,7 +608,7 @@ fn close_pet_context_menu_surface(
         return Ok(());
     }
     geometry.context_menu_open = false;
-    if geometry.portrait_hit_relaxed {
+    if geometry.portrait_hit_relaxed || geometry.control_surface_preview_active {
         return Ok(());
     }
     let hit_regions = geometry
@@ -774,6 +801,7 @@ fn settings_character_appearance_get(
         emit_appearance(&app_handle, cancelled)?;
     }
     sync_settings_window_appearance_background(&window, &publication)?;
+    appearance.mark_settings_background_synced(&publication.values)?;
     Ok(SettingsCharacterAppearanceSnapshot {
         schema_version: 1,
         window_generation,
@@ -795,9 +823,14 @@ fn settings_character_appearance_preview(
 ) -> Result<character_appearance::AppearancePublication, String> {
     product_shell::validate_settings_window(&window)?;
     let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    let publication =
+    let (publication, settings_background_changed) =
         appearance.preview(shell.generation()?, &presentation.presentation, values)?;
-    sync_settings_window_appearance_background(&window, &publication)?;
+    // Layout/font previews are high-frequency. Avoid a redundant native background update on
+    // every slider tick; on Windows that call otherwise sits directly on the visual preview path.
+    if settings_background_changed {
+        sync_settings_window_appearance_background(&window, &publication)?;
+        appearance.mark_settings_background_synced(&publication.values)?;
+    }
     emit_appearance(&app_handle, publication.clone())?;
     Ok(publication)
 }
@@ -825,6 +858,7 @@ fn settings_character_appearance_save(
         }
     };
     sync_settings_window_appearance_background(&window, &publication)?;
+    appearance.mark_settings_background_synced(&publication.values)?;
     emit_appearance(&app_handle, publication.clone())?;
     Ok(publication)
 }
@@ -838,6 +872,7 @@ fn settings_character_appearance_cancel_preview(
     product_shell::validate_settings_window(&window)?;
     if let Some(publication) = appearance.cancel()? {
         sync_settings_window_appearance_background(&window, &publication)?;
+        appearance.mark_settings_background_synced(&publication.values)?;
         emit_appearance(&app_handle, publication)?;
     }
     Ok(())
@@ -1048,6 +1083,62 @@ async fn settings_provider_model_cancel(
 }
 
 #[tauri::command]
+fn begin_control_surface_preview(
+    window: WebviewWindow,
+    revision: u64,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.request_control_surface_preview(revision) {
+        return Ok(());
+    }
+    // SetWindowRgn is also the visible Win32 clip. Expand it once before WebView geometry starts
+    // moving, then leave it untouched for the whole slider burst to avoid compositor tearing.
+    NativeWindowInteractionBackend
+        .restore_full_hit_region(&window)
+        .map_err(|error| error.to_string())?;
+    geometry.activate_control_surface_preview(revision);
+    Ok(())
+}
+
+#[tauri::command]
+fn end_control_surface_preview(
+    window: WebviewWindow,
+    revision: u64,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.can_end_control_surface_preview(revision) {
+        return Ok(());
+    }
+    geometry.control_surface_preview_active = false;
+    if geometry.context_menu_open || geometry.portrait_hit_relaxed {
+        return Ok(());
+    }
+    let hit_regions = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    if let Err(error) = apply_precise_hit_regions(&window, &hit_regions) {
+        // apply_precise_hit_regions recovers to the full region on failure. Keep the preview flag
+        // retryable so a later settle (or the next slider burst) can restore the precise mask.
+        geometry.control_surface_preview_active = true;
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn begin_portrait_scale_preview(
     window: WebviewWindow,
     revision: u64,
@@ -1162,7 +1253,7 @@ fn activate_portrait_hit_test(
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         portrait_scale_percent,
-        geometry.context_menu_open,
+        geometry.context_menu_open || geometry.control_surface_preview_active,
     )?;
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_key = Some(portrait_key);
@@ -1711,6 +1802,8 @@ fn main() {
             runtime_lifecycle_snapshot,
             current_character_presentation,
             current_character_appearance,
+            begin_control_surface_preview,
+            end_control_surface_preview,
             begin_portrait_scale_preview,
             activate_portrait_hit_test,
             wp_3_03_acceptance_enabled,
@@ -1881,6 +1974,19 @@ mod tests {
         assert!(!session.context_menu_open);
         assert!(session.hit_regions.is_none());
         assert!(!session.portrait_hit_relaxed);
+        assert!(!session.control_surface_preview_active);
+        assert_eq!(session.control_surface_preview_revision, 0);
+    }
+
+    #[test]
+    fn stale_control_surface_settle_cannot_close_a_newer_preview_burst() {
+        let mut session = WindowGeometrySession::default();
+        assert!(session.request_control_surface_preview(8));
+        session.activate_control_surface_preview(8);
+        assert!(!session.request_control_surface_preview(7));
+        assert!(!session.request_control_surface_preview(9));
+        assert!(!session.can_end_control_surface_preview(8));
+        assert!(session.can_end_control_surface_preview(9));
     }
 
     #[test]

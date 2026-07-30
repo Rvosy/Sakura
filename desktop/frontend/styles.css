@@ -203,6 +203,13 @@ textarea:focus-visible,
     box-shadow 140ms ease;
 }
 
+/* Settings sliders publish many geometry targets per second. Do not add a 160ms CSS tail after
+   each native-confirmed frame; normal content-driven resize keeps its easing. */
+.pet-stage[data-layout-preview="active"] .bubble,
+.pet-stage[data-layout-preview="active"] .composer {
+  transition: none;
+}
+
 .bubble::before,
 .bubble::after {
   position: absolute;

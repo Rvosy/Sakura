@@ -91,9 +91,12 @@ export function createAdaptiveControlSurface({
   let pendingFrame = null;
   let refreshPromise = Promise.resolve({ applied: false });
   let lastRequest = "";
+  let visualPreviewRequested = false;
 
   async function refresh() {
     if (disposed) return Object.freeze({ applied: false, disposed: true });
+    const visualPreview = visualPreviewRequested;
+    visualPreviewRequested = false;
     const adjustments = applyControlPanelWidth(root, contract, readAdjustments());
     const rawMeasured = measuredControlHeights({
       bubble,
@@ -114,6 +117,7 @@ export function createAdaptiveControlSurface({
     return layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
       adjustments,
       measurements: measured,
+      visualPreview,
     });
   }
 
@@ -141,7 +145,8 @@ export function createAdaptiveControlSurface({
       lastRequest = "";
       schedule();
     },
-    invalidate() {
+    invalidate({ visualPreview = false } = {}) {
+      visualPreviewRequested ||= Boolean(visualPreview);
       lastRequest = "";
       schedule();
     },

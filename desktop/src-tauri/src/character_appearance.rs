@@ -177,6 +177,7 @@ struct PreviewSession {
     character_id: String,
     baseline: AppearanceValues,
     preview: Option<AppearanceValues>,
+    settings_background: String,
 }
 
 pub struct CharacterAppearanceState {
@@ -223,6 +224,11 @@ impl CharacterAppearanceState {
             window_generation,
             core_generation_id: presentation.generation_id.clone(),
             character_id: presentation.character_id.clone(),
+            settings_background: baseline
+                .theme_tokens
+                .get("pageBackground")
+                .expect("validated appearance theme")
+                .clone(),
             baseline: baseline.clone(),
             preview: None,
         });
@@ -234,14 +240,43 @@ impl CharacterAppearanceState {
         window_generation: u64,
         presentation: &CharacterPresentation,
         values: AppearanceValues,
-    ) -> Result<AppearancePublication, String> {
+    ) -> Result<(AppearancePublication, bool), String> {
         values.validate()?;
         let mut session = self.checked_session(window_generation, presentation)?;
-        session
-            .as_mut()
-            .expect("checked appearance session")
-            .preview = Some(values.clone());
-        publication(presentation, values)
+        let session = session.as_mut().expect("checked appearance session");
+        let settings_background_changed = values
+            .theme_tokens
+            .get("pageBackground")
+            .is_none_or(|background| background != &session.settings_background);
+        session.preview = Some(values.clone());
+        Ok((
+            publication(presentation, values)?,
+            settings_background_changed,
+        ))
+    }
+
+    pub fn mark_settings_background_synced(&self, values: &AppearanceValues) -> Result<(), String> {
+        let background = values
+            .theme_tokens
+            .get("pageBackground")
+            .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let Some(session) = session.as_mut() else {
+            return Ok(());
+        };
+        let current_background = session
+            .preview
+            .as_ref()
+            .unwrap_or(&session.baseline)
+            .theme_tokens
+            .get("pageBackground");
+        if current_background == Some(background) {
+            session.settings_background = background.clone();
+        }
+        Ok(())
     }
 
     pub fn save(
@@ -818,14 +853,26 @@ mod tests {
         let (baseline, _) = state.open(7, &first).unwrap();
         let mut preview = baseline.values.clone();
         preview.portrait_scale_percent = 75;
-        assert_eq!(
-            state
-                .preview(7, &first, preview)
-                .unwrap()
-                .values
-                .portrait_scale_percent,
-            75
+        let (publication, background_changed) = state.preview(7, &first, preview).unwrap();
+        assert_eq!(publication.values.portrait_scale_percent, 75);
+        assert!(!background_changed);
+
+        let mut themed = publication.values.clone();
+        themed
+            .theme_tokens
+            .insert("pageBackground".to_string(), "#112233".to_string());
+        let (_, background_changed) = state.preview(7, &first, themed.clone()).unwrap();
+        assert!(background_changed);
+        themed.control_panel_vertical_offset = 40;
+        let (_, background_changed) = state.preview(7, &first, themed.clone()).unwrap();
+        assert!(
+            background_changed,
+            "failed native sync must remain retryable"
         );
+        state.mark_settings_background_synced(&themed).unwrap();
+        themed.control_panel_vertical_offset = 41;
+        let (_, background_changed) = state.preview(7, &first, themed).unwrap();
+        assert!(!background_changed);
         assert_eq!(state.cancel().unwrap().unwrap().values, baseline.values);
         assert!(state.cancel().unwrap().is_none());
         let stale = fixture.presentation("generation-b");

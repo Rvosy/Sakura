@@ -120,6 +120,7 @@ const layoutController = createLayoutController({
       controlsRect: layout.controlsRect,
     },
   }),
+  previewLayout: (layout) => applyPetLayout(stage, layout, contentScale),
   commitLayout: (layout, result) => {
     contentScale = result.contentScale;
     productLayout = layout;
@@ -225,11 +226,53 @@ function loadImage(source, expectedByUrl) {
 let portraitHitRevision = 0;
 let portraitHitTimer = null;
 const PORTRAIT_HIT_SETTLE_MS = 90;
+let layoutPreviewTimer = null;
+let layoutPreviewRevision = initialLayoutRevision;
+const LAYOUT_PREVIEW_SETTLE_MS = 120;
 
 function cancelPortraitHitTimer() {
   if (portraitHitTimer === null) return;
   window.clearTimeout(portraitHitTimer);
   portraitHitTimer = null;
+}
+
+function cancelLayoutPreviewTimer() {
+  if (layoutPreviewTimer !== null) window.clearTimeout(layoutPreviewTimer);
+  layoutPreviewTimer = null;
+}
+
+async function settleLayoutPreview(revision) {
+  layoutPreviewTimer = null;
+  await adaptiveSurface.settle();
+  if (disposed || revision !== layoutPreviewRevision) return;
+  try {
+    await invoke("end_control_surface_preview", { revision });
+  } catch {
+    showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
+    return;
+  }
+  if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
+}
+
+async function previewLayoutAppearance() {
+  const revision = ++layoutPreviewRevision;
+  cancelLayoutPreviewTimer();
+  try {
+    await invoke("begin_control_surface_preview", { revision });
+  } catch {
+    if (revision === layoutPreviewRevision) {
+      adaptiveSurface.invalidate();
+      showRecoverableError("桌宠布局实时预览暂时不可用。");
+    }
+    return;
+  }
+  if (disposed || revision !== layoutPreviewRevision) return;
+  stage.dataset.layoutPreview = "active";
+  adaptiveSurface.invalidate({ visualPreview: true });
+  layoutPreviewTimer = window.setTimeout(
+    () => void settleLayoutPreview(revision),
+    LAYOUT_PREVIEW_SETTLE_MS,
+  );
 }
 
 function syncPortraitAppearance(key, presentation = characterPresentation) {
@@ -581,7 +624,8 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     activeAppearance = nextAppearance;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
-    if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
+    if (changes.layout) await previewLayoutAppearance();
+    else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
       const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
         ? renderedPortrait
@@ -642,10 +686,12 @@ function dispose() {
   disposed = true;
   coreRebindRevision += 1;
   coreRebindTarget = "";
+  layoutPreviewRevision += 1;
   if (portraitHitTimer !== null) {
     window.clearTimeout(portraitHitTimer);
     portraitHitTimer = null;
   }
+  cancelLayoutPreviewTimer();
   for (const unlisten of appEventUnlisteners.splice(0)) {
     try {
       Promise.resolve(unlisten()).catch(() => {});
