@@ -8,6 +8,7 @@ const nativeProductShell = readFileSync(
   "utf8",
 );
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
+const settingsScript = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
 
 function declaration(selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -53,6 +54,25 @@ test("native settings resize reveals the page color instead of a black frame", (
   assert.match(resizeBinding, /WindowEvent::Resized\(size\)/);
   assert.match(resizeBinding, /webview\.set_size\(\*size\)/);
   assert.doesNotMatch(settingsWindow, /\.auto_resize\(\)/);
+});
+
+test("settings stay hidden until the active theme is applied", () => {
+  const settingsWindow = nativeProductShell.match(
+    /WebviewWindowBuilder::new\([\s\S]*?SETTINGS_WINDOW_CREATE_FAILED/,
+  )?.[0] || "";
+  const startup = settingsScript.split("async function startSettingsFrontend()", 2)[1] || "";
+  const reveal = nativeProductShell.match(
+    /pub fn reveal_settings_window\([\s\S]*?\n\}/,
+  )?.[0] || "";
+
+  assert.match(settingsWindow, /\.visible\(false\)/);
+  assert.ok(
+    startup.indexOf("await runtimeAppearanceController.initialize(snapshot);")
+      < startup.indexOf('await invoke("reveal_settings_window");'),
+  );
+  assert.match(reveal, /window\.show\(\)/);
+  assert.match(reveal, /window\.set_focus\(\)/);
+  assert.match(nativeMain, /product_shell::reveal_settings_window,/);
 });
 
 test("native resize fallback follows the validated page background theme", () => {

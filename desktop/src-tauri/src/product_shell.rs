@@ -61,6 +61,7 @@ pub fn product_menu_capability_manifest() -> ProductMenuCapabilityManifest {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SettingsWindowSession {
     generation: u64,
+    ready: bool,
     close_authorized: bool,
     exit_pending: bool,
     app_exit_authorized: bool,
@@ -100,8 +101,25 @@ impl ProductShellState {
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
         session.generation = session.generation.saturating_add(1).max(1);
+        session.ready = false;
         session.close_authorized = false;
         Ok(session.generation)
+    }
+
+    fn settings_ready(&self) -> Result<bool, String> {
+        self.settings
+            .lock()
+            .map(|session| session.ready)
+            .map_err(|_| "settings window state is unavailable".to_string())
+    }
+
+    fn mark_settings_ready(&self) -> Result<(), String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        session.ready = true;
+        Ok(())
     }
 
     pub fn generation(&self) -> Result<u64, String> {
@@ -183,6 +201,7 @@ impl ProductShellState {
             .settings
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
+        session.ready = false;
         session.close_authorized = false;
         Ok(())
     }
@@ -385,6 +404,10 @@ pub fn resolve_settings_close(
 
 pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
+        let state = app.state::<ProductShellState>();
+        if !state.settings_ready()? {
+            return Ok(());
+        }
         if window.is_minimized().map_err(|error| error.to_string())? {
             window.unminimize().map_err(|error| error.to_string())?;
         }
@@ -403,6 +426,8 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .title("Sakura 设置")
     // WebView2 在交互式缩放时会落后一帧；用页面默认底色覆盖原生窗口，避免露出黑底。
     .background_color(Color(255, 246, 250, 255))
+    // 主题快照应用完成前保持隐藏，避免默认粉色样式成为可见首帧。
+    .visible(false)
     .inner_size(1040.0, 760.0)
     .min_inner_size(900.0, 640.0)
     .resizable(true)
@@ -419,6 +444,17 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
         return Err(error);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_settings_window(
+    window: WebviewWindow,
+    state: tauri::State<'_, ProductShellState>,
+) -> Result<(), String> {
+    validate_settings_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    state.mark_settings_ready()
 }
 
 fn bind_settings_webview_resize(window: &WebviewWindow) -> Result<(), String> {
@@ -522,11 +558,15 @@ mod tests {
     fn settings_window_generation_is_monotonic_and_close_is_one_shot() {
         let state = ProductShellState::default();
         assert_eq!(state.next_generation().unwrap(), 1);
+        assert!(!state.settings_ready().unwrap());
+        state.mark_settings_ready().unwrap();
+        assert!(state.settings_ready().unwrap());
         assert!(!state.consume_close_authorization().unwrap());
         state.authorize_close().unwrap();
         assert!(state.consume_close_authorization().unwrap());
         assert!(!state.consume_close_authorization().unwrap());
         assert_eq!(state.next_generation().unwrap(), 2);
+        assert!(!state.settings_ready().unwrap());
     }
 
     #[test]

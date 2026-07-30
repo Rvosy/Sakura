@@ -1702,6 +1702,7 @@ fn main() {
             retry_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
+            product_shell::reveal_settings_window,
             settings_character_appearance_get,
             settings_character_appearance_preview,
             settings_character_appearance_save,

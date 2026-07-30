@@ -5003,6 +5003,8 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_character_appearance_get");
     await runtimeAppearanceController.initialize(snapshot);
+    // Rust 先同步原生背景色，initialize 再应用页面 CSS 主题；两者都就绪后才显示窗口。
+    await invoke("reveal_settings_window");
   }
   if (
     featureStatus(manifest, "providers.manage") === "available"
