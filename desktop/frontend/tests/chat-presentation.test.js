@@ -22,6 +22,27 @@ function readyReducer() {
   return reducer;
 }
 
+test("initial startup keeps the character greeting and default portrait", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "早上好，今天也请多关照。",
+    defaultPortraitKey: "__default__",
+    thinkingPortraitKey: "thinking",
+    concernedPortraitKey: "concerned",
+  });
+
+  reducer.reduce(lifecycle("startup", 1, 1));
+  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().portrait, "__default__");
+
+  reducer.reduce(lifecycle("initializing", 1, 2));
+  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().portrait, "__default__");
+
+  reducer.reduce(lifecycle("ready", 1, 3));
+  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().portrait, "__default__");
+});
+
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
   assert.equal(reducer.current().phase, "ready");

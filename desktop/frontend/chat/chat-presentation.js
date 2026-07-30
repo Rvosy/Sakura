@@ -71,6 +71,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         if (event.generationNumber === state.generationNumber && event.revision < state.revision) return result(false);
         const generationChanged = event.generationNumber > state.generationNumber;
         const establishedPresentation = hasReachedReady;
+        const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
         const [lifecycleLabel, lifecycleHeadline] = LIFECYCLE_COPY[event.status];
         const ready = event.status === "ready";
         const preserveVisualState = establishedPresentation && (generationChanged || !ready);
@@ -90,7 +91,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           operationId: ready ? state.operationId : null,
           bubbleText: preserveVisualState
             ? state.bubbleText
-            : ready
+            : ready || initialStartup
               ? state.bubbleText
               : event.status === "core_crashed"
                 ? "连接已断开，正在回收旧回复……"
@@ -99,7 +100,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
                   : "正在准备会话……",
           segments: preserveVisualState || ready ? state.segments : Object.freeze([]),
           error: null,
-          portrait: preserveVisualState || ready ? state.portrait : concernedPortrait,
+          portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: false,
           canSkip: false,
         });
