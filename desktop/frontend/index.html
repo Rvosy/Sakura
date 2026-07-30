@@ -17,11 +17,11 @@
             <span id="chat-phase" class="visually-hidden" role="status">正在准备</span>
           </div>
           <div class="bubble-actions" data-interactive="true">
-            <button type="button" id="typewriter-skip" class="text-action" hidden>立即显示</button>
-            <button type="button" id="close-window" class="close-action" aria-label="关闭 Sakura">×</button>
+            <button type="button" id="typewriter-skip" class="text-action" tabindex="-1" hidden>立即显示</button>
+            <button type="button" id="close-window" class="close-action" tabindex="-1" aria-label="关闭 Sakura">×</button>
           </div>
         </header>
-        <div id="bubble-copy" class="bubble-copy" data-interactive="true" tabindex="0" aria-live="polite">
+        <div id="bubble-copy" class="bubble-copy" data-interactive="true" aria-live="polite">
           正在读取当前角色……
         </div>
         <p id="presentation-error" class="presentation-error" role="status" hidden></p>
@@ -32,11 +32,12 @@
           id="composer-input"
           rows="1"
           maxlength="4096"
+          tabindex="-1"
           lang="zh-CN"
           aria-label="发送给当前角色的消息"
           placeholder="和当前角色说点什么……"
         ></textarea>
-        <button type="submit" id="composer-send">发送</button>
+        <button type="submit" id="composer-send" tabindex="-1">发送</button>
       </form>
 
       <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">
