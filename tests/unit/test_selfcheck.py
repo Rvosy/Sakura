@@ -1,4 +1,4 @@
-"""tests/unit/test_selfcheck.py — 启动自检与单实例锁测试。
+"""tests/unit/test_selfcheck.py — 启动自检测试。
 
 覆盖：
 - 正常环境自检通过
@@ -6,7 +6,6 @@
 - 已存在配置文件只读 → warning
 - qdrant 残留锁 → warning
 - 磁盘空间不足 → warning（mock disk_usage）
-- 单实例锁互斥与释放、崩溃残留可接管语义
 """
 
 from __future__ import annotations
@@ -14,13 +13,11 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
-from app.core.instance import InstanceAcquireStatus, SingleInstanceGuard
 from app.core.selfcheck import (
     SEVERITY_FATAL,
     SEVERITY_WARNING,
@@ -95,45 +92,3 @@ class TestRunStartupSelfCheck:
             assert issue.severity == SEVERITY_FATAL
         for issue in report.warning_issues:
             assert issue.severity == SEVERITY_WARNING
-
-
-class TestSingleInstanceGuard:
-    @pytest.fixture(autouse=True)
-    def _private_posix_lock_root(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        if os.name == "nt":
-            return
-        if sys.platform == "darwin":
-            monkeypatch.setenv("TMPDIR", str(tmp_path))
-        else:
-            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-
-    def test_acquire_and_mutual_exclusion(self) -> None:
-        base = _make_test_dir("lock")
-        first = SingleInstanceGuard(base)
-        assert first.acquire() is InstanceAcquireStatus.ACQUIRED
-        second = SingleInstanceGuard(base)
-        assert second.acquire() is InstanceAcquireStatus.ALREADY_RUNNING
-        assert "Sakura" in second.holder_description() or "进程" in second.holder_description()
-        first.release()
-        third = SingleInstanceGuard(base)
-        assert third.acquire() is InstanceAcquireStatus.ACQUIRED
-        third.release()
-
-    def test_release_is_idempotent(self) -> None:
-        base = _make_test_dir("lock_idem")
-        guard = SingleInstanceGuard(base)
-        assert guard.acquire() is InstanceAcquireStatus.ACQUIRED
-        guard.release()
-        guard.release()
-
-    def test_authoritative_lock_does_not_live_under_data(self) -> None:
-        base = _make_test_dir("lock_path")
-        guard = SingleInstanceGuard(base)
-        assert guard.acquire() is InstanceAcquireStatus.ACQUIRED
-        assert guard.lock_path != StoragePaths(base).instance_lock()
-        assert not StoragePaths(base).instance_lock().exists()
-        guard.release()

@@ -4,6 +4,7 @@ import ctypes
 import errno
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -12,11 +13,18 @@ from app.core import instance
 
 
 @pytest.fixture(autouse=True)
-def _private_posix_lock_root(
+def _private_instance_lock(
+    request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     if os.name == "nt":
+        if request.node.name != "test_shared_mutex_uses_the_frozen_windows_object_name":
+            monkeypatch.setattr(
+                instance,
+                "SHARED_MUTEX_NAME",
+                f"Local\\SakuraDesktop.Pytest.{uuid.uuid4().hex}",
+            )
         return
     if sys.platform == "darwin":
         monkeypatch.setenv("TMPDIR", str(tmp_path))

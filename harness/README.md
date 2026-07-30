@@ -21,6 +21,9 @@
 runtime\python.exe -m harness list
 runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness run unit
+runtime\python.exe -m harness run core-host
+runtime\python.exe -m harness run legacy-qt-ui
+runtime\python.exe -m harness run python-full
 runtime\python.exe -m harness run runtime-v2-shell
 ```
 
@@ -33,6 +36,15 @@ runtime\python.exe -m harness run smoke --report temp\harness\smoke.json
 默认报告写入 `temp/harness/`。进程退出码为 `0` 表示全部通过，`1` 表示至少一个 case 失败，`2` 表示调用或清单错误。
 
 `runtime-v2-shell` 会运行 `desktop/frontend` 的完整 Node 测试，以及近期桌面壳改动涉及的角色外观、角色表现、产品窗口、窗口几何和原生交互 Rust 模块测试。该 profile 保持离线，并避开会与正在运行的 Sakura 实例争用共享锁的完整 Rust 生命周期测试。
+
+Python profile 按用途分层：
+
+- `unit`：完整 `tests/unit`，适合 Python 业务代码的常规回归；
+- `core-host`：Core Host 单元与真实本地子进程集成测试，不访问公网或真实 Provider；
+- `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台验证仍受支持的 legacy Qt 回退；
+- `python-full`：依次运行 unit、integration 和 legacy Qt UI，适合合并前完整回归。
+
+Harness 只注册可执行行为、协议或生命周期检查。仅依赖源码字符串、函数排列或历史实现 token 的检查不作为 profile 门禁；对应意图应由 Python 行为测试、Node 测试、Rust 测试或独立真实验收覆盖。
 
 ## 扩展
 

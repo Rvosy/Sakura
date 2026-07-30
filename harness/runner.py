@@ -123,6 +123,21 @@ def _default_report_path(profile_name: str) -> Path:
     return DEFAULT_REPORT_ROOT / f"{stamp}-{profile_name}.json"
 
 
+def _write_captured_output(value: str, stream: Any) -> None:
+    """Write captured UTF-8 output even when the Windows console uses GBK."""
+    if not value:
+        return
+    encoding = getattr(stream, "encoding", None)
+    console_value = value
+    if encoding:
+        console_value = value.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(
+        console_value,
+        end="" if console_value.endswith("\n") else "\n",
+        file=stream,
+    )
+
+
 def run_profile(
     manifest: dict[str, Any],
     profile_name: str,
@@ -175,10 +190,8 @@ def run_profile(
         passed = exit_code == 0 and not timed_out
         label = "PASS" if passed else "FAIL"
         print(f"[harness] {label} {case.case_id} ({duration:.3f}s)", flush=True)
-        if stdout:
-            print(stdout, end="" if stdout.endswith("\n") else "\n")
-        if stderr:
-            print(stderr, end="" if stderr.endswith("\n") else "\n", file=sys.stderr)
+        _write_captured_output(stdout, sys.stdout)
+        _write_captured_output(stderr, sys.stderr)
         results.append(
             {
                 "id": case.case_id,

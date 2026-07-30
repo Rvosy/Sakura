@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
 
 import pytest
 
-from harness.runner import HarnessError, load_manifest, run_profile
+from harness.runner import (
+    HarnessError,
+    _write_captured_output,
+    load_manifest,
+    run_profile,
+)
 
 
 def _write_manifest(path: Path, *, exit_code: int = 0) -> Path:
@@ -41,6 +47,13 @@ def test_default_manifest_is_valid_and_has_smoke_profile() -> None:
 
     assert manifest["schema_version"] == 1
     assert manifest["profiles"]["smoke"]["cases"]
+    assert {
+        "unit",
+        "core-host",
+        "legacy-qt-ui",
+        "python-full",
+        "runtime-v2-shell",
+    } <= set(manifest["profiles"])
 
 
 def test_manifest_rejects_unknown_profile_case(tmp_path: Path) -> None:
@@ -88,3 +101,14 @@ def test_run_profile_rejects_unknown_profile(tmp_path: Path) -> None:
 
     with pytest.raises(HarnessError, match="unknown profile: missing"):
         run_profile(manifest, "missing", report_path=tmp_path / "report.json")
+
+
+def test_captured_output_falls_back_for_a_narrow_console_encoding() -> None:
+    class AsciiStream(io.StringIO):
+        encoding = "ascii"
+
+    stream = AsciiStream()
+
+    _write_captured_output("valid \ufffd 中文", stream)
+
+    assert stream.getvalue() == "valid \\ufffd \\u4e2d\\u6587\n"

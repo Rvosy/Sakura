@@ -14,6 +14,27 @@
         "python-unit-tests"
       ]
     },
+    "core-host": {
+      "description": "验证 Runtime v2 Python Core Host 的协议、适配器与真实本地生命周期",
+      "cases": [
+        "core-host-unit-tests",
+        "core-host-integration-tests"
+      ]
+    },
+    "legacy-qt-ui": {
+      "description": "验证仍受支持的 legacy Qt 桌宠 UI 行为",
+      "cases": [
+        "legacy-qt-ui-tests"
+      ]
+    },
+    "python-full": {
+      "description": "运行完整 Python 单元、集成与 legacy Qt UI 回归",
+      "cases": [
+        "python-unit-tests",
+        "python-integration-tests",
+        "legacy-qt-ui-tests"
+      ]
+    },
     "runtime-v2-shell": {
       "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
       "cases": [
@@ -40,7 +61,8 @@
       ],
       "timeout_seconds": 60,
       "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
       }
     },
     {
@@ -55,7 +77,8 @@
       ],
       "timeout_seconds": 120,
       "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
       }
     },
     {
@@ -70,7 +93,77 @@
       ],
       "timeout_seconds": 600,
       "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "core-host-unit-tests",
+      "description": "验证 Core Host 协议、配置、Adapter、readiness 与聊天边界",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit",
+        "-k",
+        "core_host or wp_2_02_chat_boundary",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "core-host-integration-tests",
+      "description": "以本地确定性 Provider 验证真实 Core Host 进程与生命周期",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/integration",
+        "-k",
+        "core_host",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "python-integration-tests",
+      "description": "运行离线 Python 集成测试",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/integration",
+        "-q"
+      ],
+      "timeout_seconds": 300,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "legacy-qt-ui-tests",
+      "description": "在 offscreen Qt 平台运行 legacy Qt UI 测试",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/ui",
+        "-q"
+      ],
+      "timeout_seconds": 300,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "QT_QPA_PLATFORM": "offscreen"
       }
     },
     {
@@ -99,7 +192,8 @@
       ],
       "timeout_seconds": 120,
       "env": {
-        "PYTHONDONTWRITEBYTECODE": "1"
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
       }
     },
     {
