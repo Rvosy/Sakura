@@ -39,7 +39,8 @@ WP-1A-04 已将 legacy Qt 的权威显式回退命令冻结为 `.\runtime\python
 └─ Phase 1–3 未批准写入的其他 legacy 用户数据
 
 Qt/Tauri 兼容写入
-└─ Phase 3 基础聊天的 data/chat_history/<character>.jsonl 追加
+├─ Phase 3 基础聊天的 data/chat_history/<character>.jsonl 追加
+└─ WP-3S-01 的 data/config/api.yaml Provider/模型当前 schema 原子写
 
 Runtime v2 专属
 └─ data/runtime_v2/{config,state,logs,diagnostics}/
@@ -57,7 +58,10 @@ Runtime v2 专属
 └─ legacy logs/diagnostics/cache 的 v2 所有权和兼容范围
 ```
 
-“只读复用”是 Runtime v2 Phase 1–3 权限，不禁止 legacy Qt 在持锁时执行其既有业务。“禁止修改”表示 v2 Shell/Rust/Core Host 不得直接改变；后续领域 Work Package 若需要写入，必须独立更新 ADR/门禁。
+“只读复用”是 Runtime v2 Phase 1–3 的默认权限，不禁止 legacy Qt 在持锁时执行其既有业务。WP-3S-01
+例外批准 Python 配置域在当前 schema 下兼容写 `api.yaml` 的 Provider/模型子集；Rust/WebView 仍不得直接
+读写该文件。“禁止修改”表示 v2 Shell/Rust/Core Host 不得直接改变；后续领域 Work Package 若需要写入，
+必须独立更新 ADR/门禁。
 
 ## 版本与安全状态
 
@@ -65,7 +69,7 @@ Runtime v2 以 `system_config.yaml.config_version` 作为整个 legacy 数据集
 
 | 条件 | 结果 |
 |---|---|
-| `config_version == 4` 且目标结构校验通过 | 允许执行明确列入兼容矩阵的写入；Phase 3 仅聊天历史追加 |
+| `config_version == 4` 且目标结构校验通过 | 允许执行明确列入兼容矩阵的写入：聊天历史追加，以及 WP-3S-01 的 `api.yaml` Provider/模型当前 schema 原子写 |
 | `< 4` 或缺失 | diagnostics/read-only；提示先用同版本 legacy Qt 完成迁移；v2 不推进版本 |
 | `> 4` | diagnostics/read-only；不降级、不覆盖未来格式 |
 | 类型无效、文件损坏、必要资源缺失 | diagnostics/read-only；不以默认空数据覆盖 |
@@ -228,6 +232,7 @@ legacy Qt 获取共用 mutex
 -> 兼容写一条聊天历史并退出、drain 写入、释放 mutex
 -> Tauri v2 获取同一 mutex
 -> 读取相同角色/Core 配置
+-> WP-3S-01 可读取/修改 Provider 与聊天/视觉模型槽，保留未知字段和未修改 secret bytes
 -> deterministic fake/local Provider 完成基础聊天
 -> 只追加允许的 Qt-compatible history，写 data/runtime_v2 私有配置
 -> 关闭 Core/后代/写入任务，最后释放 mutex
@@ -242,6 +247,8 @@ legacy Qt 获取共用 mutex
 - mandatory backup 失败时原文件不变。
 - temp write/fsync 失败时原文件完整。
 - atomic replace 失败时原文件和 backup 完整，运行时不应用未提交值。
+- Provider/模型任一字段或槽引用无效时整个设置域不写入；credential keep/replace/clear 语义可回读。
+- `api.yaml` 未知字段、非目标域和未修改 secret bytes 在 Qt -> v2 -> Qt 往返中保持。
 - temp fsync 后/replace 前异常中断时原 target 可读，孤儿 temp 被忽略；replace 后中断时新 target 完整。
 - 损坏文件进入 diagnostics/read-only，不写默认值覆盖。
 - `config_version > 4` 进入 diagnostics/read-only，不尝试降级。

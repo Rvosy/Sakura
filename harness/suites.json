@@ -18,6 +18,7 @@
       "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
       "cases": [
         "runtime-v2-frontend-tests",
+        "runtime-v2-provider-model-tests",
         "runtime-v2-character-appearance-tests",
         "runtime-v2-character-presentation-tests",
         "runtime-v2-product-shell-tests",
@@ -83,6 +84,22 @@
       "timeout_seconds": 120,
       "env": {
         "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-provider-model-tests",
+      "description": "验证 Provider/模型公开 DTO、密钥语义、原子保存与有界探测",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_provider_model_settings.py",
+        "tests/unit/test_core_host_provider_settings.py",
+        "-q"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1"
       }
     },
     {

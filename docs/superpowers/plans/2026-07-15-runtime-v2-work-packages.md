@@ -88,8 +88,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
-| WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | stabilizing |
-| WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | planned |
+| WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | accepted |
+| WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | stabilizing |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-3S-01 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
@@ -135,14 +135,16 @@ Fake Core 候选曾进入 `stabilizing`，但项目负责人在接受前明确�
 2026-07-27 经项目负责人验收为 `accepted`。WP-3U-01 已在同日完成实现、稳定化和项目负责人
 Windows 手动验收并标记 `accepted`；100%/150% DPI 真实设备证据由项目负责人按 G-008 明确接受为
 非失败型证据风险并登记至 WP-7-02。WP-3U-02 已于 2026-07-27 在依赖满足后激活，并在同日以候选
-`078c18df` 完成生产实现后进入 `stabilizing`；其实际允许目录、故障矩阵、数据写入边界、回退命令、
-计划提交和 DPI 延期决定见独立文档的同日记录。本地完整 Harness/Python/frontend/Rust/legacy host 门禁、
-Sakura/N.A.V.I. Windows 真实候选以及隔离目录保存失败恢复均已通过；最终 Rust 回归为 206 passed、
-23 ignored，且没有扩大忽略列表。当前仍缺同一最终候选 SHA 的 Windows 2025 x64、macOS 15 arm64、
-Ubuntu 24.04 x64 原生 platform workflow 证据；本机交叉 target 不能替代原生 runner，未经授权也不得 push
-触发 CI。该硬门不属于获批的 DPI 延期，故 WP-3U-02 仍是当前唯一 `stabilizing` Work Package；
-WP-3S-01 是其 accepted 后的下一启动点，但依赖尚未满足并保持 `planned`。WP-3-04 改为依赖
-WP-3S-01，同样不得提前启动。
+`078c18df` 完成首轮生产实现后进入 `stabilizing`；其实际允许目录、故障矩阵、数据写入边界、回退命令、
+计划提交和 DPI 延期决定见独立文档。本地完整 Harness/Python/frontend/Rust/legacy host 门禁、
+Sakura/N.A.V.I. Windows 真实候选、隔离目录保存失败恢复和后续设置退出生命周期纠正均已通过；最终
+生产候选为 `796db179454542f4a2a7900471a290f57b439ad5`，自动证据包括 canonical frontend 90 passed、
+Rust 207 passed/23 ignored 和 Runtime v2 桌面壳 Harness 6/6 cases、138 项测试，且没有扩大忽略列表。
+项目负责人于 2026-07-29 确认该最终候选的 Windows 2025 x64、macOS 15 arm64、Ubuntu 24.04 x64
+三平台验收及最终实机组合验收完成，并明确授权标记为 `accepted`；P0、P1 和退出条件缺陷为零。
+WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，当前进入 `stabilizing`；本地自动门证据与尚待
+项目负责人执行的真实 Windows/同 SHA 三平台门见第 12 节。WP-3-04 继续依赖 WP-3S-01 accepted，
+不得提前启动。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2133,6 +2135,34 @@ Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链�
 当前角色只读展示，不删除或恢复用户数据。
 
 ### WP-3S-01：供应商与模型设置纵向链
+
+激活记录（2026-07-29）：
+
+```text
+状态：active（激活时为当前唯一 active/stabilizing Work Package）
+前置条件：WP-3U-02 accepted
+独立设计：docs/runtime-v2/WP-3S-01-provider-model-settings.md
+允许目录：app/config/provider_model_settings.py；app/core_host/provider_settings.py、server.py；app/llm/api_client.py；desktop/src-tauri/src/core_host_runtime.rs、product_shell.rs、shell_lifecycle.rs、main.rs；desktop/frontend/settings/capability-shell.js、provider-model-runtime.js、settings.js；tests/fixtures/runtime_v2/wp_0_02/dataset/data/config/api.yaml；对应 Python/frontend/Rust 测试、Harness 注册；ADR-0003、WP-0-02 baseline、本节和 settings incremental spec 的状态/证据记录
+明确禁止目录：characters/**、data/** 真实用户数据、third_party/**、tools/mcp/**、plugins/**；除 api.yaml Provider/模型当前 schema 外不得写 system_config.yaml、characters.yaml、mcp.yaml、plugins.yaml、Memory、TTS 或 Runtime v2 ui.json
+数据政策：只在 system_config.yaml.config_version == 4 且 api.yaml 为合法当前 mapping 时，允许 Python 配置域保留 unknown fields、未修改 secret bytes 和非目标域后单次原子替换 api.yaml；写入包含 api_profiles、聊天/视觉 model_slots、当前聊天槽的 llm 兼容镜像与已批准生成参数；损坏/旧/未来 schema 一律只读；故障注入只用隔离临时根
+验收环境：Windows 真实 Tauri/WebView2（中文 IME、关窗、取消、受控 restart、重新打开）；runtime/python pytest；canonical frontend node:test；locked Rust test/fmt；同一候选 SHA Windows/macOS/Linux 公共门禁
+故障矩阵：Provider 字段/重复 ID/槽引用、密钥 keep/replace/clear、损坏/旧/未来 schema、权限/temp/replace、网络成功/认证失败/超时/取消/关窗、旧 generation、重复保存、Core crash/restart 失败、secret scan、Qt -> v2 -> Qt 回读
+关联 ADR：ADR-0003 Phase 3 api.yaml Provider/模型兼容写；ADR-0001 Supervisor 受控重建与退出 deadline；ADR-0002 generation/request identity 与窄 command
+计划提交：docs/test 数据门；feat Python 配置领域；feat Core/Rust Gateway；feat canonical frontend；test/验证与稳定化记录
+回退：先把 providers.*、model.* feature 改为 read_only/unavailable 并停止新探测，等待在途请求唯一终态和 Core/临时文件归零，再逆序 revert WP-3S-01 提交；不删除、恢复或重写用户 api.yaml
+```
+
+稳定化记录（2026-07-29，本地工作树候选，尚未绑定提交 SHA）：
+
+```text
+实现结果：capability schema v2、公开 Provider DTO、credential keep/replace/clear、聊天/视觉模型槽、整域校验和一次原子替换、legacy llm 兼容镜像、有界可取消探测、受控 Core restart、新 generation 回读均已接通；memory_curation 与非目标域保持未开放
+数据证据：旧/未来/损坏 schema 失败安全；unknown top/provider/model/model-slot 与非目标 TTS 保持；未修改 secret bytes 保持；Qt service -> v2 -> Qt service 回读通过；原子替换失败返回 CONFIG_SAVE_FAILED 且原文件不变
+生命周期证据：探测在 Tauri blocking worker 执行，不阻塞主事件线程；取消、关窗、旧 generation、重复保存串行化、restart 后重新绑定新 identity 已有自动门；真实 Core Provider get/save 往返测试通过
+验收阻断回归：新增但未完成模型列表的非当前 Provider 曾使 Core 全局进入 PROVIDER_SETUP_REQUIRED，并连带丢失角色发布；现仅以实际聊天槽的可解析性决定 Provider 启动状态，固定“有效聊天槽 + 空模型 Provider 草稿 + N.A.V.I.”仍 READY；新 Core generation 会通知主桌宠重载角色，角色 DTO 不可用的冷启动也会跳过无效占位图片等待并 reveal 可恢复错误态；首次修复复验暴露 WebView reload 从 revision 1 重新计数、被保留旧 revision 的原生布局会话拒绝，现从原生已应用 revision 的下一值继续，真实 Windows 整页 reload 前后均确认 N.A.V.I. 名称、主题和立绘可见
+自动门：Python unit Harness 1182 passed/6 skipped（temp/harness/20260729T163423Z-unit.json）；canonical frontend 99 passed；locked Rust 210 passed/23 ignored；smoke Harness 2/2 cases、25 tests（temp/harness/20260729T163442Z-smoke.json）；runtime-v2-shell Harness 7/7 cases、166 tests（temp/harness/20260729T170408Z-runtime-v2-shell.json）；cargo check --locked、cargo fmt --check、git diff --check 通过
+真实验收待办：Windows Tauri/WebView2 中文 IME、Provider 增删改、已保存密钥占位/替换/显式清除、模型检测/连通性、保存时受控 restart、新 generation 回读、探测中关窗、失败恢复与重新打开；随后固定候选 SHA 并通过 Windows/macOS/Linux 公共门禁
+状态结论：实现和本地自动门完成，因真实 Windows 与同 SHA 三平台证据尚未由项目负责人确认，保持 stabilizing，不标记 accepted
+```
 
 主要结果：把设置迁移从一次性 Phase 5 任务改为持续纵向交付，并首先开放真实聊天直接依赖的
 “供应商”和“模型”页面；完整设计、数据安全门、feature 级 capability、故障矩阵和回退见

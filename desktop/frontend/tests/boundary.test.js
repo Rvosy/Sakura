@@ -73,12 +73,17 @@ test("the pet window stays hidden until the native surface and first character f
   const reveal = nativeMain.match(/fn reveal_pet_window[\s\S]*?\r?\n}/)?.[0] || "";
   assert.match(reveal, /PET_LAYOUT_NOT_READY/);
   assert.match(reveal, /window[\s\S]*?\.show\(\)/);
+  const nativeRevisionIndex = app.indexOf('await invoke("current_pet_layout_revision")');
+  const layoutIndex = app.indexOf("await layoutController.transition(PRODUCT_LAYOUT_STATE");
   const presentationIndex = app.indexOf("await loadCurrentCharacterPresentation({ invoke })");
   const portraitIndex = app.lastIndexOf("await portraitController.show(characterPresentation.defaultPortraitKey");
   const readyIndex = app.lastIndexOf("document.body.dataset.shellState =");
   const revealIndex = app.lastIndexOf('await invoke("reveal_pet_window")');
+  assert.ok(nativeRevisionIndex >= 0 && nativeRevisionIndex < layoutIndex);
   assert.ok(presentationIndex >= 0 && presentationIndex < portraitIndex);
   assert.ok(portraitIndex < readyIndex && readyIndex < revealIndex);
+  assert.match(app, /if \(presentationUnavailable\)[\s\S]*?portraitFallback\.hidden = false;[\s\S]*?else \{[\s\S]*?await portraitController\.show/);
+  assert.match(app, /sakura:\/\/core-generation-changed[\s\S]*?generationId === characterPresentation\.generationId[\s\S]*?window\.location\.reload\(\)/);
   assert.match(nativeWindowBackend, /WS_CAPTION/);
   assert.match(nativeWindowBackend, /SWP_FRAMECHANGED/);
   assert.match(nativeWindowBackend, /GetWindowLongW/);

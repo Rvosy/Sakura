@@ -36,3 +36,25 @@ test("capability manifest copies section collections instead of trusting mutable
   assert.deepEqual(value.availableSections, ["character"]);
   assert.equal(Object.isFrozen(value.availableSections), true);
 });
+
+test("capability schema v2 fails unknown feature states safe and exposes migrated features", () => {
+  const value = validateCapabilityManifest({
+    schemaVersion: 2,
+    windowGeneration: 11,
+    sections: {
+      providers: {
+        status: "available",
+        features: {
+          "providers.manage": "available",
+          "providers.credentials": "future-state",
+        },
+      },
+      model: { status: "mystery", features: {} },
+    },
+    unavailableReasons: { "providers.credentials": "不可用" },
+  });
+  assert.equal(value.sections.providers.features["providers.manage"], "available");
+  assert.equal(value.sections.providers.features["providers.credentials"], "unavailable");
+  assert.equal(value.sections.model.status, "unavailable");
+  assert.deepEqual(value.availableSections, ["providers"]);
+});

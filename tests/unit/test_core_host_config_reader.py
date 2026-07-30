@@ -392,6 +392,41 @@ def test_valid_api_mapping_without_usable_chat_provider_requires_setup(
     _assert_problem(root, monkeypatch, "PROVIDER_SETUP_REQUIRED")
 
 
+def test_unused_incomplete_provider_does_not_invalidate_selected_chat_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "data" / "config" / "api.yaml").write_text(
+        """\
+api_profiles:
+  - id: fixture
+    alias: Fixture Provider
+    base_url: https://fixture.invalid/v1
+    api_key: REDACTED_FIXTURE_API_KEY
+    models:
+      - name: fixture-model
+  - id: draft-provider
+    alias: Draft Provider
+    base_url: https://draft.invalid/v1
+    api_key: ''
+    models: []
+model_slots:
+  chat:
+    profile_id: fixture
+    model: fixture-model
+""",
+        encoding="utf-8",
+    )
+
+    result, _opened = _read_with_guards(root, monkeypatch)
+
+    assert result.config_problem is None
+    assert result.current_character_id == "sakura"
+    assert result.provider_selection is not None
+    assert result.provider_selection.api_settings.model == "fixture-model"
+
+
 @pytest.mark.parametrize(
     ("content", "code"),
     [

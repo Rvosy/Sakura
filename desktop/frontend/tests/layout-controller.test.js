@@ -75,3 +75,21 @@ test("native bounds are confirmed before the DOM state is committed", async () =
   await controller.transition("composer");
   assert.deepEqual(order, ["native", "commit"]);
 });
+
+test("a reloaded WebView continues after the native layout revision", async () => {
+  const revisions = [];
+  const controller = createLayoutController({
+    initialRevision: 7,
+    computeLayout: (state) => ({ state, contractVersion: 1 }),
+    applyNativeLayout: async ({ revision }) => {
+      revisions.push(revision);
+      return { applied: revision > 7, contractVersion: 1 };
+    },
+    commitLayout() {},
+  });
+
+  assert.equal((await controller.transition("product")).applied, true);
+  assert.deepEqual(revisions, [8]);
+  assert.equal(controller.snapshot().requestedRevision, 8);
+  assert.throws(() => createLayoutController({ initialRevision: -1 }), /initial layout revision/);
+});

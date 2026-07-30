@@ -80,7 +80,9 @@ const contractResponse = await fetch("./pet/layout-contract.json", { cache: "no-
 if (!contractResponse.ok) throw new Error("failed to load pet layout contract");
 const contract = validateLayoutContract(await contractResponse.json());
 const productLayout = computePetLayout(contract, PRODUCT_LAYOUT_STATE);
+const initialLayoutRevision = await invoke("current_pet_layout_revision");
 const layoutController = createLayoutController({
+  initialRevision: initialLayoutRevision,
   computeLayout: () => productLayout,
   applyNativeLayout: ({ revision }) => invoke("apply_pet_layout", { state: PRODUCT_LAYOUT_STATE, revision }),
   commitLayout: (layout, result) => {
@@ -396,6 +398,18 @@ await listenAppEvent("sakura://product-menu-error", () => {
   showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
 });
 
+await listenAppEvent("sakura://core-generation-changed", (event) => {
+  const generationId = event?.payload?.generationId;
+  if (
+    disposed
+    || typeof generationId !== "string"
+    || !generationId
+    || generationId === characterPresentation.generationId
+  ) return;
+  document.body.dataset.shellState = "loading";
+  window.location.reload();
+});
+
 await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
@@ -489,10 +503,15 @@ window.addEventListener("beforeunload", dispose, { once: true });
 
 portraitController.beginGeneration("fake-generation-1");
 renderedPortrait = characterPresentation.defaultPortraitKey;
-await portraitController.show(characterPresentation.defaultPortraitKey, {
-  immediate: true,
-  generation: "fake-generation-1",
-});
+if (presentationUnavailable) {
+  portraitFallback.hidden = false;
+  syncPortraitAppearance(characterPresentation.defaultPortraitKey);
+} else {
+  await portraitController.show(characterPresentation.defaultPortraitKey, {
+    immediate: true,
+    generation: "fake-generation-1",
+  });
+}
 render(presentation.current());
 await enableAcceptanceEntry();
 fakeCore.start();

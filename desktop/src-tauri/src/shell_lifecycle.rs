@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
     },
@@ -14,7 +15,7 @@ use serde_json::{json, Value};
 use crate::{
     core_host_gateway::CoreHostGateway,
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
-    core_host_runtime::CoreHostRuntime,
+    core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
         CoreSupervisor, FailureReason, GenerationId, LifecycleAction, LifecycleIntent,
         SupervisorSnapshot, SupervisorState,
@@ -68,6 +69,7 @@ pub struct ShellLifecyclePublication {
 #[derive(Clone, Copy)]
 enum ShellCommand {
     Retry,
+    Restart,
     Shutdown,
 }
 
@@ -75,6 +77,8 @@ enum ShellCommand {
 pub struct ShellLifecycleHandle {
     command: Sender<ShellCommand>,
     publication: Arc<Mutex<ShellLifecyclePublication>>,
+    settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    settings_request_number: Arc<AtomicU64>,
 }
 
 impl ShellLifecycleHandle {
@@ -103,6 +107,40 @@ impl ShellLifecycleHandle {
         self.command
             .send(ShellCommand::Retry)
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    }
+
+    pub fn restart(&self) -> Result<(), &'static str> {
+        self.command
+            .send(ShellCommand::Restart)
+            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    }
+
+    pub fn settings_request(
+        &self,
+        request_id: Option<&str>,
+        name: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<Value, String> {
+        let generated;
+        let request_id = match request_id {
+            Some(value) if !value.trim().is_empty() => value,
+            Some(_) => return Err("SETTINGS_REQUEST_INVALID".to_string()),
+            None => {
+                generated = format!(
+                    "settings-{}",
+                    self.settings_request_number.fetch_add(1, Ordering::Relaxed) + 1
+                );
+                &generated
+            }
+        };
+        let transport = self
+            .settings_transport
+            .lock()
+            .map_err(|_| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?
+            .clone()
+            .ok_or_else(|| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?;
+        transport.request(request_id, name, payload, deadline)
     }
 
     pub fn request_shutdown(&self) -> Result<(), &'static str> {
@@ -139,12 +177,23 @@ impl ShellLifecycleSession {
             },
         };
         let publication = Arc::new(Mutex::new(initial));
+        let settings_transport = Arc::new(Mutex::new(None));
         let worker_publication = publication.clone();
-        let worker = thread::spawn(move || run_worker(request, commands, worker_publication));
+        let worker_settings_transport = settings_transport.clone();
+        let worker = thread::spawn(move || {
+            run_worker(
+                request,
+                commands,
+                worker_publication,
+                worker_settings_transport,
+            )
+        });
         Self {
             handle: ShellLifecycleHandle {
                 command,
                 publication,
+                settings_transport,
+                settings_request_number: Arc::new(AtomicU64::new(0)),
             },
             worker: Some(worker),
         }
@@ -182,12 +231,14 @@ struct WorkerState {
     core_version: String,
     request_number: u64,
     cleanup_blocked: bool,
+    settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
 }
 
 fn run_worker(
     request: RuntimeLocationRequest,
     commands: Receiver<ShellCommand>,
     publication: Arc<Mutex<ShellLifecyclePublication>>,
+    settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
 ) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -203,6 +254,7 @@ fn run_worker(
         core_version: "unavailable".to_string(),
         request_number: 0,
         cleanup_blocked: false,
+        settings_transport,
     };
     let mut actions = VecDeque::from(state.supervisor.submit(LifecycleIntent::Start));
     publish(&state, &publication);
@@ -217,6 +269,7 @@ fn run_worker(
                 } => {
                     state.identity = Some((generation_id, generation_number));
                     state.chat_gateway = None;
+                    clear_settings_transport(&state);
                     state.snapshot = None;
                     state.core_version = "unavailable".to_string();
                     publish(&state, &publication);
@@ -277,7 +330,7 @@ fn run_worker(
         if state.cleanup_blocked {
             match commands.recv() {
                 Ok(ShellCommand::Shutdown) | Err(_) => break,
-                Ok(ShellCommand::Retry) => continue,
+                Ok(ShellCommand::Retry | ShellCommand::Restart) => continue,
             }
         }
 
@@ -331,6 +384,7 @@ fn drain_chat_events(state: &mut WorkerState) {
 fn submit_command(state: &mut WorkerState, command: ShellCommand) -> Vec<LifecycleAction> {
     match command {
         ShellCommand::Retry => state.supervisor.submit(LifecycleIntent::Retry),
+        ShellCommand::Restart => state.supervisor.submit(LifecycleIntent::Restart),
         ShellCommand::Shutdown => state.supervisor.submit(LifecycleIntent::AppShutdown),
     }
 }
@@ -412,6 +466,20 @@ fn spawn_and_initialize(
         .host
         .as_ref()
         .and_then(|host| host.chat_gateway().ok());
+    let settings_handle = state.host.as_ref().and_then(|host| {
+        let negotiated = host.negotiation().is_some_and(|value| {
+            value
+                .capabilities
+                .iter()
+                .any(|capability| capability == "settings.provider-model")
+        });
+        negotiated
+            .then(|| host.concurrent_request_handle().ok())
+            .flatten()
+    });
+    if let Ok(mut target) = state.settings_transport.lock() {
+        *target = settings_handle;
+    }
     loop {
         match commands.try_recv() {
             Ok(command) => {
@@ -458,6 +526,7 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
 }
 
 fn stop_generation(state: &mut WorkerState) -> bool {
+    clear_settings_transport(state);
     if let Some(gateway) = state.chat_gateway.take() {
         gateway.invalidate_generation();
     }
@@ -467,6 +536,12 @@ fn stop_generation(state: &mut WorkerState) -> bool {
     match host.shutdown() {
         Ok(exit) => exit.tree_empty && exit.stderr_stats.eof && !exit.stderr_stats.read_failed,
         Err(_) => false,
+    }
+}
+
+fn clear_settings_transport(state: &WorkerState) {
+    if let Ok(mut transport) = state.settings_transport.lock() {
+        *transport = None;
     }
 }
 

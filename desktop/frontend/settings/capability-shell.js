@@ -1,50 +1,114 @@
-const REQUIRED_KEYS = Object.freeze([
+const V1_KEYS = Object.freeze([
   "schemaVersion",
   "windowGeneration",
   "availableSections",
   "readOnlySections",
   "unavailableReasons",
 ]);
-const SENSITIVE_KEY = /(password|api.?key|credential|secret|token)/i;
+const V2_KEYS = Object.freeze([
+  "schemaVersion",
+  "windowGeneration",
+  "sections",
+  "unavailableReasons",
+]);
+const SENSITIVE_KEY = /(password|api.?key|credential$|secret|(^|_)token($|_))/i;
+const STATUSES = new Set(["available", "read_only", "unavailable"]);
 
 function isStringArray(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+
+function assertNoSensitiveKeys(value) {
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (SENSITIVE_KEY.test(key)) throw new Error("settings capability manifest contains a sensitive field");
+    assertNoSensitiveKeys(child);
+  }
+}
+
+function reasons(value) {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.entries(value).some(([key, reason]) => !key || typeof reason !== "string" || !reason)
+  ) throw new Error("invalid unavailable settings reasons");
+  return Object.freeze({ ...value });
+}
+
+function normalizeV1(manifest) {
+  if (!isStringArray(manifest.availableSections) || !isStringArray(manifest.readOnlySections)) {
+    throw new Error("invalid settings capability sections");
+  }
+  const sections = {};
+  for (const section of new Set(manifest.availableSections)) {
+    sections[section] = Object.freeze({ status: "available", features: Object.freeze({}) });
+  }
+  for (const section of new Set(manifest.readOnlySections)) {
+    if (!sections[section]) sections[section] = Object.freeze({ status: "read_only", features: Object.freeze({}) });
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    windowGeneration: manifest.windowGeneration,
+    sections: Object.freeze(sections),
+    availableSections: Object.freeze([...new Set(manifest.availableSections)]),
+    readOnlySections: Object.freeze([...new Set(manifest.readOnlySections)]),
+    unavailableReasons: reasons(manifest.unavailableReasons),
+  });
+}
+
+function normalizeV2(manifest) {
+  if (!manifest.sections || typeof manifest.sections !== "object" || Array.isArray(manifest.sections)) {
+    throw new Error("invalid settings capability sections");
+  }
+  const sections = {};
+  for (const [section, value] of Object.entries(manifest.sections)) {
+    if (!section || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    const status = STATUSES.has(value.status) ? value.status : "unavailable";
+    const rawFeatures = value.features;
+    if (!rawFeatures || typeof rawFeatures !== "object" || Array.isArray(rawFeatures)) {
+      throw new Error("invalid settings capability features");
+    }
+    const features = {};
+    for (const [feature, featureStatus] of Object.entries(rawFeatures)) {
+      if (!feature) continue;
+      features[feature] = STATUSES.has(featureStatus) ? featureStatus : "unavailable";
+    }
+    sections[section] = Object.freeze({ status, features: Object.freeze(features) });
+  }
+  const availableSections = Object.keys(sections).filter((key) => sections[key].status === "available");
+  const readOnlySections = Object.keys(sections).filter((key) => sections[key].status === "read_only");
+  return Object.freeze({
+    schemaVersion: 2,
+    windowGeneration: manifest.windowGeneration,
+    sections: Object.freeze(sections),
+    availableSections: Object.freeze(availableSections),
+    readOnlySections: Object.freeze(readOnlySections),
+    unavailableReasons: reasons(manifest.unavailableReasons),
+  });
 }
 
 export function validateCapabilityManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error("invalid settings capability manifest");
   }
-  for (const key of REQUIRED_KEYS) {
+  const required = manifest.schemaVersion === 1 ? V1_KEYS : manifest.schemaVersion === 2 ? V2_KEYS : null;
+  if (!required) throw new Error("unsupported settings capability schema");
+  for (const key of required) {
     if (!(key in manifest)) throw new Error(`missing settings capability field: ${key}`);
   }
-  for (const key of Object.keys(manifest)) {
-    if (SENSITIVE_KEY.test(key)) throw new Error("settings capability manifest contains a sensitive field");
-  }
-  if (manifest.schemaVersion !== 1) throw new Error("unsupported settings capability schema");
+  assertNoSensitiveKeys(manifest);
   if (!Number.isSafeInteger(manifest.windowGeneration) || manifest.windowGeneration < 1) {
     throw new Error("invalid settings window generation");
   }
-  if (!isStringArray(manifest.availableSections) || !isStringArray(manifest.readOnlySections)) {
-    throw new Error("invalid settings capability sections");
+  return manifest.schemaVersion === 1 ? normalizeV1(manifest) : normalizeV2(manifest);
+}
+
+export function featureStatus(manifest, feature) {
+  for (const section of Object.values(manifest.sections || {})) {
+    if (feature in section.features) return section.features[feature];
   }
-  if (
-    !manifest.unavailableReasons ||
-    typeof manifest.unavailableReasons !== "object" ||
-    Array.isArray(manifest.unavailableReasons) ||
-    Object.entries(manifest.unavailableReasons).some(
-      ([section, reason]) => !section || typeof reason !== "string" || !reason,
-    )
-  ) {
-    throw new Error("invalid unavailable settings reasons");
-  }
-  return Object.freeze({
-    schemaVersion: manifest.schemaVersion,
-    windowGeneration: manifest.windowGeneration,
-    availableSections: Object.freeze([...new Set(manifest.availableSections)]),
-    readOnlySections: Object.freeze([...new Set(manifest.readOnlySections)]),
-    unavailableReasons: Object.freeze({ ...manifest.unavailableReasons }),
-  });
+  return "unavailable";
 }
 
 export function applyCapabilityManifest(document, input) {
@@ -61,9 +125,7 @@ export function applyCapabilityManifest(document, input) {
     item.disabled = unavailable;
     item.classList.remove("is-active");
     item.removeAttribute("aria-current");
-    if (unavailable) {
-      item.title = manifest.unavailableReasons[section] || "该设置能力尚未迁移";
-    }
+    if (unavailable) item.title = manifest.unavailableReasons[section] || "该设置能力尚未迁移";
   }
   for (const page of document.querySelectorAll(".settings-page")) {
     page.classList.remove("is-active");
@@ -87,10 +149,16 @@ export function applyCapabilityManifest(document, input) {
       page.hidden = false;
       page.classList.add("is-active");
       if (readOnly.has(firstSection)) {
-        for (const control of page.querySelectorAll("input, select, textarea, button")) {
-          control.disabled = true;
-        }
+        for (const control of page.querySelectorAll("input, select, textarea, button")) control.disabled = true;
       }
+    }
+  }
+
+  for (const control of document.querySelectorAll("[data-settings-feature]")) {
+    const status = featureStatus(manifest, control.dataset.settingsFeature);
+    if (status !== "available") control.disabled = true;
+    if (status === "unavailable") {
+      control.title = manifest.unavailableReasons[control.dataset.settingsFeature] || "该设置能力尚未迁移";
     }
   }
 
@@ -103,7 +171,7 @@ export function applyCapabilityManifest(document, input) {
     });
   }
 
-  const writable = available.has("character") || available.has("appearance");
+  const writable = [...available].some((section) => manifest.sections[section]?.status === "available");
   document.getElementById("applyButton").hidden = !writable;
   document.getElementById("saveButton").hidden = !writable;
   const cancel = document.getElementById("cancelButton");

@@ -23,7 +23,8 @@ CAPABILITIES = (
     "core.snapshot",
 )
 ROUTER_CAPABILITY = "transport.concurrent-router"
-SUPPORTED_CAPABILITIES = (*CAPABILITIES, ROUTER_CAPABILITY)
+PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
+SUPPORTED_CAPABILITIES = (*CAPABILITIES, ROUTER_CAPABILITY, PROVIDER_SETTINGS_CAPABILITY)
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
@@ -528,6 +529,7 @@ class ControlDispatcher:
             initializer_factory=initializer_factory,
         )
         self._chat_boundary = chat_boundary
+        self._provider_settings_boundary: object | None = None
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
@@ -539,6 +541,11 @@ class ControlDispatcher:
         if self._chat_boundary is not None:
             raise RuntimeError("chat boundary is already configured")
         self._chat_boundary = chat_boundary
+
+    def attach_provider_settings_boundary(self, boundary: object) -> None:
+        if self._provider_settings_boundary is not None:
+            raise RuntimeError("provider settings boundary is already configured")
+        self._provider_settings_boundary = boundary
 
     def invalidate_chat_generation(self) -> None:
         if self._chat_boundary is not None:
@@ -558,6 +565,14 @@ class ControlDispatcher:
         if self._chat_boundary is not None:
             try:
                 getattr(self._chat_boundary, "close")()
+            except BaseException as error:  # noqa: BLE001
+                if primary is None:
+                    primary = error
+                else:
+                    primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
+        if self._provider_settings_boundary is not None:
+            try:
+                getattr(self._provider_settings_boundary, "close")()
             except BaseException as error:  # noqa: BLE001
                 if primary is None:
                     primary = error
@@ -664,6 +679,30 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
+        elif name == "settings.provider_model.cancel":
+            if (
+                PROVIDER_SETTINGS_CAPABILITY not in self._negotiated_capabilities
+                or self._provider_settings_boundary is None
+            ):
+                return self._error_response(
+                    request,
+                    "CAPABILITY_NEGOTIATION_FAILED",
+                    "provider settings capability was not negotiated",
+                ), False
+            request_payload = request.get("payload")
+            if not isinstance(request_payload, Mapping) or set(request_payload) != {"operationId"}:
+                return self._error_response(
+                    request,
+                    "INVALID_SETTINGS_CANCEL",
+                    "settings cancellation payload is invalid",
+                ), False
+            payload = {
+                "cancelled": bool(
+                    getattr(self._provider_settings_boundary, "cancel")(
+                        request_payload.get("operationId")
+                    )
+                )
+            }
         elif name == "system.shutdown":
             payload = {"accepted": True}
         else:
@@ -751,6 +790,11 @@ class ControlDispatcher:
             selected_maximum >= 2 and ROUTER_CAPABILITY in selected
         )
         self._handshake = "complete"
+        if (
+            PROVIDER_SETTINGS_CAPABILITY in selected
+            and self._provider_settings_boundary is not None
+        ):
+            getattr(self._provider_settings_boundary, "enable")()
         return {
             "capabilities": list(selected),
             "coreVersion": CORE_VERSION,
@@ -799,12 +843,14 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
 
     writer: ResponseWriter | None = None
     dispatcher: ControlDispatcher | None = None
     router: ConcurrentHostRouter | None = None
+    provider_settings: ProviderSettingsBoundary | None = None
     primary_error: BaseException | None = None
     primary_traceback = None
     try:
@@ -823,12 +869,44 @@ def run_host(
         attach_chat_boundary = getattr(dispatcher, "attach_chat_boundary", None)
         if callable(attach_chat_boundary):
             attach_chat_boundary(chat_boundary)
+        provider_settings = ProviderSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.app_root,
+        )
+        attach_provider_boundary = getattr(
+            dispatcher,
+            "attach_provider_settings_boundary",
+            None,
+        )
+        if callable(attach_provider_boundary):
+            attach_provider_boundary(provider_settings)
+
+        class RequestBoundary:
+            def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") == "chat.send":
+                    return chat_boundary.handle_send(request)
+                return provider_settings.handle(request)
+
+            def reserve_send(self, request: dict[str, Any]) -> None:
+                if request.get("name") == "chat.send":
+                    reserve = getattr(chat_boundary, "reserve_send", None)
+                    if callable(reserve):
+                        reserve(request)
+
+            def abandon_send(self, request: dict[str, Any]) -> None:
+                if request.get("name") == "chat.send":
+                    abandon = getattr(chat_boundary, "abandon_send", None)
+                    if callable(abandon):
+                        abandon(request)
+
+        request_boundary = RequestBoundary()
         router = ConcurrentHostRouter(
             input_stream,
             writer,
             dispatcher,
-            fixture_handler=chat_boundary.handle_send,
-            fixture_names=frozenset({"chat.send"}),
+            fixture_handler=request_boundary.handle,
+            fixture_names=frozenset({"chat.send", *SETTINGS_REQUEST_NAMES}),
             read_frame_fn=read_frame,
         )
         chat_boundary.set_event_publisher(router.publish_event)

@@ -52,7 +52,7 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 1] = ["transport.concurrent-router"];
+const OPTIONAL_CAPABILITIES: [&str; 2] = ["transport.concurrent-router", "settings.provider-model"];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
     "initializing",
@@ -3788,6 +3788,92 @@ mod tests {
             "router-health-b"
         );
         host.shutdown().expect("router host shutdown");
+    }
+
+    #[test]
+    fn wp_3s_01_real_core_round_trips_redacted_provider_settings_atomically() {
+        let _test_lock = lifecycle_test_lock();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos();
+        let app_root =
+            std::env::temp_dir().join(format!("sakura-wp-3s-01-{}-{unique}", std::process::id()));
+        let source = repo_root().join("tests/fixtures/runtime_v2/wp_3_01/ready");
+        copy_fixture_tree(&source, &app_root);
+        let secret = "WP_3S_01_SECRET_MUST_NOT_ESCAPE";
+        fs::write(
+            app_root.join("data/config/api.yaml"),
+            format!(
+                "llm:\n  base_url: https://fixture.invalid/v1\n  api_key: {secret}\n  model: fixture-model\napi_profiles:\n  - id: fixture\n    alias: Fixture\n    base_url: https://fixture.invalid/v1\n    api_key: {secret}\n    preserve_me: true\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\ntts:\n  enabled: false\n"
+            ),
+        )
+        .expect("provider fixture should write");
+        let mut layout = development_layout();
+        layout.assistant_root = app_root
+            .canonicalize()
+            .expect("provider fixture should resolve");
+        let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
+            .expect("real provider settings Core should launch");
+        let hello = host
+            .request("settings-hello", "system.hello", Duration::from_secs(3))
+            .expect("settings hello should negotiate");
+        assert!(hello["payload"]["capabilities"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == "settings.provider-model")));
+        let handle = host
+            .concurrent_request_handle()
+            .expect("settings router should be available");
+        let get = handle
+            .request(
+                "settings-get",
+                "settings.provider_model.get",
+                json!({}),
+                Duration::from_secs(3),
+            )
+            .expect("provider settings get should complete");
+        assert_eq!(get["ok"], true);
+        assert_eq!(get["payload"]["providers"][0]["configured"], true);
+        assert!(!serde_json::to_string(&get)
+            .expect("settings response should serialize")
+            .contains(secret));
+
+        let save = handle
+            .request(
+                "settings-save",
+                "settings.provider_model.save",
+                json!({
+                    "draft": {
+                        "providers": [{
+                            "id": "fixture",
+                            "alias": "Fixture edited",
+                            "base_url": "https://fixture.invalid/v1",
+                            "models": ["fixture-model"],
+                            "credential": {"action": "keep", "value": ""}
+                        }],
+                        "model_slots": {
+                            "chat": {"profile_id": "fixture", "model": "fixture-model"},
+                            "vision_chat": {}
+                        },
+                        "settings": {
+                            "timeout_seconds": 30,
+                            "temperature": null,
+                            "top_p": null,
+                            "max_tokens": null
+                        }
+                    }
+                }),
+                Duration::from_secs(5),
+            )
+            .expect("provider settings save should complete");
+        assert_eq!(save["payload"]["change_plan"], "core_restart_required");
+        host.shutdown().expect("provider settings host should stop");
+        let saved = fs::read_to_string(app_root.join("data/config/api.yaml"))
+            .expect("saved provider config should read");
+        assert!(saved.contains(secret));
+        assert!(saved.contains("preserve_me: true"));
+        assert!(saved.contains("Fixture edited"));
+        fs::remove_dir_all(&app_root).expect("isolated provider fixture should clean up");
     }
 
     #[test]

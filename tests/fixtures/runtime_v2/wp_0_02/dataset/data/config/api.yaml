@@ -8,8 +8,10 @@ api_profiles:
     alias: Fixture Provider
     base_url: https://fixture.invalid/v1
     api_key: REDACTED_FIXTURE_VALUE
+    fixture_provider_unknown: preserve-provider
     models:
       - name: fixture-model
+        fixture_model_unknown: preserve-model
 model_slots:
   chat:
     profile_id: fixture
@@ -17,3 +19,5 @@ model_slots:
 tts:
   enabled: false
   provider: none
+fixture_unknown:
+  nested: preserve-top-level

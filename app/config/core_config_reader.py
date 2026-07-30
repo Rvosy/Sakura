@@ -148,9 +148,6 @@ def _parse_profiles(
         raw_models = raw_profile["models"]
         if not isinstance(raw_models, list):
             return None, _stable_error("CONFIG_DATA_INVALID")
-        if not raw_models:
-            return None, _stable_error("PROVIDER_SETUP_REQUIRED")
-
         models: list[str] = []
         for raw_model in raw_models:
             if isinstance(raw_model, str):

@@ -128,6 +128,8 @@ const fields = {
 let request = null;
 let runtimeSettingsHost = false;
 let runtimeAppearanceController = null;
+let runtimeProviderModelController = null;
+let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
@@ -321,8 +323,8 @@ function settingsSnapshot() {
 }
 
 function computeDirty() {
-  if (runtimeAppearanceController) {
-    return runtimeAppearanceController.isDirty();
+  if (runtimeSettingsHost) {
+    return Boolean(runtimeAppearanceController?.isDirty() || runtimeProviderModelController?.isDirty());
   }
   return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
 }
@@ -379,6 +381,7 @@ async function confirmDiscard() {
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
   if (runtimeSettingsHost) {
+    await runtimeProviderModelController?.cancelOperations();
     await invoke("resolve_settings_close", { discard: true });
     return;
   }
@@ -410,12 +413,13 @@ async function requestCancelClose() {
         choose: chooseUnsavedClose,
         save: async () => {
           setSubmissionBusy(true);
-          await runtimeAppearanceController?.save();
+          await saveRuntimeSettings();
           notify("已保存。", "success");
         },
         discard: async () => {
           setSubmissionBusy(true);
           await runtimeAppearanceController?.cancelPreview();
+          await runtimeProviderModelController?.cancelOperations();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -451,14 +455,16 @@ async function requestAppExitClose() {
       choose: chooseUnsavedClose,
       save: async () => {
         setSubmissionBusy(true);
-        await runtimeAppearanceController?.save();
+        await saveRuntimeSettings();
         notify("已保存。", "success");
       },
       discard: async () => {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
+        await runtimeProviderModelController?.cancelOperations();
       },
       close: async () => {
+        await runtimeProviderModelController?.cancelOperations();
         bypassCloseGuard = true;
         await invoke("resolve_settings_exit", { discard: true });
       },
@@ -928,6 +934,7 @@ const pageMeta = {
 
 function showPage(page) {
   Object.entries(fields.pages).forEach(([key, element]) => {
+    element.hidden = key !== page;
     element.classList.toggle("is-active", key === page);
   });
   fields.navItems.forEach((item) => {
@@ -1656,6 +1663,8 @@ function initializeProviderState() {
     alias: profile.alias || profile.id || "供应商",
     base_url: profile.base_url || "",
     api_key: profile.api_key || "",
+    configured: Boolean(profile.configured),
+    credential_action: profile.credential_action || (profile.configured ? "keep" : "keep"),
     models: Array.isArray(profile.models) ? profile.models.map(String) : [],
   }));
   providerState.selectedId = providerState.profiles[0]?.id || "";
@@ -1704,7 +1713,8 @@ function renderProviderPage() {
 function renderProviderStatus() {
   const items = providerState.profiles;
   const configured = items.filter(
-    (profile) => (profile.base_url || "").trim() && (profile.api_key || "").trim(),
+    (profile) => (profile.base_url || "").trim()
+      && ((profile.api_key || "").trim() || (profile.configured && profile.credential_action !== "clear")),
   ).length;
   const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
   renderStrip(fields.providerStatusStrip, [
@@ -1822,7 +1832,22 @@ function renderProviderDetail() {
   removeButton.className = "danger-button";
   removeButton.textContent = "删除供应商";
   removeButton.addEventListener("click", () => removeProvider(profile));
-  actions.append(testButton, removeButton);
+  if (runtimeSettingsHost && profile.configured) {
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "secondary-button";
+    clearButton.textContent = profile.credential_action === "clear" ? "已标记清除" : "清除凭据";
+    clearButton.addEventListener("click", () => {
+      profile.api_key = "";
+      profile.credential_action = "clear";
+      profile.configured = false;
+      renderProviderPage();
+      refreshDirty();
+    });
+    actions.append(testButton, clearButton, removeButton);
+  } else {
+    actions.append(testButton, removeButton);
+  }
   detail.append(actions);
 }
 
@@ -1837,8 +1862,14 @@ function providerField(profile, key, label, type) {
   input.dataset.providerField = key;
   input.value = profile[key] || "";
   input.placeholder = PROVIDER_FIELD_PLACEHOLDERS[key] || "";
+  if (key === "api_key" && runtimeSettingsHost && profile.configured) {
+    input.placeholder = "已保存；留空保持原值";
+  }
   input.addEventListener("input", () => {
     profile[key] = input.value;
+    if (key === "api_key" && runtimeSettingsHost) {
+      profile.credential_action = input.value.trim() ? "replace" : (profile.configured ? "keep" : "clear");
+    }
     if (input.value.trim()) {
       markInvalid(input, false);
     }
@@ -1971,7 +2002,7 @@ async function autoDetectModels(profile, button) {
     setError("请先填写 Base URL。");
     return;
   }
-  if (!apiKey) {
+  if (!apiKey && !(runtimeSettingsHost && profile.configured && profile.credential_action === "keep")) {
     markInvalid(providerDetailInput("api_key"), true);
     setError("请先填写 API Key。");
     return;
@@ -1981,11 +2012,13 @@ async function autoDetectModels(profile, button) {
   button.disabled = true;
   button.textContent = "检测中…";
   try {
-    const result = await hostCall("api.list_models", {
-      base_url: baseUrl,
-      api_key: apiKey,
-      timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
-    });
+    const result = runtimeProviderModelController
+      ? await runtimeProviderModelController.listModels(runtimeProbeProfile(profile, ""))
+      : await hostCall("api.list_models", {
+        base_url: baseUrl,
+        api_key: apiKey,
+        timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
+      });
     const models = Array.isArray(result?.models) ? result.models : [];
     if (!models.length) {
       notify("未检测到任何模型。", "info");
@@ -2004,7 +2037,7 @@ async function testProvider(profile, button) {
   const baseUrl = (profile.base_url || "").trim();
   const apiKey = (profile.api_key || "").trim();
   const model = (profile.models || [])[0];
-  if (!baseUrl || !apiKey) {
+  if (!baseUrl || (!apiKey && !(runtimeSettingsHost && profile.configured && profile.credential_action === "keep"))) {
     markInvalid(providerDetailInput("base_url"), !baseUrl);
     markInvalid(providerDetailInput("api_key"), !apiKey);
     setError("请先填写 Base URL 与 API Key。");
@@ -2019,12 +2052,14 @@ async function testProvider(profile, button) {
   button.disabled = true;
   button.textContent = "测试中…";
   try {
-    const result = await hostCall("api.test_connection", {
-      base_url: baseUrl,
-      api_key: apiKey,
-      model,
-      timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
-    });
+    const result = runtimeProviderModelController
+      ? await runtimeProviderModelController.testConnection(runtimeProbeProfile(profile, model))
+      : await hostCall("api.test_connection", {
+        base_url: baseUrl,
+        api_key: apiKey,
+        model,
+        timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
+      });
     notify(`连接成功：${result?.message || "OK"}`, "success");
   } catch (error) {
     setError(`连接失败：${error}`);
@@ -2050,6 +2085,8 @@ function addProvider(preset) {
     alias: preset?.label || "新供应商",
     base_url: preset?.base_url || "",
     api_key: "",
+    configured: false,
+    credential_action: "keep",
     models: [],
   };
   providerState.profiles.push(profile);
@@ -2236,7 +2273,7 @@ function handleSlotInheritChange(slot) {
   syncSlotInheritState(slot);
 }
 
-function renderModelSlots(selection) {
+function renderModelSlots(selection, { preserveMissing = true } = {}) {
   fields.modelSlots.textContent = "";
   request.api.slot_fields.forEach((slot) => {
     const row = document.createElement("div");
@@ -2284,7 +2321,7 @@ function renderModelSlots(selection) {
       inheritInput.checked = !selected.profile_id || !selected.model;
     }
     fillProfileOptions(profileSelect, selected.profile_id, slot.required);
-    syncModelOptions(slot.id, selected.model, { preserveMissing: true });
+    syncModelOptions(slot.id, selected.model, { preserveMissing });
     syncSlotInheritState(slot.id);
   });
 }
@@ -2319,20 +2356,25 @@ function syncModelOptions(slot, selectedModel, { preserveMissing = selectedModel
     refreshSelect(modelSelect);
     return;
   }
-  models.forEach((model) => {
+  const resolved = resolveModelOptions(models, current, preserveMissing);
+  resolved.options.forEach((model) => {
     const option = document.createElement("option");
     option.value = model;
     option.textContent = model;
     modelSelect.append(option);
   });
-  if (preserveMissing && current && !models.includes(current)) {
-    const option = document.createElement("option");
-    option.value = current;
-    option.textContent = current;
-    modelSelect.append(option);
-  }
-  modelSelect.value = current || models[0] || "";
+  modelSelect.value = resolved.value;
   refreshSelect(modelSelect);
+}
+
+function resolveModelOptions(models, selectedModel, preserveMissing) {
+  const options = [...models];
+  const current = String(selectedModel || "");
+  if (preserveMissing && current && !options.includes(current)) {
+    options.push(current);
+  }
+  const value = options.includes(current) ? current : options[0] || "";
+  return { options, value };
 }
 
 function syncSlotInheritState(slot) {
@@ -2358,7 +2400,7 @@ function syncSlotInheritState(slot) {
 }
 
 function refreshModelSlots() {
-  renderModelSlots(collectModelSelection());
+  renderModelSlots(collectModelSelection(), { preserveMissing: false });
 }
 
 function collectModelSelection() {
@@ -4221,6 +4263,9 @@ function focusProviderValidation(profile, field) {
 }
 
 function validateOnboardingBeforeSubmit() {
+  if (runtimeSettingsHost) {
+    return true;
+  }
   if (!isOnboarding()) {
     return true;
   }
@@ -4243,6 +4288,9 @@ function validateOnboardingBeforeSubmit() {
 function validateApiSettingsBeforeSubmit() {
   const profiles = normalizedProviderProfiles();
   if (!profiles.length) {
+    if (runtimeSettingsHost) {
+      return true;
+    }
     showPage("providers");
     setError("请至少添加一个 API 供应商。");
     return false;
@@ -4254,15 +4302,27 @@ function validateApiSettingsBeforeSubmit() {
     return false;
   }
   const missingModels = profiles.find((profile) => !profile.models.length);
-  if (missingModels) {
+  if (missingModels && !runtimeSettingsHost) {
     focusProviderValidation(missingModels, "");
     setError(`供应商「${providerDisplayName(missingModels)}」至少需要一个模型。`);
+    return false;
+  }
+  const missingCredential = providerState.profiles.find((profile) => (
+    !profile.api_key?.trim()
+    && !(profile.configured && profile.credential_action === "keep")
+  ));
+  if (missingCredential && !runtimeSettingsHost) {
+    focusProviderValidation(missingCredential, "api_key");
+    setError(`供应商「${providerDisplayName(missingCredential)}」缺少 API Key。`);
     return false;
   }
   const selection = collectModelSelection();
   const chat = selection.slots.chat || {};
   const chatProfile = profiles.find((profile) => profile.id === chat.profile_id);
   if (!chatProfile || !chat.model || !chatProfile.models.includes(chat.model)) {
+    if (runtimeSettingsHost && !chat.profile_id && !chat.model) {
+      return true;
+    }
     showPage("model");
     refreshModelSlots();
     setError("请选择可用的聊天模型。");
@@ -4292,6 +4352,94 @@ function collectApiSettings() {
     profiles: normalizedProviderProfiles(),
     model_selection: collectModelSelection(),
   };
+}
+
+function runtimeCredential(profile) {
+  const value = (profile.api_key || "").trim();
+  let action = profile.credential_action || (profile.configured ? "keep" : "clear");
+  if (value) action = "replace";
+  if (action === "keep" && !profile.configured) action = "clear";
+  return { action, value: action === "replace" ? value : "" };
+}
+
+function runtimeProbeProfile(profile, model) {
+  return {
+    profile_id: profile.id,
+    base_url: (profile.base_url || "").trim(),
+    model: String(model || "").trim(),
+    timeout_seconds: clampInt(fields.apiTimeout.value || 15, [1, 60]),
+    credential: runtimeCredential(profile),
+  };
+}
+
+function collectRuntimeProviderModelDraft() {
+  const api = collectApiSettings();
+  const selection = collectModelSelection().slots;
+  return {
+    providers: providerState.profiles.map((profile) => ({
+      id: profile.id,
+      alias: (profile.alias || "").trim() || profile.id,
+      base_url: (profile.base_url || "").trim(),
+      models: (profile.models || []).map((model) => String(model).trim()).filter(Boolean),
+      credential: runtimeCredential(profile),
+    })),
+    model_slots: {
+      chat: selection.chat || { profile_id: "", model: "" },
+      vision_chat: selection.vision_chat || { profile_id: "", model: "" },
+    },
+    settings: api.settings,
+  };
+}
+
+function applyRuntimeProviderModelSnapshot(snapshot) {
+  request = request || {};
+  request.limits = {
+    ...(request.limits || {}),
+    api_timeout_seconds: [1, 300],
+    api_temperature: [0, 2],
+    api_top_p: [0, 1],
+    api_max_tokens: [1, 1000000],
+  };
+  request.api = {
+    profiles: snapshot.providers.map((profile) => ({
+      ...profile,
+      api_key: "",
+      credential_action: profile.configured ? "keep" : "clear",
+    })),
+    settings: snapshot.settings,
+    slot_fields: [
+      { id: "chat", label: "聊天模型", required: true },
+      { id: "vision_chat", label: "视觉模型", required: false },
+    ],
+    model_selection: { slots: snapshot.model_slots },
+  };
+  initializeProviderState();
+  renderProviderPage();
+  renderModelSlots(request.api.model_selection);
+  setNumericBounds(fields.apiTimeout, request.limits.api_timeout_seconds);
+  setNumericBounds(fields.apiMaxTokens, request.limits.api_max_tokens);
+  fields.apiTimeout.value = snapshot.settings.timeout_seconds;
+  fields.apiTemperature.value = snapshot.settings.temperature ?? 0.8;
+  fields.apiTopPEnabled.checked = snapshot.settings.top_p !== null;
+  fields.apiTopP.value = snapshot.settings.top_p ?? 1;
+  fields.apiMaxTokensEnabled.checked = snapshot.settings.max_tokens !== null;
+  fields.apiMaxTokens.value = snapshot.settings.max_tokens ?? 2048;
+  syncApiAdvancedState();
+}
+
+async function saveRuntimeSettings() {
+  if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
+  if (!runtimeProviderModelController?.isDirty()) return null;
+  if (!validateApiSettingsBeforeSubmit()) throw new Error("供应商或模型设置未通过校验。");
+  const result = await runtimeProviderModelController.save();
+  providerState.profiles.forEach((profile) => {
+    profile.configured = runtimeCredential(profile).action !== "clear";
+    profile.api_key = "";
+    profile.credential_action = profile.configured ? "keep" : "clear";
+  });
+  renderProviderPage();
+  runtimeProviderModelController.rebase();
+  return result;
 }
 
 function collectTtsSettings() {
@@ -4671,13 +4819,13 @@ fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
 fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
 fields.saveButton.addEventListener("click", async () => {
-  if (runtimeAppearanceController) {
+  if (runtimeSettingsHost) {
     const original = fields.saveButton.textContent;
     setError("");
     setSubmissionBusy(true);
     fields.saveButton.textContent = "保存中…";
     try {
-      await runtimeAppearanceController.save();
+      await saveRuntimeSettings();
       notify("已保存。", "success");
       await closeSettingsWindow();
     } catch (error) {
@@ -4728,11 +4876,11 @@ fields.saveButton.addEventListener("click", async () => {
 });
 
 fields.applyButton.addEventListener("click", async () => {
-  if (runtimeAppearanceController) {
+  if (runtimeSettingsHost) {
     setError("");
     setSubmissionBusy(true);
     try {
-      await runtimeAppearanceController.save();
+      await saveRuntimeSettings();
       notify("已应用。", "success");
     } catch (error) {
       setError(String(error));
@@ -4826,7 +4974,10 @@ detailCard?.addEventListener("input", (event) => {
   }
 })();
 
-window.addEventListener("beforeunload", () => runtimeAppearanceController?.dispose(), { once: true });
+window.addEventListener("beforeunload", () => {
+  runtimeAppearanceController?.dispose();
+  runtimeProviderModelController?.dispose();
+}, { once: true });
 
 async function startSettingsFrontend() {
   let manifest;
@@ -4837,8 +4988,9 @@ async function startSettingsFrontend() {
     return;
   }
   runtimeSettingsHost = true;
-  const { applyCapabilityManifest } = await import("./capability-shell.js");
-  applyCapabilityManifest(document, manifest);
+  const { applyCapabilityManifest, featureStatus } = await import("./capability-shell.js");
+  manifest = applyCapabilityManifest(document, manifest);
+  runtimeCapabilityManifest = manifest;
   if (manifest.availableSections.includes("character") || manifest.availableSections.includes("appearance")) {
     const { createRuntimeAppearanceController } = await import("./appearance-runtime.js");
     runtimeAppearanceController = createRuntimeAppearanceController({
@@ -4851,6 +5003,21 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_character_appearance_get");
     await runtimeAppearanceController.initialize(snapshot);
+  }
+  if (
+    featureStatus(manifest, "providers.manage") === "available"
+    || featureStatus(manifest, "model.chat_slot") === "available"
+  ) {
+    const { createProviderModelController } = await import("./provider-model-runtime.js");
+    runtimeProviderModelController = createProviderModelController({
+      invoke,
+      readDraft: collectRuntimeProviderModelDraft,
+      applySnapshot: applyRuntimeProviderModelSnapshot,
+      onDirty: refreshDirty,
+      onError: setError,
+    });
+    const snapshot = await invoke("settings_provider_model_get");
+    await runtimeProviderModelController.initialize(snapshot);
   }
   settingsBaseline = null;
   refreshDirty();

@@ -244,9 +244,14 @@ pub fn sync_product_tray_visibility(app: &AppHandle, visible: bool) -> Result<()
 pub struct SettingsCapabilityManifest {
     pub schema_version: u32,
     pub window_generation: u64,
-    pub available_sections: Vec<String>,
-    pub read_only_sections: Vec<String>,
+    pub sections: BTreeMap<String, SettingsSectionCapability>,
     pub unavailable_reasons: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SettingsSectionCapability {
+    pub status: String,
+    pub features: BTreeMap<String, String>,
 }
 
 const SETTINGS_SECTIONS: [&str; 10] = [
@@ -271,10 +276,9 @@ impl SettingsCapabilityManifest {
             .collect::<BTreeMap<_, _>>();
         unavailable_reasons.insert("system".to_string(), reason.to_string());
         Self {
-            schema_version: 1,
+            schema_version: 2,
             window_generation,
-            available_sections: Vec::new(),
-            read_only_sections: Vec::new(),
+            sections: BTreeMap::new(),
             unavailable_reasons,
         }
     }
@@ -282,9 +286,64 @@ impl SettingsCapabilityManifest {
     fn character_appearance(window_generation: u64) -> Self {
         let mut manifest = Self::shell_only(window_generation);
         for section in ["character", "appearance"] {
-            manifest.available_sections.push(section.to_string());
+            let feature = if section == "character" {
+                "character.current"
+            } else {
+                "appearance.character"
+            };
+            manifest.sections.insert(
+                section.to_string(),
+                SettingsSectionCapability {
+                    status: "available".to_string(),
+                    features: BTreeMap::from([(feature.to_string(), "available".to_string())]),
+                },
+            );
             manifest.unavailable_reasons.remove(section);
         }
+        manifest
+    }
+
+    fn provider_model(window_generation: u64) -> Self {
+        let mut manifest = Self::character_appearance(window_generation);
+        manifest.sections.insert(
+            "providers".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([
+                    ("providers.manage".to_string(), "available".to_string()),
+                    ("providers.credentials".to_string(), "available".to_string()),
+                    ("providers.list_models".to_string(), "available".to_string()),
+                    (
+                        "providers.test_connection".to_string(),
+                        "available".to_string(),
+                    ),
+                ]),
+            },
+        );
+        manifest.sections.insert(
+            "model".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([
+                    ("model.chat_slot".to_string(), "available".to_string()),
+                    (
+                        "model.vision_chat_slot".to_string(),
+                        "available".to_string(),
+                    ),
+                    (
+                        "model.memory_curation_slot".to_string(),
+                        "unavailable".to_string(),
+                    ),
+                ]),
+            },
+        );
+        for key in ["providers", "model"] {
+            manifest.unavailable_reasons.remove(key);
+        }
+        manifest.unavailable_reasons.insert(
+            "model.memory_curation_slot".to_string(),
+            "记忆整理尚未迁移到 Runtime v2".to_string(),
+        );
         manifest
     }
 }
@@ -302,7 +361,7 @@ pub fn settings_capability_manifest(
     state: tauri::State<'_, ProductShellState>,
 ) -> Result<SettingsCapabilityManifest, String> {
     validate_settings_window(&window)?;
-    Ok(SettingsCapabilityManifest::character_appearance(
+    Ok(SettingsCapabilityManifest::provider_model(
         state.generation()?,
     ))
 }
@@ -430,21 +489,20 @@ mod tests {
     }
 
     #[test]
-    fn capability_manifest_exposes_only_wp_3u_02_sections_without_secrets() {
-        let manifest = SettingsCapabilityManifest::character_appearance(7);
-        assert_eq!(manifest.schema_version, 1);
+    fn capability_manifest_exposes_feature_scoped_settings_without_secrets() {
+        let manifest = SettingsCapabilityManifest::provider_model(7);
+        assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.window_generation, 7);
-        assert_eq!(manifest.available_sections, ["character", "appearance"]);
-        assert!(manifest.read_only_sections.is_empty());
+        assert_eq!(
+            manifest.sections["providers"].features["providers.credentials"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["model"].features["model.memory_curation_slot"],
+            "unavailable"
+        );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
-        for forbidden in [
-            "password",
-            "api_key",
-            "apikey",
-            "credential",
-            "secret",
-            "token",
-        ] {
+        for forbidden in ["password", "api_key", "apikey", "secret", "token"] {
             assert!(!json.contains(forbidden), "{forbidden}");
         }
     }

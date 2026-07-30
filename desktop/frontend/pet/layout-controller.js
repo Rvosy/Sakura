@@ -2,8 +2,12 @@ export function createLayoutController({
   computeLayout,
   applyNativeLayout,
   commitLayout,
+  initialRevision = 0,
 }) {
-  let requestedRevision = 0;
+  if (!Number.isSafeInteger(initialRevision) || initialRevision < 0) {
+    throw new Error("initial layout revision must be a non-negative safe integer");
+  }
+  let requestedRevision = initialRevision;
   let currentState = null;
 
   return Object.freeze({

@@ -36,6 +36,7 @@ use platform::{
     WindowInteractionBackend, SHARED_INSTANCE_ID,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
@@ -59,6 +60,8 @@ const SETTINGS_CAPABILITY_SCRIPT: &str =
     include_str!("../../frontend/settings/capability-shell.js");
 const SETTINGS_APPEARANCE_SCRIPT: &str =
     include_str!("../../frontend/settings/appearance-runtime.js");
+const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
+    include_str!("../../frontend/settings/provider-model-runtime.js");
 const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
@@ -188,6 +191,20 @@ fn target_monitor(
         return Ok(monitor_descriptor(&monitor));
     }
     Ok(monitors[0].clone())
+}
+
+#[tauri::command]
+fn current_pet_layout_revision(
+    window: WebviewWindow,
+    session: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<u64, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    session
+        .lock()
+        .map(|session| session.applied_revision)
+        .map_err(|_| "window geometry state is unavailable".to_string())
 }
 
 #[tauri::command]
@@ -771,6 +788,198 @@ fn settings_character_appearance_cancel_preview(
     Ok(())
 }
 
+fn settings_core_handle(
+    lifecycle: &State<'_, ShellLifecycleState>,
+) -> Result<shell_lifecycle::ShellLifecycleHandle, String> {
+    lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())
+}
+
+fn settings_response_payload(response: Value) -> Result<Value, String> {
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return response
+            .get("payload")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let code = response
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("SETTINGS_REQUEST_FAILED");
+    let message = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("设置请求失败。");
+    let feature = response
+        .pointer("/error/details/feature")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let field = response
+        .pointer("/error/details/field")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Err(format!("{code}|{feature}|{field}|{message}"))
+}
+
+async fn dispatch_settings_request(
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    request_id: Option<String>,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request(request_id.as_deref(), name, payload, deadline)
+    })
+    .await
+    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+}
+
+fn assert_settings_identity(
+    shell: &product_shell::ProductShellState,
+    handle: &shell_lifecycle::ShellLifecycleHandle,
+    window_generation: u64,
+    core_generation_id: &str,
+) -> Result<(), String> {
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let current = handle
+        .current_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    if current != core_generation_id {
+        return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn settings_provider_model_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .current_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "settings.provider_model.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("window_generation".to_string(), json!(window_generation));
+    object.insert("core_generation_id".to_string(), json!(core_generation_id));
+    app_handle
+        .emit_to(
+            "main",
+            "sakura://core-generation-changed",
+            json!({"generationId": core_generation_id}),
+        )
+        .map_err(|error| format!("CORE_GENERATION_PUBLICATION_FAILED: {error}"))?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_provider_model_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    draft: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "settings.provider_model.save",
+        json!({"draft": draft}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    handle.restart().map_err(str::to_string)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_provider_model_probe(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    operation_id: String,
+    kind: String,
+    profile: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let name = match kind.as_str() {
+        "list_models" => "settings.provider_model.list_models",
+        "test_connection" => "settings.provider_model.test_connection",
+        _ => return Err("SETTINGS_PROBE_KIND_INVALID".to_string()),
+    };
+    let response = dispatch_settings_request(
+        handle.clone(),
+        Some(operation_id.clone()),
+        name,
+        json!({"operation_id": operation_id, "profile": profile}),
+        std::time::Duration::from_secs(65),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    settings_response_payload(response)
+}
+
+#[tauri::command]
+async fn settings_provider_model_cancel(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    operation_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<bool, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "settings.provider_model.cancel",
+        json!({"operationId": operation_id}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    Ok(settings_response_payload(response)?
+        .get("cancelled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
 #[tauri::command]
 fn begin_portrait_scale_preview(
     window: WebviewWindow,
@@ -1322,6 +1531,7 @@ fn main() {
         SETTINGS_SCRIPT.len(),
         SETTINGS_CAPABILITY_SCRIPT.len(),
         SETTINGS_APPEARANCE_SCRIPT.len(),
+        SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
     );
 
@@ -1418,6 +1628,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            current_pet_layout_revision,
             apply_pet_layout,
             reveal_pet_window,
             start_pet_drag,
@@ -1440,6 +1651,10 @@ fn main() {
             settings_character_appearance_preview,
             settings_character_appearance_save,
             settings_character_appearance_cancel_preview,
+            settings_provider_model_get,
+            settings_provider_model_save,
+            settings_provider_model_probe,
+            settings_provider_model_cancel,
             product_shell::resolve_settings_close,
             resolve_settings_exit
         ])
@@ -1570,6 +1785,7 @@ mod tests {
         assert!(!SETTINGS_STYLES.is_empty());
         assert!(!SETTINGS_SCRIPT.is_empty());
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
+        assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
         assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract

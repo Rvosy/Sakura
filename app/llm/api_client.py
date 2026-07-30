@@ -126,7 +126,7 @@ class OpenAICompatibleClient:
             extra["max_tokens"] = self.settings.max_tokens
         return temperature, extra
 
-    def test_connection(self) -> str:
+    def test_connection(self, *, cancel_checker: CancelChecker | None = None) -> str:
         """发送一次最小聊天请求，验证 Base URL、API Key 和模型是否可用。"""
         self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
 
@@ -142,7 +142,11 @@ class OpenAICompatibleClient:
             ],
             "max_tokens": 8,
         }
-        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(
+            payload,
+            cancel_checker=cancel_checker,
+        )
+        check_cancelled(cancel_checker)
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -151,7 +155,7 @@ class OpenAICompatibleClient:
 
         return str(content).strip() or "OK"
 
-    def list_models(self) -> list[str]:
+    def list_models(self, *, cancel_checker: CancelChecker | None = None) -> list[str]:
         """读取 OpenAI 兼容 /models 接口，返回可选择的模型 id 列表。"""
         self._ensure_model_list_config()
         base_url = _normalize_openai_base_url(self.settings.base_url)
@@ -172,7 +176,12 @@ class OpenAICompatibleClient:
                 "timeout_seconds": self.settings.timeout_seconds,
             },
         )
-        response_body = self._send_with_retries(request)
+        response_body = (
+            self._send_with_retries(request)
+            if cancel_checker is None
+            else self._send_with_retries(request, cancel_checker=cancel_checker)
+        )
+        check_cancelled(cancel_checker)
 
         try:
             data: dict[str, Any] = json.loads(response_body)

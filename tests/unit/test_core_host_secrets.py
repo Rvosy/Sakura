@@ -25,7 +25,9 @@ PLANTED_PROMPT = "PLANTED_PRIVATE_SYSTEM_PROMPT"
 PLANTED_CREDENTIAL = "abcdeffedcba0123456789abcdef0123"
 GENERIC_SERIALIZER_FILES = (
     "app/core_host/server.py",
+    "app/core_host/provider_settings.py",
     "app/core_host/assistant_adapter.py",
+    "app/config/provider_model_settings.py",
     "app/config/core_config_reader.py",
     "app/config/models.py",
     "app/config/character_loader.py",
