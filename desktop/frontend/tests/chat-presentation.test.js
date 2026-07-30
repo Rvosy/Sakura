@@ -72,14 +72,26 @@ test("failed and cancelled terminals are operation-scoped and immediately retrya
   }
 });
 
-test("Core restart resets presentation and rejects old generation callbacks", () => {
+test("Core restart preserves the settled presentation and rejects old generation callbacks", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "old" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "old",
+    reply: { segments: [{ text: "切换前的回复", portrait: "smile" }] },
+  });
+  reducer.setTypingText("切换前的回复");
+  reducer.setTypingSegment({ portrait: "smile" });
+  reducer.finishTyping();
   reducer.reduce(lifecycle("core_crashed", 1, 2));
   reducer.reduce(lifecycle("restarting", 2, 3));
   reducer.reduce(lifecycle("ready", 2, 4));
-  assert.equal(reducer.current().phase, "ready");
+  assert.equal(reducer.current().phase, "settled");
   assert.equal(reducer.current().generationId, "generation-2");
+  assert.equal(reducer.current().bubbleText, "切换前的回复");
+  assert.equal(reducer.current().portrait, "smile");
   assert.equal(
     reducer.reduce({ type: "chat.completed", generationId: "generation-1", generationNumber: 1, operationId: "old", reply: { segments: [{ text: "late" }] } }).applied,
     false,

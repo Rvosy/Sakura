@@ -83,7 +83,9 @@ test("the pet window stays hidden until the native surface and first character f
   assert.ok(presentationIndex >= 0 && presentationIndex < portraitIndex);
   assert.ok(portraitIndex < readyIndex && readyIndex < revealIndex);
   assert.match(app, /if \(presentationUnavailable\)[\s\S]*?portraitFallback\.hidden = false;[\s\S]*?else \{[\s\S]*?await portraitController\.show/);
-  assert.match(app, /sakura:\/\/core-generation-changed[\s\S]*?generationId === characterPresentation\.generationId[\s\S]*?window\.location\.reload\(\)/);
+  assert.match(app, /sakura:\/\/core-generation-changed[\s\S]*?generationId === characterPresentation\.generationId[\s\S]*?rebindCoreGeneration\(generationId\)/);
+  assert.doesNotMatch(app, /window\.location\.reload\(\)/);
+  assert.match(app, /Keep the decoded old frame on screen until the replacement resource is ready/);
   assert.match(nativeWindowBackend, /WS_CAPTION/);
   assert.match(nativeWindowBackend, /SWP_FRAMECHANGED/);
   assert.match(nativeWindowBackend, /GetWindowLongW/);

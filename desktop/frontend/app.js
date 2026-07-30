@@ -117,7 +117,7 @@ try {
   });
 }
 
-const portraits = portraitSequence(characterPresentation);
+let portraits = portraitSequence(characterPresentation);
 let activeAppearance = Object.freeze({
   portraitScalePercent: 100,
   speechFontSize: 19,
@@ -143,14 +143,16 @@ portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立
 portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
 if (!presentationUnavailable) clearRecoverableError();
 
-const expectedByUrl = new Map(
-  characterPresentation.portraitKeys.map((key) => [
-    characterPresentation.portraitResourceUrls[key],
-    characterPresentation.portraitMetadata[key],
-  ]),
-);
+function expectedPortraitsByUrl(presentation) {
+  return new Map(
+    presentation.portraitKeys.map((key) => [
+      presentation.portraitResourceUrls[key],
+      presentation.portraitMetadata[key],
+    ]),
+  );
+}
 
-function loadImage(source) {
+function loadImage(source, expectedByUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.decoding = "async";
@@ -185,9 +187,9 @@ function cancelPortraitHitTimer() {
   portraitHitTimer = null;
 }
 
-function syncPortraitAppearance(key) {
-  const metadata = characterPresentation.portraitMetadata[key]
-    || characterPresentation.portraitMetadata[characterPresentation.defaultPortraitKey];
+function syncPortraitAppearance(key, presentation = characterPresentation) {
+  const metadata = presentation.portraitMetadata[key]
+    || presentation.portraitMetadata[presentation.defaultPortraitKey];
   const scale = constrainedPortraitScale({
     requestedPercent: activeAppearance.portraitScalePercent,
     sourceSize: [metadata.width, metadata.height],
@@ -225,34 +227,40 @@ async function previewPortraitScale(key) {
   schedulePortraitHitTest(key, revision);
 }
 
-const portraitController = createPortraitController({
-  assets: characterPresentation.portraitResourceUrls,
-  defaultKey: characterPresentation.defaultPortraitKey,
-  loadImage,
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  preview: ({ source }) => {
-    portraitNext.src = source;
-    portrait.classList.add("is-transitioning");
-  },
-  commit: ({ key, source }) => {
-    portraitCurrent.src = source;
-    portraitNext.removeAttribute("src");
-    portrait.classList.remove("is-transitioning");
-    portraitFallback.hidden = true;
-    syncPortraitAppearance(key);
-    activatePortraitHitTest(key);
-    if (!presentationUnavailable) clearRecoverableError();
-  },
-  showFallback: () => {
-    portrait.classList.remove("is-transitioning");
-    portraitFallback.hidden = false;
-  },
-  reportError: ({ code }) => {
-    if (!presentationUnavailable) {
-      showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "表情映射无效，已恢复默认立绘。" : "立绘解码失败，仍可继续输入。");
-    }
-  },
-});
+function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
+  const expectedByUrl = expectedPortraitsByUrl(boundPresentation);
+  return createPortraitController({
+    assets: boundPresentation.portraitResourceUrls,
+    defaultKey: boundPresentation.defaultPortraitKey,
+    loadImage: (source) => loadImage(source, expectedByUrl),
+    reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    preview: ({ source }) => {
+      portraitNext.src = source;
+      portrait.classList.add("is-transitioning");
+    },
+    commit: ({ key, source }) => {
+      portraitCurrent.src = source;
+      portraitNext.removeAttribute("src");
+      portrait.classList.remove("is-transitioning");
+      portraitFallback.hidden = true;
+      syncPortraitAppearance(key, boundPresentation);
+      activatePortraitHitTest(key);
+      if (!presentationUnavailable) clearRecoverableError();
+    },
+    showFallback: () => {
+      if (preserveFrameOnFailure) return;
+      portrait.classList.remove("is-transitioning");
+      portraitFallback.hidden = false;
+    },
+    reportError: ({ code }) => {
+      if (!presentationUnavailable) {
+        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "表情映射无效，已恢复默认立绘。" : "立绘解码失败，仍可继续输入。");
+      }
+    },
+  });
+}
+
+let portraitController = buildPortraitController(characterPresentation);
 
 const presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
@@ -398,6 +406,92 @@ await listenAppEvent("sakura://product-menu-error", () => {
   showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
 });
 
+let coreRebindRevision = 0;
+let coreRebindTarget = "";
+
+async function rebindCoreGeneration(generationId) {
+  if (
+    disposed
+    || !generationId
+    || generationId === characterPresentation.generationId
+    || generationId === coreRebindTarget
+  ) return false;
+
+  const revision = ++coreRebindRevision;
+  coreRebindTarget = generationId;
+  let candidateController = null;
+  try {
+    const nextPresentation = await loadCurrentCharacterPresentation({
+      invoke,
+      expectedGenerationId: generationId,
+    });
+    if (disposed || revision !== coreRebindRevision) return false;
+
+    const visiblePortrait = renderedPortrait && nextPresentation.portraitKeys.includes(renderedPortrait)
+      ? renderedPortrait
+      : nextPresentation.defaultPortraitKey;
+    const expectedByUrl = expectedPortraitsByUrl(nextPresentation);
+
+    // Keep the decoded old frame on screen until the replacement resource is ready.
+    await loadImage(nextPresentation.portraitResourceUrls[visiblePortrait], expectedByUrl);
+    if (disposed || revision !== coreRebindRevision) return false;
+
+    let nextAppearance = activeAppearance;
+    try {
+      nextAppearance = validateAppearancePublication(
+        await invoke("current_character_appearance"),
+        nextPresentation,
+      );
+    } catch {
+      // Retain the last valid visual settings; a later appearance publication can update them.
+    }
+
+    candidateController = buildPortraitController(nextPresentation, { preserveFrameOnFailure: true });
+    const visualGeneration = presentation.current().generationId || generationId;
+    candidateController.beginGeneration(visualGeneration);
+    const shown = await candidateController.show(visiblePortrait, {
+      immediate: true,
+      generation: visualGeneration,
+    });
+    if (!shown.applied) throw new Error("CORE_GENERATION_PORTRAIT_REBIND_FAILED");
+    if (disposed || revision !== coreRebindRevision) {
+      candidateController.dispose();
+      return false;
+    }
+
+    const previousController = portraitController;
+    const changes = appearanceChanges(activeAppearance, nextAppearance);
+    characterPresentation = nextPresentation;
+    portraits = portraitSequence(nextPresentation);
+    activeAppearance = nextAppearance;
+    portraitController = candidateController;
+    candidateController = null;
+    renderedPortrait = shown.key;
+    presentationUnavailable = false;
+
+    characterName.textContent = nextPresentation.displayName;
+    input.placeholder = `和${nextPresentation.displayName}说点什么……`;
+    portraitFallbackName.textContent = nextPresentation.displayName;
+    portrait.setAttribute("aria-label", `${nextPresentation.displayName} 的立绘，可拖动窗口`);
+    portraitCurrent.alt = `${nextPresentation.displayName} 立绘`;
+    if (changes.theme) applyTheme(activeAppearance.themeTokens);
+    if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    syncPortraitAppearance(renderedPortrait, nextPresentation);
+    previousController.dispose();
+    clearRecoverableError();
+    render(presentation.current());
+    return true;
+  } catch {
+    candidateController?.dispose();
+    if (!disposed && revision === coreRebindRevision) {
+      showRecoverableError("桌宠资源重新连接失败；当前画面将继续保留。请稍后重试。");
+    }
+    return false;
+  } finally {
+    if (revision === coreRebindRevision) coreRebindTarget = "";
+  }
+}
+
 await listenAppEvent("sakura://core-generation-changed", (event) => {
   const generationId = event?.payload?.generationId;
   if (
@@ -406,8 +500,7 @@ await listenAppEvent("sakura://core-generation-changed", (event) => {
     || !generationId
     || generationId === characterPresentation.generationId
   ) return;
-  document.body.dataset.shellState = "loading";
-  window.location.reload();
+  void rebindCoreGeneration(generationId);
 });
 
 await listenAppEvent("sakura://character-appearance-changed", async (event) => {
@@ -474,6 +567,8 @@ async function enableAcceptanceEntry() {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  coreRebindRevision += 1;
+  coreRebindTarget = "";
   if (portraitHitTimer !== null) {
     window.clearTimeout(portraitHitTimer);
     portraitHitTimer = null;

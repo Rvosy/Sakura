@@ -48,6 +48,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
   const thinkingPortrait = thinkingPortraitKey || defaultPortraitKey;
   const concernedPortrait = concernedPortraitKey || defaultPortraitKey;
   let state = initialState(initialMessage, defaultPortraitKey);
+  let hasReachedReady = false;
 
   function acceptGeneration(event) {
     if (!Number.isSafeInteger(event?.generationNumber) || event.generationNumber < 1) return false;
@@ -69,8 +70,10 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         if (!Number.isSafeInteger(event.revision) || event.revision < 0) return result(false);
         if (event.generationNumber === state.generationNumber && event.revision < state.revision) return result(false);
         const generationChanged = event.generationNumber > state.generationNumber;
+        const establishedPresentation = hasReachedReady;
         const [lifecycleLabel, lifecycleHeadline] = LIFECYCLE_COPY[event.status];
         const ready = event.status === "ready";
+        const preserveVisualState = establishedPresentation && (generationChanged || !ready);
         state = Object.freeze({
           ...state,
           generationId: event.generationId,
@@ -79,23 +82,28 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           lifecycle: event.status,
           lifecycleLabel,
           lifecycleHeadline,
-          phase: ready ? (generationChanged || ["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase) : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
+          phase: preserveVisualState
+            ? (["thinking", "typing"].includes(state.phase) ? "settled" : state.phase)
+            : ready
+              ? (["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase)
+              : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
           operationId: ready ? state.operationId : null,
-          bubbleText: ready
-            ? generationChanged || ["booting", "reconnecting"].includes(state.phase)
-              ? initialMessage
-              : state.bubbleText
-            : event.status === "core_crashed"
-              ? "连接已断开，正在回收旧回复……"
-              : event.status === "restarting"
-              ? "正在重新连接……"
-                : "正在准备会话……",
-          segments: ready ? state.segments : Object.freeze([]),
+          bubbleText: preserveVisualState
+            ? state.bubbleText
+            : ready
+              ? state.bubbleText
+              : event.status === "core_crashed"
+                ? "连接已断开，正在回收旧回复……"
+                : event.status === "restarting"
+                  ? "正在重新连接……"
+                  : "正在准备会话……",
+          segments: preserveVisualState || ready ? state.segments : Object.freeze([]),
           error: null,
-          portrait: ready ? state.portrait : concernedPortrait,
+          portrait: preserveVisualState || ready ? state.portrait : concernedPortrait,
           canCancel: false,
           canSkip: false,
         });
+        if (ready) hasReachedReady = true;
         return result(true);
       }
 

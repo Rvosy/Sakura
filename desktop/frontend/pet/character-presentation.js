@@ -87,16 +87,21 @@ export async function loadCurrentCharacterPresentation({
   attempts = 160,
   delayMs = 100,
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
+  expectedGenerationId = "",
 } = {}) {
   if (typeof invoke !== "function") throw new Error("CHARACTER_PRESENTATION_INVOKE_REQUIRED");
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return validateCharacterPresentation(await invoke("current_character_presentation"));
+      const presentation = validateCharacterPresentation(await invoke("current_character_presentation"));
+      if (expectedGenerationId && presentation.generationId !== expectedGenerationId) {
+        throw new Error("CHARACTER_PRESENTATION_GENERATION_STALE");
+      }
+      return presentation;
     } catch (error) {
       lastError = error;
       const message = String(error?.message || error || "");
-      if (!/NOT_READY|UNAVAILABLE|LIFECYCLE/i.test(message)) throw error;
+      if (!/NOT_READY|UNAVAILABLE|LIFECYCLE|GENERATION_STALE/i.test(message)) throw error;
       if (attempt + 1 < attempts) await new Promise((resolve) => setTimer(resolve, delayMs));
     }
   }

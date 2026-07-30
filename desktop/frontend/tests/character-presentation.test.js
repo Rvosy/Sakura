@@ -87,3 +87,19 @@ test("not-ready publication retries but structural failures are immediate", asyn
     /INVALID/,
   );
 });
+
+test("generation rebind waits for the requested Core publication", async () => {
+  let attempts = 0;
+  const loaded = await loadCurrentCharacterPresentation({
+    invoke: async () => {
+      attempts += 1;
+      return sample({ generationId: attempts < 3 ? "gen-1" : "gen-2" });
+    },
+    expectedGenerationId: "gen-2",
+    attempts: 3,
+    delayMs: 0,
+    setTimer: (callback) => { callback(); return 1; },
+  });
+  assert.equal(attempts, 3);
+  assert.equal(loaded.generationId, "gen-2");
+});
