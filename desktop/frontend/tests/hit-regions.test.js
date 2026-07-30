@@ -27,6 +27,37 @@ test("transparent complement and half-open region boundaries are explicit", () =
   assert.equal(hitRegions.classifyHitPoint(model, [750, 984]), "transparent");
 });
 
+test("scaled portrait head remains in the frontend drag region", () => {
+  const model = hitRegions.computeHitRegions(computePetLayout(contract), {
+    portraitSourceSize: [600, 656],
+    portraitScalePercent: 150,
+  });
+  assert.deepEqual(model.drag[0], [0, 0, 900, 984]);
+  assert.equal(hitRegions.classifyHitPoint(model, [450, 64]), "drag");
+  assert.equal(
+    hitRegions.shouldStartNativeDrag({
+      hitKind: hitRegions.classifyHitPoint(model, [450, 64]),
+      button: 0,
+      isPrimary: true,
+    }),
+    true,
+  );
+});
+
+test("portrait hit region follows contain geometry before appearance scaling", () => {
+  const layout = computePetLayout(contract);
+  const tall = hitRegions.computeHitRegions(layout, {
+    portraitSourceSize: [400, 800],
+    portraitScalePercent: 100,
+  });
+  const wide = hitRegions.computeHitRegions(layout, {
+    portraitSourceSize: [1200, 300],
+    portraitScalePercent: 100,
+  });
+  assert.deepEqual(tall.drag[0], [286, 328, 328, 656]);
+  assert.deepEqual(wide.drag[0], [150, 834, 600, 150]);
+});
+
 test("interactive controls win over an overlapping portrait drag region", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   const product = hitRegions.computeHitRegions(computePetLayout(contract));

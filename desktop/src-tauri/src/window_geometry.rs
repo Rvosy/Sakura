@@ -254,6 +254,14 @@ struct ScaledLayout {
     anchor: [u32; 2],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScaledSurfaceBounds {
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+}
+
 #[derive(Clone, Copy)]
 struct AnchorEnvelope {
     left: u32,
@@ -306,8 +314,10 @@ pub fn apply_window_layout(
     revision: u64,
     monitor: &MonitorDescriptor,
     existing_anchor: Option<PhysicalPoint>,
+    visible_surface_bounds: [u32; 4],
 ) -> Result<LayoutApplication, String> {
     contract.validate()?;
+    validate_visible_surface_bounds(contract, visible_surface_bounds)?;
     if !monitor.scale_factor.is_finite() || monitor.scale_factor <= 0.0 {
         return Err("monitor scale factor must be positive and finite".to_string());
     }
@@ -315,8 +325,9 @@ pub fn apply_window_layout(
         return Err("monitor work area must be non-empty".to_string());
     }
 
-    let (content_scale, envelope) = fit_contract_to_work_area(contract, monitor)?;
-    let anchor = normalize_anchor(monitor.work_area, envelope, existing_anchor)?;
+    let (content_scale, envelope) =
+        fit_contract_to_work_area(contract, monitor, visible_surface_bounds)?;
+    let anchor = resolve_anchor(monitor.work_area, envelope, existing_anchor)?;
     let scaled = scale_viewport(&contract.viewport, monitor.scale_factor, content_scale);
     let x = i64::from(anchor.x) - i64::from(scaled.anchor[0]);
     let y = i64::from(anchor.y) - i64::from(scaled.anchor[1]);
@@ -326,7 +337,14 @@ pub fn apply_window_layout(
         width: scaled.size[0],
         height: scaled.size[1],
     };
-    ensure_within_work_area(placement, monitor.work_area)?;
+    if existing_anchor.is_none() {
+        let scaled_surface = scale_visible_surface_bounds(
+            visible_surface_bounds,
+            monitor.scale_factor,
+            content_scale,
+        );
+        ensure_visible_surface_within_work_area(placement, scaled_surface, monitor.work_area)?;
+    }
 
     Ok(LayoutApplication {
         applied: true,
@@ -354,7 +372,7 @@ pub fn anchor_from_window_position(
     if monitor.work_area.width == 0 || monitor.work_area.height == 0 {
         return Err("monitor work area must be non-empty".to_string());
     }
-    let (content_scale, _) = fit_contract_to_work_area(contract, monitor)?;
+    let content_scale = content_scale_for_work_area(contract, monitor)?;
     let scaled = scale_viewport(&contract.viewport, monitor.scale_factor, content_scale);
     let x = i64::from(window_position.x) + i64::from(scaled.anchor[0]);
     let y = i64::from(window_position.y) + i64::from(scaled.anchor[1]);
@@ -379,10 +397,16 @@ fn content_scale_for_work_area(
 fn fit_contract_to_work_area(
     contract: &LayoutContract,
     monitor: &MonitorDescriptor,
+    visible_surface_bounds: [u32; 4],
 ) -> Result<(f64, AnchorEnvelope), String> {
     let mut content_scale = content_scale_for_work_area(contract, monitor)?;
     for _ in 0..16 {
-        let envelope = anchor_envelope(contract, monitor.scale_factor, content_scale)?;
+        let envelope = anchor_envelope(
+            contract,
+            visible_surface_bounds,
+            monitor.scale_factor,
+            content_scale,
+        )?;
         if envelope.left.saturating_add(envelope.right) <= monitor.work_area.width
             && envelope.top.saturating_add(envelope.bottom) <= monitor.work_area.height
         {
@@ -434,21 +458,62 @@ fn round_nonnegative(value: f64) -> u32 {
     value.round().max(0.0).min(f64::from(u32::MAX)) as u32
 }
 
+fn validate_visible_surface_bounds(
+    contract: &LayoutContract,
+    bounds: [u32; 4],
+) -> Result<(), String> {
+    let [x, y, width, height] = bounds;
+    let [viewport_width, viewport_height] = contract.viewport.window_size;
+    if width == 0
+        || height == 0
+        || x.saturating_add(width) > viewport_width
+        || y.saturating_add(height) > viewport_height
+    {
+        return Err("visible pet surface escapes native viewport envelope".to_string());
+    }
+    Ok(())
+}
+
+fn scale_visible_surface_bounds(
+    [x, y, width, height]: [u32; 4],
+    scale_factor: f64,
+    content_scale: f64,
+) -> ScaledSurfaceBounds {
+    let scale = scale_factor * content_scale;
+    ScaledSurfaceBounds {
+        left: (f64::from(x) * scale).floor().max(0.0) as u32,
+        top: (f64::from(y) * scale).floor().max(0.0) as u32,
+        right: (f64::from(x.saturating_add(width)) * scale).ceil().max(0.0) as u32,
+        bottom: (f64::from(y.saturating_add(height)) * scale)
+            .ceil()
+            .max(0.0) as u32,
+    }
+}
+
 fn anchor_envelope(
     contract: &LayoutContract,
+    visible_surface_bounds: [u32; 4],
     scale_factor: f64,
     content_scale: f64,
 ) -> Result<AnchorEnvelope, String> {
     let scaled = scale_viewport(&contract.viewport, scale_factor, content_scale);
+    let surface = scale_visible_surface_bounds(visible_surface_bounds, scale_factor, content_scale);
+    if surface.left > scaled.anchor[0]
+        || surface.top > scaled.anchor[1]
+        || surface.right < scaled.anchor[0]
+        || surface.bottom < scaled.anchor[1]
+    {
+        return Err("visible pet surface does not contain portrait anchor".to_string());
+    }
     Ok(AnchorEnvelope {
-        left: scaled.anchor[0],
-        right: scaled.size[0].saturating_sub(scaled.anchor[0]),
-        top: scaled.anchor[1],
-        bottom: scaled.size[1].saturating_sub(scaled.anchor[1]),
+        left: scaled.anchor[0] - surface.left,
+        right: surface.right - scaled.anchor[0],
+        top: scaled.anchor[1] - surface.top,
+        bottom: surface.bottom - scaled.anchor[1],
     })
 }
 
-fn normalize_anchor(
+fn resolve_anchor(
     work_area: PhysicalRect,
     envelope: AnchorEnvelope,
     requested: Option<PhysicalPoint>,
@@ -460,30 +525,30 @@ fn normalize_anchor(
     if min_x > max_x || min_y > max_y {
         return Err("layout envelope cannot fit inside target work area".to_string());
     }
-    let requested = requested.unwrap_or(PhysicalPoint {
+    if let Some(requested) = requested {
+        return Ok(requested);
+    }
+    Ok(PhysicalPoint {
         x: i32::try_from(max_x).map_err(|_| "default anchor x overflow".to_string())?,
         y: i32::try_from(max_y).map_err(|_| "default anchor y overflow".to_string())?,
-    });
-    Ok(PhysicalPoint {
-        x: i32::try_from(i64::from(requested.x).clamp(min_x, max_x))
-            .map_err(|_| "normalized anchor x overflow".to_string())?,
-        y: i32::try_from(i64::from(requested.y).clamp(min_y, max_y))
-            .map_err(|_| "normalized anchor y overflow".to_string())?,
     })
 }
 
-fn ensure_within_work_area(
+fn ensure_visible_surface_within_work_area(
     placement: PhysicalPlacement,
+    surface: ScaledSurfaceBounds,
     work_area: PhysicalRect,
 ) -> Result<(), String> {
-    let right = i64::from(placement.x) + i64::from(placement.width);
-    let bottom = i64::from(placement.y) + i64::from(placement.height);
-    if i64::from(placement.x) < i64::from(work_area.x)
-        || i64::from(placement.y) < i64::from(work_area.y)
+    let left = i64::from(placement.x) + i64::from(surface.left);
+    let top = i64::from(placement.y) + i64::from(surface.top);
+    let right = i64::from(placement.x) + i64::from(surface.right);
+    let bottom = i64::from(placement.y) + i64::from(surface.bottom);
+    if left < i64::from(work_area.x)
+        || top < i64::from(work_area.y)
         || right > work_area.right()
         || bottom > work_area.bottom()
     {
-        return Err("computed pet window placement escaped target work area".to_string());
+        return Err("computed visible pet surface escaped target work area".to_string());
     }
     Ok(())
 }
@@ -505,9 +570,45 @@ mod tests {
         }
     }
 
-    fn assert_inside(application: &LayoutApplication) {
-        ensure_within_work_area(application.physical_placement, application.work_area)
-            .expect("placement must stay inside work area");
+    fn visible_bounds(scale_percent: u16) -> [u32; 4] {
+        crate::window_interaction::logical_visible_surface_bounds(
+            &contract(),
+            PresentationState::Product,
+            scale_percent,
+        )
+        .expect("product visible surface must be valid")
+    }
+
+    fn apply(
+        contract: &LayoutContract,
+        state: PresentationState,
+        revision: u64,
+        monitor: &MonitorDescriptor,
+        anchor: Option<PhysicalPoint>,
+        scale_percent: u16,
+    ) -> Result<LayoutApplication, String> {
+        apply_window_layout(
+            contract,
+            state,
+            revision,
+            monitor,
+            anchor,
+            visible_bounds(scale_percent),
+        )
+    }
+
+    fn assert_visible_inside(application: &LayoutApplication, scale_percent: u16) {
+        let surface = scale_visible_surface_bounds(
+            visible_bounds(scale_percent),
+            application.scale_factor,
+            application.content_scale,
+        );
+        ensure_visible_surface_within_work_area(
+            application.physical_placement,
+            surface,
+            application.work_area,
+        )
+        .expect("visible surface must stay inside work area");
     }
 
     #[test]
@@ -521,6 +622,147 @@ mod tests {
                 .window_size,
             [900, 996]
         );
+    }
+
+    #[test]
+    fn requested_anchor_may_move_the_entire_visible_surface_outside_the_work_area() {
+        let contract = contract();
+        for scale_factor in [1.0, 1.25, 1.5] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1800,
+                },
+                scale_factor,
+            );
+            let result = apply(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor,
+                Some(PhysicalPoint { x: 0, y: 0 }),
+                100,
+            )
+            .unwrap();
+            let surface = scale_visible_surface_bounds(
+                visible_bounds(100),
+                result.scale_factor,
+                result.content_scale,
+            );
+
+            assert_eq!(result.portrait_anchor, PhysicalPoint { x: 0, y: 0 });
+            assert!(result.physical_placement.x < 0);
+            assert!(result.physical_placement.y < 0);
+            assert_eq!(
+                result.physical_placement.width,
+                (900.0 * scale_factor) as u32
+            );
+            assert_eq!(
+                result.physical_placement.height,
+                (996.0 * scale_factor) as u32
+            );
+            assert!(ensure_visible_surface_within_work_area(
+                result.physical_placement,
+                surface,
+                result.work_area,
+            )
+            .is_err());
+
+            let initial = apply(
+                &contract,
+                PresentationState::Product,
+                2,
+                &monitor,
+                None,
+                100,
+            )
+            .unwrap();
+            assert_visible_inside(&initial, 100);
+        }
+    }
+
+    #[test]
+    fn scale_changes_preserve_an_explicit_offscreen_anchor() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            },
+            1.0,
+        );
+        let parked = apply(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            Some(PhysicalPoint { x: 320, y: 656 }),
+            100,
+        )
+        .unwrap();
+        let enlarged = apply(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(parked.portrait_anchor),
+            150,
+        )
+        .unwrap();
+        assert_eq!(enlarged.portrait_anchor, parked.portrait_anchor);
+        assert_eq!(enlarged.physical_placement, parked.physical_placement);
+        let enlarged_surface = scale_visible_surface_bounds(
+            visible_bounds(150),
+            enlarged.scale_factor,
+            enlarged.content_scale,
+        );
+        assert!(ensure_visible_surface_within_work_area(
+            enlarged.physical_placement,
+            enlarged_surface,
+            enlarged.work_area,
+        )
+        .is_err());
+
+        let reduced = apply(
+            &contract,
+            PresentationState::Product,
+            3,
+            &monitor,
+            Some(enlarged.portrait_anchor),
+            50,
+        )
+        .unwrap();
+        assert_eq!(reduced.portrait_anchor, enlarged.portrait_anchor);
+        assert_eq!(reduced.physical_placement, enlarged.physical_placement);
+    }
+
+    #[test]
+    fn invalid_visible_surface_bounds_fail_closed() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            },
+            1.0,
+        );
+        for bounds in [[0, 0, 0, 10], [899, 0, 2, 10], [0, 995, 10, 2]] {
+            assert!(apply_window_layout(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor,
+                None,
+                bounds,
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -540,15 +782,14 @@ mod tests {
             let mut placement = None;
             for (revision, state) in PresentationState::all().into_iter().enumerate() {
                 let result =
-                    apply_window_layout(&contract, state, revision as u64 + 1, &monitor, anchor)
-                        .unwrap();
+                    apply(&contract, state, revision as u64 + 1, &monitor, anchor, 100).unwrap();
                 if let Some(previous) = anchor {
                     assert_eq!(result.portrait_anchor, previous);
                 }
                 if let Some(previous) = placement {
                     assert_eq!(result.physical_placement, previous);
                 }
-                assert_inside(&result);
+                assert_visible_inside(&result, 100);
                 anchor = Some(result.portrait_anchor);
                 placement = Some(result.physical_placement);
             }
@@ -579,16 +820,17 @@ mod tests {
         ];
         let anchor = PhysicalPoint { x: -600, y: 1050 };
         assert_eq!(select_target_monitor(&monitors, anchor), Some(1));
-        let result = apply_window_layout(
+        let result = apply(
             &contract(),
             PresentationState::Product,
             1,
             &monitors[1],
             Some(anchor),
+            100,
         )
         .unwrap();
         assert_eq!(result.portrait_anchor, anchor);
-        assert_inside(&result);
+        assert_visible_inside(&result, 100);
     }
 
     #[test]
@@ -620,37 +862,39 @@ mod tests {
     }
 
     #[test]
-    fn requested_anchor_near_each_edge_is_corrected_once_for_the_full_envelope() {
+    fn requested_anchor_near_each_edge_is_preserved_without_work_area_clamping() {
         let contract = contract();
-        let monitor = monitor(
-            PhysicalRect {
-                x: -1280,
-                y: 40,
-                width: 1280,
-                height: 984,
-            },
-            1.0,
-        );
-        for requested in [
-            PhysicalPoint { x: -1280, y: 40 },
-            PhysicalPoint { x: 0, y: 40 },
-            PhysicalPoint { x: -1280, y: 1024 },
-            PhysicalPoint { x: 0, y: 1024 },
-        ] {
-            let first = apply_window_layout(
-                &contract,
-                PresentationState::Product,
-                1,
-                &monitor,
-                Some(requested),
-            )
-            .unwrap();
-            let anchor = first.portrait_anchor;
-            for state in PresentationState::all() {
-                let result =
-                    apply_window_layout(&contract, state, 2, &monitor, Some(anchor)).unwrap();
-                assert_eq!(result.portrait_anchor, anchor);
-                assert_inside(&result);
+        for scale_factor in [1.0, 1.25, 1.5] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: -1280,
+                    y: 40,
+                    width: 1280,
+                    height: 984,
+                },
+                scale_factor,
+            );
+            for requested in [
+                PhysicalPoint { x: -1280, y: 40 },
+                PhysicalPoint { x: 0, y: 40 },
+                PhysicalPoint { x: -1280, y: 1024 },
+                PhysicalPoint { x: 0, y: 1024 },
+            ] {
+                let first = apply(
+                    &contract,
+                    PresentationState::Product,
+                    1,
+                    &monitor,
+                    Some(requested),
+                    100,
+                )
+                .unwrap();
+                assert_eq!(first.portrait_anchor, requested);
+                let anchor = first.portrait_anchor;
+                for state in PresentationState::all() {
+                    let result = apply(&contract, state, 2, &monitor, Some(anchor), 100).unwrap();
+                    assert_eq!(result.portrait_anchor, anchor);
+                }
             }
         }
     }
@@ -669,14 +913,14 @@ mod tests {
         );
         let mut anchor = None;
         for state in PresentationState::all() {
-            let result = apply_window_layout(&contract, state, 1, &monitor, anchor).unwrap();
+            let result = apply(&contract, state, 1, &monitor, anchor, 100).unwrap();
             assert!(result.content_scale < 1.0);
             assert!(result.physical_placement.width <= monitor.work_area.width);
             assert!(result.physical_placement.height <= monitor.work_area.height);
             if let Some(previous) = anchor {
                 assert_eq!(result.portrait_anchor, previous);
             }
-            assert_inside(&result);
+            assert_visible_inside(&result, 100);
             anchor = Some(result.portrait_anchor);
         }
     }
@@ -726,6 +970,7 @@ mod tests {
                 1,
                 &monitor(work_area, scale_factor),
                 None,
+                visible_bounds(100),
             )
             .is_err());
         }
@@ -756,18 +1001,18 @@ mod tests {
             );
             let position = PhysicalPoint { x: -2300, y: -100 };
             let anchor = anchor_from_window_position(&contract, &monitor, position).unwrap();
-            let result = apply_window_layout(
+            let result = apply(
                 &contract,
                 PresentationState::Product,
                 1,
                 &monitor,
                 Some(anchor),
+                100,
             )
             .unwrap();
             assert_eq!(result.portrait_anchor, anchor);
             for state in PresentationState::all() {
-                let transitioned =
-                    apply_window_layout(&contract, state, 2, &monitor, Some(anchor)).unwrap();
+                let transitioned = apply(&contract, state, 2, &monitor, Some(anchor), 100).unwrap();
                 assert_eq!(transitioned.portrait_anchor, anchor);
                 assert_eq!(transitioned.physical_placement, result.physical_placement);
             }
@@ -775,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn dragged_anchor_is_corrected_for_edges_and_a_smaller_work_area() {
+    fn dragged_anchor_outside_a_smaller_work_area_is_preserved() {
         let contract = contract();
         let monitor = monitor(
             PhysicalRect {
@@ -786,24 +1031,29 @@ mod tests {
             },
             1.5,
         );
-        let requested = anchor_from_window_position(
-            &contract,
-            &monitor,
-            PhysicalPoint {
-                x: i32::MIN + 1,
-                y: i32::MAX - 1,
-            },
-        )
-        .unwrap();
-        let result = apply_window_layout(
+        let requested =
+            anchor_from_window_position(&contract, &monitor, PhysicalPoint { x: -1000, y: -800 })
+                .unwrap();
+        let result = apply(
             &contract,
             PresentationState::Product,
             1,
             &monitor,
             Some(requested),
+            100,
         )
         .unwrap();
-        assert_inside(&result);
-        assert_ne!(result.portrait_anchor, requested);
+        assert_eq!(result.portrait_anchor, requested);
+        let surface = scale_visible_surface_bounds(
+            visible_bounds(100),
+            result.scale_factor,
+            result.content_scale,
+        );
+        assert!(ensure_visible_surface_within_work_area(
+            result.physical_placement,
+            surface,
+            result.work_area,
+        )
+        .is_err());
     }
 }

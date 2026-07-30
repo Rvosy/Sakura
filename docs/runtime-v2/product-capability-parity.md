@@ -44,7 +44,7 @@ legacy 行为与数据
 | ID | 现有能力 | Runtime v2 目标 | 目标 WP | 平台敏感点 | 当前状态 |
 |---|---|---|---|---|---|
 | CAP-001 | 默认启动、单实例、显式 legacy Qt 回退 | Tauri 为默认根；Qt/Tauri 共用锁；安全切换 | WP-1P-02、WP-1P-03、WP-1P-06、WP-3-06 | 可执行/Runtime 定位、锁、退出 | implemented |
-| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定窗口包络内的真实立绘、常驻气泡与常驻输入框；功能状态不改变几何 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏 | implemented |
+| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定渲染包络内的真实立绘、常驻气泡与常驻输入框；首次放置按可见表面留在工作区，用户拖拽后的显式锚点不做屏幕边界夹取，后续状态与缩放保持该位置 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏 | implemented |
 | CAP-003 | 点击穿透、拖动、焦点、IME、显示隐藏 | 平台 backend 保持相同用户语义 | WP-1P-05、WP-3-03 | Win32、NSWindow、X11/Wayland | implemented |
 | CAP-004 | 真实聊天、思考、完成与错误 | WP-3-01 先验证无 Qt Adapter/readiness，再由最小 IPC/Gateway/Snapshot 承载聊天 | WP-3-01、WP-2-01、WP-2-02、WP-3-02、WP-3-04、WP-3V-01 | Provider/网络失败不阻塞 Shell | planned |
 | CAP-005 | 取消、跳过打字机、请求唯一终态 | 最小聊天 cancel 与 UI 表现动作分离；不以前置通用 Operation 为条件 | WP-2-02、WP-3-02、WP-3-03、WP-3-04、WP-3V-01 | 旧 generation、晚到事件 | planned |

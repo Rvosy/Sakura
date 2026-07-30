@@ -23,11 +23,55 @@ function optionalRect(rect, name, windowSize) {
   return rect === null ? null : copyRect(rect, name, windowSize);
 }
 
-export function computeHitRegions(layout) {
+function containedPortraitRect(target, sourceSize) {
+  if (sourceSize === null) return target;
+  if (
+    !Array.isArray(sourceSize)
+    || sourceSize.length !== 2
+    || sourceSize.some((value) => !Number.isFinite(value) || value <= 0)
+  ) {
+    throw new Error("invalid portraitSourceSize");
+  }
+  const [x, y, targetWidth, targetHeight] = target;
+  const [sourceWidth, sourceHeight] = sourceSize;
+  const contain = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const width = Math.min(targetWidth, Math.ceil(sourceWidth * contain));
+  const height = Math.min(targetHeight, Math.ceil(sourceHeight * contain));
+  return [x + Math.floor((targetWidth - width) / 2), y + targetHeight - height, width, height];
+}
+
+function transformedPortraitRect(target, scalePercent, windowSize) {
+  if (!Number.isSafeInteger(scalePercent) || scalePercent < 50 || scalePercent > 150) {
+    throw new Error("invalid portraitScalePercent");
+  }
+  const [x, y, baseWidth, baseHeight] = target;
+  const [windowWidth] = windowSize;
+  const centerX = x + baseWidth / 2;
+  const bottom = y + baseHeight;
+  const maxWidth = 2 * Math.min(centerX, windowWidth - centerX);
+  const effectiveScale = Math.min(scalePercent / 100, maxWidth / baseWidth, bottom / baseHeight);
+  const width = Math.ceil(baseWidth * effectiveScale);
+  const height = Math.ceil(baseHeight * effectiveScale);
+  return [Math.floor(centerX - width / 2), Math.floor(bottom - height), width, height];
+}
+
+export function computeHitRegions(
+  layout,
+  { portraitSourceSize = null, portraitScalePercent = 100 } = {},
+) {
   if (!Array.isArray(layout?.windowSize) || layout.windowSize.length !== 2) {
     throw new Error("invalid windowSize");
   }
-  const portrait = copyRect(layout.portraitRect, "portraitRect", layout.windowSize);
+  const portraitSlot = copyRect(layout.portraitRect, "portraitRect", layout.windowSize);
+  const portrait = copyRect(
+    transformedPortraitRect(
+      containedPortraitRect(portraitSlot, portraitSourceSize),
+      portraitScalePercent,
+      layout.windowSize,
+    ),
+    "transformedPortraitRect",
+    layout.windowSize,
+  );
   const bubble = optionalRect(layout.bubbleRect, "bubbleRect", layout.windowSize);
   const input = optionalRect(layout.inputRect, "inputRect", layout.windowSize);
   const controls = copyRect(layout.controlsRect, "controlsRect", layout.windowSize);

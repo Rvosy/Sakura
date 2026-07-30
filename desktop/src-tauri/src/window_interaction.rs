@@ -29,6 +29,22 @@ pub const fn native_drag_completion() -> NativeDragCompletion {
     }
 }
 
+#[cfg(any(windows, test))]
+fn dragged_window_origin(
+    initial_window: [i32; 2],
+    initial_cursor: [i32; 2],
+    current_cursor: [i32; 2],
+) -> Result<[i32; 2], String> {
+    let x =
+        i64::from(initial_window[0]) + i64::from(current_cursor[0]) - i64::from(initial_cursor[0]);
+    let y =
+        i64::from(initial_window[1]) + i64::from(current_cursor[1]) - i64::from(initial_cursor[1]);
+    Ok([
+        i32::try_from(x).map_err(|_| "native drag x coordinate overflow".to_string())?,
+        i32::try_from(y).map_err(|_| "native drag y coordinate overflow".to_string())?,
+    ])
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -257,7 +273,11 @@ pub fn logical_hit_regions_with_portrait_transform(
             portrait_scale_percent,
             contract.viewport.window_size,
         )?,
-        None => portrait_rect,
+        None => constrained_portrait_rect(
+            portrait_rect,
+            portrait_scale_percent,
+            contract.viewport.window_size,
+        )?,
     };
     let mut drag = vec![portrait_rect];
     if let Some(rect) = layout.bubble_rect {
@@ -274,6 +294,47 @@ pub fn logical_hit_regions_with_portrait_transform(
         drag,
         neutral: Vec::new(),
     })
+}
+
+pub fn logical_visible_surface_bounds(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_scale_percent: u16,
+) -> Result<[u32; 4], String> {
+    // Placement deliberately uses the complete portrait slot instead of the
+    // active PNG's contain/alpha bounds. Expression changes can therefore
+    // tighten click-through without moving a pet parked at a screen edge.
+    let regions =
+        logical_hit_regions_with_portrait_transform(contract, state, None, portrait_scale_percent)?;
+    let mut rectangles = regions
+        .interactive
+        .iter()
+        .chain(&regions.drag)
+        .chain(&regions.neutral);
+    let first = rectangles
+        .next()
+        .ok_or_else(|| "visible pet surface is empty".to_string())?;
+    let mut left = i64::from(first.x);
+    let mut top = i64::from(first.y);
+    let mut right = left + i64::from(first.width);
+    let mut bottom = top + i64::from(first.height);
+    for rect in rectangles {
+        left = left.min(i64::from(rect.x));
+        top = top.min(i64::from(rect.y));
+        right = right.max(i64::from(rect.x) + i64::from(rect.width));
+        bottom = bottom.max(i64::from(rect.y) + i64::from(rect.height));
+    }
+    if left < 0 || top < 0 || right <= left || bottom <= top {
+        return Err("visible pet surface bounds are invalid".to_string());
+    }
+    Ok([
+        u32::try_from(left).map_err(|_| "visible pet surface x overflow".to_string())?,
+        u32::try_from(top).map_err(|_| "visible pet surface y overflow".to_string())?,
+        u32::try_from(right - left)
+            .map_err(|_| "visible pet surface width overflow".to_string())?,
+        u32::try_from(bottom - top)
+            .map_err(|_| "visible pet surface height overflow".to_string())?,
+    ])
 }
 
 fn constrained_portrait_rect(
@@ -719,30 +780,57 @@ pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(
 
 #[cfg(windows)]
 pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragCompletion, String> {
-    use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
-    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use std::{thread, time::Duration};
+
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, ReleaseCapture, VK_LBUTTON,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+        GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
-    let mut cursor = POINT::default();
+    let mut initial_cursor = POINT::default();
+    let mut initial_window = RECT::default();
     unsafe {
-        GetCursorPos(&mut cursor)
+        GetCursorPos(&mut initial_cursor)
             .map_err(|error| format!("failed to read native drag cursor: {error}"))?;
+        GetWindowRect(hwnd, &mut initial_window)
+            .map_err(|error| format!("failed to read native drag window bounds: {error}"))?;
         ReleaseCapture().map_err(|error| format!("failed to release pointer capture: {error}"))?;
-        let x = u32::from(cursor.x as u16);
-        let y = u32::from(cursor.y as u16);
-        let packed = isize::try_from(x | (y << 16))
-            .map_err(|_| "native drag cursor coordinate overflow".to_string())?;
-        let _ = SendMessageW(
-            hwnd,
-            WM_NCLBUTTONDOWN,
-            Some(WPARAM(HTCAPTION as usize)),
-            Some(LPARAM(packed)),
-        );
+    }
+
+    // HTCAPTION enters Windows' system move loop, which applies top-edge snap
+    // and work-area policies even though our geometry layer accepts negative
+    // coordinates. Follow the physical cursor directly so every monitor edge
+    // has the same unrestricted behavior.
+    while unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) } < 0 {
+        let mut cursor = POINT::default();
+        unsafe {
+            GetCursorPos(&mut cursor)
+                .map_err(|error| format!("failed to read native drag cursor: {error}"))?;
+        }
+        let [x, y] = dragged_window_origin(
+            [initial_window.left, initial_window.top],
+            [initial_cursor.x, initial_cursor.y],
+            [cursor.x, cursor.y],
+        )?;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .map_err(|error| format!("failed to move native pet window: {error}"))?;
+        }
+        thread::sleep(Duration::from_millis(8));
     }
     Ok(native_drag_completion())
 }
@@ -784,6 +872,24 @@ mod tests {
             native_drag_completion(),
             NativeDragCompletion::DeferredWindowMoved
         );
+    }
+
+    #[test]
+    fn custom_drag_origin_preserves_negative_and_cross_monitor_coordinates() {
+        assert_eq!(
+            dragged_window_origin([1500, 120], [1800, 400], [1650, 50]).unwrap(),
+            [1350, -230]
+        );
+        assert_eq!(
+            dragged_window_origin([-2400, -200], [-2000, 100], [-800, 900]).unwrap(),
+            [-1200, 600]
+        );
+    }
+
+    #[test]
+    fn custom_drag_origin_rejects_coordinate_overflow() {
+        assert!(dragged_window_origin([i32::MAX, 0], [0, 0], [1, 0]).is_err());
+        assert!(dragged_window_origin([0, i32::MIN], [0, 1], [0, 0]).is_err());
     }
 
     #[test]
@@ -887,6 +993,43 @@ mod tests {
         }
         assert!(small_rect.height < base_rect.height);
         assert_eq!(large_rect.height, base_rect.height * 3 / 2);
+    }
+
+    #[test]
+    fn visible_surface_bounds_follow_current_scale_without_using_png_shape() {
+        let contract = contract();
+        assert_eq!(
+            logical_visible_surface_bounds(&contract, PresentationState::Product, 50).unwrap(),
+            [130, 656, 640, 328]
+        );
+        assert_eq!(
+            logical_visible_surface_bounds(&contract, PresentationState::Product, 100).unwrap(),
+            [130, 328, 640, 656]
+        );
+        assert_eq!(
+            logical_visible_surface_bounds(&contract, PresentationState::Product, 150).unwrap(),
+            [0, 0, 900, 984]
+        );
+
+        let tall = logical_hit_regions_with_portrait_transform(
+            &contract,
+            PresentationState::Product,
+            Some([400, 800]),
+            100,
+        )
+        .unwrap();
+        let wide = logical_hit_regions_with_portrait_transform(
+            &contract,
+            PresentationState::Product,
+            Some([1200, 300]),
+            100,
+        )
+        .unwrap();
+        assert_ne!(tall.drag[0], wide.drag[0]);
+        assert_eq!(
+            logical_visible_surface_bounds(&contract, PresentationState::Product, 100).unwrap(),
+            [130, 328, 640, 656]
+        );
     }
 
     #[test]

@@ -193,6 +193,29 @@ fn target_monitor(
     Ok(monitors[0].clone())
 }
 
+fn compute_pet_window_layout(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    existing_anchor: Option<window_geometry::PhysicalPoint>,
+    portrait_scale_percent: u16,
+) -> Result<LayoutApplication, String> {
+    let visible_surface_bounds = window_interaction::logical_visible_surface_bounds(
+        contract,
+        state,
+        portrait_scale_percent,
+    )?;
+    apply_window_layout(
+        contract,
+        state,
+        revision,
+        monitor,
+        existing_anchor,
+        visible_surface_bounds,
+    )
+}
+
 #[tauri::command]
 fn current_pet_layout_revision(
     window: WebviewWindow,
@@ -243,7 +266,14 @@ fn apply_pet_layout(
         session.portrait_anchor
     };
     let monitor = target_monitor(&window, requested_anchor)?;
-    let application = apply_window_layout(&contract, state, revision, &monitor, requested_anchor)?;
+    let application = compute_pet_window_layout(
+        &contract,
+        state,
+        revision,
+        &monitor,
+        requested_anchor,
+        session.portrait_scale_percent,
+    )?;
 
     if session.is_deferred_drag_pending() {
         session.finish_deferred_drag();
@@ -345,8 +375,14 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     let monitor = target_monitor(window, None)?;
     // Revision zero is a native bootstrap only. The frontend owns revision one
     // and the first committed WindowGeometrySession state after WebView startup.
-    let application =
-        apply_window_layout(&contract, PresentationState::Product, 0, &monitor, None)?;
+    let application = compute_pet_window_layout(
+        &contract,
+        PresentationState::Product,
+        0,
+        &monitor,
+        None,
+        100,
+    )?;
     apply_native_pet_surface(window, &contract, &application, None, 100, false)?;
     Ok(())
 }
@@ -385,12 +421,13 @@ fn commit_dragged_window_position(
     let monitor = target_monitor(&window, None)?;
     let requested_anchor =
         window_geometry::anchor_from_window_position(&contract, &monitor, position)?;
-    let application = apply_window_layout(
+    let application = compute_pet_window_layout(
         &contract,
         state,
         session.applied_revision,
         &monitor,
         Some(requested_anchor),
+        session.portrait_scale_percent,
     )?;
     NativeWindowInteractionBackend
         .apply_bounds(&window, &application.physical_placement)
@@ -1096,14 +1133,15 @@ fn activate_portrait_hit_test(
         .ok_or_else(|| "pet layout is not ready for portrait hit testing".to_string())?;
     let contract = layout_contract()?;
     let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-    let application = apply_window_layout(
+    let application = compute_pet_window_layout(
         &contract,
         state,
         geometry.applied_revision,
         &monitor,
         geometry.portrait_anchor,
+        portrait_scale_percent,
     )?;
-    let hit_regions = apply_native_interaction_region(
+    let hit_regions = apply_native_pet_surface(
         &window,
         &contract,
         &application,
@@ -1116,6 +1154,7 @@ fn activate_portrait_hit_test(
     geometry.portrait_hit_revision = revision;
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_percent = portrait_scale_percent;
+    geometry.portrait_anchor = Some(application.portrait_anchor);
     geometry.hit_regions = Some(hit_regions);
     Ok(())
 }

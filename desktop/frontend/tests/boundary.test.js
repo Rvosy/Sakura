@@ -168,6 +168,9 @@ test("portrait previews relax the stale native clip before scaling and rebuild i
   const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePortraitUpdate, /let cache_matches =/);
   assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
+  assert.match(nativePortraitUpdate, /compute_pet_window_layout\([\s\S]*?portrait_scale_percent/);
+  assert.match(nativePortraitUpdate, /apply_native_pet_surface\(/);
+  assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
   assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
 });
 
@@ -272,12 +275,15 @@ test("portrait click-through is tightened after the decoded contain size is know
   assert.match(nativeInteraction, /portrait_alpha_mask/);
 });
 
-test("Windows drag reasserts the borderless invariant without weakening native click-through", () => {
+test("Windows drag is borderless, click-through aware, and independent of the caption move loop", () => {
   assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some/);
   assert.match(nativeInteraction, /SetWindowSubclass/);
   assert.doesNotMatch(nativeInteraction, /GWLP_WNDPROC/);
   assert.match(nativeInteraction, /WM_NCCALCSIZE/);
   assert.match(nativeInteraction, /WM_NCPAINT/);
+  assert.match(nativeInteraction, /GetAsyncKeyState/);
+  assert.match(nativeInteraction, /SetWindowPos/);
+  assert.doesNotMatch(nativeInteraction, /SendMessageW|WM_NCLBUTTONDOWN/);
   const dragBackend = nativeWindowBackend.slice(
     nativeWindowBackend.indexOf("fn start_drag("),
     nativeWindowBackend.indexOf("fn set_visible("),

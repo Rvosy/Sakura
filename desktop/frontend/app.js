@@ -190,13 +190,18 @@ function cancelPortraitHitTimer() {
 function syncPortraitAppearance(key, presentation = characterPresentation) {
   const metadata = presentation.portraitMetadata[key]
     || presentation.portraitMetadata[presentation.defaultPortraitKey];
+  const portraitSourceSize = [metadata.width, metadata.height];
   const scale = constrainedPortraitScale({
     requestedPercent: activeAppearance.portraitScalePercent,
-    sourceSize: [metadata.width, metadata.height],
+    sourceSize: portraitSourceSize,
     portraitRect: productLayout.portraitRect,
     windowSize: productLayout.windowSize,
   });
   stage.style.setProperty("--portrait-render-scale", String(scale));
+  currentHitRegions = computeHitRegions(productLayout, {
+    portraitSourceSize,
+    portraitScalePercent: activeAppearance.portraitScalePercent,
+  });
 }
 
 function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
