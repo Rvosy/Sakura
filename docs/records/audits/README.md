@@ -13,3 +13,4 @@ updated: 2026-07-31
 - [WP-H-01 设计预检记录](WP-H-01-DESIGN-PREFLIGHT.md)
 - [WP-3S-01 项目负责人验收声明](WP-3S-01-OWNER-ACCEPTANCE.md)
 - [WP-H-01 实现与本地验证记录](WP-H-01-IMPLEMENTATION-VALIDATION.md)
+- [WP-H-01 项目负责人验收声明](WP-H-01-OWNER-ACCEPTANCE.md)
