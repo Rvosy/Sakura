@@ -12,7 +12,12 @@ updated: 2026-07-31
 
 ## 设计思路
 
-Sakura 采用直接的运行时结构：UI 负责收集用户输入、截图、确认面板和主动事件，`ChatWorker` / `ChatPipeline` 负责把它们整理成运行请求，`ContextOrchestrator` 按优先级、信任级别和 token 预算选择上下文，真正的对话决策与工具循环交给 `AgentRuntime`。
+Sakura 正在使用 Runtime v2：Tauri Shell 是桌面生命周期根，通过受监管的 bundled Python Core Host
+承载 Assistant 领域服务；`main.py` 只负责把开发命令交给已构建的 Tauri Shell。完整 PySide6 桌宠仍
+保留在 `legacy_qt_main.py`，仅作为显式兼容回退，不是默认入口。
+
+Python 领域层继续由 `ChatPipeline`、`ContextOrchestrator` 和 `AgentRuntime` 负责上下文与工具循环；
+Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程监管和用户交互由 Tauri Shell 负责。
 
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 
@@ -20,46 +25,37 @@ Sakura 采用直接的运行时结构：UI 负责收集用户输入、截图、�
 
 ## 启动流程
 
-运行 `python main.py` 后：
+运行 `python main.py` 或平台启动脚本后：
 
-1. 创建 `QApplication`，取得单实例锁
-2. 生成缺失的默认配置，执行版本化迁移并记录应用版本
-3. 检查数据目录写权限、配置文件、磁盘空间和记忆库锁
-4. `AppSettingsService` 加载 `data/config/*.yaml`
-5. `CharacterRegistry` 扫描角色包并加载人格卡、语气和立绘
-6. `bootstrap.py` 组装 `AppContext`、`ResourceManager`、工具、记忆、MCP、插件和 TTS
-7. 后台装配耗时服务，显示 `PetWindow`
+1. 定位并启动 `desktop/src-tauri` 已构建的 Runtime v2 Shell。
+2. Shell 获取跨入口共享应用锁并创建桌宠窗口。
+3. Supervisor 从固定 Runtime 布局启动 bundled Python Core Host。
+4. Core Host 加载配置、当前角色和无窗口 Assistant Adapter，并发布 readiness/Snapshot。
+5. Tauri 前端根据 Snapshot 展示角色、聊天和设置能力；关闭应用时统一停止 Core 与完整后代进程树。
+
+需要验证旧 UI 时，必须显式运行 `start-legacy-qt.bat` 或 `legacy_qt_main.py`，且不能与 Runtime v2
+并发写同一份用户数据。
 
 ```mermaid
 flowchart LR
-    A["main.py"] --> X["默认配置 / 迁移 / 自检"]
-    X --> B["data/config/*.yaml<br/>配置"]
-    X --> C["CharacterRegistry"]
-    C --> D["characters/sakura/character.json<br/>角色包"]
-    A --> E["OpenAICompatibleClient<br/>API 客户端"]
-    B --> E
-    X --> J["bootstrap.py"]
-    J --> K["AppContext"]
-    J --> R["ResourceManager"]
-    K --> L["PetWindow"]
-    L --> M["ChatWorker<br/>后台线程"]
-    M --> N["ChatPipeline<br/>运行管线"]
-    N --> O["ContextOrchestrator<br/>上下文预算与选择"]
-    O --> S["AgentRuntime<br/>原生 tool_calls 循环"]
-    S --> T["ToolRegistry"]
-    T --> U["内置工具 + MCP 工具 + 插件工具"]
-    S --> V["ChatReply<br/>分段 JSON 回复"]
-    V --> L
-    L --> W["字幕 / 立绘 / TTS / 接话"]
-    R --> M
-    R --> W
+    A["main.py / 平台启动脚本"] --> B["Tauri Shell"]
+    B --> C["Supervisor"]
+    C --> D["bundled Python Core Host"]
+    D --> E["Assistant Adapter"]
+    E --> F["ChatPipeline / AgentRuntime"]
+    D --> G["配置与角色数据"]
+    D --> H["Readiness / Snapshot / Chat IPC"]
+    H --> B
+    B --> I["桌宠 / 设置 / 角色工作室"]
 ```
 
 ## 项目结构
 
 ```text
 .
-├── main.py                             # 应用入口
+├── main.py                             # Runtime v2 开发兼容入口
+├── legacy_qt_main.py                   # 显式 PySide6 回退入口
+├── desktop/                            # Tauri Runtime v2 Shell 与前端
 ├── app/
 │   ├── agent/                          # Agent 决策层
 │   │   ├── actions.py                  # 动作/事件/待确认数据结构
@@ -136,7 +132,7 @@ flowchart LR
 ├── plugins/                            # 本地插件
 │   └── playwright_browser/             # Playwright 浏览器插件
 ├── characters/sakura/                  # 角色资源
-├── assets/backchannels/                # 角色接话清单与开发说明
+├── docs/devdocs/examples/backchannels/ # 角色接话示例清单
 ├── data/                               # 本地数据
 │   ├── config/                         # YAML 配置（api.yaml / system_config.yaml 等）
 │   ├── chat_history/                   # 聊天记录
@@ -154,7 +150,8 @@ flowchart LR
 │   ├── plans/                          # 当前实施计划
 │   ├── records/                        # 验收与历史事实
 │   └── archive/                        # 已完成或被替代资料
-├── tools/studio/                       # SakuraCharacterStudio
+├── tools/studio-tauri/                 # 当前 Tauri 角色工作室
+├── tools/requirements-dev.txt          # 开发与 CI 依赖入口
 ├── tools/cleanup.py                    # 安全清理工具（默认 dry-run）
 └── tools/mcp/                          # MCP Server 运行时
 ```

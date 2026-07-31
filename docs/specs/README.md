@@ -12,5 +12,6 @@ Spec 描述系统必须满足的行为、接口、数据和验收契约。Spec �
 Work Package 计划。
 
 - [Runtime v2 Specs](runtime-v2/README.md)
+- [仓库根目录与发布入口契约](repository-layout.md)
 
 架构原因请看 [`../adr/`](../adr/)，当前执行状态请看 [`../plans/`](../plans/)。

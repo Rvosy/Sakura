@@ -38,7 +38,6 @@ pytest_tmp_probe_delete/
 .mypy_cache/
 .ruff_cache/
 temp/
-tools/studio/workspace/
 
 *.log
 data/backchannel_eval.jsonl

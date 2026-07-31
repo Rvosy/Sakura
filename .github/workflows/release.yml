@@ -52,8 +52,7 @@ jobs:
         timeout-minutes: 8
         run: |
           python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
+          pip install -r tools/requirements-dev.txt -q
 
       - name: Run tests
         timeout-minutes: 6
@@ -279,9 +278,7 @@ jobs:
             'main.py',
             'requirements.txt',
             'start.bat',
-            'start_studio.bat',
             'update.bat',
-            'update-delete.json',
             'VERSION'
           ) | Where-Object { Test-Path -LiteralPath $_ }
           $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
@@ -290,7 +287,9 @@ jobs:
           }
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/requirements-dev.txt') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/tests') -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/package.json') -Force -ErrorAction SilentlyContinue
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
@@ -315,9 +314,7 @@ jobs:
             'main.py',
             'requirements.txt',
             'start.bat',
-            'start_studio.bat',
             'update.bat',
-            'update-delete.json',
             'VERSION'
           ) | Where-Object { Test-Path -LiteralPath $_ }
           $stage = New-Item -ItemType Directory -Path "update-stage" -Force
@@ -326,7 +323,10 @@ jobs:
           }
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/requirements-dev.txt') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/tests') -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/package.json') -Force -ErrorAction SilentlyContinue
+          Copy-Item -LiteralPath '.github/release/update-delete.json' -Destination (Join-Path $stage.FullName 'update-delete.json') -Force
           $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
           if (-not (Test-Path -LiteralPath $settingsExe)) {
@@ -372,7 +372,9 @@ jobs:
             app plugins runtime third_party tools \
             LICENSE main.py requirements.txt VERSION \
             scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
-            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' \
+              'tools/requirements-dev.txt' 'tools/studio-tauri/frontend/tests/*' \
+              'tools/studio-tauri/frontend/package.json'
 
       - name: Create update archive (macOS)
         if: matrix.platform != 'windows-x64'
@@ -384,8 +386,10 @@ jobs:
             app plugins third_party tools \
             LICENSE main.py requirements.txt VERSION \
             scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
-            update-delete.json \
-            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
+            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' \
+              'tools/requirements-dev.txt' 'tools/studio-tauri/frontend/tests/*' \
+              'tools/studio-tauri/frontend/package.json'
+          zip -qj "${{ matrix.update_artifact }}" .github/release/update-delete.json
 
       - name: Upload verified bundle artifacts
         uses: actions/upload-artifact@v4

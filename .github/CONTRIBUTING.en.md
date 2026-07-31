@@ -37,14 +37,14 @@ Windows:
 
 ```powershell
 .\install.bat
-.\runtime\python.exe -m pip install -r requirements-dev.txt
+.\runtime\python.exe -m pip install -r tools/requirements-dev.txt
 ```
 
 macOS or Linux:
 
 ```bash
 bash scripts/install.sh
-./runtime/bin/python3 -m pip install -r requirements-dev.txt
+./runtime/bin/python3 -m pip install -r tools/requirements-dev.txt
 ```
 
 Run the application on Windows with:

@@ -20,7 +20,6 @@ Sakura 基于 PySide6（Qt）开发，本身是跨平台的，因此可以在 ma
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install -r requirements-macos-intel.txt   # 仅当 venv 为 x86 / Rosetta 时需要，见 §1
 # 修复 python.org 版 Python 的 SSL 证书（见 §2）
 # 在 data/config/api.yaml 填入你的 LLM API Key
 python main.py
@@ -36,18 +35,11 @@ python main.py
 python3 -c "import platform; print(platform.machine())"
 ```
 
-- **`arm64`** —— 原生 Apple Silicon。新版 PyTorch 可用，**不需要**额外的 pin 文件。
+- **`arm64`** —— 原生 Apple Silicon。新版 PyTorch 可用，不会应用 Intel 兼容约束。
 - **`x86_64`** —— 你正运行在 **Rosetta** 下（即使是 Apple Silicon，只要终端/Python 是 x86
   就会这样）。在 x86 macOS 下，PyTorch 最高只到 **2.2.2**，与 NumPy 2 和新版
-  `transformers` 不兼容。请套用 pin：
-
-  ```bash
-  pip install -r requirements-macos-intel.txt
-  ```
-
-  该文件锁定 `numpy<2` 与 `transformers>=4.41,<4.45`。**每次执行
-  `pip install -r requirements.txt` 之后都要重新套用一次**，否则会被重新拉回不兼容
-  的版本，导致长期记忆功能（mem0 本地向量）失效。
+  `transformers` 不兼容。`requirements.txt` 会按 `platform_machine == "x86_64"` 自动应用
+  `numpy<2` 与 `transformers>=4.41,<4.45`，不再需要第二次安装平台专用清单。
 
   若不套用，典型症状：`Failed to initialize NumPy: _ARRAY_API not found`，或
   `transformers` 输出「Disabling PyTorch because PyTorch >= 2.4 is required」。
@@ -181,7 +173,6 @@ tts:
 # 一次性
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pip install -r requirements-macos-intel.txt        # 仅 x86/Rosetta 需要
 /Applications/Python\ 3.12/Install\ Certificates.command
 
 # 每次运行

@@ -233,6 +233,62 @@ def test_update_delete_manifest_rejects_protected_paths() -> None:
         update.apply_update_archive(archive, tmp_path)
 
 
+def test_release_delete_manifest_retires_legacy_studio_without_touching_user_data() -> None:
+    repo_root = Path(__file__).parents[2]
+    manifest_path = repo_root / ".github" / "release" / update.DELETE_MANIFEST_NAME
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert manifest["format"] == 1
+    assert "start_studio.bat" in manifest["delete_paths"]
+    assert "tools/studio/main.py" in manifest["delete_paths"]
+
+    tmp_path = _runtime_root("release_delete_manifest")
+    (tmp_path / "tools/studio").mkdir(parents=True)
+    (tmp_path / "start_studio.bat").write_text("legacy", encoding="utf-8")
+    (tmp_path / "tools/studio/main.py").write_text("legacy", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/user.txt").write_text("keep", encoding="utf-8")
+    archive = tmp_path / "update.zip"
+    _write_zip(
+        archive,
+        {
+            "VERSION": "1.1.0\n",
+            update.DELETE_MANIFEST_NAME: manifest_text,
+        },
+    )
+
+    update.apply_update_archive(archive, tmp_path)
+
+    assert not (tmp_path / "start_studio.bat").exists()
+    assert not (tmp_path / "tools/studio/main.py").exists()
+    assert (tmp_path / "data/user.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_release_workflow_injects_delete_manifest_only_into_update_archives() -> None:
+    repo_root = Path(__file__).parents[2]
+    workflow = (repo_root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    windows_bundle = workflow.split("- name: Create bundle archive (Windows)", 1)[1].split(
+        "- name: Create update archive (Windows)", 1
+    )[0]
+    macos_bundle = workflow.split("- name: Create bundle archive (macOS)", 1)[1].split(
+        "- name: Create update archive (macOS)", 1
+    )[0]
+    windows_update = workflow.split("- name: Create update archive (Windows)", 1)[1].split(
+        "- name: Create runtime archive (Windows)", 1
+    )[0]
+    macos_update = workflow.split("- name: Create update archive (macOS)", 1)[1].split(
+        "- name: Upload verified bundle artifacts", 1
+    )[0]
+
+    assert "update-delete.json" not in windows_bundle
+    assert "update-delete.json" not in macos_bundle
+    assert ".github/release/update-delete.json" in windows_update
+    assert "update-delete.json" in windows_update
+    assert "zip -qj" in macos_update
+    assert ".github/release/update-delete.json" in macos_update
+    assert "start_studio.bat" not in workflow
+
+
 def test_run_update_installs_dependencies_only_when_requirements_changed() -> None:
     tmp_path = _runtime_root("requirements_changed")
     (tmp_path / "VERSION").write_text("1.0.0\n", encoding="utf-8")

@@ -44,7 +44,7 @@ Sakura 使用 OpenAI 兼容接口连接大模型。每套供应商配置需要 3
 
 登录后进入**控制台**，在左侧选择**令牌管理**，点击**添加令牌**。
 
-![进入令牌管理](../../assets/gemai_01.webp)
+![进入令牌管理](assets/gemai_01.webp)
 
 创建令牌时：
 
@@ -53,11 +53,11 @@ Sakura 使用 OpenAI 兼容接口连接大模型。每套供应商配置需要 3
 - **过期时间**：选不过期，后续需要时再删除或重建
 - **额度设置**：保持默认即可
 
-![创建令牌](../../assets/gemai_02.webp)
+![创建令牌](assets/gemai_02.webp)
 
 创建完成后回到**令牌管理**页面，点击密钥右侧的复制按钮，复制刚创建的密钥。
 
-![复制密钥](../../assets/gemai_03.webp)
+![复制密钥](assets/gemai_03.webp)
 
 密钥通常以 `sk-` 开头。不要把完整密钥截图发到公开群、Issue 或社交平台。
 
@@ -65,7 +65,7 @@ Sakura 使用 OpenAI 兼容接口连接大模型。每套供应商配置需要 3
 
 进入**模型广场**，选择 Google 供应商，优先选择 Gemini Flash 系列。
 
-![选择 Gemini Flash 模型](../../assets/gemai_04.webp)
+![选择 Gemini Flash 模型](assets/gemai_04.webp)
 
 示例模型名：
 
@@ -79,7 +79,7 @@ Sakura 使用 OpenAI 兼容接口连接大模型。每套供应商配置需要 3
 
 打开 Sakura 的**设置**窗口，进入**模型**页面。
 
-![配置模型](../../assets/setup_02.webp)
+![配置模型](assets/setup_02.webp)
 
 按下面填写：
 

@@ -16,4 +16,7 @@ protobuf>=5.29.6,<7.0.0
 sentence-transformers>=5.0.0
 py7zz>=1.1.4
 py7zr
-pytest>=8.0.0
+
+# Intel macOS 的 PyTorch 2.2.2 兼容边界；其他平台不会安装这些约束。
+numpy<2; sys_platform == "darwin" and platform_machine == "x86_64"
+transformers>=4.41,<4.45; sys_platform == "darwin" and platform_machine == "x86_64"

@@ -59,8 +59,7 @@ jobs:
         timeout-minutes: 8
         run: |
           python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
+          pip install -r tools/requirements-dev.txt -q
 
       - name: Run unit tests
         timeout-minutes: 6
@@ -113,8 +112,7 @@ jobs:
         timeout-minutes: 8
         run: |
           python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
+          pip install -r tools/requirements-dev.txt -q
 
       - name: Run UI tests
         timeout-minutes: 6

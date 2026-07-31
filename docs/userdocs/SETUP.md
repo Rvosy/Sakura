@@ -57,7 +57,7 @@ updated: 2026-07-31
 
 下载后在软件设置中点击**导入 .char**，选择文件完成导入。
 
-![导入角色包](../../assets/setup_01.webp)
+![导入角色包](assets/setup_01.webp)
 
 ---
 
@@ -129,6 +129,6 @@ Windows 的 `0.9.9-dev` 及后续构建包含 `update.bat`。先退出 Sakura，
 
 ## 角色工作室（Windows / macOS）
 
-Release 完整包会同时携带 Tauri 设置页和角色工作室二进制。在 Sakura 设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
+Release 完整包会携带 Tauri 角色工作室二进制。在 Sakura 设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
 
-Windows 仍可使用 `start_studio.bat` 启动旧的独立工作室入口。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。
+从 0.9.9 起，应用内的 Tauri 工作室是唯一受支持入口，不再提供 `start_studio.bat` 和旧 PySide6 独立工作室。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。

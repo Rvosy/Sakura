@@ -10,6 +10,7 @@ updated: 2026-07-31
 
 - [技术架构与项目结构](TECHNICAL_README.md)
 - [插件 SDK](SAKURA_PLUGIN_SDK.md)
+- [角色接话 Manifest 开发指南](BACKCHANNEL_MANIFEST.md)
 - [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
 - [Harness 使用说明](../../harness/README.md)
 - [测试审计记录](../records/audits/TEST_SUITE_AUDIT.md)

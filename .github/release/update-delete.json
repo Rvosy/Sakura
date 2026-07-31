@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "delete_paths": [
+    "app/ui/settings_dialog.py",
+    "app/ui/settings/pages/sections.py",
+    "app/core/debug_log.py",
+    "app/agent/proactive_care.py",
+    "app/agent/tools/builtin/provider.py",
+    "start_studio.bat",
+    "tools/_write_test.py",
+    "tools/build-tauri.bat",
+    "tools/studio/__init__.py",
+    "tools/studio/app_studio.py",
+    "tools/studio/assets/icon.svg",
+    "tools/studio/character_doc.py",
+    "tools/studio/main.py",
+    "tools/studio/panels/__init__.py",
+    "tools/studio/panels/base.py",
+    "tools/studio/panels/basic_panel.py",
+    "tools/studio/panels/flow_panel.py",
+    "tools/studio/panels/portrait_panel.py",
+    "tools/studio/panels/theme_panel.py",
+    "tools/studio/panels/tone_panel.py",
+    "tools/studio/panels/voice_panel.py",
+    "tools/studio/styles.py",
+    "tools/studio/workspace.py"
+  ]
+}

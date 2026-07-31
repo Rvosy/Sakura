@@ -21,6 +21,9 @@
 
 - Windows 包新增 `update.bat`。它会检查更新清单和 SHA-256，覆盖程序文件时保留 `data/`、角色、运行环境与用户插件配置。
 - 发布包进一步缩小体积，工作流补上更新包、删除清单和校验文件的生成步骤。
+- 角色工作室统一为 Sakura 内打开的 Tauri 界面；升级时会移除 `start_studio.bat` 和旧 PySide6 工作室文件。
+- 整理源码仓库根目录：文档素材归入 `docs/`，开发依赖归入 `tools/`，升级删除清单改为仅在构建更新包时注入。
+- Intel macOS 的 NumPy/Transformers 兼容约束已并入 `requirements.txt`，无需再安装单独的约束文件。
 
 ### 稳定性修复
 

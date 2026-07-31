@@ -34,8 +34,8 @@ Sakura 最大的特点：**她会主动来找你**。
 
 <div align="center">
 
-![Sakura 预览](assets/sakura_01.webp)
-![N.A.V.I. 预览](assets/navi_01.webp)
+![Sakura 预览](docs/userdocs/assets/sakura_01.webp)
+![N.A.V.I. 预览](docs/userdocs/assets/navi_01.webp)
 
 </div>
 
