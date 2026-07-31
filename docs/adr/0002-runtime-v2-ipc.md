@@ -1,3 +1,11 @@
+---
+kind: adr
+status: accepted
+audience: maintainer
+source_of_truth: self
+updated: 2026-07-31
+---
+
 # ADR-0002：Runtime v2 IPC
 
 > 状态：Technically Validated for Phase 1C transport foundation（最小 Router/真实 Assistant 消费验证待完成）
@@ -384,7 +392,7 @@ event 验证 response/event 交错，因此该能力按兼容扩展登记为 pro
 2.0/2.1 peer 继续允许完成已经冻结的 hello/health/initialize/snapshot/shutdown lifecycle。2.2 event
 只包含公共 Envelope identity、generation credential、关联 request id、name 和 payload，不携带 request
 deadline/priority 或 response ok/error；本 WP 不增加 sequence 或通用 operationId。具体允许目录、故障矩阵、
-兼容门和回退见 `docs/runtime-v2/WP-2-01-minimal-concurrent-router.md`。本激活决策不改变 ADR 当前状态；
+兼容门和回退见 `docs/specs/runtime-v2/WP-2-01-minimal-concurrent-router.md`。本激活决策不改变 ADR 当前状态；
 只有总表定义的 WP-2-01/02 与 WP-3V-01 验证全部完成后才可更新为 Accepted。
 
 ## WP-2-01 stabilizing 验证记录（2026-07-26）
@@ -416,7 +424,7 @@ Rust Gateway 的首个固定 allowlist 仅为 `chat.send`/`chat.cancel`，并独
 request identity、受控 deadline 和内部调度类别的注入权。Snapshot 收窄为 Python 构造的五字段完整
 快照，Rust 只读校验和缓存；不实现通用 Operation、三级 priority、patch/component model、resource
 token、streaming 或真实 Assistant/UI 接线。允许目录、故障矩阵、验收环境和回退命令见
-`docs/runtime-v2/WP-2-02-minimal-chat-boundary.md`。本激活不改变 ADR 当前技术验证状态；仍须 WP-2-02
+`docs/specs/runtime-v2/WP-2-02-minimal-chat-boundary.md`。本激活不改变 ADR 当前技术验证状态；仍须 WP-2-02
 候选验收和后续 WP-3V-01 真实纵向验证后，才能按本 ADR 状态门禁更新。
 
 ## WP-2-02 stabilizing 验证记录（2026-07-26）

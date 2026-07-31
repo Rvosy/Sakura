@@ -1,0 +1,17 @@
+---
+kind: index
+status: current
+audience: developer
+source_of_truth: self
+updated: 2026-07-31
+---
+
+# 开发者文档
+
+- [技术架构与项目结构](TECHNICAL_README.md)
+- [插件 SDK](SAKURA_PLUGIN_SDK.md)
+- [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
+- [Harness 使用说明](../../harness/README.md)
+- [测试审计记录](../records/audits/TEST_SUITE_AUDIT.md)
+
+产品和运行时的强制契约请看 [`../specs/`](../specs/)，架构决策请看 [`../adr/`](../adr/)。

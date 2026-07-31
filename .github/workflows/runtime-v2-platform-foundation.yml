@@ -20,9 +20,9 @@ on:
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
-      - "docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
+      - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
-      - "docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md"
+      - "docs/plans/runtime-v2/work-packages.md"
   pull_request:
     branches: [main, dev]
     paths:
@@ -41,9 +41,9 @@ on:
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
-      - "docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
+      - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
-      - "docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md"
+      - "docs/plans/runtime-v2/work-packages.md"
 
 permissions:
   contents: read

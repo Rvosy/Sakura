@@ -109,4 +109,4 @@ python tools/probe_dist.py check-compat \
 
 ---
 
-相容性契约由 `tools/probe_dist.py` 的 `check-compat` 机检保证;probe 产物的完整性/溯源见 `docs/probe_dist.md`。
+相容性契约由 `tools/probe_dist.py` 的 `check-compat` 机检保证;probe 产物的完整性/溯源见 `tools/probe_dist.py`。

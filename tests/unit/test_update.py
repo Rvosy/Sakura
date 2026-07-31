@@ -123,7 +123,7 @@ def test_apply_update_archive_skips_user_paths() -> None:
             "app/new.py": "new",
             "assets/setup_01.webp": "replace",
             "data/config/api.yaml": "replace",
-            "docs/SETUP.md": "replace",
+            "docs/userdocs/SETUP.md": "replace",
             "runtime/python.exe": "replace",
             "characters/user.txt": "replace",
             "tts/model.bin": "replace",
@@ -134,8 +134,8 @@ def test_apply_update_archive_skips_user_paths() -> None:
     (tmp_path / "data/config/api.yaml").write_text("keep", encoding="utf-8")
     (tmp_path / "assets").mkdir()
     (tmp_path / "assets/setup_01.webp").write_text("keep", encoding="utf-8")
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs/SETUP.md").write_text("keep", encoding="utf-8")
+    (tmp_path / "docs/userdocs").mkdir(parents=True)
+    (tmp_path / "docs/userdocs/SETUP.md").write_text("keep", encoding="utf-8")
     (tmp_path / "runtime").mkdir()
     (tmp_path / "runtime/python.exe").write_text("keep", encoding="utf-8")
     (tmp_path / "characters").mkdir()
@@ -151,7 +151,7 @@ def test_apply_update_archive_skips_user_paths() -> None:
     assert (tmp_path / "app/new.py").read_text(encoding="utf-8") == "new"
     assert (tmp_path / "assets/setup_01.webp").read_text(encoding="utf-8") == "keep"
     assert (tmp_path / "data/config/api.yaml").read_text(encoding="utf-8") == "keep"
-    assert (tmp_path / "docs/SETUP.md").read_text(encoding="utf-8") == "keep"
+    assert (tmp_path / "docs/userdocs/SETUP.md").read_text(encoding="utf-8") == "keep"
     assert (tmp_path / "runtime/python.exe").read_text(encoding="utf-8") == "keep"
     assert (tmp_path / "characters/user.txt").read_text(encoding="utf-8") == "keep"
     assert (tmp_path / "tts/model.bin").read_text(encoding="utf-8") == "keep"

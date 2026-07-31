@@ -1,3 +1,11 @@
+---
+kind: adr
+status: accepted
+audience: maintainer
+source_of_truth: self
+updated: 2026-07-31
+---
+
 # ADR-0001：Runtime v2 进程监管
 
 > 状态：Accepted（Supervisor 语义与 Windows backend）；跨平台 backend 受 ADR-0004 / Phase 1P 约束

@@ -1,0 +1,12 @@
+---
+kind: index
+status: current
+audience: maintainer
+source_of_truth: self
+updated: 2026-07-31
+---
+
+# Archived Runtime v2 Plans
+
+这些是 Runtime v2 的历史实施方案。当前状态和执行边界以 [`../../../plans/runtime-v2/`](../../../plans/runtime-v2/)
+为准。

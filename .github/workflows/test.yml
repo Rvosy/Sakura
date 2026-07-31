@@ -11,6 +11,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs:
+    name: Documentation checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate documentation structure
+        run: python tools/check_docs.py
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest

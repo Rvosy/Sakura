@@ -5,12 +5,12 @@
 ### 一个能主动感知屏幕内容与系统事件的通用桌宠 Agent 框架
 
 [![Release](https://img.shields.io/github/v/release/Rvosy/sakura)](https://github.com/Rvosy/sakura/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/SETUP.md)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/userdocs/SETUP.md)
 [![Downloads](https://img.shields.io/github/downloads/Rvosy/sakura/total)](https://github.com/Rvosy/sakura/releases)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/github/license/Rvosy/sakura)](LICENSE)
 
-[English](docs/README.en.md) [安装教程](docs/SETUP.md) [API配置教程](docs/API_CONFIG.md)  [插件开发文档](docs/SAKURA_PLUGIN_SDK.md)  [技术文档](docs/TECHNICAL_README.md)
+[English](docs/README.en.md) [安装教程](docs/userdocs/SETUP.md) [API配置教程](docs/userdocs/API_CONFIG.md)  [插件开发文档](docs/devdocs/SAKURA_PLUGIN_SDK.md)  [技术文档](docs/devdocs/TECHNICAL_README.md)
 
 </div>
 
@@ -43,13 +43,13 @@ Sakura 最大的特点：**她会主动来找你**。
 
 推荐直接使用 **Release 里的最新版本**，不要只下载 GitHub 页面上的源码压缩包。
 
-> **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/SETUP.md)。
+> **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/userdocs/SETUP.md)。
 
 1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载 `sakura-v0.9.8-windows-x64.zip`
 2. 解压后双击 `install.bat` 安装依赖
 3. 双击 `start.bat` 启动
 
-遇到问题、使用 Mac/Linux、或想了解更多配置项，请看 **[完整安装指南](docs/SETUP.md)**。
+遇到问题、使用 Mac/Linux、或想了解更多配置项，请看 **[完整安装指南](docs/userdocs/SETUP.md)**。
 
 ## 功能特性
 
@@ -95,11 +95,12 @@ Sakura 最大的特点：**她会主动来找你**。
 
 | 文档 | 内容 |
 |---|---|
-| [安装与配置指南](docs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
-| [API 配置教程](docs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
-| [macOS 安装指南](docs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
-| [技术讲解 README](docs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
-| [插件 SDK 文档](docs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
+| [安装与配置指南](docs/userdocs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
+| [API 配置教程](docs/userdocs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
+| [macOS 安装指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
+| [技术讲解 README](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
+| [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
+| [文档总览](docs/README.md) | 按用户文档、开发文档、spec、ADR、plan、record 和 archive 分类的完整目录 |
 | [贡献指南](.github/CONTRIBUTING.md) | 开发环境、分支规范、测试和 PR 要求 |
 | [更新日志](CHANGELOG.md) | 各版本的用户可见变化与升级提醒 |
 

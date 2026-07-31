@@ -1,9 +1,17 @@
+---
+kind: adr
+status: accepted
+audience: maintainer
+source_of_truth: self
+updated: 2026-07-31
+---
+
 # ADR-0003：Runtime v2 用户数据兼容与 legacy Qt 回退
 
 > 状态：Technically Validated（Windows/POSIX shared lock 与三平台 lifecycle 数据零变化）；Qt → Tauri → Qt 兼容门禁待 WP-3-06/WP-3V-01
 > 日期：2026-07-15
 > 适用范围：Runtime v2 与 legacy Qt 入口共享的角色、配置、历史、Memory、工具数据、插件数据和用户资源
-> Phase 0 基线：`docs/runtime-v2/baselines/WP-0-02-data-lock-baseline.md`
+> Phase 0 基线：`docs/records/baselines/runtime-v2/WP-0-02-data-lock-baseline.md`
 
 ## 背景
 
@@ -127,7 +135,7 @@ scope: 当前登录用户/桌面会话
 
 identity 不按 executable、安装路径、版本、Qt/Tauri、PID、角色或 Core generation 区分。Windows 双方必须使用完全相同的 object name；macOS/Linux 双方必须使用完全相同的路径解析、打开模式和 advisory lock 语义。POSIX 普通文件存在或 PID 文本不能代表锁仍被持有，锁文件不得位于共享 `data/` 内。
 
-WP-1P-03 冻结的 POSIX 细则为：候选环境根必须是绝对路径；canonical `sakura` 目录必须由当前 effective UID 所有并收紧为 `0700`；锁以 read/write、create、`O_CLOEXEC | O_NOFOLLOW`、`0600` 打开；已打开 fd 必须是当前用户所有、单硬链接 regular file，再执行 `flock(LOCK_EX | LOCK_NB)`。只有 `flock` 的 `EACCES/EAGAIN/EWOULDBLOCK` 表示 `already_running`；路径、打开、owner/type/link 或权限失败全部 fatal。完整可执行契约见 `docs/runtime-v2/WP-1P-03-shared-instance-lock.md`。
+WP-1P-03 冻结的 POSIX 细则为：候选环境根必须是绝对路径；canonical `sakura` 目录必须由当前 effective UID 所有并收紧为 `0700`；锁以 read/write、create、`O_CLOEXEC | O_NOFOLLOW`、`0600` 打开；已打开 fd 必须是当前用户所有、单硬链接 regular file，再执行 `flock(LOCK_EX | LOCK_NB)`。只有 `flock` 的 `EACCES/EAGAIN/EWOULDBLOCK` 表示 `already_running`；路径、打开、owner/type/link 或权限失败全部 fatal。完整可执行契约见 `docs/specs/runtime-v2/WP-1P-03-shared-instance-lock.md`。
 
 ### 生命周期
 
@@ -258,8 +266,8 @@ legacy Qt 获取共用 mutex
 脱敏 fixture、当前可执行 oracle 和重复执行命令：
 
 - `tests/fixtures/runtime_v2/wp_0_02/`
-- `docs/runtime-v2/baselines/wp_0_02_contract.py`
-- `docs/runtime-v2/baselines/run_wp_0_02_baseline.ps1`
+- `docs/records/baselines/runtime-v2/wp_0_02_contract.py`
+- `docs/records/baselines/runtime-v2/run_wp_0_02_baseline.ps1`
 
 Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebView 和应用锁门禁。WP-3-06 完成双向兼容且 WP-3V-01 组合复验通过后，本 ADR 才可更新为 `Accepted`。
 

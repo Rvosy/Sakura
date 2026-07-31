@@ -8,6 +8,13 @@
         "core-host-protocol"
       ]
     },
+    "docs": {
+      "description": "验证文档目录、元数据、链接和真相源约束",
+      "cases": [
+        "docs-check",
+        "docs-structure-tests"
+      ]
+    },
     "unit": {
       "description": "运行完整 Python 单元测试集",
       "cases": [
@@ -55,6 +62,35 @@
     }
   },
   "cases": [
+    {
+      "id": "docs-check",
+      "description": "运行文档结构、元数据、链接和真相源检查",
+      "argv": [
+        "{python}",
+        "tools/check_docs.py"
+      ],
+      "timeout_seconds": 60,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "docs-structure-tests",
+      "description": "运行文档规范检查的单元测试",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_docs_structure.py",
+        "-q"
+      ],
+      "timeout_seconds": 60,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
     {
       "id": "harness-self-test",
       "description": "验证 Harness 清单、执行器和报告契约",

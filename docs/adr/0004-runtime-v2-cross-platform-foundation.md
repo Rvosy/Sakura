@@ -1,3 +1,11 @@
+---
+kind: adr
+status: accepted
+audience: maintainer
+source_of_truth: self
+updated: 2026-07-31
+---
+
 # ADR-0004：Runtime v2 跨平台基础与平台后端边界
 
 > 状态：Technically Validated for CI platform foundation

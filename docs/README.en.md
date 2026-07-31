@@ -1,78 +1,30 @@
-[中文](../README.md)
+---
+kind: index
+status: current
+audience: all
+source_of_truth: self
+updated: 2026-07-31
+---
 
-# Sakura Desktop Pet
+# Sakura Documentation
 
-A desktop companion Agent — chats, changes expressions, speaks, remembers what you allow, and helps with tasks after confirmation.
+Choose a documentation area by audience and purpose:
 
-> The current development version is `0.9.9-dev`. The latest stable Windows package is still `0.9.8`.
-
-![Sakura Preview](../assets/sakura_01.webp)
-
-## Quick Start
-
-> **On macOS?** See [MACOS_SETUP.md](MACOS_SETUP.md) before you begin.
-
-1. Download `sakura-v0.9.8-windows-x64.zip` from [Releases](https://github.com/Rvosy/sakura/releases).
-2. Extract it to a path containing only ASCII characters.
-3. Run `install.bat`, then `start.bat`.
-4. Enter your OpenAI-compatible API details in the first-run setup.
-
-For source installs, macOS/Linux instructions, TTS, and upgrades, see the [Setup Guide](SETUP.md).
-
-## Features
-
-- **Character-pack driven.** Personality card, portraits, voice references, and GPT-SoVITS weights are all bundled per character.
-- **Proactive.** Sakura observes context on a timer and speaks up on her own — you don't have to always start the conversation.
-- **Bilingual replies.** Model outputs Japanese dialogue + Chinese subtitle + mood tag; UI drives subtitles, expressions, and voice in sync.
-- **Fast local reactions.** Sakura can respond with a short in-character line while the full model reply is still being generated.
-- **Screen observation.** On-demand screenshots and autonomous visual summaries fed into the conversation context.
-- **Selected screenshots.** Capture a specific screen region from the input bar and attach it to the next message.
-- **Multiple model providers.** Save several API providers and choose separate models for chat, vision, and memory curation.
-- **Tool use.** Browser control, desktop actions, file read, web search, reminders, notes, and memory.
-- **Permission gate.** High-risk tool calls ask for user confirmation before executing.
-- **Long-term memory.** Layered memories, relevant recall, automatic curation, and manual editing.
-- **Plugins & MCP.** Local plugins, MCP servers, and a built-in web-search MCP server.
-- **Character Studio.** Create, edit, validate, and export `.char` packages from a graphical editor.
-- **Mobile web chat.** An optional plugin lets a phone share the desktop app's current character, history, and memory without exposing host tools.
-- **Windows updater.** `update.bat` verifies update archives and preserves user data while replacing program files.
-
-## Docs
-
-| Doc | Contents |
+| Area | Contents |
 |---|---|
-| [Setup Guide](SETUP.md) | Full install steps, character packs, TTS setup, updating |
-| [API Config Guide](API_CONFIG.md) | Base URL, API key, model selection, relay-provider setup |
-| [macOS Setup](MACOS_SETUP.md) | Apple Silicon/Rosetta, SSL cert fix, GPT-SoVITS on Mac |
-| [Technical README](TECHNICAL_README.md) | Runtime architecture, bootstrap, project layout, config reference |
-| [Plugin SDK](SAKURA_PLUGIN_SDK.md) | Plugin development |
-| [Contributing Guide](../.github/CONTRIBUTING.en.md) | Development setup, branches, tests, and pull requests |
+| [User docs](userdocs/README.md) | Installation, API configuration, and macOS setup |
+| [Developer docs](devdocs/README.md) | Architecture, plugin SDK, and testing references |
+| [Specs](specs/README.md) | Normative product and technical contracts |
+| [ADRs](adr/README.md) | Architecture decisions and trade-offs |
+| [Plans](plans/README.md) | Current Runtime v2 delivery plans and work packages |
+| [Records](records/README.md) | Baselines, acceptance evidence, audits, incidents, and releases |
+| [Archive](archive/README.md) | Superseded or historical material |
 
-## Acknowledgements and Open Source License Notice
+The complete user guides are currently maintained in Chinese. The English entry point links to the
+same canonical guides and engineering records.
 
-Sakura Desktop Pet is inspired by open source projects in desktop Agents, companion interactions, and plugin ecosystems. Special thanks to the [Shinsekai](https://github.com/RachelForster/Shinsekai) project and its plugin ecosystem for exploring desktop companions, character interaction, and plugin extensibility, which informed Sakura's compatibility design and feature set.
+Runtime v2 status is maintained only in
+[the Work Package plan](plans/runtime-v2/work-packages.md). Specs define required behavior, ADRs
+explain why a decision was made, and records preserve verification evidence.
 
-This project is open source under the MIT License. You may freely use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this project's code, provided that you retain this project's copyright notice and MIT License text.
-
-Copyright © 2026 Rvosy
-
-### Third-Party Code and Compatibility Notes
-
-The built-in plugin `plugins/playwright_browser` includes code and modifications based on the following MIT-licensed open source project:
-
-- Project: [`shinsekai-playwright-browser`](https://github.com/RachelForster/shinsekai-playwright-browser)
-- License: MIT License
-- Copyright: Copyright © 2026 Chihiro
-
-Sakura adapts and modifies this work to provide Playwright browser automation capabilities.
-
-Thanks to all open source project authors and contributors.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=Rvosy%2Fsakura&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&legend=top-left" />
- </picture>
-</a>
+[中文总览](README.md) · [Project README](../README.md)

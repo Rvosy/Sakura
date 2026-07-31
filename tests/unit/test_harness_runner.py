@@ -49,6 +49,7 @@ def test_default_manifest_is_valid_and_has_smoke_profile() -> None:
     assert manifest["profiles"]["smoke"]["cases"]
     assert {
         "unit",
+        "docs",
         "core-host",
         "legacy-qt-ui",
         "python-full",
