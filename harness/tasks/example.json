@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "WP-EXAMPLE-01",
+  "title": "任务契约示例（不可激活）",
+  "status_source": "docs/plans/runtime-v2/work-packages.md",
+  "documents": {
+    "specs": ["docs/specs/runtime-v2/WP-H-01-agent-development-harness.md"],
+    "adrs": ["docs/adr/0008-agent-development-harness.md"],
+    "plans": ["docs/plans/agent-development-harness-v1.md"]
+  },
+  "dependencies": [],
+  "base_ref": "1ef52723e08f5584e0e747fd48a1fa12cfb8fd05",
+  "allowed_paths": ["docs/**", "harness/**", "tests/unit/test_harness_*.py"],
+  "forbidden_paths": ["app/**", "desktop/**", "plugins/**"],
+  "protected_paths": ["data/**", "characters/**", "third_party/**"],
+  "dependency_policy": {"mode": "forbidden", "allowed_files": []},
+  "required_profiles": ["docs", "smoke"],
+  "acceptance": {
+    "automated": ["task contract and scope unit tests pass"],
+    "manual": ["maintainer reviews the task boundary and rollback"]
+  },
+  "rollback": ["revert the task implementation without modifying product data"]
+}

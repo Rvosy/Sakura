@@ -37,6 +37,29 @@ python -m pytest tests/unit
 - 完整 Python 单元测试运行 `runtime\python.exe -m harness run unit`。
 - 默认报告写入已忽略的 `temp/harness/`；新增检查时，测试断言仍放在 `tests/`，只在 `harness/suites.json` 中注册执行入口。
 
+### Agent Development Harness 启用门
+
+`WP-H-01` accepted 前，仓库只保证上述 `list`/`run` 命令可用；`current`、`preflight`、`check`、`verify`
+属于已冻结但尚未实现的设计，不得伪报已执行。`WP-H-01` accepted 后，下列规则自动成为强制开发流程：
+
+- 所有非微小开发任务必须绑定 Work Package ID 和 `harness/tasks/<WP-ID>.json`。
+- 修改产品代码前运行 `runtime\python.exe -m harness preflight <WP-ID>`。
+- 开发中运行 `runtime\python.exe -m harness check <WP-ID>`。
+- 声称完成前运行 `runtime\python.exe -m harness verify <WP-ID>`；非零退出时不得声称完成。
+- 不得修改任务契约、Spec、ADR、测试或 Harness 来弱化当前门禁；契约变化必须独立审查并重新预检。
+- 无法执行验证时明确报告未验证命令、环境限制和风险。
+- Agent 不得自动填写或伪造人工验收，不得擅自将 Work Package 标记为 `accepted`。
+
+标准命令：
+
+```powershell
+runtime\python.exe -m harness current
+runtime\python.exe -m harness preflight WP-3-04
+runtime\python.exe -m harness check WP-3-04
+runtime\python.exe -m harness run smoke
+runtime\python.exe -m harness verify WP-3-04
+```
+
 ## 文档治理与开发任务预检
 
 文档按职责组织在 `docs/` 下。修改或新增文档前，必须先阅读

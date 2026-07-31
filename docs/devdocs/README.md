@@ -13,6 +13,7 @@ updated: 2026-07-31
 - [角色接话 Manifest 开发指南](BACKCHANNEL_MANIFEST.md)
 - [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
 - [Harness 使用说明](../../harness/README.md)
+- [Agent Development Harness 开发说明](AGENT_DEVELOPMENT_HARNESS.md)
 - [测试审计记录](../records/audits/TEST_SUITE_AUDIT.md)
 
 产品和运行时的强制契约请看 [`../specs/`](../specs/)，架构决策请看 [`../adr/`](../adr/)。

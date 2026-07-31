@@ -51,6 +51,35 @@ Python profile 按用途分层：
 - `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台验证仍受支持的 legacy Qt 回退；
 - `python-full`：依次运行 unit、integration 和 legacy Qt UI，适合合并前完整回归。
 
+## Agent Development Harness v1（计划中）
+
+`WP-H-01` 当前受 Work Package 治理门阻断，尚未实现以下命令；在它 accepted 前，调用它们会是当前
+CLI 的正常“未知命令”错误，不能把本节当作可用性声明：
+
+- `run`：当前已可用，运行一个验证 profile。
+- `current`：计划从唯一真相源查询 active/stabilizing Work Package。
+- `preflight`：计划在修改前校验任务契约、状态、依赖、文档、profile 和 base ref。
+- `check`：计划检查 committed、staged、unstaged、untracked 变化及依赖/受保护路径。
+- `verify`：计划按前置门、scope、required profiles、自动验收、人工汇总顺序生成任务报告。
+
+Test 是单个行为断言；Test Harness 运行并汇总测试；Agent Development Harness 还约束任务、Git 范围和
+依赖。Task Contract 是 `harness/tasks/<WP-ID>.json` 的机器可读任务边界；Work Package 的当前状态仍只在
+`docs/plans/runtime-v2/work-packages.md`。自动验收由命令确定结果；人工验收由项目负责人执行，Harness
+只汇总状态，Agent 不得代填。
+
+计划中的完整示例：
+
+```powershell
+runtime\python.exe -m harness current
+runtime\python.exe -m harness preflight WP-3-04
+runtime\python.exe -m harness check WP-3-04
+runtime\python.exe -m harness run smoke
+runtime\python.exe -m harness verify WP-3-04
+```
+
+退出码设计为 `0` 自动门和必需人工门完成，`1` 验证失败，`2` 调用/契约/清单错误，`3` 自动门通过但
+必需人工验收 pending。任务报告与现有 profile 报告各自保持 schema v1，不能混写字段或破坏兼容。
+
 Harness 只注册可执行行为、协议或生命周期检查。仅依赖源码字符串、函数排列或历史实现 token 的检查不作为 profile 门禁；对应意图应由 Python 行为测试、Node 测试、Rust 测试或独立真实验收覆盖。
 
 ## 扩展

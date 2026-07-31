@@ -25,7 +25,9 @@ Work Package 是 Runtime v2 最小的、可独立验证和回退的实施单元�
 - 状态只使用 `planned`、`active`、`stabilizing`、`accepted`。
 - 同一时间最多一个 Work Package 处于 `active` 或 `stabilizing`。
 
-推荐编号格式：`WP-1A-01`、`WP-1B-02`。
+产品 Work Package 推荐编号格式：`WP-1A-01`、`WP-1B-02`。插入产品序列、直接约束后续产品开发的
+仓库基础设施包可以使用独立 `WP-H-01` 命名空间，但必须登记在同一状态总表并占用同一个
+`active/stabilizing` 槽位，不能借“非产品代码”建立第二条并行实施序列。
 
 Runtime v2 Phase 0–7 的 Work Package 顺序、状态和范围统一登记在：
 
@@ -36,6 +38,9 @@ Runtime v2 Phase 0–7 的 Work Package 顺序、状态和范围统一登记在�
 ## G-001：单 Work Package 开发限制
 
 同一时间只允许一个 Runtime v2 Work Package 处于功能开发或稳定化状态。
+
+插入 Runtime v2 顺序的 Harness、CI 或仓库治理 Work Package 同样受本规则约束。另一个 WP 仍为
+`active` 或 `stabilizing` 时，只能准备 ADR、Spec、Plan 和任务契约草案，不能激活或提交基础设施生产实现。
 
 前一个 Work Package 未满足退出条件、Bug Budget 和稳定化检查前，不得开始后续 Work Package 的生产代码。允许提前进行文档讨论、只读调研和不进入生产分支的技术记录，但不得提前提交未来阶段实现。
 
