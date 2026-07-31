@@ -98,3 +98,19 @@ verify --active
 
 因此当前只能结论为：实现与本地自动门通过，等待项目负责人审查独立锚点和人工验收。WP-H-01 继续为
 `stabilizing`，不得标记 `accepted`，也不得开始 WP-3-04。
+
+## 2026-07-31 远端 CI 复核
+
+稳定化修复推送后，GitHub Actions 对 PR #147 的真实 head
+`bc2bcfe6ce596c7ba6fd0fb58a0bdfef21eacae5` 完成了一次 PR 事件验证。按该 SHA 查询仅有下列两次
+workflow run，均为首次执行成功，没有同一 workflow 的分支 push 重复运行：
+
+- [`Test #455`](https://github.com/Rvosy/Sakura/actions/runs/30642923600)：`success`；Documentation checks、
+  Agent Development Harness v1、Unit tests (3.12)、UI tests (3.12) 四个 job 全部成功。Harness job 中
+  “Run Harness v1 self-test profile”和“Resolve and preflight the active Work Package”步骤均成功。
+- [`Runtime v2 platform foundation #116`](https://github.com/Rvosy/Sakura/actions/runs/30642924167)：
+  `success`；RuntimeLocator 的 `windows-x64`、`macos-arm64`、`linux-x64` 三个平台 job 全部成功。
+
+两次运行均由 `pull_request` 触发，PR head 与 workflow `head_sha` 都是上述 40 位候选 SHA，未使用临时
+merge commit。远端自动门据此通过；人工验收仍未记录，因此本证据不改变唯一状态源，WP-H-01 继续为
+`stabilizing`，不标记 `accepted`，也不启动 WP-3-04。
