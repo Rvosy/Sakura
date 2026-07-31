@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-H-01
+active_work_package: WP-3-04
 updated: 2026-07-31
 ---
 
@@ -99,8 +99,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | accepted |
 | WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | accepted |
-| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | stabilizing |
-| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | planned |
+| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | accepted |
+| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | active |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
@@ -154,7 +154,8 @@ Rust 207 passed/23 ignored 和 Runtime v2 桌面壳 Harness 6/6 cases、138 项�
 三平台验收及最终实机组合验收完成，并明确授权标记为 `accepted`；P0、P1 和退出条件缺陷为零。
 WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，并于 2026-07-31 由项目负责人明确验收通过；
 验收声明的精确记录见第 12 节和对应 record。WP-H-01 作为仓库基础设施步骤插入 WP-3S-01 与
-WP-3-04 之间，现已按冻结契约激活。WP-3-04 依赖 WP-H-01 accepted，不得提前启动。
+WP-3-04 之间，完成实现、本地自动门和远端 CI 后于 2026-07-31 由项目负责人明确验收通过；对应声明
+见 `docs/records/audits/WP-H-01-OWNER-ACCEPTANCE.md`。WP-3-04 的依赖现已满足，并按冻结任务契约激活。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2299,7 +2300,26 @@ profile timeout/失败、报告 replace 失败和窄控制台编码。前置失�
 与后续关系：WP-H-01 accepted 后，WP-3-04 才可激活，并必须使用任务契约执行 preflight/check/verify。
 本 WP 不提供绕过 WP-3S-01 人工/三平台验收的理由，也不替代任何产品 Work Package 的退出门。
 
+最终验收记录（2026-07-31）：项目负责人在当前开发会话中明确确认 WP-H-01 验收通过，并授权标记后
+开始 WP-3-04。精确声明与证据边界见
+`docs/records/audits/WP-H-01-OWNER-ACCEPTANCE.md`；总表据此标记 `accepted`。
+
 ### WP-3-04：真实聊天接入已冻结桌宠 UI
+
+激活记录（2026-07-31）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-H-01 已由项目负责人明确验收并标记 accepted
+base_ref：4d3e34fc10ad770847694c9203f8e562c182d9f2
+允许文件：冻结于 harness/tasks/WP-3-04.json；限真实聊天 WebView/Rust 桥、聊天表现 timing 设置、相关测试和治理文档
+明确禁止：app/** 业务语义、legacy Qt UI、插件/TTS/Tools/Memory/MCP/截图/主动互动/历史/Studio、依赖文件；data/**、characters/**、third_party/** 受保护
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
+验收环境：仓库 runtime Python、Node、locked Cargo；Windows 真实 Tauri/WebView2 与开发配置；同一候选 SHA 三平台公共门
+关联 ADR：ADR-0002、ADR-0003、ADR-0006、ADR-0007
+计划提交：先冻结前端/Rust 失败测试，再接真实 chat bridge，再迁移 presentation timing 设置，最后故障与验收证据
+回退：先取消并排水活动聊天，禁用真实桥与 chat.presentation_timing，切回 Fake Core 演示路径；不删除或改写 history/配置
+```
 
 主要结果：把 WP-3-02 的真实聊天 Core 链接入已经由 WP-3-03/3U-01/3U-02 冻结的产品 UI，形成
 第一条真实产品垂直链；本 WP 只替换聊天数据源，不重新设计桌宠 DOM、布局或视觉语言。

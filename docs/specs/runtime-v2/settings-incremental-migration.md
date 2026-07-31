@@ -10,11 +10,11 @@ updated: 2026-07-31
 # Runtime v2 设置功能增量迁移规范
 
 ```text
-规范状态：Normative / planned
+规范状态：Normative
 决策日期：2026-07-28
 执行状态唯一真相源：docs/plans/runtime-v2/work-packages.md 第 2 节
 已关闭硬门：WP-3U-02 已于 2026-07-29 accepted
-当前设置 WP：WP-3S-01 供应商与模型设置纵向链（stabilizing）
+当前设置 WP：WP-3-04 真实聊天表现 timing 设置切片
 ```
 
 ## 1. 架构依据
@@ -23,9 +23,9 @@ updated: 2026-07-31
 长期后果见 [`ADR-0007`](../../adr/0007-incremental-settings-feature-migration.md)。本文定义每个设置
 切片必须满足的行为、数据、安全和验收契约。
 
-这个调整不改变单一 Work Package 规则。WP-3U-02 已完成同一最终候选的三平台验收并于 2026-07-29
-标记为 `accepted`；WP-3S-01 已按治理规则补齐激活记录、数据写入允许集合和验收夹具，并在完成生产
-实现与本地自动门后进入 `stabilizing`。真实 Windows 与同一候选 SHA 三平台门关闭前不得进入 WP-3-04。
+这个调整不改变单一 Work Package 规则。WP-3U-02 与 WP-3S-01 已完成验收；插入其后的 WP-H-01 也已
+于 2026-07-31 由项目负责人明确验收。WP-3-04 现按冻结任务契约激活，只开放下文定义的真实聊天表现
+timing feature，不重新开放已经被固定桌宠 UI 否决的自动隐藏或自由布局字段。
 
 ## 2. 适用前提
 
@@ -93,9 +93,8 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 
 ## 5. 交付顺序
 
-设置的实际交付顺序由消费者依赖、数据风险和可回退性共同决定，不按表单字段多少排序。WP-3U-02 的
-同一候选三平台硬门已经关闭；当前正在稳定化下表第 2 项 WP-3S-01，待其 accepted 后再进入 WP-3-04
-和后续能力 WP。
+设置的实际交付顺序由消费者依赖、数据风险和可回退性共同决定，不按表单字段多少排序。WP-3U-02、
+WP-3S-01 与 WP-H-01 的前置门已经关闭；当前执行下表第 3 项 WP-3-04。
 
 | 顺序 | 设置切片 | 目标 WP | 相对难度 | 开放条件与边界 |
 |---:|---|---|---|---|
@@ -219,7 +218,26 @@ feature 已迁移：
 回退 Gateway、Core Adapter 和前端接线，但不删除、恢复或重写用户现有 `api.yaml`。已经以兼容 schema
 保存的数据继续由 legacy Qt 读取；若生产缺陷涉及写入安全，Runtime v2 对该域退回只读。
 
-## 7. 后续 WP 的强制设置责任
+## 7. WP-3-04：真实聊天表现 timing 设置切片
+
+WP-3-04 新开放单一 feature key：`chat.presentation_timing`。公开 DTO 只包含：
+
+- `subtitle_typing_interval_ms`：完整回复进入 WebView 后的逐字显示间隔；
+- `reply_segment_pause_ms`：相邻完整回复段之间的展示停顿。
+
+两项字段必须使用有界整数、一次原子保存到 Runtime v2 `ui.json`，保存成功后立即作用于后续回复；失败
+时旧持久值和当前运行值都保持不变。设置窗口重新打开必须回读已提交值，未提交预览和旧 window
+generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 timer，不成为持久化真相源。
+
+`appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
+`bubble_auto_hide_enabled`、`bubble_auto_hide_delay_seconds`、气泡高度、输入栏偏移和自由布局字段继续
+`unavailable`：它们会破坏 WP-3-03 冻结的常驻气泡、常驻输入和固定窗口包络。Enter 发送、Shift+Enter
+换行、IME composition 门禁与“立即显示”是固定产品交互，不新增可配置开关。
+
+回退时先把 `chat.presentation_timing` capability 恢复为 `unavailable`，停止新的预览 timer，回退
+Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。旧版本忽略新增字段即可。
+
+## 8. 后续 WP 的强制设置责任
 
 从本规范生效后，任何拥有用户可配置能力的 WP 在激活记录中必须增加“设置切片”字段，明确：
 

@@ -1,0 +1,146 @@
+---
+kind: spec
+status: normative
+audience: maintainer
+source_of_truth: self
+status_source: docs/plans/runtime-v2/work-packages.md
+updated: 2026-07-31
+---
+
+# WP-3-04：真实聊天接入已冻结桌宠 UI
+
+## 目标与依赖
+
+本 Work Package 把 WP-3-02 已验收的真实 `chat.send`/`chat.cancel` Core 链接入 WP-3-03、WP-3U-01 和
+WP-3U-02 已冻结的产品桌宠 UI，形成第一条用户可操作的真实产品聊天纵向链。当前执行状态只见
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md)。
+
+依赖为 WP-H-01 accepted；协议、真实 Core、固定 UI、同应用设置宿主、角色表现和 Provider/模型设置均
+已由前置 Work Package 提供。本 WP 只接消费者，不改 Python Assistant、Provider、history 或基础
+Envelope 语义。
+
+## 唯一产品数据流
+
+```text
+main WebView composer
+-> Tauri main-window-only chat command
+-> generation-scoped CoreHostGateway
+-> WP-3-02 RealChatBoundary / AssistantSession / Provider
+-> chat.started
+-> exactly one chat.completed | chat.failed | chat.cancelled
+-> Tauri validates identity and generation, then emits to main WebView
+-> frozen chat presentation reducer / typewriter / portrait controller
+```
+
+Fake Core 只保留为确定性前端测试和独立回退演示，不得继续作为正常产品数据源，也不得把 `/slow`、
+`/error`、`/long`、`/multi`、`/restart` 等演示命令发送给真实 Core。
+
+## Tauri chat bridge 契约
+
+- 只有 `main` WebView 可以发送或取消聊天；settings、未来窗口和未知 label 必须在 Core 写入前拒绝。
+- send payload 只能包含非空 `message`。Tauri 生成 operation/cancel identity，调用既有
+  `CoreHostGateway`，向 WebView 返回 opaque `operationId`、`cancelHandle` 和当前 generation identity；
+  不返回 credential、Provider、history、路径或 Core 私有字段。
+- 同一主窗口同时只允许一个 active interaction。等待终态时用户可以编辑下一条草稿，但不能排队或发送
+  第二个请求。send 在提交失败时保留输入；被 Gateway 接受后才清除本次输入。
+- lifecycle worker 不再静默丢弃已由 Gateway 验证的 chat event。它必须把 allowlisted 事件投影给当前
+  main WebView，同时保持 control、Snapshot 和 shutdown 不被 UI 订阅阻塞。
+- send response 与 `chat.started` 可以竞态到达；bridge 必须在 Core dispatch 前登记 UI identity，WebView
+  也必须按 operation/generation 安全接收，不得依赖“response 总先到”。
+- generation 变化、Core 关闭、窗口销毁或 app 退出会立即使旧 cancel handle 和旧事件失效。晚到旧
+  generation、未知 operation、重复 started 或第二终态不得改变 UI。
+- 取消调用既有 `chat.cancel` 并保持幂等 UI。取消已胜出的 completed/failed 不得伪造 cancelled；关闭与
+  restart 继续由既有有界 lifecycle 负责，不在 WebView 建第二个进程所有者。
+- Rust 只做窗口授权、identity、generation、事件投影和设置协调，不解析业务 reply 含义，也不保存
+  history。CoreHostGateway 的 exact payload 验证与唯一终态仲裁继续是信任边界。
+
+## 冻结 UI 映射
+
+- `chat.started` 映射为 thinking；主按钮切换为取消，输入框保持可编辑，气泡、输入框、窗口包络和立绘
+  锚点不变。
+- `chat.completed` 的完整 `segments` 交给现有 presentation reducer。WebView 只在完整回复到达后运行
+  typewriter；不引入 token streaming、delta 或进度协议。
+- segment 的 `text`/`translation`/`tone`/`portrait`/`suppressTts` 只按已冻结 DTO 消费；本 WP 允许
+  portrait/tone 驱动现有角色表现，不允许执行 action、Tool 或 TTS。
+- `chat.failed` 显示脱敏稳定错误并允许下一次发送；`retryable` 只影响提示，不在 UI 自动重试。
+- `chat.cancelled` 回到 settled/ready 表现，不伪造回复。Core cancel 与 typewriter “立即显示”严格分离：
+  后者只结束本地动画，绝不发送 `chat.cancel`。
+- 长文本只在气泡内部滚动。正常、thinking、typing、settled、error、cancelled 和 lifecycle 提示必须持续
+  使用 WP-3-03 的同一 DOM、样式、命中区域与固定原生窗口几何。
+- Enter 发送、Shift+Enter 换行、IME composition、焦点恢复、reduced motion 和拖动行为沿用已验收
+  语义；本 WP 不借真实聊天重新设计视觉或交互。
+
+## 设置切片
+
+本 WP 新开放 `chat.presentation_timing`，只含 `subtitle_typing_interval_ms` 和
+`reply_segment_pause_ms`。精确持久化、失败原子性、重新打开和回退契约见
+[`settings-incremental-migration.md`](settings-incremental-migration.md) 第 7 节。
+
+已迁移的 `appearance.character` 继续提供字体与主题。自动隐藏、气泡高度、输入栏偏移、自由布局、发送
+键行为和其他旧控件不得开放；未迁移 feature 继续失败安全禁用并显示稳定原因。
+
+## 数据、安全与隐私
+
+- 正常聊天唯一业务写入仍是 WP-3-02 的角色级 append-only history；本 WP 不改变 schema、窗口大小、
+  rotate/repair 或失败降级语义，也不清理、恢复、截断或改写既有 history。
+- `chat.presentation_timing` 只写 Runtime v2 `ui.json` 的批准字段。测试和故障注入必须使用隔离临时
+  app root；仓库真实 `data/**` 不得被测试、脚本或验收改写。
+- WebView 事件不得包含 credential、Authorization、Provider URL、模型私有响应、history、绝对路径、
+  prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable。
+- 不新增网络、文件、shell 或窗口权限，不放宽 CSP，不新增依赖或 dependency manifest/lock 变化。
+
+## 实施白名单与禁止范围
+
+精确机器可读范围见 `harness/tasks/WP-3-04.json`。允许修改仅限：
+
+- `desktop/frontend/app.js`、`desktop/frontend/chat/**`、`desktop/frontend/pet/**`：真实 chat client、
+  reducer/typewriter/portrait 接线及其窄回归；不改 DOM 与视觉语言。
+- `desktop/frontend/settings/**`：只开放 `chat.presentation_timing` 及保存/回读/失败恢复。
+- `desktop/src-tauri/src/` 中列名允许的 chat bridge、lifecycle、Gateway、product shell、`ui.json` 共享
+  repository 与 timing 设置模块；不扩大通用 IPC 或窗口系统。
+- 相关 frontend/Rust/真实桌面 acceptance、隔离 fixture、Runtime v2 platform workflow、规范、记录、
+  userdoc 和 changelog。
+
+明确禁止：
+
+- `app/**` Python Assistant/Core/Provider/history 业务改动、legacy Qt UI 与两个入口；若真实数据暴露前置
+  层缺陷，先停止并修订契约，不得借本 WP 顺手修改。
+- TTS、Tools、Action 确认、Memory、MCP、插件、截图/视觉输入、主动互动、提醒/任务、历史窗口、角色
+  切换、Studio、导入导出、通用 Operation/priority/resource token、streaming/progress/delta。
+- 修改固定 DOM、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
+- 新增依赖，修改 Cargo/npm/Python manifest 或 lockfile，删除/重命名既有测试，降低既有三平台门禁。
+
+## 自动验收矩阵
+
+| 门类 | 必测情形 | 核心断言 |
+|---|---|---|
+| send | 正常、空白、超限、重复发送、提交失败 | main-only；accepted 后清输入；失败保留；单 active interaction |
+| event race | started 早于/晚于 send response、未知 operation、重复 started/terminal | 不丢首事件；按 identity 接受；唯一 UI 终态 |
+| terminal | 多段/长文本、Provider 错误、取消、完成/取消竞态 | exact 投影；错误脱敏；cancel/skip 分离；内部滚动 |
+| generation | restart、旧 event、旧 cancel handle、窗口 reload/close | 旧代不改变 UI；新代重新绑定；资源与 timer 归零 |
+| portrait | 有效/缺失 portrait、tone、快速终态与 late load | 复用安全资源映射；失败 fallback；旧代资源丢弃 |
+| timing 设置 | get/save/reopen、边界值、坏 JSON、写失败、旧 generation | 两字段原子；即时作用于后续回复；失败保留旧值 |
+| 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | DOM/样式/几何不漂移；气泡与输入常驻；无 Fake 命令 |
+| 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
+
+任务级 required profiles 固定为 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`。实现还须
+执行 locked Rust 全量测试、fmt/diff check，以及同一候选 SHA 的 Windows/macOS/Linux 公共 workflow；
+自动测试使用确定性 local Provider 和隔离根，不访问公网或真实用户 Provider。
+
+## 人工验收与退出条件
+
+Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证中文 IME、Enter/
+Shift+Enter、长文本、打字机立即显示、portrait/tone、连续第二轮和窗口关闭。Sakura 与 N.A.V.I.、100%/
+150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
+控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。
+
+自动门通过只允许进入 `stabilizing` 并等待负责人验收；Agent 不代填人工结果，也不自行标记
+`accepted`。
+
+## 回退
+
+回退前停止新 send，取消并排水活动 operation，等待 Core/Router/event bridge/typewriter/portrait timer
+按既有 deadline 归零。随后禁用真实 chat bridge 与 `chat.presentation_timing`，让主 UI 切回 WP-3-03
+Fake Core 演示路径，保留 WP-3-02 headless chat、WP-3U-02 角色表现和 WP-3S-01 Provider 设置。
+
+回退不得删除、恢复、截断或重写 chat history、`api.yaml` 或 `ui.json`；旧版本只需忽略新增 timing 字段。
