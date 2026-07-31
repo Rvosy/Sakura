@@ -5,7 +5,15 @@
       "description": "快速验证 Harness 自身与 Runtime v2 核心协议边界",
       "cases": [
         "harness-self-test",
+        "harness-agent-development-tests",
         "core-host-protocol"
+      ]
+    },
+    "harness-v1": {
+      "description": "验证任务契约、Work Package、Git 范围和任务报告",
+      "cases": [
+        "harness-self-test",
+        "harness-agent-development-tests"
       ]
     },
     "docs": {
@@ -102,6 +110,22 @@
         "-q"
       ],
       "timeout_seconds": 60,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "harness-agent-development-tests",
+      "description": "验证任务契约、Work Package、Git 范围和任务报告",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_harness_agent_development.py",
+        "-q"
+      ],
+      "timeout_seconds": 120,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"

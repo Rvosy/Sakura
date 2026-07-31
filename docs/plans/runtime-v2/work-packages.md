@@ -2231,7 +2231,7 @@ Gateway/Core Adapter/canonical frontend 接线；不删除、恢复或重写用�
 状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-3S-01 已由项目负责人明确验收并标记 accepted
 契约准备提交：642c1b005550e41e3b16838e086c8c5ff2d13e44
-base_ref：642c1b005550e41e3b16838e086c8c5ff2d13e44
+base_ref：895adb987bab5c3a4adf26e43794addde12ae342（激活提交；契约内该字段在后续 bootstrap 记账提交固定）
 允许目录：harness/**；tests/unit/test_harness_*.py；AGENTS.md；本 WP 的 ADR/Spec/Plan/Devdoc/record；docs/plans/runtime-v2/** 的治理与本节；两个既有 workflow 的增量 Harness 接线
 明确禁止目录：app/**；desktop/** 产品实现；plugins/**；runtime/**；tools/mcp/**；data/**、characters/**、third_party/** 受保护
 验收环境：仓库 runtime Python；stdlib；临时 Git 仓库；本地 docs/smoke/unit；现有 Node/Rust 环境；GitHub Actions 既有平台环境

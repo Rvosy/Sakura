@@ -9,7 +9,7 @@
     "plans": ["docs/plans/agent-development-harness-v1.md"]
   },
   "dependencies": ["WP-3S-01"],
-  "base_ref": "642c1b005550e41e3b16838e086c8c5ff2d13e44",
+  "base_ref": "895adb987bab5c3a4adf26e43794addde12ae342",
   "allowed_paths": [
     ".github/workflows/test.yml",
     ".github/workflows/runtime-v2-platform-foundation.yml",

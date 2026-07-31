@@ -55,6 +55,7 @@ def test_default_manifest_is_valid_and_has_smoke_profile() -> None:
         "python-full",
         "runtime-v2-shell",
         "runtime-v2-windows-interaction",
+        "harness-v1",
     } <= set(manifest["profiles"])
 
 

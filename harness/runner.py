@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+from .report import write_json_atomic
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = Path(__file__).with_name("suites.json")
@@ -223,14 +225,9 @@ def run_profile(
         },
         "cases": results,
     }
-    destination = (report_path or _default_report_path(profile_name)).resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp")
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    destination = write_json_atomic(
+        report_path or _default_report_path(profile_name), report
     )
-    temporary.replace(destination)
     return (0 if report["status"] == "passed" else 1), report, destination
 
 
@@ -247,12 +244,76 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="run one profile")
     run_parser.add_argument("profile", nargs="?", default="smoke")
     run_parser.add_argument("--report", type=Path, help="write JSON report to this path")
+    current_parser = subparsers.add_parser(
+        "current", help="show the active or stabilizing Work Package"
+    )
+    current_parser.add_argument("--json", action="store_true", help="emit JSON")
+    preflight_parser = subparsers.add_parser(
+        "preflight", help="validate a task before implementation"
+    )
+    preflight_parser.add_argument("task")
+    check_parser = subparsers.add_parser(
+        "check", help="check task scope, dependencies and frozen boundaries"
+    )
+    check_parser.add_argument("task")
+    verify_parser = subparsers.add_parser(
+        "verify", help="run full task verification"
+    )
+    verify_parser.add_argument("task", nargs="?")
+    verify_parser.add_argument("--active", action="store_true")
+    verify_parser.add_argument("--report", type=Path, help="write JSON report to this path")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
+        if args.command == "current":
+            from .task_runner import current_task
+
+            result = current_task()
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            else:
+                print(
+                    f"{result['task']} {result['status']} "
+                    f"source={result['status_source']}"
+                )
+            return 0
+        if args.command in {"preflight", "check", "verify"}:
+            from .git_state import GitStateError
+            from .task_contract import ContractError
+            from .task_runner import (
+                _default_task_report,
+                check_task,
+                current_task,
+                preflight_task,
+                verify_task,
+            )
+            from .work_packages import WorkPackageError
+
+            if args.command == "preflight":
+                exit_code, result = preflight_task(
+                    args.task, manifest_path=args.manifest
+                )
+            elif args.command == "check":
+                exit_code, result = check_task(args.task, manifest_path=args.manifest)
+            else:
+                if bool(args.task) == bool(args.active):
+                    raise HarnessError(
+                        "verify requires exactly one task argument or --active"
+                    )
+                task_id = current_task()["task"] if args.active else args.task
+                destination = args.report or _default_task_report(REPO_ROOT, task_id)
+                exit_code, result = verify_task(
+                    task_id,
+                    manifest_path=args.manifest,
+                    report_path=destination,
+                )
+                print(f"[harness] report={destination.resolve()}")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return exit_code
+
         manifest = load_manifest(args.manifest)
         if args.command == "list":
             cases = {item["id"]: item for item in manifest["cases"]}
@@ -266,7 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.profile,
             report_path=args.report,
         )
-    except HarnessError as error:
+    except (HarnessError, ValueError) as error:
         print(f"harness error: {error}", file=sys.stderr)
         return 2
     print(
