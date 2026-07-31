@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3S-01
+active_work_package: WP-H-01
 updated: 2026-07-31
 ---
 
@@ -98,8 +98,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | accepted |
-| WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | stabilizing |
-| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | planned |
+| WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | accepted |
+| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | active |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
@@ -152,10 +152,9 @@ Sakura/N.A.V.I. Windows 真实候选、隔离目录保存失败恢复和后续�
 Rust 207 passed/23 ignored 和 Runtime v2 桌面壳 Harness 6/6 cases、138 项测试，且没有扩大忽略列表。
 项目负责人于 2026-07-29 确认该最终候选的 Windows 2025 x64、macOS 15 arm64、Ubuntu 24.04 x64
 三平台验收及最终实机组合验收完成，并明确授权标记为 `accepted`；P0、P1 和退出条件缺陷为零。
-WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，当前进入 `stabilizing`；本地自动门证据与尚待
-项目负责人执行的真实 Windows/同 SHA 三平台门见第 12 节。WP-H-01 作为仓库基础设施步骤计划插入
-WP-3S-01 与 WP-3-04 之间；当前不得激活或提交其生产实现。WP-3-04 改为依赖 WP-H-01 accepted，
-不得提前启动。
+WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，并于 2026-07-31 由项目负责人明确验收通过；
+验收声明的精确记录见第 12 节和对应 record。WP-H-01 作为仓库基础设施步骤插入 WP-3S-01 与
+WP-3-04 之间，现已按冻结契约激活。WP-3-04 依赖 WP-H-01 accepted，不得提前启动。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2179,6 +2178,17 @@ Windows 候选：100% DPI 下正常产品 N.A.V.I. 冷启动和真实资源链�
 状态结论：实现和本地自动门完成，因真实 Windows 与同 SHA 三平台证据尚未由项目负责人确认，保持 stabilizing，不标记 accepted
 ```
 
+验收记录（2026-07-31）：
+
+```text
+状态：accepted
+项目负责人结论：项目负责人在当前开发会话中明确声明“WP-3S-01 我亲自验收通过了”，并授权直接开始后续 Harness 改造
+证据边界：保留下方 stabilizing 记录中的既有自动证据；本记录不补写负责人未提供的设备组合、CI run ID 或候选 SHA 细节
+P0/P1：项目负责人验收结论未报告新的 P0/P1 或退出条件缺陷
+后续：允许按总表激活 WP-H-01；仍不得开始 WP-3-04，直至 WP-H-01 accepted
+回退：如后续出现可复现且可归因于 WP-3S-01 的缺陷，按治理规则重新打开该责任 WP；不得以 WP-H-01 掩盖产品缺陷
+```
+
 主要结果：把设置迁移从一次性 Phase 5 任务改为持续纵向交付，并首先开放真实聊天直接依赖的
 “供应商”和“模型”页面；完整设计、数据安全门、feature 级 capability、故障矩阵和回退见
 `docs/specs/runtime-v2/settings-incremental-migration.md` 第 6 节；架构选择见
@@ -2215,9 +2225,24 @@ Gateway/Core Adapter/canonical frontend 接线；不删除、恢复或重写用�
 
 ### WP-H-01：Agent Development Harness Foundation
 
-当前状态与插入理由：本 WP 是仓库基础设施，不是 Sakura 产品能力。它依赖 WP-3S-01 accepted，并在
-WP-3-04 前建立机器可执行开发门禁。WP-3S-01 仍 stabilizing 时，本节、ADR、Spec、Plan 与任务契约只能
-作为准备态草案；不得把 WP-H-01 标记 active，不得提交 Harness Python、测试或 CI 生产实现。
+激活记录（2026-07-31）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3S-01 已由项目负责人明确验收并标记 accepted
+契约准备提交：642c1b005550e41e3b16838e086c8c5ff2d13e44
+base_ref：642c1b005550e41e3b16838e086c8c5ff2d13e44
+允许目录：harness/**；tests/unit/test_harness_*.py；AGENTS.md；本 WP 的 ADR/Spec/Plan/Devdoc/record；docs/plans/runtime-v2/** 的治理与本节；两个既有 workflow 的增量 Harness 接线
+明确禁止目录：app/**；desktop/** 产品实现；plugins/**；runtime/**；tools/mcp/**；data/**、characters/**、third_party/** 受保护
+验收环境：仓库 runtime Python；stdlib；临时 Git 仓库；本地 docs/smoke/unit；现有 Node/Rust 环境；GitHub Actions 既有平台环境
+关联 ADR：ADR-0008
+计划提交：test(harness) 失败矩阵；feat(harness) 任务门禁；ci(harness) 当前分支自测；docs/record 收口
+bootstrap：新命令尚不存在，首次实现前使用现有 docs、smoke 和定向 pytest；命令转绿后关闭该例外
+回退：逆序回退 CI、CLI/checks、tests 与激活记录，保留原 list/run profiles，不触碰产品代码或真实数据
+```
+
+插入理由：本 WP 是仓库基础设施，不是 Sakura 产品能力。它依赖 WP-3S-01 accepted，并在 WP-3-04 前
+建立机器可执行开发门禁。生产实现必须遵守上述冻结范围。
 
 主要结果：把 ADR、Spec、Work Package、AGENTS.md、Tests 与现有 profile runner 串为确定性的任务流程：
 

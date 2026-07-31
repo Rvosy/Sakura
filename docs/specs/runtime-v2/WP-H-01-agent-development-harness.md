@@ -1,6 +1,6 @@
 ---
 kind: spec
-status: draft
+status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md

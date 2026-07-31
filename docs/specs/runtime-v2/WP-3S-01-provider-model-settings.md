@@ -72,6 +72,6 @@ Python unit 1182 passed/6 skipped、canonical frontend 99 passed、locked Rust 2
 前端现先读取原生已应用 revision，再从下一值继续；真实 Windows 窗口已执行整页 reload，重载前后均确认
 `N.A.V.I.` 名称、主题和立绘可见。
 
-项目负责人验收前仍需完成 Windows 真实 Tauri/WebView2 的中文 IME、Provider 增删改、凭据三态、模型检测、
-连通性、保存/restart/重新打开、探测中关窗与失败恢复，并将最终候选提交固定为同一 SHA 后取得
-Windows/macOS/Linux 公共门禁。上述证据确认前不得标记 `accepted`，也不得启动 WP-3-04。
+项目负责人于 2026-07-31 在当前开发会话中明确声明 WP-3S-01 已亲自验收通过，并授权开始后续 Harness
+改造。Work Package 总表据此登记 accepted；本规范不补写负责人未提供的设备组合、CI run ID 或候选
+SHA 细节。WP-3-04 仍不得启动，必须先完成插入的 WP-H-01。

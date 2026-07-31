@@ -51,10 +51,10 @@ Python profile 按用途分层：
 - `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台验证仍受支持的 legacy Qt 回退；
 - `python-full`：依次运行 unit、integration 和 legacy Qt UI，适合合并前完整回归。
 
-## Agent Development Harness v1（计划中）
+## Agent Development Harness v1（实现中）
 
-`WP-H-01` 当前受 Work Package 治理门阻断，尚未实现以下命令；在它 accepted 前，调用它们会是当前
-CLI 的正常“未知命令”错误，不能把本节当作可用性声明：
+`WP-H-01` 已激活但以下命令尚未转绿；在实现完成前，调用它们仍会是当前 CLI 的正常“未知命令”错误，
+不能把本节当作可用性声明：
 
 - `run`：当前已可用，运行一个验证 profile。
 - `current`：计划从唯一真相源查询 active/stabilizing Work Package。

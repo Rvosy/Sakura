@@ -10,8 +10,8 @@ updated: 2026-07-31
 
 ## 当前可用与计划能力
 
-当前 Harness 仍只提供 `list` 和 `run`，负责运行既有验证 profile 并生成 JSON 报告。`WP-H-01` 被治理
-门阻断在 planned 时，`current/preflight/check/verify` 只是已冻结设计，不能在文档中当作已实现命令。
+当前 Harness 仍只提供 `list` 和 `run`，负责运行既有验证 profile 并生成 JSON 报告。`WP-H-01` 已激活，
+正处于一次性 bootstrap 实现阶段；`current/preflight/check/verify` 在转绿前仍不能当作已实现命令。
 
 概念边界：Test 是单个行为断言；Test Harness 选择、执行并汇总测试；Agent Development Harness 在
 测试外增加 Work Package、任务契约、Git 范围和依赖门；Task Contract 是单个 WP 的机器可读边界；

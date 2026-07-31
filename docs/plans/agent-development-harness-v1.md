@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: planned
+status: active
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
@@ -11,13 +11,12 @@ updated: 2026-07-31
 
 ## 前置与治理门
 
-执行状态只见 [`Runtime v2 Work Package 总表`](runtime-v2/work-packages.md)。当前 `WP-3S-01` 仍在
-stabilizing，因此本文只冻结设计和任务契约草案；不得激活 `WP-H-01`、提交 Harness Python/测试/CI
-生产实现，或开始 `WP-3-04`。项目负责人确认 `WP-3S-01` accepted 后，才能把 `WP-H-01` 置为 active。
+执行状态只见 [`Runtime v2 Work Package 总表`](runtime-v2/work-packages.md)。项目负责人已于
+2026-07-31 明确验收 WP-3S-01，WP-H-01 现按冻结契约激活；仍不得开始 `WP-3-04`。
 
-激活使用两步：先以独立可审查提交加入 `WP-H-01.json` 的最终边界，再在后续激活提交把 `base_ref`
-固定为该准备提交的完整 SHA。一次性 bootstrap 只使用现有 docs/smoke/定向 pytest；新命令可用后立即
-关闭例外。
+激活使用两步：准备提交 `642c1b005550e41e3b16838e086c8c5ff2d13e44` 已加入 `WP-H-01.json` 的
+最终边界；本次激活把 `base_ref` 固定为该 SHA。一次性 bootstrap 只使用现有 docs/smoke/定向 pytest；
+新命令可用后立即关闭例外。
 
 ## 实施步骤
 
