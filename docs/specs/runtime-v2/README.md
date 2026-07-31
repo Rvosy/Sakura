@@ -27,6 +27,7 @@ updated: 2026-07-31
 - [Router](WP-2-01-minimal-concurrent-router.md) · [聊天边界](WP-2-02-minimal-chat-boundary.md)
 - [Assistant Adapter](WP-3-01-qt-free-assistant-adapter-readiness.md) · [真实聊天 Core](WP-3-02-headless-real-chat-core.md)
 - [桌宠聊天表现](WP-3-03-fake-core-pet-chat-presentation.md)
+- [真实聊天接入已冻结桌宠 UI](WP-3-04-real-chat-frozen-pet-ui.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [Agent Development Harness](WP-H-01-agent-development-harness.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
