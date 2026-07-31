@@ -45,7 +45,9 @@ python -m pytest tests/unit
 - 所有非微小开发任务必须绑定 Work Package ID 和 `harness/tasks/<WP-ID>.json`。
 - 修改产品代码前运行 `runtime\python.exe -m harness preflight <WP-ID>`。
 - 开发中运行 `runtime\python.exe -m harness check <WP-ID>`。
-- 声称完成前运行 `runtime\python.exe -m harness verify <WP-ID>`；非零退出时不得声称完成。
+- 声称完成前运行 `runtime\python.exe -m harness verify <WP-ID>`；退出码 `1` 或 `2` 时不得声称实现完成。
+- 退出码 `3` 表示自动门已通过、等待项目负责人验收；此时只能声称“自动门通过，等待验收”，不得声称
+  Work Package 已 `accepted`，也不得由 Agent 填写人工验收结果。
 - 不得修改任务契约、Spec、ADR、测试或 Harness 来弱化当前门禁；契约变化必须独立审查并重新预检。
 - 无法执行验证时明确报告未验证命令、环境限制和风险。
 - Agent 不得自动填写或伪造人工验收，不得擅自将 Work Package 标记为 `accepted`。

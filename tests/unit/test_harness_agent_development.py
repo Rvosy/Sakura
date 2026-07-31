@@ -155,6 +155,31 @@ def test_repository_task_schema_is_strict_v1() -> None:
     assert schema["properties"]["schema_version"] == {"const": 1}
     assert schema["additionalProperties"] is False
     assert schema["properties"]["documents"]["additionalProperties"] is False
+    document_schema = schema["properties"]["documents"]
+    assert document_schema["properties"]["specs"] == {"$ref": "#/$defs/uniqueStrings"}
+    assert len(document_schema["anyOf"]) == 3
+
+
+def test_contract_allows_empty_document_categories_but_not_all_empty(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/tasks/WP-T-01.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["documents"]["adrs"] = []
+    value["documents"]["plans"] = []
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    contract = _load(repo)
+
+    assert contract.documents["specs"] == ("docs/specs/task.md",)
+    assert contract.documents["adrs"] == ()
+    assert contract.documents["plans"] == ()
+
+    value["documents"]["specs"] = []
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ContractError, match="CONTRACT_DOCUMENTS_EMPTY"):
+        _load(repo)
 
 
 @pytest.mark.parametrize(
@@ -323,6 +348,24 @@ def test_scope_detects_contract_boundary_changes_but_allows_base_ref_only(
     result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
     assert result.contract_files == ("harness/tasks/WP-T-01.json",)
     assert result.status == "failed"
+
+
+def test_scope_ignores_checkout_line_endings_for_frozen_documents(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    contract = _load(repo)
+    for references in contract.documents.values():
+        for reference in references:
+            path = repo / reference
+            lf_content = path.read_bytes().replace(b"\r\n", b"\n")
+            path.write_bytes(lf_content.replace(b"\n", b"\r\n"))
+
+    result = evaluate_scope(
+        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
+    )
+
+    assert result.contract_files == ()
 
 
 def test_preflight_rejects_unaccepted_dependency(tmp_path: Path) -> None:

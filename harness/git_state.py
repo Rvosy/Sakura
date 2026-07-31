@@ -259,6 +259,13 @@ def _normalized_contract(data: bytes) -> bytes | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _normalized_frozen_document(data: bytes | None) -> bytes | None:
+    """Ignore checkout-only CRLF conversion when comparing frozen Markdown."""
+    if data is None:
+        return None
+    return data.replace(b"\r\n", b"\n")
+
+
 def evaluate_scope(
     state: GitState,
     contract: TaskContract,
@@ -307,7 +314,9 @@ def evaluate_scope(
                 current = (repo_root / reference).read_bytes()
             except OSError:
                 current = None
-            if frozen is None or current != frozen:
+            if _normalized_frozen_document(current) != _normalized_frozen_document(
+                frozen
+            ):
                 frozen_changes.append(reference)
 
     failed = bool(

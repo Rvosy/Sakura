@@ -47,3 +47,8 @@ Bootstrap 例外只属于 WP-H-01 的首次 RED/GREEN，现已关闭。后续所
 `preflight` 会聚合状态、依赖、base ancestor、范围、受保护路径、依赖文件、测试删除和冻结契约的所有
 可独立判断结果。`check` 输出 changed/untracked/out-of-scope/forbidden/protected/dependency/deleted-test/
 contract buckets。`verify` 前置失败时写失败报告但跳过 profile；自动门全过而人工项存在时退出 3。
+退出码 3 是“自动门通过，等待负责人验收”，不是验证失败；Agent 可以报告实现与自动验证已经完成，但
+不得把 Work Package 声称为 `accepted` 或代填人工验收结果。只有退出码 1 或 2 会阻止声称实现完成。
+
+`documents.specs`、`documents.adrs` 和 `documents.plans` 三类字段都必须存在，但每类可以为空；三类合计
+至少引用一份与任务相关的权威文档。普通修复不应为了满足契约机械创建 Spec、ADR、Plan 三件套。

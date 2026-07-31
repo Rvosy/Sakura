@@ -19,6 +19,7 @@
 
 ```powershell
 runtime\python.exe -m harness list
+runtime\python.exe -m harness run harness-v1
 runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness run docs
 runtime\python.exe -m harness run unit
@@ -76,8 +77,9 @@ runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness verify WP-3-04
 ```
 
-退出码设计为 `0` 自动门和必需人工门完成，`1` 验证失败，`2` 调用/契约/清单错误，`3` 自动门通过但
-必需人工验收 pending。任务报告与现有 profile 报告各自保持 schema v1，不能混写字段或破坏兼容。
+退出码设计为 `0` 自动门通过且没有人工待办，`1` 验证失败，`2` 调用/契约/清单错误，`3` 自动门通过但
+必需人工验收 pending。退出码 3 表示已经准备好交给负责人验收，不表示 Work Package 已 `accepted`；
+Agent 不得代填人工结果。任务报告与现有 profile 报告各自保持 schema v1，不能混写字段或破坏兼容。
 
 `verify --active` 使用当前 Work Package；`verify <ID> --report <path>` 显式指定任务和报告位置。前置门
 失败时不会运行 required profiles。任务报告使用 UTF-8、UTC 时间和同目录临时文件原子替换；不会枚举
@@ -85,6 +87,8 @@ runtime\python.exe -m harness verify WP-3-04
 
 契约根对象和嵌套对象拒绝未知字段。路径必须是仓库相对 POSIX 模式；相同或明确父子冲突的
 allowed/forbidden/protected 规则失败。依赖文件默认禁止，只有 `allowlisted` 契约中的显式文件可变化。
+`documents` 的 specs/adrs/plans 三类字段必须存在、各类可以为空，但合计至少引用一份权威文档，避免
+普通修复被迫机械创建三类文档。
 契约文件除 `base_ref` 激活记账字段外，以及引用的 Spec/ADR/Plan，均与 base ref 内容比较；实施中变化
 会触发 `contract_files` 失败。
 

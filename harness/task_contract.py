@@ -184,10 +184,15 @@ def load_task_contract(
     )
     documents = {
         name: _strings(
-            document_object.get(name), f"documents.{name}", errors, non_empty=True
+            document_object.get(name), f"documents.{name}", errors, non_empty=False
         )
         for name in sorted(DOCUMENT_FIELDS)
     }
+    if not any(documents.values()):
+        errors.append(
+            "CONTRACT_DOCUMENTS_EMPTY: documents must reference at least one "
+            "spec, ADR, or plan"
+        )
     dependencies = _strings(
         root.get("dependencies"), "dependencies", errors, non_empty=False
     )
