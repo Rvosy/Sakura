@@ -42,7 +42,7 @@
       "existing runner compatibility tests pass",
       "task contract, Work Package, Git scope and report tests pass",
       "docs and smoke profiles pass",
-      "CI runs Harness self-tests on refactor/tauri-runtime-v2"
+      "CI resolves preflight and check with --active and contains no Work Package ID"
     ],
     "manual": [
       "maintainer reviews the frozen contract and bootstrap exception closure"
