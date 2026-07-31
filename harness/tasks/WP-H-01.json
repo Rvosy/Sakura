@@ -19,6 +19,7 @@
     "docs/plans/agent-development-harness-v1.md",
     "docs/plans/runtime-v2/**",
     "docs/records/audits/**",
+    "docs/specs/runtime-v2/WP-3S-01-provider-model-settings.md",
     "docs/specs/runtime-v2/WP-H-01-agent-development-harness.md",
     "harness/**",
     "tests/unit/test_docs_structure.py",
