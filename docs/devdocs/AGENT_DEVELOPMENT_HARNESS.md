@@ -8,17 +8,17 @@ updated: 2026-07-31
 
 # Agent Development Harness 开发说明
 
-## 当前可用与计划能力
+## 当前能力
 
-当前 Harness 仍只提供 `list` 和 `run`，负责运行既有验证 profile 并生成 JSON 报告。`WP-H-01` 已激活，
-正处于一次性 bootstrap 实现阶段；`current/preflight/check/verify` 在转绿前仍不能当作已实现命令。
+Harness 同时提供 profile 级 `list/run` 和任务级 `current/preflight/check/verify`。WP-H-01 的一次性
+bootstrap 例外已关闭，当前实现也必须接受自身 `check/verify` 约束。
 
 概念边界：Test 是单个行为断言；Test Harness 选择、执行并汇总测试；Agent Development Harness 在
 测试外增加 Work Package、任务契约、Git 范围和依赖门；Task Contract 是单个 WP 的机器可读边界；
 Work Package 是唯一状态真相源中的可回退交付单元；自动验收可由进程确定结果，人工验收只能由负责人
 记录，Agent 只汇总 pending/结果。
 
-当前可执行：
+profile 级命令：
 
 ```powershell
 runtime\python.exe -m harness list
@@ -26,7 +26,7 @@ runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness run docs
 ```
 
-`WP-H-01` accepted 后的标准流程将是：
+任务级标准流程：
 
 ```powershell
 runtime\python.exe -m harness current
@@ -42,5 +42,8 @@ runtime\python.exe -m harness verify WP-3-04
 验收和 rollback；激活提交只固定 base_ref。实施过程中变更契约或引用的成功标准会触发失败并要求新的
 独立预检，不能与“修实现让门通过”混在同一变更。
 
-Bootstrap 例外只属于 `WP-H-01`：命令尚未存在时使用当前 `run docs`、`run smoke` 和定向 pytest。
-后续所有非微小开发任务不得复用该例外。
+Bootstrap 例外只属于 WP-H-01 的首次 RED/GREEN，现已关闭。后续所有非微小开发任务不得复用该例外。
+
+`preflight` 会聚合状态、依赖、base ancestor、范围、受保护路径、依赖文件、测试删除和冻结契约的所有
+可独立判断结果。`check` 输出 changed/untracked/out-of-scope/forbidden/protected/dependency/deleted-test/
+contract buckets。`verify` 前置失败时写失败报告但跳过 profile；自动门全过而人工项存在时退出 3。

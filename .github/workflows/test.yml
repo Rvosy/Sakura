@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, refactor/tauri-runtime-v2]
   pull_request:
     branches: [main, dev]
 
@@ -11,6 +11,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  harness-v1:
+    name: Agent Development Harness v1
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Harness test dependency
+        run: python -m pip install "pytest>=8.0.0"
+
+      - name: Run Harness contract and scope tests
+        run: >-
+          python -m pytest
+          tests/unit/test_harness_runner.py
+          tests/unit/test_harness_agent_development.py
+          tests/unit/test_docs_structure.py
+          -q
+
+      - name: Resolve and preflight the active Work Package
+        run: |
+          python -m harness current --json
+          python -m harness preflight WP-H-01
+          python -m harness check WP-H-01
+
+      - name: Run shared documentation profile
+        run: python -m harness run docs
+
+      - name: Run shared smoke profile
+        run: python -m harness run smoke
+
   docs:
     name: Documentation checks
     runs-on: ubuntu-latest
