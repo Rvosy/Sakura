@@ -46,6 +46,12 @@
         "runtime-v2-window-geometry-tests",
         "runtime-v2-window-interaction-tests"
       ]
+    },
+    "runtime-v2-windows-interaction": {
+      "description": "在真实 Windows 桌面验证 Runtime v2 原生透明穿透",
+      "cases": [
+        "runtime-v2-windows-transparent-clickthrough"
+      ]
     }
   },
   "cases": [
@@ -286,6 +292,26 @@
         "--test-threads=1"
       ],
       "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-windows-transparent-clickthrough",
+      "description": "构建桌面壳并验证透明像素点击跨进程到达背景窗口",
+      "argv": [
+        "pwsh",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "desktop/tests/windows_transparent_clickthrough_acceptance.ps1",
+        "-Build",
+        "-EvidenceDirectory",
+        "temp/harness/windows-transparent-clickthrough"
+      ],
+      "timeout_seconds": 300,
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"

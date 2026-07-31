@@ -44,7 +44,12 @@ test("rounded WebView surfaces preserve the native clip contract without externa
   for (const [selector, radius] of [["bubble", 22], ["composer", 28]]) {
     const block = declarationBlock(selector, "border-radius");
     assert.match(block, new RegExp(`border-radius:\\s*${radius}px`), selector);
+    assert.match(block, /box-shadow:\s*none/, `${selector} must not paint outside its native hit region`);
   }
+  const thinkingBubble = styles.match(/body\[data-chat-state="thinking"\] \.bubble\s*\{([^}]*)\}/)?.[1] || "";
+  const focusedComposer = styles.match(/\.composer:focus-within\s*\{([^}]*)\}/)?.[1] || "";
+  assert.doesNotMatch(thinkingBubble, /box-shadow\s*:/);
+  assert.doesNotMatch(focusedComposer, /box-shadow\s*:/);
   for (const selector of ["pet-stage", "portrait", "portrait-frame", "portrait-image"]) {
     const block = declarationBlock(selector, "background");
     assert.match(block, /background:\s*transparent/, selector);
@@ -294,10 +299,11 @@ test("the native tray keeps a hidden pet recoverable through the shared visibili
 
   const visibilityToggle = nativeMain.match(/fn toggle_pet_visibility[\s\S]*?\n}/)?.[0] || "";
   assert.match(visibilityToggle, /window\.hide\(\)/);
-  assert.match(visibilityToggle, /window\.show\(\)/);
+  assert.match(visibilityToggle, /set_visible\(&window, true\)/);
+  assert.match(visibilityToggle, /reapply_current_pet_hit_region\(&window\)/);
   assert.match(visibilityToggle, /sync_product_tray_visibility\(app, false\)/);
   assert.match(visibilityToggle, /sync_product_tray_visibility\(app, true\)/);
-  assert.match(visibilityToggle, /window\.set_focus\(\)/);
+  assert.match(nativeWindowBackend, /fn set_visible\([\s\S]*?window[\s\S]*?\.show\(\)[\s\S]*?\.set_focus\(\)/);
   assert.equal(nativeMain.match(/toggle_pet_visibility\(app\)/g)?.length, 2);
   assert.match(nativeMain, /reveal_pet_window[\s\S]*?sync_product_tray_visibility\(window\.app_handle\(\), true\)/);
 
@@ -336,11 +342,15 @@ test("portrait click-through is tightened after the decoded contain size is know
   assert.match(nativeInteraction, /portrait_alpha_mask/);
 });
 
-test("Windows drag is borderless, click-through aware, and independent of the caption move loop", () => {
-  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, None/);
+test("Windows drag is borderless, alpha-clipped, and independent of the caption move loop", () => {
+  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some\(combined\)/);
   assert.match(nativeInteraction, /SetWindowSubclass/);
-  assert.match(nativeInteraction, /WM_NCHITTEST/);
-  assert.match(nativeInteraction, /HTTRANSPARENT/);
+  assert.match(nativeWindowBackend, /DWMWA_NCRENDERING_POLICY/);
+  assert.match(nativeWindowBackend, /DWMNCRP_DISABLED/);
+  assert.match(nativeInteraction, /CreateRectRgn/);
+  assert.match(nativeInteraction, /CombineRgn\(Some\(combined\), Some\(combined\), Some\(part\), RGN_OR\)/);
+  assert.doesNotMatch(nativeInteraction, /WS_EX_TRANSPARENT/);
+  assert.doesNotMatch(nativeInteraction, /HTTRANSPARENT/);
   assert.doesNotMatch(nativeInteraction, /GWLP_WNDPROC/);
   assert.match(nativeInteraction, /WM_NCCALCSIZE/);
   assert.match(nativeInteraction, /WM_NCPAINT/);

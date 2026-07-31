@@ -109,8 +109,8 @@ export class PetContextMenu {
   openAt(clientX, clientY, manifest) {
     if (this.disposed) return;
     this.applyManifest(manifest);
+    this.menu.classList.remove("is-open");
     this.menu.hidden = false;
-    this.menu.classList.add("is-open");
     this.menu.style.visibility = "hidden";
     this.menu.style.left = "0px";
     this.menu.style.top = "0px";
@@ -125,6 +125,10 @@ export class PetContextMenu {
     this.menu.style.left = `${position.x}px`;
     this.menu.style.top = `${position.y}px`;
     this.menu.style.visibility = "visible";
+    // Flush the class removal so reopening an already-visible menu replays
+    // the entrance animation at its new position.
+    void this.menu.offsetWidth;
+    this.menu.classList.add("is-open");
     this.enabledItems()[0]?.focus({ preventScroll: true });
   }
 

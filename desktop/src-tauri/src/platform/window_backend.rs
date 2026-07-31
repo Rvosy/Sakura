@@ -28,6 +28,9 @@ fn borderless_window_style(style: u32) -> u32 {
 #[cfg(windows)]
 fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformResult<()> {
     use windows::Win32::Foundation::{GetLastError, SetLastError, WIN32_ERROR};
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
@@ -99,6 +102,19 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
                 format!("native frame bits survived style refresh: 0x{verified:08x}"),
             ));
         }
+        let non_client_policy = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            (&raw const non_client_policy).cast(),
+            u32::try_from(std::mem::size_of_val(&non_client_policy)).unwrap_or(u32::MAX),
+        )
+        .map_err(|error| {
+            map_error(
+                "prepare_window",
+                format!("failed to disable the native DWM shadow: {error}"),
+            )
+        })?;
     }
     Ok(())
 }

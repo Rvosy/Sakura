@@ -53,6 +53,7 @@ def test_default_manifest_is_valid_and_has_smoke_profile() -> None:
         "legacy-qt-ui",
         "python-full",
         "runtime-v2-shell",
+        "runtime-v2-windows-interaction",
     } <= set(manifest["profiles"])
 
 

@@ -379,6 +379,29 @@ fn apply_precise_hit_regions(
     Ok(())
 }
 
+fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
+    let session = window.state::<Mutex<WindowGeometrySession>>();
+    let geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let keep_full_hit_region = geometry.context_menu_open
+        || geometry.portrait_hit_relaxed
+        || geometry.control_surface_preview_active;
+    let hit_regions = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    drop(geometry);
+
+    if keep_full_hit_region {
+        NativeWindowInteractionBackend
+            .restore_full_hit_region(window)
+            .map_err(|error| error.to_string())
+    } else {
+        apply_precise_hit_regions(window, &hit_regions)
+    }
+}
+
 fn apply_native_pet_surface(
     window: &WebviewWindow,
     contract: &LayoutContract,
@@ -443,6 +466,7 @@ fn reveal_pet_window(
     window
         .show()
         .map_err(|error| format!("failed to reveal pet window: {error}"))?;
+    reapply_current_pet_hit_region(&window)?;
     product_shell::sync_product_tray_visibility(window.app_handle(), true)
 }
 
@@ -643,15 +667,20 @@ fn probe_pet_visibility(window: WebviewWindow) -> Result<(), String> {
             std::thread::sleep(VISIBILITY_PROBE_HIDDEN_DURATION);
             let restore_window = delayed_window.clone();
             if let Err(error) = delayed_window.run_on_main_thread(move || {
-                if let Err(error) = NativeWindowInteractionBackend.set_visible(&restore_window, true)
-                {
+                let restored = NativeWindowInteractionBackend
+                    .set_visible(&restore_window, true)
+                    .map_err(|error| error.to_string())
+                    .and_then(|_| reapply_current_pet_hit_region(&restore_window));
+                if let Err(error) = restored {
                     eprintln!("failed to restore pet visibility probe: {error}");
                 }
             }) {
                 eprintln!("failed to schedule pet visibility restoration: {error}");
-                if let Err(recovery_error) =
-                    NativeWindowInteractionBackend.set_visible(&delayed_window, true)
-                {
+                let recovery = NativeWindowInteractionBackend
+                    .set_visible(&delayed_window, true)
+                    .map_err(|error| error.to_string())
+                    .and_then(|_| reapply_current_pet_hit_region(&delayed_window));
+                if let Err(recovery_error) = recovery {
                     eprintln!(
                         "failed to recover pet visibility after scheduling error: {recovery_error}"
                     );
@@ -659,7 +688,10 @@ fn probe_pet_visibility(window: WebviewWindow) -> Result<(), String> {
             }
         })
         .map_err(|error| {
-            let recovery = NativeWindowInteractionBackend.set_visible(&window, true);
+            let recovery = NativeWindowInteractionBackend
+                .set_visible(&window, true)
+                .map_err(|error| error.to_string())
+                .and_then(|_| reapply_current_pet_hit_region(&window));
             match recovery {
                 Ok(()) => format!("failed to start pet visibility timer: {error}"),
                 Err(recovery_error) => format!(
@@ -1381,9 +1413,12 @@ fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
         window.hide().map_err(|error| error.to_string())?;
         product_shell::sync_product_tray_visibility(app, false)
     } else {
-        window.show().map_err(|error| error.to_string())?;
+        NativeWindowInteractionBackend
+            .set_visible(&window, true)
+            .map_err(|error| error.to_string())?;
+        reapply_current_pet_hit_region(&window)?;
         product_shell::sync_product_tray_visibility(app, true)?;
-        window.set_focus().map_err(|error| error.to_string())
+        Ok(())
     }
 }
 

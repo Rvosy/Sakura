@@ -25,6 +25,7 @@ runtime\python.exe -m harness run core-host
 runtime\python.exe -m harness run legacy-qt-ui
 runtime\python.exe -m harness run python-full
 runtime\python.exe -m harness run runtime-v2-shell
+runtime\python.exe -m harness run runtime-v2-windows-interaction
 ```
 
 也可以指定报告位置：
@@ -36,6 +37,8 @@ runtime\python.exe -m harness run smoke --report temp\harness\smoke.json
 默认报告写入 `temp/harness/`。进程退出码为 `0` 表示全部通过，`1` 表示至少一个 case 失败，`2` 表示调用或清单错误。
 
 `runtime-v2-shell` 会运行 `desktop/frontend` 的完整 Node 测试，以及近期桌面壳改动涉及的角色外观、角色表现、产品窗口、窗口几何和原生交互 Rust 模块测试。该 profile 保持离线，并避开会与正在运行的 Sakura 实例争用共享锁的完整 Rust 生命周期测试。
+
+`runtime-v2-windows-interaction` 是 Windows 专用实机门禁。它会先构建 debug 桌面壳，再启动桌宠和独立背景接收窗口，验证透明点不属于桌宠、可见立绘仍属于桌宠，并确认透明点击实际跨进程到达背景窗口。运行期间会短暂显示窗口并移动鼠标，证据写入 `temp/harness/windows-transparent-clickthrough/`。
 
 Python profile 按用途分层：
 

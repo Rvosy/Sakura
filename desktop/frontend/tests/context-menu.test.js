@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PetContextMenu,
   PRODUCT_MENU_ACTIONS,
   clampMenuPosition,
   moveMenuFocusIndex,
@@ -54,4 +55,75 @@ test("keyboard focus wraps and supports Home and End", () => {
   assert.equal(moveMenuFocusIndex(1, 3, "Home"), 0);
   assert.equal(moveMenuFocusIndex(1, 3, "End"), 2);
   assert.equal(moveMenuFocusIndex(1, 0, "ArrowDown"), -1);
+});
+
+test("repositioning an open menu restarts its entrance animation", () => {
+  const classNames = new Set(["is-open"]);
+  const classMutations = [];
+  const item = {
+    dataset: { menuAction: PRODUCT_MENU_ACTIONS.settings },
+    disabled: false,
+    setAttribute() {},
+    focus() {},
+  };
+  const menu = {
+    hidden: false,
+    style: {},
+    offsetWidth: 226,
+    offsetHeight: 330,
+    classList: {
+      add(name) {
+        classNames.add(name);
+        classMutations.push(`add:${name}`);
+      },
+      remove(name) {
+        classNames.delete(name);
+        classMutations.push(`remove:${name}`);
+      },
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    contains() {
+      return false;
+    },
+    getBoundingClientRect() {
+      return { width: 226, height: 330 };
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "[data-menu-action]" || selector === "[data-menu-action]:not(:disabled)") {
+        return [item];
+      }
+      return [];
+    },
+  };
+  const documentRef = {
+    activeElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const windowRef = {
+    innerWidth: 900,
+    innerHeight: 996,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const contextMenu = new PetContextMenu({
+    menu,
+    invoke: async () => {},
+    documentRef,
+    windowRef,
+  });
+
+  contextMenu.openAt(400, 500, {
+    schemaVersion: 1,
+    availableActions: [PRODUCT_MENU_ACTIONS.settings],
+  });
+
+  assert.deepEqual(classMutations, ["remove:is-open", "add:is-open"]);
+  assert.equal(classNames.has("is-open"), true);
+  assert.equal(menu.style.left, "400px");
+  assert.equal(menu.style.top, "500px");
 });

@@ -1,9 +1,6 @@
+use serde::Serialize;
 #[cfg(any(windows, test))]
 use std::collections::HashMap;
-#[cfg(windows)]
-use std::sync::{Mutex, OnceLock};
-
-use serde::Serialize;
 
 use crate::{
     character_presentation::PortraitAlphaMask,
@@ -165,7 +162,7 @@ impl PhysicalHitRect {
         i64::from(self.y) + i64::from(self.height)
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn contains(self, point: [i32; 2]) -> bool {
         let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < self.right()
@@ -711,63 +708,6 @@ fn native_hit_rectangles(
 const PET_BORDERLESS_SUBCLASS_ID: usize = 0x5341_4b42;
 
 #[cfg(windows)]
-static PRECISE_NATIVE_HIT_REGIONS: OnceLock<Mutex<HashMap<usize, Vec<PhysicalHitRect>>>> =
-    OnceLock::new();
-
-#[cfg(windows)]
-fn precise_native_hit_regions() -> &'static Mutex<HashMap<usize, Vec<PhysicalHitRect>>> {
-    PRECISE_NATIVE_HIT_REGIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(windows)]
-fn native_window_key(hwnd: windows::Win32::Foundation::HWND) -> usize {
-    hwnd.0 as usize
-}
-
-#[cfg(windows)]
-fn replace_precise_native_hit_regions(
-    hwnd: windows::Win32::Foundation::HWND,
-    rectangles: Vec<PhysicalHitRect>,
-) -> Result<(), String> {
-    precise_native_hit_regions()
-        .lock()
-        .map_err(|_| "native hit-test registry is unavailable".to_string())?
-        .insert(native_window_key(hwnd), rectangles);
-    Ok(())
-}
-
-#[cfg(windows)]
-fn clear_precise_native_hit_regions(hwnd: windows::Win32::Foundation::HWND) {
-    if let Ok(mut regions) = precise_native_hit_regions().lock() {
-        regions.remove(&native_window_key(hwnd));
-    }
-}
-
-#[cfg(windows)]
-fn point_is_in_precise_native_hit_regions(
-    hwnd: windows::Win32::Foundation::HWND,
-    point: [i32; 2],
-) -> Option<bool> {
-    precise_native_hit_regions()
-        .lock()
-        .ok()
-        .and_then(|regions| {
-            regions
-                .get(&native_window_key(hwnd))
-                .map(|rectangles| rectangles.iter().copied().any(|rect| rect.contains(point)))
-        })
-}
-
-#[cfg(windows)]
-fn screen_point_from_lparam(lparam: windows::Win32::Foundation::LPARAM) -> [i32; 2] {
-    let packed = lparam.0 as u32;
-    [
-        i32::from((packed & 0xffff) as u16 as i16),
-        i32::from((packed >> 16) as u16 as i16),
-    ]
-}
-
-#[cfg(windows)]
 unsafe extern "system" fn pet_window_borderless_proc(
     hwnd: windows::Win32::Foundation::HWND,
     message: u32,
@@ -777,33 +717,19 @@ unsafe extern "system" fn pet_window_borderless_proc(
     _reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::Graphics::Gdi::ScreenToClient;
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        HTTRANSPARENT, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCPAINT,
+        WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT,
     };
 
     match message {
         WM_NCCALCSIZE | WM_NCPAINT => return LRESULT(0),
         WM_NCACTIVATE => return LRESULT(1),
-        WM_NCHITTEST => {
-            let [screen_x, screen_y] = screen_point_from_lparam(lparam);
-            let mut point = windows::Win32::Foundation::POINT {
-                x: screen_x,
-                y: screen_y,
-            };
-            if ScreenToClient(hwnd, &mut point).as_bool()
-                && point_is_in_precise_native_hit_regions(hwnd, [point.x, point.y]) == Some(false)
-            {
-                return LRESULT(HTTRANSPARENT as isize);
-            }
-        }
         _ => {}
     }
 
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
     if message == WM_NCDESTROY {
-        clear_precise_native_hit_regions(hwnd);
         let _ = RemoveWindowSubclass(
             hwnd,
             Some(pet_window_borderless_proc),
@@ -839,7 +765,10 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::SetWindowRgn;
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, ERROR, HGDIOBJ,
+        RGN_OR,
+    };
 
     let hwnd = window
         .hwnd()
@@ -850,12 +779,46 @@ pub fn apply_native_hit_regions(
     let envelope = [inner_size.width, inner_size.height];
     let native_rectangles = native_hit_rectangles(model, envelope)?;
     install_native_borderless_subclass(hwnd)?;
-    // Keep the visual surface rectangular so WebView2 can sample the complete
-    // transparent backdrop for blur. WM_NCHITTEST below owns click-through.
-    if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
-        return Err("failed to restore the complete native visual surface".to_string());
+    let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    if combined.is_invalid() {
+        return Err("failed to create native hit region".to_string());
     }
-    replace_precise_native_hit_regions(hwnd, native_rectangles)
+    for rect in &native_rectangles {
+        let right = i32::try_from(rect.right())
+            .map_err(|_| "native hit region right edge overflow".to_string())?;
+        let bottom = i32::try_from(rect.bottom())
+            .map_err(|_| "native hit region bottom edge overflow".to_string())?;
+        let part = if rect.corner_radius == 0 {
+            unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) }
+        } else {
+            let diameter = i32::try_from(rect.corner_radius.saturating_mul(2))
+                .map_err(|_| "native rounded clip radius overflow".to_string())?;
+            unsafe { CreateRoundRectRgn(rect.x, rect.y, right, bottom, diameter, diameter) }
+        };
+        if part.is_invalid() {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(combined));
+            }
+            return Err("failed to create native hit rectangle".to_string());
+        }
+        let result = unsafe { CombineRgn(Some(combined), Some(combined), Some(part), RGN_OR) };
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(part));
+        }
+        if result.0 == ERROR {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(combined));
+            }
+            return Err("failed to combine native hit rectangles".to_string());
+        }
+    }
+    if unsafe { SetWindowRgn(hwnd, Some(combined), true) } == 0 {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(combined));
+        }
+        return Err("failed to apply native pet hit region".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -866,7 +829,6 @@ pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
     install_native_borderless_subclass(hwnd)?;
-    clear_precise_native_hit_regions(hwnd);
     if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
         Err("failed to restore full native pet hit region".to_string())
     } else {
