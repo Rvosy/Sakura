@@ -426,7 +426,17 @@ mod unix_tests {
     }
 
     fn python_probe(root: &Path, mode: &str) -> Command {
-        let mut command = Command::new("python");
+        let configured_python =
+            env::var_os("SAKURA_RUNTIME_V2_TEST_PYTHON").filter(|value| !value.is_empty());
+        let repository_python = repository_root().join("runtime/bin/python3");
+        let python = configured_python.unwrap_or_else(|| {
+            if repository_python.is_file() {
+                repository_python.into_os_string()
+            } else {
+                OsString::from("python3")
+            }
+        });
+        let mut command = Command::new(python);
         command
             .arg("tests/fixtures/runtime_v2/wp_1p_03/python_lock_probe.py")
             .arg(mode)

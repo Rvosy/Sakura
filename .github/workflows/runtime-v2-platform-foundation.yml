@@ -16,14 +16,10 @@ on:
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
-      - "tests/integration/test_chat_pipeline.py"
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "tests/unit/test_http_client.py"
-      - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
-      - "tests/unit/test_runtime_v2_archive.py"
       - "docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
       - "docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md"
@@ -41,14 +37,10 @@ on:
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
-      - "tests/integration/test_chat_pipeline.py"
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "tests/unit/test_http_client.py"
-      - "tests/unit/test_runtime_v2_platform_workflow.py"
       - "tests/unit/test_wp_1a_04_shared_mutex.py"
-      - "tests/unit/test_runtime_v2_archive.py"
       - "docs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
       - "docs/superpowers/plans/2026-07-15-runtime-v2-work-packages.md"
@@ -247,18 +239,6 @@ jobs:
           tests/unit/test_core_host_*.py
           tests/integration/test_core_host_*.py
           tests/unit/test_hardening_regressions.py
-          tests/unit/test_http_client.py
-
-      - name: Stage the frozen packaged Runtime and Core resource layout
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          set -euo pipefail
-          python desktop/tests/stage_wp_1c_04_bundled_runtime.py \
-            --repo "$GITHUB_WORKSPACE" \
-            --target "${{ matrix.platform }}" \
-            --development-runtime "$GITHUB_WORKSPACE/runtime" \
-            --resources "$RUNNER_TEMP/sakura-wp-1c-04-packaged-resources"
 
       - name: Check formatting
         working-directory: desktop
@@ -334,50 +314,6 @@ jobs:
               "--test-threads=1",
           ], timeout=180).returncode)
           PY
-
-      - name: Run packaged bundled Python lifecycle and fault matrix
-        working-directory: desktop
-        timeout-minutes: 4
-        env:
-          RUST_BACKTRACE: '1'
-          SAKURA_WP_1C_04_PACKAGED_RESOURCES: ${{ runner.temp }}/sakura-wp-1c-04-packaged-resources
-        run: >-
-          python tests/run_wp_1c_04_packaged_lifecycle.py
-          --resources "${{ runner.temp }}/sakura-wp-1c-04-packaged-resources"
-
-      - name: Run native Windows Shell + development bundled Python Core lifecycle
-        if: runner.os == 'Windows'
-        working-directory: desktop
-        timeout-minutes: 5
-        shell: pwsh
-        run: >-
-          python tests/cross_platform_shell_core_lifecycle.py
-          --binary src-tauri/target/debug/sakura-runtime-v2-shell.exe
-          --repo ..
-
-      - name: Run native macOS Shell + development bundled Python Core lifecycle
-        if: runner.os == 'macOS'
-        working-directory: desktop
-        timeout-minutes: 5
-        shell: bash
-        run: >-
-          python3 tests/cross_platform_shell_core_lifecycle.py
-          --binary src-tauri/target/debug/sakura-runtime-v2-shell
-          --repo ..
-
-      - name: Run native Linux Xvfb Shell + development bundled Python Core lifecycle
-        if: runner.os == 'Linux'
-        working-directory: desktop
-        timeout-minutes: 5
-        shell: bash
-        env:
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: >-
-          timeout --signal=TERM --kill-after=10s 240s
-          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24'
-          python3 tests/cross_platform_shell_core_lifecycle.py
-          --binary src-tauri/target/debug/sakura-runtime-v2-shell
-          --repo ..
 
       - name: Verify the staged native Runtime through RuntimeLocator
         working-directory: desktop

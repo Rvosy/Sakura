@@ -6391,6 +6391,11 @@ class PetWindow(QWidget):
                 log_event("PetWindow", "同步原生置顶状态失败", {"error": str(exc)})
             return
         if sys.platform == "darwin":
+            app = QApplication.instance()
+            if app is None or app.platformName() != "cocoa":
+                # offscreen/minimal 等测试后端的 winId 不是 Objective-C 对象，
+                # 向它发送 AppKit 消息会直接导致进程段错误。
+                return
             try:
                 for window in self._topmost_sync_windows():
                     _set_macos_window_topmost(int(window.winId()), effective_topmost)
