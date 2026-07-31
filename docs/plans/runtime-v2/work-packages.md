@@ -99,7 +99,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3U-01 | 同一 Tauri App 的右键菜单与设置窗口宿主 | WP-3-03 | accepted |
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | accepted |
 | WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | accepted |
-| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | active |
+| WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | stabilizing |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | planned |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
@@ -2243,6 +2243,21 @@ bootstrap：新命令尚不存在，首次实现前使用现有 docs、smoke 和
 
 插入理由：本 WP 是仓库基础设施，不是 Sakura 产品能力。它依赖 WP-3S-01 accepted，并在 WP-3-04 前
 建立机器可执行开发门禁。生产实现必须遵守上述冻结范围。
+
+稳定化记录（2026-07-31）：
+
+```text
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
+实现提交：eac7890eadd08309d91c0edbe2ccc65b303d9b3c（核心与测试）；6ce3a46a6022e7db2bd062534a022420f32d73e1（CI 与启用态文档）
+RED/GREEN：新增测试首次因 harness.git_state 不存在在收集阶段退出 2；实现后定向矩阵 39 passed
+干净仓库 verify：preflight 12/12 检查通过；scope 无越界、禁止、受保护、依赖、测试删除或契约变化；docs 2/2、smoke 3/3、unit 575 passed/1 skipped；报告 schema v1 有效；退出码 3，仅人工审查 pending
+扩展回归：runtime-v2-shell 7/7 cases 通过，包括 frontend 68、Provider/模型 25、Rust 角色外观 8、角色表现 8、产品窗口 7、几何 16、交互 15
+本地工作树故障证据：预存未跟踪 .codex/environments/environment.toml 被列为 out-of-scope，verify 在 0.223 秒内退出 1 且 profiles 为空；没有删除、忽略或扩大契约
+CI：当前分支 push 已配置专用 Harness v1 job；远端 Actions 尚未运行，不把配置存在记录为远端通过
+人工验收：冻结契约和 bootstrap 例外关闭仍待项目负责人审查；Agent 不代填通过，不标记 accepted
+P0/P1：自动矩阵未发现；人工门和远端 CI 结果待确认
+回退：逆序 revert 6ce3a46、eac7890；保留 list/run、既有 profiles 和产品测试，不触碰产品代码或真实数据
+```
 
 主要结果：把 ADR、Spec、Work Package、AGENTS.md、Tests 与现有 profile runner 串为确定性的任务流程：
 
