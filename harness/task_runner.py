@@ -61,10 +61,21 @@ def preflight_task(
 ) -> tuple[int, dict[str, Any]]:
     _, registry, contract = _load(task_id, repo_root, manifest_path)
     checks: list[dict[str, str]] = []
+    state = collect_git_state(repo_root, contract.base_sha)
+    scope = evaluate_scope(state, contract, repo_root=repo_root)
+    status_source_pending = contract.status_source in scope.owner_review_files
 
-    def add(code: str, passed: bool, message: str) -> None:
+    def add(
+        code: str, passed: bool, message: str, *, owner_review: bool = False
+    ) -> None:
         checks.append(
-            {"code": code, "status": "passed" if passed else "failed", "message": message}
+            {
+                "code": code,
+                "status": (
+                    "passed" if passed else "pending" if owner_review else "failed"
+                ),
+                "message": message,
+            }
         )
 
     package = registry.packages.get(task_id)
@@ -75,7 +86,12 @@ def preflight_task(
         f"contract id is {contract.task_id}",
     )
     is_current = package is not None and registry.current.task_id == task_id
-    add("PREFLIGHT_CURRENT", is_current, f"current Work Package is {registry.current.task_id}")
+    add(
+        "PREFLIGHT_CURRENT",
+        is_current,
+        f"current Work Package is {registry.current.task_id}",
+        owner_review=status_source_pending,
+    )
     if package is not None:
         dependency_mismatch = tuple(package.dependencies) != contract.dependencies
         add(
@@ -92,20 +108,17 @@ def preflight_task(
             f"dependency {dependency} is "
             + (dependency_package.status if dependency_package else "missing"),
         )
-    state = collect_git_state(repo_root, contract.base_sha)
     add(
         "PREFLIGHT_BASE_ANCESTOR",
         is_ancestor(repo_root, contract.base_sha),
         "base_ref is an ancestor of HEAD",
     )
-    scope = evaluate_scope(state, contract, repo_root=repo_root)
     scope_checks = (
         ("PREFLIGHT_ALLOWED_PATHS", scope.out_of_scope_files, "out-of-scope files"),
         ("PREFLIGHT_FORBIDDEN_PATHS", scope.forbidden_files, "forbidden files"),
         ("PREFLIGHT_PROTECTED_PATHS", scope.protected_files, "protected files"),
         ("PREFLIGHT_DEPENDENCY_FILES", scope.dependency_files, "dependency files"),
         ("PREFLIGHT_TEST_DELETION", scope.deleted_tests, "deleted tests"),
-        ("PREFLIGHT_CONTRACT_FROZEN", scope.contract_files, "frozen contract files"),
     )
     for code, values, label in scope_checks:
         add(
@@ -113,11 +126,27 @@ def preflight_task(
             not values,
             f"{label}: " + (", ".join(values) if values else "none"),
         )
+    add(
+        "PREFLIGHT_GOVERNANCE_FROZEN",
+        not scope.owner_review_files,
+        "owner-review files: "
+        + (", ".join(scope.owner_review_files) if scope.owner_review_files else "none"),
+        owner_review=True,
+    )
     failed = any(check["status"] == "failed" for check in checks)
+    pending = any(check["status"] == "pending" for check in checks)
     return (
-        EXIT_VALIDATION_FAILED if failed else EXIT_PASSED,
+        (
+            EXIT_VALIDATION_FAILED
+            if failed
+            else EXIT_MANUAL_PENDING
+            if pending
+            else EXIT_PASSED
+        ),
         {
-            "status": "failed" if failed else "passed",
+            "status": (
+                "failed" if failed else "owner_review_required" if pending else "passed"
+            ),
             "checks": checks,
             "base_ref": contract.base_sha,
         },
@@ -147,7 +176,13 @@ def check_task(
         },
     }
     return (
-        EXIT_PASSED if scope.status == "passed" else EXIT_VALIDATION_FAILED,
+        (
+            EXIT_PASSED
+            if scope.status == "passed"
+            else EXIT_MANUAL_PENDING
+            if scope.status == "owner_review_required"
+            else EXIT_VALIDATION_FAILED
+        ),
         report,
     )
 
@@ -180,6 +215,10 @@ def verify_task(
         for description in contract.manual_acceptance
     ]
 
+    governance_pending = (
+        preflight_exit == EXIT_MANUAL_PENDING
+        or scope.status == "owner_review_required"
+    )
     if preflight_exit == EXIT_PASSED and scope.status == "passed":
         for profile_name in contract.required_profiles:
             profile_report_path = destination.parent / f".{destination.stem}-{profile_name}.json"
@@ -206,6 +245,12 @@ def verify_task(
             }
             for description in contract.automated_acceptance
         ]
+    elif governance_pending:
+        profiles_passed = False
+        automated = [
+            {"description": description, "status": "pending"}
+            for description in contract.automated_acceptance
+        ]
     else:
         profiles_passed = False
         automated = [
@@ -214,13 +259,16 @@ def verify_task(
         ]
 
     automatic_failure = (
-        preflight_exit != EXIT_PASSED
-        or scope.status != "passed"
-        or not profiles_passed
+        preflight_exit == EXIT_VALIDATION_FAILED
+        or scope.status == "failed"
+        or (not governance_pending and not profiles_passed)
     )
     if automatic_failure:
         exit_code = EXIT_VALIDATION_FAILED
         status = "failed"
+    elif governance_pending:
+        exit_code = EXIT_MANUAL_PENDING
+        status = "owner_review_required"
     elif manual:
         exit_code = EXIT_MANUAL_PENDING
         status = "manual_pending"

@@ -66,6 +66,7 @@ class ScopeResult:
     dependency_changes: tuple[dict[str, str], ...]
     deleted_tests: tuple[str, ...]
     contract_files: tuple[str, ...]
+    owner_review_files: tuple[str, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +79,7 @@ class ScopeResult:
             "dependency_files": list(self.dependency_files),
             "deleted_tests": list(self.deleted_tests),
             "contract_files": list(self.contract_files),
+            "owner_review_files": list(self.owner_review_files),
         }
 
 
@@ -221,7 +223,17 @@ def is_ancestor(repo_root: Path, base_sha: str) -> bool:
 
 
 def _matches(path: str, patterns: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+    return any(
+        path == pattern
+        or (
+            pattern.endswith("/**")
+            and (
+                path == pattern[:-3].rstrip("/")
+                or path.startswith(pattern[:-3].rstrip("/") + "/")
+            )
+        )
+        for pattern in patterns
+    )
 
 
 def _is_dependency(path: str) -> bool:
@@ -247,15 +259,15 @@ def _git_file(repo_root: Path, revision: str, path: str) -> bytes | None:
     return completed.stdout if completed.returncode == 0 else None
 
 
-def _normalized_contract(data: bytes) -> bytes | None:
+def _normalized_contract(data: bytes | None) -> bytes | None:
+    if data is None:
+        return None
     try:
         value = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(value, dict):
         return None
-    value = dict(value)
-    value["base_ref"] = "<ACTIVATION_REF>"
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -301,7 +313,7 @@ def evaluate_scope(
         current_contract = current_contract_path.read_bytes()
     except OSError:
         current_contract = b""
-    frozen_contract = _git_file(repo_root, state.base_sha, contract.task_path)
+    frozen_contract = _git_file(repo_root, contract.activation_sha, contract.task_path)
     if (
         frozen_contract is None
         or _normalized_contract(frozen_contract) != _normalized_contract(current_contract)
@@ -309,7 +321,7 @@ def evaluate_scope(
         frozen_changes.append(contract.task_path)
     for references in contract.documents.values():
         for reference in references:
-            frozen = _git_file(repo_root, state.base_sha, reference)
+            frozen = _git_file(repo_root, contract.activation_sha, reference)
             try:
                 current = (repo_root / reference).read_bytes()
             except OSError:
@@ -319,16 +331,29 @@ def evaluate_scope(
             ):
                 frozen_changes.append(reference)
 
+    frozen_status_source = _git_file(
+        repo_root, contract.activation_sha, contract.status_source
+    )
+    try:
+        current_status_source = (repo_root / contract.status_source).read_bytes()
+    except OSError:
+        current_status_source = None
+    owner_review = list(frozen_changes)
+    if _normalized_frozen_document(current_status_source) != _normalized_frozen_document(
+        frozen_status_source
+    ):
+        owner_review.append(contract.status_source)
+
     failed = bool(
         out_of_scope
         or forbidden
         or protected
         or rejected_dependencies
         or deleted_tests
-        or frozen_changes
     )
+    status = "failed" if failed else "owner_review_required" if owner_review else "passed"
     return ScopeResult(
-        status="failed" if failed else "passed",
+        status=status,
         changed_files=tuple(sorted(paths)),
         untracked_files=state.untracked_files,
         out_of_scope_files=tuple(out_of_scope),
@@ -338,4 +363,5 @@ def evaluate_scope(
         dependency_changes=tuple(dependency_changes),
         deleted_tests=tuple(deleted_tests),
         contract_files=tuple(sorted(set(frozen_changes))),
+        owner_review_files=tuple(sorted(set(owner_review))),
     )

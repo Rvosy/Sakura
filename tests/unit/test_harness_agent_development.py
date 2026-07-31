@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from harness.git_state import collect_git_state, evaluate_scope
 from harness.report import write_json_atomic
+from harness.runner import _build_parser
 from harness.task_contract import ContractError, TaskContract, load_task_contract
 from harness.task_runner import (
     EXIT_MANUAL_PENDING,
@@ -82,7 +82,7 @@ def _manifest(exit_code: int = 0) -> dict[str, object]:
     }
 
 
-def _contract(base_ref: str = "HEAD") -> dict[str, object]:
+def _contract(base_ref: str) -> dict[str, object]:
     return {
         "schema_version": 1,
         "id": "WP-T-01",
@@ -95,7 +95,13 @@ def _contract(base_ref: str = "HEAD") -> dict[str, object]:
         },
         "dependencies": ["WP-D-01"],
         "base_ref": base_ref,
-        "allowed_paths": ["src/**", "tests/**"],
+        "allowed_paths": [
+            "docs/plans/runtime-v2/work-packages.md",
+            "harness/activations/WP-T-01/0001.json",
+            "harness/tasks/WP-T-01.json",
+            "src/**",
+            "tests/**",
+        ],
         "forbidden_paths": ["forbidden/**"],
         "protected_paths": ["data/**", "characters/**", "third_party/**"],
         "dependency_policy": {"mode": "forbidden", "allowed_files": []},
@@ -120,12 +126,28 @@ def _repo(
     _write(repo / "src/allowed.txt", "base\n")
     _write(repo / "tests/test_keep.py", "def test_keep(): pass\n")
     _write(repo / "harness/suites.json", json.dumps(_manifest(profile_exit_code)))
-    contract = _contract()
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base_ref = _git(repo, "rev-parse", "HEAD")
+    contract = _contract(base_ref)
     if manual_acceptance:
         contract["acceptance"]["manual"] = ["负责人验收"]
     _write(repo / "harness/tasks/WP-T-01.json", json.dumps(contract))
+    _write(
+        repo / "harness/activations/WP-T-01/0001.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sequence": 1,
+                "task_id": "WP-T-01",
+                "kind": "activation",
+                "base_ref": base_ref,
+                "supersedes": None,
+            }
+        ),
+    )
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "base")
+    _git(repo, "commit", "-m", "activate task")
     return repo
 
 
@@ -144,7 +166,17 @@ def test_valid_contract_loads_and_resolves_base_ref(tmp_path: Path) -> None:
 
     assert contract.task_id == "WP-T-01"
     assert len(contract.base_sha) == 40
+    assert len(contract.activation_sha) == 40
+    assert contract.activation_path == "harness/activations/WP-T-01/0001.json"
     assert contract.required_profiles == ("task",)
+
+
+@pytest.mark.parametrize("command", ["preflight", "check", "verify"])
+def test_task_commands_accept_active_selector(command: str) -> None:
+    args = _build_parser().parse_args([command, "--active"])
+
+    assert args.active is True
+    assert args.task is None
 
 
 def test_repository_task_schema_is_strict_v1() -> None:
@@ -153,6 +185,10 @@ def test_repository_task_schema_is_strict_v1() -> None:
     )
 
     assert schema["properties"]["schema_version"] == {"const": 1}
+    assert schema["properties"]["base_ref"] == {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{40}$",
+    }
     assert schema["additionalProperties"] is False
     assert schema["properties"]["documents"]["additionalProperties"] is False
     document_schema = schema["properties"]["documents"]
@@ -200,7 +236,14 @@ def test_contract_allows_empty_document_categories_but_not_all_empty(
             lambda value: value["acceptance"].__setitem__("automated", []),
             "CONTRACT_ACCEPTANCE_EMPTY",
         ),
-        (lambda value: value.__setitem__("base_ref", "missing-ref"), "CONTRACT_BASE_REF"),
+        (
+            lambda value: value.__setitem__("base_ref", "missing-ref"),
+            "CONTRACT_BASE_REF_FORMAT",
+        ),
+        (
+            lambda value: value.__setitem__("allowed_paths", ["src/*.py"]),
+            "CONTRACT_PATH_PATTERN",
+        ),
     ],
 )
 def test_invalid_contracts_fail_closed(tmp_path: Path, mutation, message: str) -> None:
@@ -277,8 +320,7 @@ def test_scope_accepts_allowed_staged_unstaged_untracked_and_committed(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
-    base = _git(repo, "rev-parse", "HEAD")
-    contract = replace(_load(repo), base_ref=base, base_sha=base)
+    contract = _load(repo)
     _write(repo / "src/committed.txt", "committed\n")
     _git(repo, "add", "src/committed.txt")
     _git(repo, "commit", "-m", "allowed commit")
@@ -287,7 +329,9 @@ def test_scope_accepts_allowed_staged_unstaged_untracked_and_committed(
     _write(repo / "src/allowed.txt", "unstaged\n")
     _write(repo / "src/未跟踪.txt", "untracked\n")
 
-    result = evaluate_scope(collect_git_state(repo, base), contract, repo_root=repo)
+    result = evaluate_scope(
+        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
+    )
 
     assert result.status == "passed"
     assert "src/committed.txt" in result.changed_files
@@ -330,24 +374,114 @@ def test_scope_detects_deleted_tests_and_renames(tmp_path: Path) -> None:
     assert result.status == "failed"
 
 
-def test_scope_detects_contract_boundary_changes_but_allows_base_ref_only(
+def test_scope_detects_contract_boundary_changes_as_owner_review_required(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
     path = repo / "harness/tasks/WP-T-01.json"
     value = json.loads(path.read_text(encoding="utf-8"))
-    value["base_ref"] = _git(repo, "rev-parse", "HEAD")
-    path.write_text(json.dumps(value), encoding="utf-8")
-    contract = _load(repo)
-    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
-    assert result.contract_files == ()
-
     value["allowed_paths"].append("outside/**")
     path.write_text(json.dumps(value), encoding="utf-8")
     contract = _load(repo)
     result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
     assert result.contract_files == ("harness/tasks/WP-T-01.json",)
-    assert result.status == "failed"
+    assert result.owner_review_files == ("harness/tasks/WP-T-01.json",)
+    assert result.status == "owner_review_required"
+
+
+def test_base_ref_cannot_be_head_current_sha_or_later_sha(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/tasks/WP-T-01.json"
+    original = json.loads(path.read_text(encoding="utf-8"))
+
+    for replacement, message in (
+        ("HEAD", "CONTRACT_BASE_REF_FORMAT"),
+        (_git(repo, "rev-parse", "HEAD"), "CONTRACT_ACTIVATION_BASE_REF"),
+    ):
+        value = dict(original)
+        value["base_ref"] = replacement
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(ContractError, match=message):
+            _load(repo)
+
+    path.write_text(json.dumps(original), encoding="utf-8")
+    _write(repo / "src/later.txt", "later\n")
+    _git(repo, "add", "src/later.txt")
+    _git(repo, "commit", "-m", "later implementation")
+    value = dict(original)
+    value["base_ref"] = _git(repo, "rev-parse", "HEAD")
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_BASE_REF"):
+        _load(repo)
+
+
+def test_activation_anchor_cannot_share_commit_with_implementation(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    contract = _load(repo)
+    _write(
+        repo / "harness/activations/WP-T-01/0002.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sequence": 2,
+                "task_id": "WP-T-01",
+                "kind": "contract_revision",
+                "base_ref": contract.base_ref,
+                "supersedes": "0001",
+            }
+        ),
+    )
+    _write(repo / "src/hidden.txt", "implementation\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "invalid mixed anchor")
+
+    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_SCOPE"):
+        _load(repo)
+
+
+def test_committed_activation_anchor_is_immutable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/activations/WP-T-01/0001.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["kind"] = "contract_revision"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_FROZEN"):
+        _load(repo)
+
+
+def test_status_source_change_requires_owner_review(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    contract = _load(repo)
+    status_source = repo / contract.status_source
+    status_source.write_text(
+        status_source.read_text(encoding="utf-8") + "\n<!-- lifecycle edit -->\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_scope(
+        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
+    )
+
+    assert result.status == "owner_review_required"
+    assert result.owner_review_files == (contract.status_source,)
+
+    preflight_exit, preflight = preflight_task("WP-T-01", repo_root=repo)
+    check_exit, check = check_task("WP-T-01", repo_root=repo)
+    assert preflight_exit == EXIT_MANUAL_PENDING
+    assert preflight["status"] == "owner_review_required"
+    assert check_exit == EXIT_MANUAL_PENDING
+    assert check["status"] == "owner_review_required"
+
+    verify_exit, verify = verify_task(
+        "WP-T-01", repo_root=repo, report_path=repo / "temp/owner-review.json"
+    )
+    assert verify_exit == EXIT_MANUAL_PENDING
+    assert verify["status"] == "owner_review_required"
+    assert verify["profiles"] == []
+    assert verify["acceptance"]["automated"][0]["status"] == "pending"
 
 
 def test_scope_ignores_checkout_line_endings_for_frozen_documents(

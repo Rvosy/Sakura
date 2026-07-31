@@ -71,26 +71,27 @@ Test 是单个行为断言；Test Harness 运行并汇总测试；Agent Developm
 
 ```powershell
 runtime\python.exe -m harness current
-runtime\python.exe -m harness preflight WP-3-04
-runtime\python.exe -m harness check WP-3-04
+runtime\python.exe -m harness preflight --active
+runtime\python.exe -m harness check --active
 runtime\python.exe -m harness run smoke
-runtime\python.exe -m harness verify WP-3-04
+runtime\python.exe -m harness verify --active
 ```
 
-退出码设计为 `0` 自动门通过且没有人工待办，`1` 验证失败，`2` 调用/契约/清单错误，`3` 自动门通过但
-必需人工验收 pending。退出码 3 表示已经准备好交给负责人验收，不表示 Work Package 已 `accepted`；
-Agent 不得代填人工结果。任务报告与现有 profile 报告各自保持 schema v1，不能混写字段或破坏兼容。
+退出码设计为 `0` 自动门通过且没有人工待办，`1` 验证失败，`2` 调用/契约/清单错误，`3` 没有自动失败
+但仍需负责人处理。退出 3 的报告可能是 `manual_pending`，也可能是冻结治理文件变化导致的
+`owner_review_required`；后一种情况尚未完成 required profiles。两者都不表示 Work Package 已
+`accepted`，Agent 不得代填人工结果。
 
-`verify --active` 使用当前 Work Package；`verify <ID> --report <path>` 显式指定任务和报告位置。前置门
+`preflight/check/verify --active` 使用当前 Work Package；也可传 `<ID>` 显式指定任务。前置门
 失败时不会运行 required profiles。任务报告使用 UTF-8、UTC 时间和同目录临时文件原子替换；不会枚举
 环境变量或读取密钥。所有 Git 命令使用 argv、仓库根 cwd 和 10 秒 timeout。
 
-契约根对象和嵌套对象拒绝未知字段。路径必须是仓库相对 POSIX 模式；相同或明确父子冲突的
+契约根对象和嵌套对象拒绝未知字段。路径只接受精确文件或 `directory/**`；相同或明确父子冲突的
 allowed/forbidden/protected 规则失败。依赖文件默认禁止，只有 `allowlisted` 契约中的显式文件可变化。
 `documents` 的 specs/adrs/plans 三类字段必须存在、各类可以为空，但合计至少引用一份权威文档，避免
 普通修复被迫机械创建三类文档。
-契约文件除 `base_ref` 激活记账字段外，以及引用的 Spec/ADR/Plan，均与 base ref 内容比较；实施中变化
-会触发 `contract_files` 失败。
+完整 40 位 `base_ref` 必须与最新独立激活锚点一致。契约、引用的 Spec/ADR/Plan 和状态源与锚点提交比较；
+实施中变化会进入 `owner_review_files`，不能由普通自动门直接通过。
 
 Harness 只注册可执行行为、协议或生命周期检查。仅依赖源码字符串、函数排列或历史实现 token 的检查不作为 profile 门禁；对应意图应由 Python 行为测试、Node 测试、Rust 测试或独立真实验收覆盖。
 

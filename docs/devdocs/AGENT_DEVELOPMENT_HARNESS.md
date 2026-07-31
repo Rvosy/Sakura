@@ -30,25 +30,29 @@ runtime\python.exe -m harness run docs
 
 ```powershell
 runtime\python.exe -m harness current
-runtime\python.exe -m harness preflight WP-3-04
-runtime\python.exe -m harness check WP-3-04
+runtime\python.exe -m harness preflight --active
+runtime\python.exe -m harness check --active
 runtime\python.exe -m harness run smoke
-runtime\python.exe -m harness verify WP-3-04
+runtime\python.exe -m harness verify --active
 ```
 
 ## 契约准备规则
 
-任务契约必须先于实现独立审查。准备提交加入最终 allowed/forbidden/protected、依赖、文档、profiles、
-验收和 rollback；激活提交只固定 base_ref。实施过程中变更契约或引用的成功标准会触发失败并要求新的
-独立预检，不能与“修实现让门通过”混在同一变更。
+任务契约必须先于实现独立审查。治理提交加入最终 allowed/forbidden/protected、依赖、文档、profiles、
+验收、rollback 和 `harness/activations/<WP-ID>/<sequence>.json` 锚点；`base_ref` 必须是完整 40 位 SHA。
+锚点首次加入的提交只能包含契约、状态源、引用文档和锚点，不能夹带实现。后续契约修订新增递增锚点，
+不能覆写旧记录或与“修实现让门通过”混在同一提交。
 
 Bootstrap 例外只属于 WP-H-01 的首次 RED/GREEN，现已关闭。后续所有非微小开发任务不得复用该例外。
 
-`preflight` 会聚合状态、依赖、base ancestor、范围、受保护路径、依赖文件、测试删除和冻结契约的所有
+`preflight` 会聚合状态、依赖、base ancestor、范围、受保护路径、依赖文件、测试删除和冻结治理边界的所有
 可独立判断结果。`check` 输出 changed/untracked/out-of-scope/forbidden/protected/dependency/deleted-test/
-contract buckets。`verify` 前置失败时写失败报告但跳过 profile；自动门全过而人工项存在时退出 3。
-退出码 3 是“自动门通过，等待负责人验收”，不是验证失败；Agent 可以报告实现与自动验证已经完成，但
-不得把 Work Package 声称为 `accepted` 或代填人工验收结果。只有退出码 1 或 2 会阻止声称实现完成。
+contract/owner-review buckets。实现阶段若状态源、契约或引用文档偏离最新锚点，命令退出 3 并报告
+`owner_review_required`，不运行昂贵 profile。退出码 3 表示没有自动失败但仍需负责人处理，可能是自动门
+已经通过等待验收，也可能是治理变化等待审查；只有报告为 `manual_pending` 时才能声称自动验证已完成。
+Agent 始终不得把 Work Package 声称为 `accepted` 或代填人工验收结果。
 
 `documents.specs`、`documents.adrs` 和 `documents.plans` 三类字段都必须存在，但每类可以为空；三类合计
 至少引用一份与任务相关的权威文档。普通修复不应为了满足契约机械创建 Spec、ADR、Plan 三件套。
+
+路径规则 v1 只接受精确文件和 `directory/**`；`app/*.py` 一类模式会被拒绝，避免跨目录误匹配。

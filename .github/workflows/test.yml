@@ -36,8 +36,8 @@ jobs:
       - name: Resolve and preflight the active Work Package
         run: |
           python -m harness current --json
-          python -m harness preflight WP-H-01
-          python -m harness check WP-H-01
+          python -m harness preflight --active
+          python -m harness check --active
 
   docs:
     name: Documentation checks

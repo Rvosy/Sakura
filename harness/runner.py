@@ -251,11 +251,13 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight_parser = subparsers.add_parser(
         "preflight", help="validate a task before implementation"
     )
-    preflight_parser.add_argument("task")
+    preflight_parser.add_argument("task", nargs="?")
+    preflight_parser.add_argument("--active", action="store_true")
     check_parser = subparsers.add_parser(
         "check", help="check task scope, dependencies and frozen boundaries"
     )
-    check_parser.add_argument("task")
+    check_parser.add_argument("task", nargs="?")
+    check_parser.add_argument("--active", action="store_true")
     verify_parser = subparsers.add_parser(
         "verify", help="run full task verification"
     )
@@ -292,18 +294,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             from .work_packages import WorkPackageError
 
+            if bool(args.task) == bool(args.active):
+                raise HarnessError(
+                    f"{args.command} requires exactly one task argument or --active"
+                )
+            task_id = current_task()["task"] if args.active else args.task
             if args.command == "preflight":
                 exit_code, result = preflight_task(
-                    args.task, manifest_path=args.manifest
+                    task_id, manifest_path=args.manifest
                 )
             elif args.command == "check":
-                exit_code, result = check_task(args.task, manifest_path=args.manifest)
+                exit_code, result = check_task(task_id, manifest_path=args.manifest)
             else:
-                if bool(args.task) == bool(args.active):
-                    raise HarnessError(
-                        "verify requires exactly one task argument or --active"
-                    )
-                task_id = current_task()["task"] if args.active else args.task
                 destination = args.report or _default_task_report(REPO_ROOT, task_id)
                 exit_code, result = verify_task(
                     task_id,

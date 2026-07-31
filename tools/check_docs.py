@@ -247,7 +247,7 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
 
         if status not in {"archived", "superseded", "deprecated"} and kind != "index":
             category = Path(relative_path).parts[1]
-            if str(document.path.resolve()) not in linked_by_category.get(category, set()):
+            if document.path.resolve().as_posix() not in linked_by_category.get(category, set()):
                 errors.append(f"{prefix} active document is not linked by a category README")
 
         for raw_target in MARKDOWN_LINK.findall(document.body):

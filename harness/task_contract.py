@@ -30,6 +30,14 @@ ROOT_FIELDS = {
 DOCUMENT_FIELDS = {"specs", "adrs", "plans"}
 DEPENDENCY_POLICY_FIELDS = {"mode", "allowed_files"}
 ACCEPTANCE_FIELDS = {"automated", "manual"}
+ACTIVATION_FIELDS = {
+    "schema_version",
+    "sequence",
+    "task_id",
+    "kind",
+    "base_ref",
+    "supersedes",
+}
 
 
 class ContractError(ValueError):
@@ -45,6 +53,8 @@ class TaskContract:
     dependencies: tuple[str, ...]
     base_ref: str
     base_sha: str
+    activation_path: str
+    activation_sha: str
     allowed_paths: tuple[str, ...]
     forbidden_paths: tuple[str, ...]
     protected_paths: tuple[str, ...]
@@ -110,6 +120,16 @@ def _validate_path(pattern: str, field: str, errors: list[str]) -> None:
         errors.append(
             f"CONTRACT_PATH: {field} must contain repository-relative POSIX patterns: {pattern!r}"
         )
+        return
+    recursive = pattern.endswith("/**")
+    prefix = pattern[:-3] if recursive else pattern
+    if not prefix or any(token in prefix for token in "*?[") or (
+        not recursive and any(token in pattern for token in "*?[")
+    ):
+        errors.append(
+            "CONTRACT_PATH_PATTERN: "
+            f"{field} only supports exact paths or directory/**: {pattern!r}"
+        )
 
 
 def _prefix(pattern: str) -> str | None:
@@ -135,6 +155,11 @@ def _patterns_conflict(left: str, right: str) -> bool:
 def _resolve_base(repo_root: Path, base_ref: str, errors: list[str]) -> str:
     if not base_ref:
         return ""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", base_ref):
+        errors.append(
+            "CONTRACT_BASE_REF_FORMAT: base_ref must be a full 40-character commit SHA"
+        )
+        return ""
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
@@ -154,6 +179,198 @@ def _resolve_base(repo_root: Path, base_ref: str, errors: list[str]) -> str:
         errors.append(f"CONTRACT_BASE_REF: {base_ref!r} is not a commit")
         return ""
     return sha.lower()
+
+
+def _git_text(repo_root: Path, argv: list[str], error_code: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *argv],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ContractError(f"{error_code}: git {' '.join(argv)} failed: {error}") from error
+    if completed.returncode != 0:
+        raise ContractError(
+            f"{error_code}: git {' '.join(argv)} exited {completed.returncode}: "
+            f"{completed.stderr.strip()}"
+        )
+    return completed.stdout
+
+
+def _canonical_json(data: bytes) -> bytes | None:
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _load_activation_anchor(
+    *,
+    repo_root: Path,
+    task_id: str,
+    task_path: str,
+    status_source: str,
+    documents: dict[str, tuple[str, ...]],
+    base_ref: str,
+) -> tuple[str, str]:
+    activation_root = repo_root / "harness" / "activations" / task_id
+    candidates = sorted(activation_root.glob("*.json")) if activation_root.is_dir() else []
+    if not candidates:
+        raise ContractError(
+            f"CONTRACT_ACTIVATION_MISSING: no activation anchor exists for {task_id}"
+        )
+    expected_names = [f"{index:04d}.json" for index in range(1, len(candidates) + 1)]
+    if [path.name for path in candidates] != expected_names:
+        raise ContractError(
+            "CONTRACT_ACTIVATION_SEQUENCE: activation anchors must be contiguous from 0001"
+        )
+
+    governance_paths = {task_path, status_source}
+    governance_paths.update(
+        reference for references in documents.values() for reference in references
+    )
+    governance_paths.update(
+        path.resolve().relative_to(repo_root.resolve()).as_posix() for path in candidates
+    )
+    latest_path = ""
+    latest_sha = ""
+    previous_anchor_sha = ""
+    for index, path in enumerate(candidates, start=1):
+        relative_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        try:
+            raw_bytes = path.read_bytes()
+            raw = json.loads(raw_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ContractError(
+                f"CONTRACT_ACTIVATION_LOAD: cannot load {relative_path}: {error}"
+            ) from error
+        errors: list[str] = []
+        record = _object(raw, "activation", ACTIVATION_FIELDS, errors)
+        if record.get("schema_version") != 1:
+            errors.append("CONTRACT_ACTIVATION_SCHEMA: schema_version must be 1")
+        if record.get("sequence") != index:
+            errors.append(
+                f"CONTRACT_ACTIVATION_SEQUENCE: {relative_path} must declare sequence {index}"
+            )
+        if record.get("task_id") != task_id:
+            errors.append(
+                f"CONTRACT_ACTIVATION_TASK: {relative_path} must target {task_id}"
+            )
+        if record.get("kind") not in {"activation", "contract_revision"}:
+            errors.append(
+                "CONTRACT_ACTIVATION_KIND: kind must be activation or contract_revision"
+            )
+        record_base = record.get("base_ref")
+        if not isinstance(record_base, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{40}", record_base
+        ):
+            errors.append(
+                "CONTRACT_ACTIVATION_BASE_REF: base_ref must be a full 40-character commit SHA"
+            )
+        expected_supersedes = None if index == 1 else f"{index - 1:04d}"
+        if record.get("supersedes") != expected_supersedes:
+            errors.append(
+                "CONTRACT_ACTIVATION_SUPERSEDES: "
+                f"{relative_path} must supersede {expected_supersedes!r}"
+            )
+        if errors:
+            raise ContractError("\n".join(dict.fromkeys(errors)))
+        if index == len(candidates) and record_base.lower() != base_ref.lower():
+            raise ContractError(
+                "CONTRACT_ACTIVATION_BASE_REF: current contract base_ref differs "
+                "from the latest anchor"
+            )
+
+        additions = [
+            line
+            for line in _git_text(
+                repo_root,
+                ["log", "--format=%H", "--diff-filter=A", "--", relative_path],
+                "CONTRACT_ACTIVATION_HISTORY",
+            ).splitlines()
+            if line
+        ]
+        if len(additions) != 1:
+            raise ContractError(
+                "CONTRACT_ACTIVATION_HISTORY: "
+                f"{relative_path} must have exactly one committed addition"
+            )
+        anchor_sha = additions[0].lower()
+        ancestry_parent = previous_anchor_sha or base_ref.lower()
+        merge_base = _git_text(
+            repo_root,
+            ["merge-base", ancestry_parent, anchor_sha],
+            "CONTRACT_ACTIVATION_HISTORY",
+        ).strip().lower()
+        if merge_base != ancestry_parent:
+            raise ContractError(
+                "CONTRACT_ACTIVATION_HISTORY: activation anchors must follow base_ref "
+                "in sequence"
+            )
+        frozen = _git_text(
+            repo_root,
+            ["show", f"{anchor_sha}:{relative_path}"],
+            "CONTRACT_ACTIVATION_HISTORY",
+        ).encode("utf-8")
+        if _canonical_json(frozen) != _canonical_json(raw_bytes):
+            raise ContractError(
+                f"CONTRACT_ACTIVATION_FROZEN: {relative_path} differs from its addition commit"
+            )
+        changed = {
+            line
+            for line in _git_text(
+                repo_root,
+                [
+                    "diff-tree",
+                    "--root",
+                    "--no-commit-id",
+                    "--name-only",
+                    "-r",
+                    anchor_sha,
+                ],
+                "CONTRACT_ACTIVATION_HISTORY",
+            ).splitlines()
+            if line
+        }
+        implementation_files = sorted(changed - governance_paths)
+        if implementation_files:
+            raise ContractError(
+                "CONTRACT_ACTIVATION_SCOPE: anchor commit contains non-governance files: "
+                + ", ".join(implementation_files)
+            )
+        anchor_contract = json.loads(
+            _git_text(
+                repo_root,
+                ["show", f"{anchor_sha}:{task_path}"],
+                "CONTRACT_ACTIVATION_HISTORY",
+            )
+        )
+        anchor_contract_base = (
+            anchor_contract.get("base_ref")
+            if isinstance(anchor_contract, dict)
+            else None
+        )
+        if (
+            not isinstance(anchor_contract_base, str)
+            or anchor_contract_base.lower() != record_base.lower()
+        ):
+            raise ContractError(
+                "CONTRACT_ACTIVATION_BASE_REF: anchor contract and activation record differ"
+            )
+        latest_path = relative_path
+        latest_sha = anchor_sha
+        previous_anchor_sha = anchor_sha
+
+    return latest_path, latest_sha
 
 
 def load_task_contract(
@@ -288,6 +505,14 @@ def load_task_contract(
         task_path = path.as_posix()
     if errors:
         raise ContractError("\n".join(dict.fromkeys(errors)))
+    activation_path, activation_sha = _load_activation_anchor(
+        repo_root=repo_root,
+        task_id=task_id,
+        task_path=task_path,
+        status_source=status_source,
+        documents=documents,
+        base_ref=base_ref,
+    )
     return TaskContract(
         task_id=task_id,
         title=title,
@@ -296,6 +521,8 @@ def load_task_contract(
         dependencies=dependencies,
         base_ref=base_ref,
         base_sha=base_sha,
+        activation_path=activation_path,
+        activation_sha=activation_sha,
         allowed_paths=path_groups["allowed_paths"],
         forbidden_paths=path_groups["forbidden_paths"],
         protected_paths=path_groups["protected_paths"],
