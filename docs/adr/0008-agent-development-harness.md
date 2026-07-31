@@ -45,10 +45,17 @@ updated: 2026-07-31
 
 - 任务契约是 `harness/tasks/<WP-ID>.json`；schema 版本独立于 profile 报告版本。
 - Work Package 当前状态仍唯一来自 `docs/plans/runtime-v2/work-packages.md`，契约不得复制或覆盖状态。
-- `base_ref` 固定任务实现差异起点；所有 Git 命令使用 argv、仓库根 cwd 和有界 timeout。
-- 契约冻结以 `base_ref:<task-file>` 为准。激活提交只允许把准备态 `base_ref` 固定为前一个契约准备
-  commit；比较时仅规范化该字段，其余边界、文档、profile、验收和回退变化都要求独立重新预检。
+- `base_ref` 必须直接保存完整 40 位提交 SHA，固定任务实现差异起点；禁止 `HEAD`、分支和 tag。所有
+  Git 命令使用 argv、仓库根 cwd 和有界 timeout。
+- 激活或契约修订在 `harness/activations/<WP-ID>/<sequence>.json` 保存独立锚点。Harness 从 Git 历史
+  定位锚点文件首次加入的提交，并要求该提交只改变任务契约、状态源、契约引用文档和锚点本身；实现
+  代码必须在后续提交中出现。当前契约的 `base_ref` 必须与最新锚点完全一致，不再归一化或允许
+  `base_ref-only` 变化。
+- 契约、引用的 Spec/ADR/Plan 和唯一状态源以锚点提交中的内容冻结。实现阶段若改写这些治理文件，
+  自动门返回 `owner_review_required`，不得直接通过；合法修订必须新增递增锚点并接受独立负责人审查。
 - changed set 是 `base_ref..HEAD`、index、unstaged 和 untracked 的并集，路径统一为仓库相对 POSIX 形式。
+- v1 路径规则只接受精确文件和 `directory/**` 两种形式，避免 Python `fnmatch` 让 `app/*.py` 意外匹配
+  多级目录。
 - 依赖策略默认禁止；只有契约显式列出 manifest/lock 文件时才允许变化，且声明文件与锁文件按同一
   变更审查，不能把锁文件一律视为失败或安全。
 - 人工验收只汇总为 `pending/passed/failed`；Agent 不得自动填写 passed，也不得因此把 Work Package

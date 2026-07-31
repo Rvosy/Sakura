@@ -9,7 +9,7 @@
     "plans": ["docs/plans/agent-development-harness-v1.md"]
   },
   "dependencies": ["WP-3S-01"],
-  "base_ref": "895adb987bab5c3a4adf26e43794addde12ae342",
+  "base_ref": "642c1b005550e41e3b16838e086c8c5ff2d13e44",
   "allowed_paths": [
     ".github/workflows/test.yml",
     ".github/workflows/runtime-v2-platform-foundation.yml",
@@ -21,7 +21,10 @@
     "docs/records/audits/**",
     "docs/specs/runtime-v2/WP-H-01-agent-development-harness.md",
     "harness/**",
-    "tests/unit/test_harness_*.py"
+    "tests/unit/test_docs_structure.py",
+    "tests/unit/test_harness_agent_development.py",
+    "tests/unit/test_harness_runner.py",
+    "tools/check_docs.py"
   ],
   "forbidden_paths": [
     "app/**",

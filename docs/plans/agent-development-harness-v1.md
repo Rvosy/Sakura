@@ -15,8 +15,9 @@ updated: 2026-07-31
 2026-07-31 明确验收 WP-3S-01，WP-H-01 现按冻结契约激活；仍不得开始 `WP-3-04`。
 
 激活使用两步：准备提交 `642c1b005550e41e3b16838e086c8c5ff2d13e44` 已加入 `WP-H-01.json` 的
-最终边界；本次激活把 `base_ref` 固定为该 SHA。一次性 bootstrap 只使用现有 docs/smoke/定向 pytest；
-新命令可用后立即关闭例外。
+最终边界；激活提交 `895adb987bab5c3a4adf26e43794addde12ae342` 当时也明确把 `base_ref` 固定为
+该准备 SHA。后续把契约基线改成激活 SHA 属于错误漂移，本次修订恢复为 `642c1b...`，并新增独立、
+只含治理变化的 `0001` 锚点。一次性 bootstrap 例外保持关闭。
 
 ## 实施步骤
 
@@ -26,7 +27,8 @@ updated: 2026-07-31
 4. 用临时 Git 仓库实现并验证 committed/index/unstaged/untracked、删除、重命名和冻结契约检查。
 5. 实现依赖策略、protected path 和关键测试删除检查。
 6. 实现 `verify` 编排、人工 pending 退出码与失败时原子报告。
-7. 增量增加当前分支 CI 自测；不重写平台矩阵或 Qt cleanup。
+7. CI 使用真实 PR head 和通用 `--active` 门禁；不写死 WP，不重复 docs/smoke/unit，不重写平台矩阵或
+   Qt cleanup。
 8. 更新 AGENTS.md/README 为已启用状态，执行定向 pytest、docs、smoke、unit 和可用的 runtime shell。
 9. 审计 diff、写验证 record，进入 stabilizing；由项目负责人决定人工验收和 accepted。
 
@@ -34,7 +36,8 @@ updated: 2026-07-31
 
 退出条件以 [`WP-H-01 spec`](../specs/runtime-v2/WP-H-01-agent-development-harness.md) 为准。除功能测试
 外，必须注入 Git timeout/坏引用、畸形 Markdown 表、窄控制台编码、报告 replace 失败、profile 超时、
-契约自我放宽和路径穿越。任何失败不得泄露环境或继续昂贵测试。
+契约自我放宽、`base_ref` 改为 `HEAD`/当前 HEAD/后移 SHA、状态源改写、非法 glob 和路径穿越。必须另有
+故障测试证明合法的一次性锚点通过。任何失败不得泄露环境或继续昂贵测试。
 
 ## 回退
 
