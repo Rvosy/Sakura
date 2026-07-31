@@ -57,3 +57,44 @@ current/preflight/check、docs 和 smoke。远端 Actions 尚未因本地提交�
 
 自动实现门在干净仓库通过，人工审查仍 pending，因此 WP-H-01 进入 stabilizing，不标记 accepted，
 WP-3-04 继续保持 planned。
+
+## 2026-07-31 稳定化约束修复
+
+审查后的治理修订与实现候选如下：
+
+- `e327e1488dd3f813535b5b23a1f402b351f05756`：修订激活锚点、状态源、路径和 CI 契约，新增独立 `0001` 锚点。
+- `fe18b6e77fda5cac75350e64c17a6b0dbe196083`：精确补入原激活提交中的 WP-3S-01 依赖验收 spec，新增 `0002` 锚点。
+- `7382da498ea0e3aaa3922eb2ea2a442602d33dd0`：实现完整 SHA 与锚点锁定、状态源 owner gate、通用
+  `--active`、受限路径语义、CI 泛化和 Windows 文档路径修复。
+- `48e3f643551c3d0d715230c6633bbcdc91e54317`：修正任务契约中残留的旧 CI 验收描述，新增 `0003` 锚点。
+
+Windows 原工作树的 `preflight --active` 和 `check --active` 仍按设计拒绝任务开始前已有的未跟踪
+`.codex/environments/environment.toml` 与受保护 `data/runtime_v2/config/ui.json`。两者未删除、未修改、
+未暂存，也未加入允许列表。为隔离这些用户运行时文件，使用无 hardlink 的本地干净 clone 验证最终候选；
+仓库嵌入式 Python 固定包含原仓库路径，因此验证入口显式把 clone 路径放在模块搜索首位，报告路径也位于
+clone 内，避免误用原工作树模块。
+
+最终候选 `48e3f643...` 的自动结果：
+
+```text
+current --json                 -> WP-H-01 / stabilizing
+preflight --active             -> 12/12 checks passed
+check --active                 -> passed; base=642c1b...; all failure buckets empty
+harness-v1                     -> 2/2 cases; 45 tests passed
+docs                           -> 2/2 cases; Windows path comparison passed
+smoke                          -> 3/3 cases
+verify --active
+  docs                         -> 2/2 cases passed
+  smoke                        -> 3/3 cases passed
+  unit                         -> 580 passed / 6 skipped
+  final report                 -> manual_pending; 19 passed / 0 failed / 1 pending
+  duration                     -> 112.922 seconds
+```
+
+故障矩阵另行证明：`base_ref` 为 `HEAD`、当前 HEAD SHA 或后移 SHA 均失败；锚点提交夹带实现、已提交锚点
+覆写、非法 `src/*.py` glob 均失败；状态源或冻结治理文件变化进入 `owner_review_required`，退出 3 且跳过
+昂贵 profiles。远端 GitHub Actions 尚未由这些本地提交触发，本记录不把本地 workflow 检查写成远端 CI
+成功。
+
+因此当前只能结论为：实现与本地自动门通过，等待项目负责人审查独立锚点和人工验收。WP-H-01 继续为
+`stabilizing`，不得标记 `accepted`，也不得开始 WP-3-04。
