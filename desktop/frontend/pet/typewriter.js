@@ -14,8 +14,8 @@ export function createTypewriter({
   onSegment = () => {},
   onComplete = () => {},
 } = {}) {
-  const typingDelay = Math.max(5, Math.min(200, Number(intervalMs) || 28));
-  const pauseDelay = Math.max(0, Math.min(3000, Number(segmentPauseMs) || 0));
+  let typingDelay = Math.max(5, Math.min(200, Number(intervalMs) || 28));
+  let pauseDelay = Math.max(0, Math.min(3000, Number(segmentPauseMs) || 0));
   let sequence = 0;
   let timer = null;
   let active = null;
@@ -49,14 +49,14 @@ export function createTypewriter({
       if (characterIndex < characters.length) {
         run.visible += characters[characterIndex++];
         onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
-        timer = setTimer(tick, typingDelay);
+        timer = setTimer(tick, run.typingDelay);
         return;
       }
       run.segmentIndex += 1;
       if (run.segmentIndex >= run.segments.length) return complete(run, false);
-      timer = setTimer(() => typeSegment(run), pauseDelay);
+      timer = setTimer(() => typeSegment(run), run.pauseDelay);
     };
-    timer = setTimer(tick, typingDelay);
+    timer = setTimer(tick, run.typingDelay);
   }
 
   return Object.freeze({
@@ -71,7 +71,14 @@ export function createTypewriter({
         onComplete(Object.freeze({ skipped: false }));
         return false;
       }
-      active = { sequence, segments: normalized, segmentIndex: 0, visible: "" };
+      active = {
+        sequence,
+        segments: normalized,
+        segmentIndex: 0,
+        visible: "",
+        typingDelay,
+        pauseDelay,
+      };
       typeSegment(active);
       return true;
     },
@@ -93,6 +100,10 @@ export function createTypewriter({
       clearActiveTimer();
       active = null;
       onText(String(replacement ?? ""), Object.freeze({ reason: "cancel", forceEnd: false }));
+    },
+    updateTiming({ intervalMs: nextInterval, segmentPauseMs: nextPause } = {}) {
+      typingDelay = Math.max(5, Math.min(200, Number(nextInterval) || 28));
+      pauseDelay = Math.max(0, Math.min(3000, Number(nextPause) || 0));
     },
     dispose() {
       sequence += 1;

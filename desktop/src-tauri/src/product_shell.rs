@@ -364,6 +364,25 @@ impl SettingsCapabilityManifest {
             "model.memory_curation_slot".to_string(),
             "记忆整理尚未迁移到 Runtime v2".to_string(),
         );
+        manifest.sections.insert(
+            "interaction".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([(
+                    "chat.presentation_timing".to_string(),
+                    "available".to_string(),
+                )]),
+            },
+        );
+        manifest.unavailable_reasons.remove("interaction");
+        for (feature, reason) in [
+            ("chat.bubble_auto_hide", "固定桌宠气泡必须保持常驻"),
+            ("chat.backchannel", "快速接话尚未迁移到 Runtime v2"),
+        ] {
+            manifest
+                .unavailable_reasons
+                .insert(feature.to_string(), reason.to_string());
+        }
         manifest
     }
 }
@@ -595,6 +614,10 @@ mod tests {
         assert_eq!(
             manifest.sections["model"].features["model.memory_curation_slot"],
             "unavailable"
+        );
+        assert_eq!(
+            manifest.sections["interaction"].features["chat.presentation_timing"],
+            "available"
         );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {

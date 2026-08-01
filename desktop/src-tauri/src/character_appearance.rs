@@ -1,18 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
+    path::PathBuf,
+    sync::Mutex,
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::character_presentation::CharacterPresentation;
+use crate::{character_presentation::CharacterPresentation, ui_config::UiConfigRepository};
 
 pub const APPEARANCE_CHANGED_EVENT: &str = "sakura://character-appearance-changed";
 const SCHEMA_VERSION: u64 = 1;
@@ -40,7 +35,6 @@ const THEME_TOKENS: [(&str, &str); 11] = [
     ("bubbleBackground", "bubble_background_color"),
     ("border", "border_color"),
 ];
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -191,8 +185,12 @@ impl CharacterAppearanceState {
     }
 
     pub(crate) fn new_with_repository_path(repository_path: PathBuf) -> Self {
+        Self::new_with_repository(UiConfigRepository::new(repository_path))
+    }
+
+    pub(crate) fn new_with_repository(repository: UiConfigRepository) -> Self {
         Self {
-            repository: AppearanceRepository::new(repository_path),
+            repository: AppearanceRepository::from_config(repository),
             session: Mutex::new(None),
         }
     }
@@ -389,28 +387,22 @@ fn publication_from_session(
 }
 
 struct AppearanceRepository {
-    path: PathBuf,
+    config: UiConfigRepository,
 }
 
 impl AppearanceRepository {
     fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            config: UiConfigRepository::new(path),
+        }
+    }
+
+    fn from_config(config: UiConfigRepository) -> Self {
+        Self { config }
     }
 
     fn load_document(&self) -> Result<Value, String> {
-        if !self.path.exists() {
-            return Ok(serde_json::json!({
-                "schema_version": SCHEMA_VERSION,
-                "domain": DOMAIN,
-                "settings": {}
-            }));
-        }
-        let bytes = fs::read(&self.path).map_err(|_| "APPEARANCE_READ_FAILED".to_string())?;
-        if bytes.is_empty() || bytes.len() > 512 * 1024 {
-            return Err("APPEARANCE_DOCUMENT_INVALID".to_string());
-        }
-        let document: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
+        let document = self.config.load("APPEARANCE")?;
         validate_document(&document)?;
         Ok(document)
     }
@@ -422,45 +414,42 @@ impl AppearanceRepository {
 
     fn save_for(&self, character_id: &str, values: &AppearanceValues) -> Result<(), String> {
         values.validate()?;
-        let mut document = self.load_document()?;
-        validate_document(&document)?;
-        let settings = document
-            .get_mut("settings")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
-        settings.insert(
-            "portrait_scale_percent".to_string(),
-            Value::from(values.portrait_scale_percent),
-        );
-        for (name, value) in [
-            ("control_panel_width", values.control_panel_width),
-            ("bubble_height", values.bubble_max_height),
-            ("input_bar_offset", values.input_bar_offset),
-        ] {
-            settings.insert(name.to_string(), Value::from(value));
-        }
-        settings.insert(
-            "control_panel_vertical_offset".to_string(),
-            Value::from(values.control_panel_vertical_offset),
-        );
-        for (name, value) in [
-            ("speech_font_size", values.speech_font_size),
-            ("name_font_size", values.name_font_size),
-            ("input_font_size", values.input_font_size),
-        ] {
-            settings.insert(name.to_string(), Value::from(value));
-        }
-        let overrides = settings
-            .entry("character_theme_overrides")
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .ok_or_else(|| "APPEARANCE_THEME_OVERRIDES_INVALID".to_string())?;
-        overrides.insert(character_id.to_string(), disk_theme(&values.theme_tokens)?);
-        validate_document(&document)?;
-        let mut bytes = serde_json::to_vec_pretty(&document)
-            .map_err(|_| "APPEARANCE_SERIALIZE_FAILED".to_string())?;
-        bytes.push(b'\n');
-        atomic_write(&self.path, &bytes)
+        self.config.update("APPEARANCE", |document| {
+            validate_document(document)?;
+            let settings = document
+                .get_mut("settings")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
+            settings.insert(
+                "portrait_scale_percent".to_string(),
+                Value::from(values.portrait_scale_percent),
+            );
+            for (name, value) in [
+                ("control_panel_width", values.control_panel_width),
+                ("bubble_height", values.bubble_max_height),
+                ("input_bar_offset", values.input_bar_offset),
+            ] {
+                settings.insert(name.to_string(), Value::from(value));
+            }
+            settings.insert(
+                "control_panel_vertical_offset".to_string(),
+                Value::from(values.control_panel_vertical_offset),
+            );
+            for (name, value) in [
+                ("speech_font_size", values.speech_font_size),
+                ("name_font_size", values.name_font_size),
+                ("input_font_size", values.input_font_size),
+            ] {
+                settings.insert(name.to_string(), Value::from(value));
+            }
+            let overrides = settings
+                .entry("character_theme_overrides")
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| "APPEARANCE_THEME_OVERRIDES_INVALID".to_string())?;
+            overrides.insert(character_id.to_string(), disk_theme(&values.theme_tokens)?);
+            validate_document(document)
+        })
     }
 }
 
@@ -629,89 +618,6 @@ fn disk_theme(theme: &BTreeMap<String, String>) -> Result<Value, String> {
     Ok(Value::Object(disk))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "APPEARANCE_PATH_INVALID".to_string())?;
-    fs::create_dir_all(parent).map_err(|_| "APPEARANCE_PERMISSION_DENIED".to_string())?;
-    let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".ui.json.{}.{}.tmp", std::process::id(), sequence));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|_| "APPEARANCE_TEMP_CREATE_FAILED".to_string())?;
-        file.write_all(bytes)
-            .and_then(|()| file.flush())
-            .and_then(|()| file.sync_all())
-            .map_err(|_| "APPEARANCE_WRITE_FAILED".to_string())?;
-        drop(file);
-        atomic_replace(&temp, path)?;
-        sync_parent(parent)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
-#[cfg(windows)]
-fn atomic_replace(temp: &Path, target: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::{
-        core::PCWSTR,
-        Win32::Storage::FileSystem::{
-            MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH, REPLACEFILE_WRITE_THROUGH,
-        },
-    };
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>()
-    };
-    let temp_wide = wide(temp);
-    let target_wide = wide(target);
-    let result = unsafe {
-        if target.exists() {
-            ReplaceFileW(
-                PCWSTR(target_wide.as_ptr()),
-                PCWSTR(temp_wide.as_ptr()),
-                PCWSTR::null(),
-                REPLACEFILE_WRITE_THROUGH,
-                None,
-                None,
-            )
-        } else {
-            MoveFileExW(
-                PCWSTR(temp_wide.as_ptr()),
-                PCWSTR(target_wide.as_ptr()),
-                MOVEFILE_WRITE_THROUGH,
-            )
-        }
-    };
-    result.map_err(|_| "APPEARANCE_ATOMIC_REPLACE_FAILED".to_string())
-}
-
-#[cfg(not(windows))]
-fn atomic_replace(temp: &Path, target: &Path) -> Result<(), String> {
-    fs::rename(temp, target).map_err(|_| "APPEARANCE_ATOMIC_REPLACE_FAILED".to_string())
-}
-
-#[cfg(unix)]
-fn sync_parent(parent: &Path) -> Result<(), String> {
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| "APPEARANCE_DIRECTORY_SYNC_FAILED".to_string())
-}
-
-#[cfg(not(unix))]
-fn sync_parent(_parent: &Path) -> Result<(), String> {
-    Ok(())
-}
-
 fn bounded(value: u16, minimum: u16, maximum: u16) -> bool {
     value >= minimum && value <= maximum
 }
@@ -734,6 +640,7 @@ fn is_hex_color(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Fixture(PathBuf);
@@ -950,4 +857,7 @@ mod tests {
         );
         assert_eq!(fs::read(parent_as_file).unwrap(), b"not a directory");
     }
+}
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    crate::ui_config::atomic_write(path, bytes, "APPEARANCE")
 }

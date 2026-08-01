@@ -70,6 +70,8 @@ impl ChatCancelHandle {
 
 #[derive(Debug)]
 pub struct ChatSubmission {
+    pub operation_id: String,
+    pub generation_id: String,
     pub cancel_handle: ChatCancelHandle,
     pub completion: Receiver<Result<Value, String>>,
 }
@@ -171,7 +173,7 @@ impl CoreHostGateway {
         validate_chat_payload(&payload)?;
         let operation_id = new_identity("chat");
         let opaque = new_identity("chat-cancel");
-        {
+        let generation_id = {
             let mut state = self
                 .state
                 .lock()
@@ -191,7 +193,8 @@ impl CoreHostGateway {
             );
             state.handles.insert(opaque.clone(), operation_id.clone());
             state.order.push_back(operation_id.clone());
-        }
+            state.generation_id.clone()
+        };
         let mut core_payload = payload;
         core_payload
             .as_object_mut()
@@ -202,11 +205,12 @@ impl CoreHostGateway {
             );
         let transport = Arc::clone(&self.transport);
         let (completion_sender, completion) = mpsc::sync_channel(1);
+        let request_operation_id = operation_id.clone();
         thread::Builder::new()
             .name(format!("sakura-chat-request-{operation_id}"))
             .spawn(move || {
                 let result = transport.request(
-                    &operation_id,
+                    &request_operation_id,
                     "chat.send",
                     core_payload,
                     CHAT_SEND_DEADLINE,
@@ -216,6 +220,8 @@ impl CoreHostGateway {
             })
             .map_err(|error| format!("CHAT_DISPATCH_FAILED: {error}"))?;
         Ok(ChatSubmission {
+            operation_id,
+            generation_id,
             cancel_handle: ChatCancelHandle { opaque },
             completion,
         })

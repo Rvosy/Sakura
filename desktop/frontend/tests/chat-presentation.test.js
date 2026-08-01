@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createChatPresentationReducer } from "../chat/chat-presentation.js";
+import { createTypewriter } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1) => ({
   type: "lifecycle",
@@ -68,6 +69,28 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   assert.equal(reducer.current().bubbleText, "完整回复");
 });
 
+test("same-generation ready updates preserve active cancel and typewriter skip actions", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-1" });
+
+  assert.equal(reducer.reduce(lifecycle("ready", 1, 2)).applied, true);
+  assert.equal(reducer.current().phase, "thinking");
+  assert.equal(reducer.current().operationId, "op-1");
+  assert.equal(reducer.current().canCancel, true);
+
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-1",
+    reply: { segments: [{ text: "完整回复", portrait: "smile" }] },
+  });
+  assert.equal(reducer.reduce(lifecycle("ready", 1, 3)).applied, true);
+  assert.equal(reducer.current().phase, "typing");
+  assert.equal(reducer.current().operationId, "op-1");
+  assert.equal(reducer.current().canSkip, true);
+});
+
 test("old operations, generations, and revisions cannot replace current presentation", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "current" });
@@ -118,4 +141,22 @@ test("Core restart preserves the settled presentation and rejects old generation
     false,
   );
   assert.notEqual(reducer.current().bubbleText, "late");
+});
+
+test("timing updates are snapshotted for the next reply without retiming the active one", () => {
+  const timers = [];
+  const typewriter = createTypewriter({
+    intervalMs: 28,
+    segmentPauseMs: 160,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+  });
+  typewriter.start([{ text: "ab" }]);
+  assert.equal(timers.at(-1).delay, 28);
+  typewriter.updateTiming({ intervalMs: 51, segmentPauseMs: 275 });
+  timers.shift().callback();
+  assert.equal(timers.at(-1).delay, 28);
+  typewriter.skip();
+  typewriter.start([{ text: "next" }]);
+  assert.equal(timers.at(-1).delay, 51);
 });

@@ -11,9 +11,10 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use tauri::Emitter;
 
 use crate::{
-    core_host_gateway::CoreHostGateway,
+    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -79,6 +80,7 @@ pub struct ShellLifecycleHandle {
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     settings_request_number: Arc<AtomicU64>,
+    chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
 }
 
 impl ShellLifecycleHandle {
@@ -148,11 +150,21 @@ impl ShellLifecycleHandle {
             .send(ShellCommand::Shutdown)
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
     }
+
+    pub fn chat_bridge(&self) -> Result<ChatBridge, String> {
+        self.chat_bridge
+            .lock()
+            .map_err(|_| "CHAT_BRIDGE_UNAVAILABLE".to_string())?
+            .clone()
+            .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())
+    }
 }
 
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
+    chat_events: Option<Receiver<ChatEventPublication>>,
+    chat_projector: Option<JoinHandle<()>>,
 }
 
 impl ShellLifecycleSession {
@@ -178,14 +190,19 @@ impl ShellLifecycleSession {
         };
         let publication = Arc::new(Mutex::new(initial));
         let settings_transport = Arc::new(Mutex::new(None));
+        let chat_bridge = Arc::new(Mutex::new(None));
+        let (chat_event_sender, chat_events) = mpsc::channel();
         let worker_publication = publication.clone();
         let worker_settings_transport = settings_transport.clone();
+        let worker_chat_bridge = chat_bridge.clone();
         let worker = thread::spawn(move || {
             run_worker(
                 request,
                 commands,
                 worker_publication,
                 worker_settings_transport,
+                worker_chat_bridge,
+                chat_event_sender,
             )
         });
         Self {
@@ -194,8 +211,11 @@ impl ShellLifecycleSession {
                 publication,
                 settings_transport,
                 settings_request_number: Arc::new(AtomicU64::new(0)),
+                chat_bridge,
             },
             worker: Some(worker),
+            chat_events: Some(chat_events),
+            chat_projector: None,
         }
     }
 
@@ -203,12 +223,32 @@ impl ShellLifecycleSession {
         self.handle.clone()
     }
 
+    pub fn bind_chat_projection(&mut self, app: tauri::AppHandle) -> Result<(), &'static str> {
+        if self.chat_projector.is_some() {
+            return Ok(());
+        }
+        let events = self
+            .chat_events
+            .take()
+            .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
+        self.chat_projector = Some(thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                let _ = app.emit_to("main", CHAT_EVENT, event);
+            }
+        }));
+        Ok(())
+    }
+
     pub fn shutdown_and_join(mut self) -> Result<(), &'static str> {
         let _ = self.handle.request_shutdown();
         let Some(worker) = self.worker.take() else {
             return Ok(());
         };
-        worker.join().map_err(|_| "LIFECYCLE_WORKER_FAILED")
+        worker.join().map_err(|_| "LIFECYCLE_WORKER_FAILED")?;
+        if let Some(projector) = self.chat_projector.take() {
+            projector.join().map_err(|_| "CHAT_PROJECTOR_FAILED")?;
+        }
+        Ok(())
     }
 }
 
@@ -218,6 +258,9 @@ impl Drop for ShellLifecycleSession {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        if let Some(projector) = self.chat_projector.take() {
+            let _ = projector.join();
+        }
     }
 }
 
@@ -225,13 +268,14 @@ struct WorkerState {
     request: RuntimeLocationRequest,
     supervisor: CoreSupervisor,
     host: Option<CoreHostRuntime>,
-    chat_gateway: Option<CoreHostGateway>,
+    chat_bridge: Option<ChatBridge>,
     snapshot: Option<Value>,
     identity: Option<(GenerationId, u64)>,
     core_version: String,
     request_number: u64,
     cleanup_blocked: bool,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
 }
 
 fn run_worker(
@@ -239,6 +283,8 @@ fn run_worker(
     commands: Receiver<ShellCommand>,
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
+    chat_events: Sender<ChatEventPublication>,
 ) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -248,13 +294,14 @@ fn run_worker(
         request,
         supervisor: CoreSupervisor::new(nonce),
         host: None,
-        chat_gateway: None,
+        chat_bridge: None,
         snapshot: None,
         identity: None,
         core_version: "unavailable".to_string(),
         request_number: 0,
         cleanup_blocked: false,
         settings_transport,
+        shared_chat_bridge,
     };
     let mut actions = VecDeque::from(state.supervisor.submit(LifecycleIntent::Start));
     publish(&state, &publication);
@@ -268,7 +315,8 @@ fn run_worker(
                     ..
                 } => {
                     state.identity = Some((generation_id, generation_number));
-                    state.chat_gateway = None;
+                    state.chat_bridge = None;
+                    clear_chat_bridge(&state);
                     clear_settings_transport(&state);
                     state.snapshot = None;
                     state.core_version = "unavailable".to_string();
@@ -340,7 +388,7 @@ fn run_worker(
                 actions.extend(state.supervisor.submit(LifecycleIntent::AppShutdown))
             }
             Err(RecvTimeoutError::Timeout) => {
-                drain_chat_events(&mut state);
+                drain_chat_events(&mut state, &chat_events);
                 if state.supervisor.snapshot().state == SupervisorState::Running {
                     match refresh_snapshot(&mut state) {
                         Ok(()) => publish(&state, &publication),
@@ -360,7 +408,7 @@ fn run_worker(
     }
 }
 
-fn drain_chat_events(state: &mut WorkerState) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -374,8 +422,10 @@ fn drain_chat_events(state: &mut WorkerState) {
             .and_then(Value::as_str)
             .is_some_and(|name| name.starts_with("chat."))
         {
-            if let Some(gateway) = state.chat_gateway.as_ref() {
-                let _ = gateway.observe_event(&event);
+            if let Some(bridge) = state.chat_bridge.as_ref() {
+                if let Ok(Some(publication)) = bridge.observe_event(&event) {
+                    let _ = events.send(publication);
+                }
             }
         }
     }
@@ -462,10 +512,21 @@ fn spawn_and_initialize(
     }
 
     let readiness_deadline = Instant::now() + READINESS_DEADLINE;
-    state.chat_gateway = state
+    state.chat_bridge = state
         .host
         .as_ref()
-        .and_then(|host| host.chat_gateway().ok());
+        .and_then(|host| host.chat_gateway().ok())
+        .and_then(|gateway| {
+            ChatBridge::new(
+                gateway,
+                generation_text.clone(),
+                state.identity.map_or(0, |(_, number)| number),
+            )
+            .ok()
+        });
+    if let Ok(mut target) = state.shared_chat_bridge.lock() {
+        *target = state.chat_bridge.clone();
+    }
     let settings_handle = state.host.as_ref().and_then(|host| {
         let negotiated = host.negotiation().is_some_and(|value| {
             value
@@ -527,8 +588,9 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
 
 fn stop_generation(state: &mut WorkerState) -> bool {
     clear_settings_transport(state);
-    if let Some(gateway) = state.chat_gateway.take() {
-        gateway.invalidate_generation();
+    clear_chat_bridge(state);
+    if let Some(bridge) = state.chat_bridge.take() {
+        bridge.invalidate();
     }
     let Some(host) = state.host.take() else {
         return true;
@@ -536,6 +598,14 @@ fn stop_generation(state: &mut WorkerState) -> bool {
     match host.shutdown() {
         Ok(exit) => exit.tree_empty && exit.stderr_stats.eof && !exit.stderr_stats.read_failed,
         Err(_) => false,
+    }
+}
+
+fn clear_chat_bridge(state: &WorkerState) {
+    if let Ok(mut bridge) = state.shared_chat_bridge.lock() {
+        if let Some(existing) = bridge.take() {
+            existing.invalidate();
+        }
     }
 }
 

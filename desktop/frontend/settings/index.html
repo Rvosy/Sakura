@@ -492,14 +492,14 @@
                 <span class="setting-title">字幕逐字间隔</span>
                 <span class="setting-desc">字幕逐字显示的间隔时间。</span>
               </label>
-              <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" /><span class="unit">ms</span></span>
+              <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="replySegmentPause">
                 <span class="setting-title">回复分段停顿</span>
                 <span class="setting-desc">多段回复之间的停顿时间。</span>
               </label>
-              <span class="field-unit"><input id="replySegmentPause" type="number" step="1" /><span class="unit">ms</span></span>
+              <span class="field-unit"><input id="replySegmentPause" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
             </div>
           </fieldset>
 
@@ -510,14 +510,14 @@
                 <span class="setting-title">气泡自动隐藏</span>
                 <span class="setting-desc">无操作一段时间后自动隐藏气泡。</span>
               </label>
-              <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" /></span>
+              <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" data-settings-feature="chat.bubble_auto_hide" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoHideDelay">
                 <span class="setting-title">无操作时长</span>
                 <span class="setting-desc">触发自动隐藏前的无操作时长。</span>
               </label>
-              <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" /><span class="unit">秒</span></span>
+              <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" data-settings-feature="chat.bubble_auto_hide" /><span class="unit">秒</span></span>
             </div>
           </fieldset>
 
@@ -528,14 +528,14 @@
                 <span class="setting-title">启用快速接话</span>
                 <span class="setting-desc">在你说话间隙快速给出简短回应。</span>
               </label>
-              <span class="setting-toggle"><input id="backchannelEnabled" type="checkbox" /></span>
+              <span class="setting-toggle"><input id="backchannelEnabled" type="checkbox" data-settings-feature="chat.backchannel" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="backchannelMode">
                 <span class="setting-title">模式</span>
                 <span class="setting-desc">规则更稳，智能辅助会使用本地模型帮助判断。</span>
               </label>
-              <select id="backchannelMode">
+              <select id="backchannelMode" data-settings-feature="chat.backchannel">
                 <option value="rules">规则</option>
                 <option value="hybrid">智能辅助</option>
               </select>
@@ -545,21 +545,21 @@
                 <span class="setting-title">延迟</span>
                 <span class="setting-desc">接话前的等待延迟。</span>
               </label>
-              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" /><span class="unit">毫秒</span></span>
+              <span class="field-unit"><input id="backchannelDelay" type="number" step="1" data-settings-feature="chat.backchannel" /><span class="unit">毫秒</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="backchannelProbability">
                 <span class="setting-title">概率</span>
                 <span class="setting-desc">命中接话的概率（0–1）。</span>
               </label>
-              <input id="backchannelProbability" type="number" min="0" max="1" step="0.01" />
+              <input id="backchannelProbability" type="number" min="0" max="1" step="0.01" data-settings-feature="chat.backchannel" />
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="backchannelTtsEnabled">
                 <span class="setting-title">接话语音</span>
                 <span class="setting-desc">接话时同时播放 TTS。</span>
               </label>
-              <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" /></span>
+              <span class="setting-toggle"><input id="backchannelTtsEnabled" type="checkbox" data-settings-feature="chat.backchannel" /></span>
             </div>
             <details class="resource-foldout">
               <summary>

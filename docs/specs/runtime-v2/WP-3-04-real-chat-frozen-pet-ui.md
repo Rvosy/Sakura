@@ -56,8 +56,9 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 ## 冻结 UI 映射
 
-- `chat.started` 映射为 thinking；主按钮切换为取消，输入框保持可编辑，气泡、输入框、窗口包络和立绘
-  锚点不变。
+- `chat.started` 映射为 thinking；主按钮在原有尺寸和命中区域内切换为可点击取消的环形旋转条，输入框
+  保持可编辑，气泡、输入框、窗口包络和立绘锚点不变。系统要求减少动态效果时，环形条保持静态但取消
+  语义不变。
 - `chat.completed` 的完整 `segments` 交给现有 presentation reducer。WebView 只在完整回复到达后运行
   typewriter；不引入 token streaming、delta 或进度协议。
 - segment 的 `text`/`translation`/`tone`/`portrait`/`suppressTts` 只按已冻结 DTO 消费；本 WP 允许

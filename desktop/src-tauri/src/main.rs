@@ -2,6 +2,8 @@
 
 mod character_appearance;
 mod character_presentation;
+mod chat_bridge;
+mod chat_settings;
 #[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
 mod core_host_gateway;
 #[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
@@ -25,6 +27,7 @@ mod platform;
 mod product_shell;
 mod shared_instance;
 mod shell_lifecycle;
+mod ui_config;
 mod window_geometry;
 mod window_interaction;
 
@@ -63,6 +66,8 @@ const SETTINGS_APPEARANCE_SCRIPT: &str =
 const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
     include_str!("../../frontend/settings/provider-model-runtime.js");
 const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
+const SETTINGS_CHAT_TIMING_SCRIPT: &str =
+    include_str!("../../frontend/settings/chat-timing-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
@@ -731,6 +736,87 @@ fn runtime_lifecycle_snapshot(
             .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?;
     }
     Ok(publication)
+}
+
+#[tauri::command]
+async fn chat_send(
+    window: WebviewWindow,
+    payload: chat_bridge::ChatSendRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<chat_bridge::ChatSendPublication, String> {
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
+    let pending = handle
+        .chat_bridge()?
+        .send(window.label(), payload.message)?;
+    tauri::async_runtime::spawn_blocking(move || pending.wait())
+        .await
+        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+}
+
+#[tauri::command]
+async fn chat_cancel(
+    window: WebviewWindow,
+    payload: chat_bridge::ChatCancelRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<chat_bridge::ChatCancelPublication, String> {
+    let bridge = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?
+        .chat_bridge()?;
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        bridge.cancel(&label, &payload.operation_id, &payload.cancel_handle)
+    })
+    .await
+    .map_err(|_| "CHAT_CANCEL_ABORTED".to_string())?
+}
+
+#[tauri::command]
+fn current_chat_presentation_timing(
+    window: WebviewWindow,
+    timing: State<'_, chat_settings::ChatPresentationTimingState>,
+) -> Result<chat_settings::ChatPresentationTiming, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    timing.get()
+}
+
+#[tauri::command]
+fn settings_chat_presentation_timing_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, chat_settings::ChatPresentationTimingState>,
+) -> Result<chat_settings::ChatPresentationTimingSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    timing.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+fn settings_chat_presentation_timing_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: chat_settings::ChatPresentationTiming,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, chat_settings::ChatPresentationTimingState>,
+) -> Result<chat_settings::ChatPresentationTiming, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = timing.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", chat_settings::CHAT_TIMING_CHANGED_EVENT, saved)
+        .map_err(|error| format!("CHAT_TIMING_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1593,7 +1679,7 @@ fn development_runtime_request() -> platform::RuntimeLocationRequest {
 }
 
 fn character_appearance_state(
-    app_root: std::path::PathBuf,
+    repository: ui_config::UiConfigRepository,
 ) -> character_appearance::CharacterAppearanceState {
     #[cfg(debug_assertions)]
     if let Some(root) = std::env::var_os(WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV) {
@@ -1604,7 +1690,7 @@ fn character_appearance_state(
         );
     }
 
-    character_appearance::CharacterAppearanceState::new(app_root)
+    character_appearance::CharacterAppearanceState::new_with_repository(repository)
 }
 
 #[cfg(debug_assertions)]
@@ -1729,18 +1815,22 @@ fn main() {
         SETTINGS_APPEARANCE_SCRIPT.len(),
         SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
+        SETTINGS_CHAT_TIMING_SCRIPT.len(),
     );
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
         || std::env::var_os("SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY").is_some();
     let runtime_request = development_runtime_request();
     let character_resource_root = runtime_request.assistant_root.clone();
-    let shell_lifecycle_session =
+    let mut shell_lifecycle_session =
         (!acceptance_mode).then(|| shell_lifecycle::ShellLifecycleSession::start(runtime_request));
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
 
+    let ui_config_repository = ui_config::UiConfigRepository::new(
+        character_resource_root.join("data/runtime_v2/config/ui.json"),
+    );
     let app = tauri::Builder::default()
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
@@ -1750,7 +1840,10 @@ fn main() {
         .manage(character_presentation::CharacterPresentationState::new(
             character_resource_root.clone(),
         ))
-        .manage(character_appearance_state(character_resource_root))
+        .manage(character_appearance_state(ui_config_repository.clone()))
+        .manage(chat_settings::ChatPresentationTimingState::new(
+            ui_config_repository,
+        ))
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -1835,6 +1928,9 @@ fn main() {
             close_pet_window,
             collect_native_diagnostics,
             runtime_lifecycle_snapshot,
+            chat_send,
+            chat_cancel,
+            current_chat_presentation_timing,
             current_character_presentation,
             current_character_appearance,
             begin_control_surface_preview,
@@ -1850,6 +1946,8 @@ fn main() {
             settings_character_appearance_preview,
             settings_character_appearance_save,
             settings_character_appearance_cancel_preview,
+            settings_chat_presentation_timing_get,
+            settings_chat_presentation_timing_save,
             settings_provider_model_get,
             settings_provider_model_save,
             settings_provider_model_probe,
@@ -1859,6 +1957,12 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Sakura Runtime v2 pet geometry gate");
+
+    if let Some(session) = shell_lifecycle_session.as_mut() {
+        session
+            .bind_chat_projection(app.handle().clone())
+            .expect("failed to bind the Runtime v2 chat event projector");
+    }
 
     #[cfg(debug_assertions)]
     let mut phase_1c_acceptance =

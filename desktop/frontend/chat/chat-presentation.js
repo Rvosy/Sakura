@@ -2,6 +2,8 @@ const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
   initializing: ["正在准备", "正在准备会话"],
   ready: ["在线", "可以开始对话"],
+  setup_required: ["需要设置", "请先完成聊天供应商设置"],
+  degraded: ["受限", "聊天服务当前处于受限状态"],
   failed: ["不可用", "会话启动失败"],
   core_crashed: ["连接中断", "连接已中断"],
   restarting: ["正在重连", "正在重新连接"],
@@ -75,6 +77,10 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         const [lifecycleLabel, lifecycleHeadline] = LIFECYCLE_COPY[event.status];
         const ready = event.status === "ready";
         const preserveVisualState = establishedPresentation && (generationChanged || !ready);
+        const preserveInteraction = ready
+          && !generationChanged
+          && Boolean(state.operationId)
+          && ["thinking", "typing"].includes(state.phase);
         state = Object.freeze({
           ...state,
           generationId: event.generationId,
@@ -88,7 +94,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             : ready
               ? (["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase)
               : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
-          operationId: ready ? state.operationId : null,
+          operationId: preserveInteraction ? state.operationId : null,
           bubbleText: preserveVisualState
             ? state.bubbleText
             : ready || initialStartup
@@ -101,8 +107,8 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           segments: preserveVisualState || ready ? state.segments : Object.freeze([]),
           error: null,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
-          canCancel: false,
-          canSkip: false,
+          canCancel: preserveInteraction && state.canCancel,
+          canSkip: preserveInteraction && state.canSkip,
         });
         if (ready) hasReachedReady = true;
         return result(true);
@@ -149,7 +155,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           operationId: null,
           bubbleText: message,
           segments: Object.freeze([]),
-          error: Object.freeze({ code: String(event.error?.code || "FAKE_CORE_FAILED"), retryable: Boolean(event.error?.retryable) }),
+          error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
           portrait: concernedPortrait,
           canCancel: false,
           canSkip: false,

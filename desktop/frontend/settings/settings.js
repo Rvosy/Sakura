@@ -134,6 +134,7 @@ let request = null;
 let runtimeSettingsHost = false;
 let runtimeAppearanceController = null;
 let runtimeProviderModelController = null;
+let runtimeChatTimingController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -325,7 +326,11 @@ function settingsSnapshot() {
 
 function computeDirty() {
   if (runtimeSettingsHost) {
-    return Boolean(runtimeAppearanceController?.isDirty() || runtimeProviderModelController?.isDirty());
+    return Boolean(
+      runtimeAppearanceController?.isDirty()
+      || runtimeProviderModelController?.isDirty()
+      || runtimeChatTimingController?.isDirty()
+    );
   }
   return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
 }
@@ -421,6 +426,7 @@ async function requestCancelClose() {
           setSubmissionBusy(true);
           await runtimeAppearanceController?.cancelPreview();
           await runtimeProviderModelController?.cancelOperations();
+          runtimeChatTimingController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -463,6 +469,7 @@ async function requestAppExitClose() {
         setSubmissionBusy(true);
         await runtimeAppearanceController?.cancelPreview();
         await runtimeProviderModelController?.cancelOperations();
+        runtimeChatTimingController?.discard();
       },
       close: async () => {
         await runtimeProviderModelController?.cancelOperations();
@@ -4426,16 +4433,21 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
 
 async function saveRuntimeSettings() {
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
-  if (!runtimeProviderModelController?.isDirty()) return null;
-  if (!validateApiSettingsBeforeSubmit()) throw new Error("供应商或模型设置未通过校验。");
-  const result = await runtimeProviderModelController.save();
-  providerState.profiles.forEach((profile) => {
-    profile.configured = runtimeCredential(profile).action !== "clear";
-    profile.api_key = "";
-    profile.credential_action = profile.configured ? "keep" : "clear";
-  });
-  renderProviderPage();
-  runtimeProviderModelController.rebase();
+  let result = null;
+  if (runtimeProviderModelController?.isDirty()) {
+    if (!validateApiSettingsBeforeSubmit()) throw new Error("供应商或模型设置未通过校验。");
+    result = await runtimeProviderModelController.save();
+    providerState.profiles.forEach((profile) => {
+      profile.configured = runtimeCredential(profile).action !== "clear";
+      profile.api_key = "";
+      profile.credential_action = profile.configured ? "keep" : "clear";
+    });
+    renderProviderPage();
+    runtimeProviderModelController.rebase();
+  }
+  if (runtimeChatTimingController?.isDirty()) {
+    result = await runtimeChatTimingController.save();
+  }
   return result;
 }
 
@@ -4970,6 +4982,7 @@ detailCard?.addEventListener("input", (event) => {
 window.addEventListener("beforeunload", () => {
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
+  runtimeChatTimingController?.dispose();
 }, { once: true });
 
 async function startSettingsFrontend() {
@@ -5014,6 +5027,16 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_provider_model_get");
     await runtimeProviderModelController.initialize(snapshot);
+  }
+  if (featureStatus(manifest, "chat.presentation_timing") === "available") {
+    const { createChatTimingController } = await import("./chat-timing-runtime.js");
+    runtimeChatTimingController = createChatTimingController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    const snapshot = await invoke("settings_chat_presentation_timing_get");
+    runtimeChatTimingController.initialize(snapshot);
   }
   settingsBaseline = null;
   refreshDirty();

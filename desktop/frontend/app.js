@@ -1,5 +1,6 @@
 import { createChatPresentationReducer } from "./chat/chat-presentation.js";
-import { createFakeChatCore } from "./chat/fake-chat-core.js";
+import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
+import { createRealChatClient } from "./chat/real-chat-client.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { applyTheme } from "./core/theme.js";
 import {
@@ -37,6 +38,8 @@ const typewriterSkip = document.querySelector("#typewriter-skip");
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
+const cancelIcon = send.querySelector(".composer-action-icon--cancel svg");
+const cancelShape = cancelIcon.querySelector("rect");
 const portrait = document.querySelector("#portrait");
 const portraitCurrent = document.querySelector("#portrait-current");
 const portraitNext = document.querySelector("#portrait-next");
@@ -53,6 +56,11 @@ let disposed = false;
 let presentationUnavailable = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
+const composerActionIndicator = createComposerActionIndicator({
+  svg: cancelIcon,
+  shape: cancelShape,
+  prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+});
 
 const contextMenu = new PetContextMenu({
   menu: contextMenuElement,
@@ -362,7 +370,6 @@ const presentation = createChatPresentationReducer({
   thinkingPortraitKey: portraits.thinking,
   concernedPortraitKey: portraits.concerned,
 });
-const fakeCore = createFakeChatCore({ portraits });
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
 const adaptiveSurface = createAdaptiveControlSurface({
   root: stage,
@@ -391,7 +398,23 @@ const phaseLabels = Object.freeze({
   reconnecting: "正在重连",
 });
 
+let chatTiming = Object.freeze({
+  subtitleTypingIntervalMs: 28,
+  replySegmentPauseMs: 160,
+});
+try {
+  const persistedTiming = await invoke("current_chat_presentation_timing");
+  if (
+    Number.isSafeInteger(persistedTiming?.subtitleTypingIntervalMs)
+    && Number.isSafeInteger(persistedTiming?.replySegmentPauseMs)
+  ) chatTiming = Object.freeze(persistedTiming);
+} catch {
+  // Defaults remain valid when the isolated ui.json timing slice cannot be read.
+}
+
 const typewriter = createTypewriter({
+  intervalMs: chatTiming.subtitleTypingIntervalMs,
+  segmentPauseMs: chatTiming.replySegmentPauseMs,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
     const result = presentation.setTypingText(text);
@@ -413,6 +436,7 @@ function render(state, bubbleUpdate = {}) {
   typewriterSkip.hidden = !state.canSkip;
   send.dataset.action = state.canCancel ? "cancel" : "send";
   send.setAttribute("aria-label", state.canCancel ? "停止回复" : "发送消息");
+  composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
   send.disabled = presentationUnavailable || state.lifecycle !== "ready" || state.phase === "reconnecting";
   document.body.dataset.chatState = state.phase;
@@ -442,17 +466,24 @@ function handleCoreEvent(event) {
   if (event.type === "chat.completed" && result.state.phase === "typing") typewriter.start(result.state.segments);
 }
 
-fakeCore.subscribe(handleCoreEvent);
+const chatClient = createRealChatClient({
+  invoke,
+  listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+  onEvent: handleCoreEvent,
+});
 
-function submitMessage({ text }) {
+async function submitMessage({ text }) {
   const state = presentation.current();
   if (presentationUnavailable || state.canCancel || state.lifecycle !== "ready") return;
   typewriter.cancel("");
-  input.value = "";
-  input.lang = "zh-CN";
-  adaptiveSurface.resetInput();
+  const submittedDraft = input.value;
   try {
-    fakeCore.send({ message: text });
+    await chatClient.send({ message: text });
+    if (input.value === submittedDraft) {
+      input.value = "";
+      input.lang = "zh-CN";
+      adaptiveSurface.resetInput();
+    }
   } catch {
     showRecoverableError("消息暂时无法发送，请稍后重试。");
   }
@@ -637,6 +668,19 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   }
 });
 
+await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
+  const values = event?.payload;
+  if (
+    !Number.isSafeInteger(values?.subtitleTypingIntervalMs)
+    || !Number.isSafeInteger(values?.replySegmentPauseMs)
+  ) return;
+  chatTiming = Object.freeze(values);
+  typewriter.updateTiming({
+    intervalMs: values.subtitleTypingIntervalMs,
+    segmentPauseMs: values.replySegmentPauseMs,
+  });
+});
+
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
@@ -659,7 +703,7 @@ input.addEventListener("keydown", (event) => {
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const state = presentation.current();
-  if (state.canCancel) fakeCore.cancel(state.operationId);
+  if (state.canCancel) void chatClient.cancel(state.operationId);
   else inputFocus.submit("button");
 });
 typewriterSkip.addEventListener("click", () => typewriter.skip());
@@ -668,22 +712,10 @@ window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => inputFocus.handleWindowBlur());
 document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
 
-async function enableAcceptanceEntry() {
-  if (!(await invoke("wp_3_03_acceptance_enabled"))) return;
-  const entry = document.querySelector("#acceptance-entry");
-  entry.hidden = false;
-  entry.setAttribute("aria-hidden", "false");
-  entry.addEventListener("click", (event) => {
-    const scenario = event.target.closest("[data-scenario]")?.dataset.scenario;
-    if (!scenario) return;
-    input.value = scenario;
-    inputFocus.submit("acceptance");
-  });
-}
-
 function dispose() {
   if (disposed) return;
   disposed = true;
+  composerActionIndicator.dispose();
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;
@@ -703,7 +735,7 @@ function dispose() {
   bubbleScroll.dispose();
   adaptiveSurface.dispose();
   portraitController.dispose();
-  fakeCore.dispose();
+  chatClient.dispose();
   contextMenu.dispose();
 }
 
@@ -716,7 +748,7 @@ document.querySelector("#close-window").addEventListener("click", async () => {
 });
 window.addEventListener("beforeunload", dispose, { once: true });
 
-portraitController.beginGeneration("fake-generation-1");
+portraitController.beginGeneration(characterPresentation.generationId);
 renderedPortrait = characterPresentation.defaultPortraitKey;
 if (presentationUnavailable) {
   portraitFallback.hidden = false;
@@ -724,12 +756,11 @@ if (presentationUnavailable) {
 } else {
   await portraitController.show(characterPresentation.defaultPortraitKey, {
     immediate: true,
-    generation: "fake-generation-1",
+    generation: characterPresentation.generationId,
   });
 }
 render(presentation.current());
-await enableAcceptanceEntry();
-fakeCore.start();
+await chatClient.start();
 await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";

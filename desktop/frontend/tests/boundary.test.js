@@ -6,6 +6,7 @@ const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
+const realChat = readFileSync(new URL("../chat/real-chat-client.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
@@ -157,12 +158,16 @@ test("only rendered reply text overrides bubble dragging while the scrollbar rem
   assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag"\)/);
 });
 
-test("WP-3-03 presentation never invokes the real chat Gateway or reads network and product data", () => {
+test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core remains isolated", () => {
   for (const forbidden of ["chat_send", "chat_cancel", "fetch(", "localStorage", "sessionStorage", "characters/", "data/"])
     assert.equal(fakeCore.includes(forbidden), false, forbidden);
   assert.equal(app.includes('invoke("chat_'), false);
-  assert.equal(app.includes("runtime_lifecycle_snapshot"), false);
-  assert.equal(app.includes("window.setInterval"), false);
+  assert.match(app, /createRealChatClient/);
+  assert.match(realChat, /invoke\("chat_send", \{ payload: \{ message \} \}\)/);
+  assert.match(realChat, /invoke\("chat_cancel"/);
+  assert.match(realChat, /invoke\("runtime_lifecycle_snapshot"\)/);
+  for (const forbidden of ["fetch(", "localStorage", "sessionStorage", "characters/", "data/", "apiKey", "credential"])
+    assert.equal(realChat.includes(forbidden), false, forbidden);
 });
 
 test("CSP admits only controlled character URLs and keeps network/media sources closed", () => {
