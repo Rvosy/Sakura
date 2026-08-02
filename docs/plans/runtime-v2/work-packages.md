@@ -2484,6 +2484,23 @@ Legacy 参考进程创建/修改数据并退出
 
 ### WP-3V-01：Runtime v2 Assistant Architecture Validation Slice
 
+激活前冻结契约（2026-08-02）：
+
+```text
+状态：planned；只有 WP-3-06 accepted 后才能由独立 activation 提交切换为唯一 active Work Package
+前置条件：WP-3-01 至 WP-3-06、WP-3U-01/02、WP-3S-01 全部 accepted
+真实消费者：现有 Runtime v2 桌宠 UI、Rust Gateway/Supervisor、bundled Python Core、无 Qt Assistant Adapter、Chat Pipeline、history 仓库和共享应用锁
+允许文件：.github/workflows/runtime-v2-platform-foundation.yml；desktop/src-tauri/src/main.rs 中仅限 debug/test acceptance 接线；新增 desktop/src-tauri/src/wp_3v_01_assistant_architecture_acceptance.rs；desktop/frontend/tests/**；新增 desktop/tests/windows_wp_3v_01_assistant_architecture_acceptance.ps1；新增 tests/fixtures/runtime_v2/wp_3v_01/** 和 tests/integration/test_wp_3v_01_assistant_architecture.py；harness/suites.json、harness/README.md、harness/tasks/WP-3V-01.json、harness/activations/WP-3V-01/0001.json；ADR-0002/0003/0004、产品能力台账、Runtime v2 spec 索引、技术 README、本计划和 audits 记录/索引
+明确禁止：修改 app/**、现有 Rust Supervisor/Gateway/transport/data production 模块、frontend 产品代码、legacy_qt_main.py、main.py、依赖/lockfile/tauri.conf、plugins/**、runtime/**、tools/mcp/**；data/**、characters/**、third_party/** 受保护
+协议冻结输入：现有 hello/initialize/readiness、chat.send/chat.cancel、chat started/completed/failed/cancelled、health/shutdown、generation、credential、最小 Snapshot/角色/历史字段；不得新增通用 Operation、resource token、任务优先级或未来 component
+数据政策：自动场景只写系统临时目录中的脱敏 fixture；真实 Provider 场景只允许现有兼容 history append，验收前后生成 path/length/mtime/SHA-256 manifest；credential、API Key、完整 Prompt 和私密配置不得进入输出或证据
+验收环境：同一候选 SHA 的 Windows x64、macOS arm64、Linux x64 locked 公共门；Windows 真实 Runtime v2 EXE/WebView2 与已有开发 Provider 配置；bundled Python，不允许 Fake Core 或直接 Python 调用替代跨边界链路
+故障矩阵：真实完整回复、取消唯一终态、聊天/取消期间 health/shutdown、Core 强杀与新 generation 水合、旧代 response/event/Snapshot/cancel 丢弃、Provider 失败、协议/credential 错误、锁冲突/重获、正常/强杀退出、完整进程/pipe/thread/handle/fd/临时根清场、manifest 和 secret scan
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
+人工验收：负责人直接启动当前 Runtime v2 EXE，以已有开发配置完成一次真实 Provider 回复和取消，复核强杀恢复、历史追加、退出零残留、脱敏证据及同一候选三平台结果
+回退：删除/回退本 WP 的 acceptance 接线、脚本和证据，不回退任何已 accepted 生产 WP，不删除或改写用户数据；发现生产缺陷时 WP-3V-01 退回 planned，只重新打开唯一责任 WP
+```
+
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
 强制前置：WP-3-01 至 WP-3-06、WP-3U-01/02 以及 WP-3S-01 全部 accepted；WP-2-01/02 的最小 Router、
