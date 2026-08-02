@@ -22,3 +22,4 @@ updated: 2026-08-02
 - [WP-3-06 项目负责人验收声明](WP-3-06-OWNER-ACCEPTANCE.md)
 - [WP-3V-01 Router 事件顺序缺陷记录](WP-3V-01-ROUTER-ORDERING-DEFECT.md)
 - [WP-2-01 Router 稳定化项目负责人验收声明](WP-2-01-ROUTER-STABILIZATION-OWNER-ACCEPTANCE.md)
+- [WP-3V-01 本地自动验证记录](WP-3V-01-AUTOMATED-VALIDATION.md)

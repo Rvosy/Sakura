@@ -108,7 +108,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | active |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | stabilizing |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
@@ -2561,6 +2561,16 @@ Router，也不得通过延迟 Provider 或放宽 Gateway 顺序校验制造通�
 恢复记录（2026-08-03）：项目负责人验收通过 WP-2-01 Router 顺序稳定化并批准恢复本 WP。恢复只
 重建任务契约 activation 基线，不改变原冻结范围、自动/人工验收项、Provider 时序或数据边界；恢复后
 须在当前候选重新运行 preflight、required profiles、真实 Windows 组合验收及最终 verify。
+
+恢复后稳定化记录（2026-08-03）：实现候选至 `43b9b731`；WP-2-01 依赖已 accepted，第二次
+activation/preflight 通过。真实 Windows 组合验收再次通过：4 次 Provider 请求、1 次 Core 强杀、取消
+唯一终态、新 generation 水合、Legacy oracle 回读、仅预声明 fixture history 变化、敏感证据/进程残留
+均为 0。Harness verify 报告 `temp/harness/20260802T165927Z-WP-3V-01.json` 为 required profiles
+5/5、自动项 24 passed/0 failed、人工项 3 pending；完整 Rust 单线程 239 passed/24 ignored，release
+build 和 cargo fmt 通过。当前分支比远端 ahead 24，`43b9b731` 尚无实际同 SHA 三平台 workflow；
+Harness 的本地 automated 映射不替代该远端证据。负责人仍须完成真实开发 Provider 回复/取消、恢复/
+锁/零残留复核以及同 SHA 三平台证据审查；完成前保持 stabilizing，不更新 CAP-004，不标记 accepted。
+本地证据详见 `docs/records/audits/WP-3V-01-AUTOMATED-VALIDATION.md`。
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
