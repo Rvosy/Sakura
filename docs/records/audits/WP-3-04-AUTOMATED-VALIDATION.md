@@ -174,3 +174,28 @@ runtime\python.exe -m harness check WP-3-04        -> passed / 无越界
 完整 Harness、Rust、Core integration 与文档门禁将在最终候选上串行重跑并追加到本节。回复翻阅的跨重启
 恢复、旧聊天记录读取、TTS 重放和 Core history 协议均不属于本次纠正。本记录不代填人工验收，不改变
 WP-3-04 的 `active` 状态。
+
+## 2026-08-02 控制面板高度与撕裂纠正
+
+项目负责人提供三张 Windows 实机截图，确认加入回复轨道后同类字幕的气泡高度发生变化；同时指出既有
+气泡/输入栏自适应会出现表面撕裂，输入栏向上扩展时发送按钮先下沉到可见区域外再随外框展开。
+
+定位到两个直接原因：回复 DOM 重组后，旧测量代码仍从 `bubble-copy` 读取已经迁移到 `reply-body` 的
+8px 内容间距；textarea 测量把目标高度立即留在可见 DOM 中，但外层面板要等待原生精确区域确认，期间
+网格先被撑开并受 `overflow: hidden` 裁切。原生区域确认后，bubble/composer 的 `top`/`height` 仍继续
+160ms CSS 过渡，形成 DOM 与 Win32 精确区域的尾帧错位。
+
+第五次契约修订未修改固定 layout contract。实现提交 `21c00467` 恢复 reply body 的原 flex 高度语义并
+从该容器读取内容间距；测量后立即恢复屏幕上的 textarea，把目标 height/overflow 作为布局候选；原生确认
+后在同一同步提交阶段更新子项与外层面板；普通自适应不再保留 top/height CSS 尾帧。overflow-only 变化
+也进入候选 key，避免达到最大高度后漏开或漏关内部滚动。
+
+阶段性自动结果：
+
+```text
+desktop/frontend node --test                       -> 100/100 passed
+runtime\python.exe -m harness check WP-3-04        -> passed / 无越界
+```
+
+真实 WebView2 下的同文本气泡高度，以及输入栏 1→4→1 行时按钮底部锚定、无裁切/撕裂，仍必须由项目
+负责人完成实机视觉验收；本记录不以 Node 几何测试代替该结果。
