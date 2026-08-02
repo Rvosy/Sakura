@@ -26,11 +26,13 @@ import { createLayoutController } from "./pet/layout-controller.js";
 import { applyPetLayout, computePetLayout, PRODUCT_LAYOUT_STATE, validateLayoutContract } from "./pet/layout.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
-import { createTypewriter } from "./pet/typewriter.js";
+import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 
 const invoke = window.__TAURI__.core.invoke;
 const stage = document.querySelector("#pet-stage");
 const bubbleCopy = document.querySelector("#bubble-copy");
+const replyHistoryPrevious = document.querySelector("#reply-history-previous");
+const replyHistoryNext = document.querySelector("#reply-history-next");
 const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
@@ -437,7 +439,7 @@ const typewriter = createTypewriter({
     if (result.applied) render(result.state, bubbleUpdate);
   },
   onSegment: (segment, index) => {
-    const result = presentation.setTypingSegment(segment);
+    const result = presentation.setTypingSegment(segment, index);
     if (result.applied) {
       const nextPortrait = result.state.segments[index + 1]?.portrait;
       if (nextPortrait) {
@@ -470,6 +472,8 @@ function render(state, bubbleUpdate = {}) {
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
   send.disabled = presentationUnavailable || state.lifecycle !== "ready" || state.phase === "reconnecting";
+  replyHistoryPrevious.disabled = !state.canReviewPrevious;
+  replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
   adaptiveSurface.schedule();
@@ -572,7 +576,9 @@ document.addEventListener("contextmenu", async (event) => {
       surfaceX: point[0],
       surfaceY: point[1],
     });
-    contextMenu.openAt(event.clientX, event.clientY, manifest);
+    contextMenu.openAt(event.clientX, event.clientY, manifest, {
+      focusFirst: !event.pointerType && event.button === 0,
+    });
   } catch {
     contextMenu.hide();
     invoke("close_pet_context_menu").catch(() => {});
@@ -588,7 +594,15 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
   const language = event?.payload === "ja" ? "ja" : event?.payload === "zh" ? "zh" : null;
   if (!language) return;
   subtitleLanguage = language;
+  const wasTyping = typewriter.isActive();
   typewriter.updateLanguage(language);
+  if (!wasTyping) {
+    const state = presentation.current();
+    const segment = state.replyHistorySegments[state.replyHistoryIndex];
+    if (!segment) return;
+    const refreshed = presentation.refreshVisibleReply(selectSegmentText(segment, language));
+    if (refreshed.applied) render(refreshed.state, { reason: "language", forceEnd: true });
+  }
 });
 
 let coreRebindRevision = 0;
@@ -747,6 +761,16 @@ composer.addEventListener("submit", (event) => {
   if (state.canCancel) void chatClient.cancel(state.operationId);
   else inputFocus.submit("button");
 });
+function reviewReplyBy(offset) {
+  const state = presentation.current();
+  const targetIndex = state.replyHistoryIndex + offset;
+  const segment = state.replyHistorySegments[targetIndex];
+  if (!segment) return;
+  const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
+  if (result.applied) render(result.state, { reason: "history", forceEnd: true });
+}
+replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
+replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => inputFocus.handleWindowBlur());
 document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
@@ -779,13 +803,6 @@ function dispose() {
   contextMenu.dispose();
 }
 
-document.querySelector("#close-window").addEventListener("click", async () => {
-  try {
-    await invoke("close_pet_window");
-  } catch {
-    showRecoverableError("Sakura 暂时无法退出，请稍后重试。");
-  }
-});
 window.addEventListener("beforeunload", dispose, { once: true });
 
 portraitController.beginGeneration(characterPresentation.generationId);

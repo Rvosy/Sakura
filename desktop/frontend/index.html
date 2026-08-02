@@ -16,12 +16,40 @@
             <strong id="character-name">Sakura</strong>
             <span id="chat-phase" class="visually-hidden" role="status">正在准备</span>
           </div>
-          <div class="bubble-actions" data-interactive="true">
-            <button type="button" id="close-window" class="close-action" tabindex="-1" aria-label="关闭 Sakura">×</button>
-          </div>
         </header>
-        <div id="bubble-copy" class="bubble-copy" aria-live="polite">
-          正在读取当前角色……
+        <div class="reply-body">
+          <div id="bubble-copy" class="bubble-copy" aria-live="polite">
+            正在读取当前角色……
+          </div>
+          <nav id="reply-history-nav" class="reply-history-nav"
+            data-interactive="true"
+            aria-label="回复记录"
+          >
+            <button
+              type="button"
+              id="reply-history-previous"
+              class="reply-history-button"
+              tabindex="-1"
+              aria-label="上一条回复"
+              disabled
+            >
+              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
+                <path d="m5.5 12.25 4.5-4.5 4.5 4.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              id="reply-history-next"
+              class="reply-history-button"
+              tabindex="-1"
+              aria-label="下一条回复"
+              disabled
+            >
+              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
+                <path d="m5.5 7.75 4.5 4.5 4.5-4.5" />
+              </svg>
+            </button>
+          </nav>
         </div>
         <p id="presentation-error" class="presentation-error" role="status" hidden></p>
       </section>

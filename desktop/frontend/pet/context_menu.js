@@ -116,10 +116,12 @@ export class PetContextMenu {
     return manifest;
   }
 
-  openAt(clientX, clientY, manifest) {
+  openAt(clientX, clientY, manifest, { focusFirst = false } = {}) {
     if (this.disposed) return;
     this.applyManifest(manifest);
     this.menu.classList.remove("is-open");
+    if (focusFirst) this.menu.classList.add("is-keyboard-open");
+    else if (this.menu.classList.contains?.("is-keyboard-open")) this.menu.classList.remove("is-keyboard-open");
     this.menu.hidden = false;
     this.menu.style.visibility = "hidden";
     this.menu.style.left = "0px";
@@ -139,7 +141,7 @@ export class PetContextMenu {
     // the entrance animation at its new position.
     void this.menu.offsetWidth;
     this.menu.classList.add("is-open");
-    this.enabledItems()[0]?.focus({ preventScroll: true });
+    if (focusFirst) this.enabledItems()[0]?.focus({ preventScroll: true });
   }
 
   enabledItems() {
@@ -165,8 +167,10 @@ export class PetContextMenu {
 
   hide() {
     if (this.menu.hidden) return false;
+    const focusedItem = this.document.activeElement;
+    if (focusedItem && this.menu.contains(focusedItem)) focusedItem.blur?.();
     this.menu.hidden = true;
-    this.menu.classList.remove("is-open");
+    this.menu.classList.remove("is-open", "is-keyboard-open");
     this.menu.style.visibility = "";
     return true;
   }

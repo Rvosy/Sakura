@@ -273,39 +273,22 @@ body[data-chat-state="thinking"] .bubble::after {
   white-space: nowrap;
 }
 
-.bubble-actions { display: flex; min-height: 28px; align-items: center; gap: 10px; cursor: default; }
-.bubble-actions button { border: 0; background: transparent; cursor: pointer; }
-.text-action {
-  padding: 5px 0;
-  color: var(--secondary-text);
-  font-size: 11px;
-  font-weight: var(--font-weight-medium);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.close-action {
-  width: 28px;
-  height: 28px;
-  border-radius: 50% !important;
-  color: var(--muted-text);
-  font-size: 19px;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease;
-}
-
-.bubble:hover .close-action,
-.close-action:focus-visible { opacity: .62; }
-.close-action:hover { color: var(--text); background: color-mix(in srgb, var(--primary), transparent 88%); }
-
-.bubble-copy {
+.reply-body {
   position: relative;
   z-index: 2;
+  display: grid;
   flex: 1;
   min-height: 0;
   margin-top: 8px;
-  padding-right: 10px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 10px;
+}
+
+.bubble-copy {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding-right: 4px;
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--text);
@@ -316,6 +299,70 @@ body[data-chat-state="thinking"] .bubble::after {
   user-select: text;
   scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
   scrollbar-width: thin;
+}
+
+.reply-history-nav {
+  position: relative;
+  width: 30px;
+  display: grid;
+  min-height: 0;
+  grid-template-rows: 30px 30px;
+  align-content: space-between;
+  justify-items: center;
+  cursor: default;
+}
+
+.reply-history-nav::before {
+  position: absolute;
+  z-index: 0;
+  top: 24px;
+  bottom: 24px;
+  left: 50%;
+  width: 1px;
+  background: color-mix(in srgb, var(--primary) 34%, transparent);
+  content: "";
+  transform: translateX(-50%);
+}
+
+.reply-history-button {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--border));
+  border-radius: 11px;
+  color: color-mix(in srgb, var(--primary) 72%, var(--text));
+  background: color-mix(in srgb, var(--bubble-background) 84%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 56%);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+
+.reply-history-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.reply-history-button:not(:disabled):hover,
+.reply-history-button:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 64%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 14%, var(--bubble-background));
+  transform: translateY(-1px);
+}
+
+.reply-history-button:disabled {
+  cursor: default;
+  opacity: .28;
 }
 
 .bubble [data-selectable-text] { cursor: text; }
@@ -521,7 +568,7 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .pet-context-menu button:not(:disabled):hover,
-.pet-context-menu button:not(:disabled):focus-visible {
+.pet-context-menu.is-keyboard-open button:not(:disabled):focus-visible {
   outline: none;
   color: var(--text);
   background: color-mix(in srgb, var(--panel-background) 86%, transparent);

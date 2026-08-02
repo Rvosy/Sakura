@@ -9,8 +9,23 @@ const LIFECYCLE_COPY = Object.freeze({
   restarting: ["正在重连", "正在重新连接"],
 });
 
-function initialState(defaultPortraitKey) {
+function freezeState(value) {
+  const historyLength = value.replyHistorySegments.length;
+  const reviewEnabled = ["settled", "error"].includes(value.phase) && historyLength > 1;
+  const historyIndex = Number.isInteger(value.replyHistoryIndex) ? value.replyHistoryIndex : -1;
   return Object.freeze({
+    ...value,
+    reviewingHistory: Boolean(value.showingReplyHistorySegment)
+      && reviewEnabled
+      && historyIndex >= 0
+      && historyIndex < historyLength - 1,
+    canReviewPrevious: reviewEnabled && historyIndex > 0,
+    canReviewNext: reviewEnabled && historyIndex >= 0 && historyIndex < historyLength - 1,
+  });
+}
+
+function initialState(defaultPortraitKey) {
+  return freezeState({
     generationId: null,
     generationNumber: 0,
     revision: 0,
@@ -21,6 +36,13 @@ function initialState(defaultPortraitKey) {
     operationId: null,
     bubbleText: "",
     segments: Object.freeze([]),
+    replyHistorySegments: Object.freeze([]),
+    replyHistoryIndex: -1,
+    currentReplyHistoryStart: -1,
+    showingReplyHistorySegment: false,
+    reviewingHistory: false,
+    canReviewPrevious: false,
+    canReviewNext: false,
     error: null,
     portrait: defaultPortraitKey,
     canCancel: false,
@@ -89,7 +111,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           && state.phase === "typing"
           && !state.operationId
           && ["startup", "initializing", "ready"].includes(event.status);
-        state = Object.freeze({
+        state = freezeState({
           ...state,
           generationId: event.generationId,
           generationNumber: event.generationNumber,
@@ -115,6 +137,10 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
                   ? "正在重新连接……"
                   : "正在准备会话……",
           segments: preserveVisualState || preserveGreeting || ready ? state.segments : Object.freeze([]),
+          replyHistorySegments: generationChanged ? Object.freeze([]) : state.replyHistorySegments,
+          replyHistoryIndex: generationChanged ? -1 : state.replyHistoryIndex,
+          currentReplyHistoryStart: generationChanged ? -1 : state.currentReplyHistoryStart,
+          showingReplyHistorySegment: generationChanged ? false : state.showingReplyHistorySegment,
           error: null,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
@@ -127,12 +153,14 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         return result(false);
       if (event.type === "chat.started") {
         if (state.lifecycle !== "ready" || !event.operationId || state.canCancel) return result(false);
-        state = Object.freeze({
+        state = freezeState({
           ...state,
           phase: "thinking",
           operationId: event.operationId,
           bubbleText: ".",
           segments: Object.freeze([]),
+          currentReplyHistoryStart: -1,
+          showingReplyHistorySegment: false,
           error: null,
           portrait: state.portrait,
           canCancel: true,
@@ -144,10 +172,16 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       if (event.type === "chat.completed" && state.phase === "thinking") {
         const segments = normalizedSegments(event.reply);
         if (!segments.length) return result(false);
-        state = Object.freeze({
+        const currentReplyHistoryStart = state.replyHistorySegments.length;
+        const replyHistorySegments = Object.freeze([...state.replyHistorySegments, ...segments]);
+        state = freezeState({
           ...state,
           phase: "typing",
           segments,
+          replyHistorySegments,
+          replyHistoryIndex: currentReplyHistoryStart,
+          currentReplyHistoryStart,
+          showingReplyHistorySegment: false,
           bubbleText: "",
           portrait: state.portrait,
           canCancel: false,
@@ -156,12 +190,13 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       }
       if (event.type === "chat.failed" && state.phase === "thinking") {
         const message = typeof event.error?.message === "string" ? event.error.message : "暂时无法完成回复。";
-        state = Object.freeze({
+        state = freezeState({
           ...state,
           phase: "error",
           operationId: null,
           bubbleText: message,
           segments: Object.freeze([]),
+          showingReplyHistorySegment: false,
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
           portrait: state.portrait,
           canCancel: false,
@@ -169,12 +204,13 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         return result(true);
       }
       if (event.type === "chat.cancelled" && state.phase === "thinking") {
-        state = Object.freeze({
+        state = freezeState({
           ...state,
           phase: "settled",
           operationId: null,
           bubbleText: event.reason === "core_restart" ? "旧回复已随连接关闭。" : "已取消当前回复。",
           segments: Object.freeze([]),
+          showingReplyHistorySegment: false,
           error: null,
           portrait: state.portrait,
           canCancel: false,
@@ -185,26 +221,55 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     },
     setTypingText(text) {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, bubbleText: String(text ?? "") });
+      state = freezeState({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },
     setThinkingText(text) {
       if (state.phase !== "thinking") return result(false);
-      state = Object.freeze({ ...state, bubbleText: String(text ?? "") });
+      state = freezeState({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },
-    setTypingSegment(segment) {
+    setTypingSegment(segment, index = 0) {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, portrait: segment?.portrait || state.portrait });
+      const historyIndex = state.currentReplyHistoryStart >= 0 && Number.isInteger(index)
+        ? state.currentReplyHistoryStart + index
+        : state.replyHistoryIndex;
+      state = freezeState({
+        ...state,
+        portrait: segment?.portrait || state.portrait,
+        replyHistoryIndex: historyIndex,
+        showingReplyHistorySegment: state.currentReplyHistoryStart >= 0,
+      });
+      return result(true);
+    },
+    refreshVisibleReply(text) {
+      if (!["settled", "error"].includes(state.phase) || !state.showingReplyHistorySegment) return result(false);
+      const segment = state.replyHistorySegments[state.replyHistoryIndex];
+      if (!segment) return result(false);
+      state = freezeState({ ...state, bubbleText: String(text ?? "") });
+      return result(true);
+    },
+    reviewReplyAt(index, text) {
+      if (!["settled", "error"].includes(state.phase) || !Number.isInteger(index)) return result(false);
+      const segment = state.replyHistorySegments[index];
+      if (!segment) return result(false);
+      state = freezeState({
+        ...state,
+        bubbleText: String(text ?? ""),
+        portrait: segment.portrait || state.portrait,
+        replyHistoryIndex: index,
+        showingReplyHistorySegment: true,
+      });
       return result(true);
     },
     beginGreeting() {
       if (greetingStarted || !initialMessage || !["ready", "booting"].includes(state.phase)) return result(false);
       greetingStarted = true;
-      state = Object.freeze({
+      state = freezeState({
         ...state,
         phase: "typing",
         bubbleText: "",
+        showingReplyHistorySegment: false,
         segments: Object.freeze([Object.freeze({
           text: initialMessage,
           translation: "",
@@ -217,7 +282,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     },
     finishTyping() {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, phase: "settled", operationId: null });
+      state = freezeState({ ...state, phase: "settled", operationId: null });
       return result(true);
     },
     current() {
