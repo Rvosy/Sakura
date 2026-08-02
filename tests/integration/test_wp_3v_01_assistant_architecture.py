@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -132,6 +133,40 @@ def test_headless_oracle_reads_the_frozen_legacy_format_without_changes(
 
     assert oracle.read_compatible_history(app_root) == len(entries)
     assert driver.manifest(app_root) == before
+
+
+def test_headless_oracle_imports_repository_modules_from_isolated_python(
+    tmp_path: Path,
+) -> None:
+    script = str(HEADLESS_ORACLE)
+    root = str(ROOT)
+    bootstrap = (
+        "import pathlib,runpy,sys;"
+        f"root=pathlib.Path({root!r}).resolve();"
+        "sys.path[:]=[entry for entry in sys.path "
+        "if not entry or pathlib.Path(entry).resolve()!=root];"
+        f"sys.argv=[{script!r},'--verify-imports'];"
+        "runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", bootstrap],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "qt_free": True,
+        "repository_imports": True,
+        "status": "passed",
+    }
 
 
 def test_early_tauri_exit_preserves_the_actual_diagnostic(tmp_path: Path) -> None:

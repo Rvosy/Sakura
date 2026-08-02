@@ -4,11 +4,12 @@ import importlib.abc
 import json
 import sys
 import tempfile
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SANITIZED_MARKER = ".sakura-wp-3-06-sanitized"
 EXPECTED_HISTORY_MARKERS = {
     "[WP-3-06-LEGACY-USER]",
@@ -21,6 +22,25 @@ EXPECTED_HISTORY_MARKERS = {
     "[WP-3V-01-RECOVERY]",
     "[WP-3V-01-REPLY-3]",
 }
+
+
+def configure_repository_imports() -> None:
+    required = (
+        REPO_ROOT / "app/core/instance.py",
+        REPO_ROOT / "app/storage/chat_history.py",
+    )
+    if not all(path.is_file() and not path.is_symlink() for path in required):
+        raise RuntimeError("WP-3V-01 oracle repository import root is invalid")
+
+    retained: list[str] = []
+    for entry in sys.path:
+        try:
+            if entry and Path(entry).resolve() == REPO_ROOT:
+                continue
+        except OSError:
+            pass
+        retained.append(entry)
+    sys.path[:] = [str(REPO_ROOT), *retained]
 
 
 class _RejectQtImports(importlib.abc.MetaPathFinder):
@@ -40,6 +60,16 @@ def reject_qt_imports() -> Iterator[None]:
         yield
     finally:
         sys.meta_path.remove(blocker)
+
+
+def verify_import_boundary() -> dict[str, object]:
+    configure_repository_imports()
+    with reject_qt_imports():
+        from app.core.instance import InstanceAcquireStatus, SingleInstanceGuard
+        from app.storage.chat_history import ChatHistoryStore
+
+    del InstanceAcquireStatus, SingleInstanceGuard, ChatHistoryStore
+    return {"status": "passed", "repository_imports": True, "qt_free": True}
 
 
 def validate_acceptance_root(raw_directory: str | Path) -> tuple[Path, Path]:
@@ -71,6 +101,7 @@ def validate_acceptance_root(raw_directory: str | Path) -> tuple[Path, Path]:
 
 
 def read_compatible_history(app_root: Path) -> int:
+    configure_repository_imports()
     with reject_qt_imports():
         from app.storage.chat_history import ChatHistoryStore
 
@@ -89,6 +120,7 @@ def read_compatible_history(app_root: Path) -> int:
 
 
 def run(raw_directory: str | Path) -> dict[str, object]:
+    configure_repository_imports()
     with reject_qt_imports():
         from app.core.instance import InstanceAcquireStatus, SingleInstanceGuard
 
@@ -115,4 +147,8 @@ def run(raw_directory: str | Path) -> dict[str, object]:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         raise SystemExit("usage: headless_legacy_oracle.py <acceptance-directory>")
-    print(json.dumps(run(sys.argv[1]), ensure_ascii=False, sort_keys=True))
+    if sys.argv[1] == "--verify-imports":
+        result = verify_import_boundary()
+    else:
+        result = run(sys.argv[1])
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
