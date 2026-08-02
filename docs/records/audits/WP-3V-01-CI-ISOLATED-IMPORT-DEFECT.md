@@ -52,3 +52,23 @@ oracle 的 cwd 虽然是仓库根，但 Python 执行脚本时不以 cwd 作为�
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。实现候选须重新通过定向隔离导入测试、
 真实 Windows 组合验收、required profiles 和同一 SHA 三平台 workflow；远端结果通过前不标记 WP-3V-01
 accepted，也不更新 CAP-004。
+
+## 修复候选本地验证
+
+修复实现提交为 `339a1caa`。oracle 现在从自身文件路径解析并验证仓库根，去除等价旧项后将该根固定为
+首个 Python 导入路径；没有读取或信任外部 `PYTHONPATH`，Qt import blocker 和共享锁/历史 parser 边界
+保持不变。
+
+本地验证结果：
+
+- 定向 integration：8 passed；新增用例以 `python -I` 启动独立解释器，显式清除仓库根 `sys.path`，
+  将 cwd 置于仓库外，再执行 oracle 导入边界，结果为 `repository_imports=true`、`qt_free=true`。
+- 真实 Windows 组合：`status=passed`、`provider_requests=4`、`core_kills=1`、`cancel_terminals=1`；
+  headless oracle 重获锁并兼容回读，仅允许的 fixture history 变化，敏感证据和进程残留均为 0，临时根
+  已删除。
+- Harness verify 报告 `temp/harness/20260802T175857Z-WP-3V-01.json`：5/5 required profiles
+  通过，24 项自动检查 passed、0 failed，3 项负责人验收 pending，状态为 `manual_pending`。
+- docs profile、Harness check、`cargo fmt --check`、Python `py_compile` 和 `git diff --check`：通过。
+
+上述结果关闭本地可复现的隔离导入缺陷，但不替代新提交同 SHA 的原生三平台 CI；该远端证据仍待推送
+后取得。
