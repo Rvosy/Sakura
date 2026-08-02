@@ -5,6 +5,8 @@ import sys
 import ctypes
 import faulthandler
 import traceback
+import tempfile
+import time
 from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
@@ -82,6 +84,9 @@ from app.voice.tts_bundle import (
 
 BASE_DIR = Path(__file__).resolve().parent
 LINGERING_QTHREAD_EXIT_WAIT_MS = 15_000
+WP_3_06_ACCEPTANCE_DIRECTORY_ENV = "SAKURA_WP_3_06_ACCEPTANCE_DIRECTORY"
+WP_3_06_ACCEPTANCE_MODE_ENV = "SAKURA_WP_3_06_ACCEPTANCE_MODE"
+WP_3_06_ACCEPTANCE_MARKER = ".sakura-wp-3-06-sanitized"
 
 # 保活 faulthandler 的写入句柄,避免被 GC 关闭后崩溃时写向失效 fd。
 _CRASH_LOG_HANDLE = None
@@ -411,6 +416,11 @@ def main() -> int:
     instance_guard = SingleInstanceGuard(BASE_DIR)
     instance_status = instance_guard.acquire()
     if instance_status is not InstanceAcquireStatus.ACQUIRED:
+        acceptance = _wp_3_06_acceptance_request()
+        if acceptance is not None:
+            directory, _app_root, _mode = acceptance
+            (directory / "legacy.lock_conflict").write_text("already_running", encoding="utf-8")
+            return 0 if instance_status is InstanceAcquireStatus.ALREADY_RUNNING else 1
         app = QApplication(sys.argv)
         app.setApplicationName("Sakura Desktop Pet")
         _force_light_palette(app)
@@ -431,9 +441,96 @@ def main() -> int:
         raise RuntimeError(f"未知共享应用锁状态：{instance_status}")
 
     try:
+        acceptance = _wp_3_06_acceptance_request()
+        if acceptance is not None:
+            return _run_wp_3_06_acceptance(*acceptance)
         return _run_acquired_legacy_qt_application()
     finally:
         instance_guard.release()
+
+
+def _wp_3_06_acceptance_request() -> tuple[Path, Path, str] | None:
+    raw_directory = os.environ.get(WP_3_06_ACCEPTANCE_DIRECTORY_ENV, "")
+    raw_mode = os.environ.get(WP_3_06_ACCEPTANCE_MODE_ENV, "")
+    if not raw_directory and not raw_mode:
+        return None
+    if not __debug__ or not raw_directory or raw_mode not in {
+        "legacy-write",
+        "legacy-read",
+        "legacy-hold",
+    }:
+        raise RuntimeError("WP-3-06 acceptance request is invalid")
+    directory = Path(raw_directory)
+    if not directory.is_absolute():
+        raise RuntimeError("WP-3-06 acceptance directory must be absolute")
+    directory = directory.resolve(strict=True)
+    temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+    try:
+        relative = directory.relative_to(temp_root)
+    except ValueError as exc:
+        raise RuntimeError("WP-3-06 acceptance directory is outside system temp") from exc
+    if len(relative.parts) != 1 or not relative.name.startswith("sakura-wp-3-06-"):
+        raise RuntimeError("WP-3-06 acceptance directory name is invalid")
+    marker = directory / WP_3_06_ACCEPTANCE_MARKER
+    app_root = directory / "app-root"
+    if not marker.is_file() or marker.is_symlink() or not app_root.is_dir() or app_root.is_symlink():
+        raise RuntimeError("WP-3-06 sanitized fixture marker is missing")
+    app_root = app_root.resolve(strict=True)
+    if app_root.parent != directory:
+        raise RuntimeError("WP-3-06 app root escaped its acceptance directory")
+    required = (
+        app_root / "data/config/system_config.yaml",
+        app_root / "data/config/characters.yaml",
+        app_root / "characters/fixture/character.json",
+    )
+    if not all(path.is_file() and not path.is_symlink() for path in required):
+        raise RuntimeError("WP-3-06 sanitized fixture is incomplete")
+    return directory, app_root, raw_mode
+
+
+def _run_wp_3_06_acceptance(directory: Path, app_root: Path, mode: str) -> int:
+    from app.config.core_config_reader import CoreConfigReader
+    from app.storage.chat_history import ChatHistoryStore
+    from app.storage.paths import StoragePaths
+
+    config = CoreConfigReader().read(app_root)
+    if config.config_problem is not None or config.current_character_id != "fixture":
+        raise RuntimeError("WP-3-06 fixture failed the production config reader")
+    profile = CharacterRegistry(app_root).get(config.current_character_id)
+    history = ChatHistoryStore(
+        StoragePaths(app_root).chat_history_for(profile.id),
+        profile.display_name,
+    )
+    history.assert_compatible_append()
+
+    if mode == "legacy-write":
+        history.append("user", "[WP-3-06-LEGACY-USER]")
+        history.append("assistant", "[WP-3-06-LEGACY-REPLY]")
+        history.assert_compatible_append()
+        (directory / "legacy.write_complete").write_text("complete", encoding="utf-8")
+        return 0
+    if mode == "legacy-read":
+        contents = [entry.content for entry in history.load()]
+        expected = {
+            "[WP-3-06-LEGACY-USER]",
+            "[WP-3-06-LEGACY-REPLY]",
+            "[WP-3-06-TAURI-USER]",
+            "[WP-3-06-TAURI-REPLY]",
+        }
+        if not expected.issubset(contents):
+            raise RuntimeError("WP-3-06 round-trip history is incomplete")
+        history.assert_compatible_append()
+        (directory / "legacy.read_complete").write_text("complete", encoding="utf-8")
+        return 0
+
+    (directory / "legacy.holding").write_text("holding", encoding="utf-8")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if (directory / "legacy.release").is_file():
+            (directory / "legacy.released").write_text("released", encoding="utf-8")
+            return 0
+        time.sleep(0.05)
+    raise RuntimeError("WP-3-06 legacy hold timed out")
 
 
 def _run_acquired_legacy_qt_application() -> int:

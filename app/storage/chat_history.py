@@ -13,6 +13,10 @@ from app.storage.atomic import atomic_write_text
 CHAT_HISTORY_SEGMENT_BYTES = 32 * 1024 * 1024
 
 
+class ChatHistoryCompatibilityError(ValueError):
+    """The existing JSONL is unsafe for a Runtime v2 compatible append."""
+
+
 @dataclass(frozen=True)
 class ChatHistoryEntry:
     created_at: str
@@ -61,6 +65,30 @@ class ChatHistoryStore:
         self._rotate_if_needed()
         with self.path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def assert_compatible_append(self) -> None:
+        """Validate existing segments without invoking legacy repair behavior.
+
+        Runtime v2 may append only when every existing record is structurally
+        readable by the legacy parser.  The check is deliberately side-effect
+        free: a corrupt/truncated tail stays untouched for diagnostics and the
+        caller must enter a read-only failure state.
+        """
+
+        if _path_has_link_or_junction(self.path):
+            raise ChatHistoryCompatibilityError("HISTORY_PATH_UNSAFE")
+        for segment in self._segments():
+            if segment.is_symlink() or not segment.is_file():
+                raise ChatHistoryCompatibilityError("HISTORY_PATH_UNSAFE")
+            try:
+                with segment.open("rb") as handle:
+                    for raw_line in handle:
+                        if not raw_line.endswith(b"\n") or _entry_from_bytes(raw_line) is None:
+                            raise ChatHistoryCompatibilityError("HISTORY_DATA_INVALID")
+            except ChatHistoryCompatibilityError:
+                raise
+            except OSError as exc:
+                raise ChatHistoryCompatibilityError("HISTORY_READ_FAILED") from exc
 
     def load(self) -> list[ChatHistoryEntry]:
         return list(self.iter_entries())
@@ -176,6 +204,23 @@ def _entry_from_bytes(raw_line: bytes) -> ChatHistoryEntry | None:
         tone=tone if isinstance(tone, str) else "",
         portrait=portrait if isinstance(portrait, str) else "",
     )
+
+
+def _path_has_link_or_junction(path: Path) -> bool:
+    """Reject aliases in every existing component of an append target."""
+
+    current = path
+    while True:
+        try:
+            is_junction = getattr(current, "is_junction", lambda: False)
+            if current.is_symlink() or is_junction():
+                return True
+        except OSError:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
 
 
 def _read_lines_binary(path: Path, block_size: int = 64 * 1024) -> list[bytes]:

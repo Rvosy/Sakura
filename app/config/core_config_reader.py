@@ -60,6 +60,10 @@ _PROBLEM_DETAILS: dict[str, tuple[Literal["setup_required", "failed"], str]] = {
         "setup_required",
         "Provider configuration setup is required.",
     ),
+    "HISTORY_COMPATIBILITY_READ_ONLY": (
+        "failed",
+        "Chat history is read-only because existing data is incompatible.",
+    ),
 }
 
 
@@ -303,6 +307,16 @@ class CoreConfigReader:
         current_character_id = current_character_id.strip()
         if not current_character_id:
             return _problem_result("CORE_CONFIG_SETUP_REQUIRED")
+
+        try:
+            from app.storage.chat_history import ChatHistoryStore
+            from app.storage.paths import StoragePaths
+
+            ChatHistoryStore(
+                StoragePaths(app_root).chat_history_for(current_character_id)
+            ).assert_compatible_append()
+        except Exception:
+            return _problem_result("HISTORY_COMPATIBILITY_READ_ONLY")
 
         return CoreConfigReadResult(
             current_character_id=current_character_id,

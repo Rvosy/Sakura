@@ -32,6 +32,7 @@ APPROVED_CONFIG_READS = {
     "data/config/system_config.yaml",
     "data/config/api.yaml",
     "data/config/characters.yaml",
+    "data/chat_history/sakura.jsonl",
 }
 EXPECTED_PROBLEMS = {
     "CORE_CONFIG_SETUP_REQUIRED": StableReadinessError(
@@ -53,6 +54,11 @@ EXPECTED_PROBLEMS = {
         state="setup_required",
         code="PROVIDER_SETUP_REQUIRED",
         message="Provider configuration setup is required.",
+    ),
+    "HISTORY_COMPATIBILITY_READ_ONLY": StableReadinessError(
+        state="failed",
+        code="HISTORY_COMPATIBILITY_READ_ONLY",
+        message="Chat history is read-only because existing data is incompatible.",
     ),
 }
 _REAL_PATH_OPEN = Path.open
@@ -157,7 +163,12 @@ def _read_with_guards(
     assert all(item["bak_absent"] for item in before.values())
     assert not list(root.rglob("*.bak"))
     assert {relative for relative, _mode, _encoding in opened} <= APPROVED_CONFIG_READS
-    assert all(mode == "r" and encoding == "utf-8" for _path, mode, encoding in opened)
+    assert all(
+        (mode == "r" and encoding == "utf-8")
+        if path.startswith("data/config/")
+        else (mode == "rb" and encoding is None)
+        for path, mode, encoding in opened
+    )
     return result, opened
 
 
@@ -527,3 +538,20 @@ def test_reader_source_has_only_the_approved_read_only_dependencies() -> None:
     assert "from app.llm.api_client import ApiSettings as ClientApiSettings" in source
     assert "yaml.safe_load" in source
     assert "read_text(encoding=\"utf-8\")" in source
+
+
+def test_corrupt_current_history_enters_read_only_readiness_without_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    history = root / "data/chat_history/sakura.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(b'{"created_at":"2000","role":"user","content":')
+    before = history.read_bytes()
+
+    result, _opened = _read_with_guards(root, monkeypatch)
+
+    assert result.config_problem == EXPECTED_PROBLEMS["HISTORY_COMPATIBILITY_READ_ONLY"]
+    assert history.read_bytes() == before
+    assert not list(history.parent.glob("sakura.jsonl.corrupt-*.bak"))

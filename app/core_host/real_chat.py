@@ -154,6 +154,14 @@ class RealChatBoundary:
             )
             message = str(payload["message"])
             try:
+                history.assert_compatible_append()
+            except Exception as exc:
+                raise _BoundaryFailure(
+                    "HISTORY_COMPATIBILITY_READ_ONLY",
+                    "Chat history is read-only because existing data is incompatible",
+                    False,
+                ) from exc
+            try:
                 recent = history.load_recent(max(0, MAX_MODEL_CONTEXT_MESSAGES - 1))
             except Exception:
                 recent = []
