@@ -36,8 +36,10 @@ function frameHeight(style) {
     + px(style.borderBottomWidth);
 }
 
-function measuredControlHeights({ bubble, bubbleHeader, bubbleCopy, composer, input, contract, getStyle }) {
+function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, composer, input, contract, getStyle }) {
   const inputStyle = getStyle(input);
+  const visibleInputHeight = input.style.height;
+  const visibleInputOverflow = input.dataset.overflow;
   input.style.height = "0px";
   const naturalScrollHeight = input.scrollHeight;
   const text = textareaMetrics({
@@ -46,8 +48,9 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleCopy, composer, in
     paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
     maxRows: contract.controlPanel.inputMaxRows,
   });
-  input.style.height = `${text.height}px`;
-  input.dataset.overflow = text.overflow ? "true" : "false";
+  input.style.height = visibleInputHeight;
+  if (visibleInputOverflow === undefined) delete input.dataset.overflow;
+  else input.dataset.overflow = visibleInputOverflow;
 
   const composerStyle = getStyle(composer);
   const inputHeight = clamp(
@@ -57,22 +60,26 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleCopy, composer, in
   );
 
   const bubbleStyle = getStyle(bubble);
-  const copyStyle = getStyle(bubbleCopy);
+  const bodyStyle = getStyle(bubbleBody);
   const bubbleHeight = bubbleSurfaceHeight({
     contentHeight: bubbleCopy.scrollHeight,
     headerHeight: bubbleHeader.offsetHeight,
     chromeHeight: frameHeight(bubbleStyle),
-    contentGap: px(copyStyle.marginTop),
+    contentGap: px(bodyStyle.marginTop),
     minimum: contract.controlPanel.bubbleMinHeight,
     maximum: contract.controlPanel.bubbleMaxHeight.maximum,
   });
-  return Object.freeze({ bubbleHeight, inputHeight });
+  return Object.freeze({
+    measurements: Object.freeze({ bubbleHeight, inputHeight }),
+    inputVisual: Object.freeze({ height: text.height, overflow: text.overflow }),
+  });
 }
 
 export function createAdaptiveControlSurface({
   root,
   bubble,
   bubbleHeader,
+  bubbleBody,
   bubbleCopy,
   composer,
   input,
@@ -84,7 +91,7 @@ export function createAdaptiveControlSurface({
   cancelFrame = (frame) => window.cancelAnimationFrame(frame),
   ResizeObserverClass = window.ResizeObserver,
 } = {}) {
-  if (!root || !bubble || !bubbleHeader || !bubbleCopy || !composer || !input || !contract || !layoutController) {
+  if (!root || !bubble || !bubbleHeader || !bubbleBody || !bubbleCopy || !composer || !input || !contract || !layoutController) {
     throw new Error("adaptive control surface requires complete DOM and layout dependencies");
   }
   let disposed = false;
@@ -98,9 +105,10 @@ export function createAdaptiveControlSurface({
     const visualPreview = visualPreviewRequested;
     visualPreviewRequested = false;
     const adjustments = applyControlPanelWidth(root, contract, readAdjustments());
-    const rawMeasured = measuredControlHeights({
+    const measuredControl = measuredControlHeights({
       bubble,
       bubbleHeader,
+      bubbleBody,
       bubbleCopy,
       composer,
       input,
@@ -108,15 +116,20 @@ export function createAdaptiveControlSurface({
       getStyle,
     });
     const measured = Object.freeze({
-      ...rawMeasured,
-      bubbleHeight: Math.min(rawMeasured.bubbleHeight, adjustments.bubbleMaxHeight),
+      ...measuredControl.measurements,
+      bubbleHeight: Math.min(measuredControl.measurements.bubbleHeight, adjustments.bubbleMaxHeight),
     });
-    const requestKey = JSON.stringify([adjustments, measured]);
+    const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
     lastRequest = requestKey;
     return layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
       adjustments,
       measurements: measured,
+      commitVisual: () => {
+        if (disposed) return;
+        input.style.height = `${measuredControl.inputVisual.height}px`;
+        input.dataset.overflow = measuredControl.inputVisual.overflow ? "true" : "false";
+      },
       visualPreview,
     });
   }
@@ -140,8 +153,6 @@ export function createAdaptiveControlSurface({
     refresh,
     settle: () => refreshPromise,
     resetInput() {
-      input.style.height = "";
-      input.dataset.overflow = "false";
       lastRequest = "";
       schedule();
     },

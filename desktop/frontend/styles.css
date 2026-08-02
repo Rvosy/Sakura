@@ -206,14 +206,11 @@ textarea:focus-visible,
   backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
   cursor: grab;
-  transition:
-    top 160ms cubic-bezier(.22, .8, .28, 1),
-    height 160ms cubic-bezier(.22, .8, .28, 1),
-    border-color 140ms ease;
+  transition: border-color 140ms ease;
 }
 
-/* Settings sliders publish many geometry targets per second. Do not add a 160ms CSS tail after
-   each native-confirmed frame; normal content-driven resize keeps its easing. */
+/* Adaptive geometry commits atomically after its native region, so top/height never have a CSS
+   tail. Settings previews also suppress the remaining cosmetic transitions during slider bursts. */
 .pet-stage[data-layout-preview="active"] .bubble,
 .pet-stage[data-layout-preview="active"] .composer {
   transition: none;
@@ -276,16 +273,16 @@ body[data-chat-state="thinking"] .bubble::after {
 .reply-body {
   position: relative;
   z-index: 2;
-  display: grid;
+  display: flex;
   flex: 1;
   min-height: 0;
   margin-top: 8px;
-  grid-template-columns: minmax(0, 1fr) 30px;
   gap: 10px;
 }
 
 .bubble-copy {
   position: relative;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   padding-right: 4px;
@@ -425,8 +422,6 @@ body[data-chat-state="thinking"] .bubble::after {
   box-shadow: none;
   backdrop-filter: blur(18px) saturate(1.08);
   transition:
-    top 160ms cubic-bezier(.22, .8, .28, 1),
-    height 160ms cubic-bezier(.22, .8, .28, 1),
     border-color 140ms ease,
     background-color 140ms ease;
 }

@@ -31,6 +31,7 @@ import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 const invoke = window.__TAURI__.core.invoke;
 const stage = document.querySelector("#pet-stage");
 const bubbleCopy = document.querySelector("#bubble-copy");
+const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
 const replyHistoryNext = document.querySelector("#reply-history-next");
 const bubbleHeader = document.querySelector(".bubble-header");
@@ -383,6 +384,7 @@ const adaptiveSurface = createAdaptiveControlSurface({
   root: stage,
   bubble: document.querySelector("#chat-bubble"),
   bubbleHeader,
+  bubbleBody,
   bubbleCopy,
   composer,
   input,

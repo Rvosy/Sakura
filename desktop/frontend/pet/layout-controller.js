@@ -68,6 +68,7 @@ export function createLayoutController({
       // Ordinary adaptive changes remain paired with their precise Win32 clip. During an explicit
       // settings preview the native region is already relaxed, so stale native acknowledgements
       // must not paint over the newest immediate WebView frame.
+      work.commitVisual?.(work.layout, nativeResult);
       commitLayout(work.layout, nativeResult);
       committedLayout = work.layout;
       work.resolve(isCurrent
@@ -112,7 +113,13 @@ export function createLayoutController({
       // Keep only one native request behind the in-flight call. Slider input can arrive much
       // faster than Windows can rebuild its visible/click-through region, so pending intermediate
       // targets are superseded instead of forming the previous one-second backlog.
-      return enqueueNative({ state, revision, layout, previewed });
+      return enqueueNative({
+        state,
+        revision,
+        layout,
+        previewed,
+        commitVisual: typeof input?.commitVisual === "function" ? input.commitVisual : null,
+      });
     },
     snapshot() {
       return Object.freeze({ requestedRevision, currentState });
