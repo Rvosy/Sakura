@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-05
+active_work_package: WP-3-06
 updated: 2026-08-02
 ---
 
@@ -101,8 +101,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | accepted |
 | WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | accepted |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
-| WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | active |
-| WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
+| WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
+| WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | active |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
@@ -157,7 +157,9 @@ WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，并于 2
 WP-3-04 之间，完成实现、本地自动门和远端 CI 后于 2026-07-31 由项目负责人明确验收通过；对应声明
 见 `docs/records/audits/WP-H-01-OWNER-ACCEPTANCE.md`。WP-3-04 完成实现、最终自动门和负责人实机验收后，
 于 2026-08-02 由项目负责人明确验收通过；声明见
-`docs/records/audits/WP-3-04-OWNER-ACCEPTANCE.md`。WP-3-05 的依赖现已满足，并按冻结任务契约激活。
+`docs/records/audits/WP-3-04-OWNER-ACCEPTANCE.md`。WP-3-05 随后完成实现、自动门和 Windows 实机验收，
+并于 2026-08-02 由项目负责人明确验收通过；声明见
+`docs/records/audits/WP-3-05-OWNER-ACCEPTANCE.md`。WP-3-06 的依赖现已满足，并按冻结任务契约激活。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2376,6 +2378,18 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 回退：停止新 send 并退出确认 Core 树归零，逆序禁用 UI 水合和新增 publication；保留既有 Supervisor/generation 屏障、WP-3-04 真实聊天、history 与配置
 ```
 
+完成记录（2026-08-02）：
+
+```text
+状态：accepted
+最终实现候选：f53a42d3885b3d98d9ace37ce164a49d45655635
+自动验收：frontend 105 passed；locked Rust 232 passed / 24 ignored；cargo fmt、git diff check、docs/smoke/core-host/runtime-v2-shell/python-full required profiles 全部通过；Harness verify 23 passed / 0 failed / 3 manual pending
+人工验收：项目负责人完成真实 Windows Tauri/WebView2 的 idle/active/settled Core 强杀、恢复期中文/日文 IME、连续崩溃预算耗尽、手动重试、下一轮聊天、完整退出和零相关进程残留，并确认同一候选证据与回退边界通过
+数据与安全：data/**、characters/**、third_party/** 零变化；不恢复跨 generation 模型任务，不自动重发，不误杀无关 Python 或 Tauri Shell
+验收记录：docs/records/audits/WP-3-05-AUTOMATED-VALIDATION.md；docs/records/audits/WP-3-05-OWNER-ACCEPTANCE.md
+回退：停止新 send 并确认 Core 树归零，逆序禁用 UI 水合和新增 publication；保留 Supervisor/generation 屏障、WP-3-04 真实聊天、history 与配置
+```
+
 主要结果：Core 崩溃时桌宠窗口保持存在，旧 generation 立即失效，新 Core ready 后按明确契约恢复 UI。
 
 允许能力：
@@ -2399,6 +2413,22 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 独立回退：保留崩溃诊断但禁用自动 UI 水合，退回显式重新开始交互。
 
 ### WP-3-06：legacy Qt → Tauri v2 → legacy Qt 兼容门禁
+
+激活记录（2026-08-02）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-05 已由项目负责人明确验收并标记 accepted
+base_ref：93c75ba9803618d2d9fde6e99ebb152ffc176a6b
+允许文件：冻结于 harness/tasks/WP-3-06.json；限全局数据写入门、现有 history/provider/UI 仓库、生产共享锁、真实 Qt/Tauri 隔离验收、相关测试和治理文档
+明确禁止：破坏性 migration、Memory/Qdrant/SQLite、Tools/MCP/插件/TTS、角色/真实数据、依赖、默认配置 backfill 和通用 app-root 后门；data/**、characters/**、third_party/** 受保护
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
+验收环境：仓库 runtime Python、Node、locked Cargo；系统临时目录内的 WP-0-02 脱敏副本；Windows 真实 legacy Qt/Tauri/WebView2；同一候选 SHA 三平台公共锁/数据门
+故障矩阵：Qt→Tauri→Qt、双向锁冲突、current/old/missing/future/corrupt schema、backup/temp/flush/replace/中断、v2 私有未来 schema、正常/强杀退出、进程与 manifest 清场
+关联 ADR：ADR-0001、ADR-0002、ADR-0003
+计划提交：先冻结数据清单与真实双入口失败测试，再补最小版本/结构写入门和验收接线，最后串行运行双入口、全量自动门与负责人实机验收
+回退：停止 v2 共享数据写入并退回只读使用，逆序回退 WP-3-06 接线；不删除、恢复、重命名或修复任何用户文件，不回退 legacy Qt 入口和共享锁
+```
 
 主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和 legacy Qt 回退能力。
 

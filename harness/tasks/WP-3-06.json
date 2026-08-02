@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "id": "WP-3-06",
+  "title": "legacy Qt 与 Tauri v2 双向数据兼容门禁",
+  "status_source": "docs/plans/runtime-v2/work-packages.md",
+  "documents": {
+    "specs": [
+      "docs/specs/runtime-v2/WP-3-06-legacy-tauri-data-compatibility.md"
+    ],
+    "adrs": [
+      "docs/adr/0001-runtime-v2-process-supervision.md",
+      "docs/adr/0002-runtime-v2-ipc.md",
+      "docs/adr/0003-runtime-v2-data-compatibility.md"
+    ],
+    "plans": ["docs/plans/runtime-v2/work-packages.md"]
+  },
+  "dependencies": ["WP-3-05"],
+  "base_ref": "93c75ba9803618d2d9fde6e99ebb152ffc176a6b",
+  "allowed_paths": [
+    ".github/workflows/runtime-v2-platform-foundation.yml",
+    "CHANGELOG.md",
+    "app/config/core_config_reader.py",
+    "app/config/provider_model_settings.py",
+    "app/core/instance.py",
+    "app/core_host/provider_settings.py",
+    "app/core_host/real_chat.py",
+    "app/storage/chat_history.py",
+    "app/storage/paths.py",
+    "desktop/frontend/app.js",
+    "desktop/frontend/lifecycle.js",
+    "desktop/frontend/tests/**",
+    "desktop/src-tauri/src/character_appearance.rs",
+    "desktop/src-tauri/src/chat_settings.rs",
+    "desktop/src-tauri/src/core_host_gateway.rs",
+    "desktop/src-tauri/src/core_host_runtime.rs",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/shared_instance.rs",
+    "desktop/src-tauri/src/shell_lifecycle.rs",
+    "desktop/src-tauri/src/ui_config.rs",
+    "desktop/src-tauri/src/wp_3_06_data_compat_acceptance.rs",
+    "desktop/tests/**",
+    "docs/adr/0003-runtime-v2-data-compatibility.md",
+    "docs/plans/runtime-v2/work-packages.md",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/README.md",
+    "docs/specs/runtime-v2/WP-3-06-legacy-tauri-data-compatibility.md",
+    "docs/specs/runtime-v2/product-capability-parity.md",
+    "docs/userdocs/SETUP.md",
+    "harness/activations/WP-3-06/0001.json",
+    "harness/tasks/WP-3-06.json",
+    "legacy_qt_main.py",
+    "tests/fixtures/runtime_v2/wp_3_06/**",
+    "tests/integration/test_wp_3_06_data_compatibility.py",
+    "tests/unit/test_core_host_config_reader.py",
+    "tests/unit/test_core_host_provider_settings.py",
+    "tests/unit/test_provider_model_settings.py",
+    "tests/unit/test_wp_3_06_data_compatibility.py"
+  ],
+  "forbidden_paths": [
+    "app/agent/**",
+    "app/config/migration_runner.py",
+    "app/plugins/**",
+    "app/voice/**",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/tauri.conf.json",
+    "main.py",
+    "plugins/**",
+    "runtime/**",
+    "tools/mcp/**"
+  ],
+  "protected_paths": ["data/**", "characters/**", "third_party/**"],
+  "dependency_policy": {"mode": "forbidden", "allowed_files": []},
+  "required_profiles": [
+    "docs",
+    "smoke",
+    "core-host",
+    "runtime-v2-shell",
+    "python-full"
+  ],
+  "acceptance": {
+    "automated": [
+      "real legacy Qt, Tauri Shell and bundled Core processes complete the sanitized Qt-to-Tauri-to-Qt round trip under the production shared lock",
+      "only approved history, provider-model and Runtime v2 UI paths change while legacy parsers read the result and all other fixture data remains byte-identical",
+      "old, missing, future, corrupt and escaping datasets enter a stable diagnostics read-only state before any shared write or Core chat session",
+      "bidirectional lock conflicts, normal exit and forced termination preserve single ownership, immediate reacquisition and zero related process residue",
+      "backup, temporary write, flush, replace and interruption failures preserve the previous readable file and never promote partial state",
+      "locked Rust, Python, frontend, required Harness profiles and same-SHA three-platform workflow pass without protected-data or dependency changes"
+    ],
+    "manual": [
+      "maintainer runs the isolated Windows legacy Qt to Tauri to legacy Qt sequence and validates visible real apps, compatible history, unchanged character/config behavior and a successful basic chat",
+      "maintainer validates both lock-conflict directions, future/corrupt read-only diagnostics, save-failure preservation, forced-exit lock reacquisition and zero related process residue",
+      "maintainer reviews the same candidate SHA platform evidence, sanitized final manifest and rollback boundary"
+    ]
+  },
+  "rollback": [
+    "stop new chat and settings writes, exit Runtime v2 and verify the complete Core and writer process tree is gone",
+    "disable Runtime v2 shared-business-data writes and return the Tauri path to diagnostics/read-only access",
+    "revert WP-3-06 version-gate and acceptance wiring commits in reverse order while retaining the accepted shared lock and WP-3-05 lifecycle",
+    "preserve every user file and compatible history append; do not delete, restore, rename, migrate or repair legacy data during rollback"
+  ]
+}
