@@ -17,3 +17,4 @@ updated: 2026-08-01
 - [WP-3-04 本地自动验证记录](WP-3-04-AUTOMATED-VALIDATION.md)
 - [WP-3-04 项目负责人验收声明](WP-3-04-OWNER-ACCEPTANCE.md)
 - [WP-3-05 本地自动验证记录](WP-3-05-AUTOMATED-VALIDATION.md)
+- [WP-3-05 项目负责人验收声明](WP-3-05-OWNER-ACCEPTANCE.md)
