@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hmac
+import json
+import re
 import sys
 import threading
 import urllib.error
@@ -429,6 +431,16 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
         return "PROVIDER_CONFIGURATION_INVALID", "Provider configuration is invalid", False
     if isinstance(error, ApiRequestError):
         text = str(error).lower()
+        cause: BaseException | None = error
+        while cause is not None:
+            if isinstance(cause, urllib.error.HTTPError):
+                retryable = cause.code == 429 or cause.code >= 500
+                return (
+                    "PROVIDER_REQUEST_FAILED",
+                    _public_provider_http_message(error, cause.code),
+                    retryable,
+                )
+            cause = cause.__cause__
         response_invalid = any(
             marker in text
             for marker in (
@@ -440,15 +452,86 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
             )
         )
         if response_invalid:
-            return "PROVIDER_RESPONSE_INVALID", "Provider response was invalid", False
-        cause: BaseException | None = error
-        while cause is not None:
-            if isinstance(cause, urllib.error.HTTPError):
-                retryable = cause.code == 429 or cause.code >= 500
-                return "PROVIDER_REQUEST_FAILED", "Provider request failed", retryable
-            cause = cause.__cause__
+            message = (
+                "供应商响应格式无效：返回内容不是有效 JSON。"
+                if "格式无法解析" in text or "invalid json" in text
+                else "供应商响应格式无效：回复结构不符合协议。"
+            )
+            return "PROVIDER_RESPONSE_INVALID", message, False
         return "PROVIDER_REQUEST_FAILED", "Provider request failed", True
     return "CHAT_EXECUTION_FAILED", "Chat execution failed", False
+
+
+_PROVIDER_PUBLIC_FIELDS = ("message", "code", "type", "status")
+_PROVIDER_DIAGNOSTIC_LIMIT = 360
+_PROVIDER_SENSITIVE_PATTERNS = (
+    re.compile(r"\bPRIVATE_[A-Z0-9_]+\b"),
+    re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{6,}\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:api[_ -]?key|authorization|bearer|token|secret|password|credential)\b"
+        r"\s*[:=]\s*[^\s,;]+",
+        re.IGNORECASE,
+    ),
+    re.compile(r"https?://[^\s\])}>,;]+", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z]:\\[^\s\])}>,;]+"),
+    re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s\])}>,;]+"),
+)
+
+
+def _public_provider_http_message(error: BaseException, status_code: int) -> str:
+    payload = _provider_error_payload(str(error), status_code)
+    if payload is None:
+        return f"API HTTP {status_code}: 供应商请求失败。"
+
+    raw_error = payload.get("error")
+    public_source = raw_error if isinstance(raw_error, Mapping) else payload
+    public_values: dict[str, str] = {}
+    for field in _PROVIDER_PUBLIC_FIELDS:
+        value = public_source.get(field)
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            continue
+        sanitized = _sanitize_provider_diagnostic(str(value))
+        if sanitized:
+            public_values[field] = sanitized
+
+    message = public_values.pop("message", "")
+    metadata = "; ".join(
+        f"{field}: {public_values[field]}"
+        for field in _PROVIDER_PUBLIC_FIELDS[1:]
+        if field in public_values
+    )
+    if message and metadata:
+        return f"API HTTP {status_code}: {message} ({metadata})"
+    if message:
+        return f"API HTTP {status_code}: {message}"
+    if metadata:
+        return f"API HTTP {status_code}: {metadata}"
+    return f"API HTTP {status_code}: 供应商请求失败。"
+
+
+def _provider_error_payload(error_text: str, status_code: int) -> Mapping[str, Any] | None:
+    raw_marker = "\n原始响应："
+    if raw_marker in error_text:
+        candidate = error_text.rsplit(raw_marker, 1)[1].strip()
+    else:
+        prefix = f"API HTTP {status_code}:"
+        candidate = error_text.split(prefix, 1)[1].strip() if prefix in error_text else ""
+    if not candidate.startswith("{"):
+        return None
+    try:
+        decoded = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return decoded if isinstance(decoded, Mapping) else None
+
+
+def _sanitize_provider_diagnostic(value: str) -> str:
+    sanitized = " ".join(value.split())
+    for pattern in _PROVIDER_SENSITIVE_PATTERNS:
+        sanitized = pattern.sub("[REDACTED]", sanitized)
+    if len(sanitized) > _PROVIDER_DIAGNOSTIC_LIMIT:
+        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
+    return sanitized
 
 
 def _safe_diagnostic(error: BaseException) -> None:
