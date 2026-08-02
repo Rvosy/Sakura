@@ -2438,13 +2438,17 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 契约修订记录（2026-08-02）：
 
 ```text
-负责人批准：确认 1e157909 的产品方向修订，批准作为 WP-3-06 新契约基线
-kind：contract_revision；sequence：2；supersedes：0001
-base_ref：1e157909b05a37aa73e7ac5d7d429517c2af3317
+负责人批准：确认 1e157909 的产品方向修订，批准作为 WP-3-06 新契约内容
+最新有效修订：kind=contract_revision；sequence=3；supersedes=0002
+实现差异 base_ref：93c75ba9803618d2d9fde6e99ebb152ffc176a6b（按 Harness 契约保持初始实现锚点）
+契约冻结：1e157909 的获批内容由最新 activation 提交冻结；不把方向提交误作实现差异起点
 方向：Legacy Qt 仅作为迁移期实现参考、数据 parser/oracle 和隔离测试；不再是用户回退或可见 UI 验收对象
 最终边界：全部能力迁入 Runtime v2 并通过 Phase 7 总门后，删除 Legacy Qt 桌宠入口、实现和发布引用
 验收调整：可见人工验收只针对 Runtime v2；真实 Legacy 参考进程往返继续作为自动数据兼容证据
 ```
+
+`0002` 曾把负责人批准提交误填为实现差异 `base_ref`，首次重新预检以
+`CONTRACT_ACTIVATION_HISTORY` 拒绝；`0003` 仅纠正 Harness 锚点语义，不改变已批准产品方向或实现范围。
 
 主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和冻结的迁移前数据基线；不建立 Legacy Qt 产品回退能力。
 

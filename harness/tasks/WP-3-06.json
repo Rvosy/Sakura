@@ -17,7 +17,7 @@
     "plans": ["docs/plans/runtime-v2/work-packages.md"]
   },
   "dependencies": ["WP-3-05"],
-  "base_ref": "1e157909b05a37aa73e7ac5d7d429517c2af3317",
+  "base_ref": "93c75ba9803618d2d9fde6e99ebb152ffc176a6b",
   "allowed_paths": [
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "CHANGELOG.md",
@@ -58,6 +58,7 @@
     "docs/userdocs/SETUP.md",
     "harness/activations/WP-3-06/0001.json",
     "harness/activations/WP-3-06/0002.json",
+    "harness/activations/WP-3-06/0003.json",
     "harness/README.md",
     "harness/suites.json",
     "harness/tasks/WP-3-06.json",
