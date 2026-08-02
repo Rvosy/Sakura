@@ -541,6 +541,10 @@ mod tests {
             Some(ProductMenuAction::TogglePet)
         );
         assert_eq!(
+            ProductMenuAction::from_id(MENU_TOGGLE_SUBTITLE),
+            Some(ProductMenuAction::ToggleSubtitle)
+        );
+        assert_eq!(
             ProductMenuAction::from_id(MENU_OPEN_SETTINGS),
             Some(ProductMenuAction::OpenSettings)
         );
@@ -554,12 +558,13 @@ mod tests {
 
     #[test]
     fn product_menu_manifest_exposes_only_dispatchable_actions() {
-        let manifest = product_menu_capability_manifest();
-        assert_eq!(manifest.schema_version, 1);
+        let manifest = product_menu_capability_manifest(true);
+        assert_eq!(manifest.schema_version, 2);
         assert_eq!(
             manifest.available_actions,
-            [MENU_TOGGLE_PET, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
+            [MENU_TOGGLE_PET, MENU_TOGGLE_SUBTITLE, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
         );
+        assert_eq!(manifest.checked_actions, [MENU_TOGGLE_SUBTITLE]);
         assert_eq!(manifest.unavailable_reason, PRODUCT_MENU_UNAVAILABLE_REASON);
         assert!(manifest
             .available_actions

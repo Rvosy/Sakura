@@ -218,4 +218,48 @@ mod tests {
         assert!(state.save(ChatPresentationTiming::default()).is_err());
         assert_eq!(fs::read(path).unwrap(), b"not json");
     }
+
+    #[test]
+    fn subtitle_language_defaults_to_chinese_and_normalizes_invalid_values() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("ui.json");
+        let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
+        assert_eq!(state.get().unwrap(), SubtitleLanguage::Zh);
+
+        fs::write(
+            &path,
+            br#"{"schema_version":1,"domain":"ui","settings":{"subtitle_language":"invalid"}}"#,
+        )
+        .unwrap();
+        assert_eq!(state.get().unwrap(), SubtitleLanguage::Zh);
+        assert_eq!(state.save(SubtitleLanguage::Ja).unwrap(), SubtitleLanguage::Ja);
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["subtitle_language"], "ja");
+    }
+
+    #[test]
+    fn subtitle_language_round_trips_and_preserves_unknown_fields() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("ui.json");
+        fs::write(
+            &path,
+            br#"{"schema_version":1,"domain":"ui","settings":{"future":true,"subtitle_language":"zh"}}"#,
+        )
+        .unwrap();
+        let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
+        assert_eq!(state.toggle().unwrap(), SubtitleLanguage::Ja);
+        assert_eq!(state.get().unwrap(), SubtitleLanguage::Ja);
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["future"], true);
+    }
+
+    #[test]
+    fn subtitle_language_save_failure_keeps_the_previous_document() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("ui.json");
+        fs::write(&path, b"not json").unwrap();
+        let state = SubtitleLanguageState::new(UiConfigRepository::new(path.clone()));
+        assert!(state.save(SubtitleLanguage::Ja).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"not json");
+    }
 }

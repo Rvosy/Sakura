@@ -123,6 +123,21 @@ test("bubble typography uses language-owned families and only real product weigh
   assert.match(index, /id="composer-input"[\s\S]*?lang="zh-CN"/);
 });
 
+test("portrait cross-fade uses the legacy overlap without a second CSS transition", () => {
+  assert.doesNotMatch(styles, /\.portrait-image--current\s*\{[^}]*transition:/s);
+  assert.doesNotMatch(styles, /\.portrait-image--next\s*\{[^}]*transition:/s);
+  assert.match(styles, /@keyframes portrait-current-fade-out[\s\S]*?opacity:\s*1[\s\S]*?opacity:\s*0/);
+  assert.match(styles, /@keyframes portrait-next-fade-in[\s\S]*?opacity:\s*0[\s\S]*?opacity:\s*1/);
+  assert.match(styles, /portrait-next-fade-in\s+250ms[^;]*50ms/);
+});
+
+test("Chinese subtitle menu item is an enabled checked action", () => {
+  const subtitleItem = index.match(/<button[\s\S]*?显示中文字幕[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(subtitleItem, /data-menu-action="sakura\.chat\.subtitle\.toggle"/);
+  assert.match(subtitleItem, /role="menuitemcheckbox"/);
+  assert.doesNotMatch(subtitleItem, /data-menu-unavailable|disabled/);
+});
+
 test("runtime typography assigns weight by semantic role", () => {
   const petBlock = (selector) => styles.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"))?.[1] || "";
   const settingsBlock = (selector) => settingsStyles.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"))?.[1] || "";

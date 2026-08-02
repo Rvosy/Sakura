@@ -23,7 +23,7 @@ function readyReducer() {
   return reducer;
 }
 
-test("initial startup keeps the character greeting and default portrait", () => {
+test("initial startup keeps the greeting hidden until an explicit one-shot reveal", () => {
   const reducer = createChatPresentationReducer({
     initialMessage: "早上好，今天也请多关照。",
     defaultPortraitKey: "__default__",
@@ -32,16 +32,20 @@ test("initial startup keeps the character greeting and default portrait", () => 
   });
 
   reducer.reduce(lifecycle("startup", 1, 1));
-  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().bubbleText, "");
   assert.equal(reducer.current().portrait, "__default__");
 
   reducer.reduce(lifecycle("initializing", 1, 2));
-  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().bubbleText, "");
   assert.equal(reducer.current().portrait, "__default__");
 
   reducer.reduce(lifecycle("ready", 1, 3));
-  assert.equal(reducer.current().bubbleText, "早上好，今天也请多关照。");
+  assert.equal(reducer.current().bubbleText, "");
   assert.equal(reducer.current().portrait, "__default__");
+  assert.equal(reducer.beginGreeting().applied, true);
+  assert.equal(reducer.current().phase, "typing");
+  assert.deepEqual(reducer.current().segments.map(({ text }) => text), ["早上好，今天也请多关照。"]);
+  assert.equal(reducer.beginGreeting().applied, false);
 });
 
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
@@ -67,6 +71,18 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   reducer.finishTyping();
   assert.equal(reducer.current().phase, "settled");
   assert.equal(reducer.current().bubbleText, "完整回复");
+});
+
+test("chat.started preserves the committed portrait while waiting", () => {
+  const reducer = readyReducer();
+  reducer.setPortraitForTest?.("smile");
+  reducer.reduce({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-portrait",
+  });
+  assert.equal(reducer.current().portrait, "__default__");
 });
 
 test("same-generation ready updates preserve active cancel and typewriter skip actions", () => {
@@ -159,4 +175,85 @@ test("timing updates are snapshotted for the next reply without retiming the act
   typewriter.skip();
   typewriter.start([{ text: "next" }]);
   assert.equal(timers.at(-1).delay, 51);
+});
+
+test("multi-segment replies clear the previous segment and select Chinese translation", () => {
+  const timers = [];
+  const rendered = [];
+  const segments = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    language: "zh",
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onText(text) { rendered.push(text); },
+    onSegment(_segment, index) { segments.push(index); },
+  });
+  typewriter.start([
+    { text: "いち", translation: "一" },
+    { text: "に", translation: "二" },
+  ]);
+  while (timers.length) timers.shift().callback();
+  assert.deepEqual(segments, [0, 1]);
+  assert.deepEqual(rendered, ["", "一", "", "二"]);
+});
+
+test("skip completes only the current segment and keeps later segments sequential", () => {
+  const timers = [];
+  const rendered = [];
+  const completed = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    segmentPauseMs: 20,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onText(text) { rendered.push(text); },
+    onComplete(result) { completed.push(result); },
+  });
+  typewriter.start([{ text: "ab" }, { text: "cd" }]);
+  timers.shift().callback();
+  assert.equal(typewriter.skip(), true);
+  assert.equal(rendered.at(-1), "ab");
+  assert.equal(completed.length, 0);
+  while (timers.length) timers.shift().callback();
+  assert.equal(rendered.at(-1), "cd");
+  assert.equal(completed.length, 1);
+});
+
+test("changing subtitle language restarts only the active segment without mixed text", () => {
+  const timers = [];
+  const rendered = [];
+  const typewriter = createTypewriter({
+    intervalMs: 10,
+    language: "zh",
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onText(text) { rendered.push(text); },
+  });
+  typewriter.start([{ text: "かな", translation: "中文" }, { text: "次", translation: "下一段" }]);
+  timers.shift().callback();
+  assert.equal(rendered.at(-1), "中");
+  assert.equal(typewriter.updateLanguage("ja"), true);
+  assert.equal(rendered.at(-1), "");
+  timers.shift().callback();
+  assert.equal(rendered.at(-1), "か");
+  assert.equal(rendered.includes("中か"), false);
+});
+
+test("reduced motion completes one segment immediately but preserves the segment pause", () => {
+  const timers = [];
+  const rendered = [];
+  const typewriter = createTypewriter({
+    reducedMotion: true,
+    segmentPauseMs: 25,
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onText(text) { rendered.push(text); },
+  });
+  typewriter.start([{ text: "first" }, { text: "second" }]);
+  assert.equal(rendered.at(-1), "first");
+  assert.equal(timers.at(-1).delay, 25);
+  timers.shift().callback();
+  assert.equal(rendered.at(-1), "second");
 });

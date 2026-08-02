@@ -12,6 +12,7 @@ import {
 test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
     visibility: "sakura.pet.visibility.toggle",
+    subtitle: "sakura.chat.subtitle.toggle",
     settings: "sakura.settings.open",
     exit: "sakura.app.exit",
   });
@@ -30,21 +31,25 @@ test("menu positioning remains inside every viewport edge", () => {
 
 test("the capability manifest fails closed and ignores unknown actions", () => {
   const manifest = validateProductMenuManifest({
-    schemaVersion: 1,
+    schemaVersion: 2,
     availableActions: [
       PRODUCT_MENU_ACTIONS.visibility,
+      PRODUCT_MENU_ACTIONS.subtitle,
       "sakura.history.open",
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.exit,
     ],
+    checkedActions: [PRODUCT_MENU_ACTIONS.subtitle],
     unavailableReason: "尚未迁移",
   });
   assert.deepEqual(manifest.availableActions, [
     PRODUCT_MENU_ACTIONS.visibility,
+    PRODUCT_MENU_ACTIONS.subtitle,
     PRODUCT_MENU_ACTIONS.settings,
     PRODUCT_MENU_ACTIONS.exit,
   ]);
+  assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitle]);
   assert.equal(manifest.unavailableReason, "尚未迁移");
   assert.throws(() => validateProductMenuManifest({ schemaVersion: 2 }), /MANIFEST_INVALID/);
 });
@@ -118,8 +123,9 @@ test("repositioning an open menu restarts its entrance animation", () => {
   });
 
   contextMenu.openAt(400, 500, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     availableActions: [PRODUCT_MENU_ACTIONS.settings],
+    checkedActions: [],
   });
 
   assert.deepEqual(classMutations, ["remove:is-open", "add:is-open"]);
