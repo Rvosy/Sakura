@@ -141,6 +141,100 @@ test("composer placeholder names the thinking character and restores the normal 
   assert.equal(composerPlaceholder("Sakura", "settled"), "和Sakura说点什么……");
 });
 
+test("settled subtitle language changes replace the visible segment immediately", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "language" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "language",
+    reply: { segments: [{ text: "原文", translation: "译文", portrait: "smile" }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("译文");
+  reducer.finishTyping();
+
+  const refreshed = reducer.refreshVisibleReply("原文");
+  assert.equal(refreshed.applied, true);
+  assert.equal(refreshed.state.bubbleText, "原文");
+  assert.equal(refreshed.state.portrait, "smile");
+});
+
+test("subtitle changes do not replace cancellation or provider error copy with an older reply", () => {
+  for (const terminal of [
+    { type: "chat.cancelled", reason: "user" },
+    { type: "chat.failed", error: { code: "PROVIDER_HTTP_429", message: "请求过于频繁。", retryable: true } },
+  ]) {
+    const reducer = readyReducer();
+    reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "reply" });
+    reducer.reduce({
+      type: "chat.completed",
+      generationId: "generation-1",
+      generationNumber: 1,
+      operationId: "reply",
+      reply: { segments: [{ text: "原文", translation: "译文", portrait: "smile" }] },
+    });
+    reducer.setTypingSegment(reducer.current().segments[0], 0);
+    reducer.setTypingText("译文");
+    reducer.finishTyping();
+    reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "terminal" });
+    reducer.reduce({ ...terminal, generationId: "generation-1", generationNumber: 1, operationId: "terminal" });
+
+    const terminalCopy = reducer.current().bubbleText;
+    assert.equal(reducer.refreshVisibleReply("原文").applied, false);
+    assert.equal(reducer.current().bubbleText, terminalCopy);
+  }
+});
+
+test("reply history navigation crosses turns and switches text with its portrait", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "first" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "first",
+    reply: { segments: [
+      { text: "第一段", portrait: "calm" },
+      { text: "第二段", portrait: "smile" },
+    ] },
+  });
+  assert.equal(reducer.reviewReplyAt(0, "第一段").applied, false);
+  reducer.setTypingSegment(reducer.current().segments[1], 1);
+  reducer.setTypingText("第二段");
+  reducer.finishTyping();
+
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "second" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "second",
+    reply: { segments: [{ text: "第三段", portrait: "surprised" }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("第三段");
+  reducer.finishTyping();
+
+  assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["第一段", "第二段", "第三段"]);
+  assert.equal(reducer.current().replyHistoryIndex, 2);
+  assert.equal(reducer.current().canReviewPrevious, true);
+  assert.equal(reducer.current().canReviewNext, false);
+
+  let reviewed = reducer.reviewReplyAt(1, "第二段");
+  assert.equal(reviewed.applied, true);
+  assert.equal(reviewed.state.bubbleText, "第二段");
+  assert.equal(reviewed.state.portrait, "smile");
+  assert.equal(reviewed.state.canReviewPrevious, true);
+  assert.equal(reviewed.state.canReviewNext, true);
+
+  reviewed = reducer.reviewReplyAt(0, "第一段");
+  assert.equal(reviewed.state.portrait, "calm");
+  assert.equal(reviewed.state.canReviewPrevious, false);
+  assert.equal(reducer.reviewReplyAt(-1, "越界").applied, false);
+});
+
 test("failed and cancelled terminals are operation-scoped and immediately retryable", () => {
   for (const terminal of ["chat.failed", "chat.cancelled"]) {
     const reducer = readyReducer();

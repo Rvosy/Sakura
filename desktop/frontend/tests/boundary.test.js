@@ -29,10 +29,11 @@ function declarationBlock(selector, requiredDeclaration = null) {
 }
 
 test("markup exposes fixed product chat, portrait, status, and accessible controls", () => {
-  for (const id of ["chat-bubble", "bubble-copy", "composer-input", "composer-send", "portrait-current", "close-window"])
+  for (const id of ["chat-bubble", "bubble-copy", "reply-history-previous", "reply-history-next", "composer-input", "composer-send", "portrait-current"])
     assert.match(index, new RegExp(`id="${id}"`), id);
-  assert.doesNotMatch(index, /id="typewriter-skip"|立即显示/);
+  assert.doesNotMatch(index, /id="typewriter-skip"|id="close-window"|立即显示/);
   assert.doesNotMatch(app, /typewriterSkip|typewriter\.skip\(/);
+  assert.doesNotMatch(app, /querySelector\("#close-window"\)/);
   assert.match(index, /aria-live="polite"/);
   assert.match(index, /maxlength="4096"/);
   assert.doesNotMatch(index, /id="bubble-copy"[^>]*data-interactive/);
@@ -151,7 +152,7 @@ test("runtime typography assigns weight by semantic role", () => {
   const settingsBlock = (selector) => settingsStyles.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"))?.[1] || "";
 
   assert.match(petBlock("\\.identity strong"), /font-weight:\s*var\(--font-weight-bold\)/);
-  assert.match(petBlock("\\.text-action"), /font-weight:\s*var\(--font-weight-medium\)/);
+  assert.match(petBlock("\\.reply-history-button"), /font-weight:\s*var\(--font-weight-medium\)/);
   assert.match(petBlock("\\.composer textarea"), /font-weight:\s*var\(--font-weight-regular\)/);
   assert.match(petBlock("\\.composer button"), /place-items:\s*center/);
   assert.match(petBlock("\\.pet-context-menu button"), /font-weight:\s*var\(--font-weight-regular\)/);
@@ -177,7 +178,7 @@ test("only rendered reply text overrides bubble dragging while the scrollbar rem
   assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*grab/s);
   assert.match(styles, /\.bubble:active\s*\{\s*cursor:\s*grabbing/);
   assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
-  assert.match(styles, /\.bubble-actions\s*\{[^}]*cursor:\s*default/);
+  assert.match(styles, /\.reply-history-nav\s*\{[^}]*cursor:\s*default/);
   assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag"\)/);
 });
 
@@ -341,15 +342,42 @@ test("the native tray keeps a hidden pet recoverable through the shared visibili
   assert.match(trayEvents, /MouseButtonState::Up/);
 });
 
-test("closing the pet always coordinates whole-app exit with the settings window", () => {
-  const closeHandler = app.match(/#close-window[\s\S]*?beforeunload/)?.[0] || "";
-  assert.match(closeHandler, /await invoke\("close_pet_window"\)/);
-  assert.doesNotMatch(closeHandler, /dispose\(\)[\s\S]*?invoke\("close_pet_window"\)/);
+test("the bubble has no close action while native close still coordinates whole-app exit", () => {
+  assert.doesNotMatch(index, /close-action|id="close-window"/);
+  assert.doesNotMatch(app, /close_pet_window/);
   assert.match(app, /beforeunload", dispose/);
 
   const nativeWindowEvents = nativeMain.match(/\.on_window_event\([\s\S]*?\.invoke_handler/)?.[0] || "";
   assert.match(nativeWindowEvents, /window\.label\(\) == "main"/);
   assert.match(nativeWindowEvents, /CloseRequested[\s\S]*?api\.prevent_close\(\)[\s\S]*?request_app_exit/);
+});
+
+test("reply navigation is a compact theme-owned vertical track", () => {
+  const nav = index.match(/<nav id="reply-history-nav"[\s\S]*?<\/nav>/)?.[0] || "";
+  assert.match(nav, /aria-label="回复记录"/);
+  assert.match(nav, /id="reply-history-previous"[\s\S]*aria-label="上一条回复"/);
+  assert.match(nav, /id="reply-history-next"[\s\S]*aria-label="下一条回复"/);
+  assert.equal((nav.match(/<svg/g) || []).length, 2);
+  assert.match(styles, /\.reply-history-nav\s*\{[^}]*width:\s*30px[^}]*display:\s*grid/s);
+  assert.match(styles, /\.reply-history-nav::before\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--primary\)/s);
+  assert.match(styles, /\.reply-history-button:disabled\s*\{[^}]*opacity:/s);
+  assert.match(app, /replyHistoryPrevious\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(-1\)\)/);
+  assert.match(app, /replyHistoryNext\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(1\)\)/);
+  assert.match(app, /presentation\.reviewReplyAt\(targetIndex,\s*selectSegmentText\(segment,\s*subtitleLanguage\)\)/);
+});
+
+test("settled subtitle changes synchronously repaint the currently reviewed segment", () => {
+  const listener = app.match(/sakura:\/\/subtitle-language-changed[\s\S]*?let coreRebindRevision/)?.[0] || "";
+  assert.match(listener, /typewriter\.updateLanguage\(language\)/);
+  assert.match(listener, /state\.replyHistorySegments\[state\.replyHistoryIndex\]/);
+  assert.match(listener, /presentation\.refreshVisibleReply\(selectSegmentText\(segment,\s*language\)\)/);
+  assert.match(listener, /render\(refreshed\.state/);
+});
+
+test("pointer-open menus do not paint the first action as persistently focused", () => {
+  assert.match(app, /focusFirst:\s*!event\.pointerType\s*&&\s*event\.button\s*===\s*0/);
+  assert.match(styles, /\.pet-context-menu\.is-keyboard-open button:not\(:disabled\):focus-visible/);
+  assert.doesNotMatch(styles, /button:not\(:disabled\):hover,\s*\n\.pet-context-menu button:not\(:disabled\):focus-visible/);
 });
 
 test("confirmed settings close destroys the window before ending its appearance session", () => {

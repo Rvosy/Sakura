@@ -69,8 +69,9 @@ test("repositioning an open menu restarts its entrance animation", () => {
     dataset: { menuAction: PRODUCT_MENU_ACTIONS.settings },
     disabled: false,
     setAttribute() {},
-    focus() {},
+    focus() { focusCount += 1; },
   };
+  let focusCount = 0;
   const menu = {
     hidden: false,
     style: {},
@@ -132,4 +133,13 @@ test("repositioning an open menu restarts its entrance animation", () => {
   assert.equal(classNames.has("is-open"), true);
   assert.equal(menu.style.left, "400px");
   assert.equal(menu.style.top, "500px");
+  assert.equal(focusCount, 0);
+
+  contextMenu.openAt(400, 500, {
+    schemaVersion: 2,
+    availableActions: [PRODUCT_MENU_ACTIONS.settings],
+    checkedActions: [],
+  }, { focusFirst: true });
+  assert.equal(focusCount, 1);
+  assert.equal(classNames.has("is-keyboard-open"), true);
 });
