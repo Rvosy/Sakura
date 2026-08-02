@@ -1920,6 +1920,15 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 `harness/activations/WP-2-01/0001.json`，基线 `d47cd414ce37249ca94cd93812deb6cacfeacc8f`。
 失败事实与归因记录见 `docs/records/audits/WP-3V-01-ROUTER-ORDERING-DEFECT.md`。
 
+重新稳定化候选记录（2026-08-03）：实现提交 `fab46beb` 以共享单调序号合并普通/关键事件队头，
+保持 wire order，同时用显式计数保证缓存队头仍占用原命名容量。TDD 回归证明快速
+`chat.started -> chat.completed` 不再重排，Router 10/10；完整 Rust 单线程 239 passed/24 ignored；
+WP-3V-01 真实 Windows 组合验收通过（4 次 Provider 请求、1 次 Core 强杀、唯一取消终态、新代水合、
+Legacy oracle 回读、敏感证据和进程残留均为 0）；Harness required profiles 四项全绿，自动项
+20 passed/0 failed，保持负责人复核 pending。首次默认并行完整 Rust 的 3 个共享 Windows mutex
+失败不涉及 Router，精确清理遗留测试树后以稳定单线程模式全绿。当前不标记 accepted，也不恢复
+WP-3V-01；负责人验收后另做状态与 activation 提交。
+
 主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
 
 允许能力：
