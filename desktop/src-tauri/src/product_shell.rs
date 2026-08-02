@@ -16,6 +16,7 @@ pub const PRODUCT_MENU_ERROR_EVENT: &str = "sakura://product-menu-error";
 pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
+const MENU_TOGGLE_SUBTITLE: &str = "sakura.chat.subtitle.toggle";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
@@ -24,6 +25,7 @@ const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductMenuAction {
     TogglePet,
+    ToggleSubtitle,
     OpenSettings,
     ExitApp,
 }
@@ -32,6 +34,7 @@ impl ProductMenuAction {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             MENU_TOGGLE_PET => Some(Self::TogglePet),
+            MENU_TOGGLE_SUBTITLE => Some(Self::ToggleSubtitle),
             MENU_OPEN_SETTINGS => Some(Self::OpenSettings),
             MENU_EXIT_APP => Some(Self::ExitApp),
             _ => None,
@@ -44,15 +47,25 @@ impl ProductMenuAction {
 pub struct ProductMenuCapabilityManifest {
     pub schema_version: u32,
     pub available_actions: Vec<String>,
+    pub checked_actions: Vec<String>,
     pub unavailable_reason: String,
 }
 
-pub fn product_menu_capability_manifest() -> ProductMenuCapabilityManifest {
+pub fn product_menu_capability_manifest(chinese_subtitles: bool) -> ProductMenuCapabilityManifest {
     ProductMenuCapabilityManifest {
-        schema_version: 1,
-        available_actions: [MENU_TOGGLE_PET, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
+        schema_version: 2,
+        available_actions: [
+            MENU_TOGGLE_PET,
+            MENU_TOGGLE_SUBTITLE,
+            MENU_OPEN_SETTINGS,
+            MENU_EXIT_APP,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        checked_actions: chinese_subtitles
+            .then(|| MENU_TOGGLE_SUBTITLE.to_string())
             .into_iter()
-            .map(str::to_string)
             .collect(),
         unavailable_reason: PRODUCT_MENU_UNAVAILABLE_REASON.to_string(),
     }
@@ -562,7 +575,12 @@ mod tests {
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(
             manifest.available_actions,
-            [MENU_TOGGLE_PET, MENU_TOGGLE_SUBTITLE, MENU_OPEN_SETTINGS, MENU_EXIT_APP]
+            [
+                MENU_TOGGLE_PET,
+                MENU_TOGGLE_SUBTITLE,
+                MENU_OPEN_SETTINGS,
+                MENU_EXIT_APP
+            ]
         );
         assert_eq!(manifest.checked_actions, [MENU_TOGGLE_SUBTITLE]);
         assert_eq!(manifest.unavailable_reason, PRODUCT_MENU_UNAVAILABLE_REASON);

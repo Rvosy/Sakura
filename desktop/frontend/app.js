@@ -412,9 +412,19 @@ try {
   // Defaults remain valid when the isolated ui.json timing slice cannot be read.
 }
 
+let subtitleLanguage = "zh";
+try {
+  const persistedLanguage = await invoke("current_subtitle_language");
+  if (persistedLanguage === "ja") subtitleLanguage = "ja";
+} catch {
+  // Chinese remains the fail-safe default when the isolated setting cannot be read.
+}
+
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
+  language: subtitleLanguage,
+  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
     const result = presentation.setTypingText(text);
@@ -549,7 +559,14 @@ document.addEventListener("contextmenu", async (event) => {
 });
 
 await listenAppEvent("sakura://product-menu-error", () => {
-  showRecoverableError("设置窗口暂时无法打开，请稍后重试。");
+  showRecoverableError("桌宠菜单操作失败，请稍后重试。");
+});
+
+await listenAppEvent("sakura://subtitle-language-changed", (event) => {
+  const language = event?.payload === "ja" ? "ja" : event?.payload === "zh" ? "zh" : null;
+  if (!language) return;
+  subtitleLanguage = language;
+  typewriter.updateLanguage(language);
 });
 
 let coreRebindRevision = 0;

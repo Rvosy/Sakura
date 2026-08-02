@@ -593,6 +593,7 @@ fn open_pet_context_menu(
     surface_x: f64,
     surface_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+    subtitle: tauri::State<'_, chat_settings::SubtitleLanguageState>,
 ) -> Result<product_shell::ProductMenuCapabilityManifest, String> {
     if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
@@ -623,7 +624,9 @@ fn open_pet_context_menu(
             .map_err(|error| error.to_string())?;
         geometry.context_menu_open = true;
     }
-    Ok(product_shell::product_menu_capability_manifest())
+    Ok(product_shell::product_menu_capability_manifest(
+        subtitle.get()?.is_chinese(),
+    ))
 }
 
 fn close_pet_context_menu_surface(
@@ -784,6 +787,17 @@ fn current_chat_presentation_timing(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     timing.get()
+}
+
+#[tauri::command]
+fn current_subtitle_language(
+    window: WebviewWindow,
+    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
+) -> Result<chat_settings::SubtitleLanguage, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    subtitle.get()
 }
 
 #[tauri::command]
@@ -1514,6 +1528,16 @@ fn handle_product_menu_action(
 ) -> Result<(), String> {
     match action {
         product_shell::ProductMenuAction::TogglePet => toggle_pet_visibility(app),
+        product_shell::ProductMenuAction::ToggleSubtitle => {
+            let subtitle = app.state::<chat_settings::SubtitleLanguageState>();
+            let language = subtitle.toggle()?;
+            app.emit_to(
+                "main",
+                chat_settings::SUBTITLE_LANGUAGE_CHANGED_EVENT,
+                language,
+            )
+            .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
+        }
         product_shell::ProductMenuAction::OpenSettings => {
             product_shell::show_or_focus_settings(app)
         }
@@ -1842,6 +1866,9 @@ fn main() {
         ))
         .manage(character_appearance_state(ui_config_repository.clone()))
         .manage(chat_settings::ChatPresentationTimingState::new(
+            ui_config_repository.clone(),
+        ))
+        .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
         .register_uri_scheme_protocol(
@@ -1931,6 +1958,7 @@ fn main() {
             chat_send,
             chat_cancel,
             current_chat_presentation_timing,
+            current_subtitle_language,
             current_character_presentation,
             current_character_appearance,
             begin_control_surface_preview,

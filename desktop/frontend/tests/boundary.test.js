@@ -132,10 +132,14 @@ test("portrait cross-fade uses the legacy overlap without a second CSS transitio
 });
 
 test("Chinese subtitle menu item is an enabled checked action", () => {
-  const subtitleItem = index.match(/<button[\s\S]*?显示中文字幕[\s\S]*?<\/button>/)?.[0] || "";
+  const actionIndex = index.indexOf('data-menu-action="sakura.chat.subtitle.toggle"');
+  const subtitleItem = actionIndex < 0
+    ? ""
+    : index.slice(index.lastIndexOf("<button", actionIndex), index.indexOf("</button>", actionIndex) + 9);
   assert.match(subtitleItem, /data-menu-action="sakura\.chat\.subtitle\.toggle"/);
   assert.match(subtitleItem, /role="menuitemcheckbox"/);
-  assert.doesNotMatch(subtitleItem, /data-menu-unavailable|disabled/);
+  assert.match(subtitleItem, /aria-disabled="false"/);
+  assert.doesNotMatch(subtitleItem, /data-menu-unavailable|\sdisabled(?:\s|>)/);
 });
 
 test("runtime typography assigns weight by semantic role", () => {
@@ -265,7 +269,7 @@ test("adaptive geometry settles after fonts and before the hidden window is reve
 
 test("product menu presentation is themed in the WebView while Rust owns capabilities and actions", () => {
   assert.match(index, /id="pet-context-menu"[^>]*role="menu"/);
-  assert.equal((index.match(/data-menu-unavailable/g) || []).length, 5);
+  assert.equal((index.match(/data-menu-unavailable/g) || []).length, 4);
   assert.equal((index.match(/role="menuitemcheckbox"/g) || []).length, 3);
   for (const label of ["隐藏至托盘", "显示中文字幕", "完整访问权限", "保持置顶", "历史记录", "运行日志 \/ 诊断", "设置", "退出"])
     assert.match(index, new RegExp(label));

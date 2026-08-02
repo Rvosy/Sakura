@@ -1,5 +1,6 @@
 export const PRODUCT_MENU_ACTIONS = Object.freeze({
   visibility: "sakura.pet.visibility.toggle",
+  subtitle: "sakura.chat.subtitle.toggle",
   settings: "sakura.settings.open",
   exit: "sakura.app.exit",
 });
@@ -20,16 +21,21 @@ export function clampMenuPosition(clientX, clientY, menuWidth, menuHeight, viewp
 }
 
 export function validateProductMenuManifest(value) {
-  if (!value || value.schemaVersion !== 1 || !Array.isArray(value.availableActions)) {
+  if (!value || value.schemaVersion !== 2 || !Array.isArray(value.availableActions) || !Array.isArray(value.checkedActions)) {
     throw new Error("PRODUCT_MENU_MANIFEST_INVALID");
   }
   const availableActions = value.availableActions.filter(
     (action, index, actions) =>
       typeof action === "string" && KNOWN_ACTIONS.includes(action) && actions.indexOf(action) === index,
   );
+  const checkedActions = value.checkedActions.filter(
+    (action, index, actions) =>
+      typeof action === "string" && availableActions.includes(action) && actions.indexOf(action) === index,
+  );
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     availableActions: Object.freeze(availableActions),
+    checkedActions: Object.freeze(checkedActions),
     unavailableReason:
       typeof value.unavailableReason === "string" && value.unavailableReason.trim()
         ? value.unavailableReason
@@ -91,10 +97,14 @@ export class PetContextMenu {
   applyManifest(value) {
     const manifest = validateProductMenuManifest(value);
     const available = new Set(manifest.availableActions);
+    const checked = new Set(manifest.checkedActions);
     for (const item of this.menu.querySelectorAll("[data-menu-action]")) {
       const enabled = available.has(item.dataset.menuAction);
       item.disabled = !enabled;
       item.setAttribute("aria-disabled", String(!enabled));
+      if (item.getAttribute?.("role") === "menuitemcheckbox") {
+        item.setAttribute("aria-checked", String(checked.has(item.dataset.menuAction)));
+      }
     }
     for (const item of this.menu.querySelectorAll("[data-menu-unavailable]")) {
       item.disabled = true;

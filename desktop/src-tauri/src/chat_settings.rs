@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::ui_config::UiConfigRepository;
 
 pub const CHAT_TIMING_CHANGED_EVENT: &str = "sakura://chat-presentation-timing-changed";
+pub const SUBTITLE_LANGUAGE_CHANGED_EVENT: &str = "sakura://subtitle-language-changed";
 const SCHEMA_VERSION: u64 = 1;
 const DOMAIN: &str = "ui";
 const TYPING_INTERVAL_MIN: u16 = 5;
@@ -113,6 +114,91 @@ impl ChatPresentationTimingState {
         })?;
         Ok(values)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SubtitleLanguage {
+    #[default]
+    Zh,
+    Ja,
+}
+
+impl SubtitleLanguage {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Zh => Self::Ja,
+            Self::Ja => Self::Zh,
+        }
+    }
+
+    pub fn is_chinese(self) -> bool {
+        self == Self::Zh
+    }
+}
+
+pub struct SubtitleLanguageState {
+    repository: UiConfigRepository,
+}
+
+impl SubtitleLanguageState {
+    pub fn new(repository: UiConfigRepository) -> Self {
+        Self { repository }
+    }
+
+    pub fn get(&self) -> Result<SubtitleLanguage, String> {
+        subtitle_language_from_document(&self.repository.load("CHAT_SUBTITLE")?)
+    }
+
+    pub fn save(&self, language: SubtitleLanguage) -> Result<SubtitleLanguage, String> {
+        self.repository.update("CHAT_SUBTITLE", |document| {
+            validate_subtitle_document(document)?;
+            let settings = document
+                .get_mut("settings")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "CHAT_SUBTITLE_DOCUMENT_INVALID".to_string())?;
+            settings.insert(
+                "subtitle_language".to_string(),
+                Value::String(
+                    match language {
+                        SubtitleLanguage::Zh => "zh",
+                        SubtitleLanguage::Ja => "ja",
+                    }
+                    .to_string(),
+                ),
+            );
+            Ok(())
+        })?;
+        Ok(language)
+    }
+
+    pub fn toggle(&self) -> Result<SubtitleLanguage, String> {
+        self.save(self.get()?.toggled())
+    }
+}
+
+fn validate_subtitle_document(document: &Value) -> Result<(), String> {
+    let root = document
+        .as_object()
+        .ok_or_else(|| "CHAT_SUBTITLE_DOCUMENT_INVALID".to_string())?;
+    if root.get("schema_version").and_then(Value::as_u64) != Some(SCHEMA_VERSION) {
+        return Err("CHAT_SUBTITLE_SCHEMA_UNSUPPORTED".to_string());
+    }
+    if root.get("domain").and_then(Value::as_str) != Some(DOMAIN) {
+        return Err("CHAT_SUBTITLE_DOMAIN_INVALID".to_string());
+    }
+    root.get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "CHAT_SUBTITLE_DOCUMENT_INVALID".to_string())?;
+    Ok(())
+}
+
+fn subtitle_language_from_document(document: &Value) -> Result<SubtitleLanguage, String> {
+    validate_subtitle_document(document)?;
+    Ok(match document["settings"]["subtitle_language"].as_str() {
+        Some("ja") => SubtitleLanguage::Ja,
+        _ => SubtitleLanguage::Zh,
+    })
 }
 
 fn validate_document(document: &Value) -> Result<(), String> {
@@ -232,7 +318,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.get().unwrap(), SubtitleLanguage::Zh);
-        assert_eq!(state.save(SubtitleLanguage::Ja).unwrap(), SubtitleLanguage::Ja);
+        assert_eq!(
+            state.save(SubtitleLanguage::Ja).unwrap(),
+            SubtitleLanguage::Ja
+        );
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["settings"]["subtitle_language"], "ja");
     }
