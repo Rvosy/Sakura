@@ -3,12 +3,13 @@ export function createPortraitController({
   defaultKey,
   loadImage,
   preview = () => {},
+  cancelPreview = () => {},
   commit = () => {},
   showFallback = () => {},
   reportError = () => {},
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
-  transitionMs = 180,
+  transitionMs = 300,
   reducedMotion = false,
 } = {}) {
   if (!assets || typeof assets !== "object" || !Object.hasOwn(assets, defaultKey)) {
@@ -20,12 +21,31 @@ export function createPortraitController({
   let pendingResolve = null;
   let currentKey = null;
   let generationId = null;
+  let previewActive = false;
+  const imageCache = new Map();
+
+  function decodedImage(source) {
+    if (imageCache.has(source)) return imageCache.get(source);
+    let pending;
+    try {
+      pending = Promise.resolve(loadImage(source));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    imageCache.set(source, pending);
+    pending.catch(() => imageCache.delete(source));
+    return pending;
+  }
 
   function clearTransition() {
     if (timer != null) clearTimer(timer);
     timer = null;
     if (pendingResolve) pendingResolve(Object.freeze({ applied: false, key: null }));
     pendingResolve = null;
+    if (previewActive) {
+      previewActive = false;
+      cancelPreview();
+    }
   }
 
   function beginGeneration(nextGenerationId) {
@@ -47,19 +67,25 @@ export function createPortraitController({
       const key = known ? requestedKey : defaultKey;
       if (!known) reportError({ code: "PORTRAIT_KEY_UNKNOWN", requestedKey, fallbackKey: key });
       const source = assets[key];
+      if (currentKey === key) {
+        token += 1;
+        clearTransition();
+        return Object.freeze({ applied: true, key, unchanged: true, recoveredUnknownKey: !known });
+      }
       const requestToken = ++token;
       clearTransition();
       try {
-        const image = await loadImage(source);
+        const image = await decodedImage(source);
         if (requestToken !== token || generation !== generationId) {
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
-        if (immediate || reducedMotion || currentKey === null || currentKey === key) {
+        if (immediate || reducedMotion || currentKey === null) {
           currentKey = key;
           commit({ key, source, image });
           return Object.freeze({ applied: true, key, recoveredUnknownKey: !known });
         }
         preview({ key, source, image });
+        previewActive = true;
         return await new Promise((resolve) => {
           pendingResolve = resolve;
           timer = setTimer(() => {
@@ -68,6 +94,7 @@ export function createPortraitController({
             if (requestToken !== token || generation !== generationId) {
               return resolve(Object.freeze({ applied: false, key, staleGeneration: true }));
             }
+            previewActive = false;
             currentKey = key;
             commit({ key, source, image });
             resolve(Object.freeze({ applied: true, key, recoveredUnknownKey: !known }));
@@ -78,14 +105,36 @@ export function createPortraitController({
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
         reportError({ code: "PORTRAIT_DECODE_FAILED", requestedKey: key });
-        showFallback({ key, source });
+        if (currentKey === null) showFallback({ key, source });
         return Object.freeze({ applied: false, key, failed: true });
+      }
+    },
+    async preload(requestedKey, { generation = generationId } = {}) {
+      if (!generation || generation !== generationId) {
+        return Object.freeze({ loaded: false, key: null, staleGeneration: true });
+      }
+      const known = Object.hasOwn(assets, requestedKey);
+      const key = known ? requestedKey : defaultKey;
+      if (!known) reportError({ code: "PORTRAIT_KEY_UNKNOWN", requestedKey, fallbackKey: key });
+      try {
+        await decodedImage(assets[key]);
+        if (generation !== generationId) {
+          return Object.freeze({ loaded: false, key, staleGeneration: true });
+        }
+        return Object.freeze({ loaded: true, key, recoveredUnknownKey: !known });
+      } catch {
+        if (generation !== generationId) {
+          return Object.freeze({ loaded: false, key, staleGeneration: true });
+        }
+        reportError({ code: "PORTRAIT_DECODE_FAILED", requestedKey: key });
+        return Object.freeze({ loaded: false, key, failed: true });
       }
     },
     dispose() {
       generationId = null;
       token += 1;
       clearTransition();
+      imageCache.clear();
     },
     current() {
       return currentKey;

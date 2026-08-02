@@ -337,13 +337,19 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     loadImage: (source) => loadImage(source, expectedByUrl),
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     preview: ({ source }) => {
+      portrait.classList.remove("is-transitioning");
       portraitNext.src = source;
+      void portrait.offsetWidth;
       portrait.classList.add("is-transitioning");
+    },
+    cancelPreview: () => {
+      portrait.classList.remove("is-transitioning");
+      portraitNext.removeAttribute("src");
     },
     commit: ({ key, source }) => {
       portraitCurrent.src = source;
-      portraitNext.removeAttribute("src");
       portrait.classList.remove("is-transitioning");
+      portraitNext.removeAttribute("src");
       portraitFallback.hidden = true;
       syncPortraitAppearance(key, boundPresentation);
       activatePortraitHitTest(key);
@@ -430,9 +436,15 @@ const typewriter = createTypewriter({
     const result = presentation.setTypingText(text);
     if (result.applied) render(result.state, bubbleUpdate);
   },
-  onSegment: (segment) => {
+  onSegment: (segment, index) => {
     const result = presentation.setTypingSegment(segment);
-    if (result.applied) return render(result.state);
+    if (result.applied) {
+      const nextPortrait = result.state.segments[index + 1]?.portrait;
+      if (nextPortrait) {
+        void portraitController.preload(nextPortrait, { generation: result.state.generationId });
+      }
+      return render(result.state);
+    }
     return undefined;
   },
   onComplete: () => {

@@ -85,7 +85,46 @@ test("same key is a no-op and preloading is reused by show", async () => {
   await controller.show("A", { generation: "g1" });
   await controller.preload("B", { generation: "g1" });
   const shown = controller.show("B", { generation: "g1" });
+  await Promise.resolve();
   timers.at(-1).callback();
   await shown;
   assert.deepEqual(loads, ["a.png", "b.png"]);
+});
+
+test("a newer request cancels an active preview and restores the committed frame while loading", async () => {
+  const pending = new Map();
+  const previews = [];
+  const cancelled = [];
+  const timers = [];
+  const controller = createPortraitController({
+    assets: { A: "a.png", B: "b.png", C: "c.png" },
+    defaultKey: "A",
+    loadImage(source) {
+      const request = deferred();
+      pending.set(source, request);
+      return request.promise;
+    },
+    preview(value) { previews.push(value.key); },
+    cancelPreview() { cancelled.push(previews.at(-1)); },
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+  });
+  controller.beginGeneration("g1");
+  const a = controller.show("A", { immediate: true, generation: "g1" });
+  await Promise.resolve();
+  pending.get("a.png").resolve({});
+  await a;
+  const b = controller.show("B", { generation: "g1" });
+  await Promise.resolve();
+  pending.get("b.png").resolve({});
+  await Promise.resolve();
+  assert.deepEqual(previews, ["B"]);
+  const c = controller.show("C", { generation: "g1" });
+  assert.deepEqual(cancelled, ["B"]);
+  await Promise.resolve();
+  pending.get("c.png").resolve({});
+  await Promise.resolve();
+  timers.at(-1).callback();
+  await Promise.all([b, c]);
+  assert.equal(controller.current(), "C");
 });
