@@ -1,7 +1,17 @@
 function normalizeSegments(segments) {
   return Array.isArray(segments)
-    ? segments.filter((segment) => segment && typeof segment.text === "string" && segment.text.length > 0)
+    ? segments.filter((segment) => segment && typeof segment === "object")
     : [];
+}
+
+function normalizeLanguage(language) {
+  return language === "ja" ? "ja" : "zh";
+}
+
+export function selectSegmentText(segment, language = "zh") {
+  const text = typeof segment?.text === "string" ? segment.text : "";
+  const translation = typeof segment?.translation === "string" ? segment.translation : "";
+  return normalizeLanguage(language) === "zh" && translation.trim() ? translation : text;
 }
 
 export function createTypewriter({
@@ -9,6 +19,8 @@ export function createTypewriter({
   segmentPauseMs = 160,
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
+  language = "zh",
+  reducedMotion = false,
   onStart = () => {},
   onText = () => {},
   onSegment = () => {},
@@ -19,44 +31,63 @@ export function createTypewriter({
   let sequence = 0;
   let timer = null;
   let active = null;
+  let selectedLanguage = normalizeLanguage(language);
 
   function clearActiveTimer() {
     if (timer != null) clearTimer(timer);
     timer = null;
   }
 
-  function complete(run, skipped) {
+  function complete(run) {
     if (run.sequence !== sequence) return;
     clearActiveTimer();
     active = null;
-    onComplete(Object.freeze({ skipped }));
+    onComplete(Object.freeze({ skipped: run.skipped }));
+  }
+
+  function scheduleNextSegment(run) {
+    if (run.sequence !== sequence) return;
+    if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
+    timer = setTimer(() => {
+      timer = null;
+      if (run.sequence !== sequence) return;
+      run.segmentIndex += 1;
+      typeSegment(run);
+    }, run.pauseDelay);
   }
 
   function typeSegment(run) {
     if (run.sequence !== sequence) return;
     const segment = run.segments[run.segmentIndex];
-    if (!segment) return complete(run, false);
-    onSegment(segment, run.segmentIndex);
-    const prefix = run.segmentIndex === 0 ? "" : "\n";
-    if (prefix) {
-      run.visible += prefix;
-      onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
-    }
-    const characters = Array.from(segment.text);
-    let characterIndex = 0;
-    const tick = () => {
-      if (run.sequence !== sequence) return;
-      if (characterIndex < characters.length) {
-        run.visible += characters[characterIndex++];
-        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
-        timer = setTimer(tick, run.typingDelay);
+    if (!segment) return complete(run);
+    const segmentRevision = ++run.segmentRevision;
+    const begin = () => {
+      if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
+      run.text = selectSegmentText(segment, selectedLanguage);
+      run.visible = "";
+      run.characters = Array.from(run.text);
+      run.characterIndex = 0;
+      onText("", Object.freeze({ reason: "segment", forceEnd: true }));
+      if (reducedMotion || run.characters.length === 0) {
+        run.visible = run.text;
+        if (run.text) onText(run.visible, Object.freeze({ reason: "typing", forceEnd: true }));
+        scheduleNextSegment(run);
         return;
       }
-      run.segmentIndex += 1;
-      if (run.segmentIndex >= run.segments.length) return complete(run, false);
-      timer = setTimer(() => typeSegment(run), run.pauseDelay);
+      const tick = () => {
+        timer = null;
+        if (run.sequence !== sequence || segmentRevision !== run.segmentRevision) return;
+        run.visible += run.characters[run.characterIndex++];
+        onText(run.visible, Object.freeze({ reason: "typing", forceEnd: false }));
+        if (run.characterIndex >= run.characters.length) scheduleNextSegment(run);
+        else timer = setTimer(tick, run.typingDelay);
+      };
+      timer = setTimer(tick, run.typingDelay);
     };
-    timer = setTimer(tick, run.typingDelay);
+    const prepared = onSegment(segment, run.segmentIndex);
+    if (prepared && typeof prepared.then === "function") {
+      Promise.resolve(prepared).then(begin, begin);
+    } else begin();
   }
 
   return Object.freeze({
@@ -65,7 +96,6 @@ export function createTypewriter({
       clearActiveTimer();
       const normalized = normalizeSegments(segments);
       onStart();
-      onText("", Object.freeze({ reason: "start", forceEnd: true }));
       if (!normalized.length) {
         active = null;
         onComplete(Object.freeze({ skipped: false }));
@@ -76,6 +106,11 @@ export function createTypewriter({
         segments: normalized,
         segmentIndex: 0,
         visible: "",
+        text: "",
+        characters: [],
+        characterIndex: 0,
+        segmentRevision: 0,
+        skipped: false,
         typingDelay,
         pauseDelay,
       };
@@ -85,14 +120,13 @@ export function createTypewriter({
     skip() {
       if (!active) return false;
       const run = active;
-      sequence += 1;
       clearActiveTimer();
-      const fullText = run.segments.map((segment) => segment.text).join("\n");
-      const last = run.segments.at(-1);
-      onSegment(last, run.segments.length - 1);
-      onText(fullText, Object.freeze({ reason: "skip", forceEnd: true }));
-      active = null;
-      onComplete(Object.freeze({ skipped: true }));
+      run.segmentRevision += 1;
+      run.skipped = true;
+      run.characterIndex = run.characters.length;
+      run.visible = run.text;
+      onText(run.visible, Object.freeze({ reason: "skip", forceEnd: true }));
+      scheduleNextSegment(run);
       return true;
     },
     cancel(replacement = "") {
@@ -104,6 +138,15 @@ export function createTypewriter({
     updateTiming({ intervalMs: nextInterval, segmentPauseMs: nextPause } = {}) {
       typingDelay = Math.max(5, Math.min(200, Number(nextInterval) || 28));
       pauseDelay = Math.max(0, Math.min(3000, Number(nextPause) || 0));
+    },
+    updateLanguage(nextLanguage) {
+      const normalized = normalizeLanguage(nextLanguage);
+      if (normalized === selectedLanguage) return false;
+      selectedLanguage = normalized;
+      if (!active) return true;
+      clearActiveTimer();
+      typeSegment(active);
+      return true;
     },
     dispose() {
       sequence += 1;

@@ -9,7 +9,7 @@ const LIFECYCLE_COPY = Object.freeze({
   restarting: ["正在重连", "正在重新连接"],
 });
 
-function initialState(initialMessage, defaultPortraitKey) {
+function initialState(defaultPortraitKey) {
   return Object.freeze({
     generationId: null,
     generationNumber: 0,
@@ -19,7 +19,7 @@ function initialState(initialMessage, defaultPortraitKey) {
     lifecycleHeadline: "Sakura 正在启动",
     phase: "booting",
     operationId: null,
-    bubbleText: initialMessage,
+    bubbleText: "",
     segments: Object.freeze([]),
     error: null,
     portrait: defaultPortraitKey,
@@ -32,10 +32,10 @@ function normalizedSegments(reply) {
   if (!Array.isArray(reply?.segments)) return Object.freeze([]);
   return Object.freeze(
     reply.segments
-      .filter((segment) => segment && typeof segment.text === "string" && segment.text.length > 0)
+      .filter((segment) => segment && typeof segment === "object")
       .map((segment) =>
         Object.freeze({
-          text: segment.text,
+          text: typeof segment.text === "string" ? segment.text : "",
           translation: typeof segment.translation === "string" ? segment.translation : "",
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
@@ -47,10 +47,10 @@ function normalizedSegments(reply) {
 
 export function createChatPresentationReducer({ initialMessage, defaultPortraitKey, thinkingPortraitKey, concernedPortraitKey } = {}) {
   if (!initialMessage || !defaultPortraitKey) throw new Error("character presentation is required");
-  const thinkingPortrait = thinkingPortraitKey || defaultPortraitKey;
   const concernedPortrait = concernedPortraitKey || defaultPortraitKey;
-  let state = initialState(initialMessage, defaultPortraitKey);
+  let state = initialState(defaultPortraitKey);
   let hasReachedReady = false;
+  let greetingStarted = false;
 
   function acceptGeneration(event) {
     if (!Number.isSafeInteger(event?.generationNumber) || event.generationNumber < 1) return false;
@@ -125,7 +125,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           bubbleText: "正在组织完整回复……",
           segments: Object.freeze([]),
           error: null,
-          portrait: thinkingPortrait,
+          portrait: state.portrait,
           canCancel: true,
           canSkip: false,
         });
@@ -141,7 +141,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           phase: "typing",
           segments,
           bubbleText: "",
-          portrait: segments[0].portrait,
+          portrait: state.portrait,
           canCancel: false,
           canSkip: true,
         });
@@ -156,7 +156,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           bubbleText: message,
           segments: Object.freeze([]),
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
-          portrait: concernedPortrait,
+          portrait: state.portrait,
           canCancel: false,
           canSkip: false,
         });
@@ -170,7 +170,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           bubbleText: event.reason === "core_restart" ? "旧回复已随连接关闭。" : "已取消当前回复。",
           segments: Object.freeze([]),
           error: null,
-          portrait: defaultPortraitKey,
+          portrait: state.portrait,
           canCancel: false,
           canSkip: false,
         });
@@ -185,7 +185,25 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     },
     setTypingSegment(segment) {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, portrait: segment?.portrait || defaultPortraitKey });
+      state = Object.freeze({ ...state, portrait: segment?.portrait || state.portrait });
+      return result(true);
+    },
+    beginGreeting() {
+      if (greetingStarted || !initialMessage || !["ready", "booting"].includes(state.phase)) return result(false);
+      greetingStarted = true;
+      state = Object.freeze({
+        ...state,
+        phase: "typing",
+        bubbleText: "",
+        segments: Object.freeze([Object.freeze({
+          text: initialMessage,
+          translation: "",
+          tone: "calm",
+          portrait: state.portrait,
+          suppressTts: true,
+        })]),
+        canSkip: true,
+      });
       return result(true);
     },
     finishTyping() {

@@ -422,7 +422,8 @@ const typewriter = createTypewriter({
   },
   onSegment: (segment) => {
     const result = presentation.setTypingSegment(segment);
-    if (result.applied) render(result.state);
+    if (result.applied) return render(result.state);
+    return undefined;
   },
   onComplete: () => {
     const result = presentation.finishTyping();
@@ -444,11 +445,12 @@ function render(state, bubbleUpdate = {}) {
   adaptiveSurface.schedule();
   if (renderedPortrait !== state.portrait) {
     renderedPortrait = state.portrait;
-    portraitController.show(state.portrait, {
+    return portraitController.show(state.portrait, {
       immediate: portraitCurrent.getAttribute("src") === null,
       generation: state.generationId,
     });
   }
+  return Promise.resolve({ applied: false, key: state.portrait });
 }
 
 function handleCoreEvent(event) {

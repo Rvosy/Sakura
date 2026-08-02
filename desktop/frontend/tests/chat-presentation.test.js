@@ -51,7 +51,7 @@ test("initial startup keeps the greeting hidden until an explicit one-shot revea
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
   assert.equal(reducer.current().phase, "ready");
-  assert.equal(reducer.current().bubbleText, "你好，我是当前角色。");
+  assert.equal(reducer.current().bubbleText, "");
   assert.equal(reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-1" }).applied, true);
   assert.equal(reducer.current().canCancel, true);
   assert.equal(
@@ -201,13 +201,14 @@ test("multi-segment replies clear the previous segment and select Chinese transl
 
 test("skip completes only the current segment and keeps later segments sequential", () => {
   const timers = [];
+  let nextTimer = 0;
   const rendered = [];
   const completed = [];
   const typewriter = createTypewriter({
     intervalMs: 10,
     segmentPauseMs: 20,
-    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
-    clearTimer() {},
+    setTimer(callback, delay) { const id = ++nextTimer; timers.push({ id, callback, delay }); return id; },
+    clearTimer(id) { const index = timers.findIndex((timer) => timer.id === id); if (index >= 0) timers.splice(index, 1); },
     onText(text) { rendered.push(text); },
     onComplete(result) { completed.push(result); },
   });
@@ -223,12 +224,13 @@ test("skip completes only the current segment and keeps later segments sequentia
 
 test("changing subtitle language restarts only the active segment without mixed text", () => {
   const timers = [];
+  let nextTimer = 0;
   const rendered = [];
   const typewriter = createTypewriter({
     intervalMs: 10,
     language: "zh",
-    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
-    clearTimer() {},
+    setTimer(callback, delay) { const id = ++nextTimer; timers.push({ id, callback, delay }); return id; },
+    clearTimer(id) { const index = timers.findIndex((timer) => timer.id === id); if (index >= 0) timers.splice(index, 1); },
     onText(text) { rendered.push(text); },
   });
   typewriter.start([{ text: "かな", translation: "中文" }, { text: "次", translation: "下一段" }]);
