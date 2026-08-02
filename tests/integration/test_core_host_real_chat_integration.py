@@ -393,7 +393,7 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
-                "message": "Provider response was invalid",
+                "message": "供应商响应格式无效：返回内容不是有效 JSON。",
                 "retryable": False,
                 "details": {},
             },
@@ -539,7 +539,7 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
         ]
         assert frames[1]["payload"]["error"] == {
             "code": "PROVIDER_RESPONSE_INVALID",
-            "message": "Provider response was invalid",
+            "message": "供应商响应格式无效：回复结构不符合协议。",
             "retryable": False,
             "details": {},
         }
