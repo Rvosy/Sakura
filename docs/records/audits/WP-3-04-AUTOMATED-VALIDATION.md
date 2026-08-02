@@ -4,7 +4,7 @@ status: recorded
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-01
+updated: 2026-08-02
 ---
 
 # WP-3-04 本地自动验证记录
@@ -79,3 +79,36 @@ final status    -> manual_pending
 取消的环形旋转条；减少动态效果模式下显示静态圆环。新增回归先复现 `false !== true`，修复后定向测试
 9/9 通过，前端全量测试 76/76、docs 2/2、smoke 3/3、runtime-v2-shell 7/7 通过。该结果只证明自动回归，
 Windows 真实取消仍等待负责人重新验证。
+
+## 2026-08-02 聊天表现一致性纠正
+
+用户复核真实聊天后，WP-3-04 追加了五项以旧 Qt 为行为基准的纠正：启动问候 reveal 后逐字播放、等待
+终态保持当前立绘、完整回复逐段清屏显示、右键菜单恢复中/日字幕选择，以及约 300ms、80% 重叠的双层
+立绘交叉淡入。实现未修改 Python Core、legacy Qt、角色包、固定窗口几何、依赖清单或真实用户数据。
+
+基线先取消 Git 对 `data/runtime_v2/config/ui.json` 的误跟踪，并保留用户本地文件；该路径与 `.codex/`
+本地环境目录均已加入忽略规则。Windows 历史失败用例
+`spawn_failures_and_repeated_release_do_not_leak_process_handles` 连续运行三次，结果均为 1/1 passed，因此
+没有重新打开或修改进程树前置工作包。
+
+纠正实现候选为 `989fc852a053d6c6d6f37a090acd54e94a2122ca`。定向与完整自动结果：
+
+```text
+runtime\python.exe -m harness run docs              -> 2/2 cases passed
+runtime\python.exe -m harness run smoke             -> 3/3 cases passed
+runtime\python.exe -m harness run unit              -> 580 passed / 6 skipped
+runtime\python.exe -m harness run runtime-v2-shell  -> 7/7 cases passed；frontend 88/88
+cargo test subtitle_language                        -> 3/3 passed
+cargo test product_menu                             -> 4/4 passed
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check -> passed
+runtime\python.exe -m harness verify WP-3-04        -> exit 3 / manual_pending
+```
+
+`verify` 机器报告为 `temp/harness/20260802T044917Z-WP-3-04.json`，运行 149.843 秒；preflight、scope、
+依赖与 required profiles 全部通过，汇总为 22 passed / 0 failed / 3 manual pending。该自动结果包含三平台
+workflow 契约的静态/测试门，不代表本纠正候选已经取得新的远端三平台同 SHA 运行证据。
+
+剩余门禁仍由项目负责人完成：Windows 真实 Provider 下复核启动问候、等待立绘、多段中/日字幕、当前段
+“立即显示”、取消/错误/连续第二轮与快速立绘切换；Sakura 和 N.A.V.I. 在 100%/150% DPI 下复核固定
+几何与冷热缓存过渡；最后审查同一最终候选 SHA 的 Windows、macOS、Linux CI 和独立回退边界。本记录
+不填写上述人工结果，不把 WP-3-04 标记为 `accepted`。
