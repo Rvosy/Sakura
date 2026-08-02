@@ -254,6 +254,15 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.match(app, /createAdaptiveControlSurface/);
 });
 
+test("adaptive control geometry has no CSS tail outside the native-confirmed region", () => {
+  const bubble = declarationBlock(".bubble");
+  const composer = declarationBlock(".composer");
+  assert.doesNotMatch(bubble, /transition:[^;]*(?:top|height)/s);
+  assert.doesNotMatch(composer, /transition:[^;]*(?:top|height)/s);
+  assert.match(app, /const bubbleBody = document\.querySelector\("\.reply-body"\)/);
+  assert.match(app, /bubbleBody,/);
+});
+
 test("the composer action is an accessible local SVG send and stop control", () => {
   assert.match(index, /id="composer-send"[^>]*data-action="send"[^>]*aria-label="发送消息"/);
   assert.match(index, /composer-action-icon--send[\s\S]*?<svg[\s\S]*?<path/);

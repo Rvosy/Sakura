@@ -82,6 +82,21 @@ test("native bounds are confirmed before the DOM state is committed", async () =
   assert.deepEqual(order, ["native", "commit"]);
 });
 
+test("native-confirmed child and panel geometry commit in one synchronous stage", async () => {
+  const order = [];
+  const controller = createLayoutController({
+    computeLayout: (state) => ({ state, contractVersion: 1 }),
+    applyNativeLayout: async () => {
+      order.push("native");
+      return { applied: true, contractVersion: 1 };
+    },
+    commitLayout: () => order.push("panel"),
+  });
+
+  await controller.transition("composer", "", { commitVisual: () => order.push("child") });
+  assert.deepEqual(order, ["native", "child", "panel"]);
+});
+
 test("native-confirmed intermediate frames keep a busy same-state slider moving", async () => {
   const pending = [];
   const committed = [];
