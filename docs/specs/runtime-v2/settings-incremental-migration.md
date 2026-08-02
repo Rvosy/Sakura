@@ -232,7 +232,8 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 `chat.subtitle_language` 只持久化 `subtitle_language: "zh" | "ja"`。缺失或非法值读取为默认 `zh`，
 下一次成功保存时规范化；`zh` 优先展示 segment `translation`，空值回退 `text`，`ja` 展示 `text`。
 主窗口通过 `sakura.chat.subtitle.toggle` 右键菜单动作切换，菜单 manifest 必须返回 checked 状态；保存失败
-保持旧文件、旧运行值与旧勾选态。切换成功立即从正在输入的当前段开头按新语言重播，不回放已完成段。
+保持旧文件、旧运行值与旧勾选态。切换成功后，输入中的当前段立即清空并按新语言从头重播；settled 或
+当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘。
 该 feature 不读写 legacy `system_config.yaml`，旧版本可安全忽略新增字段。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。

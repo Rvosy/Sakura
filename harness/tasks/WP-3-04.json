@@ -49,6 +49,7 @@
     "harness/activations/WP-3-04/0001.json",
     "harness/activations/WP-3-04/0002.json",
     "harness/activations/WP-3-04/0003.json",
+    "harness/activations/WP-3-04/0004.json",
     "harness/tasks/WP-3-04.json",
     "tests/integration/test_core_host_real_chat_integration.py",
     "tests/fixtures/runtime_v2/wp_3_04/**",
@@ -82,7 +83,7 @@
       "locked Rust full tests, formatting and same-SHA three-platform workflow pass"
     ],
     "manual": [
-      "maintainer validates the legacy-style waiting indicator, character thinking placeholder, actionable sanitized Provider error, cancel, and second turn in the Windows Tauri app",
+      "maintainer validates immediate subtitle-language refresh, session reply navigation with synchronized portraits, pointer-open menu styling, cancel, and second turn in the Windows Tauri app",
       "maintainer validates Sakura and N.A.V.I. at 100% and 150% DPI with unchanged frozen pet geometry",
       "maintainer reviews the same candidate SHA platform evidence and rollback boundary"
     ]
