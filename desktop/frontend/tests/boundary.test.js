@@ -87,9 +87,11 @@ test("the pet window stays hidden until the native surface and first character f
   const portraitIndex = app.lastIndexOf("await portraitController.show(characterPresentation.defaultPortraitKey");
   const readyIndex = app.lastIndexOf("document.body.dataset.shellState =");
   const revealIndex = app.lastIndexOf('await invoke("reveal_pet_window")');
+  const greetingIndex = app.lastIndexOf("presentation.beginGreeting()");
   assert.ok(nativeRevisionIndex >= 0 && nativeRevisionIndex < layoutIndex);
   assert.ok(presentationIndex >= 0 && presentationIndex < portraitIndex);
   assert.ok(portraitIndex < readyIndex && readyIndex < revealIndex);
+  assert.ok(revealIndex < greetingIndex);
   assert.match(app, /if \(presentationUnavailable\)[\s\S]*?portraitFallback\.hidden = false;[\s\S]*?else \{[\s\S]*?await portraitController\.show/);
   assert.match(app, /sakura:\/\/core-generation-changed[\s\S]*?generationId === characterPresentation\.generationId[\s\S]*?rebindCoreGeneration\(generationId\)/);
   assert.doesNotMatch(app, /window\.location\.reload\(\)/);

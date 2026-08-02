@@ -48,6 +48,23 @@ test("initial startup keeps the greeting hidden until an explicit one-shot revea
   assert.equal(reducer.beginGreeting().applied, false);
 });
 
+test("startup lifecycle refreshes preserve an active one-shot greeting", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "启动问候",
+    defaultPortraitKey: "__default__",
+  });
+  reducer.reduce(lifecycle("startup", 1, 1));
+  reducer.beginGreeting();
+  reducer.setTypingText("启动");
+  reducer.reduce(lifecycle("initializing", 1, 2));
+  assert.equal(reducer.current().phase, "typing");
+  assert.equal(reducer.current().bubbleText, "启动");
+  assert.equal(reducer.current().canSkip, true);
+  reducer.reduce(lifecycle("ready", 1, 3));
+  assert.equal(reducer.current().phase, "typing");
+  assert.equal(reducer.current().bubbleText, "启动");
+});
+
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
   assert.equal(reducer.current().phase, "ready");

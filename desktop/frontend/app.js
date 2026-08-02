@@ -784,3 +784,10 @@ await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
 await invoke("reveal_pet_window");
+if (!presentationUnavailable) {
+  const greeting = presentation.beginGreeting();
+  if (greeting.applied) {
+    render(greeting.state);
+    typewriter.start(greeting.state.segments);
+  }
+}

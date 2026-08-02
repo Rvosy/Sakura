@@ -81,6 +81,10 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           && !generationChanged
           && Boolean(state.operationId)
           && ["thinking", "typing"].includes(state.phase);
+        const preserveGreeting = greetingStarted
+          && state.phase === "typing"
+          && !state.operationId
+          && ["startup", "initializing", "ready"].includes(event.status);
         state = Object.freeze({
           ...state,
           generationId: event.generationId,
@@ -89,13 +93,15 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           lifecycle: event.status,
           lifecycleLabel,
           lifecycleHeadline,
-          phase: preserveVisualState
+          phase: preserveGreeting
+            ? state.phase
+            : preserveVisualState
             ? (["thinking", "typing"].includes(state.phase) ? "settled" : state.phase)
             : ready
               ? (["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase)
               : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
           operationId: preserveInteraction ? state.operationId : null,
-          bubbleText: preserveVisualState
+          bubbleText: preserveVisualState || preserveGreeting
             ? state.bubbleText
             : ready || initialStartup
               ? state.bubbleText
@@ -104,11 +110,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
                 : event.status === "restarting"
                   ? "正在重新连接……"
                   : "正在准备会话……",
-          segments: preserveVisualState || ready ? state.segments : Object.freeze([]),
+          segments: preserveVisualState || preserveGreeting || ready ? state.segments : Object.freeze([]),
           error: null,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
-          canSkip: preserveInteraction && state.canSkip,
+          canSkip: (preserveInteraction || preserveGreeting) && state.canSkip,
         });
         if (ready) hasReachedReady = true;
         return result(true);
