@@ -79,7 +79,7 @@ git diff --check
 ```
 
 `runtime\python.exe -m harness verify WP-3-06` 报告为
-`temp/harness/20260802T150200Z-WP-3-06.json`：五个 required profiles 全部通过，23 项通过、0 项失败、
+`temp/harness/20260802T153322Z-WP-3-06.json`：负责人批准的新契约基线下五个 required profiles 全部通过，23 项通过、0 项失败、
 3 项人工验收 pending。Harness 的验收描述映射不单独替代真实进程证据；本记录以上述真实 Windows 脚本
 输出作为 Qt → Tauri → Qt 自动门的实际证据。
 
