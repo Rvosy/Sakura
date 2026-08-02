@@ -4,12 +4,23 @@ import test from "node:test";
 import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createTypewriter } from "../pet/typewriter.js";
 
-const lifecycle = (status, generationNumber = 1, revision = 1) => ({
+const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false) => ({
   type: "lifecycle",
   status,
   generationId: `generation-${generationNumber}`,
   generationNumber,
   revision,
+  canRetry,
+});
+
+test("only an exhausted or deterministic failure exposes the manual retry action", () => {
+  const reducer = readyReducer();
+  reducer.reduce(lifecycle("core_crashed", 1, 2, false));
+  assert.equal(reducer.current().canRetry, false);
+  reducer.reduce(lifecycle("core_crashed", 1, 3, true));
+  assert.equal(reducer.current().canRetry, true);
+  reducer.reduce(lifecycle("rehydrating", 2, 1, false));
+  assert.equal(reducer.current().canRetry, false);
 });
 
 function readyReducer() {
@@ -268,11 +279,51 @@ test("Core restart preserves the settled presentation and rejects old generation
   assert.equal(reducer.current().generationId, "generation-2");
   assert.equal(reducer.current().bubbleText, "切换前的回复");
   assert.equal(reducer.current().portrait, "smile");
+  assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["切换前的回复"]);
   assert.equal(
     reducer.reduce({ type: "chat.completed", generationId: "generation-1", generationNumber: 1, operationId: "old", reply: { segments: [{ text: "late" }] } }).applied,
     false,
   );
   assert.notEqual(reducer.current().bubbleText, "late");
+});
+
+test("Core failure gives active work one interrupted terminal and preserves earlier completed replies", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "done" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "done",
+    reply: { segments: [{ text: "已经完成", portrait: "smile" }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("已经完成");
+  reducer.finishTyping();
+
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "active" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "active",
+    reply: { segments: [{ text: "不应跨代续播", portrait: "concerned" }] },
+  });
+  reducer.setTypingText("不应");
+
+  reducer.reduce(lifecycle("core_crashed", 1, 2));
+  assert.equal(reducer.current().phase, "error");
+  assert.equal(reducer.current().operationId, null);
+  assert.equal(reducer.current().canCancel, false);
+  assert.equal(reducer.current().bubbleText, "连接中断，本次回复已停止。");
+  assert.equal(reducer.current().error.code, "CHAT_INTERRUPTED");
+  assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
+
+  reducer.reduce(lifecycle("rehydrating", 2, 1));
+  reducer.reduce(lifecycle("ready", 2, 2));
+  assert.equal(reducer.current().bubbleText, "连接中断，本次回复已停止。");
+  assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
+  assert.equal(reducer.current().lifecycle, "ready");
 });
 
 test("timing updates are snapshotted for the next reply without retiming the active one", () => {

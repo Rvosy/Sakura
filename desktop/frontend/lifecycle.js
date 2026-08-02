@@ -7,6 +7,7 @@ const STATUSES = new Set([
   "failed",
   "core_crashed",
   "restarting",
+  "rehydrating",
 ]);
 
 const STATUS_CODES = Object.freeze({
@@ -18,6 +19,7 @@ const STATUS_CODES = Object.freeze({
   failed: "CORE_FAILED",
   core_crashed: "CORE_CRASHED",
   restarting: "CORE_RESTARTING",
+  rehydrating: "CORE_REHYDRATING",
 });
 
 export const LIFECYCLE_COPY = Object.freeze({
@@ -29,6 +31,7 @@ export const LIFECYCLE_COPY = Object.freeze({
   failed: ["failed", "Core 启动失败"],
   core_crashed: ["Core crashed", "Core 已意外退出"],
   restarting: ["restarting", "Core 正在安全重启"],
+  rehydrating: ["rehydrating", "Core 已恢复，正在还原桌宠状态"],
 });
 
 const CRASH_FAILURES = new Set(["unexpected_exit", "connection_lost"]);
@@ -65,7 +68,11 @@ export function projectLifecycle({ supervisor, snapshot }) {
     label,
     headline,
     code: STATUS_CODES[status],
-    canRetry: !["startup", "initializing", "restarting"].includes(status),
+    canRetry: status === "failed" || (
+      status === "core_crashed"
+      && supervisor.state === "failed"
+      && !supervisor.restartPending
+    ),
     canExit: true,
   });
 }

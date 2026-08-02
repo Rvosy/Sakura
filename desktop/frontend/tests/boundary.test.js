@@ -96,7 +96,8 @@ test("the pet window stays hidden until the native surface and first character f
   assert.ok(portraitIndex < readyIndex && readyIndex < revealIndex);
   assert.ok(revealIndex < greetingIndex);
   assert.match(app, /if \(presentationUnavailable\)[\s\S]*?portraitFallback\.hidden = false;[\s\S]*?else \{[\s\S]*?await portraitController\.show/);
-  assert.match(app, /sakura:\/\/core-generation-changed[\s\S]*?generationId === characterPresentation\.generationId[\s\S]*?rebindCoreGeneration\(generationId\)/);
+  assert.match(app, /initialPreparedGenerationId: characterPresentation\.generationId,[\s\S]*?prepareGeneration: \(\{ generationId \}\) => rebindCoreGeneration\(generationId\)/);
+  assert.match(app, /generationId === characterPresentation\.generationId\) return true;/);
   assert.doesNotMatch(app, /window\.location\.reload\(\)/);
   assert.match(app, /Keep the decoded old frame on screen until the replacement resource is ready/);
   assert.match(nativeWindowBackend, /WS_CAPTION/);
@@ -263,12 +264,14 @@ test("adaptive control geometry has no CSS tail outside the native-confirmed reg
   assert.match(app, /bubbleBody,/);
 });
 
-test("the composer action is an accessible local SVG send and stop control", () => {
+test("the composer action is an accessible local SVG send, stop, and recovery control", () => {
   assert.match(index, /id="composer-send"[^>]*data-action="send"[^>]*aria-label="发送消息"/);
   assert.match(index, /composer-action-icon--send[\s\S]*?<svg[\s\S]*?<path/);
   assert.match(index, /composer-action-icon--cancel[\s\S]*?<svg[\s\S]*?<rect/);
-  assert.match(app, /send\.dataset\.action = state\.canCancel \? "cancel" : "send"/);
-  assert.match(app, /send\.setAttribute\("aria-label", state\.canCancel \? "停止回复" : "发送消息"\)/);
+  assert.match(app, /send\.dataset\.action = state\.canCancel \? "cancel" : state\.canRetry \? "retry" : "send"/);
+  assert.match(app, /const actionLabel = state\.canCancel \? "停止回复" : state\.canRetry \? "重试连接" : "发送消息"/);
+  assert.match(app, /send\.setAttribute\("aria-label", actionLabel\);[\s\S]*?send\.title = actionLabel/);
+  assert.match(app, /else if \(state\.canRetry\)[\s\S]*?invoke\("retry_core"\)/);
   assert.doesNotMatch(styles, /--button-font-size/);
 });
 

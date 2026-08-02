@@ -67,11 +67,13 @@ pub struct ShellLifecyclePublication {
     versions: VersionPublication,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ShellCommand {
     Retry,
     Restart,
     Shutdown,
+    #[cfg(test)]
+    CrashForTest(Sender<Result<(), String>>),
 }
 
 #[derive(Clone)]
@@ -98,10 +100,10 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
-    pub fn current_generation_id(&self) -> Result<Option<String>, &'static str> {
+    pub fn available_generation_id(&self) -> Result<Option<String>, &'static str> {
         self.publication
             .lock()
-            .map(|publication| publication.supervisor.generation_id.clone())
+            .map(|publication| available_generation_id(&publication))
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
@@ -149,6 +151,17 @@ impl ShellLifecycleHandle {
         self.command
             .send(ShellCommand::Shutdown)
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    }
+
+    #[cfg(test)]
+    fn crash_core_for_test(&self) -> Result<(), String> {
+        let (reply, result) = mpsc::channel();
+        self.command
+            .send(ShellCommand::CrashForTest(reply))
+            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?;
+        result
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "CORE_TEST_CRASH_TIMEOUT".to_string())?
     }
 
     pub fn chat_bridge(&self) -> Result<ChatBridge, String> {
@@ -315,10 +328,7 @@ fn run_worker(
                     ..
                 } => {
                     state.identity = Some((generation_id, generation_number));
-                    state.chat_bridge = None;
-                    clear_chat_bridge(&state);
-                    clear_settings_transport(&state);
-                    state.snapshot = None;
+                    invalidate_generation_surfaces(&mut state);
                     state.core_version = "unavailable".to_string();
                     publish(&state, &publication);
                     drain_commands(&commands, &mut state, &mut actions);
@@ -335,6 +345,7 @@ fn run_worker(
                         &mut actions,
                         &publication,
                     ) {
+                        invalidate_generation_surfaces(&mut state);
                         actions.extend(
                             state
                                 .supervisor
@@ -379,6 +390,10 @@ fn run_worker(
             match commands.recv() {
                 Ok(ShellCommand::Shutdown) | Err(_) => break,
                 Ok(ShellCommand::Retry | ShellCommand::Restart) => continue,
+                #[cfg(test)]
+                Ok(ShellCommand::CrashForTest(reply)) => {
+                    let _ = reply.send(Err("CORE_TEST_CLEANUP_BLOCKED".to_string()));
+                }
             }
         }
 
@@ -394,6 +409,7 @@ fn run_worker(
                         Ok(()) => publish(&state, &publication),
                         Err(()) => {
                             if let Some((generation_id, _)) = state.identity {
+                                invalidate_generation_surfaces(&mut state);
                                 actions.extend(state.supervisor.observe_generation_failed(
                                     generation_id,
                                     FailureReason::UnexpectedExit,
@@ -436,6 +452,16 @@ fn submit_command(state: &mut WorkerState, command: ShellCommand) -> Vec<Lifecyc
         ShellCommand::Retry => state.supervisor.submit(LifecycleIntent::Retry),
         ShellCommand::Restart => state.supervisor.submit(LifecycleIntent::Restart),
         ShellCommand::Shutdown => state.supervisor.submit(LifecycleIntent::AppShutdown),
+        #[cfg(test)]
+        ShellCommand::CrashForTest(reply) => {
+            let result = state
+                .host
+                .as_mut()
+                .ok_or_else(|| "CORE_TEST_HOST_UNAVAILABLE".to_string())
+                .and_then(CoreHostRuntime::terminate_tree_for_test);
+            let _ = reply.send(result);
+            Vec::new()
+        }
     }
 }
 
@@ -587,18 +613,23 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
 }
 
 fn stop_generation(state: &mut WorkerState) -> bool {
-    clear_settings_transport(state);
-    clear_chat_bridge(state);
-    if let Some(bridge) = state.chat_bridge.take() {
-        bridge.invalidate();
-    }
+    invalidate_generation_surfaces(state);
     let Some(host) = state.host.take() else {
         return true;
     };
     match host.shutdown() {
         Ok(exit) => exit.tree_empty && exit.stderr_stats.eof && !exit.stderr_stats.read_failed,
-        Err(_) => false,
+        Err(failure) => failure.into_recovery().is_none(),
     }
+}
+
+fn invalidate_generation_surfaces(state: &mut WorkerState) {
+    clear_settings_transport(state);
+    clear_chat_bridge(state);
+    if let Some(bridge) = state.chat_bridge.take() {
+        bridge.invalidate();
+    }
+    state.snapshot = None;
 }
 
 fn clear_chat_bridge(state: &WorkerState) {
@@ -674,6 +705,17 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
     if let Ok(mut publication) = target.lock() {
         *publication = next;
     }
+}
+
+fn available_generation_id(publication: &ShellLifecyclePublication) -> Option<String> {
+    if publication.supervisor.state != "running" {
+        return None;
+    }
+    let generation_id = publication.supervisor.generation_id.as_ref()?;
+    if publication.snapshot.as_ref()?.generation_id != *generation_id {
+        return None;
+    }
+    Some(generation_id.clone())
 }
 
 fn supervisor_publication(
@@ -896,6 +938,104 @@ mod tests {
     }
 
     #[test]
+    fn real_core_crash_invalidates_public_surfaces_before_serial_recovery() {
+        let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
+        let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repository_root = manifest_directory
+            .join("../..")
+            .canonicalize()
+            .expect("repository root");
+        let assistant_root = repository_root
+            .join("tests/fixtures/runtime_v2/wp_3_01/ready")
+            .canonicalize()
+            .expect("ready Assistant fixture");
+        let executable_directory = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .expect("test executable directory")
+            .to_path_buf();
+        let session = ShellLifecycleSession::start(RuntimeLocationRequest {
+            mode: crate::platform::RuntimeMode::ExplicitDevelopment,
+            target: crate::platform::current_platform_target().expect("formal test target"),
+            executable_directory,
+            resource_directory: repository_root.clone(),
+            explicit_development_root: Some(repository_root),
+            assistant_root,
+        });
+        let handle = session.handle();
+        let first = wait_for_stable_generation(&handle, 1);
+        let first_id = first.supervisor.generation_id.expect("first generation");
+        assert_eq!(
+            handle
+                .available_generation_id()
+                .expect("available generation")
+                .as_deref(),
+            Some(first_id.as_str())
+        );
+
+        handle
+            .crash_core_for_test()
+            .expect("test fault should terminate the complete Core tree");
+        let invalidation_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let publication = handle.snapshot().expect("recovery publication");
+            if publication.supervisor.generation_number >= 1
+                && publication.snapshot.is_none()
+                && publication.character_presentation.is_none()
+                && handle
+                    .available_generation_id()
+                    .expect("generation availability")
+                    .is_none()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < invalidation_deadline,
+                "old generation surfaces were not invalidated before recovery"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let second = wait_for_stable_generation(&handle, 2);
+        assert_ne!(
+            second.supervisor.generation_id.as_deref(),
+            Some(first_id.as_str())
+        );
+        assert_eq!(
+            handle
+                .available_generation_id()
+                .expect("replacement generation")
+                .as_deref(),
+            second.supervisor.generation_id.as_deref()
+        );
+        for expected_generation in 3..=4 {
+            handle
+                .crash_core_for_test()
+                .expect("repeated test fault should terminate the Core tree");
+            wait_for_stable_generation(&handle, expected_generation);
+        }
+        handle
+            .crash_core_for_test()
+            .expect("budget-exhausting fault should terminate the Core tree");
+        let exhausted = wait_for_failed(&handle, 4);
+        assert_eq!(exhausted.supervisor.last_failure, Some("unexpected_exit"));
+        assert!(exhausted.snapshot.is_none());
+        assert!(exhausted.character_presentation.is_none());
+        assert!(handle
+            .available_generation_id()
+            .expect("exhausted generation availability")
+            .is_none());
+
+        handle
+            .retry()
+            .expect("manual retry uses the same Supervisor");
+        wait_for_stable_generation(&handle, 5);
+        session
+            .shutdown_and_join()
+            .expect("recovered lifecycle should reclaim all resources");
+    }
+
+    #[test]
     fn lifecycle_publication_serializes_only_the_approved_minimum() {
         let publication = ShellLifecyclePublication {
             supervisor: SupervisorPublication {
@@ -939,6 +1079,59 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden), "{forbidden}");
         }
+    }
+
+    #[test]
+    fn generation_surfaces_require_one_complete_running_snapshot() {
+        let generation = "generation-safe".to_string();
+        let mut publication = ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "running",
+                generation_id: Some(generation.clone()),
+                generation_number: 2,
+                restart_pending: false,
+                app_shutdown: false,
+                last_failure: None,
+            },
+            snapshot: Some(SnapshotPublication {
+                generation_id: generation.clone(),
+                revision: 7,
+                readiness: "ready".to_string(),
+            }),
+            character_presentation: Some(json!({ "generationId": generation })),
+            versions: VersionPublication {
+                desktop_version: "0.1.0",
+                core_version: "2.1.0".to_string(),
+                protocol_version: "2.1".to_string(),
+                log_location: "Sakura application logs",
+            },
+        };
+        assert_eq!(
+            available_generation_id(&publication).as_deref(),
+            Some("generation-safe")
+        );
+
+        publication.supervisor.state = "stopping";
+        assert!(available_generation_id(&publication).is_none());
+        publication.supervisor.state = "running";
+        publication.snapshot = None;
+        assert!(available_generation_id(&publication).is_none());
+        publication.snapshot = Some(SnapshotPublication {
+            generation_id: "stale-generation".to_string(),
+            revision: 8,
+            readiness: "failed".to_string(),
+        });
+        publication.character_presentation = None;
+        assert!(available_generation_id(&publication).is_none());
+        publication.snapshot = Some(SnapshotPublication {
+            generation_id: "generation-safe".to_string(),
+            revision: 9,
+            readiness: "failed".to_string(),
+        });
+        assert_eq!(
+            available_generation_id(&publication).as_deref(),
+            Some("generation-safe")
+        );
     }
 
     #[test]

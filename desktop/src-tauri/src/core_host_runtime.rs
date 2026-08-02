@@ -1694,6 +1694,15 @@ impl CoreHostRuntime {
         self.snapshot_cache.current()
     }
 
+    #[cfg(test)]
+    pub(crate) fn terminate_tree_for_test(&mut self) -> Result<(), String> {
+        self.tree
+            .as_mut()
+            .ok_or_else(|| "Core Host process tree is unavailable".to_string())?
+            .terminate_tree(95)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
     }

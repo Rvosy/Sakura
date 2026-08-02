@@ -7,6 +7,7 @@ const LIFECYCLE_COPY = Object.freeze({
   failed: ["不可用", "会话启动失败"],
   core_crashed: ["连接中断", "连接已中断"],
   restarting: ["正在重连", "正在重新连接"],
+  rehydrating: ["正在恢复", "正在恢复桌宠状态"],
 });
 
 function freezeState(value) {
@@ -46,6 +47,7 @@ function initialState(defaultPortraitKey) {
     error: null,
     portrait: defaultPortraitKey,
     canCancel: false,
+    canRetry: false,
   });
 }
 
@@ -78,6 +80,25 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
   let hasReachedReady = false;
   let greetingStarted = false;
 
+  function interruptedReplyState(value) {
+    const historyEnd = value.currentReplyHistoryStart >= 0
+      ? value.currentReplyHistoryStart
+      : value.replyHistorySegments.length;
+    const replyHistorySegments = Object.freeze(value.replyHistorySegments.slice(0, historyEnd));
+    return {
+      phase: "error",
+      operationId: null,
+      bubbleText: "连接中断，本次回复已停止。",
+      segments: Object.freeze([]),
+      replyHistorySegments,
+      replyHistoryIndex: replyHistorySegments.length - 1,
+      currentReplyHistoryStart: -1,
+      showingReplyHistorySegment: false,
+      error: Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true }),
+      canCancel: false,
+    };
+  }
+
   function acceptGeneration(event) {
     if (!Number.isSafeInteger(event?.generationNumber) || event.generationNumber < 1) return false;
     if (event.generationNumber < state.generationNumber) return false;
@@ -102,6 +123,10 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
         const [lifecycleLabel, lifecycleHeadline] = LIFECYCLE_COPY[event.status];
         const ready = event.status === "ready";
+        const activeReplyInterrupted = establishedPresentation
+          && ["thinking", "typing"].includes(state.phase)
+          && Boolean(state.operationId)
+          && (generationChanged || !ready);
         const preserveVisualState = establishedPresentation && (generationChanged || !ready);
         const preserveInteraction = ready
           && !generationChanged
@@ -111,7 +136,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           && state.phase === "typing"
           && !state.operationId
           && ["startup", "initializing", "ready"].includes(event.status);
-        state = freezeState({
+        const preserved = {
           ...state,
           generationId: event.generationId,
           generationNumber: event.generationNumber,
@@ -119,7 +144,9 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           lifecycle: event.status,
           lifecycleLabel,
           lifecycleHeadline,
-          phase: preserveGreeting
+          phase: activeReplyInterrupted
+            ? "error"
+            : preserveGreeting
             ? state.phase
             : preserveVisualState
             ? (["thinking", "typing"].includes(state.phase) ? "settled" : state.phase)
@@ -127,7 +154,9 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
               ? (["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase)
               : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
           operationId: preserveInteraction ? state.operationId : null,
-          bubbleText: preserveVisualState || preserveGreeting
+          bubbleText: activeReplyInterrupted
+            ? "连接中断，本次回复已停止。"
+            : preserveVisualState || preserveGreeting
             ? state.bubbleText
             : ready || initialStartup
               ? state.bubbleText
@@ -137,14 +166,20 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
                   ? "正在重新连接……"
                   : "正在准备会话……",
           segments: preserveVisualState || preserveGreeting || ready ? state.segments : Object.freeze([]),
-          replyHistorySegments: generationChanged ? Object.freeze([]) : state.replyHistorySegments,
-          replyHistoryIndex: generationChanged ? -1 : state.replyHistoryIndex,
-          currentReplyHistoryStart: generationChanged ? -1 : state.currentReplyHistoryStart,
-          showingReplyHistorySegment: generationChanged ? false : state.showingReplyHistorySegment,
-          error: null,
+          replyHistorySegments: state.replyHistorySegments,
+          replyHistoryIndex: state.replyHistoryIndex,
+          currentReplyHistoryStart: state.currentReplyHistoryStart,
+          showingReplyHistorySegment: state.showingReplyHistorySegment,
+          error: activeReplyInterrupted
+            ? Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true })
+            : state.error,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
-        });
+          canRetry: Boolean(event.canRetry),
+        };
+        state = freezeState(activeReplyInterrupted
+          ? { ...preserved, ...interruptedReplyState(state) }
+          : preserved);
         if (ready) hasReachedReady = true;
         return result(true);
       }

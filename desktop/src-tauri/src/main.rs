@@ -730,7 +730,7 @@ fn runtime_lifecycle_snapshot(
         .as_ref()
         .ok_or("LIFECYCLE_COMMAND_UNAVAILABLE")?;
     let publication = handle.snapshot()?;
-    let generation_id = handle.current_generation_id()?;
+    let generation_id = handle.available_generation_id()?;
     if let Some(rollback) = appearance
         .cancel_if_generation_changed(generation_id.as_deref())
         .map_err(|_| "LIFECYCLE_APPEARANCE_ROLLBACK_FAILED")?
@@ -850,7 +850,7 @@ fn load_current_character_presentation(
         .as_ref()
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
     let generation_id = handle
-        .current_generation_id()
+        .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
 
@@ -1082,7 +1082,7 @@ fn assert_settings_identity(
         return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
     }
     let current = handle
-        .current_generation_id()
+        .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     if current != core_generation_id {
@@ -1102,7 +1102,7 @@ async fn settings_provider_model_get(
     let handle = settings_core_handle(&lifecycle)?;
     let window_generation = shell.generation()?;
     let core_generation_id = handle
-        .current_generation_id()
+        .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(
@@ -1284,7 +1284,7 @@ fn begin_portrait_scale_preview(
         .handle
         .as_ref()
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
-        .current_generation_id()
+        .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
     let mut geometry = geometry_state
@@ -1330,7 +1330,7 @@ fn activate_portrait_hit_test(
         .handle
         .as_ref()
         .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
-        .current_generation_id()
+        .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
     let mut geometry = geometry_state
@@ -1443,7 +1443,7 @@ fn character_protocol_response(
             "CHARACTER_RESOURCE_NOT_READY",
         );
     };
-    let current_generation = match handle.current_generation_id() {
+    let current_generation = match handle.available_generation_id() {
         Ok(Some(value)) => value,
         _ => return fail(StatusCode::GONE, "CHARACTER_RESOURCE_GENERATION_STALE"),
     };

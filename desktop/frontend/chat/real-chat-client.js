@@ -1,6 +1,7 @@
 import { projectLifecycle } from "../lifecycle.js";
 
 const TERMINALS = new Set(["chat.completed", "chat.failed", "chat.cancelled"]);
+const STABLE_LIFECYCLE = new Set(["ready", "setup_required", "degraded", "failed"]);
 
 function validateChatEvent(value) {
   if (
@@ -29,66 +30,176 @@ function validateSend(value) {
   return Object.freeze(value);
 }
 
-export function createRealChatClient({ invoke, listen, onEvent, pollIntervalMs = 120 }) {
+export function createRealChatClient({
+  invoke,
+  listen,
+  onEvent,
+  prepareGeneration = async () => true,
+  initialPreparedGenerationId = null,
+  pollIntervalMs = 120,
+}) {
   let disposed = false;
   let unlisten = null;
   let lifecycleTimer = null;
   let lifecycleBusy = false;
   let lifecycleSignature = "";
   let lifecycleRevision = 0;
-  let lifecycleGeneration = 0;
-  let pendingSend = false;
+  let lifecycleStatus = "startup";
+  let currentIdentity = null;
+  let interactionEpoch = 0;
+  let preparedGenerationId = null;
+  let pendingSend = null;
   let active = null;
-  let pendingCancel = false;
+  let pendingCancel = null;
   const earlyTerminals = new Set();
+
+  const sameIdentity = (generationId, generationNumber) => Boolean(
+    currentIdentity
+    && currentIdentity.generationId === generationId
+    && currentIdentity.generationNumber === generationNumber
+  );
+
+  function operationKey(generationId, generationNumber, operationId) {
+    return `${generationNumber}:${generationId}:${operationId}`;
+  }
+
+  function sealInteraction() {
+    interactionEpoch += 1;
+    active = null;
+    pendingSend = null;
+    pendingCancel = null;
+    earlyTerminals.clear();
+  }
+
+  function acceptIdentity(supervisor) {
+    if (
+      typeof supervisor?.generationId !== "string"
+      || !supervisor.generationId
+      || !Number.isSafeInteger(supervisor.generationNumber)
+      || supervisor.generationNumber < 1
+    ) return false;
+    if (currentIdentity) {
+      if (supervisor.generationNumber < currentIdentity.generationNumber) return false;
+      if (
+        supervisor.generationNumber === currentIdentity.generationNumber
+        && supervisor.generationId !== currentIdentity.generationId
+      ) return false;
+    }
+    if (!sameIdentity(supervisor.generationId, supervisor.generationNumber)) {
+      sealInteraction();
+      currentIdentity = Object.freeze({
+        generationId: supervisor.generationId,
+        generationNumber: supervisor.generationNumber,
+      });
+      lifecycleRevision = 0;
+      lifecycleSignature = "";
+      preparedGenerationId = supervisor.generationId === initialPreparedGenerationId
+        ? supervisor.generationId
+        : null;
+      initialPreparedGenerationId = null;
+    }
+    return true;
+  }
+
+  function emitLifecycle(status, supervisor, signature, canRetry = false) {
+    if (signature === lifecycleSignature) return;
+    lifecycleSignature = signature;
+    lifecycleStatus = status;
+    lifecycleRevision += 1;
+    onEvent(Object.freeze({
+      type: "lifecycle",
+      status,
+      generationId: supervisor.generationId,
+      generationNumber: supervisor.generationNumber,
+      revision: lifecycleRevision,
+      canRetry: Boolean(canRetry),
+    }));
+  }
+
+  function lifecycleSignatureFor(publication, status) {
+    const supervisor = publication.supervisor;
+    return JSON.stringify([
+      supervisor.generationId,
+      supervisor.generationNumber,
+      supervisor.state,
+      supervisor.restartPending,
+      supervisor.lastFailure,
+      publication.snapshot?.revision,
+      publication.snapshot?.readiness,
+      status,
+    ]);
+  }
 
   async function pollLifecycle() {
     if (disposed || lifecycleBusy) return;
     lifecycleBusy = true;
     try {
-      const publication = await invoke("runtime_lifecycle_snapshot");
-      const supervisor = publication?.supervisor;
-      if (!supervisor || !Number.isSafeInteger(supervisor.generationNumber) || supervisor.generationNumber < 1) return;
-      const view = projectLifecycle(publication);
-      const signature = JSON.stringify([
-        supervisor.generationId,
-        supervisor.generationNumber,
-        supervisor.state,
-        supervisor.restartPending,
-        supervisor.lastFailure,
-        publication.snapshot?.revision,
-        publication.snapshot?.readiness,
-      ]);
-      if (signature === lifecycleSignature) return;
-      if (supervisor.generationNumber !== lifecycleGeneration) {
-        lifecycleGeneration = supervisor.generationNumber;
-        lifecycleRevision = 0;
-        active = null;
-        pendingCancel = false;
-        earlyTerminals.clear();
+      let publication = await invoke("runtime_lifecycle_snapshot");
+      let supervisor = publication?.supervisor;
+      if (!acceptIdentity(supervisor)) return;
+      let view = projectLifecycle(publication);
+
+      if (lifecycleStatus === "ready" && view.status !== "ready") sealInteraction();
+
+      const snapshotMatches = publication.snapshot?.generationId === supervisor.generationId;
+      if (
+        STABLE_LIFECYCLE.has(view.status)
+        && snapshotMatches
+        && preparedGenerationId !== supervisor.generationId
+      ) {
+        emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false);
+        const attemptIdentity = currentIdentity;
+        const attemptEpoch = interactionEpoch;
+        const preparationRequired = view.status === "ready" || view.status === "degraded";
+        let prepared = false;
+        try {
+          prepared = await prepareGeneration(Object.freeze({
+            generationId: supervisor.generationId,
+            generationNumber: supervisor.generationNumber,
+            snapshotRevision: publication.snapshot.revision,
+          })) !== false;
+        } catch {
+          prepared = false;
+        }
+        if (
+          disposed
+          || currentIdentity !== attemptIdentity
+          || interactionEpoch !== attemptEpoch
+        ) return;
+        if (!prepared && preparationRequired) return;
+        if (!prepared) {
+          emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry);
+          return;
+        }
+
+        publication = await invoke("runtime_lifecycle_snapshot");
+        supervisor = publication?.supervisor;
+        if (
+          !sameIdentity(supervisor?.generationId, supervisor?.generationNumber)
+          || publication.snapshot?.generationId !== supervisor.generationId
+        ) return;
+        view = projectLifecycle(publication);
+        if (!STABLE_LIFECYCLE.has(view.status)) return;
+        preparedGenerationId = supervisor.generationId;
       }
-      lifecycleSignature = signature;
-      lifecycleRevision += 1;
-      onEvent(Object.freeze({
-        type: "lifecycle",
-        status: view.status,
-        generationId: supervisor.generationId,
-        generationNumber: supervisor.generationNumber,
-        revision: lifecycleRevision,
-      }));
+      emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry);
     } finally {
       lifecycleBusy = false;
     }
   }
 
-  async function cancelActive() {
-    if (!active || disposed) return false;
-    const current = active;
+  async function cancelActive(current) {
+    if (!current || disposed || active !== current || lifecycleStatus !== "ready") return false;
+    const epoch = interactionEpoch;
     const result = await invoke("chat_cancel", { payload: {
       operationId: current.operationId,
       cancelHandle: current.cancelHandle,
     } });
-    return result?.operationId === current.operationId && Boolean(result.accepted);
+    return interactionEpoch === epoch
+      && active === current
+      && lifecycleStatus === "ready"
+      && result?.operationId === current.operationId
+      && Boolean(result.accepted);
   }
 
   function receive(nativeEvent) {
@@ -99,10 +210,14 @@ export function createRealChatClient({ invoke, listen, onEvent, pollIntervalMs =
     } catch {
       return;
     }
+    if (
+      lifecycleStatus !== "ready"
+      || !sameIdentity(event.generationId, event.generationNumber)
+    ) return;
     if (TERMINALS.has(event.type)) {
       if (active?.operationId === event.operationId) active = null;
-      else earlyTerminals.add(event.operationId);
-      pendingCancel = false;
+      else earlyTerminals.add(operationKey(event.generationId, event.generationNumber, event.operationId));
+      pendingCancel = null;
     }
     onEvent(event);
   }
@@ -112,39 +227,51 @@ export function createRealChatClient({ invoke, listen, onEvent, pollIntervalMs =
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
       unlisten = await listen("sakura://chat-event", receive);
       await pollLifecycle();
-      lifecycleTimer = window.setInterval(() => void pollLifecycle(), pollIntervalMs);
+      lifecycleTimer = window.setInterval(() => pollLifecycle().catch(() => {}), pollIntervalMs);
     },
     async send({ message }) {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
       if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
-      pendingSend = true;
+      if (!currentIdentity || lifecycleStatus !== "ready") throw new Error("CHAT_NOT_READY");
+      const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch });
+      pendingSend = token;
       try {
         const response = validateSend(await invoke("chat_send", { payload: { message } }));
-        if (!earlyTerminals.delete(response.operationId)) active = response;
-        if (pendingCancel && active) await cancelActive();
+        if (
+          token.identity !== currentIdentity
+          || token.epoch !== interactionEpoch
+          || lifecycleStatus !== "ready"
+          || !sameIdentity(response.generationId, response.generationNumber)
+        ) throw new Error("CHAT_GENERATION_INVALIDATED");
+        const key = operationKey(response.generationId, response.generationNumber, response.operationId);
+        if (!earlyTerminals.delete(key)) active = response;
+        if (
+          pendingCancel?.epoch === interactionEpoch
+          && pendingCancel.operationId === response.operationId
+          && active
+        ) await cancelActive(active);
         return response;
       } finally {
-        pendingSend = false;
+        if (pendingSend === token) pendingSend = null;
       }
     },
     async cancel(operationId) {
       if (disposed) return false;
       if (!active) {
         if (pendingSend && typeof operationId === "string" && operationId) {
-          pendingCancel = true;
+          pendingCancel = Object.freeze({ operationId, epoch: interactionEpoch });
           return true;
         }
         return false;
       }
       if (active.operationId !== operationId) return false;
-      return cancelActive();
+      return cancelActive(active);
     },
     dispose() {
       disposed = true;
       window.clearInterval(lifecycleTimer);
       lifecycleTimer = null;
-      active = null;
-      earlyTerminals.clear();
+      sealInteraction();
       try {
         Promise.resolve(unlisten?.()).catch(() => {});
       } catch {

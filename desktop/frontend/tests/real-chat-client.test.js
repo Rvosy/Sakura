@@ -10,16 +10,20 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function lifecyclePublication() {
+function lifecyclePublication(generationNumber = 1, state = "running", readiness = "ready") {
   return {
     supervisor: {
-      state: "running",
-      generationId: "generation-1",
-      generationNumber: 1,
-      restartPending: false,
-      lastFailure: null,
+      state,
+      generationId: `generation-${generationNumber}`,
+      generationNumber,
+      restartPending: state === "restarting",
+      lastFailure: state === "running" ? null : "unexpected_exit",
     },
-    snapshot: { generationId: "generation-1", revision: 7, readiness: "ready" },
+    snapshot: readiness ? {
+      generationId: `generation-${generationNumber}`,
+      revision: 7,
+      readiness,
+    } : null,
   };
 }
 
@@ -28,13 +32,14 @@ function harness(sendResponses = []) {
   const calls = [];
   const intervals = new Map();
   let nextInterval = 0;
+  let publication = lifecyclePublication();
   globalThis.window = {
     setInterval(callback) { const id = ++nextInterval; intervals.set(id, callback); return id; },
     clearInterval(id) { intervals.delete(id); },
   };
   const invoke = async (name, payload) => {
     calls.push([name, payload]);
-    if (name === "runtime_lifecycle_snapshot") return lifecyclePublication();
+    if (name === "runtime_lifecycle_snapshot") return publication;
     if (name === "chat_send") return sendResponses.shift();
     if (name === "chat_cancel") return { accepted: true, operationId: payload.payload.operationId };
     throw new Error(name);
@@ -42,11 +47,17 @@ function harness(sendResponses = []) {
   return {
     calls,
     emit(payload) { nativeListener({ payload }); },
-    create(onEvent) {
+    setPublication(next) { publication = next; },
+    async tick() {
+      await Promise.all([...intervals.values()].map((callback) => callback()));
+    },
+    create(onEvent, options = {}) {
       return createRealChatClient({
         invoke,
         listen: async (_name, listener) => { nativeListener = listener; return () => { nativeListener = null; }; },
         onEvent,
+        initialPreparedGenerationId: "generation-1",
+        ...options,
       });
     },
   };
@@ -84,6 +95,84 @@ test("started and terminal events may win the send response race without leaving
   await client.send({ message: "second" });
   assert.deepEqual(events.slice(1).map((event) => event.type), ["chat.started", "chat.completed"]);
   assert.equal(env.calls.filter(([name]) => name === "chat_send").length, 2);
+  client.dispose();
+});
+
+test("generation change seals pending send, cancel, and old native events", async () => {
+  const response = deferred();
+  const events = [];
+  const env = harness([response.promise]);
+  const client = env.create((event) => events.push(event));
+  await client.start();
+
+  const send = client.send({ message: "will be interrupted" });
+  env.emit({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "old-op" });
+  assert.equal(await client.cancel("old-op"), true);
+
+  env.setPublication(lifecyclePublication(2, "restarting", null));
+  await env.tick();
+  response.resolve({
+    accepted: true,
+    operationId: "old-op",
+    cancelHandle: "old-cancel",
+    generationId: "generation-1",
+    generationNumber: 1,
+  });
+  await assert.rejects(send, /CHAT_GENERATION_INVALIDATED/);
+
+  const count = events.length;
+  env.emit({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "old-op",
+    reply: { segments: [{ text: "late" }] },
+  });
+  assert.equal(events.length, count);
+  assert.equal(env.calls.some(([name]) => name === "chat_cancel"), false);
+  client.dispose();
+});
+
+test("new generation stays rehydrating until its complete Snapshot resources are prepared", async () => {
+  const gate = deferred();
+  const events = [];
+  const env = harness();
+  const client = env.create((event) => events.push(event), {
+    prepareGeneration: ({ generationId }) => {
+      assert.equal(generationId, "generation-2");
+      return gate.promise;
+    },
+  });
+  await client.start();
+
+  env.setPublication(lifecyclePublication(2));
+  const poll = env.tick();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(events.at(-1).status, "rehydrating");
+  assert.equal(events.some((event) => event.generationNumber === 2 && event.status === "ready"), false);
+
+  gate.resolve(true);
+  await poll;
+  assert.equal(events.at(-1).status, "ready");
+  assert.equal(events.at(-1).generationNumber, 2);
+  client.dispose();
+});
+
+test("failed readiness exposes retry even when character rehydration cannot complete", async () => {
+  const events = [];
+  const env = harness();
+  const client = env.create((event) => events.push(event), {
+    prepareGeneration: async () => false,
+  });
+  await client.start();
+
+  env.setPublication(lifecyclePublication(2, "running", "failed"));
+  await env.tick();
+  assert.deepEqual(
+    events.filter((event) => event.generationNumber === 2).map(({ status, canRetry }) => [status, canRetry]),
+    [["rehydrating", false], ["failed", true]],
+  );
   client.dispose();
 });
 

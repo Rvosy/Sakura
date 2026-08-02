@@ -469,11 +469,16 @@ function render(state, bubbleUpdate = {}) {
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
   bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
   input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
-  send.dataset.action = state.canCancel ? "cancel" : "send";
-  send.setAttribute("aria-label", state.canCancel ? "停止回复" : "发送消息");
+  send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
+  const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
+  send.setAttribute("aria-label", actionLabel);
+  send.title = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
-  send.disabled = presentationUnavailable || state.lifecycle !== "ready" || state.phase === "reconnecting";
+  send.disabled = presentationUnavailable || (
+    !state.canRetry
+    && (state.lifecycle !== "ready" || state.phase === "reconnecting")
+  );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
@@ -510,6 +515,8 @@ const chatClient = createRealChatClient({
   invoke,
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
   onEvent: handleCoreEvent,
+  initialPreparedGenerationId: characterPresentation.generationId,
+  prepareGeneration: ({ generationId }) => rebindCoreGeneration(generationId),
 });
 
 async function submitMessage({ text }) {
@@ -611,10 +618,10 @@ let coreRebindRevision = 0;
 let coreRebindTarget = "";
 
 async function rebindCoreGeneration(generationId) {
+  if (generationId === characterPresentation.generationId) return true;
   if (
     disposed
     || !generationId
-    || generationId === characterPresentation.generationId
     || generationId === coreRebindTarget
   ) return false;
 
@@ -694,17 +701,6 @@ async function rebindCoreGeneration(generationId) {
   }
 }
 
-await listenAppEvent("sakura://core-generation-changed", (event) => {
-  const generationId = event?.payload?.generationId;
-  if (
-    disposed
-    || typeof generationId !== "string"
-    || !generationId
-    || generationId === characterPresentation.generationId
-  ) return;
-  void rebindCoreGeneration(generationId);
-});
-
 await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
@@ -761,6 +757,9 @@ composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const state = presentation.current();
   if (state.canCancel) void chatClient.cancel(state.operationId);
+  else if (state.canRetry) {
+    invoke("retry_core").catch(() => showRecoverableError("Core 重试请求失败，请稍后再试。"));
+  }
   else inputFocus.submit("button");
 });
 function reviewReplyBy(offset) {
