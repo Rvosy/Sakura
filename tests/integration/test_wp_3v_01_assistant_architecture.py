@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,3 +89,20 @@ def test_tauri_and_legacy_oracle_environments_are_isolated(
     assert driver.LEGACY_MODE_ENV not in tauri
     assert legacy[driver.LEGACY_MODE_ENV] == "legacy-read"
     assert driver.WP3V_MODE_ENV not in legacy
+
+
+def test_early_tauri_exit_preserves_the_actual_diagnostic(tmp_path: Path) -> None:
+    driver = _load_driver()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stderr.write('early failure\\n'); sys.exit(7)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        driver.wait_for_process_marker(tmp_path / "missing", process, tmp_path, timeout=5)
+
+    assert "Tauri exited before missing (7)" in str(captured.value)
+    assert "early failure" in str(captured.value)

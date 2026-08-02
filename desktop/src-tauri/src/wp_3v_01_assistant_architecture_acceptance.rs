@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Listener};
+use tauri::{AppHandle, Listener, Manager};
 
 use crate::{
     chat_bridge::{ChatBridge, CHAT_EVENT},
@@ -39,7 +39,9 @@ pub fn request_from_environment() -> Result<Option<AcceptanceRequest>, String> {
     match (directory, mode) {
         (None, None) => Ok(None),
         (Some(directory), Some(mode)) if mode == "vertical" => {
-            validate_request(PathBuf::from(directory)).map(Some)
+            let request = validate_request(PathBuf::from(directory))?;
+            write_marker(&request.directory, "tauri.request_parsed", "parsed")?;
+            Ok(Some(request))
         }
         _ => Err("WP_3V_01_ACCEPTANCE_REQUEST_INVALID".to_string()),
     }
@@ -118,14 +120,16 @@ pub fn start_driver(
     let Some(request) = request else {
         return Ok(None);
     };
-    let lifecycle = lifecycle.ok_or_else(|| "WP_3V_01_LIFECYCLE_UNAVAILABLE".to_string())?;
-    let (events, receiver) = mpsc::channel();
-    let listener = app.listen(CHAT_EVENT, move |event| {
-        let _ = events.send(event.payload().to_string());
-    });
+    let lifecycle = match lifecycle {
+        Some(lifecycle) => lifecycle,
+        None => {
+            let error = "WP_3V_01_LIFECYCLE_UNAVAILABLE";
+            let _ = write_marker(&request.directory, "tauri.start_error", error);
+            return Err(error.to_string());
+        }
+    };
     Ok(Some(thread::spawn(move || {
-        let result = run_vertical_slice(&request, &lifecycle, &receiver);
-        app.unlisten(listener);
+        let result = run_after_main_window(&request, &lifecycle, &app);
         let exit_code = match result {
             Ok(()) => 0,
             Err(error) => {
@@ -138,15 +142,35 @@ pub fn start_driver(
     })))
 }
 
+fn run_after_main_window(
+    request: &AcceptanceRequest,
+    lifecycle: &ShellLifecycleHandle,
+    app: &AppHandle,
+) -> Result<(), String> {
+    let mut window = None;
+    wait_for(Duration::from_secs(10), || {
+        window = app.get_webview_window("main");
+        window.is_some()
+    })
+    .ok_or_else(|| "WP_3V_01_MAIN_WINDOW_TIMEOUT".to_string())?;
+    let window = window.ok_or_else(|| "WP_3V_01_MAIN_WINDOW_UNAVAILABLE".to_string())?;
+    let (events, receiver) = mpsc::channel();
+    let listener = window.listen(CHAT_EVENT, move |event| {
+        let _ = events.send(event.payload().to_string());
+    });
+    write_marker(&request.directory, "tauri.driver_started", "started")?;
+    let result = run_vertical_slice(request, lifecycle, &receiver);
+    window.unlisten(listener);
+    result
+}
+
 fn run_vertical_slice(
     request: &AcceptanceRequest,
     lifecycle: &ShellLifecycleHandle,
     events: &Receiver<String>,
 ) -> Result<(), String> {
     let initial_generation = wait_for_generation(lifecycle, None, Duration::from_secs(35))?;
-    if lifecycle.character_presentation()?.is_none() {
-        return Err("WP_3V_01_CHARACTER_PRESENTATION_MISSING".to_string());
-    }
+    wait_for_character_presentation(lifecycle, Duration::from_secs(10))?;
 
     let old_bridge = complete_chat(
         lifecycle,
@@ -174,9 +198,7 @@ fn run_vertical_slice(
     if stale_error != "CHAT_GENERATION_INVALIDATED" {
         return Err(format!("WP_3V_01_STALE_BRIDGE_ACCEPTED:{stale_error}"));
     }
-    if lifecycle.character_presentation()?.is_none() {
-        return Err("WP_3V_01_RECOVERED_PRESENTATION_MISSING".to_string());
-    }
+    wait_for_character_presentation(lifecycle, Duration::from_secs(10))?;
     complete_chat(
         lifecycle,
         events,
@@ -290,7 +312,7 @@ fn cancel_chat(lifecycle: &ShellLifecycleHandle, events: &Receiver<String>) -> R
                 if event.get("operationId").and_then(Value::as_str)
                     == Some(publication.operation_id.as_str())
                     && event
-                        .get("eventType")
+                        .get("type")
                         .and_then(Value::as_str)
                         .is_some_and(is_terminal)
                 {
@@ -313,18 +335,24 @@ fn wait_for_terminal(
     timeout: Duration,
 ) -> Result<Value, String> {
     let deadline = Instant::now() + timeout;
+    let mut observed = Vec::new();
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match events.recv_timeout(remaining.min(Duration::from_millis(250))) {
             Ok(payload) => {
                 let event = parse_chat_event(&payload)?;
+                if observed.len() < 16 {
+                    observed.push(event.to_string());
+                }
                 if event.get("operationId").and_then(Value::as_str) != Some(operation_id) {
                     continue;
                 }
                 let event_type = event
-                    .get("eventType")
+                    .get("type")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| "WP_3V_01_CHAT_EVENT_TYPE_MISSING".to_string())?;
+                    .ok_or_else(|| {
+                        format!("WP_3V_01_CHAT_EVENT_TYPE_MISSING:{}", event)
+                    })?;
                 if event_type == expected {
                     return Ok(event);
                 }
@@ -340,11 +368,26 @@ fn wait_for_terminal(
             }
         }
     }
-    Err(format!("WP_3V_01_CHAT_TERMINAL_TIMEOUT:{expected}"))
+    Err(format!(
+        "WP_3V_01_CHAT_TERMINAL_TIMEOUT:{expected}:observed={}",
+        Value::Array(
+            observed
+                .into_iter()
+                .map(Value::String)
+                .collect::<Vec<_>>()
+        )
+    ))
 }
 
 fn parse_chat_event(payload: &str) -> Result<Value, String> {
-    serde_json::from_str(payload).map_err(|_| "WP_3V_01_CHAT_EVENT_INVALID".to_string())
+    let parsed: Value =
+        serde_json::from_str(payload).map_err(|_| "WP_3V_01_CHAT_EVENT_INVALID".to_string())?;
+    match parsed {
+        Value::String(inner) => {
+            serde_json::from_str(&inner).map_err(|_| "WP_3V_01_CHAT_EVENT_INVALID".to_string())
+        }
+        value => Ok(value),
+    }
 }
 
 fn wait_for_generation(
@@ -361,6 +404,19 @@ fn wait_for_generation(
     })
     .ok_or_else(|| "WP_3V_01_CORE_READY_TIMEOUT".to_string())?;
     generation.ok_or_else(|| "WP_3V_01_GENERATION_MISSING".to_string())
+}
+
+fn wait_for_character_presentation(
+    lifecycle: &ShellLifecycleHandle,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let mut presentation = None;
+    wait_for(timeout, || {
+        presentation = lifecycle.character_presentation().ok().flatten();
+        presentation.is_some()
+    })
+    .ok_or_else(|| "WP_3V_01_CHARACTER_PRESENTATION_TIMEOUT".to_string())?;
+    presentation.ok_or_else(|| "WP_3V_01_CHARACTER_PRESENTATION_MISSING".to_string())
 }
 
 fn is_terminal(event_type: &str) -> bool {
@@ -452,5 +508,16 @@ mod tests {
     #[test]
     fn request_rejects_relative_and_non_fixture_roots() {
         assert!(validate_request(PathBuf::from(".")).is_err());
+    }
+
+    #[test]
+    fn chat_event_parser_accepts_direct_and_tauri_window_wrapped_payloads() {
+        let direct = r#"{"type":"chat.completed","operationId":"op"}"#;
+        let wrapped = serde_json::to_string(direct).unwrap();
+        assert_eq!(
+            parse_chat_event(direct).unwrap()["type"],
+            "chat.completed"
+        );
+        assert_eq!(parse_chat_event(&wrapped).unwrap()["operationId"], "op");
     }
 }

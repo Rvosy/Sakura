@@ -263,6 +263,51 @@ def wait_for(path: Path, timeout: float = 45) -> None:
     raise TimeoutError(f"acceptance marker timed out: {path.name}")
 
 
+def wait_for_process_marker(
+    path: Path,
+    process: subprocess.Popen[str],
+    directory: Path,
+    timeout: float = 45,
+) -> None:
+    def markers() -> list[str]:
+        return sorted(path.name for path in directory.iterdir() if path.is_file())
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        error_path = directory / "tauri.error"
+        if error_path.is_file():
+            error = error_path.read_text(encoding="utf-8", errors="replace")
+            try:
+                stdout, stderr = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate(timeout=10)
+            raise RuntimeError(
+                f"Tauri acceptance failed before {path.name}: {error}\n"
+                f"markers={markers()}\nprovider_requests={len(ProviderHandler.requests)}\n"
+                f"stdout={stdout}\nstderr={stderr}"
+            )
+        return_code = process.poll()
+        if return_code is not None:
+            stdout, stderr = process.communicate(timeout=10)
+            start_error_path = directory / "tauri.start_error"
+            if error_path.is_file():
+                error = error_path.read_text(encoding="utf-8", errors="replace")
+            elif start_error_path.is_file():
+                error = start_error_path.read_text(encoding="utf-8", errors="replace")
+            else:
+                error = "marker unavailable"
+            raise RuntimeError(
+                f"Tauri exited before {path.name} ({return_code}): {error}\n"
+                f"markers={markers()}\nprovider_requests={len(ProviderHandler.requests)}\n"
+                f"stdout={stdout}\nstderr={stderr}"
+            )
+        time.sleep(0.05)
+    raise TimeoutError(f"acceptance marker timed out while Tauri remained alive: {path.name}")
+
+
 def wait_for_zero(owner: ProcessOwner, timeout: float = 12) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -496,11 +541,11 @@ def run() -> dict[str, object]:
         before = manifest(app_root)
 
         tauri = start_process([str(TAURI)], directory, owner)
-        wait_for(directory / "core.kill_requested")
+        wait_for_process_marker(directory / "core.kill_requested", tauri, directory)
         core_pid = terminate_core_descendant(tauri.pid)
         (directory / "core.killed").write_text(str(core_pid), encoding="utf-8")
-        wait_for(directory / "tauri.vertical_complete")
-        wait_for(directory / "tauri.shutdown_during_chat")
+        wait_for_process_marker(directory / "tauri.vertical_complete", tauri, directory)
+        wait_for_process_marker(directory / "tauri.shutdown_during_chat", tauri, directory)
         stdout, stderr = finish_process(tauri, "wp-3v-01-tauri")
         evidence_text += stdout + stderr
 
