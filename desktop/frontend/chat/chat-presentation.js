@@ -24,8 +24,12 @@ function initialState(defaultPortraitKey) {
     error: null,
     portrait: defaultPortraitKey,
     canCancel: false,
-    canSkip: false,
   });
+}
+
+export function composerPlaceholder(displayName, phase) {
+  const name = String(displayName || "当前角色");
+  return phase === "thinking" ? `${name}正在思考中…` : `和${name}说点什么……`;
 }
 
 function normalizedSegments(reply) {
@@ -114,7 +118,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: null,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
-          canSkip: (preserveInteraction || preserveGreeting) && state.canSkip,
         });
         if (ready) hasReachedReady = true;
         return result(true);
@@ -128,12 +131,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           ...state,
           phase: "thinking",
           operationId: event.operationId,
-          bubbleText: "正在组织完整回复……",
+          bubbleText: ".",
           segments: Object.freeze([]),
           error: null,
           portrait: state.portrait,
           canCancel: true,
-          canSkip: false,
         });
         return result(true);
       }
@@ -149,7 +151,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           bubbleText: "",
           portrait: state.portrait,
           canCancel: false,
-          canSkip: true,
         });
         return result(true);
       }
@@ -164,7 +165,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
           portrait: state.portrait,
           canCancel: false,
-          canSkip: false,
         });
         return result(true);
       }
@@ -178,7 +178,6 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: null,
           portrait: state.portrait,
           canCancel: false,
-          canSkip: false,
         });
         return result(true);
       }
@@ -186,6 +185,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     },
     setTypingText(text) {
       if (state.phase !== "typing") return result(false);
+      state = Object.freeze({ ...state, bubbleText: String(text ?? "") });
+      return result(true);
+    },
+    setThinkingText(text) {
+      if (state.phase !== "thinking") return result(false);
       state = Object.freeze({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },
@@ -208,13 +212,12 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           portrait: state.portrait,
           suppressTts: true,
         })]),
-        canSkip: true,
       });
       return result(true);
     },
     finishTyping() {
       if (state.phase !== "typing") return result(false);
-      state = Object.freeze({ ...state, phase: "settled", operationId: null, canSkip: false });
+      state = Object.freeze({ ...state, phase: "settled", operationId: null });
       return result(true);
     },
     current() {

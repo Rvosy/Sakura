@@ -1,6 +1,7 @@
-import { createChatPresentationReducer } from "./chat/chat-presentation.js";
+import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
+import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { applyTheme } from "./core/theme.js";
 import {
@@ -34,7 +35,6 @@ const bubbleHeader = document.querySelector(".bubble-header");
 const chatPhase = document.querySelector("#chat-phase");
 const characterName = document.querySelector("#character-name");
 const presentationError = document.querySelector("#presentation-error");
-const typewriterSkip = document.querySelector("#typewriter-skip");
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
@@ -191,7 +191,7 @@ try {
 applyTheme(activeAppearance.themeTokens);
 applyAppearanceVariables(activeAppearance);
 characterName.textContent = characterPresentation.displayName;
-input.placeholder = `和${characterPresentation.displayName}说点什么……`;
+input.placeholder = composerPlaceholder(characterPresentation.displayName, "ready");
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
 portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
@@ -453,10 +453,18 @@ const typewriter = createTypewriter({
   },
 });
 
+const waitingIndicator = createWaitingIndicator({
+  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  onFrame: (frame) => {
+    const result = presentation.setThinkingText(frame);
+    if (result.applied) render(result.state);
+  },
+});
+
 function render(state, bubbleUpdate = {}) {
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
   bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
-  typewriterSkip.hidden = !state.canSkip;
+  input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
   send.dataset.action = state.canCancel ? "cancel" : "send";
   send.setAttribute("aria-label", state.canCancel ? "停止回复" : "发送消息");
   composerActionIndicator.setBusy(state.canCancel);
@@ -483,10 +491,12 @@ function handleCoreEvent(event) {
   }
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (before.phase === "thinking" && result.state.phase !== "thinking") waitingIndicator.stop();
   if (result.state.phase === "reconnecting" || (before.phase === "typing" && result.state.phase !== "typing")) {
     typewriter.cancel(result.state.bubbleText);
   }
   render(result.state);
+  if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
   if (event.type === "chat.completed" && result.state.phase === "typing") typewriter.start(result.state.segments);
 }
 
@@ -737,8 +747,6 @@ composer.addEventListener("submit", (event) => {
   if (state.canCancel) void chatClient.cancel(state.operationId);
   else inputFocus.submit("button");
 });
-typewriterSkip.addEventListener("click", () => typewriter.skip());
-
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
 window.addEventListener("blur", () => inputFocus.handleWindowBlur());
 document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
@@ -763,6 +771,7 @@ function dispose() {
     }
   }
   typewriter.dispose();
+  waitingIndicator.dispose();
   bubbleScroll.dispose();
   adaptiveSurface.dispose();
   portraitController.dispose();
