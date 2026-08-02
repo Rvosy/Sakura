@@ -64,6 +64,7 @@ data/config/characters.yaml
 data/config/system_config.yaml
 data/config/mcp.yaml
 data/config/plugins.yaml
+data/runtime_v2/config/ui.json
 task.md
 log.txt
 _cleanup_log.py
