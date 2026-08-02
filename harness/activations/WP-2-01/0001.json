@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "sequence": 1,
+  "task_id": "WP-2-01",
+  "kind": "activation",
+  "base_ref": "d47cd414ce37249ca94cd93812deb6cacfeacc8f",
+  "supersedes": null
+}

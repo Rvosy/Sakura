@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3V-01
-updated: 2026-08-02
+active_work_package: WP-2-01
+updated: 2026-08-03
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -97,7 +97,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
-| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
+| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | stabilizing |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
@@ -108,7 +108,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | active |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
@@ -1910,6 +1910,16 @@ Diagnostics：只含稳定状态、CORE_* 稳定 code、Desktop/Core/Protocol �
 回退：先使当前 generation 失效并执行 AppShutdown，确认 Shell/Core/后代、reader/writer/dispatcher、pending waiter、pipe/fd/handle 和 temp 归零；按 0d7c5e751、213b2af85、b7c405923、8f1cca3a9 逆序 revert；不触碰用户数据
 ```
 
+重新打开记录（2026-08-03）：WP-3V-01 的真实 Windows 组合验收以快速本地 Provider 稳定复现
+`chat.completed` 被跨队列提前到 `chat.started` 之前；Gateway 正确拒绝乱序终态后，UI 只收到 started
+并永久等待。相同数据集和响应直接驱动 bundled Python Core 时保持
+`started -> completed -> response`，因此唯一责任归属 Rust `CoreHostRouter` 的普通/关键双队列读取顺序。
+项目负责人已批准按 WP-3V-01 冻结停止条款重新打开本 WP。稳定化范围只允许
+`core_host_router.rs` 内的最小有界顺序修复和内联回归测试，不修改协议、Gateway、Core、产品 UI、
+用户数据或 Provider 时序；任务契约为 `harness/tasks/WP-2-01.json`，activation 为
+`harness/activations/WP-2-01/0001.json`，基线 `d47cd414ce37249ca94cd93812deb6cacfeacc8f`。
+失败事实与归因记录见 `docs/records/audits/WP-3V-01-ROUTER-ORDERING-DEFECT.md`。
+
 主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
 
 允许能力：
@@ -2525,6 +2535,13 @@ base_ref：5c3cfc59fda1f238c78d1b9b333e4968c46d747c
 范围：只新增或修改冻结的组合验收设施、同一候选三平台接线、证据和能力台账；不允许修改前置生产实现
 停止条件：发现生产缺陷时立即退回 planned，只重新打开唯一责任 WP；不得在本 WP 内顺手修复或放宽门禁
 ```
+
+停止记录（2026-08-03）：修正验收器自身的窗口监听、启动时序和公开事件字段后，真实 Windows
+组合验收稳定暴露 WP-2-01 Rust Router 的跨队列事件重排缺陷。项目负责人明确批准执行冻结停止
+条款：本 WP 退回 `planned`，只将 WP-2-01 重新打开为 `stabilizing`；不得在本验证 WP 内修改生产
+Router，也不得通过延迟 Provider 或放宽 Gateway 顺序校验制造通过。验收器诊断提交为
+`d47cd414`，缺陷证据见 `docs/records/audits/WP-3V-01-ROUTER-ORDERING-DEFECT.md`。WP-2-01 修复
+重新 accepted 后，才可在新的 activation 基线重新激活本 WP。
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
