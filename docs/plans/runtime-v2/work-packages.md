@@ -2435,6 +2435,17 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 回退：停止 v2 共享数据写入并退回只读使用，逆序回退 WP-3-06 接线；不删除、恢复、重命名或修复任何用户文件，不把产品入口切回 Legacy Qt
 ```
 
+契约修订记录（2026-08-02）：
+
+```text
+负责人批准：确认 1e157909 的产品方向修订，批准作为 WP-3-06 新契约基线
+kind：contract_revision；sequence：2；supersedes：0001
+base_ref：1e157909b05a37aa73e7ac5d7d429517c2af3317
+方向：Legacy Qt 仅作为迁移期实现参考、数据 parser/oracle 和隔离测试；不再是用户回退或可见 UI 验收对象
+最终边界：全部能力迁入 Runtime v2 并通过 Phase 7 总门后，删除 Legacy Qt 桌宠入口、实现和发布引用
+验收调整：可见人工验收只针对 Runtime v2；真实 Legacy 参考进程往返继续作为自动数据兼容证据
+```
+
 主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和冻结的迁移前数据基线；不建立 Legacy Qt 产品回退能力。
 
 允许能力：
