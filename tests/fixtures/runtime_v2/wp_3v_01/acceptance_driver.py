@@ -28,11 +28,10 @@ PYTHON = (
 TAURI = REPO_ROOT / "desktop/src-tauri/target/debug/sakura-runtime-v2-shell"
 if os.name == "nt":
     TAURI = TAURI.with_suffix(".exe")
+HEADLESS_ORACLE = Path(__file__).with_name("headless_legacy_oracle.py")
 
 WP3V_DIRECTORY_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_DIRECTORY"
 WP3V_MODE_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_MODE"
-LEGACY_DIRECTORY_ENV = "SAKURA_WP_3_06_ACCEPTANCE_DIRECTORY"
-LEGACY_MODE_ENV = "SAKURA_WP_3_06_ACCEPTANCE_MODE"
 ALLOWED_CHANGES = {"data/chat_history/fixture.jsonl"}
 PRIVATE_PROVIDER_KEY = "LOCAL_WP_3V_01_KEY"
 _SENSITIVE_PATTERNS = (
@@ -353,21 +352,22 @@ def seed_frozen_legacy_oracle_markers(app_root: Path) -> None:
             )
 
 
-def environment(directory: Path, *, legacy: bool = False) -> dict[str, str]:
+def environment(directory: Path, *, target: str = "tauri") -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
-    if legacy:
-        env[LEGACY_DIRECTORY_ENV] = str(directory)
-        env[LEGACY_MODE_ENV] = "legacy-read"
-    else:
+    env.pop(WP3V_DIRECTORY_ENV, None)
+    env.pop(WP3V_MODE_ENV, None)
+    if target == "tauri":
         env[WP3V_DIRECTORY_ENV] = str(directory)
         env[WP3V_MODE_ENV] = "vertical"
+    elif target != "oracle":
+        raise ValueError(f"unknown acceptance process target: {target}")
     return env
 
 
 def start_process(
-    command: list[str], directory: Path, owner: ProcessOwner, *, legacy: bool = False
+    command: list[str], directory: Path, owner: ProcessOwner, *, target: str = "tauri"
 ) -> subprocess.Popen[str]:
     kwargs: dict[str, object] = {}
     if os.name == "nt":
@@ -377,7 +377,7 @@ def start_process(
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
-        env=environment(directory, legacy=legacy),
+        env=environment(directory, target=target),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -414,17 +414,26 @@ def process_table() -> list[tuple[int, int, str, int]]:
     if os.name == "nt":
         return _windows_process_table()
     output = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,comm=,pgid="],
+        ["ps", "-axo", "pid=,ppid=,pgid=,comm="],
         check=True,
         capture_output=True,
         text=True,
         encoding="utf-8",
     ).stdout
+    return _parse_posix_process_table(output)
+
+
+def _parse_posix_process_table(output: str) -> list[tuple[int, int, str, int]]:
     rows = []
     for line in output.splitlines():
         parts = line.strip().split(None, 3)
-        if len(parts) == 4:
-            rows.append((int(parts[0]), int(parts[1]), parts[2], int(parts[3])))
+        if len(parts) != 4:
+            continue
+        try:
+            pid, parent, group = (int(parts[index]) for index in range(3))
+        except ValueError:
+            continue
+        rows.append((pid, parent, parts[3], group))
     return rows
 
 
@@ -549,12 +558,15 @@ def run() -> dict[str, object]:
         stdout, stderr = finish_process(tauri, "wp-3v-01-tauri")
         evidence_text += stdout + stderr
 
-        legacy = start_process(
-            [str(PYTHON), "legacy_qt_main.py"], directory, owner, legacy=True
+        oracle = start_process(
+            [str(PYTHON), str(HEADLESS_ORACLE), str(directory)],
+            directory,
+            owner,
+            target="oracle",
         )
-        legacy_stdout, legacy_stderr = finish_process(legacy, "wp-3v-01-legacy-oracle")
-        evidence_text += legacy_stdout + legacy_stderr
-        wait_for(directory / "legacy.read_complete")
+        oracle_stdout, oracle_stderr = finish_process(oracle, "wp-3v-01-headless-oracle")
+        evidence_text += oracle_stdout + oracle_stderr
+        wait_for(directory / "oracle.read_complete")
 
         after = manifest(app_root)
         changed = changed_paths(before, after)
@@ -575,7 +587,7 @@ def run() -> dict[str, object]:
             "core_kills": 1,
             "cancel_terminals": 1,
             "generation_rehydrated": True,
-            "legacy_oracle": "read-compatible",
+            "headless_oracle": "lock-reacquired-and-read-compatible",
             "process_residue": 0,
             "sensitive_evidence": 0,
             "acceptance_root_removed": True,

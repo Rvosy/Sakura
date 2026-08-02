@@ -226,7 +226,6 @@ jobs:
           python -m pip install --disable-pip-version-check
           --requirement tools/requirements-dev.txt
           "PyYAML==6.0.2"
-          "PySide6>=6.7"
 
       - name: Run WP-3V-01 real Assistant vertical slice (Windows/macOS)
         if: runner.os != 'Linux'

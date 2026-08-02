@@ -45,8 +45,10 @@ WP-3V-01 提供一条组合架构验证脚本：
 
 该脚本直接启动当前 debug Runtime v2 EXE，而不是把 `start.bat` 当作产品入口。它在系统临时目录内以
 确定性本地 Provider 完成真实回复、取消、并发 health、Core 强杀、新 generation 水合和活动聊天期间
-shutdown，再由无可见 UI 的 Legacy oracle 重新获取共享锁并解析兼容历史。脚本只允许 history fixture
-变化，退出前检查敏感证据和验收进程树残留；真实 Provider 回复仍由负责人使用已有开发配置人工验收。
+shutdown，再由独立 headless 参考 oracle 重新获取共享锁并解析兼容历史。该 oracle 复用冻结的数据
+parser 与生产共享锁，不启动 `legacy_qt_main.py`、不导入 PySide6 或创建窗口。脚本只允许 history
+fixture 变化，退出前检查敏感证据和验收进程树残留；真实 Provider 回复仍由负责人使用已有开发配置
+人工验收。
 
 ```mermaid
 flowchart LR

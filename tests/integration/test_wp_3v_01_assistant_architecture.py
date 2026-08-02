@@ -11,10 +11,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_DRIVER = ROOT / "tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py"
+HEADLESS_ORACLE = ROOT / "tests/fixtures/runtime_v2/wp_3v_01/headless_legacy_oracle.py"
 
 
 def _load_driver():
     spec = importlib.util.spec_from_file_location("wp_3v_01_acceptance_driver", PYTHON_DRIVER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_oracle():
+    spec = importlib.util.spec_from_file_location("wp_3v_01_headless_oracle", HEADLESS_ORACLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -73,22 +82,56 @@ def test_provider_message_classification_uses_the_latest_user_turn() -> None:
     assert driver._last_user_message(request) == "[WP-3V-01-CANCEL]"
 
 
-def test_tauri_and_legacy_oracle_environments_are_isolated(
+def test_tauri_and_headless_oracle_environments_are_isolated(
     tmp_path: Path, monkeypatch
 ) -> None:
     driver = _load_driver()
     monkeypatch.delenv(driver.WP3V_DIRECTORY_ENV, raising=False)
     monkeypatch.delenv(driver.WP3V_MODE_ENV, raising=False)
-    monkeypatch.delenv(driver.LEGACY_DIRECTORY_ENV, raising=False)
-    monkeypatch.delenv(driver.LEGACY_MODE_ENV, raising=False)
 
     tauri = driver.environment(tmp_path)
-    legacy = driver.environment(tmp_path, legacy=True)
+    oracle = driver.environment(tmp_path, target="oracle")
 
     assert tauri[driver.WP3V_MODE_ENV] == "vertical"
-    assert driver.LEGACY_MODE_ENV not in tauri
-    assert legacy[driver.LEGACY_MODE_ENV] == "legacy-read"
-    assert driver.WP3V_MODE_ENV not in legacy
+    assert driver.WP3V_MODE_ENV not in oracle
+    assert driver.WP3V_DIRECTORY_ENV not in oracle
+
+
+def test_posix_process_table_keeps_command_names_with_spaces() -> None:
+    driver = _load_driver()
+
+    rows = driver._parse_posix_process_table(
+        "  1  0  1 /sbin/launchd\n"
+        "240  1 240 Core Audio Driver\n"
+        "invalid process table row\n"
+    )
+
+    assert rows == [
+        (1, 0, "/sbin/launchd", 1),
+        (240, 1, "Core Audio Driver", 240),
+    ]
+
+
+def test_headless_oracle_reads_the_frozen_legacy_format_without_changes(
+    tmp_path: Path,
+) -> None:
+    driver = _load_driver()
+    oracle = _load_oracle()
+    app_root = tmp_path / "app-root"
+    history = app_root / "data/chat_history/fixture.jsonl"
+    history.parent.mkdir(parents=True)
+    entries = [
+        {"created_at": f"2000-01-01T00:00:{index:02d}+00:00", "role": "user", "content": marker}
+        for index, marker in enumerate(sorted(oracle.EXPECTED_HISTORY_MARKERS), start=1)
+    ]
+    history.write_text(
+        "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+    before = driver.manifest(app_root)
+
+    assert oracle.read_compatible_history(app_root) == len(entries)
+    assert driver.manifest(app_root) == before
 
 
 def test_early_tauri_exit_preserves_the_actual_diagnostic(tmp_path: Path) -> None:
