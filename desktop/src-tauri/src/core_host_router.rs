@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     fs::File,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
         Arc, Mutex,
     },
@@ -42,13 +42,22 @@ struct Pending {
     waiter: mpsc::Sender<Result<Value, String>>,
 }
 
+struct SequencedEvent {
+    sequence: u64,
+    critical: bool,
+    message: Value,
+}
+
 struct Shared {
     generation_id: String,
     generation_credential: String,
     pending: Mutex<HashMap<String, Pending>>,
     writer: SyncSender<WriterCommand>,
-    events: SyncSender<Value>,
-    critical_events: SyncSender<Value>,
+    events: SyncSender<SequencedEvent>,
+    critical_events: SyncSender<SequencedEvent>,
+    next_event_sequence: AtomicU64,
+    event_count: AtomicUsize,
+    critical_event_count: AtomicUsize,
     stopped: AtomicBool,
     event_capable: AtomicBool,
     fatal: Mutex<Option<String>>,
@@ -56,8 +65,10 @@ struct Shared {
 
 pub struct CoreHostRouter {
     shared: Arc<Shared>,
-    event_receiver: Receiver<Value>,
-    critical_event_receiver: Receiver<Value>,
+    event_receiver: Receiver<SequencedEvent>,
+    critical_event_receiver: Receiver<SequencedEvent>,
+    event_head: Mutex<Option<SequencedEvent>>,
+    critical_event_head: Mutex<Option<SequencedEvent>>,
     writer_thread: Option<JoinHandle<()>>,
     reader_thread: Option<JoinHandle<()>>,
 }
@@ -90,6 +101,9 @@ impl CoreHostRouter {
             writer,
             events,
             critical_events,
+            next_event_sequence: AtomicU64::new(1),
+            event_count: AtomicUsize::new(0),
+            critical_event_count: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
             event_capable: AtomicBool::new(false),
             fatal: Mutex::new(None),
@@ -108,6 +122,8 @@ impl CoreHostRouter {
             shared,
             event_receiver,
             critical_event_receiver,
+            event_head: Mutex::new(None),
+            critical_event_head: Mutex::new(None),
             writer_thread: Some(writer_thread),
             reader_thread: Some(reader_thread),
         })
@@ -126,16 +142,28 @@ impl CoreHostRouter {
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<Option<Value>, String> {
         let deadline = Instant::now() + timeout;
         loop {
-            match self.critical_event_receiver.try_recv() {
-                Ok(event) => return Ok(Some(event)),
-                Err(mpsc::TryRecvError::Disconnected | mpsc::TryRecvError::Empty) => {}
+            self.fill_event_heads()?;
+            if let Some(event) = self.take_next_event()? {
+                let count = if event.critical {
+                    &self.shared.critical_event_count
+                } else {
+                    &self.shared.event_count
+                };
+                count.fetch_sub(1, Ordering::AcqRel);
+                return Ok(Some(event.message));
             }
             match self.event_receiver.recv_timeout(
                 deadline
                     .saturating_duration_since(Instant::now())
                     .min(READ_SLICE),
             ) {
-                Ok(event) => return Ok(Some(event)),
+                Ok(event) => {
+                    *self
+                        .event_head
+                        .lock()
+                        .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable")? =
+                        Some(event);
+                }
                 Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
                 Err(RecvTimeoutError::Timeout) => return Ok(None),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -148,6 +176,52 @@ impl CoreHostRouter {
                 }
             }
         }
+    }
+
+    fn fill_event_heads(&self) -> Result<(), String> {
+        let mut event_head = self
+            .event_head
+            .lock()
+            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable".to_string())?;
+        if event_head.is_none() {
+            if let Ok(event) = self.event_receiver.try_recv() {
+                *event_head = Some(event);
+            }
+        }
+        drop(event_head);
+
+        let mut critical_head = self
+            .critical_event_head
+            .lock()
+            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable".to_string())?;
+        if critical_head.is_none() {
+            if let Ok(event) = self.critical_event_receiver.try_recv() {
+                *critical_head = Some(event);
+            }
+        }
+        Ok(())
+    }
+
+    fn take_next_event(&self) -> Result<Option<SequencedEvent>, String> {
+        let mut event_head = self
+            .event_head
+            .lock()
+            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: event head unavailable".to_string())?;
+        let mut critical_head = self
+            .critical_event_head
+            .lock()
+            .map_err(|_| "EVENT_QUEUE_LOCK_FAILED: critical event head unavailable".to_string())?;
+        let take_critical = match (event_head.as_ref(), critical_head.as_ref()) {
+            (None, None) => return Ok(None),
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (Some(event), Some(critical)) => critical.sequence < event.sequence,
+        };
+        Ok(if take_critical {
+            critical_head.take()
+        } else {
+            event_head.take()
+        })
     }
 
     pub fn fatal(&self) -> Option<String> {
@@ -414,9 +488,25 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             } else {
                 &shared.events
             };
-            target
-                .try_send(message)
+            let (count, limit) = if critical {
+                (&shared.critical_event_count, CRITICAL_EVENT_QUEUE_LIMIT)
+            } else {
+                (&shared.event_count, EVENT_QUEUE_LIMIT)
+            };
+            count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    (current < limit).then_some(current + 1)
+                })
                 .map_err(|_| "EVENT_QUEUE_FULL: event queue is full".to_string())?;
+            let event = SequencedEvent {
+                sequence: shared.next_event_sequence.fetch_add(1, Ordering::Relaxed),
+                critical,
+                message,
+            };
+            if target.try_send(event).is_err() {
+                count.fetch_sub(1, Ordering::AcqRel);
+                return Err("EVENT_QUEUE_FULL: event queue is full".to_string());
+            }
             Ok(())
         }
         Some("response") => {
@@ -529,7 +619,10 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::{CoreHostRouter, EVENT_QUEUE_LIMIT, PENDING_LIMIT, WRITER_QUEUE_LIMIT};
+    use super::{
+        CoreHostRouter, CRITICAL_EVENT_QUEUE_LIMIT, EVENT_QUEUE_LIMIT, PENDING_LIMIT,
+        WRITER_QUEUE_LIMIT,
+    };
     use crate::{
         core_host_protocol::encode_frame,
         platform::{ManagedPipeReadOutcome, ManagedPipeReader, PlatformResult},
@@ -692,6 +785,122 @@ mod tests {
             Some(event)
         );
         assert_eq!(waiter.join().unwrap().unwrap()["id"], "one");
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn critical_chat_terminal_does_not_overtake_its_started_event() {
+        let (mut router, _released) = router_with_messages(Vec::new());
+        router.enable_events(true);
+        let (waiter, _receiver) = std::sync::mpsc::channel();
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .insert(
+                "chat-fast".to_string(),
+                super::Pending {
+                    name: "chat.send".to_string(),
+                    is_hello: false,
+                    protocol_minor: 2,
+                    waiter,
+                },
+            );
+        let event = |name: &str| {
+            json!({
+                "protocolMajor": 2,
+                "protocolMinor": 2,
+                "kind": "event",
+                "generationId": GENERATION,
+                "generationCredential": CREDENTIAL,
+                "id": "chat-fast",
+                "name": name,
+                "payload": {"operationId": "chat-fast"}
+            })
+        };
+        super::route_message(&router.shared, event("chat.started")).expect("started queued");
+        super::route_message(&router.shared, event("chat.completed")).expect("terminal queued");
+
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::ZERO)
+                .unwrap()
+                .and_then(|message| message["name"].as_str().map(str::to_string)),
+            Some("chat.started".to_string())
+        );
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::ZERO)
+                .unwrap()
+                .and_then(|message| message["name"].as_str().map(str::to_string)),
+            Some("chat.completed".to_string())
+        );
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .clear();
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn held_critical_head_remains_inside_the_named_capacity() {
+        let (mut router, _released) = router_with_messages(Vec::new());
+        router.enable_events(true);
+        let (waiter, _receiver) = std::sync::mpsc::channel();
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .insert(
+                "chat-capacity".to_string(),
+                super::Pending {
+                    name: "chat.send".to_string(),
+                    is_hello: false,
+                    protocol_minor: 2,
+                    waiter,
+                },
+            );
+        let event = |name: &str| {
+            json!({
+                "protocolMajor": 2,
+                "protocolMinor": 2,
+                "kind": "event",
+                "generationId": GENERATION,
+                "generationCredential": CREDENTIAL,
+                "id": "chat-capacity",
+                "name": name,
+                "payload": {"operationId": "chat-capacity"}
+            })
+        };
+        super::route_message(&router.shared, event("chat.started")).expect("started queued");
+        super::route_message(&router.shared, event("chat.completed")).expect("terminal queued");
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::ZERO)
+                .unwrap()
+                .and_then(|message| message["name"].as_str().map(str::to_string)),
+            Some("chat.started".to_string())
+        );
+
+        for _ in 1..CRITICAL_EVENT_QUEUE_LIMIT {
+            super::route_message(&router.shared, event("chat.completed"))
+                .expect("remaining reserved slot");
+        }
+        assert!(
+            super::route_message(&router.shared, event("chat.completed"))
+                .expect_err("held head must count toward the critical capacity")
+                .starts_with("EVENT_QUEUE_FULL:")
+        );
+        router
+            .shared
+            .pending
+            .lock()
+            .expect("pending registry")
+            .clear();
         router.close().expect("clean router close");
     }
 
