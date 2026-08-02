@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-06
+active_work_package: WP-3V-01
 updated: 2026-08-02
 ---
 
@@ -107,8 +107,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | accepted |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
-| WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | active |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
+| WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | active |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
@@ -164,7 +164,9 @@ WP-3-04 之间，完成实现、本地自动门和远端 CI 后于 2026-07-31 �
 于 2026-08-02 由项目负责人明确验收通过；声明见
 `docs/records/audits/WP-3-04-OWNER-ACCEPTANCE.md`。WP-3-05 随后完成实现、自动门和 Windows 实机验收，
 并于 2026-08-02 由项目负责人明确验收通过；声明见
-`docs/records/audits/WP-3-05-OWNER-ACCEPTANCE.md`。WP-3-06 的依赖现已满足，并按冻结任务契约激活。
+`docs/records/audits/WP-3-05-OWNER-ACCEPTANCE.md`。WP-3-06 完成实现、自动兼容门与负责人直接启动
+Runtime v2 EXE 的人工验收，并于 2026-08-02 标记为 `accepted`；声明见
+`docs/records/audits/WP-3-06-OWNER-ACCEPTANCE.md`。WP-3V-01 的依赖现已满足，并按冻结任务契约激活。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2450,6 +2452,18 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 `0002` 曾把负责人批准提交误填为实现差异 `base_ref`，首次重新预检以
 `CONTRACT_ACTIVATION_HISTORY` 拒绝；`0003` 仅纠正 Harness 锚点语义，不改变已批准产品方向或实现范围。
 
+完成记录（2026-08-02）：
+
+```text
+状态：accepted
+产品实现候选：ed16b7385；获批方向基线：1e157909；最终自动验证审计收口：ca36dfc1
+自动验收：真实 Windows reference → Tauri → reference 进程门通过；只改变 fixture history 与 Runtime v2 ui.json；双向锁冲突、未来/损坏只读、保存失败、强杀重获、零相关进程残留通过；required profiles 全绿；Harness verify 23 passed / 0 failed / 3 manual pending
+人工验收：项目负责人直接启动真实 Runtime v2 EXE，确认兼容历史、角色/配置行为和基础聊天，并明确批准三项人工门、同一候选证据、脱敏 manifest、独立回退与 Phase 7 Legacy Qt 删除边界
+数据与安全：自动往返只使用系统临时目录脱敏 fixture；验收根已删除；data/**、characters/**、third_party/** 无产品变更；Legacy Qt 仅作迁移参考/oracle，不是可见 UI 或用户回退入口
+验收记录：docs/records/audits/WP-3-06-AUTOMATED-VALIDATION.md；docs/records/audits/WP-3-06-OWNER-ACCEPTANCE.md
+回退：停止 Runtime v2 共享数据写入并退回只读使用，保留所有用户数据；不得切回 Legacy Qt；其实现仅在全部能力迁移并通过 Phase 7 后删除
+```
+
 主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和冻结的迁移前数据基线；不建立 Legacy Qt 产品回退能力。
 
 允许能力：
@@ -2499,6 +2513,17 @@ Legacy 参考进程创建/修改数据并退出
 required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 人工验收：负责人直接启动当前 Runtime v2 EXE，以已有开发配置完成一次真实 Provider 回复和取消，复核强杀恢复、历史追加、退出零残留、脱敏证据及同一候选三平台结果
 回退：删除/回退本 WP 的 acceptance 接线、脚本和证据，不回退任何已 accepted 生产 WP，不删除或改写用户数据；发现生产缺陷时 WP-3V-01 退回 planned，只重新打开唯一责任 WP
+```
+
+激活记录（2026-08-02）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-06 已由项目负责人明确验收并标记 accepted
+base_ref：5c3cfc59fda1f238c78d1b9b333e4968c46d747c
+任务契约：harness/tasks/WP-3V-01.json；activation：harness/activations/WP-3V-01/0001.json
+范围：只新增或修改冻结的组合验收设施、同一候选三平台接线、证据和能力台账；不允许修改前置生产实现
+停止条件：发现生产缺陷时立即退回 planned，只重新打开唯一责任 WP；不得在本 WP 内顺手修复或放宽门禁
 ```
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。

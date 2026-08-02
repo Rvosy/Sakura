@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "id": "WP-3V-01",
+  "title": "Runtime v2 Assistant Architecture Validation Slice",
+  "status_source": "docs/plans/runtime-v2/work-packages.md",
+  "documents": {
+    "specs": [
+      "docs/specs/runtime-v2/product-capability-parity.md"
+    ],
+    "adrs": [
+      "docs/adr/0001-runtime-v2-process-supervision.md",
+      "docs/adr/0002-runtime-v2-ipc.md",
+      "docs/adr/0003-runtime-v2-data-compatibility.md",
+      "docs/adr/0004-runtime-v2-cross-platform-foundation.md"
+    ],
+    "plans": [
+      "docs/plans/runtime-v2/delivery-governance.md",
+      "docs/plans/runtime-v2/work-packages.md"
+    ]
+  },
+  "dependencies": ["WP-3-06"],
+  "base_ref": "5c3cfc59fda1f238c78d1b9b333e4968c46d747c",
+  "allowed_paths": [
+    ".github/workflows/runtime-v2-platform-foundation.yml",
+    "desktop/frontend/tests/**",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/wp_3v_01_assistant_architecture_acceptance.rs",
+    "desktop/tests/windows_wp_3v_01_assistant_architecture_acceptance.ps1",
+    "docs/adr/0002-runtime-v2-ipc.md",
+    "docs/adr/0003-runtime-v2-data-compatibility.md",
+    "docs/adr/0004-runtime-v2-cross-platform-foundation.md",
+    "docs/adr/README.md",
+    "docs/devdocs/TECHNICAL_README.md",
+    "docs/plans/runtime-v2/work-packages.md",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/README.md",
+    "docs/specs/runtime-v2/product-capability-parity.md",
+    "harness/README.md",
+    "harness/activations/WP-3V-01/0001.json",
+    "harness/suites.json",
+    "harness/tasks/WP-3V-01.json",
+    "tests/fixtures/runtime_v2/wp_3v_01/**",
+    "tests/integration/test_wp_3v_01_assistant_architecture.py"
+  ],
+  "forbidden_paths": [
+    "app/**",
+    "desktop/frontend/app.js",
+    "desktop/frontend/chat/**",
+    "desktop/frontend/index.html",
+    "desktop/frontend/lifecycle.js",
+    "desktop/frontend/settings/**",
+    "desktop/frontend/styles.css",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/tauri.conf.json",
+    "legacy_qt_main.py",
+    "main.py",
+    "plugins/**",
+    "runtime/**",
+    "tools/mcp/**"
+  ],
+  "protected_paths": ["data/**", "characters/**", "third_party/**"],
+  "dependency_policy": {
+    "mode": "forbidden",
+    "allowed_files": []
+  },
+  "required_profiles": [
+    "docs",
+    "smoke",
+    "core-host",
+    "runtime-v2-shell",
+    "python-full"
+  ],
+  "acceptance": {
+    "automated": [
+      "the real bundled Python Core, Qt-free Assistant Adapter, Chat Pipeline, Rust Gateway and acceptance surface complete one deterministic local-provider reply and one uniquely terminal cancellation across the production IPC boundary",
+      "health and shutdown remain responsive during chat and cancellation while invalid credentials and stale-generation responses, events, snapshots and cancel handles cannot affect the current generation",
+      "forced Core termination starts a fresh generation, restores the compatible role, history and minimum UI state, and leaves no process, pipe, waiter, reader, writer, thread, handle, fd or temporary-root residue after exit",
+      "the production shared lock is immediately reacquired by the isolated Legacy reference oracle, which reads the allowed compatible history append without requiring a visible Legacy Qt UI",
+      "sanitized before-and-after manifests show only the predeclared fixture history append, and no credential, API key, complete prompt or private configuration enters logs, snapshots or evidence artifacts",
+      "locked required Harness profiles and the same candidate SHA Windows x64, macOS arm64 and Linux x64 workflow pass without production-code, dependency or protected-data changes"
+    ],
+    "manual": [
+      "maintainer directly starts the current Runtime v2 executable with the existing development Provider configuration and completes one real-provider reply and one cancellation",
+      "maintainer validates Core termination and fresh-generation recovery, compatible history append, normal exit, immediate lock reacquisition and zero related process residue",
+      "maintainer reviews the same candidate SHA three-platform evidence, sanitized manifest and logs, CAP-004 architecture-validation boundary and the validation-only rollback"
+    ]
+  },
+  "rollback": [
+    "stop the validation run, exit Runtime v2 and verify the complete Core and acceptance process tree is gone",
+    "revert only WP-3V-01 acceptance wiring, scripts, workflow registration and evidence without reverting any accepted production Work Package",
+    "preserve all user data and compatible history; never delete, restore, rename, migrate or repair data during validation rollback",
+    "if validation exposes a production defect, return WP-3V-01 to planned and reopen only the single owning predecessor as stabilizing"
+  ]
+}
