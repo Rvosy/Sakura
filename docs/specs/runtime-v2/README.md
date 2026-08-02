@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # Runtime v2 Specs
@@ -28,6 +28,7 @@ updated: 2026-07-31
 - [Assistant Adapter](WP-3-01-qt-free-assistant-adapter-readiness.md) · [真实聊天 Core](WP-3-02-headless-real-chat-core.md)
 - [桌宠聊天表现](WP-3-03-fake-core-pet-chat-presentation.md)
 - [真实聊天接入已冻结桌宠 UI](WP-3-04-real-chat-frozen-pet-ui.md)
+- [Core 崩溃恢复与 UI 重新水合](WP-3-05-core-crash-ui-rehydration.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [Agent Development Harness](WP-H-01-agent-development-harness.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
