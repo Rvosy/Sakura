@@ -22,6 +22,7 @@
     ".gitignore",
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "CHANGELOG.md",
+    "app/core_host/real_chat.py",
     "desktop/frontend/app.js",
     "desktop/frontend/index.html",
     "desktop/frontend/styles.css",
@@ -47,12 +48,13 @@
     "docs/userdocs/SETUP.md",
     "harness/activations/WP-3-04/0001.json",
     "harness/activations/WP-3-04/0002.json",
+    "harness/activations/WP-3-04/0003.json",
     "harness/tasks/WP-3-04.json",
+    "tests/integration/test_core_host_real_chat_integration.py",
     "tests/fixtures/runtime_v2/wp_3_04/**",
     "tools/settings-tauri/**"
   ],
   "forbidden_paths": [
-    "app/**",
     "desktop/src-tauri/Cargo.lock",
     "desktop/src-tauri/Cargo.toml",
     "desktop/src-tauri/tauri.conf.json",
@@ -80,7 +82,7 @@
       "locked Rust full tests, formatting and same-SHA three-platform workflow pass"
     ],
     "manual": [
-      "maintainer validates real configured chat, error, cancel, second turn and typewriter skip in the Windows Tauri app",
+      "maintainer validates the legacy-style waiting indicator, character thinking placeholder, actionable sanitized Provider error, cancel, and second turn in the Windows Tauri app",
       "maintainer validates Sakura and N.A.V.I. at 100% and 150% DPI with unchanged frozen pet geometry",
       "maintainer reviews the same candidate SHA platform evidence and rollback boundary"
     ]

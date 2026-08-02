@@ -57,12 +57,14 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 冻结 UI 映射
 
 - `chat.started` 映射为 thinking；主按钮在原有尺寸和命中区域内切换为可点击取消的环形旋转条，输入框
-  保持可编辑，气泡、输入框、窗口包络和立绘锚点不变。等待终态期间必须保持已经提交的当前立绘，
-  不得切换固定 thinking 立绘。系统要求减少动态效果时，环形条保持静态但取消语义不变。
+  保持可编辑并把 placeholder 切换为“`{角色显示名}正在思考中…`”。气泡只按旧 Qt 节奏每 360ms 循环
+  `. → .. → ... → .... → ..... → ...... → .....`，不得显示“正在组织完整回复”或其他解释性文案。
+  等待终态期间必须保持已经提交的当前立绘，不得切换固定 thinking 立绘。系统要求减少动态效果时，
+  圆环保持静态，气泡固定显示 `...`，取消语义不变。
 - `chat.completed` 的完整 `segments` 交给现有 presentation reducer。WebView 只在完整回复到达后运行
   typewriter；每段清空上一段后独立显示，逐段同步对应 portrait，最后一段留在 settled 状态；不得把
-  多段拼接为单一气泡文本，也不引入 token streaming、delta 或进度协议。“立即显示”只补全当前段，
-  后续段仍按顺序显示。
+  多段拼接为单一气泡文本，也不引入 token streaming、delta 或进度协议。产品界面不提供“立即显示”
+  按钮；逐字播放只能由完成、取消、新请求、语言切换或生命周期失效推进。
 - segment 的 `text`/`translation`/`tone`/`portrait`/`suppressTts` 只按已冻结 DTO 消费；本 WP 允许
   portrait/tone 驱动现有角色表现，不允许执行 action、Tool 或 TTS。
 - Runtime v2 默认显示中文字幕：`zh` 优先使用 `translation`，空值回退 `text`；`ja` 使用 `text`。
@@ -71,9 +73,13 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   reload/focus 不重播，用户发送消息会取消未完成问候。reduced motion 下 reveal 后立即显示完整问候。
 - 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
   总过渡约 300ms。相同 key 不动画，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
-- `chat.failed` 显示脱敏稳定错误并允许下一次发送；`retryable` 只影响提示，不在 UI 自动重试。
-- `chat.cancelled` 回到 settled/ready 表现，不伪造回复。Core cancel 与 typewriter “立即显示”严格分离：
-  后者只结束本地动画，绝不发送 `chat.cancel`。
+- `chat.failed` 显示可诊断且脱敏的稳定错误并允许下一次发送。Provider HTTP 失败至少显示状态码，并在
+  响应为受支持 JSON 结构时附带经过长度限制与敏感信息过滤的 `error.message`、`error.code`、
+  `error.type` 或 `error.status`；不得再只显示 `Provider response was invalid`/`Provider request failed`。
+  原始响应体、URL、请求头、凭据、prompt 和无法确认安全的字段不得进入 WebView；无法安全提取时回退为
+  含状态码的稳定文案。`retryable` 只影响提示，不在 UI 自动重试。
+- `chat.cancelled` 回到 settled/ready 表现，不伪造回复。产品界面不暴露 typewriter skip 控件，Core
+  cancel 只用于终止仍在生成的请求。
 - 长文本只在气泡内部滚动。正常、thinking、typing、settled、error、cancelled 和 lifecycle 提示必须持续
   使用 WP-3-03 的同一 DOM、样式、命中区域与固定原生窗口几何。
 - Enter 发送、Shift+Enter 换行、IME composition、焦点恢复、reduced motion 和拖动行为沿用已验收
@@ -95,8 +101,9 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   rotate/repair 或失败降级语义，也不清理、恢复、截断或改写既有 history。
 - 两个聊天设置 feature 只写 Runtime v2 `ui.json` 的批准字段。测试和故障注入必须使用隔离临时
   app root；仓库真实 `data/**` 不得被测试、脚本或验收改写。
-- WebView 事件不得包含 credential、Authorization、Provider URL、模型私有响应、history、绝对路径、
-  prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable。
+- WebView 事件不得包含 credential、Authorization、Provider URL、原始 Provider 响应体、history、绝对
+  路径、prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable；Provider
+  message/code/type/status 必须先经过 allowlist、长度上限与敏感模式过滤。
 - 不新增网络、文件、shell 或窗口权限，不放宽 CSP，不新增依赖或 dependency manifest/lock 变化。
 
 ## 实施白名单与禁止范围
@@ -115,8 +122,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 明确禁止：
 
-- `app/**` Python Assistant/Core/Provider/history 业务改动、legacy Qt UI 与两个入口；若真实数据暴露前置
-  层缺陷，先停止并修订契约，不得借本 WP 顺手修改。
+- 除 `app/core_host/real_chat.py` 中窄 Provider 错误公开投影外，禁止 Python Assistant/Core/Provider/
+  history 业务改动、legacy Qt UI 与两个入口；该例外不得改变请求、重试、Provider 选择或 history 语义。
 - TTS、Tools、Action 确认、Memory、MCP、插件、截图/视觉输入、主动互动、提醒/任务、历史窗口、角色
   切换、Studio、导入导出、通用 Operation/priority/resource token、streaming/progress/delta。
 - 修改固定 DOM 层级、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
@@ -128,13 +135,13 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 |---|---|---|
 | send | 正常、空白、超限、重复发送、提交失败 | main-only；accepted 后清输入；失败保留；单 active interaction |
 | event race | started 早于/晚于 send response、未知 operation、重复 started/terminal | 不丢首事件；按 identity 接受；唯一 UI 终态 |
-| terminal | 多段/长文本、Provider 错误、取消、完成/取消竞态 | exact 投影；错误脱敏；cancel/skip 分离；内部滚动 |
+| terminal | 多段/长文本、Provider 400/429/5xx、坏响应、取消、完成/取消竞态 | exact 投影；HTTP 状态与安全诊断可见；私有字段脱敏；内部滚动 |
 | generation | restart、旧 event、旧 cancel handle、窗口 reload/close | 旧代不改变 UI；新代重新绑定；资源与 timer 归零 |
 | portrait | 有效/缺失 portrait、tone、快速终态与 late load | 复用安全资源映射；失败 fallback；旧代资源丢弃 |
 | 聊天设置 | timing 与字幕语言 get/save/reopen、边界值、坏 JSON、写失败、旧 generation | 分 feature 原子；字幕默认中文；失败保留旧值/勾选态 |
-| 分段/启动 | 启动 reveal、多段回复、skip、切换语言、reduced motion | 问候只播一次；逐段清屏；skip 只补当前段；不混合语言 |
+| 分段/启动 | 启动 reveal、多段回复、切换语言、reduced motion | 问候只播一次；逐段清屏；无 skip 控件；不混合语言 |
 | 立绘过渡 | 解码失败、同 key、A→B→C、旧 generation、冷热缓存 | 旧层不断帧；只提交最新请求；无二次淡出；命中延后提交 |
-| 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | DOM/样式/几何不漂移；气泡与输入常驻；无 Fake 命令 |
+| 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | 点号等待动效与角色 thinking placeholder；无“立即显示”；DOM/样式/几何不漂移 |
 | 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
 
 任务级 required profiles 固定为 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`。实现还须
@@ -144,7 +151,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 人工验收与退出条件
 
 Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证启动问候、中文字幕开关、
-多段逐段显示、等待立绘保持、中文 IME、Enter/Shift+Enter、长文本、仅补当前段、portrait/tone、快速
+多段逐段显示、点号等待动效、角色名思考 placeholder、等待立绘保持、HTTP 400/429 诊断、中文 IME、
+Enter/Shift+Enter、长文本、无“立即显示”控件、portrait/tone、快速
 立绘竞态、连续第二轮和窗口关闭。Sakura 与 N.A.V.I.、100%/
 150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
 控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。

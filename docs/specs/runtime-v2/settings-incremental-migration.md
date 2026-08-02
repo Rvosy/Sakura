@@ -238,7 +238,7 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
 `bubble_auto_hide_enabled`、`bubble_auto_hide_delay_seconds`、气泡高度、输入栏偏移和自由布局字段继续
 `unavailable`：它们会破坏 WP-3-03 冻结的常驻气泡、常驻输入和固定窗口包络。Enter 发送、Shift+Enter
-换行、IME composition 门禁与“立即显示”是固定产品交互，不新增可配置开关。
+换行与 IME composition 门禁是固定产品交互；Runtime v2 不提供“立即显示”控件，也不新增对应配置开关。
 
 回退时先把 `chat.presentation_timing` 和 `chat.subtitle_language` capability 恢复为 `unavailable`，停止新的
 预览 timer，回退 Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。旧版本忽略新增字段即可。

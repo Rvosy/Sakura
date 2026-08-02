@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "sequence": 3,
+  "task_id": "WP-3-04",
+  "kind": "contract_revision",
+  "base_ref": "4d3e34fc10ad770847694c9203f8e562c182d9f2",
+  "supersedes": "0002"
+}
