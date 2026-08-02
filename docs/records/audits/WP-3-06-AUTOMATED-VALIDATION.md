@@ -43,8 +43,8 @@ Core readiness 在创建可写聊天会话前，使用现有全局版本门并�
 {"acceptance_root_removed":true,"changed_paths":["data/chat_history/fixture.jsonl","data/runtime_v2/config/ui.json"],"fixture_files":28,"lock_conflicts":["legacy-holds-tauri","tauri-holds-legacy"],"provider_requests":1,"status":"passed"}
 ```
 
-这证明真实 `legacy_qt_main.py` 写入、真实 Tauri/Shell lifecycle、bundled Core、本机确定性 Provider、legacy
-回读以及生产共享锁双向冲突均走通。最终只改变批准的 history/UI 两个相对路径，临时根已删除；结束后只读
+这证明真实 `legacy_qt_main.py` 参考进程写入、真实 Tauri/Shell lifecycle、bundled Core、本机确定性
+Provider、冻结 oracle 回读以及生产共享锁双向冲突均走通。最终只改变批准的 history/UI 两个相对路径，临时根已删除；结束后只读
 进程与窗口核对未发现 Sakura、Tauri 或该轮 Core 残留，既有无关 Python 进程未被终止。
 
 ## 本地自动结果
@@ -85,9 +85,10 @@ git diff --check
 
 ## 结论与待验收项
 
-本地自动门与真实 Windows 双向兼容门通过，等待项目负责人完成三项人工验收：确认两种真实 UI 的可见
-行为与基础聊天；复核未来/损坏只读诊断、保存失败、强杀重获与零残留；审查同一候选 SHA 的三平台证据、
-最终脱敏 manifest 和回退边界。
+本地自动门与真实 Windows 迁移 oracle 往返门通过。按 2026-08-02 产品方向修订，Legacy Qt 只作为迁移
+参考，不要求可见 UI，也不是用户回退入口。等待项目负责人确认可见 Runtime v2 的基础聊天；复核未来/
+损坏只读诊断、保存失败、强杀重获与零残留；审查同一候选 SHA 的三平台证据、最终脱敏 manifest、
+Runtime v2 回退边界和 Phase 7 Legacy Qt 删除边界。
 
 本文不填写上述人工结果，不把 WP-3-06 标记为 `accepted`；当前状态唯一见
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md)。

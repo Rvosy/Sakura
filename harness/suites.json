@@ -37,13 +37,13 @@
       ]
     },
     "legacy-qt-ui": {
-      "description": "验证仍受支持的 legacy Qt 桌宠 UI 行为",
+      "description": "冻结迁移期 Legacy Qt 桌宠 UI 参考行为",
       "cases": [
         "legacy-qt-ui-tests"
       ]
     },
     "python-full": {
-      "description": "运行完整 Python 单元、集成与 legacy Qt UI 回归",
+      "description": "运行完整 Python 单元、集成与迁移参考 Qt UI 回归",
       "cases": [
         "python-unit-tests",
         "python-integration-tests",
@@ -217,7 +217,7 @@
     },
     {
       "id": "legacy-qt-ui-tests",
-      "description": "在 offscreen Qt 平台运行 legacy Qt UI 测试",
+      "description": "在 offscreen Qt 平台运行迁移参考 Qt UI 测试",
       "argv": [
         "{python}",
         "-m",

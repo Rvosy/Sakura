@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # 仓库根目录与发布入口契约
@@ -55,7 +55,8 @@ update.bat
 ## 用户入口
 
 - Windows 安装、启动和更新入口分别为 `install.bat`、`start.bat` 和 `update.bat`。
-- Runtime v2 的显式 Qt 回退继续使用 `start-legacy-qt.bat` 和 `legacy_qt_main.py`，不得在一般整理中迁移。
+- `start-legacy-qt.bat` 和 `legacy_qt_main.py` 在迁移期仅作为开发参考/oracle 暂留根目录，不是用户入口，
+  不进入最终 Runtime v2 发布承诺；全部能力迁移并通过发布总门后必须连同 Legacy Qt 桌宠实现删除。
 - 角色工作室只通过 Sakura 应用内的 Tauri Studio 打开；不再提供根级 `start_studio.bat` 或旧
   PySide6 Studio。
 - macOS/Linux 的安装与启动入口继续位于 `scripts/`，根级 `.command` 文件只存在于生成的发布包，
@@ -75,4 +76,5 @@ update.bat
 - 布局测试确认 25 个 Git 跟踪根入口与本规范一致。
 - 用户入口、开发依赖命令和更新包内部清单路径都有自动测试或发布工作流断言。
 - 旧 Studio、旧入口和废弃工具不再被源码、当前文档或发布白名单引用。
+- 最终 Runtime v2 发布清单不包含 Legacy Qt 启动脚本、桌宠实现或面向用户的 Qt 回退说明。
 - 文档、Python、Tauri Studio 和发布相关门禁全部通过。

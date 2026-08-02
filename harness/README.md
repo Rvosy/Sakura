@@ -49,8 +49,8 @@ Python profile 按用途分层：
 
 - `unit`：完整 `tests/unit`，适合 Python 业务代码的常规回归；
 - `core-host`：Core Host 单元与真实本地子进程集成测试，不访问公网或真实 Provider；
-- `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台验证仍受支持的 legacy Qt 回退；
-- `python-full`：依次运行 unit、integration 和 legacy Qt UI，适合合并前完整回归。
+- `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台冻结迁移期 Legacy Qt 行为参考；它不是受支持产品入口；
+- `python-full`：依次运行 unit、integration 和迁移参考 Qt UI，适合合并前完整回归。
 
 ## Agent Development Harness v1
 

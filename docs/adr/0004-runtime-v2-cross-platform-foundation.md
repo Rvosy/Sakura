@@ -3,14 +3,14 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # ADR-0004：Runtime v2 跨平台基础与平台后端边界
 
 > 状态：Technically Validated for CI platform foundation
 > 日期：2026-07-22
-> 适用范围：Tauri Shell、legacy Qt 回退、Python Core 监管、透明窗口、运行时定位、诊断、CI 和发布打包
+> 适用范围：Tauri Shell、迁移期 Legacy Qt 参考进程、Python Core 监管、透明窗口、运行时定位、诊断、CI 和发布打包
 
 ## 背景
 

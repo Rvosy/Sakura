@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # Sakura 技术讲解 README
@@ -13,8 +13,9 @@ updated: 2026-07-31
 ## 设计思路
 
 Sakura 正在使用 Runtime v2：Tauri Shell 是桌面生命周期根，通过受监管的 bundled Python Core Host
-承载 Assistant 领域服务；`main.py` 只负责把开发命令交给已构建的 Tauri Shell。完整 PySide6 桌宠仍
-保留在 `legacy_qt_main.py`，仅作为显式兼容回退，不是默认入口。
+承载 Assistant 领域服务；`main.py` 只负责把开发命令交给已构建的 Tauri Shell。迁移期保留的
+`legacy_qt_main.py` 只用于实现对照、数据 parser/oracle 和隔离回归，不是受支持的用户入口；Runtime v2
+完成全部能力迁移并通过发布总门后会连同 PySide6 桌宠实现一起删除。
 
 Python 领域层继续由 `ChatPipeline`、`ContextOrchestrator` 和 `AgentRuntime` 负责上下文与工具循环；
 Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程监管和用户交互由 Tauri Shell 负责。
@@ -33,8 +34,8 @@ Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程�
 4. Core Host 加载配置、当前角色和无窗口 Assistant Adapter，并发布 readiness/Snapshot。
 5. Tauri 前端根据 Snapshot 展示角色、聊天和设置能力；关闭应用时统一停止 Core 与完整后代进程树。
 
-需要验证旧 UI 时，必须显式运行 `start-legacy-qt.bat` 或 `legacy_qt_main.py`，且不能与 Runtime v2
-并发写同一份用户数据。
+开发者只有在迁移对照或隔离验收需要时才运行 `start-legacy-qt.bat` 或 `legacy_qt_main.py`，不得把它们
+作为用户回退方案，也不得让参考进程与 Runtime v2 并发写真实用户数据。
 
 ```mermaid
 flowchart LR
@@ -54,7 +55,7 @@ flowchart LR
 ```text
 .
 ├── main.py                             # Runtime v2 开发兼容入口
-├── legacy_qt_main.py                   # 显式 PySide6 回退入口
+├── legacy_qt_main.py                   # 迁移期 PySide6 参考/oracle，最终删除
 ├── desktop/                            # Tauri Runtime v2 Shell 与前端
 ├── app/
 │   ├── agent/                          # Agent 决策层

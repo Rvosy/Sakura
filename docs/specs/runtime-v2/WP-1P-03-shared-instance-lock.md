@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # WP-1P-03：Windows/POSIX 共享应用锁 backends
@@ -115,7 +115,7 @@ Tauri 必须在 `tauri::Builder`、Core、日志、配置、migration 和任何�
 
 同一 SHA 的 Test run `30025831268` 也已全绿：Unit 2m12s、UI 4m08s。push event 的三平台 run `30025828101` 独立重复成功。实现过程先后暴露并修正 Unix 泛型函数项生命周期推断以及测试探针 `PYTHONPATH`/stdout pipe 问题；没有用 skip/xfail 绕过失败。
 
-diff 审查确认没有 `data/`、`runtime/`、产品能力或用户资源变化，P0/P1 为 0，故 WP-1P-03 登记 `Accepted`。这里接受的是生产 Rust/Python backend、Tauri composition-root 接线和原生子进程互斥契约；WP-1P-06 继续负责三平台真实 Shell + Core、legacy Qt 回退入口和全部后代/写入任务完整排水后才释放锁的产品级生命周期总证据。
+diff 审查确认没有 `data/`、`runtime/`、产品能力或用户资源变化，P0/P1 为 0，故 WP-1P-03 登记 `Accepted`。这里接受的是生产 Rust/Python backend、Tauri composition-root 接线和原生子进程互斥契约；WP-1P-06 当时继续以三平台真实 Shell + Core、Legacy Qt 参考进程和全部后代/写入任务完整排水后才释放锁，形成产品级生命周期总证据。该历史证据不构成当前用户回退承诺。
 
 ## 8. 独立回退
 

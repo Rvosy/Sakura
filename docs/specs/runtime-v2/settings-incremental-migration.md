@@ -42,7 +42,7 @@ timing 与字幕语言 feature，不重新开放已经被固定桌宠 UI 否决�
 
 每个 feature 必须一次性交付：
 
-1. 明确数据与运行态所有者，以及 legacy Qt/v2 共读时的 schema 和锁边界。
+1. 明确数据与运行态所有者，以及迁移期 Legacy 数据 oracle/v2 共读时的 schema 和锁边界。
 2. `get` 只返回该 feature 所需的公开 DTO；密钥、裸路径和私有插件数据不得进入通用 Snapshot。
 3. `validate` 在任何落盘或运行态修改前完成，错误指向稳定的 feature/field。
 4. `save` 逐域原子提交，保留未知字段；失败时旧文件和旧运行态仍有效。
@@ -206,7 +206,7 @@ feature 已迁移：
 - Provider 新增/编辑/删除、密钥保持/替换/显式清除、模型槽引用和重新打开一致性通过。
 - `list_models`、连通性成功/认证失败/超时/取消/关窗/Core crash 均为有界唯一终态且错误脱敏。
 - 原子替换、权限、损坏 YAML、未来 schema、旧 generation、重复保存和 restart 失败不产生半更新。
-- legacy Qt 创建配置 -> v2 读取/修改 -> legacy Qt 回读通过；未知字段和未修改 secret bytes 保持。
+- Legacy 参考进程创建配置 -> v2 读取/修改 -> 冻结 oracle 回读通过；未知字段和未修改 secret bytes 保持。
 - Core 受控 restart 后使用新配置达到预期 readiness；旧 generation response/event 不改变设置 UI。
 - Windows 真实 Tauri 完成中文 IME 密钥/URL/模型输入、模型列表、测试、应用/保存、失败恢复和重新打开；
   公共 Python/Rust/frontend 代码取得同一候选 SHA 的三平台门禁。
@@ -216,7 +216,7 @@ feature 已迁移：
 
 禁用 `providers.*` 和 `model.*` feature，设置窗口恢复只读/未迁移提示，停止新的 Provider 网络探测；
 回退 Gateway、Core Adapter 和前端接线，但不删除、恢复或重写用户现有 `api.yaml`。已经以兼容 schema
-保存的数据继续由 legacy Qt 读取；若生产缺陷涉及写入安全，Runtime v2 对该域退回只读。
+保存的数据继续通过冻结 Legacy oracle；若生产缺陷涉及写入安全，Runtime v2 对该域退回只读，不切换用户入口。
 
 ## 7. WP-3-04：真实聊天表现设置切片
 

@@ -7,14 +7,15 @@ status_source: docs/plans/runtime-v2/work-packages.md
 updated: 2026-08-02
 ---
 
-# WP-3-06：legacy Qt 与 Tauri v2 双向数据兼容门禁
+# WP-3-06：Legacy 数据参考与 Tauri v2 兼容门禁
 
 ## 目标与依赖
 
-本 Work Package 在 WP-3-05 验收后关闭 Phase 3 的数据回退风险：使用 WP-0-02 的脱敏数据集，通过真实
-legacy Qt 入口、真实 Tauri Shell、bundled Python Core 和同一共享应用锁完成
-`legacy Qt → Tauri v2 → legacy Qt` 往返。Tauri dogfooding 后，legacy Qt 必须仍能启动并读取角色、
-配置与聊天历史；未迁移的 Memory、插件、任务、提醒和用户资源必须保持原样。当前执行状态只见
+本 Work Package 在 WP-3-05 验收后关闭 Phase 3 的迁移数据风险：使用 WP-0-02 的脱敏数据集，通过真实
+Legacy 参考进程、真实 Tauri Shell、bundled Python Core 和同一共享应用锁完成
+`legacy oracle → Tauri v2 → legacy oracle` 往返。Tauri dogfooding 后，冻结 parser/oracle 必须仍能读取
+角色、配置与聊天历史；未迁移的 Memory、插件、任务、提醒和用户资源必须保持原样。Legacy Qt 不属于
+目标产品能力或用户回退入口，当前执行状态只见
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md)。
 
 依赖为 WP-3-05 accepted，并复用 WP-0-02 数据矩阵、ADR-0003、WP-1P-03 共享锁、WP-3S-01 设置仓库、
@@ -32,7 +33,7 @@ WP-3-04 真实聊天和 WP-3-05 完整退出/恢复契约。本 WP 不扩大产�
 | 数据状态 | Runtime v2 行为 |
 | --- | --- |
 | 当前版本且目标结构有效 | 允许读取共享数据，并只执行下表批准的 Phase 1–3 写入 |
-| 旧版本、缺少版本 | `diagnostics_read_only`；提示先由同版本 legacy Qt 迁移，不运行 v2 共享写 |
+| 旧版本、缺少版本 | `diagnostics_read_only`；提示使用受支持的备份恢复或后续迁移路径，不运行 v2 共享写 |
 | 未来版本 | `diagnostics_read_only`；不降级、不覆盖、不生成默认共享配置 |
 | YAML/JSON/JSONL 损坏或必要资源缺失 | `diagnostics_read_only`；保留原 bytes，不用默认值修复 |
 | v2 私有文件未来 schema | 仅禁用/只读对应 v2 域，不回写任何 legacy 共享文件 |
@@ -46,7 +47,7 @@ WP-3-04 真实聊天和 WP-3-05 完整退出/恢复契约。本 WP 不扩大产�
 | --- | --- | --- |
 | 聊天历史 | Python `ChatHistoryStore` 向当前角色 JSONL 追加本次真实 user/assistant turn | 沿用 legacy 文件名和字段；Qt parser 可读；不修复、截断、迁移、轮转或重放旧工件 |
 | Provider/模型配置 | WP-3S-01 Python repository 更新已批准字段 | 原子保存；未知字段、非目标域和未修改 secret bytes 保留；失败保持旧文件 |
-| Runtime v2 外观/聊天表现配置 | 只写 `data/runtime_v2/config/ui.json` 的已批准 feature | `schema_version=1`；同目录原子替换；legacy Qt 忽略该命名空间 |
+| Runtime v2 外观/聊天表现配置 | 只写 `data/runtime_v2/config/ui.json` 的已批准 feature | `schema_version=1`；同目录原子替换；迁移 oracle 忽略该命名空间 |
 
 除上述目标外，兼容运行前后必须保持文件集合与 SHA-256 不变，尤其包括：角色包、`characters.yaml`、
 `system_config.yaml`、MCP/插件配置、Memory/Qdrant/SQLite、整理状态、任务、提醒、notes、visual/runtime event、
@@ -55,7 +56,7 @@ Studio、TTS、migration backup、`.bak`、旧单文件历史、archive/corrupt 
 
 ## 真实双入口序列
 
-Windows 自动/人工验收必须以真实进程执行以下单一序列：
+Windows 自动验收必须以真实进程执行以下单一序列：
 
 ```text
 copy sanitized WP-0-02 fixture to isolated app root
@@ -77,9 +78,10 @@ copy sanitized WP-0-02 fixture to isolated app root
 WP-3-06 目录名和脱敏 fixture marker。任一条件缺失时 fail closed。release 正常入口不得接受任意 app-root
 覆盖；验收参数、绝对路径和 fixture 内容不得投影到 WebView 或普通日志。
 
-这不是静态 parser 测试：两个 Python 阶段必须经过真实 `legacy_qt_main.py` 进程及生产锁；中间阶段必须
+这不是静态 parser 测试：两个 Python 阶段必须经过真实 `legacy_qt_main.py` 参考进程及生产锁；中间阶段必须
 经过真实 Tauri 可执行文件、生产锁、Shell lifecycle 和 bundled Core。允许验收模式自动关闭窗口和使用
-本机确定性 loopback Provider，但不得直接调用 Core 函数冒充 Tauri 进程。
+本机确定性 loopback Provider，但不得直接调用 Core 函数冒充 Tauri 进程。参考进程不要求创建可见 Qt UI；
+可见产品验收只针对 Tauri Runtime v2。
 
 ## 锁、退出与故障契约
 
@@ -100,7 +102,7 @@ WP-3-06 目录名和脱敏 fixture marker。任一条件缺失时 fail closed。
 
 - Python Core 的全局版本/结构写入门、现有聊天历史兼容追加，以及现有 Provider/模型仓库的失败安全；
 - Rust/Tauri 对隔离 app root 的验收专用定位、共享锁和现有生命周期编排；
-- `legacy_qt_main.py` 中同样 fail-closed 的验收入口，不改变正常 legacy Qt 启动、迁移或业务语义；
+- `legacy_qt_main.py` 中同样 fail-closed 的参考验收入口；其存在不构成正常用户启动、迁移或回退承诺；
 - 专用 Windows 双入口验收脚本、跨平台锁/数据单元测试、隔离 fixture 扩展和治理文档。
 
 明确禁止修改或运行真实 `data/**`、`characters/**`、`third_party/**`，禁止新增依赖、破坏性 schema migration、
@@ -117,8 +119,8 @@ WP-3-06 目录名和脱敏 fixture marker。任一条件缺失时 fail closed。
 | 保存故障 | backup/temp/flush/replace/中断 | 原文件可读且 hash 不变；temp 不晋升；重试不形成半提交 |
 | 私有命名空间 | v2 UI 正常/未来 schema、未知字段 | Qt 行为不变；未来域局部禁用；共享 legacy 文件不回写 |
 | 清单边界 | 角色、配置、历史、Memory、插件和外部资源前后 manifest | 只有批准 history/API/UI 路径变化；凭据与私密内容不进入报告 |
-| 退出/强杀 | 正常退出、活动写入退出、Core/Tauri/Qt 强杀 | 完整进程与句柄归零；锁可立即重获；不误杀无关进程 |
-| 平台门 | Windows/macOS/Linux 同一候选的公共锁和数据语义 | 平台 backend 通过；真实 Qt/Tauri 往返至少在 Windows 完成 |
+| 退出/强杀 | 正常退出、活动写入退出、Core/Tauri/Legacy 参考进程强杀 | 完整进程与句柄归零；锁可立即重获；不误杀无关进程 |
+| 平台门 | Windows/macOS/Linux 同一候选的公共锁和数据语义 | 平台 backend 通过；真实参考进程/Tauri 往返至少在 Windows 完成 |
 
 required profiles 固定为 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`。还须执行专用
 Python integration、locked Rust 全量、格式/差异检查和同一候选 SHA 三平台 workflow。报告只记录脱敏
@@ -126,9 +128,10 @@ fixture 的相对路径、允许变化分类、计数与摘要 hash，不记录 
 
 ## 人工验收与退出条件
 
-项目负责人在 Windows 使用隔离脱敏数据执行真实 Qt → Tauri → Qt 序列，确认两种 UI 均实际出现并有界
-退出；Tauri 完成一轮基础聊天后，legacy Qt 能读取两端新增历史，当前角色、现有配置和 v2 专属配置的
-忽略行为正确。双向同时启动只允许持锁方继续。
+项目负责人在 Windows 审查隔离脱敏数据的真实 reference → Tauri → reference 进程证据，并亲自确认可见
+Tauri Runtime v2 正常启动、有界退出和完成一轮基础聊天；无需显示或验收 Legacy Qt UI。冻结 parser/oracle
+必须读取两端新增历史，当前角色、现有配置和 v2 专属配置的隔离行为正确。双向锁冲突由真实参考进程门禁
+证明，不把参考入口作为用户可操作产品。
 
 负责人还须确认未来/损坏 schema 的只读诊断、保存故障的旧文件保留、正常/强杀后的锁重获和零相关进程
 残留，并审查同一候选 SHA 的三平台证据、最终脱敏 manifest 与独立回退边界。自动门通过只允许进入
@@ -140,5 +143,6 @@ fixture 的相对路径、允许变化分类、计数与摘要 hash，不记录 
 业务数据的写入并退回只读使用，逆序回退 WP-3-06 的版本门补强与验收接线；保留 WP-3-05 及以前已验收
 的 UI、Supervisor、共享锁、Provider/模型设置和 Python `ChatHistoryStore`。
 
-回退不得删除、恢复、重命名或“修复”任何用户文件，不得回退 legacy Qt 入口或共享锁，也不得用旧
-generation 重放聊天。若已产生兼容 JSONL 追加，它属于用户历史，不随代码回退删除。
+回退不得删除、恢复、重命名或"修复"任何用户文件，不得把默认入口切回 Legacy Qt，也不得用旧 generation
+重放聊天。若已产生兼容 JSONL 追加，它属于用户历史，不随代码回退删除。迁移参考代码暂留到 Phase 7
+确认全部能力已迁入 Runtime v2，随后按删除清单移除；删除不属于本 WP 的故障回退动作。

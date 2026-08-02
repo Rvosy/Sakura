@@ -19,6 +19,11 @@ updated: 2026-08-02
 
 Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等对应真实消费者出现后，才由所属 WP 验证和冻结。每个 WP 仍须在进入 `active` 前补齐实际允许目录、验收环境、故障矩阵和回退命令，不得仅凭总表提前编码。
 
+2026-08-02 产品方向修订：Legacy Qt 从受支持用户回退调整为迁移期实现参考、数据 parser/oracle 和隔离
+验收工具。历史 Work Package 中关于真实 Qt、双入口和回退的文字保留为当时的事实证据，不再形成当前
+产品承诺；活跃和未来 WP 不得用可运行 Qt 入口代替 Runtime v2 能力迁移。WP-7-03 确认 Qt 不再承载任何
+未迁移能力并批准删除清单，WP-7-04 的正式工件不得包含 Legacy Qt 桌宠入口、实现或用户回退说明。
+
 ## 1. 执行规则
 
 - 状态只使用 `planned`、`active`、`stabilizing`、`accepted`。
@@ -102,7 +107,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | accepted |
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
-| WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | active |
+| WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | active |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
@@ -2412,7 +2417,7 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 
 独立回退：保留崩溃诊断但禁用自动 UI 水合，退回显式重新开始交互。
 
-### WP-3-06：legacy Qt → Tauri v2 → legacy Qt 兼容门禁
+### WP-3-06：Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁
 
 激活记录（2026-08-02）：
 
@@ -2423,14 +2428,14 @@ base_ref：93c75ba9803618d2d9fde6e99ebb152ffc176a6b
 允许文件：冻结于 harness/tasks/WP-3-06.json；限全局数据写入门、现有 history/provider/UI 仓库、生产共享锁、真实 Qt/Tauri 隔离验收、相关测试和治理文档
 明确禁止：破坏性 migration、Memory/Qdrant/SQLite、Tools/MCP/插件/TTS、角色/真实数据、依赖、默认配置 backfill 和通用 app-root 后门；data/**、characters/**、third_party/** 受保护
 required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
-验收环境：仓库 runtime Python、Node、locked Cargo；系统临时目录内的 WP-0-02 脱敏副本；Windows 真实 legacy Qt/Tauri/WebView2；同一候选 SHA 三平台公共锁/数据门
-故障矩阵：Qt→Tauri→Qt、双向锁冲突、current/old/missing/future/corrupt schema、backup/temp/flush/replace/中断、v2 私有未来 schema、正常/强杀退出、进程与 manifest 清场
+验收环境：仓库 runtime Python、Node、locked Cargo；系统临时目录内的 WP-0-02 脱敏副本；Windows 真实 Legacy 参考进程/Tauri/WebView2；同一候选 SHA 三平台公共锁/数据门
+故障矩阵：reference→Tauri→reference、双向锁冲突、current/old/missing/future/corrupt schema、backup/temp/flush/replace/中断、v2 私有未来 schema、正常/强杀退出、进程与 manifest 清场
 关联 ADR：ADR-0001、ADR-0002、ADR-0003
 计划提交：先冻结数据清单与真实双入口失败测试，再补最小版本/结构写入门和验收接线，最后串行运行双入口、全量自动门与负责人实机验收
-回退：停止 v2 共享数据写入并退回只读使用，逆序回退 WP-3-06 接线；不删除、恢复、重命名或修复任何用户文件，不回退 legacy Qt 入口和共享锁
+回退：停止 v2 共享数据写入并退回只读使用，逆序回退 WP-3-06 接线；不删除、恢复、重命名或修复任何用户文件，不把产品入口切回 Legacy Qt
 ```
 
-主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和 legacy Qt 回退能力。
+主要结果：证明 v2 dogfooding 不会破坏现有角色、配置、历史、Memory 和冻结的迁移前数据基线；不建立 Legacy Qt 产品回退能力。
 
 允许能力：
 
@@ -2441,23 +2446,24 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 明确禁止：
 
 - 不执行破坏性 schema 迁移。
-- 不以保留 Qt 源码或静态解析测试代替真实双向启动。
+- 不以保留 Qt 源码或静态解析测试代替真实参考进程往返；也不要求 Legacy Qt UI 可见。
 
 退出证据：
 
 ```text
-legacy Qt 创建/修改数据并退出
+Legacy 参考进程创建/修改数据并退出
 -> Tauri 获取同一应用锁并完成基础聊天
 -> Tauri 退出且所有写入任务结束
--> legacy Qt 重新获取应用锁并读取兼容数据
+-> Legacy 参考进程重新获取应用锁并由冻结 oracle 读取兼容数据
 ```
 
 - 两个入口同时启动时只有一个成功持锁。
 - v2 专属配置不改变 Qt 行为。
 - 不支持的未来 schema 进入 diagnostics/只读安全状态。
-- 本 WP 产生 ADR-0003 的真实双向证据；须经 WP-3V-01 组合纵向复验后才能更新为 `Accepted`。
+- 本 WP 产生 ADR-0003 的真实迁移 oracle 往返证据；须经 WP-3V-01 组合纵向复验后才能关闭该技术门。
+- 人工可见 UI 只验收 Runtime v2；Legacy Qt 不再是用户验收对象，并在 Phase 7 删除。
 
-独立回退：停止 v2 共享数据写入并退回只读使用，不删除 legacy Qt 数据或入口。
+独立回退：停止 v2 共享数据写入并退回只读使用，保留用户数据；不得把用户切回 Legacy Qt。
 
 ## 13. Phase 3V：Assistant 架构验证硬门禁
 
@@ -2557,8 +2563,8 @@ Tauri/Rust 启动 bundled Python Core
 |---|---|---|---|
 | WP-7-01 | 全部 | 完整 Python/Rust/前端/协议和三平台 CI | required checks 全绿；无绕过或把 GUI crash 误判通过 |
 | WP-7-02 | CAP-001–029 | 三平台真实 Tauri WebView E2E | 平台 UI、IME、scale、多屏、托盘、音频、截图真实验收 |
-| WP-7-03 | CAP-001–030 | 产品功能等价与数据兼容总审查 | 台账逐行 parity-accepted/获批替代；Qt -> Tauri -> Qt 通过 |
-| WP-7-04 | CAP-028 | 打包、签名/notarization、更新、完整性、干净安装 | 三平台正式工件从零安装/更新/回退，包内 Python 唯一且受控 |
+| WP-7-03 | CAP-001–030 | 产品功能等价与数据兼容总审查 | 台账逐行 parity-accepted/获批替代；冻结 oracle 往返通过；批准 Legacy Qt 删除清单 |
+| WP-7-04 | CAP-028 | 打包、签名/notarization、更新、完整性、干净安装 | 三平台正式工件从零安装/更新/回退，包内 Python 唯一且受控，不含 Legacy Qt 桌宠 |
 | WP-7-05 | CAP-029 | soak、休眠恢复、重复启停和故障注入 | Core/MCP/TTS/browser/更新链无泄漏、死锁、数据损坏 |
 | WP-7-06 | 全部 | 最终发布审查与进入 `dev` 决策 | P0/P1=0；回退演练完成；项目负责人明确批准合并/发布 |
 

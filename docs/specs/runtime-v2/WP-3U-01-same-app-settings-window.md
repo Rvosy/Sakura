@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
@@ -61,8 +61,8 @@ WP-3U-02；其他设置功能按 `docs/specs/runtime-v2/settings-incremental-mig
 - `app/ui/tauri_settings.py` 中依赖 PySide6 的 QProcess、QObject、QThread、QTimer、Signal/Slot 和 QWidget 适配层。
 - legacy Qt 对桌宠置顶压低、外部设置进程检测和 stdout marker 的生命周期所有权。
 
-旧独立设置工具在 legacy Qt 回退期间保留，不因本 WP 删除；Runtime v2 与 legacy Qt 应共享前端和纯配置
-契约的规范源，但保留各自窗口宿主。
+旧独立设置工具在 Legacy Qt 迁移参考期保留，不因本 WP 删除，也不构成用户回退；Runtime v2 与参考
+实现应共享前端和纯配置契约的规范源，但保留各自窗口宿主。
 
 ## 窗口架构
 

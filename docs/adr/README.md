@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # Architecture Decision Records
@@ -13,7 +13,7 @@ spec 或 plan，验收证据放在 records。
 
 - [ADR-0001：Runtime v2 进程监管](0001-runtime-v2-process-supervision.md)
 - [ADR-0002：Runtime v2 IPC](0002-runtime-v2-ipc.md)
-- [ADR-0003：用户数据兼容与 legacy Qt 回退](0003-runtime-v2-data-compatibility.md)
+- [ADR-0003：用户数据兼容与 Legacy Qt 迁移参考](0003-runtime-v2-data-compatibility.md)
 - [ADR-0004：跨平台基础与平台后端边界](0004-runtime-v2-cross-platform-foundation.md)
 - [ADR-0005：无 Qt 薄 Assistant Adapter](0005-runtime-v2-headless-assistant-adapter.md)
 - [ADR-0006：同一 Tauri App 的设置窗口宿主](0006-same-app-settings-host.md)

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -18,7 +18,11 @@ updated: 2026-07-31
 
 Runtime v2 是桌面运行时和 UI 重构，不是产品删减。内部开发分支可以暂时只有 Shell、Fake Core 或局部垂直链，但进入 `dev` 和发布前，现有用户可见功能、可配置能力、数据可读性和关键平台行为必须达到等价或获得项目负责人明确批准的替代体验。
 
-“代码仍在仓库”“legacy Qt 可以回退”“未来 Phase 会做”均不等于功能已经迁移。每项能力必须拥有可执行映射：
+2026-08-02 产品方向修订：Legacy Qt 不再属于目标产品能力或用户回退方案。迁移期代码只作为行为基线、
+数据 parser/oracle 与隔离验收参考；每项用户能力仍必须迁入 Runtime v2，不能以参考实现仍可启动代替。
+Phase 7 在确认能力与数据门全部关闭后删除 Legacy Qt 桌宠入口、实现和发布引用。
+
+“代码仍在仓库”“Legacy Qt 参考仍可运行”“未来 Phase 会做”均不等于功能已经迁移。每项能力必须拥有可执行映射：
 
 ```text
 legacy 行为与数据
@@ -52,7 +56,7 @@ legacy 行为与数据
 
 | ID | 现有能力 | Runtime v2 目标 | 目标 WP | 平台敏感点 | 当前状态 |
 |---|---|---|---|---|---|
-| CAP-001 | 默认启动、单实例、显式 legacy Qt 回退 | Tauri 为默认根；Qt/Tauri 共用锁；安全切换 | WP-1P-02、WP-1P-03、WP-1P-06、WP-3-06 | 可执行/Runtime 定位、锁、退出 | implemented |
+| CAP-001 | 默认启动与单实例 | Tauri 是唯一产品桌面根；迁移期参考进程只参与隔离锁测试，最终删除 | WP-1P-02、WP-1P-03、WP-1P-06、WP-3-06、WP-7-03 | 可执行/Runtime 定位、锁、退出 | implemented |
 | CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定渲染包络内的真实立绘、常驻气泡与常驻输入框；首次放置按可见表面留在工作区，用户拖拽后的显式锚点不做屏幕边界夹取，后续状态与缩放保持该位置 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏 | implemented |
 | CAP-003 | 点击穿透、拖动、焦点、IME、显示隐藏 | 平台 backend 保持相同用户语义 | WP-1P-05、WP-3-03 | Win32、NSWindow、X11/Wayland | implemented |
 | CAP-004 | 真实聊天、思考、完成与错误 | WP-3-01 先验证无 Qt Adapter/readiness，再由最小 IPC/Gateway/Snapshot 承载聊天 | WP-3-01、WP-2-01、WP-2-02、WP-3-02、WP-3-04、WP-3V-01 | Provider/网络失败不阻塞 Shell | planned |
@@ -81,7 +85,7 @@ legacy 行为与数据
 | CAP-027 | 角色导入、发布、回滚 | 校验、原子保存、Operation 和故障恢复 | WP-6-02、WP-6-04、WP-6-05 | ZIP 路径安全、文件替换 | planned |
 | CAP-028 | 更新包、安装和回退 | 三平台包、签名、完整性和干净安装门禁 | WP-7-04 | 签名、notarization、包格式 | planned |
 | CAP-029 | 长时间运行、重复启停和故障恢复 | 三平台 soak + Core/MCP/TTS/browser 故障注入 | WP-7-05 | 休眠、多用户、资源泄漏 | planned |
-| CAP-030 | 用户数据与 Qt 双向兼容 | Qt -> Tauri -> Qt 全量读取/允许写入门禁 | WP-3-06、WP-3V-01、WP-7-03 | 路径、锁、原子替换、编码 | planned |
+| CAP-030 | 用户数据与迁移前基线兼容 | 冻结 fixture/oracle -> Tauri -> oracle 往返；最终产品不依赖 Qt 入口 | WP-3-06、WP-3V-01、WP-7-03 | 路径、锁、原子替换、编码 | planned |
 
 2026-07-24 的 WP-1P-05A 是 CAP-001、CAP-002、CAP-003 的窄范围 macOS 基础纠正稳定化：
 它只修正默认入口、透明 Shell 和拖动后的固定立绘锚点，不改变本表任何能力状态，也不接入
@@ -133,7 +137,8 @@ Phase 7 的 WP-7-03 必须逐行审查本台账：
 1. 不允许存在 `baselined`、`planned` 或仅 `implemented` 的发布必备行。
 2. `platform-verified` 只能证明平台实现，不能替代真实产品语义和数据门禁。
 3. `approved-replacement` 必须链接项目负责人批准记录、用户体验说明和数据兼容结果。
-4. legacy Qt 回退保留期间，Tauri 写入不得让 Qt 无法启动或读取原数据。
-5. 全部能力通过后仍需 WP-7-04、WP-7-05 的打包、更新、长时间运行和故障恢复验收。
+4. 迁移参考保留期间，Tauri 写入必须通过冻结 fixture/parser/oracle；这不是对 Legacy Qt 产品入口的支持承诺。
+5. WP-7-03 必须确认 Legacy Qt 参考已不再承载任何未迁移能力，并批准删除清单；WP-7-04 的正式工件不得包含 Qt 桌宠入口或回退说明。
+6. 全部能力通过后仍需 WP-7-04、WP-7-05 的打包、更新、长时间运行和故障恢复验收。
 
 任何能力无法保持时，必须在对应功能开发前提出替代设计并获得批准；不得在 Phase 7 才以时间不足为理由删除或降级。

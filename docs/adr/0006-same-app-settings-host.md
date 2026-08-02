@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # ADR-0006：设置窗口属于同一 Tauri App 和同一生命周期根
@@ -53,7 +53,8 @@ canonical frontend 的位置另比较了两个可行布局：直接以 `desktop/
 - Runtime v2 不启动独立 `sakura-settings` 子进程，也不复用其 HostRpc 作为产品边界。
 - `desktop/frontend/settings/**` 是设置前端的 canonical source；legacy 独立设置宿主可以保留，
   但必须机械消费同一资源，不能维护第二份完整资产。
-- legacy 独立设置工具和 Qt 回退入口的最终移除不属于本决策；在回退期内它们继续存在。
+- 本 ADR 不决定旧实现的删除时机。按 2026-08-02 产品方向修订，legacy 独立设置工具和 Qt 桌宠只作为
+  迁移参考暂存，不是用户回退；Phase 7 确认能力清零后删除。
 
 设置窗口 command、capability manifest、关闭状态机和验收条件继续由
 [`WP-3U-01` spec](../specs/runtime-v2/WP-3U-01-same-app-settings-window.md) 约束。

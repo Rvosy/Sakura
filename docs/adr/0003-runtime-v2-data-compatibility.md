@@ -3,12 +3,12 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
-# ADR-0003：Runtime v2 用户数据兼容与 legacy Qt 回退
+# ADR-0003：Runtime v2 用户数据兼容与 Legacy Qt 迁移参考
 
-> 状态：Technically Validated（Windows/POSIX shared lock 与三平台 lifecycle 数据零变化）；Qt → Tauri → Qt 兼容门禁待 WP-3-06/WP-3V-01
+> 状态：Technically Validated（Windows/POSIX shared lock 与三平台 lifecycle 数据零变化）；参考 oracle → Tauri → oracle 兼容门禁待 WP-3-06/WP-3V-01
 > 日期：2026-07-15
 > 适用范围：Runtime v2 与 legacy Qt 入口共享的角色、配置、历史、Memory、工具数据、插件数据和用户资源
 > Phase 0 基线：`docs/records/baselines/runtime-v2/WP-0-02-data-lock-baseline.md`
@@ -23,11 +23,23 @@ Phase 0 取证确认：当前数据集的全局版本锚点是 `data/config/syst
 
 WP-1A-04 已将 legacy Qt 的权威显式回退命令冻结为 `.\runtime\python.exe .\legacy_qt_main.py`，并提供 `start-legacy-qt.bat` 作为便利入口。回退前必须先退出 Tauri；用户不负责删除锁文件、判断 stale PID 或合并共享数据。能否启动和写入由两个入口共同实现的 named mutex、schema 安全状态和当前桌面生命周期根负责。
 
+## 2026-08-02 产品方向修订
+
+本节替代本文中“Legacy Qt 是受支持用户回退入口”的产品承诺，但保留此前双入口锁、数据零变化和真实
+进程验收作为历史技术证据。Legacy Qt 从本修订起仅是迁移期的实现对照、数据 parser/oracle 和隔离故障
+夹具；用户入口、发布能力和最终回退均只由 Runtime v2 承担。迁移完成并通过 Phase 7 总门后，删除
+`legacy_qt_main.py`、`start-legacy-qt.bat`、Qt 桌宠实现及发布引用；需要长期保留的数据兼容证据转为冻结
+fixture、schema/parser 测试和不可变历史记录，不保留可运行 Qt 产品。
+
+因此 WP-3-06 的真实 Legacy 进程只证明迁移前数据仍可被旧 oracle 读取，不要求显示 Legacy Qt UI，也
+不能成为用户验收或发布回退路径。Runtime v2 发生问题时只能回退本次 v2 变更、停止危险写入或进入只读
+诊断，不能把用户引导到 Legacy Qt。
+
 ## 不可妥协的约束
 
 - Phase 1–3 不执行破坏性用户数据迁移，也不由 v2 静默运行 legacy `MigrationRunner`。
 - 现有角色资源、Core 配置、历史、Memory 和用户目录优先原样复用。
-- legacy Qt 仍受支持期间，共享数据写入必须保持 Qt 可读且不会破坏旧入口启动。
+- 迁移参考保留期间，共享数据写入必须保持冻结 parser/oracle 可读；这不构成对旧 UI 启动的产品承诺。
 - v2 专属桌面/UI/Shell 配置使用独立文件和独立命名空间。
 - Tauri 和 legacy Qt 使用同一应用锁，同一用户会话中两个桌面入口不能同时运行，也不能出现两个共享数据写入者。
 - schema migration 必须有版本、强制迁移前备份、同目录临时目标、解析/校验、原子切换、失败恢复和明确回退策略。
@@ -66,7 +78,8 @@ Runtime v2 专属
 └─ legacy logs/diagnostics/cache 的 v2 所有权和兼容范围
 ```
 
-“只读复用”是 Runtime v2 Phase 1–3 的默认权限，不禁止 legacy Qt 在持锁时执行其既有业务。WP-3S-01
+"只读复用"是 Runtime v2 Phase 1–3 的默认权限；Legacy Qt 既有业务只允许在隔离迁移验收中作为 oracle
+执行，不是用户工作流。WP-3S-01
 例外批准 Python 配置域在当前 schema 下兼容写 `api.yaml` 的 Provider/模型子集；Rust/WebView 仍不得直接
 读写该文件。“禁止修改”表示 v2 Shell/Rust/Core Host 不得直接改变；后续领域 Work Package 若需要写入，
 必须独立更新 ADR/门禁。
@@ -78,11 +91,11 @@ Runtime v2 以 `system_config.yaml.config_version` 作为整个 legacy 数据集
 | 条件 | 结果 |
 |---|---|
 | `config_version == 4` 且目标结构校验通过 | 允许执行明确列入兼容矩阵的写入：聊天历史追加，以及 WP-3S-01 的 `api.yaml` Provider/模型当前 schema 原子写 |
-| `< 4` 或缺失 | diagnostics/read-only；提示先用同版本 legacy Qt 完成迁移；v2 不推进版本 |
+| `< 4` 或缺失 | diagnostics/read-only；提示使用受支持的备份恢复或后续迁移路径；v2 不推进版本 |
 | `> 4` | diagnostics/read-only；不降级、不覆盖未来格式 |
 | 类型无效、文件损坏、必要资源缺失 | diagnostics/read-only；不以默认空数据覆盖 |
 
-当前隐式无版本文件不能单独证明未来兼容。停止支持 legacy Qt 或首次引入不兼容共享 schema 时，必须用新 ADR supersede 本文，并同时更新版本锚点、迁移和双向 fixtures。
+当前隐式无版本文件不能单独证明未来兼容。删除 Legacy Qt 参考或首次引入不兼容共享 schema 时，必须更新 ADR、版本锚点、迁移和冻结兼容 fixtures。
 
 ## Runtime v2 专属命名空间
 
@@ -230,7 +243,7 @@ WP-1P-03/06 必须在 macOS 与 Linux 分别验证：
 
 据此 WP-1P-03 的共享锁 backend 技术门已接受。真实三平台 Tauri Shell + Core、legacy Qt 回退入口、全部后代/写入任务排水完成后才释放，以及隔离数据清单前后零变化，仍由 WP-1P-06 验收；本段不能替代该产品级生命周期总门或 Phase 3 数据兼容门。
 
-## Phase 3 Qt → Tauri v2 → Qt 兼容门禁输入
+## Phase 3 迁移 oracle → Tauri v2 → oracle 兼容门禁输入
 
 真实流程：
 
@@ -244,8 +257,8 @@ legacy Qt 获取共用 mutex
 -> deterministic fake/local Provider 完成基础聊天
 -> 只追加允许的 Qt-compatible history，写 data/runtime_v2 私有配置
 -> 关闭 Core/后代/写入任务，最后释放 mutex
--> legacy Qt 重新获取 mutex并真实启动
--> Qt 读取原角色/配置/历史并显示新增记录
+-> legacy 参考进程重新获取 mutex并真实运行
+-> 冻结 parser/oracle 读取原角色、配置、历史和新增记录
 ```
 
 还必须覆盖：
@@ -269,22 +282,22 @@ legacy Qt 获取共用 mutex
 - `docs/records/baselines/runtime-v2/wp_0_02_contract.py`
 - `docs/records/baselines/runtime-v2/run_wp_0_02_baseline.ps1`
 
-Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebView 和应用锁门禁。WP-3-06 完成双向兼容且 WP-3V-01 组合复验通过后，本 ADR 才可更新为 `Accepted`。
+Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Legacy 参考双进程、WebView 和应用锁门禁。WP-3-06 完成双向兼容且 WP-3V-01 组合复验通过后，才能更新本 ADR 的技术验证结论。
 
 ## 结果与代价
 
 收益：
 
-- legacy Qt 是可验证的真实回退，而不是仅保留源码。
+- Legacy Qt 是可执行的迁移 oracle，而不是产品回退或仅保留源码的心理保障。
 - Runtime v2 dogfooding 不会以用户数据为代价。
 - lock identity、持有时间、冲突结果、stale 行为和数据安全状态不再留给实现临时决定。
 - v2 专属配置不会被 legacy Qt 误读或覆盖。
-- 后续停止 Qt 回退时有明确决策点，而不是被格式变化意外切断。
+- 最终删除 Qt 参考前有明确的数据证据转存和能力关闭门，而不是被格式变化意外切断。
 
 代价：
 
 - Phase 1–3 只有当前 schema 4 数据允许共享兼容写，旧/未来/损坏数据先进入 diagnostics/read-only。
-- Qt 回退期内，共享 schema 演进受到向后兼容约束。
+- 迁移 oracle 保留期内，共享 schema 演进受到冻结基线兼容约束。
 - 双入口不能同时运行，开发调试需要显式退出前一个入口。
 - Qdrant、插件、TTS 和无版本格式需要后续领域 Work Package 单独验证，不能由 Rust 统一接管。
 
@@ -298,8 +311,8 @@ Phase 0 oracle 只能冻结预期，不能代替实际 Tauri/Qt 双进程、WebV
 - Phase 1–3 无破坏性 migration，只有批准的 Qt-compatible write。
 - migration-grade backup 失败不修改原数据。
 - 未来/损坏 schema 进入 diagnostics/read-only。
-- Qt → Tauri → Qt 真实兼容门禁和真实 `data/` 零变化证据通过。
+- 迁移 oracle → Tauri → oracle 真实兼容门禁和真实 `data/` 零变化证据通过。
 
 ## ADR 状态门禁
 
-本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过；WP-1P-03 的 macOS/Linux Rust/Python shared-lock backend 已在原生平台通过双向冲突、正常/强杀释放和安全属性测试；WP-1P-06 的三平台应用 lifecycle、树清理、锁重获和隔离数据零变化总门也已通过。更新为 `Accepted` 前仍必须由 WP-3-06/WP-3V-01 完成正式平台的 Qt → Tauri → Qt 真实兼容纵向链，并关闭产品能力台账中的数据项。停止支持 legacy Qt 或引入不兼容共享 schema 时，必须以新的 ADR Supersede 本文。
+本 ADR 当前为 `Technically Validated`，精确含义是 Windows Phase 1A 的共用 named mutex、双入口、崩溃释放和真实数据零变化门禁已经通过；WP-1P-03 的 macOS/Linux Rust/Python shared-lock backend 已在原生平台通过双向冲突、正常/强杀释放和安全属性测试；WP-1P-06 的三平台应用 lifecycle、树清理、锁重获和隔离数据零变化总门也已通过。更新技术状态前仍必须由 WP-3-06/WP-3V-01 完成迁移 oracle → Tauri → oracle 纵向链，并关闭产品能力台账中的数据项。Phase 7 还必须确认 Qt 不再承载任何产品能力，随后删除可运行 Legacy Qt 桌宠，仅保留冻结数据契约和历史证据。
