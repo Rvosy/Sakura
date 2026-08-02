@@ -18,7 +18,7 @@
     "docs/plans/runtime-v2/work-packages.md",
     "docs/records/audits/README.md",
     "docs/records/audits/WP-3V-01-ROUTER-ORDERING-DEFECT.md",
-    "harness/activations/WP-2-01/0001.json",
+    "harness/activations/WP-2-01/**",
     "harness/tasks/WP-2-01.json"
   ],
   "forbidden_paths": [

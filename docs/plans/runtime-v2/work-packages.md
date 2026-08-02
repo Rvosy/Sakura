@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-2-01
+active_work_package: WP-3V-01
 updated: 2026-08-03
 ---
 
@@ -97,7 +97,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-1C-04 | bundled Python 端到端与 lifecycle 接口冻结 | WP-1C-03 | accepted |
 | WP-3-01 | 无 Qt Assistant Adapter 与真实 readiness | WP-1C-04、WP-1P-05A | accepted |
 | WP-1D-01 | 最小生命周期可见性与安全重试 | WP-3-01 | accepted |
-| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | stabilizing |
+| WP-2-01 | 最小并发 request/response/event Router | WP-1D-01 | accepted |
 | WP-2-02 | 最小聊天取消、Gateway 与 Snapshot 边界 | WP-2-01 | accepted |
 | WP-3-02 | 无 UI 的真实聊天 Core 垂直链 | WP-3-01、WP-2-02 | accepted |
 | WP-3-03 | 固定产品 UI 与真实角色表现基线 | WP-3-02 | accepted |
@@ -108,7 +108,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | active |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
@@ -1929,6 +1929,12 @@ Legacy oracle 回读、敏感证据和进程残留均为 0）；Harness required
 失败不涉及 Router，精确清理遗留测试树后以稳定单线程模式全绿。当前不标记 accepted，也不恢复
 WP-3V-01；负责人验收后另做状态与 activation 提交。
 
+重新验收记录（2026-08-03）：项目负责人明确确认 `fab46beb` 的 Router 顺序稳定化验收通过，批准
+本 WP 重新标记 accepted 并恢复 WP-3V-01。接受范围仅为已审计的 wire-order 合并与容量计数修复；
+不扩大协议、Gateway、队列或产品功能。最终候选证据沿用上述 Router 10/10、Rust 单线程
+239 passed/24 ignored、真实 Windows 组合验收通过、Harness 自动项 20 passed/0 failed 和进程残留 0。
+若后续再次复现终态超越 started、容量突破或资源残留，必须重新打开本 WP，不在验证包中规避。
+
 主要结果：为一个真实聊天消费者建立不阻塞 lifecycle 的最小 Router；不建设通用任务调度平台。
 
 允许能力：
@@ -2551,6 +2557,10 @@ base_ref：5c3cfc59fda1f238c78d1b9b333e4968c46d747c
 Router，也不得通过延迟 Provider 或放宽 Gateway 顺序校验制造通过。验收器诊断提交为
 `d47cd414`，缺陷证据见 `docs/records/audits/WP-3V-01-ROUTER-ORDERING-DEFECT.md`。WP-2-01 修复
 重新 accepted 后，才可在新的 activation 基线重新激活本 WP。
+
+恢复记录（2026-08-03）：项目负责人验收通过 WP-2-01 Router 顺序稳定化并批准恢复本 WP。恢复只
+重建任务契约 activation 基线，不改变原冻结范围、自动/人工验收项、Provider 时序或数据边界；恢复后
+须在当前候选重新运行 preflight、required profiles、真实 Windows 组合验收及最终 verify。
 
 主要结果：用真实 Sakura Assistant 领域代码证明 Runtime v2 可以承载第一条可靠产品垂直链，并把 CAP-004 推进到 `architecture-validated`。这是验证 WP，不是新业务实现 WP；Fake Core 不能作为通过证据。
 
