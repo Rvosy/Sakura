@@ -1,4 +1,5 @@
 .vscode/
+.codex/
 
 .env
 .env.migrated
