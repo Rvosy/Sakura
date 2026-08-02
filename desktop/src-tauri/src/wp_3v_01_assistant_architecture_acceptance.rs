@@ -350,9 +350,7 @@ fn wait_for_terminal(
                 let event_type = event
                     .get("type")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!("WP_3V_01_CHAT_EVENT_TYPE_MISSING:{}", event)
-                    })?;
+                    .ok_or_else(|| format!("WP_3V_01_CHAT_EVENT_TYPE_MISSING:{}", event))?;
                 if event_type == expected {
                     return Ok(event);
                 }
@@ -370,12 +368,7 @@ fn wait_for_terminal(
     }
     Err(format!(
         "WP_3V_01_CHAT_TERMINAL_TIMEOUT:{expected}:observed={}",
-        Value::Array(
-            observed
-                .into_iter()
-                .map(Value::String)
-                .collect::<Vec<_>>()
-        )
+        Value::Array(observed.into_iter().map(Value::String).collect::<Vec<_>>())
     ))
 }
 
@@ -514,10 +507,7 @@ mod tests {
     fn chat_event_parser_accepts_direct_and_tauri_window_wrapped_payloads() {
         let direct = r#"{"type":"chat.completed","operationId":"op"}"#;
         let wrapped = serde_json::to_string(direct).unwrap();
-        assert_eq!(
-            parse_chat_event(direct).unwrap()["type"],
-            "chat.completed"
-        );
+        assert_eq!(parse_chat_event(direct).unwrap()["type"], "chat.completed");
         assert_eq!(parse_chat_event(&wrapped).unwrap()["operationId"], "op");
     }
 }
