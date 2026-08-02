@@ -112,3 +112,41 @@ workflow 契约的静态/测试门，不代表本纠正候选已经取得新的�
 “立即显示”、取消/错误/连续第二轮与快速立绘切换；Sakura 和 N.A.V.I. 在 100%/150% DPI 下复核固定
 几何与冷热缓存过渡；最后审查同一最终候选 SHA 的 Windows、macOS、Linux CI 和独立回退边界。本记录
 不填写上述人工结果，不把 WP-3-04 标记为 `accepted`。
+
+## 2026-08-02 等待与错误表现二次纠正
+
+项目负责人在上一候选实机复核后追加三项反馈：等待回复不显示“正在组织完整回复”，恢复旧 Qt 点号动效
+并在输入框显示角色名思考状态；Provider 400/429 等错误必须提供可诊断信息；移除“立即显示”按钮。
+第三次契约修订继续沿用原始 `base_ref`，只窄开放 `app/core_host/real_chat.py` 的错误公开投影，没有改变
+Provider 请求、重试、模型选择、history、legacy Qt、固定窗口几何、依赖或真实用户数据。
+
+回归测试先稳定复现：前端捕获旧 skip DOM、缺失角色 placeholder 和缺失等待控制器；Core 400/401/429/500
+四组用例均只得到 `Provider request failed`，坏 JSON 与坏回复结构均只得到
+`Provider response was invalid`。实现后，等待气泡按旧 Qt 的七帧序列每 360ms 循环，reduced motion 固定为
+`...`；输入框在 thinking 阶段显示“`{角色名}正在思考中…`”；skip DOM、状态与事件接线均已移除。
+Provider HTTP 错误现在公开状态码以及 JSON `error.message/code/type/status` 白名单，经过 360 字符上限和
+凭据、token、URL、绝对路径等敏感模式过滤；非 JSON 或无安全字段时只回退为含 HTTP 状态的稳定文案。
+
+本地候选实现提交为 `20c862a8`（等待/无 skip）和 `f3bb8d75`（Provider 安全诊断）。自动结果：
+
+```text
+desktop/frontend npm test                            -> 91/91 passed
+tests/integration/test_core_host_real_chat_integration.py -> 13/13 passed
+runtime\python.exe -m harness check WP-3-04          -> passed / 无越界
+runtime\python.exe -m harness verify WP-3-04         -> exit 3 / manual_pending
+cargo test --locked --quiet                          -> 230 passed / 24 ignored
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check -> passed
+runtime\python.exe -m py_compile app/core_host/real_chat.py -> passed
+```
+
+`verify` 报告为 `temp/harness/20260802T052916Z-WP-3-04.json`，运行 165.172 秒；preflight、scope、依赖与
+required profiles 全部通过，汇总为 22 passed / 0 failed / 3 manual pending。其中 frontend 91/91、
+Python unit 580 passed/6 skipped、Core Host integration 26/26、legacy Qt UI 24/24。
+
+验证期间曾错误并行启动 Harness 与第二份 locked Rust 全量，两个测试进程争用同名 Windows mutex，造成
+3 个 shared-instance/lifecycle 用例失败；确认测试进程退出后，未修改代码、未放宽或忽略测试，串行原命令
+重跑为 230 passed/24 ignored。该次并行资源冲突不计作最终产品结论，但作为验证编排问题保留记录。
+
+自动门通过后仍等待项目负责人在 Windows 实机验证：点号节奏、角色名思考 placeholder、无“立即显示”
+控件、真实 Provider 400/429 安全诊断、取消与连续第二轮；Sakura/N.A.V.I. 的 100%/150% DPI 固定几何；
+以及最终候选同一 SHA 的三平台 CI 和回退边界。本记录不代填人工验收，不改变 WP-3-04 的 `active` 状态。
