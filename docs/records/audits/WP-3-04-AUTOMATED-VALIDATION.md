@@ -197,5 +197,23 @@ desktop/frontend node --test                       -> 100/100 passed
 runtime\python.exe -m harness check WP-3-04        -> passed / 无越界
 ```
 
+最终自动候选为 `24ce52d0b4e4232510af04986a0b08e25e12678f`。全部命令串行执行，避免 Rust/Harness
+共享 Windows mutex 争用：
+
+```text
+desktop/frontend node --test                                      -> 100/100 passed
+tests/integration/test_core_host_real_chat_integration.py          -> 13/13 passed
+cargo test --locked --quiet                                        -> 230 passed / 24 ignored
+cargo fmt --all -- --check                                         -> passed
+runtime\python.exe -m harness run docs                             -> 2/2 passed
+runtime\python.exe -m harness run smoke                            -> 3/3 passed
+runtime\python.exe -m harness run unit                             -> 580 passed / 6 skipped
+runtime\python.exe -m harness verify WP-3-04                       -> exit 3 / manual_pending
+```
+
+`verify` 报告为 `temp/harness/20260802T061114Z-WP-3-04.json`，运行 164.953 秒；preflight、scope、依赖
+和五个 required profiles 全部通过，汇总为 23 passed / 0 failed / 3 manual pending。Harness 的
+`EXIT_MANUAL_PENDING` 固定为 3；自动门没有失败项。
+
 真实 WebView2 下的同文本气泡高度，以及输入栏 1→4→1 行时按钮底部锚定、无裁切/撕裂，仍必须由项目
 负责人完成实机视觉验收；本记录不以 Node 几何测试代替该结果。
