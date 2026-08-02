@@ -51,7 +51,17 @@ class _ProviderHandler(BaseHTTPRequestHandler):
             return
         if type(self).outcome.startswith("http-"):
             status = int(type(self).outcome.removeprefix("http-"))
-            response = b'{"error":{"message":"PRIVATE_PROVIDER_FAILURE"}}'
+            response = json.dumps(
+                {
+                    "error": {
+                        "message": "Rate limit exceeded for requested model",
+                        "code": "rate_limit",
+                        "type": "requests",
+                        "private": "PRIVATE_PROVIDER_FAILURE",
+                    },
+                    "api_key": "sk-private-fixture",
+                }
+            ).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
@@ -570,11 +580,15 @@ def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
         assert terminal["name"] == "chat.failed"
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
-            "message": "Provider request failed",
+            "message": (
+                f"API HTTP {status}: Rate limit exceeded for requested model "
+                "(code: rate_limit; type: requests)"
+            ),
             "retryable": retryable,
             "details": {},
         }
         assert "PRIVATE_PROVIDER_FAILURE" not in json.dumps(terminal)
+        assert "sk-private-fixture" not in json.dumps(terminal)
         assert len(_ProviderHandler.requests) == request_count
         assert _exchange(process, _request("health", "system.health", {}))["ok"] is True
         _exchange(process, _request("shutdown", "system.shutdown", {}))

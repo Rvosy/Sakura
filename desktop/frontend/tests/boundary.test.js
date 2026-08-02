@@ -29,8 +29,10 @@ function declarationBlock(selector, requiredDeclaration = null) {
 }
 
 test("markup exposes fixed product chat, portrait, status, and accessible controls", () => {
-  for (const id of ["chat-bubble", "bubble-copy", "composer-input", "composer-send", "typewriter-skip", "portrait-current", "close-window"])
+  for (const id of ["chat-bubble", "bubble-copy", "composer-input", "composer-send", "portrait-current", "close-window"])
     assert.match(index, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(index, /id="typewriter-skip"|立即显示/);
+  assert.doesNotMatch(app, /typewriterSkip|typewriter\.skip\(/);
   assert.match(index, /aria-live="polite"/);
   assert.match(index, /maxlength="4096"/);
   assert.doesNotMatch(index, /id="bubble-copy"[^>]*data-interactive/);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createChatPresentationReducer } from "../chat/chat-presentation.js";
+import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createTypewriter } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1) => ({
@@ -59,7 +59,7 @@ test("startup lifecycle refreshes preserve an active one-shot greeting", () => {
   reducer.reduce(lifecycle("initializing", 1, 2));
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().bubbleText, "启动");
-  assert.equal(reducer.current().canSkip, true);
+  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
   reducer.reduce(lifecycle("ready", 1, 3));
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().bubbleText, "启动");
@@ -83,7 +83,7 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   );
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().canCancel, false);
-  assert.equal(reducer.current().canSkip, true);
+  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
   reducer.setTypingText("完整回复");
   reducer.finishTyping();
   assert.equal(reducer.current().phase, "settled");
@@ -102,7 +102,7 @@ test("chat.started preserves the committed portrait while waiting", () => {
   assert.equal(reducer.current().portrait, "__default__");
 });
 
-test("same-generation ready updates preserve active cancel and typewriter skip actions", () => {
+test("same-generation ready updates preserve the active cancel action without a skip action", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-1" });
 
@@ -121,7 +121,7 @@ test("same-generation ready updates preserve active cancel and typewriter skip a
   assert.equal(reducer.reduce(lifecycle("ready", 1, 3)).applied, true);
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().operationId, "op-1");
-  assert.equal(reducer.current().canSkip, true);
+  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
 });
 
 test("old operations, generations, and revisions cannot replace current presentation", () => {
@@ -133,7 +133,12 @@ test("old operations, generations, and revisions cannot replace current presenta
     lifecycle("failed", 1, 0),
   ]) assert.equal(reducer.reduce(stale).applied, false);
   assert.equal(reducer.current().phase, "thinking");
-  assert.equal(reducer.current().bubbleText, "正在组织完整回复……");
+  assert.equal(reducer.current().bubbleText, ".");
+});
+
+test("composer placeholder names the thinking character and restores the normal prompt", () => {
+  assert.equal(composerPlaceholder("Sakura", "thinking"), "Sakura正在思考中…");
+  assert.equal(composerPlaceholder("Sakura", "settled"), "和Sakura说点什么……");
 });
 
 test("failed and cancelled terminals are operation-scoped and immediately retryable", () => {
