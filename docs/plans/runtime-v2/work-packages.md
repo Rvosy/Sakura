@@ -108,7 +108,7 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | active |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | active |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |

@@ -18,12 +18,13 @@
       "docs/plans/runtime-v2/work-packages.md"
     ]
   },
-  "dependencies": ["WP-3-06"],
+  "dependencies": ["WP-3-06", "WP-2-01"],
   "base_ref": "5c3cfc59fda1f238c78d1b9b333e4968c46d747c",
   "allowed_paths": [
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "desktop/frontend/tests/**",
     "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/core_host_router.rs",
     "desktop/src-tauri/src/wp_3v_01_assistant_architecture_acceptance.rs",
     "desktop/tests/windows_wp_3v_01_assistant_architecture_acceptance.ps1",
     "docs/adr/0002-runtime-v2-ipc.md",
@@ -36,8 +37,10 @@
     "docs/specs/runtime-v2/README.md",
     "docs/specs/runtime-v2/product-capability-parity.md",
     "harness/README.md",
-    "harness/activations/WP-3V-01/0001.json",
+    "harness/activations/WP-2-01/**",
+    "harness/activations/WP-3V-01/**",
     "harness/suites.json",
+    "harness/tasks/WP-2-01.json",
     "harness/tasks/WP-3V-01.json",
     "tests/fixtures/runtime_v2/wp_3v_01/**",
     "tests/integration/test_wp_3v_01_assistant_architecture.py"
