@@ -2311,14 +2311,14 @@ profile timeout/失败、报告 replace 失败和窄控制台编码。前置失�
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-H-01 已由项目负责人明确验收并标记 accepted
-base_ref：4d3e34fc10ad770847694c9203f8e562c182d9f2
-允许文件：冻结于 harness/tasks/WP-3-04.json；限真实聊天 WebView/Rust 桥、聊天表现 timing 设置、相关测试和治理文档
+base_ref：4d3e34fc10ad770847694c9203f8e562c182d9f2（2026-08-02 契约修订沿用原始基线）
+允许文件：冻结于 harness/tasks/WP-3-04.json；限真实聊天 WebView/Rust 桥、逐段/启动/立绘表现纠正、聊天 timing 与字幕语言设置、相关测试和治理文档
 明确禁止：app/** 业务语义、legacy Qt UI、插件/TTS/Tools/Memory/MCP/截图/主动互动/历史/Studio、依赖文件；data/**、characters/**、third_party/** 受保护
 required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 验收环境：仓库 runtime Python、Node、locked Cargo；Windows 真实 Tauri/WebView2 与开发配置；同一候选 SHA 三平台公共门
 关联 ADR：ADR-0002、ADR-0003、ADR-0006、ADR-0007
-计划提交：先冻结前端/Rust 失败测试，再接真实 chat bridge，再迁移 presentation timing 设置，最后故障与验收证据
-回退：先取消并排水活动聊天，禁用真实桥与 chat.presentation_timing，切回 Fake Core 演示路径；不删除或改写 history/配置
+计划提交：先冻结前端/Rust 失败测试，再逐项恢复逐段回复、中文字幕、启动问候与立绘交叉淡入，最后补故障与验收证据
+回退：先取消并排水活动聊天，禁用真实桥、chat.presentation_timing 与 chat.subtitle_language，按独立提交逆序回退；不删除或改写 history/配置
 ```
 
 主要结果：把 WP-3-02 的真实聊天 Core 链接入已经由 WP-3-03/3U-01/3U-02 冻结的产品 UI，形成
@@ -2328,6 +2328,8 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 
 - 真实输入、发送、思考、完成、错误和取消。
 - 真实回复段的 portrait/tone 投影到 WP-3U-02 已完成的立绘表现。
+- 真实回复逐段清屏显示，等待时保持立绘，启动问候 reveal 后播放一次，按旧 Qt 时序恢复无闪烁交叉淡入。
+- 右键菜单恢复 `zh`/`ja` 字幕选择，默认中文并原子保存到 Runtime v2 `ui.json`。
 - 最小受控 Gateway、聊天 identity/取消和 UI 状态映射。
 - 只为真实聊天 UI 已直接消费的气泡、输入和打字机字段开放对应设置 feature，并完成读取、保存、
   生效、失败恢复和重新打开闭环；不得改变固定窗口包络。

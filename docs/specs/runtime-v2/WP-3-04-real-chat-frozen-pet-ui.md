@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-02
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -57,12 +57,20 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 ## 冻结 UI 映射
 
 - `chat.started` 映射为 thinking；主按钮在原有尺寸和命中区域内切换为可点击取消的环形旋转条，输入框
-  保持可编辑，气泡、输入框、窗口包络和立绘锚点不变。系统要求减少动态效果时，环形条保持静态但取消
-  语义不变。
+  保持可编辑，气泡、输入框、窗口包络和立绘锚点不变。等待终态期间必须保持已经提交的当前立绘，
+  不得切换固定 thinking 立绘。系统要求减少动态效果时，环形条保持静态但取消语义不变。
 - `chat.completed` 的完整 `segments` 交给现有 presentation reducer。WebView 只在完整回复到达后运行
-  typewriter；不引入 token streaming、delta 或进度协议。
+  typewriter；每段清空上一段后独立显示，逐段同步对应 portrait，最后一段留在 settled 状态；不得把
+  多段拼接为单一气泡文本，也不引入 token streaming、delta 或进度协议。“立即显示”只补全当前段，
+  后续段仍按顺序显示。
 - segment 的 `text`/`translation`/`tone`/`portrait`/`suppressTts` 只按已冻结 DTO 消费；本 WP 允许
   portrait/tone 驱动现有角色表现，不允许执行 action、Tool 或 TTS。
+- Runtime v2 默认显示中文字幕：`zh` 优先使用 `translation`，空值回退 `text`；`ja` 使用 `text`。
+  右键菜单复选项可以原子切换该偏好；输入过程中切换语言只从当前段开头重播，不回放已完成段。
+- 启动问候在字体、初始立绘和窗口 reveal 完成后通过同一可取消 typewriter 播放一次；reveal 前气泡为空，
+  reload/focus 不重播，用户发送消息会取消未完成问候。reduced motion 下 reveal 后立即显示完整问候。
+- 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
+  总过渡约 300ms。相同 key 不动画，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
 - `chat.failed` 显示脱敏稳定错误并允许下一次发送；`retryable` 只影响提示，不在 UI 自动重试。
 - `chat.cancelled` 回到 settled/ready 表现，不伪造回复。Core cancel 与 typewriter “立即显示”严格分离：
   后者只结束本地动画，绝不发送 `chat.cancel`。
@@ -73,8 +81,9 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 ## 设置切片
 
-本 WP 新开放 `chat.presentation_timing`，只含 `subtitle_typing_interval_ms` 和
-`reply_segment_pause_ms`。精确持久化、失败原子性、重新打开和回退契约见
+本 WP 新开放 `chat.presentation_timing` 和 `chat.subtitle_language`。前者只含
+`subtitle_typing_interval_ms` 和 `reply_segment_pause_ms`；后者只含 `subtitle_language: "zh" | "ja"`，
+由主窗口右键菜单切换并持久化。精确持久化、失败原子性、重新打开和回退契约见
 [`settings-incremental-migration.md`](settings-incremental-migration.md) 第 7 节。
 
 已迁移的 `appearance.character` 继续提供字体与主题。自动隐藏、气泡高度、输入栏偏移、自由布局、发送
@@ -84,7 +93,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 - 正常聊天唯一业务写入仍是 WP-3-02 的角色级 append-only history；本 WP 不改变 schema、窗口大小、
   rotate/repair 或失败降级语义，也不清理、恢复、截断或改写既有 history。
-- `chat.presentation_timing` 只写 Runtime v2 `ui.json` 的批准字段。测试和故障注入必须使用隔离临时
+- 两个聊天设置 feature 只写 Runtime v2 `ui.json` 的批准字段。测试和故障注入必须使用隔离临时
   app root；仓库真实 `data/**` 不得被测试、脚本或验收改写。
 - WebView 事件不得包含 credential、Authorization、Provider URL、模型私有响应、history、绝对路径、
   prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable。
@@ -95,10 +104,12 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 精确机器可读范围见 `harness/tasks/WP-3-04.json`。允许修改仅限：
 
 - `desktop/frontend/app.js`、`desktop/frontend/chat/**`、`desktop/frontend/pet/**`：真实 chat client、
-  reducer/typewriter/portrait 接线及其窄回归；不改 DOM 与视觉语言。
+  reducer/typewriter/portrait 接线及其窄回归。
+- `desktop/frontend/index.html`、`desktop/frontend/styles.css`：只启用既有中文字幕菜单项，并把既有双层
+  立绘过渡改为确定性交叉淡入；不改变固定 DOM 层级、产品布局或视觉语言。
 - `desktop/frontend/settings/**`：只开放 `chat.presentation_timing` 及保存/回读/失败恢复。
 - `desktop/src-tauri/src/` 中列名允许的 chat bridge、lifecycle、Gateway、product shell、`ui.json` 共享
-  repository 与 timing 设置模块；不扩大通用 IPC 或窗口系统。
+  repository 与聊天设置模块；不扩大通用 IPC 或窗口系统。
 - 相关 frontend/Rust/真实桌面 acceptance、隔离 fixture、Runtime v2 platform workflow、规范、记录、
   userdoc 和 changelog。
 
@@ -108,7 +119,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   层缺陷，先停止并修订契约，不得借本 WP 顺手修改。
 - TTS、Tools、Action 确认、Memory、MCP、插件、截图/视觉输入、主动互动、提醒/任务、历史窗口、角色
   切换、Studio、导入导出、通用 Operation/priority/resource token、streaming/progress/delta。
-- 修改固定 DOM、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
+- 修改固定 DOM 层级、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
 - 新增依赖，修改 Cargo/npm/Python manifest 或 lockfile，删除/重命名既有测试，降低既有三平台门禁。
 
 ## 自动验收矩阵
@@ -120,7 +131,9 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 | terminal | 多段/长文本、Provider 错误、取消、完成/取消竞态 | exact 投影；错误脱敏；cancel/skip 分离；内部滚动 |
 | generation | restart、旧 event、旧 cancel handle、窗口 reload/close | 旧代不改变 UI；新代重新绑定；资源与 timer 归零 |
 | portrait | 有效/缺失 portrait、tone、快速终态与 late load | 复用安全资源映射；失败 fallback；旧代资源丢弃 |
-| timing 设置 | get/save/reopen、边界值、坏 JSON、写失败、旧 generation | 两字段原子；即时作用于后续回复；失败保留旧值 |
+| 聊天设置 | timing 与字幕语言 get/save/reopen、边界值、坏 JSON、写失败、旧 generation | 分 feature 原子；字幕默认中文；失败保留旧值/勾选态 |
+| 分段/启动 | 启动 reveal、多段回复、skip、切换语言、reduced motion | 问候只播一次；逐段清屏；skip 只补当前段；不混合语言 |
+| 立绘过渡 | 解码失败、同 key、A→B→C、旧 generation、冷热缓存 | 旧层不断帧；只提交最新请求；无二次淡出；命中延后提交 |
 | 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | DOM/样式/几何不漂移；气泡与输入常驻；无 Fake 命令 |
 | 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
 
@@ -130,8 +143,9 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 
 ## 人工验收与退出条件
 
-Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证中文 IME、Enter/
-Shift+Enter、长文本、打字机立即显示、portrait/tone、连续第二轮和窗口关闭。Sakura 与 N.A.V.I.、100%/
+Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错误与取消；验证启动问候、中文字幕开关、
+多段逐段显示、等待立绘保持、中文 IME、Enter/Shift+Enter、长文本、仅补当前段、portrait/tone、快速
+立绘竞态、连续第二轮和窗口关闭。Sakura 与 N.A.V.I.、100%/
 150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
 控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。
 
@@ -141,7 +155,8 @@ Shift+Enter、长文本、打字机立即显示、portrait/tone、连续第二�
 ## 回退
 
 回退前停止新 send，取消并排水活动 operation，等待 Core/Router/event bridge/typewriter/portrait timer
-按既有 deadline 归零。随后禁用真实 chat bridge 与 `chat.presentation_timing`，让主 UI 切回 WP-3-03
+按既有 deadline 归零。随后禁用真实 chat bridge、`chat.presentation_timing` 与
+`chat.subtitle_language`，让主 UI 切回 WP-3-03
 Fake Core 演示路径，保留 WP-3-02 headless chat、WP-3U-02 角色表现和 WP-3S-01 Provider 设置。
 
-回退不得删除、恢复、截断或重写 chat history、`api.yaml` 或 `ui.json`；旧版本只需忽略新增 timing 字段。
+回退不得删除、恢复、截断或重写 chat history、`api.yaml` 或 `ui.json`；旧版本只需忽略新增聊天设置字段。

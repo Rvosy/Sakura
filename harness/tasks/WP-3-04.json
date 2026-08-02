@@ -19,9 +19,12 @@
   "dependencies": ["WP-H-01"],
   "base_ref": "4d3e34fc10ad770847694c9203f8e562c182d9f2",
   "allowed_paths": [
+    ".gitignore",
     ".github/workflows/runtime-v2-platform-foundation.yml",
     "CHANGELOG.md",
     "desktop/frontend/app.js",
+    "desktop/frontend/index.html",
+    "desktop/frontend/styles.css",
     "desktop/frontend/chat/**",
     "desktop/frontend/pet/**",
     "desktop/frontend/settings/**",
@@ -43,14 +46,13 @@
     "docs/specs/runtime-v2/settings-incremental-migration.md",
     "docs/userdocs/SETUP.md",
     "harness/activations/WP-3-04/0001.json",
+    "harness/activations/WP-3-04/0002.json",
     "harness/tasks/WP-3-04.json",
     "tests/fixtures/runtime_v2/wp_3_04/**",
     "tools/settings-tauri/**"
   ],
   "forbidden_paths": [
     "app/**",
-    "desktop/frontend/index.html",
-    "desktop/frontend/styles.css",
     "desktop/src-tauri/Cargo.lock",
     "desktop/src-tauri/Cargo.toml",
     "desktop/src-tauri/tauri.conf.json",
