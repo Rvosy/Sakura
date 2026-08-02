@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-04
-updated: 2026-07-31
+active_work_package: WP-3-05
+updated: 2026-08-02
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -100,8 +100,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3U-02 | 角色包可见能力与外观设置联动 | WP-3U-01 | accepted |
 | WP-3S-01 | 供应商与模型设置纵向链 | WP-3U-02 | accepted |
 | WP-H-01 | Agent Development Harness Foundation | WP-3S-01 | accepted |
-| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | active |
-| WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | planned |
+| WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
+| WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | active |
 | WP-3-06 | legacy Qt → Tauri v2 → legacy Qt 兼容门禁 | WP-3-05 | planned |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06 | planned |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
@@ -155,7 +155,9 @@ Rust 207 passed/23 ignored 和 Runtime v2 桌面壳 Harness 6/6 cases、138 项�
 WP-3S-01 已在依赖满足后完成激活、数据门和生产实现，并于 2026-07-31 由项目负责人明确验收通过；
 验收声明的精确记录见第 12 节和对应 record。WP-H-01 作为仓库基础设施步骤插入 WP-3S-01 与
 WP-3-04 之间，完成实现、本地自动门和远端 CI 后于 2026-07-31 由项目负责人明确验收通过；对应声明
-见 `docs/records/audits/WP-H-01-OWNER-ACCEPTANCE.md`。WP-3-04 的依赖现已满足，并按冻结任务契约激活。
+见 `docs/records/audits/WP-H-01-OWNER-ACCEPTANCE.md`。WP-3-04 完成实现、最终自动门和负责人实机验收后，
+于 2026-08-02 由项目负责人明确验收通过；声明见
+`docs/records/audits/WP-3-04-OWNER-ACCEPTANCE.md`。WP-3-05 的依赖现已满足，并按冻结任务契约激活。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2357,6 +2359,22 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 独立回退：切回 Fake Core UI 演示路径，保留真实 headless chat、固定产品 UI、设置窗口宿主和角色表现能力。
 
 ### WP-3-05：Core 崩溃恢复与 UI 重新水合
+
+激活记录（2026-08-02）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-04 已由项目负责人明确验收并标记 accepted
+base_ref：0ad1a1af3922d9263dac45fb0320d655e18c3a08
+允许文件：冻结于 harness/tasks/WP-3-05.json；限现有 Supervisor/Shell lifecycle/Gateway generation barrier、同 WebView 恢复协调、隔离故障验收和治理文档
+明确禁止：Python Assistant/Core/Provider/history、legacy Qt、插件/TTS/Tools/Memory/MCP、角色与真实数据、依赖文件、DOM/样式重设计；data/**、characters/**、third_party/** 受保护
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
+验收环境：仓库 runtime Python、Node、locked Cargo；Windows 真实 Tauri/WebView2 与开发配置；同一候选 SHA 三平台公共门
+故障矩阵：idle/active/settled Core 强杀、pipe 丢失、旧代 response/event/cancel/Snapshot/resource、Snapshot/角色延迟、恢复期草稿/IME、连续崩溃预算、retry/shutdown 竞态与完整资源回收
+关联 ADR：ADR-0001、ADR-0002、ADR-0003
+计划提交：激活后先冻结窗口存活、旧代失效、草稿/完成回复所有权、完整 Snapshot 水合和重复崩溃失败测试，再以独立实现提交关闭，最后补自动与实机证据
+回退：停止新 send 并退出确认 Core 树归零，逆序禁用 UI 水合和新增 publication；保留既有 Supervisor/generation 屏障、WP-3-04 真实聊天、history 与配置
+```
 
 主要结果：Core 崩溃时桌宠窗口保持存在，旧 generation 立即失效，新 Core ready 后按明确契约恢复 UI。
 

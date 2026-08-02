@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "WP-3-05",
+  "title": "Core 崩溃恢复与 UI 重新水合",
+  "status_source": "docs/plans/runtime-v2/work-packages.md",
+  "documents": {
+    "specs": [
+      "docs/specs/runtime-v2/WP-3-05-core-crash-ui-rehydration.md"
+    ],
+    "adrs": [
+      "docs/adr/0001-runtime-v2-process-supervision.md",
+      "docs/adr/0002-runtime-v2-ipc.md",
+      "docs/adr/0003-runtime-v2-data-compatibility.md"
+    ],
+    "plans": ["docs/plans/runtime-v2/work-packages.md"]
+  },
+  "dependencies": ["WP-3-04"],
+  "base_ref": "0ad1a1af3922d9263dac45fb0320d655e18c3a08",
+  "allowed_paths": [
+    ".github/workflows/runtime-v2-platform-foundation.yml",
+    "CHANGELOG.md",
+    "desktop/frontend/app.js",
+    "desktop/frontend/lifecycle.js",
+    "desktop/frontend/chat/**",
+    "desktop/frontend/tests/**",
+    "desktop/src-tauri/src/character_appearance.rs",
+    "desktop/src-tauri/src/character_presentation.rs",
+    "desktop/src-tauri/src/chat_bridge.rs",
+    "desktop/src-tauri/src/core_host_gateway.rs",
+    "desktop/src-tauri/src/core_host_runtime.rs",
+    "desktop/src-tauri/src/core_supervisor.rs",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/shell_lifecycle.rs",
+    "desktop/src-tauri/src/wp_3_05_recovery_acceptance.rs",
+    "desktop/tests/**",
+    "docs/plans/runtime-v2/work-packages.md",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/README.md",
+    "docs/specs/runtime-v2/WP-3-05-core-crash-ui-rehydration.md",
+    "docs/specs/runtime-v2/product-capability-parity.md",
+    "docs/userdocs/SETUP.md",
+    "harness/activations/WP-3-05/0001.json",
+    "harness/tasks/WP-3-05.json",
+    "tests/fixtures/runtime_v2/wp_3_05/**"
+  ],
+  "forbidden_paths": [
+    "app/**",
+    "desktop/frontend/index.html",
+    "desktop/frontend/styles.css",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/tauri.conf.json",
+    "legacy_qt_main.py",
+    "main.py",
+    "plugins/**",
+    "runtime/**",
+    "tools/mcp/**"
+  ],
+  "protected_paths": ["data/**", "characters/**", "third_party/**"],
+  "dependency_policy": {"mode": "forbidden", "allowed_files": []},
+  "required_profiles": [
+    "docs",
+    "smoke",
+    "core-host",
+    "runtime-v2-shell",
+    "python-full"
+  ],
+  "acceptance": {
+    "automated": [
+      "unexpected Core exit keeps the same pet window and WebView alive while a serial restart reaches a fresh ready generation",
+      "old-generation chat events, responses, cancel handles, snapshots, transports and asynchronous character resources are rejected",
+      "completed replies and the latest unsent draft survive recovery while active generation work reaches one interrupted UI terminal state",
+      "fresh complete Snapshot and character presentation rehydrate once without replaying greeting, resending chat or changing frozen geometry",
+      "repeated crashes obey the existing bounded restart budget and release process trees, pipes, waiters, queues, timers and subscriptions",
+      "locked Rust, frontend, required Harness profiles and same-SHA three-platform workflow pass without protected-data changes"
+    ],
+    "manual": [
+      "maintainer kills the real Core while idle, during a reply and after completion, then validates same-window recovery, preserved draft/content and a successful next turn",
+      "maintainer validates Chinese IME during recovery, bounded repeated-crash failure, manual retry and zero related process residue on Windows",
+      "maintainer reviews the same candidate SHA platform evidence and rollback boundary"
+    ]
+  },
+  "rollback": [
+    "stop new sends, cancel or drain the active operation and exit Runtime v2 after the complete Core tree is gone",
+    "disable the UI rehydration coordinator and any added recovery publication while retaining the accepted Supervisor and generation barriers",
+    "restore the WP-3-04 visible reconnect behavior that requires an explicit new interaction after Core recovery",
+    "revert WP-3-05 implementation commits in reverse order without deleting history, configuration or accepted predecessor behavior"
+  ]
+}
