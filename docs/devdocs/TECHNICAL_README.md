@@ -37,6 +37,17 @@ Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程�
 开发者只有在迁移对照或隔离验收需要时才运行 `start-legacy-qt.bat` 或 `legacy_qt_main.py`，不得把它们
 作为用户回退方案，也不得让参考进程与 Runtime v2 并发写真实用户数据。
 
+WP-3V-01 提供一条组合架构验证脚本：
+
+```powershell
+.\desktop\tests\windows_wp_3v_01_assistant_architecture_acceptance.ps1
+```
+
+该脚本直接启动当前 debug Runtime v2 EXE，而不是把 `start.bat` 当作产品入口。它在系统临时目录内以
+确定性本地 Provider 完成真实回复、取消、并发 health、Core 强杀、新 generation 水合和活动聊天期间
+shutdown，再由无可见 UI 的 Legacy oracle 重新获取共享锁并解析兼容历史。脚本只允许 history fixture
+变化，退出前检查敏感证据和验收进程树残留；真实 Provider 回复仍由负责人使用已有开发配置人工验收。
+
 ```mermaid
 flowchart LR
     A["main.py / 平台启动脚本"] --> B["Tauri Shell"]

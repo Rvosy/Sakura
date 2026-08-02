@@ -32,6 +32,8 @@ mod window_geometry;
 mod window_interaction;
 #[cfg(debug_assertions)]
 mod wp_3_06_data_compat_acceptance;
+#[cfg(debug_assertions)]
+mod wp_3v_01_assistant_architecture_acceptance;
 
 use std::sync::Mutex;
 
@@ -1813,6 +1815,18 @@ fn main() {
         std::process::exit(2);
     }
 
+    #[cfg(not(debug_assertions))]
+    if std::env::var_os("SAKURA_WP_3V_01_ACCEPTANCE_DIRECTORY").is_some()
+        || std::env::var_os("SAKURA_WP_3V_01_ACCEPTANCE_MODE").is_some()
+    {
+        show_startup_message(
+            "Sakura WP-3V-01 验收启动失败",
+            "release 构建不接受组合验收根覆盖。",
+            true,
+        );
+        std::process::exit(2);
+    }
+
     #[cfg(debug_assertions)]
     let wp_3_06_acceptance = match wp_3_06_data_compat_acceptance::request_from_environment() {
         Ok(request) => request,
@@ -1822,6 +1836,26 @@ fn main() {
         }
     };
 
+    #[cfg(debug_assertions)]
+    let wp_3v_01_acceptance =
+        match wp_3v_01_assistant_architecture_acceptance::request_from_environment() {
+            Ok(request) => request,
+            Err(error) => {
+                show_startup_message("Sakura WP-3V-01 验收启动失败", &error, true);
+                std::process::exit(2);
+            }
+        };
+
+    #[cfg(debug_assertions)]
+    if wp_3_06_acceptance.is_some() && wp_3v_01_acceptance.is_some() {
+        show_startup_message(
+            "Sakura 验收启动失败",
+            "WP-3-06 与 WP-3V-01 验收模式不能同时启用。",
+            true,
+        );
+        std::process::exit(2);
+    }
+
     let instance_lock_backend = NativeInstanceLockBackend;
     let _instance_guard = match instance_lock_backend.acquire(SHARED_INSTANCE_ID) {
         Ok(InstanceLockAcquire::Acquired(guard)) => guard,
@@ -1829,6 +1863,12 @@ fn main() {
             #[cfg(debug_assertions)]
             if let Some(request) = &wp_3_06_acceptance {
                 let _ = wp_3_06_data_compat_acceptance::record_lock_conflict(request);
+                eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
+                return;
+            }
+            #[cfg(debug_assertions)]
+            if let Some(request) = &wp_3v_01_acceptance {
+                let _ = wp_3v_01_assistant_architecture_acceptance::record_lock_conflict(request);
                 eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
                 return;
             }
@@ -1876,6 +1916,10 @@ fn main() {
     let mut runtime_request = development_runtime_request();
     #[cfg(debug_assertions)]
     if let Some(request) = &wp_3_06_acceptance {
+        runtime_request.assistant_root = request.app_root.clone();
+    }
+    #[cfg(debug_assertions)]
+    if let Some(request) = &wp_3v_01_acceptance {
         runtime_request.assistant_root = request.app_root.clone();
     }
     let character_resource_root = runtime_request.assistant_root.clone();
@@ -2039,6 +2083,19 @@ fn main() {
     };
 
     #[cfg(debug_assertions)]
+    let wp_3v_01_driver = match wp_3v_01_assistant_architecture_acceptance::start_driver(
+        wp_3v_01_acceptance,
+        app.handle().clone(),
+        shell_lifecycle_handle.clone(),
+    ) {
+        Ok(driver) => driver,
+        Err(error) => {
+            show_startup_message("Sakura WP-3V-01 验收启动失败", &error, true);
+            std::process::exit(2);
+        }
+    };
+
+    #[cfg(debug_assertions)]
     let mut phase_1c_acceptance =
         match phase_1c_core_host_acceptance::AcceptanceSession::start_if_requested() {
             Ok(session) => session,
@@ -2143,6 +2200,12 @@ fn main() {
         driver
             .join()
             .expect("WP-3-06 acceptance driver should not panic");
+    }
+    #[cfg(debug_assertions)]
+    if let Some(driver) = wp_3v_01_driver {
+        driver
+            .join()
+            .expect("WP-3V-01 acceptance driver should not panic");
     }
     if exit_code != 0 {
         std::process::exit(exit_code);

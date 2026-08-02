@@ -228,6 +228,22 @@ jobs:
           "PyYAML==6.0.2"
           "PySide6>=6.7"
 
+      - name: Run WP-3V-01 real Assistant vertical slice (Windows/macOS)
+        if: runner.os != 'Linux'
+        timeout-minutes: 4
+        shell: bash
+        run: python tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py
+
+      - name: Run WP-3V-01 real Assistant vertical slice (Linux Xvfb)
+        if: runner.os == 'Linux'
+        timeout-minutes: 4
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: >-
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24'
+          python tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py
+
       - name: Run Python Core Host acceptance
         timeout-minutes: 4
         shell: bash

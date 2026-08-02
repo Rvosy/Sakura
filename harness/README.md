@@ -48,7 +48,8 @@ Runtime v2 Work Package 真相源，并运行对应单元测试。
 Python profile 按用途分层：
 
 - `unit`：完整 `tests/unit`，适合 Python 业务代码的常规回归；
-- `core-host`：Core Host 单元与真实本地子进程集成测试，不访问公网或真实 Provider；
+- `core-host`：Core Host 单元、真实本地子进程集成测试，以及 WP-3V-01 脱敏 manifest、Provider 消息
+  分类、Legacy oracle 基线和环境隔离行为测试；不访问公网或真实 Provider；
 - `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台冻结迁移期 Legacy Qt 行为参考；它不是受支持产品入口；
 - `python-full`：依次运行 unit、integration 和迁移参考 Qt UI，适合合并前完整回归。
 
@@ -92,6 +93,17 @@ allowed/forbidden/protected 规则失败。依赖文件默认禁止，只有 `al
 普通修复被迫机械创建三类文档。
 完整 40 位 `base_ref` 必须与最新独立激活锚点一致。契约、引用的 Spec/ADR/Plan 和状态源与锚点提交比较；
 实施中变化会进入 `owner_review_files`，不能由普通自动门直接通过。
+
+WP-3V-01 的真实 Windows 组合进程门不混入离线 profile。它直接构建并启动 debug Runtime v2 EXE，
+使用系统临时目录中的脱敏数据和本地 Provider，精确强杀该 EXE 进程树内的 bundled Python Core，随后
+运行无 UI Legacy oracle 回读：
+
+```powershell
+.\desktop\tests\windows_wp_3v_01_assistant_architecture_acceptance.ps1
+```
+
+脚本的成功 JSON 必须报告回复/取消、新 generation 水合、Legacy oracle、敏感证据和进程残留结果；
+不能用普通 pytest 或静态源码断言替代这条真实进程证据。
 
 Harness 只注册可执行行为、协议或生命周期检查。仅依赖源码字符串、函数排列或历史实现 token 的检查不作为 profile 门禁；对应意图应由 Python 行为测试、Node 测试、Rust 测试或独立真实验收覆盖。
 

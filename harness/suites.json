@@ -190,7 +190,7 @@
         "pytest",
         "tests/integration",
         "-k",
-        "core_host",
+        "core_host or wp_3v_01_assistant_architecture",
         "-q"
       ],
       "timeout_seconds": 180,
