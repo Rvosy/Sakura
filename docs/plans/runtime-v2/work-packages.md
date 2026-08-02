@@ -2311,13 +2311,13 @@ profile timeout/失败、报告 replace 失败和窄控制台编码。前置失�
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-H-01 已由项目负责人明确验收并标记 accepted
-base_ref：4d3e34fc10ad770847694c9203f8e562c182d9f2（2026-08-02 第四次契约修订继续沿用原始基线）
-允许文件：冻结于 harness/tasks/WP-3-04.json；限真实聊天 WebView/Rust 桥、逐段/启动/立绘/当前会话回复导航纠正、聊天 timing 与字幕语言设置、real_chat 窄错误投影、相关测试和治理文档
+base_ref：4d3e34fc10ad770847694c9203f8e562c182d9f2（2026-08-02 第五次契约修订继续沿用原始基线）
+允许文件：冻结于 harness/tasks/WP-3-04.json；限真实聊天 WebView/Rust 桥、逐段/启动/立绘/当前会话回复导航及自适应控制面板纠正、聊天 timing 与字幕语言设置、real_chat 窄错误投影、相关测试和治理文档
 明确禁止：除 app/core_host/real_chat.py 的错误公开投影外其余 app/** 业务语义、legacy Qt UI、插件/TTS/Tools/Memory/MCP/截图/主动互动/历史/Studio、依赖文件；data/**、characters/**、third_party/** 受保护
 required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 验收环境：仓库 runtime Python、Node、locked Cargo；Windows 真实 Tauri/WebView2 与开发配置；同一候选 SHA 三平台公共门
 关联 ADR：ADR-0002、ADR-0003、ADR-0006、ADR-0007
-计划提交：独立修订契约后，先冻结语言即时刷新、无关闭按钮、当前会话上下回看/立绘联动及鼠标菜单焦点失败测试，再实现并补验证证据
+计划提交：独立修订契约后，先冻结语言即时刷新、回复导航、菜单焦点及气泡/输入栏原子自适应失败测试，再按独立实现提交关闭并补验证证据
 回退：先取消并排水活动聊天，禁用真实桥、chat.presentation_timing 与 chat.subtitle_language，按独立提交逆序回退；不删除或改写 history/配置
 ```
 
@@ -2333,6 +2333,8 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 - Provider HTTP 错误显示状态码和经过 allowlist/脱敏的诊断字段，不泄漏原始响应体与凭据。
 - 字幕语言切换立即刷新当前可见段；移除气泡关闭按钮，恢复当前会话回复上下回看并联动立绘。
 - 鼠标右键打开菜单不自动聚焦第一项；键盘打开继续保留完整焦点导航。
+- 回复轨道不改变相同字幕的气泡高度；气泡/输入栏自适应测量不提前改变可见子项，DOM 与原生矩形同次
+  提交，输入扩缩时发送按钮保持底部锚定、完整可见且无几何过渡撕裂。
 - 右键菜单恢复 `zh`/`ja` 字幕选择，默认中文并原子保存到 Runtime v2 `ui.json`。
 - 最小受控 Gateway、聊天 identity/取消和 UI 状态映射。
 - 只为真实聊天 UI 已直接消费的气泡、输入和打字机字段开放对应设置 feature，并完成读取、保存、

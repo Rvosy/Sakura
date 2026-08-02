@@ -86,9 +86,14 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   在当前窗口会话中按收到顺序保存真实 assistant reply segments，允许跨多轮回看；上一/下一操作立即完整
   显示目标段并同步切换该段 portrait，边界按钮禁用。thinking、typing、reconnecting 或不足两段时导航
   禁用，导航不重放 TTS、不修改持久 history。跨 WebView 重载/应用重启的历史仍由后续 history 能力负责，
-  本 WP 不新增 Core history API，也不直接读取 JSONL。
+  本 WP 不新增 Core history API，也不直接读取 JSONL。回复导航不得参与字幕内容高度计算；相同角色、字体、
+  面板宽度和字幕文本在加入导航前后必须得到相同气泡高度。
 - 长文本只在气泡内部滚动。正常、thinking、typing、settled、error、cancelled 和 lifecycle 提示必须持续
   使用 WP-3-03 的同一 DOM、样式、命中区域与固定原生窗口几何。
+- 气泡或输入栏因内容变化而自适应增减高度时，子内容尺寸、面板矩形和原生命中/可见区域必须作为同一
+  次布局提交生效；测量阶段不得提前改变可见 textarea 高度。正常自适应不得留下超出原生精确区域的 CSS
+  几何过渡尾帧。输入栏向上扩展或收回的全过程中，发送/取消按钮必须完整可见并保持底部锚点，不得先
+  下沉、被裁去一部分或出现旧、新表面撕裂。
 - Enter 发送、Shift+Enter 换行、IME composition、焦点恢复、reduced motion 和拖动行为沿用已验收
   语义；本 WP 不借真实聊天重新设计视觉或交互。
 - 鼠标右键打开产品菜单不得自动聚焦第一项或留下持续深色底；只有键盘触发打开时聚焦首个可用项并启用
@@ -151,7 +156,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 | 聊天设置 | timing 与字幕语言 get/save/reopen、输入/settled/回看切换、坏 JSON、写失败 | 分 feature 原子；当前可见字幕立即刷新；失败保留旧值/勾选态 |
 | 分段/启动 | 启动 reveal、多段回复、切换语言、reduced motion | 问候只播一次；逐段清屏；无 skip 控件；不混合语言 |
 | 立绘过渡 | 解码失败、同 key、A→B→C、旧 generation、冷热缓存 | 旧层不断帧；只提交最新请求；无二次淡出；命中延后提交 |
-| 回复导航 | 单段/多段、跨多轮、上下边界、生成中、语言切换、portrait 失败 | 当前会话有序；目标文字与立绘原子联动；不播 TTS、不写 history |
+| 回复导航 | 单段/多段、跨多轮、上下边界、生成中、语言切换、portrait 失败、加入前后高度 | 当前会话有序；目标文字与立绘原子联动；不播 TTS、不写 history；不改变同文本气泡高度 |
+| 自适应布局 | 输入 1→4→1 行、气泡长短文本、快速交替、native ack 延迟 | 测量不提前改可见子项；DOM/原生矩形同次提交；按钮底部锚定且不裁切；无 CSS 尾帧撕裂 |
 | 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | 无关闭/“立即显示”；右侧导航不改变固定几何；鼠标菜单首项无持续深色 |
 | 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
 
@@ -165,7 +171,8 @@ Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错�
 即时刷新、多段逐段显示、当前会话上下回看及立绘联动、点号等待动效、角色名思考 placeholder、等待立绘
 保持、HTTP 400/429 诊断、中文 IME、Enter/Shift+Enter、长文本、无关闭/“立即显示”控件、鼠标右键菜单
 首项不持续深色、portrait/tone、快速
-立绘竞态、连续第二轮和窗口关闭。Sakura 与 N.A.V.I.、100%/
+立绘竞态、连续第二轮、气泡高度基线、输入栏 1→4→1 行扩缩时按钮底部锚定且无裁切/撕裂，以及窗口
+关闭。Sakura 与 N.A.V.I.、100%/
 150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
 控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。
 
