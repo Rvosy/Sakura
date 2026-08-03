@@ -100,7 +100,7 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 | 1 | 当前角色只读、立绘缩放、字体、角色主题 | WP-3U-02 | 中 | 已 accepted；其余角色/布局控件保持禁用并由所属 WP 迁移 |
 | 2 | 供应商管理、凭据、模型列表/连通性、聊天与视觉模型槽 | **WP-3S-01** | 高 | WP-3U-02 accepted；解决 `setup_required -> ready`，先于 WP-3-04 |
 | 3 | 真实聊天直接消费的气泡、输入和打字机交互设置 | WP-3-04 | 低 | 只迁移真实聊天 UI 已消费字段，不改变固定窗口包络 |
-| 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | Memory 领域、外部存储和降级路径迁移时一并开放 |
+| 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | 整理轮次与 CRUD 位于记忆页；整理槽和 embedding 统一位于模型页；Memory 领域、外部存储和降级路径迁移时一并开放 |
 | 5 | 内置 Tools 设置与副作用确认选项 | WP-4-02 | 中高 | ToolRegistry、Action ID 和取消/超时真实可用后开放 |
 | 6 | MCP 配置与运行状态 | WP-4-03 | 高 | MCP 进程归属当前 generation、凭据和退出门通过后开放 |
 | 7 | 插件启停、插件设置与设置 action | WP-4-04 | 高 | 插件发现、私有数据、错误隔离和卸载清理迁移时开放 |
@@ -259,3 +259,8 @@ WP-5-01/02 只负责缺口收口、跨域一致性审计和首次设置编排，
 WP-4-01 的 Memory 设置字段、`memory.manage`、`memory.curation`、`memory.embedding_model` 与
 `model.memory_curation_slot` feature、失败降级和独立回退由
 [`WP-4-01 Memory spec`](WP-4-01-memory-capability.md) 约束。
+
+设置页面的视觉归属不改变领域所有权：`model.memory_curation_slot` 和 `memory.embedding_model` 必须
+统一呈现在“模型”页，`memory.curation` 的整理轮次和 `memory.manage` 必须呈现在“记忆”页。任何保存
+引发 Core generation 更换时，当前设置窗口必须原位重新绑定并保留草稿、筛选、选中项和 IME composition；
+不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。

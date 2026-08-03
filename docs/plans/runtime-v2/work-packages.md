@@ -2655,7 +2655,7 @@ base_ref：5fc9e56ccc091b8e099935fe5035d76b14be5e03
 真实消费者：Runtime v2 真实聊天的 Memory recall/完成轮整理，以及同一 Tauri App 的 Memory 设置和管理页面
 所有者：当前 bundled Python Core generation 内唯一无 Qt Memory owner；Rust 只管协商、窗口授权、identity、deadline 和公开 DTO
 协议：可选能力 assistant.memory；memory.search/upsert/delete、memory.settings.get/save、memory.model.import/download/cancel；模型任务只发 memory.model.* 唯一终态事件
-设置切片：开放 memory.manage、memory.curation、memory.embedding_model、model.memory_curation_slot；其他领域 feature 保持 unavailable
+设置切片：开放 memory.manage、memory.curation、memory.embedding_model、model.memory_curation_slot；整理轮次和 CRUD 位于记忆页，整理槽与 embedding 模型统一位于模型页；其他领域 feature 保持 unavailable
 允许目录：逐文件范围以 harness/tasks/WP-4-01.json 为准；新增 Core Memory boundary、Rust Memory Gateway、现有 settings Memory 页面接线、隔离 fixtures/tests/Windows 验收和三平台 workflow
 明确禁止：AppContext/bootstrap、Qt worker/tauri_settings/PetWindow、Legacy Qt 产品入口、通用 Operation/Tools/Action ID、MCP/plugin/TTS/screenshot、依赖与 lockfile；data/**、characters/**、third_party/** 受保护
 数据：Python 独占既有 Qdrant/SQLite/core_profiles/curation_state；memory.json 保持字节不变；测试只写隔离根，真实写入只来自明确用户动作或完成回复整理
@@ -2664,7 +2664,10 @@ base_ref：5fc9e56ccc091b8e099935fe5035d76b14be5e03
 required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 人工验收：直接启动当前 EXE，在隔离根完成 IME CRUD、检索影响聊天、一次整理、设置/模型失败恢复、Core 强杀恢复、退出零残留，并审查同 SHA 三平台证据
 回退：先禁用四个 Memory feature，停止新任务并退出 Core；只回退 WP-4-01 接线，恢复 DisabledMemory 降级；不删除、恢复、迁移或修复任何用户 Memory/配置/history 数据
-任务契约：harness/tasks/WP-4-01.json；activation：harness/activations/WP-4-01/0001.json
+设置生命周期：模型槽保存触发 Core restart 后，原设置窗口必须自动重绑定新 generation，保留列表、筛选、选中项、草稿与 IME composition；旧代超时、Router 关闭和 identity mismatch 不得覆盖稳定 UI，也不得要求关闭重开设置
+布局基线：沿用既有设置页面的信息层级；记忆统计/筛选紧凑，列表与编辑器稳定双栏，窄窗口不得出现逐字竖排、遮挡或主要编辑区被模型控件挤压
+验收缺陷：首次人工验收发现模型控件页面归属、窄窗口排版和 Core restart 后原位重绑定不符合契约；WP 保持 active，修复与复验见 docs/records/audits/WP-4-01-SETTINGS-LAYOUT-AND-GENERATION-DEFECT.md
+任务契约：harness/tasks/WP-4-01.json；activation：harness/activations/WP-4-01/0002.json（supersedes 0001）
 ```
 
 精确行为、DTO、字段上限、数据兼容、资源所有权、人工步骤与非目标见

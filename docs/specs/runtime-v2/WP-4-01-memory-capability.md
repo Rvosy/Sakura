@@ -22,7 +22,8 @@ updated: 2026-08-03
   或整理模型失败时，聊天仍可完成且不伪造记忆命中。
 - 手工搜索、新增、编辑和幂等删除记忆；常驻档案与四类向量记忆保持既有层语义。
 - 完成回复后按冻结阈值异步整理兼容聊天历史；取消、失败或未完成回复不推进整理游标。
-- Memory 配置、整理模型槽、本地 embedding 模型状态、ZIP 导入与显式下载的真实设置闭环。
+- Memory 配置、整理模型槽、本地 embedding 模型状态、ZIP 导入与显式下载的真实设置闭环；所有模型
+  相关控件统一位于“模型”页面，“记忆”页面不建立第二套模型配置入口。
 - 正常退出、Core 强杀、generation 重建、设置关窗和任务失败后的资源回收与数据兼容。
 
 本规范不维护 Work Package 当前状态；唯一状态源是
@@ -131,6 +132,15 @@ Memory 和可重试游标，不改变已完成回复；Core shutdown/强杀取�
 - `memory.embedding_model`：状态、固定模型 ZIP 导入、显式下载和取消；
 - `model.memory_curation_slot`：选择既有 Provider/模型，未配置时明确显示自动整理停用。
 
+页面归属冻结如下：
+
+- “模型”页面统一承载 `model.memory_curation_slot` 与 `memory.embedding_model`，和聊天、视觉模型设置
+  处于同一模型配置入口；Memory 领域仍分别拥有整理槽保存和 embedding 任务，不建立跨域“保存全部”。
+- “记忆”页面只显示 `memory.curation` 的自动整理轮次，以及 `memory.manage` 的状态、搜索、筛选、列表和
+  编辑器；不得显示整理 Provider、整理模型、embedding 状态、导入、下载或取消控件。
+- 页面布局以迁移前既有设置页面为视觉和信息层级基线：状态与筛选保持紧凑，记忆列表和编辑器保持稳定
+  双栏；窄窗口允许有界换行或滚动，但不得把状态徽标挤成逐字竖列、遮挡整理轮次或压缩主要编辑区。
+
 Memory section 只有在真实 Core 协商成功且公开读取闭环可用时为 `available`；外部存储只读时 section 为
 `read_only`，CRUD/保存/模型动作禁用但已有记录仍可查看；Core 断开或未迁移时为 `unavailable`。未知
 feature 继续失败安全禁用。
@@ -139,6 +149,13 @@ WebView 只持有草稿、筛选、选中项和进度显示。get/validate/save/
 Rust 负责设置窗口授权和 generation identity。保存 `trigger_turns` 成功后立即用于后续完成轮次；模型槽
 变更返回 `core_restart_required` 并由现有 Supervisor 受控重建，失败时旧文件、旧 Core 和当前草稿保持。
 不建立跨 Provider、Memory、外观或其他设置域的“保存全部”事务。
+
+Core 受控重建或意外更换 generation 时，已打开的设置窗口必须原位重新绑定新 Core identity，不关闭、
+重建或要求用户重新打开窗口。重绑定期间保存、搜索、CRUD 和模型动作必须稳定禁用或排队；新 generation
+完成 `memory.settings.get` 后自动恢复可用并刷新服务端数据。筛选、选中项、编辑草稿及中文/日文 IME
+composition 保留；未提交内容不得自动保存、提交或清空。旧 generation 的 response、deadline、Router
+关闭和 identity mismatch 只能结束旧请求，不得清空已有列表、覆盖编辑草稿、显示为当前数据错误或触发
+自动重发。若重绑定失败，页面显示稳定可重试状态并保留已有可读内容与草稿。
 
 ## 7. 故障矩阵与验收
 
@@ -157,6 +174,11 @@ Rust 负责设置窗口授权和 generation identity。保存 `trigger_turns` �
   fixture manifest 不变，`memory.json` 字节不变；同一 SHA 三平台 locked workflow 通过。
 - capability、窗口权限、IME composition、草稿保持、重复点击、关窗/Core crash/重启和重新打开状态
   一致；日志、Snapshot 与证据 secret scan 为零。
+- 整理槽保存触发 Core restart 后，原设置窗口自动取得新 generation，并可继续搜索、新增、编辑、删除
+  和保存；旧代迟到成功、`REQUEST_DEADLINE_EXCEEDED`、`GENERATION_INVALIDATED` 与
+  `SETTINGS_CORE_GENERATION_MISMATCH` 不覆盖新代列表、状态或草稿，也不要求关闭重开设置。
+- “模型”页包含整理模型槽与固定 embedding 模型任务，“记忆”页只含整理轮次和 Memory 管理；在
+  900×800、1080×900 和 1520×787 视口下保持可读、可操作且主要列表/编辑器不被模型控件挤压。
 
 Windows 人工验收必须直接启动当前 Runtime v2 EXE，在隔离验收根完成：创建含中文/日文 IME 的记忆、
 搜索/编辑/删除、用确定性或负责人配置的 Provider 验证命中影响下一轮聊天、触发一次整理、导入模型失败
