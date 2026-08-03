@@ -52,7 +52,11 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 2] = ["transport.concurrent-router", "settings.provider-model"];
+const OPTIONAL_CAPABILITIES: [&str; 3] = [
+    "transport.concurrent-router",
+    "settings.provider-model",
+    crate::memory_gateway::MEMORY_CAPABILITY,
+];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
     "initializing",
@@ -1661,7 +1665,20 @@ impl CoreHostRuntime {
             .router
             .as_ref()
             .ok_or_else(|| "ROUTER_UNAVAILABLE: concurrent router is unavailable".to_string())?;
-        router.recv_event_timeout(timeout)
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(event) = router.recv_event_timeout(remaining)? else {
+                return Ok(None);
+            };
+            if crate::memory_gateway::observe_core_event(&event)? {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                continue;
+            }
+            return Ok(Some(event));
+        }
     }
 
     pub fn refresh_snapshot(

@@ -24,7 +24,13 @@ CAPABILITIES = (
 )
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
-SUPPORTED_CAPABILITIES = (*CAPABILITIES, ROUTER_CAPABILITY, PROVIDER_SETTINGS_CAPABILITY)
+MEMORY_CAPABILITY = "assistant.memory"
+SUPPORTED_CAPABILITIES = (
+    *CAPABILITIES,
+    ROUTER_CAPABILITY,
+    PROVIDER_SETTINGS_CAPABILITY,
+    MEMORY_CAPABILITY,
+)
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
@@ -138,6 +144,13 @@ class ReadinessController:
         self._initializer_close_claimed = False
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
+        self._memory_enabled = False
+
+    def enable_memory(self) -> None:
+        with self._lock:
+            if self._worker is not None:
+                raise RuntimeError("memory capability must be selected before initialization")
+            self._memory_enabled = True
 
     def begin(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping) or payload:
@@ -273,6 +286,15 @@ class ReadinessController:
         initializer: object | None = None
         try:
             initializer = self._initializer_factory(self._config.app_root)
+            bind_generation = getattr(initializer, "bind_generation", None)
+            if callable(bind_generation):
+                bind_generation(self._config.generation_id)
+            with self._lock:
+                memory_enabled = self._memory_enabled
+            if memory_enabled:
+                enable_memory = getattr(initializer, "enable_memory", None)
+                if callable(enable_memory):
+                    enable_memory()
             with self._lock:
                 self._initializer = initializer
                 close_now = self._closed
@@ -795,6 +817,8 @@ class ControlDispatcher:
             and self._provider_settings_boundary is not None
         ):
             getattr(self._provider_settings_boundary, "enable")()
+        if MEMORY_CAPABILITY in selected:
+            self._readiness.enable_memory()
         return {
             "capabilities": list(selected),
             "coreVersion": CORE_VERSION,
@@ -843,6 +867,7 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from .memory_boundary import MEMORY_REQUEST_NAMES, MemoryBoundaryError
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
@@ -886,6 +911,40 @@ def run_host(
             def handle(self, request: dict[str, Any]) -> object:
                 if request.get("name") == "chat.send":
                     return chat_boundary.handle_send(request)
+                if request.get("name") in MEMORY_REQUEST_NAMES:
+                    try:
+                        if MEMORY_CAPABILITY not in dispatcher._negotiated_capabilities:
+                            raise MemoryBoundaryError(
+                                "CAPABILITY_NEGOTIATION_FAILED",
+                                "记忆能力未协商。",
+                            )
+                        session = dispatcher.published_session()
+                        boundary = getattr(session, "memory_boundary", None)
+                        if boundary is None:
+                            raise MemoryBoundaryError(
+                                "MEMORY_NOT_READY",
+                                "记忆能力仍在初始化。",
+                                retryable=True,
+                            )
+                        getattr(boundary, "set_event_publisher")(router.publish_event)
+                        payload = getattr(boundary, "handle")(
+                            str(request.get("name")), request.get("payload"), request
+                        )
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            payload=payload,
+                        )
+                    except MemoryBoundaryError as error:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error.public_error(),
+                        )
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -906,7 +965,9 @@ def run_host(
             writer,
             dispatcher,
             fixture_handler=request_boundary.handle,
-            fixture_names=frozenset({"chat.send", *SETTINGS_REQUEST_NAMES}),
+            fixture_names=frozenset(
+                {"chat.send", *SETTINGS_REQUEST_NAMES, *MEMORY_REQUEST_NAMES}
+            ),
             read_frame_fn=read_frame,
         )
         chat_boundary.set_event_publisher(router.publish_event)

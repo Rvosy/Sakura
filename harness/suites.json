@@ -33,7 +33,8 @@
       "description": "验证 Runtime v2 Python Core Host 的协议、适配器与真实本地生命周期",
       "cases": [
         "core-host-unit-tests",
-        "core-host-integration-tests"
+        "core-host-integration-tests",
+        "runtime-v2-memory-tests"
       ]
     },
     "legacy-qt-ui": {
@@ -55,6 +56,7 @@
       "cases": [
         "runtime-v2-frontend-tests",
         "runtime-v2-provider-model-tests",
+        "runtime-v2-memory-tests",
         "runtime-v2-character-appearance-tests",
         "runtime-v2-character-presentation-tests",
         "runtime-v2-product-shell-tests",
@@ -190,7 +192,7 @@
         "pytest",
         "tests/integration",
         "-k",
-        "core_host or wp_3v_01_assistant_architecture",
+        "core_host or wp_3v_01_assistant_architecture or wp_4_01_memory_capability",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -257,6 +259,23 @@
         "-q"
       ],
       "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-memory-tests",
+      "description": "验证 Memory owner、降级召回、整理游标、设置 DTO、窗口授权与代际边界",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_core_host_memory.py",
+        "tests/integration/test_wp_4_01_memory_capability.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"

@@ -128,6 +128,7 @@ class RealChatBoundary:
             self._drop_execution(operation_id)
             raise
         history_status = "saved"
+        history_committed = False
         terminal = "chat.failed"
         terminal_payload: dict[str, Any]
         try:
@@ -171,6 +172,7 @@ class RealChatBoundary:
             )
             try:
                 history.append("user", message)
+                history_committed = True
             except Exception:
                 history_status = "degraded"
 
@@ -202,6 +204,7 @@ class RealChatBoundary:
                     )
                 except Exception:
                     history_status = "degraded"
+                    history_committed = False
             execution.cancel.throw_if_cancelled()
             terminal = "chat.completed"
             terminal_payload = {
@@ -209,6 +212,16 @@ class RealChatBoundary:
                 "reply": {"segments": segments},
                 "historyStatus": history_status,
             }
+            if history_committed:
+                memory_boundary = getattr(session, "memory_boundary", None)
+                note_completed = getattr(memory_boundary, "note_completed_chat", None)
+                if callable(note_completed):
+                    try:
+                        note_completed(history)
+                    except Exception:
+                        # Curation is best effort and cannot change the unique
+                        # terminal outcome of an already completed chat.
+                        pass
         except BaseException as error:  # noqa: BLE001 - sanitize at the process boundary
             if _is_operation_cancelled(error):
                 terminal = "chat.cancelled"

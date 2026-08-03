@@ -254,6 +254,14 @@ jobs:
           tests/unit/test_core_host_*.py
           tests/integration/test_core_host_*.py
           tests/unit/test_hardening_regressions.py
+          tests/integration/test_wp_4_01_memory_capability.py
+
+      - name: Run Runtime v2 Memory gateway contracts
+        working-directory: desktop
+        timeout-minutes: 4
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          memory_gateway -- --test-threads=1
 
       - name: Check formatting
         working-directory: desktop

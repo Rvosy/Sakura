@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-02
+updated: 2026-08-03
 ---
 
 # Sakura 安装与配置指南
@@ -41,7 +41,8 @@ updated: 2026-08-02
 
 ## 第三步：启动
 
-- **Windows 用户：** 双击 `start.bat`
+- **Windows 用户：** 双击发布包中的 Sakura Runtime v2 EXE。当前源码开发候选的文件名为
+  `sakura-runtime-v2-shell.exe`；`start.bat` 不是最终产品入口，也不用于 Runtime v2 人工验收。
 - **Mac 用户：** 双击 `start.command`，或在终端运行 `bash scripts/start.sh`
 - **Linux 用户：** 在终端运行 `bash scripts/start.sh`
 
@@ -145,9 +146,24 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 
 ### 长期记忆模型
 
-首次启动时，软件会在后台自动下载长期记忆所需的本地向量模型。下载过程中可以正常使用，无需等待。
+打开设置的“记忆”页面可以搜索、新增、编辑和删除当前角色的长期记忆，并设置完成多少轮聊天后进行一次
+自动整理。记忆内容需要使用页面内单独的“保存记忆”按钮明确提交；尚未提交的中文或日文输入法组合文本
+会作为设置窗口草稿保留，Core 恢复或模型槽重启不会自动提交或清空它。删除同一条已不存在的记忆可以安全
+重复执行。
+
+自动整理模型在记忆页选择现有 Provider 和模型。留空时只停用自动整理，手工管理和已安装模型的记忆召回
+仍可使用。整理频率保存后从后续完成的回复起生效；取消、失败或中断的回复不会推进整理进度。
+
+长期记忆使用固定的本地向量模型 `sentence-transformers/all-MiniLM-L6-v2`（384 dimensions）。Runtime v2
+不会在普通聊天或启动时隐式联网；请在记忆页明确点击“在线安装”。下载期间普通聊天仍可使用，但会暂时
+按“无记忆命中”继续，不会自动重发消息。页面会显示当前阶段和进度；需要中止时点击“取消”，任务会以
+已取消状态结束，不能继续使用旧 Core generation 的取消句柄。
 
 如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动下载 `models--sentence-transformers--all-MiniLM-L6-v2.zip`，然后在软件内导入。
+
+导入错误 ZIP、下载中断或 Memory 存储暂不可用时，旧模型缓存与已有记忆保持不变。页面显示只读时不要
+删除 `data/memory/` 中的锁、Qdrant 或 SQLite 文件，也不要用旧 `data/memory.json` 猜测迁移；退出应用、
+备份整个 `data/` 后再排查。Memory 故障不会阻止不依赖记忆的普通聊天。
 
 ![手动导入记忆模型](https://oss.cialloo.cn/img/setup_05.webp)
 

@@ -28,6 +28,7 @@ class AssistantSession:
     provider: OpenAICompatibleClient = field(repr=False)
     runtime: AgentRuntime
     pipeline: ChatPipeline
+    memory_boundary: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,23 @@ class AssistantAdapter:
         self._config_reader = config_reader if config_reader is not None else CoreConfigReader()
         self._lock = Lock()
         self._closed = False
+        self._memory_enabled = False
+        self._generation_id = ""
         self._owned: list[object] = []
+
+    def enable_memory(self) -> None:
+        """Enable the optional Memory owner before initialization starts."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._memory_enabled = True
+
+    def bind_generation(self, generation_id: str) -> None:
+        with self._lock:
+            if self._closed or not generation_id.strip():
+                raise OperationCancelled()
+            self._generation_id = generation_id
 
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
@@ -146,11 +163,26 @@ class AssistantAdapter:
             owned.append(tools)
             self._check_active(cancel)
 
-            memory = DisabledMemory()
-            owned.append(memory)
-            self._check_active(cancel)
-
             system_prompt = load_character_system_prompt(profile)
+            self._check_active(cancel)
+            with self._lock:
+                memory_enabled = self._memory_enabled
+            memory_boundary: object | None = None
+            if memory_enabled:
+                from app.core_host.memory_boundary import MemoryBoundary
+
+                memory_boundary = MemoryBoundary(
+                    self._app_root,
+                    profile.id,
+                    config.provider_selection.api_settings,
+                    generation_id=self._generation_id,
+                    system_prompt=system_prompt,
+                )
+                memory = memory_boundary
+                owned.append(memory_boundary)
+            else:
+                memory = DisabledMemory()
+                owned.append(memory)
             self._check_active(cancel)
             runtime = AgentRuntime(
                 provider,
@@ -175,6 +207,7 @@ class AssistantAdapter:
                 provider=provider,
                 runtime=runtime,
                 pipeline=pipeline,
+                memory_boundary=memory_boundary,
             )
             self._check_active(cancel)
             if fallback_applied:

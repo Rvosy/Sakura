@@ -207,6 +207,10 @@ class MemoryModelImportError(RuntimeError):
     """记忆嵌入模型归档包格式错误或导入失败。"""
 
 
+class MemoryModelTaskCancelled(RuntimeError):
+    """用户或当前 Core generation 取消了模型导入/下载。"""
+
+
 @dataclass(frozen=True)
 class EmbeddingModelImportResult:
     """记忆嵌入模型导入结果。"""
@@ -352,19 +356,35 @@ class MemoryStore:
 
         return (os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip()
 
-    def import_embedding_model_archive(self, path: Path) -> EmbeddingModelImportResult:
+    def import_embedding_model_archive(
+        self,
+        path: Path,
+        *,
+        progress: Callable[[str, int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> EmbeddingModelImportResult:
         """导入离线嵌入模型 ZIP，并重置长期记忆运行时以复用新缓存。"""
 
-        result = import_embedding_model_archive(path, self.base_dir)
+        result = import_embedding_model_archive(
+            path,
+            self.base_dir,
+            progress=progress,
+            cancel=cancel,
+        )
         if not self.is_ready():
             self.reset_runtime()
             self.preload(wait=False)
         return result
 
-    def download_embedding_model(self) -> EmbeddingModelImportResult:
+    def download_embedding_model(
+        self,
+        *,
+        progress: Callable[[str, int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> EmbeddingModelImportResult:
         """在线安装记忆嵌入模型，并重置长期记忆运行时以复用新缓存。"""
 
-        result = download_embedding_model(self.base_dir)
+        result = download_embedding_model(self.base_dir, progress=progress, cancel=cancel)
         if not self.is_ready():
             self.reset_runtime()
             self.preload(wait=False)
@@ -1320,9 +1340,17 @@ def _project_embedding_cache_folder(base_dir: Path | None = None) -> Path:
     return root / "runtime" / "hf-cache" / "hub"
 
 
-def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> EmbeddingModelImportResult:
+def import_embedding_model_archive(
+    path: Path,
+    base_dir: Path | None = None,
+    *,
+    progress: Callable[[str, int], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> EmbeddingModelImportResult:
     """导入 all-MiniLM-L6-v2 的 HuggingFace hub 缓存 ZIP。"""
 
+    _check_model_task_cancelled(cancel)
+    _report_model_progress(progress, "validating", 5)
     archive_path = Path(path)
     if not archive_path.exists():
         raise FileNotFoundError(f"记忆模型包不存在：{archive_path}")
@@ -1345,29 +1373,26 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
                 raise MemoryModelImportError(str(exc)) from exc
             model_prefix = _validate_embedding_model_zip_members(zf)
             temp_root.mkdir(parents=True, exist_ok=False)
-            _extract_embedding_model_zip(zf, model_prefix, staging_model_dir)
+            _extract_embedding_model_zip(
+                zf,
+                model_prefix,
+                staging_model_dir,
+                progress=progress,
+                cancel=cancel,
+            )
             snapshot_dir = staging_model_dir / "snapshots"
             if not _hub_snapshot_has_model_weights(snapshot_dir):
                 raise MemoryModelImportError(
                     "记忆模型包不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
                 )
 
-        if backup_model_dir.exists():
-            shutil.rmtree(backup_model_dir, ignore_errors=True)
-        if destination_model_dir.exists():
-            rename_with_retry(destination_model_dir, backup_model_dir)
-        moved = False
-        try:
-            shutil.move(str(staging_model_dir), str(destination_model_dir))
-            moved = True
-            if backup_model_dir.exists():
-                shutil.rmtree(backup_model_dir, ignore_errors=True)
-        except Exception:
-            if moved and destination_model_dir.exists():
-                shutil.rmtree(destination_model_dir, ignore_errors=True)
-            if backup_model_dir.exists() and not destination_model_dir.exists():
-                rename_with_retry(backup_model_dir, destination_model_dir)
-            raise
+        _check_model_task_cancelled(cancel)
+        _report_model_progress(progress, "installing", 90)
+        _replace_embedding_model_dir(
+            staging_model_dir,
+            destination_model_dir,
+            backup_model_dir,
+        )
     except zipfile.BadZipFile as exc:
         raise MemoryModelImportError("不是有效的记忆模型 ZIP 包。") from exc
     finally:
@@ -1378,6 +1403,7 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
         for child in (destination_model_dir / "snapshots").iterdir()
         if child.is_dir()
     )
+    _report_model_progress(progress, "completed", 100)
     return EmbeddingModelImportResult(
         model_name=DEFAULT_EMBEDDING_MODEL,
         cache_folder=destination_root,
@@ -1386,13 +1412,48 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
     )
 
 
-def download_embedding_model(base_dir: Path | None = None) -> EmbeddingModelImportResult:
+def download_embedding_model(
+    base_dir: Path | None = None,
+    *,
+    progress: Callable[[str, int], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> EmbeddingModelImportResult:
     """下载 all-MiniLM-L6-v2 到 Sakura 管理的 HuggingFace hub 缓存。"""
 
     destination_root = _project_embedding_cache_folder(base_dir)
     destination_root.mkdir(parents=True, exist_ok=True)
+    temp_root = destination_root / (
+        f".memory_model_download_{int(time.time() * 1000)}_{threading.get_ident()}"
+    )
+    staging_root = temp_root / "hub"
+    staging_model_dir = staging_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    destination_model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    backup_model_dir = destination_root / f".{DEFAULT_EMBEDDING_MODEL_CACHE_NAME}.backup"
     try:
-        _download_hf_snapshot(DEFAULT_EMBEDDING_MODEL, destination_root)
+        _check_model_task_cancelled(cancel)
+        _report_model_progress(progress, "connecting", 5)
+        temp_root.mkdir(parents=True, exist_ok=False)
+        _download_hf_snapshot(
+            DEFAULT_EMBEDDING_MODEL,
+            staging_root,
+            progress=progress,
+            cancel=cancel,
+        )
+        _check_model_task_cancelled(cancel)
+        snapshot_dir = staging_model_dir / "snapshots"
+        if not _hub_snapshot_has_model_weights(snapshot_dir):
+            raise MemoryModelImportError(
+                "记忆模型下载后仍不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
+            )
+        _report_model_progress(progress, "installing", 90)
+        _replace_embedding_model_dir(
+            staging_model_dir,
+            destination_model_dir,
+            backup_model_dir,
+        )
+        _report_model_progress(progress, "completed", 100)
+    except MemoryModelTaskCancelled:
+        raise
     except MemoryModelImportError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1401,26 +1462,43 @@ def download_embedding_model(base_dir: Path | None = None) -> EmbeddingModelImpo
             f"\n\n原始错误：{exc}"
         ) from exc
 
-    model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-    snapshot_dir = model_dir / "snapshots"
-    if not _hub_snapshot_has_model_weights(snapshot_dir):
-        raise MemoryModelImportError(
-            "记忆模型下载后仍不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
-        )
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+    snapshot_dir = destination_model_dir / "snapshots"
     snapshot_count = sum(1 for child in snapshot_dir.iterdir() if child.is_dir())
     return EmbeddingModelImportResult(
         model_name=DEFAULT_EMBEDDING_MODEL,
         cache_folder=destination_root,
-        model_dir=model_dir,
+        model_dir=destination_model_dir,
         snapshot_count=snapshot_count,
     )
 
 
-def _download_hf_snapshot(repo_id: str, cache_folder: Path) -> str:
+def _download_hf_snapshot(
+    repo_id: str,
+    cache_folder: Path,
+    *,
+    progress: Callable[[str, int], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> str:
     try:
         from huggingface_hub import snapshot_download
+        from tqdm.auto import tqdm
     except ImportError as exc:
         raise MemoryModelImportError("缺少 huggingface_hub 依赖，无法在线安装记忆模型。") from exc
+
+    class CancellableProgress(tqdm):
+        def update(self, count: int | float = 1) -> bool | None:
+            _check_model_task_cancelled(cancel)
+            changed = super().update(count)
+            total = int(self.total or 0)
+            if total > 0:
+                percent = 10 + min(75, int((float(self.n) / total) * 75))
+                _report_model_progress(progress, "downloading", percent)
+            _check_model_task_cancelled(cancel)
+            return changed
+
     return str(
         snapshot_download(
             repo_id=repo_id,
@@ -1428,6 +1506,7 @@ def _download_hf_snapshot(repo_id: str, cache_folder: Path) -> str:
             endpoint=(os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip(),
             allow_patterns=list(DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS),
             local_files_only=False,
+            tqdm_class=CancellableProgress,
         )
     )
 
@@ -1502,11 +1581,17 @@ def _extract_embedding_model_zip(
     zf: zipfile.ZipFile,
     model_prefix: PurePosixPath,
     destination_model_dir: Path,
+    *,
+    progress: Callable[[str, int], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> None:
     """只把目标模型目录抽取到 staging 目录，避免 zipfile.extractall 的路径风险。"""
 
     destination_model_dir.mkdir(parents=True, exist_ok=True)
-    for info in zf.infolist():
+    members = zf.infolist()
+    total = max(1, len(members))
+    for index, info in enumerate(members, start=1):
+        _check_model_task_cancelled(cancel)
         rel = _safe_zip_member_path(info)
         if not _zip_path_is_under(rel, model_prefix) or rel == model_prefix:
             continue
@@ -1518,7 +1603,52 @@ def _extract_embedding_model_zip(
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(info, "r") as source, target.open("wb") as output:
-            shutil.copyfileobj(source, output)
+            while True:
+                _check_model_task_cancelled(cancel)
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        _report_model_progress(progress, "extracting", 10 + int(index * 75 / total))
+
+
+def _replace_embedding_model_dir(
+    staging_model_dir: Path,
+    destination_model_dir: Path,
+    backup_model_dir: Path,
+) -> None:
+    """原子边界内替换模型目录；任何失败都恢复旧的可读缓存。"""
+
+    if backup_model_dir.exists():
+        shutil.rmtree(backup_model_dir, ignore_errors=True)
+    if destination_model_dir.exists():
+        rename_with_retry(destination_model_dir, backup_model_dir)
+    moved = False
+    try:
+        shutil.move(str(staging_model_dir), str(destination_model_dir))
+        moved = True
+        if backup_model_dir.exists():
+            shutil.rmtree(backup_model_dir, ignore_errors=True)
+    except Exception:
+        if moved and destination_model_dir.exists():
+            shutil.rmtree(destination_model_dir, ignore_errors=True)
+        if backup_model_dir.exists() and not destination_model_dir.exists():
+            rename_with_retry(backup_model_dir, destination_model_dir)
+        raise
+
+
+def _check_model_task_cancelled(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise MemoryModelTaskCancelled("记忆模型任务已取消。")
+
+
+def _report_model_progress(
+    progress: Callable[[str, int], None] | None,
+    stage: str,
+    percent: int,
+) -> None:
+    if progress is not None:
+        progress(stage, max(0, min(100, int(percent))))
 
 
 def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:

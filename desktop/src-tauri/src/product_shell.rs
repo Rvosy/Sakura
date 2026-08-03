@@ -378,6 +378,30 @@ impl SettingsCapabilityManifest {
             "记忆整理尚未迁移到 Runtime v2".to_string(),
         );
         manifest.sections.insert(
+            "memory".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([
+                    ("memory.manage".to_string(), "available".to_string()),
+                    ("memory.curation".to_string(), "available".to_string()),
+                    (
+                        "memory.embedding_model".to_string(),
+                        "available".to_string(),
+                    ),
+                ]),
+            },
+        );
+        manifest.unavailable_reasons.remove("memory");
+        if let Some(model) = manifest.sections.get_mut("model") {
+            model.features.insert(
+                "model.memory_curation_slot".to_string(),
+                "available".to_string(),
+            );
+        }
+        manifest
+            .unavailable_reasons
+            .remove("model.memory_curation_slot");
+        manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
@@ -636,7 +660,11 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["model"].features["model.memory_curation_slot"],
-            "unavailable"
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["memory"].features["memory.manage"],
+            "available"
         );
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],

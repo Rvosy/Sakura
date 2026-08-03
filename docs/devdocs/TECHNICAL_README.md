@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-02
+updated: 2026-08-03
 ---
 
 # Sakura 技术讲解 README
@@ -20,13 +20,20 @@ Sakura 正在使用 Runtime v2：Tauri Shell 是桌面生命周期根，通过�
 Python 领域层继续由 `ChatPipeline`、`ContextOrchestrator` 和 `AgentRuntime` 负责上下文与工具循环；
 Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程监管和用户交互由 Tauri Shell 负责。
 
+长期记忆由当前 bundled Python Core generation 内的 `app/core_host/memory_boundary.py` 唯一拥有。只有
+握手协商 `assistant.memory` 后，Assistant Adapter 才创建真实 `MemoryStore`；Rust 的
+`memory_gateway.rs` 只做设置窗口授权、代际 identity、DTO 二次校验和 ZIP 选择令牌，不解析或缓存
+Qdrant、SQLite、档案或整理游标。`RealChatBoundary` 只在完整回复与兼容历史都落盘后通知整理调度。
+Memory 初始化、embedding 或存储失败通过 `MemoryRecallService` 降级为空私有 fragment，不改变聊天的
+唯一 terminal，也不触发自动重发。
+
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 
 最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。UI 只读取这份结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。耗时线程、子进程和外部服务统一交给 `ResourceManager`，退出时按依赖顺序关闭。
 
 ## 启动流程
 
-运行 `python main.py` 或平台启动脚本后：
+最终产品直接启动平台 Runtime v2 EXE；源码开发时 `python main.py` 仍可作为定位已构建 Shell 的兼容命令：
 
 1. 定位并启动 `desktop/src-tauri` 已构建的 Runtime v2 Shell。
 2. Shell 获取跨入口共享应用锁并创建桌宠窗口。
@@ -49,6 +56,19 @@ shutdown，再由独立 headless 参考 oracle 重新获取共享锁并解析兼
 parser 与生产共享锁，不启动 `legacy_qt_main.py`、不导入 PySide6 或创建窗口。脚本只允许 history
 fixture 变化，退出前检查敏感证据和验收进程树残留；真实 Provider 回复仍由负责人使用已有开发配置
 人工验收。
+
+WP-4-01 的可见 Memory 验收同样直接启动当前 debug Runtime v2 EXE，并为 Qdrant、SQLite、配置、历史与
+embedding cache 建立系统临时目录中的隔离应用根：
+
+```powershell
+.\desktop\tests\windows_wp_4_01_memory_acceptance.ps1
+```
+
+脚本负责构建、隔离启动，并在退出后检查 `data/memory.json`、允许写入路径、共享锁重获、相关进程残留
+和临时根清理；它不会代替项目负责人填写人工验收。模型下载/导入通过 Memory 域专用的 generation-scoped
+任务事件报告进度、取消和唯一终态，不抽取通用 Operation。Memory Core/协议回归可运行
+`runtime\python.exe -m harness run core-host`，Rust/设置前端回归包含在
+`runtime\python.exe -m harness run runtime-v2-shell`。
 
 ```mermaid
 flowchart LR
@@ -100,6 +120,11 @@ flowchart LR
 │   │   ├── selfcheck.py                 # 启动环境自检
 │   │   ├── debug_log.py                # 调试日志（自动脱敏）
 │   │   └── extensions.py               # 扩展注册表
+│   ├── core_host/                      # Runtime v2 无 Qt Core Host
+│   │   ├── assistant_adapter.py         # generation-scoped Assistant 装配
+│   │   ├── memory_boundary.py           # Memory owner、设置、整理与降级边界
+│   │   ├── real_chat.py                 # 真实聊天与完成回复协调
+│   │   └── server.py / router.py        # 协议协商与有界并发路由
 │   ├── backchannel/                     # 等待期本地快速接话
 │   ├── config/                         # 配置管理
 │   │   ├── app_version.py               # 应用版本记录

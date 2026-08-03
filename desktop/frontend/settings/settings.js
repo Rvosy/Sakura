@@ -135,6 +135,7 @@ let runtimeSettingsHost = false;
 let runtimeAppearanceController = null;
 let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
+let runtimeMemoryController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -173,6 +174,7 @@ const memoryState = {
   status: "idle",
   message: "",
   draft: null,
+  editorDrafts: new Map(),
 };
 const pluginState = {
   selectedId: "",
@@ -330,6 +332,8 @@ function computeDirty() {
       runtimeAppearanceController?.isDirty()
       || runtimeProviderModelController?.isDirty()
       || runtimeChatTimingController?.isDirty()
+      || runtimeMemoryController?.isDirty()
+      || memoryState.editorDrafts.size > 0
     );
   }
   return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
@@ -427,6 +431,7 @@ async function requestCancelClose() {
           await runtimeAppearanceController?.cancelPreview();
           await runtimeProviderModelController?.cancelOperations();
           runtimeChatTimingController?.discard();
+          runtimeMemoryController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -470,6 +475,7 @@ async function requestAppExitClose() {
         await runtimeAppearanceController?.cancelPreview();
         await runtimeProviderModelController?.cancelOperations();
         runtimeChatTimingController?.discard();
+        runtimeMemoryController?.discard();
       },
       close: async () => {
         await runtimeProviderModelController?.cancelOperations();
@@ -3108,6 +3114,69 @@ function renderBackchannelResourceCard() {
 }
 
 function renderMemoryModelResourceCard() {
+  if (runtimeMemoryController) {
+    const embedding = runtimeMemoryController.embedding() || {};
+    const memoryRuntimeStatus = runtimeMemoryController.status();
+    const actionsDisabled = ["read_only", "failed", "stopped", "unavailable"].includes(memoryRuntimeStatus);
+    const task = embedding.task;
+    const running = Boolean(task?.accepted);
+    const failedMessage = task?.error?.message || "";
+    renderResourceCard(fields.memoryModelResourceCard, {
+      title: "记忆模型",
+      subtitle: embedding.model || "sentence-transformers/all-MiniLM-L6-v2",
+      status: task?.status || (running ? "running" : ""),
+      ready: Boolean(embedding.installed),
+      message: embedding.installed
+        ? "记忆模型已就绪。"
+        : running ? "正在安装记忆模型。" : failedMessage || "记忆检索需要本地嵌入模型。",
+      detail: running
+        ? `${task.stage || "starting"} · ${task.progress || 0}%`
+        : embedding.dimensions ? `${embedding.dimensions} dimensions` : "",
+      progressVisible: running,
+      progress: running ? (task.progress || 0) : 0,
+      meta: failedMessage ? [["错误", failedMessage]] : [],
+      actions: [
+        {
+          label: running ? "安装中" : embedding.installed ? "重新安装" : "在线安装",
+          primary: !embedding.installed,
+          disabled: running || actionsDisabled,
+          onClick: async () => {
+            try {
+              await runtimeMemoryController.downloadModel();
+              renderMemoryModelResourceCard();
+            } catch (error) {
+              setError(String(error));
+            }
+          },
+        },
+        {
+          label: "导入 ZIP",
+          disabled: running || actionsDisabled,
+          onClick: async () => {
+            try {
+              const result = await runtimeMemoryController.importModel();
+              if (result?.accepted) notify("记忆模型导入任务已开始。", "success");
+              renderMemoryModelResourceCard();
+            } catch (error) {
+              setError(String(error));
+            }
+          },
+        },
+        {
+          label: "取消",
+          disabled: !running,
+          onClick: async () => {
+            try {
+              await runtimeMemoryController.cancelModel();
+            } catch (error) {
+              setError(String(error));
+            }
+          },
+        },
+      ],
+    });
+    return;
+  }
   const resources = resourcesSnapshot().memory_model || {};
   const task = taskFor("memory_model");
   const running = taskRunning(task);
@@ -3360,6 +3429,18 @@ function selectedMemory() {
   return memoryState.entries.find((entry) => entry.id === memoryState.selectedId) || null;
 }
 
+function captureMemoryEditorDraft() {
+  if (!memoryState.selectedId) return;
+  memoryState.editorDrafts.set(memoryState.selectedId, {
+    content: fields.memoryContent.value,
+    layer: fields.memoryLayer.value,
+    category: fields.memoryCategory.value,
+    source: fields.memorySource.value,
+    importance: fields.memoryImportance.value,
+    confidence: fields.memoryConfidence.value,
+  });
+}
+
 function sortedMemories() {
   const entries = [...memoryState.entries];
   const sort = fields.memorySort.value;
@@ -3401,7 +3482,7 @@ function setMemoryEditorDisabled(disabled) {
 }
 
 function fillMemoryEditor(record) {
-  const readOnly = memoryState.status === "loading" || memoryState.status === "failed";
+  const readOnly = ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
   if (!record) {
     fields.memoryContent.value = "";
     fields.memoryCategory.value = "";
@@ -3412,12 +3493,13 @@ function fillMemoryEditor(record) {
     setMemoryEditorDisabled(true);
     return;
   }
-  fields.memoryContent.value = memoryContent(record);
-  fields.memoryLayer.value = record.layer || memoryDefaults().layer;
-  fields.memoryCategory.value = record.category || "";
-  fields.memorySource.value = record.source || memoryDefaults().source;
-  fields.memoryImportance.value = Number(record.importance ?? memoryDefaults().importance);
-  fields.memoryConfidence.value = Number(record.confidence ?? memoryDefaults().confidence);
+  const editorDraft = memoryState.editorDrafts.get(memoryState.selectedId);
+  fields.memoryContent.value = editorDraft?.content ?? memoryContent(record);
+  fields.memoryLayer.value = editorDraft?.layer || record.layer || memoryDefaults().layer;
+  fields.memoryCategory.value = editorDraft?.category ?? record.category ?? "";
+  fields.memorySource.value = editorDraft?.source ?? record.source ?? memoryDefaults().source;
+  fields.memoryImportance.value = editorDraft?.importance ?? Number(record.importance ?? memoryDefaults().importance);
+  fields.memoryConfidence.value = editorDraft?.confidence ?? Number(record.confidence ?? memoryDefaults().confidence);
   refreshSelect(fields.memoryLayer);
   fields.memoryMeta.textContent = "";
   [
@@ -3470,7 +3552,7 @@ function renderMemoryList() {
     fields.memoryList.append(item);
     return;
   }
-  if (memoryState.status === "failed") {
+  if (["failed", "stopped"].includes(memoryState.status)) {
     const item = document.createElement("p");
     item.className = "empty-state";
     item.textContent = memoryState.message || "记忆系统加载失败。";
@@ -3535,7 +3617,7 @@ function renderMemoryPage() {
   renderMemoryStatus();
   renderMemoryList();
   fillMemoryEditor(selectedMemory());
-  fields.memoryAddButton.disabled = memoryState.status === "loading" || memoryState.status === "failed";
+  fields.memoryAddButton.disabled = ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
   fields.memoryRefreshButton.disabled = memoryState.loading;
   renderMemoryModelResourceCard();
 }
@@ -3545,6 +3627,7 @@ async function loadMemories() {
     return;
   }
   clearMemoryRetry();
+  captureMemoryEditorDraft();
   memoryState.loading = true;
   memoryState.status = "loading";
   memoryState.message = "记忆系统正在加载。";
@@ -3558,7 +3641,9 @@ async function loadMemories() {
     if (fields.memoryLayerFilter.value) {
       params.layer = fields.memoryLayerFilter.value;
     }
-    const result = await hostCall("memory.search", params);
+    const result = runtimeMemoryController
+      ? await runtimeMemoryController.search(params)
+      : await hostCall("memory.search", params);
     memoryState.status = result.status || "ready";
     memoryState.message = result.message || result.error || "";
     shouldRetry = memoryState.status === "loading";
@@ -3570,9 +3655,8 @@ async function loadMemories() {
       memoryState.selectedId = memoryState.entries[0]?.id || "";
     }
   } catch (error) {
-    memoryState.status = "failed";
+    memoryState.status = "degraded";
     memoryState.message = String(error);
-    memoryState.entries = [];
   } finally {
     memoryState.loading = false;
     renderMemoryPage();
@@ -3621,12 +3705,15 @@ async function saveMemoryEditor() {
   }
   setError("");
   try {
-    const result = await hostCall("memory.upsert", payload);
+    const result = runtimeMemoryController
+      ? await runtimeMemoryController.upsert(payload)
+      : await hostCall("memory.upsert", payload);
     if (result.status === "loading" || result.status === "failed") {
       setError(result.error || result.message || "记忆系统暂不可用。");
       return;
     }
     const saved = result.memory || {};
+    memoryState.editorDrafts.delete(memoryState.selectedId);
     memoryState.selectedId = saved.id || payload.id || "";
     memoryState.draft = null;
     await loadMemories();
@@ -3651,12 +3738,15 @@ async function deleteSelectedMemory() {
   }
   setError("");
   try {
-    const result = await hostCall("memory.delete", { id: record.id });
+    const result = runtimeMemoryController
+      ? await runtimeMemoryController.delete(record.id)
+      : await hostCall("memory.delete", { id: record.id });
     if (Array.isArray(result.failed) && result.failed.length) {
       setError(result.failed[0].error || "记忆删除失败。");
       return;
     }
     memoryState.selectedId = "";
+    memoryState.editorDrafts.delete(record.id);
     await loadMemories();
     notify("已删除记忆。", "success");
   } catch (error) {
@@ -4432,6 +4522,9 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
 }
 
 async function saveRuntimeSettings() {
+  if (memoryState.editorDrafts.size > 0) {
+    throw new Error("请先使用“保存记忆”提交当前记忆草稿，或还原草稿后再关闭设置。");
+  }
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
   if (runtimeProviderModelController?.isDirty()) {
@@ -4447,6 +4540,9 @@ async function saveRuntimeSettings() {
   }
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
+  }
+  if (runtimeMemoryController?.isDirty()) {
+    result = await runtimeMemoryController.save();
   }
   return result;
 }
@@ -4817,9 +4913,25 @@ fields.memorySort.addEventListener("change", renderMemoryPage);
 fields.memoryAddButton.addEventListener("click", newMemoryDraft);
 fields.memoryRefreshButton.addEventListener("click", loadMemories);
 fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
-fields.memoryRevertButton.addEventListener("click", () => fillMemoryEditor(selectedMemory()));
+fields.memoryRevertButton.addEventListener("click", () => {
+  memoryState.editorDrafts.delete(memoryState.selectedId);
+  fillMemoryEditor(selectedMemory());
+});
 fields.memoryDeleteButton.addEventListener("click", deleteSelectedMemory);
 fields.memoryTriggerTurns.addEventListener("input", renderMemoryStatus);
+[
+  fields.memoryContent,
+  fields.memoryLayer,
+  fields.memoryCategory,
+  fields.memorySource,
+  fields.memoryImportance,
+  fields.memoryConfidence,
+].forEach((field) => {
+  field.addEventListener("input", captureMemoryEditorDraft);
+  field.addEventListener("change", captureMemoryEditorDraft);
+  field.addEventListener("compositionupdate", captureMemoryEditorDraft);
+  field.addEventListener("compositionend", captureMemoryEditorDraft);
+});
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
 fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
@@ -4983,6 +5095,7 @@ window.addEventListener("beforeunload", () => {
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
+  runtimeMemoryController?.dispose();
 }, { once: true });
 
 async function startSettingsFrontend() {
@@ -5037,6 +5150,44 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_chat_presentation_timing_get");
     runtimeChatTimingController.initialize(snapshot);
+  }
+  if (featureStatus(manifest, "memory.manage") !== "unavailable") {
+    const { createMemoryController } = await import("./memory-runtime.js");
+    runtimeMemoryController = createMemoryController({
+      document,
+      invoke,
+      listen: window.__TAURI__.event.listen,
+      onDirty: refreshDirty,
+      onError: setError,
+      onModelEvent: (task) => {
+        renderMemoryModelResourceCard();
+        if (task.status === "completed") notify("记忆模型已安装。", "success");
+        if (task.status === "cancelled") notify("记忆模型任务已取消。", "info");
+        if (task.status === "failed") setError(task.error?.message || "记忆模型任务失败。");
+      },
+      applySnapshot: (snapshot, { layers }) => {
+        request = request || {};
+        request.limits = { ...(request.limits || {}), memory_trigger_turns: [1, 50] };
+        request.memory = {
+          page_size: 120,
+          layers,
+          defaults: { layer: "semantic", source: "explicit", importance: 0.5, confidence: 0.75 },
+          curation: {
+            trigger_turns: snapshot.curation.triggerTurns,
+            backfill_limit: snapshot.curation.backfillLimit,
+          },
+        };
+        renderMemoryControls();
+        memoryState.status = snapshot.status;
+        memoryState.message = snapshot.message || "";
+        const settingsReadOnly = ["read_only", "failed", "stopped"].includes(snapshot.status);
+        fields.memoryTriggerTurns.disabled = settingsReadOnly;
+        document.getElementById("memoryCurationProvider").disabled = settingsReadOnly;
+        document.getElementById("memoryCurationModel").disabled = settingsReadOnly;
+      },
+    });
+    await runtimeMemoryController.initialize(await invoke("settings_memory_get"));
+    await loadMemories();
   }
   settingsBaseline = null;
   refreshDirty();

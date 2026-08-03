@@ -18,6 +18,7 @@ mod core_supervisor;
 mod fake_core_runtime;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
+mod memory_gateway;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1b_runtime_acceptance;
 #[cfg(debug_assertions)]
@@ -72,6 +73,7 @@ const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
 const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
 const SETTINGS_CHAT_TIMING_SCRIPT: &str =
     include_str!("../../frontend/settings/chat-timing-runtime.js");
+const SETTINGS_MEMORY_SCRIPT: &str = include_str!("../../frontend/settings/memory-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
@@ -81,6 +83,10 @@ const ALREADY_RUNNING_BODY: &str =
 const WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV: &str = "SAKURA_WP_3U_02_ACCEPTANCE_FAILURE_ROOT";
 #[cfg(debug_assertions)]
 const WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-3u-02-";
+#[cfg(debug_assertions)]
+const WP_4_01_MANUAL_ROOT_ENV: &str = "SAKURA_WP_4_01_MANUAL_ROOT";
+#[cfg(debug_assertions)]
+const WP_4_01_MANUAL_DIRECTORY_PREFIX: &str = "sakura-wp-4-01-manual-";
 
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
@@ -1218,6 +1224,313 @@ async fn settings_provider_model_cancel(
         .unwrap_or(false))
 }
 
+async fn dispatch_memory_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &State<'_, ShellLifecycleState>,
+    window_generation: u64,
+    core_generation_id: &str,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<Value, String> {
+    memory_gateway::authorize_settings_window(window.label())?;
+    let handle = settings_core_handle(lifecycle)?;
+    assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
+    memory_gateway::validate_public_response(&payload)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_memory_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::authorize_settings_window(window.label())?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let mut payload = dispatch_memory_request(
+        &window,
+        &shell,
+        &lifecycle,
+        window_generation,
+        &core_generation_id,
+        "memory.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
+    )
+    .await?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "MEMORY_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_memory_search(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    query: String,
+    limit: i64,
+    layer: Option<String>,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let mut payload = json!({"query": query, "limit": limit});
+    if let Some(layer) = layer.filter(|value| !value.is_empty()) {
+        payload
+            .as_object_mut()
+            .expect("memory search payload")
+            .insert("layer".to_string(), json!(layer));
+    }
+    memory_gateway::validate_search(&payload)?;
+    dispatch_memory_request(
+        &window,
+        &shell,
+        &lifecycle,
+        window_generation,
+        &core_generation_id,
+        "memory.search",
+        payload,
+        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn settings_memory_upsert(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    memory: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::validate_upsert(&memory)?;
+    dispatch_memory_request(
+        &window,
+        &shell,
+        &lifecycle,
+        window_generation,
+        &core_generation_id,
+        "memory.upsert",
+        memory,
+        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn settings_memory_delete(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let payload = json!({"id": id});
+    memory_gateway::validate_delete(&payload)?;
+    dispatch_memory_request(
+        &window,
+        &shell,
+        &lifecycle,
+        window_generation,
+        &core_generation_id,
+        "memory.delete",
+        payload,
+        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn settings_memory_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    settings: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::validate_settings_save(&settings)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let result = dispatch_memory_request(
+        &window,
+        &shell,
+        &lifecycle,
+        window_generation,
+        &core_generation_id,
+        "memory.settings.save",
+        settings,
+        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
+    )
+    .await?;
+    if result.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
+        handle.restart().map_err(str::to_string)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn settings_memory_model_download(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::authorize_settings_window(window.label())?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    start_memory_model_task(
+        window,
+        handle,
+        window_generation,
+        core_generation_id,
+        "memory.model.download",
+        json!({}),
+        None,
+    )
+}
+
+#[tauri::command]
+async fn settings_memory_model_import(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::authorize_settings_window(window.label())?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let Some(selection_token) = memory_gateway::select_and_register_archive(&core_generation_id)?
+    else {
+        return Ok(json!({"accepted": false, "cancelled": true}));
+    };
+    start_memory_model_task(
+        window,
+        handle,
+        window_generation,
+        core_generation_id,
+        "memory.model.import",
+        json!({"selectionToken": selection_token.clone()}),
+        Some(selection_token),
+    )
+}
+
+fn start_memory_model_task(
+    window: WebviewWindow,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    window_generation: u64,
+    core_generation_id: String,
+    name: &'static str,
+    payload: Value,
+    selection_token: Option<String>,
+) -> Result<Value, String> {
+    let registration = memory_gateway::begin_model_task(&core_generation_id, window_generation)?;
+    let task_id = registration.task_id.clone();
+    let task_handle = registration.task_handle.clone();
+    let request_task_id = task_id.clone();
+    std::thread::Builder::new()
+        .name("sakura-memory-model-request".to_string())
+        .spawn(move || {
+            let result = handle
+                .settings_request(
+                    Some(&request_task_id),
+                    name,
+                    payload,
+                    std::time::Duration::from_secs(
+                        memory_gateway::MEMORY_MODEL_TASK_DEADLINE_SECONDS,
+                    ),
+                )
+                .and_then(settings_response_payload);
+            if result.is_err() {
+                memory_gateway::fail_model_task(
+                    &request_task_id,
+                    "MEMORY_MODEL_TASK_INTERRUPTED",
+                    "记忆模型任务因 Core 连接中断而停止。",
+                );
+            }
+            if let Some(token) = selection_token {
+                memory_gateway::remove_archive_selection(&token);
+            }
+        })
+        .map_err(|_| "MEMORY_MODEL_TASK_START_FAILED".to_string())?;
+    let event_task_id = task_id.clone();
+    std::thread::Builder::new()
+        .name("sakura-memory-model-events".to_string())
+        .spawn(move || {
+            while let Ok(publication) = registration.receiver.recv() {
+                let terminal =
+                    publication
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            matches!(
+                                kind,
+                                "memory.model.completed"
+                                    | "memory.model.failed"
+                                    | "memory.model.cancelled"
+                            )
+                        });
+                let _ = window.emit(memory_gateway::MEMORY_MODEL_EVENT, publication);
+                if terminal {
+                    break;
+                }
+            }
+            memory_gateway::remove_model_task(&event_task_id);
+        })
+        .map_err(|_| "MEMORY_MODEL_EVENT_START_FAILED".to_string())?;
+    Ok(json!({
+        "accepted": true,
+        "taskId": task_id,
+        "taskHandle": task_handle,
+        "status": "starting",
+    }))
+}
+
+#[tauri::command]
+async fn settings_memory_model_cancel(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    task_handle: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    memory_gateway::authorize_settings_window(window.label())?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let task_id = memory_gateway::resolve_cancel_handle(
+        &task_handle,
+        &core_generation_id,
+        window_generation,
+    )?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "memory.model.cancel",
+        json!({"taskHandle": task_id}),
+        std::time::Duration::from_secs(memory_gateway::MEMORY_MODEL_DEADLINE_SECONDS),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    settings_response_payload(response)
+}
+
 #[tauri::command]
 fn begin_control_surface_preview(
     window: WebviewWindow,
@@ -1722,6 +2035,41 @@ fn character_appearance_state(
 }
 
 #[cfg(debug_assertions)]
+fn wp_4_01_manual_root(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
+    }
+    let root = path
+        .canonicalize()
+        .map_err(|_| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
+    let directory = root
+        .parent()
+        .ok_or_else(|| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|_| "WP_4_01_MANUAL_TEMP_UNAVAILABLE".to_string())?;
+    let name = directory
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
+    if directory.parent() != Some(temp.as_path())
+        || !name.starts_with(WP_4_01_MANUAL_DIRECTORY_PREFIX)
+        || root.file_name().and_then(|value| value.to_str()) != Some("app-root")
+        || !directory.join(".sakura-wp-4-01-manual").is_file()
+        || !root.join("data/config/system_config.yaml").is_file()
+        || !root.join("data/config/api.yaml").is_file()
+        || !root.join("data/config/characters.yaml").is_file()
+    {
+        return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
+    }
+    Ok(root)
+}
+
+#[cfg(debug_assertions)]
 fn wp_3u_02_acceptance_failure_repository_path(
     root: std::path::PathBuf,
 ) -> Result<std::path::PathBuf, String> {
@@ -1827,6 +2175,16 @@ fn main() {
         std::process::exit(2);
     }
 
+    #[cfg(not(debug_assertions))]
+    if std::env::var_os("SAKURA_WP_4_01_MANUAL_ROOT").is_some() {
+        show_startup_message(
+            "Sakura WP-4-01 验收启动失败",
+            "release 构建不接受验收根覆盖。",
+            true,
+        );
+        std::process::exit(2);
+    }
+
     #[cfg(debug_assertions)]
     let wp_3_06_acceptance = match wp_3_06_data_compat_acceptance::request_from_environment() {
         Ok(request) => request,
@@ -1909,6 +2267,7 @@ fn main() {
         SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
         SETTINGS_CHAT_TIMING_SCRIPT.len(),
+        SETTINGS_MEMORY_SCRIPT.len(),
     );
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
@@ -1921,6 +2280,11 @@ fn main() {
     #[cfg(debug_assertions)]
     if let Some(request) = &wp_3v_01_acceptance {
         runtime_request.assistant_root = request.app_root.clone();
+    }
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os(WP_4_01_MANUAL_ROOT_ENV) {
+        runtime_request.assistant_root = wp_4_01_manual_root(root.into())
+            .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
     let character_resource_root = runtime_request.assistant_root.clone();
     let mut shell_lifecycle_session =
@@ -2057,6 +2421,14 @@ fn main() {
             settings_provider_model_save,
             settings_provider_model_probe,
             settings_provider_model_cancel,
+            settings_memory_get,
+            settings_memory_search,
+            settings_memory_upsert,
+            settings_memory_delete,
+            settings_memory_save,
+            settings_memory_model_download,
+            settings_memory_model_import,
+            settings_memory_model_cancel,
             product_shell::resolve_settings_close,
             resolve_settings_exit
         ])
@@ -2232,6 +2604,7 @@ mod tests {
         assert!(!SETTINGS_SCRIPT.is_empty());
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
         assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
+        assert!(!SETTINGS_MEMORY_SCRIPT.is_empty());
         assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract

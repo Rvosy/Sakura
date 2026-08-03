@@ -27,3 +27,4 @@ updated: 2026-08-03
 - [WP-3V-01 CI 稳定化本地验证记录](WP-3V-01-CI-STABILIZATION-VALIDATION.md)
 - [WP-3V-01 headless oracle 隔离导入缺陷记录](WP-3V-01-CI-ISOLATED-IMPORT-DEFECT.md)
 - [WP-3V-01 项目负责人验收声明](WP-3V-01-OWNER-ACCEPTANCE.md)
+- [WP-4-01 本地自动验证记录](WP-4-01-AUTOMATED-VALIDATION.md)
