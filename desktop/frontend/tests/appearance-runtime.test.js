@@ -124,6 +124,99 @@ test("runtime settings frontend owns no data path, character selection, or forge
   assert.match(source, /settings_character_appearance_preview/);
   assert.match(source, /settings_character_appearance_save/);
   assert.match(source, /settings_character_appearance_cancel_preview/);
+  assert.doesNotMatch(source, /Core 已更新；未提交预览已恢复/);
+  assert.doesNotMatch(source, /#applyButton, #saveButton/);
+});
+
+test("Core generation replacement rebinds appearance in place and keeps global save actions usable", async () => {
+  class Control {
+    constructor() {
+      this.value = "";
+      this.disabled = false;
+      this.listeners = {};
+      this.output = { textContent: "" };
+      this.parentElement = { querySelector: () => this.output };
+      this.style = { setProperty() {} };
+    }
+
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    fire(type) { this.listeners[type]?.(); }
+  }
+
+  const controls = Object.fromEntries([
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
+    "themeColors", "resetThemeButton", "applyButton", "saveButton",
+  ].map((id) => [id, new Control()]));
+  const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
+  const document = {
+    getElementById: (id) => controls[id],
+    querySelector: (selector) => themes[selector.match(/data-theme-field="([^"]+)"/)?.[1]],
+    querySelectorAll: () => [],
+  };
+  const makeSnapshot = (generationId) => ({
+    schemaVersion: 1,
+    windowGeneration: 4,
+    limits,
+    presentation: {
+      generationId,
+      characterId: "Sakura",
+      displayName: "夜乃桜",
+      themeTokens,
+      portraitKeys: ["__default__"],
+      portraitResourceUrls: { __default__: "sakura-character://default" },
+    },
+    appearance: { schemaVersion: 2, coreGenerationId: generationId, characterId: "Sakura", values },
+  });
+  let intervalCallback = null;
+  let nextFrame = null;
+  const calls = [];
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval(callback) { intervalCallback = callback; return 1; },
+    clearInterval() {},
+    requestAnimationFrame(callback) { nextFrame = callback; return 2; },
+    cancelAnimationFrame() { nextFrame = null; },
+  };
+  try {
+    const controller = createRuntimeAppearanceController({
+      document,
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        if (command === "runtime_lifecycle_snapshot") {
+          return { supervisor: { generationId: "generation-b" } };
+        }
+        if (command === "settings_character_appearance_get") return makeSnapshot("generation-b");
+        if (command === "settings_character_appearance_save") {
+          return { coreGenerationId: "generation-b", characterId: "Sakura", values: args.values };
+        }
+        return {};
+      },
+      onDirty() {},
+      onError(error) { throw new Error(error); },
+      prepare() {},
+      fillTheme(theme) {
+        for (const [id, value] of Object.entries(theme)) themes[id].value = value;
+      },
+      wait: async () => {},
+    });
+    await controller.initialize(makeSnapshot("generation-a"));
+    controls.portraitScale.value = "135";
+    controls.portraitScale.fire("input");
+    assert.equal(controller.isDirty(), true);
+    await intervalCallback();
+    assert.equal(controller.isDirty(), true);
+    assert.equal(controls.portraitScale.value, "135");
+    assert.equal(controls.applyButton.disabled, false);
+    assert.equal(controls.saveButton.disabled, false);
+    await controller.save();
+    assert.equal(controller.isDirty(), false);
+    assert.ok(calls.some(([command]) => command === "settings_character_appearance_get"));
+    assert.ok(calls.some(([command]) => command === "settings_character_appearance_save"));
+    assert.equal(nextFrame, null);
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
 
 test("legacy controls preview, save, retain dirty state on failure, and cancel", async () => {

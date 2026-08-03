@@ -105,7 +105,15 @@ function setRange(input, limit, value) {
   input.style.setProperty("--slider-progress", `${progress}%`);
 }
 
-export function createRuntimeAppearanceController({ document, invoke, onDirty, onError, prepare, fillTheme }) {
+export function createRuntimeAppearanceController({
+  document,
+  invoke,
+  onDirty,
+  onError,
+  prepare,
+  fillTheme,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+}) {
   let snapshot = null;
   let baseline = null;
   let draft = null;
@@ -115,6 +123,9 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
   let previewFrame = null;
   let disposed = false;
   let generationTimer = null;
+  let generationPollRunning = false;
+  let rebinding = false;
+  let rebindPromise = null;
 
   const scalarControls = Object.freeze({
     portraitScalePercent: "portraitScale",
@@ -155,7 +166,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
         await invoke("settings_character_appearance_preview", { values });
       }
     } catch (error) {
-      onError(String(error));
+      if (!rebinding) onError(String(error));
     } finally {
       previewRunning = false;
     }
@@ -168,7 +179,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
   }
 
   function schedulePreview() {
-    if (previewFrame !== null || disposed) return;
+    if (previewFrame !== null || disposed || rebinding) return;
     previewFrame = window.requestAnimationFrame(() => {
       previewFrame = null;
       if (!previewRunning) previewDrainPromise = drainPreview();
@@ -180,18 +191,77 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
       draft = read();
       previewQueued = true;
       onDirty();
-      schedulePreview();
+      if (!rebinding) schedulePreview();
     } catch (error) {
       onError(String(error));
     }
   }
 
-  async function initialize(input) {
-    snapshot = validateAppearanceSnapshot(input);
+  function applySnapshot(input, { preserveDraft = false } = {}) {
+    const next = validateAppearanceSnapshot(input);
+    const previousDraft = draft ? clone(draft) : null;
+    const previousCharacterId = snapshot?.presentation?.characterId || "";
+    snapshot = next;
     baseline = clone(snapshot.appearance.values);
     draft = clone(baseline);
+    if (preserveDraft && previousDraft && previousCharacterId === snapshot.presentation.characterId) {
+      try {
+        draft = clone(validateAppearanceValues(previousDraft, snapshot.limits));
+      } catch {
+        draft = clone(baseline);
+      }
+    }
     prepare(snapshot, THEME_FIELDS);
     fill(draft);
+    onDirty();
+  }
+
+  async function rebindGeneration(targetGeneration) {
+    if (disposed || !targetGeneration || targetGeneration === snapshot?.presentation?.generationId) return;
+    if (rebindPromise) return rebindPromise;
+    rebinding = true;
+    let restorePreview = false;
+    rebindPromise = (async () => {
+      previewQueued = false;
+      cancelPreviewFrame();
+      await previewDrainPromise;
+      try {
+        await invoke("settings_character_appearance_cancel_preview");
+      } catch {
+        // Supervisor generation replacement already rolls back an old preview session.
+      }
+      const deadline = Date.now() + 10_000;
+      let lastError = null;
+      while (!disposed && Date.now() < deadline) {
+        try {
+          const next = validateAppearanceSnapshot(await invoke("settings_character_appearance_get"));
+          if (next.presentation.generationId === targetGeneration) {
+            applySnapshot(next, { preserveDraft: true });
+            restorePreview = Boolean(baseline && stable(draft) !== stable(baseline));
+            return;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+        await wait(100);
+      }
+      throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+    })().catch((error) => {
+      onError("Core 正在恢复外观设置，请稍后再试。已有改动仍会保留。");
+      throw error;
+    }).finally(() => {
+      rebinding = false;
+      rebindPromise = null;
+      if (restorePreview && !disposed) {
+        previewQueued = true;
+        schedulePreview();
+      }
+    });
+    return rebindPromise;
+  }
+
+  async function initialize(input) {
+    applySnapshot(input);
     for (const inputId of Object.values(scalarControls)) {
       document.getElementById(inputId).addEventListener("input", changed);
     }
@@ -202,32 +272,27 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
       changed();
     });
     generationTimer = window.setInterval(async () => {
-      if (disposed) return;
+      if (disposed || generationPollRunning) return;
+      generationPollRunning = true;
       try {
         const lifecycle = await invoke("runtime_lifecycle_snapshot");
-        if (lifecycle?.supervisor?.generationId === snapshot.presentation.generationId) return;
-        previewQueued = false;
-        cancelPreviewFrame();
-        await invoke("settings_character_appearance_cancel_preview");
-        disposed = true;
-        for (const control of document.querySelectorAll(
-          "#page-character input, #page-character select, #page-character button, #page-appearance input, #page-appearance select, #page-appearance button, #applyButton, #saveButton",
-        )) {
-          control.disabled = true;
+        const targetGeneration = lifecycle?.supervisor?.generationId;
+        if (typeof targetGeneration === "string" && targetGeneration) {
+          await rebindGeneration(targetGeneration);
         }
-        onError("Core 已更新；未提交预览已恢复。请关闭并重新打开设置。");
-        window.clearInterval(generationTimer);
       } catch {
         // A transient lifecycle read must not mutate the draft or persisted baseline.
+      } finally {
+        generationPollRunning = false;
       }
     }, 500);
-    onDirty();
   }
 
   return Object.freeze({
     initialize,
     isDirty: () => Boolean(baseline && stable(draft) !== stable(baseline)),
     async save() {
+      if (rebindPromise) await rebindPromise;
       if (!snapshot) throw new Error("角色外观设置尚未加载");
       draft = read();
       previewQueued = false;
@@ -246,6 +311,7 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
       onDirty();
     },
     async cancelPreview() {
+      if (rebindPromise) await rebindPromise;
       previewQueued = false;
       cancelPreviewFrame();
       await previewDrainPromise;
@@ -261,6 +327,8 @@ export function createRuntimeAppearanceController({ document, invoke, onDirty, o
       previewQueued = false;
       cancelPreviewFrame();
       window.clearInterval(generationTimer);
+      rebindPromise = null;
+      rebinding = false;
     },
   });
 }
