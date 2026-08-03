@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-04
 ---
 
 # ADR-0005：Runtime v2 通过无 Qt 薄 Assistant Adapter 接入既有领域代码
@@ -58,6 +58,22 @@ Supervisor 边界冲突。
 - Provider 网络验证、聊天执行、Memory、Tools、MCP、插件和 TTS 由各自真实消费者 Work Package
   独立接入，不通过扩张 Adapter 初始化范围提前实现。
 - 不建立第二个 Assistant 进程、第二个 stdout writer 或第二生命周期根。
+
+### 2026-08-04：Memory embedding 隔离澄清
+
+WP-4-01 真实 Windows 冷启动证明，`SentenceTransformer` 导入 PyTorch 时会连续占用 GIL，超过 Core
+Router 的设置请求和 Supervisor Snapshot deadline。普通 Python 线程无法满足“Memory 初始化不阻塞聊天
+与控制面”的既有契约。因此本 ADR 对“第二 Python 进程”的边界作如下澄清：
+
+- 仍禁止第二 Assistant、第二 Core Host、sidecar 协议和独立生命周期根；角色、Provider、`AgentRuntime`、
+  `MemoryStore`、Qdrant、SQLite、配置与业务状态继续由唯一 Core generation 拥有。
+- 允许 Core generation 为不可在活动解释器内安全冷加载的本地推理依赖创建窄子进程。本次子进程只拥有
+  固定 HuggingFace embedding 模型，使用私有 Pipe 返回向量，不拥有 Memory 数据或公共协议。
+- 子进程必须由 Memory owner 创建、取消和回收，继承 Supervisor 管理的进程树；启动、请求、关闭均有界，
+  失败降级为空召回。它不是可独立恢复、寻址或长期驻留的服务。
+
+该澄清保留方案 A 的单一 Assistant Facade 和生命周期根，同时避免方案 C 所述的第二套 Assistant IPC、
+监管和恢复机制；如果未来把 Memory 数据或 Assistant 会话移入独立服务，仍须新增 ADR 替代本决策。
 
 精确配置输入、readiness code、Snapshot DTO、秘密投影和验收条件继续由
 [`WP-3-01` spec](../specs/runtime-v2/WP-3-01-qt-free-assistant-adapter-readiness.md) 约束。

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-03
+updated: 2026-08-04
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -32,7 +32,9 @@ updated: 2026-08-03
 ## 2. 所有权与依赖边界
 
 - `app/core_host/assistant_adapter.py` 在 initializer worker 内懒加载并构造当前 generation 唯一的无 Qt
-  Memory owner。Memory、整理器和相关线程按创建反序幂等关闭，不建立第二 Python 进程或生命周期根。
+  Memory owner。Memory、整理器和相关资源按创建反序幂等关闭，不建立第二 Assistant、协议 writer 或
+  生命周期根。固定本地 embedding 的 PyTorch 导入与推理必须位于该 owner 管理的 generation 子进程，
+  不能在 Core Router 进程的 Python 线程内运行。
 - `AgentRuntime` 与 `MemoryRecallService` 保留 Memory 业务语义；`RealChatBoundary` 只协调已完成聊天与
   整理调度，不成为 Memory 或历史真相源。
 - 禁止复用 `app/core/bootstrap.py`、`AppContext`、`app/ui/tauri_settings.py`、
@@ -40,6 +42,9 @@ updated: 2026-08-03
   必须保持无 Qt。
 - Rust/WebView 不解析 Qdrant、SQLite、mem0 或 Memory 文本文件；不缓存可写 Memory 副本。旧
   generation 的 response/event/task handle 一律失效。
+- embedding 子进程只读取固定模型缓存并通过私有本地 Pipe 收发受界文本/向量；Qdrant、SQLite、配置、
+  scope、CRUD、整理与公开 DTO 仍只由 Core 内的 `MemoryStore`/`MemoryBoundary` 拥有。子进程必须继承
+  当前 generation 的进程树，在 Core 正常退出、强杀、加载取消和 generation 更换时有界回收。
 - vendored mem0 和现有依赖锁不在本 WP 修改。若现有库不能满足三平台门，应停止并重新审查依赖，不能
   在本 WP 静默升级或替换。
 
@@ -106,6 +111,11 @@ Memory 状态只允许 `ready/loading/degraded/read_only/failed/stopped`。检�
 空命中；聊天在其内部 `serviceStatus.memory` 记录状态但仍继续 Provider 请求。该状态不加入当前通用
 Snapshot；设置窗口通过专用读取获得。
 
+首次加载固定 embedding 模型期间，`memory.settings.get`、`memory.search`、`core.snapshot`、聊天与
+`system.shutdown` 必须持续响应；PyTorch/SentenceTransformer 导入不得持有 Core Router 的 GIL。设置页
+可显示 `loading` 并返回空命中，模型子进程就绪后原位变为 `ready`。启动失败或超时必须进入可见降级状态，
+不得永久停留在 `loading`，也不得触发 Supervisor generation 重启循环。
+
 ## 5. 聊天检索与整理语义
 
 每轮聊天最多执行一次相关记忆检索。query 由当前用户输入和受界近期用户上下文构造；最多选 5 条，
@@ -168,6 +178,9 @@ composition 保留；未提交内容不得自动保存、提交或清空。旧 g
 - 自动整理阈值、仅完成回复计数、Provider/格式/写回失败、取消与 Core 强杀、游标恢复和不重复整理。
 - Qdrant、SQLite、embedding loader/download/import、thread、waiter、文件锁、pipe 和临时目录在正常退出、
   关窗、取消、Core crash、Shell exit 后有界回收；共享应用锁立即重获。
+- 在真实固定模型已安装的环境中持续轮询 `core.snapshot` 与 `memory.settings.get`，覆盖 PyTorch 冷导入
+  全程无 Router deadline、无 generation replacement；就绪后真实搜索成功。另覆盖加载中立即 shutdown，
+  Core 与 embedding 子进程在既有一秒 Assistant 清理门内退出且无残留。
 - ZIP 路径逃逸、symlink、超大文件、错误模型/dimensions、下载超时/断流/校验失败保留旧缓存；不允许
   隐式联网。
 - legacy headless reference oracle → Runtime v2 → reference oracle 往返；除预声明 Memory/配置写入外
