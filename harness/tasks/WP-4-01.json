@@ -46,6 +46,7 @@
     "app/storage/chat_history.py",
     "app/storage/paths.py",
     "desktop/frontend/settings/capability-shell.js",
+    "desktop/frontend/settings/appearance-runtime.js",
     "desktop/frontend/settings/index.html",
     "desktop/frontend/settings/memory-runtime.js",
     "desktop/frontend/settings/settings.js",
