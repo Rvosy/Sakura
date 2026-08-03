@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3V-01
+active_work_package: WP-4-01
 updated: 2026-08-03
 ---
 
@@ -108,8 +108,8 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-04 | 真实聊天接入已冻结桌宠 UI | WP-H-01 | accepted |
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
-| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | stabilizing |
-| WP-4-01 | Memory 能力等价 | WP-3V-01 | planned |
+| WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
+| WP-4-01 | Memory 能力等价 | WP-3V-01 | active |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2622,6 +2622,11 @@ Tauri/Rust 启动 bundled Python Core
 
 稳定化与回退：本 WP 只接受验证设施和证据修正。发现生产缺陷时，停止 WP-3V-01 并把它退回 `planned`，只将拥有该缺陷的一个前置 WP 重新置为 `stabilizing`；修复并重新 accepted 后再激活本 WP。独立回退验证 harness/调试 UI/台账证据即可，不回退已独立 accepted 的生产 WP，不删除或改写用户数据。
 
+负责人验收记录（2026-08-03）：项目负责人确认人工验收通过并批准进入 WP-4-01；接受候选
+`dabcd7733548c0aa2953f02578e5e3f79a6200fc` 的同一 SHA 三平台 Runtime v2 foundation 与 Test workflow
+均成功。CAP-004 据此推进为 `architecture-validated`，不等于 `parity-accepted`。声明、人工边界与证据见
+`docs/records/audits/WP-3V-01-OWNER-ACCEPTANCE.md`。
+
 ## 14. Phase 4–7 强制 Work Package
 
 以下编号和发布能力映射保留为暂定执行序列。WP-3V-01 通过后，应按下一个真实产品消费者重新确认依赖；不得仅因 ADR 已记录方向就提前完整实现通用抽象。每个 WP 进入 `active` 前必须补充逐文件允许目录、平台环境、真实消费者、协议字段、故障矩阵、人工步骤和独立回退；不得把相邻行合并成一次“大迁移”。
@@ -2638,6 +2643,33 @@ Tauri/Rust 启动 bundled Python Core
 | WP-4-06 | CAP-015 | 手动截图、相关设置及其首个 generation resource token 消费者与平台权限 | 设置与实际捕获一致；多屏/DPI、macOS 权限、X11/Wayland portal、token 失效通过 |
 | WP-4-07 | CAP-016/017 | 自动观察、主动互动、提醒、任务调度及其隐私/交互设置 | 设置保存/生效、时区/休眠恢复、重复事件、取消、数据持久化和截图权限通过 |
 | WP-4-08 | CAP-008–017 | Phase 4 组合稳定化；只冻结已经有多个真实消费者证明的调度/背压共性 | 长任务不阻塞 control；Memory/MCP/plugin/TTS/screenshot 全资源零残留 |
+
+#### WP-4-01：Memory 能力等价
+
+激活冻结契约（2026-08-03）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3V-01 已由项目负责人明确验收并标记 accepted；CAP-004 已为 architecture-validated
+base_ref：5fc9e56ccc091b8e099935fe5035d76b14be5e03
+真实消费者：Runtime v2 真实聊天的 Memory recall/完成轮整理，以及同一 Tauri App 的 Memory 设置和管理页面
+所有者：当前 bundled Python Core generation 内唯一无 Qt Memory owner；Rust 只管协商、窗口授权、identity、deadline 和公开 DTO
+协议：可选能力 assistant.memory；memory.search/upsert/delete、memory.settings.get/save、memory.model.import/download/cancel；模型任务只发 memory.model.* 唯一终态事件
+设置切片：开放 memory.manage、memory.curation、memory.embedding_model、model.memory_curation_slot；其他领域 feature 保持 unavailable
+允许目录：逐文件范围以 harness/tasks/WP-4-01.json 为准；新增 Core Memory boundary、Rust Memory Gateway、现有 settings Memory 页面接线、隔离 fixtures/tests/Windows 验收和三平台 workflow
+明确禁止：AppContext/bootstrap、Qt worker/tauri_settings/PetWindow、Legacy Qt 产品入口、通用 Operation/Tools/Action ID、MCP/plugin/TTS/screenshot、依赖与 lockfile；data/**、characters/**、third_party/** 受保护
+数据：Python 独占既有 Qdrant/SQLite/core_profiles/curation_state；memory.json 保持字节不变；测试只写隔离根，真实写入只来自明确用户动作或完成回复整理
+验收环境：bundled Python；Windows 真实 Runtime v2 EXE/WebView2 隔离验收；同一候选 SHA Windows x64、macOS arm64、Linux x64 locked workflow；Legacy 仅 headless 数据 oracle
+故障矩阵：Memory loading/failed、embedding 缺失、Qdrant/SQLite/锁/权限/磁盘/原子写故障、损坏/未来数据、CRUD/整理并发、模型 ZIP/下载失败、取消/关窗/Core 强杀/旧 generation、IME 草稿和完整资源清场
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
+人工验收：直接启动当前 EXE，在隔离根完成 IME CRUD、检索影响聊天、一次整理、设置/模型失败恢复、Core 强杀恢复、退出零残留，并审查同 SHA 三平台证据
+回退：先禁用四个 Memory feature，停止新任务并退出 Core；只回退 WP-4-01 接线，恢复 DisabledMemory 降级；不删除、恢复、迁移或修复任何用户 Memory/配置/history 数据
+任务契约：harness/tasks/WP-4-01.json；activation：harness/activations/WP-4-01/0001.json
+```
+
+精确行为、DTO、字段上限、数据兼容、资源所有权、人工步骤与非目标见
+`docs/specs/runtime-v2/WP-4-01-memory-capability.md`。实现中若发现必须升级依赖、引入新进程、改变
+Memory 数据格式或抽取通用 Operation，须停止本 WP 并独立重新审查契约，不得在 active 范围内顺手扩大。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

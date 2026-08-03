@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-02
+updated: 2026-08-03
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -14,7 +14,7 @@ updated: 2026-08-02
 决策日期：2026-07-28
 执行状态唯一真相源：docs/plans/runtime-v2/work-packages.md 第 2 节
 已关闭硬门：WP-3U-02 已于 2026-07-29 accepted
-当前设置 WP：WP-3-04 真实聊天表现设置切片
+当前设置执行项：只以 docs/plans/runtime-v2/work-packages.md 为准，本文不复制当前状态
 ```
 
 ## 1. 架构依据
@@ -23,9 +23,8 @@ updated: 2026-08-02
 长期后果见 [`ADR-0007`](../../adr/0007-incremental-settings-feature-migration.md)。本文定义每个设置
 切片必须满足的行为、数据、安全和验收契约。
 
-这个调整不改变单一 Work Package 规则。WP-3U-02 与 WP-3S-01 已完成验收；插入其后的 WP-H-01 也已
-于 2026-07-31 由项目负责人明确验收。WP-3-04 现按冻结任务契约激活，只开放下文定义的真实聊天表现
-timing 与字幕语言 feature，不重新开放已经被固定桌宠 UI 否决的自动隐藏或自由布局字段。
+这个调整不改变单一 Work Package 规则。已经完成的设置切片及当前激活项只以 Work Package 状态源为
+准；每个后续领域仍只开放其冻结 feature，不重新开放被固定桌宠 UI 否决或尚无真实消费者的控件。
 
 ## 2. 适用前提
 
@@ -93,8 +92,8 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 
 ## 5. 交付顺序
 
-设置的实际交付顺序由消费者依赖、数据风险和可回退性共同决定，不按表单字段多少排序。WP-3U-02、
-WP-3S-01 与 WP-H-01 的前置门已经关闭；当前执行下表第 3 项 WP-3-04。
+设置的实际交付顺序由消费者依赖、数据风险和可回退性共同决定，不按表单字段多少排序。下表只表达
+迁移顺序和领域归属，不复制 Work Package 当前状态。
 
 | 顺序 | 设置切片 | 目标 WP | 相对难度 | 开放条件与边界 |
 |---:|---|---|---|---|
@@ -256,3 +255,7 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 
 若一个能力 WP 不需要用户设置，也必须明确写“无设置切片”，避免把遗漏误认为有意延期。Phase 5 的
 WP-5-01/02 只负责缺口收口、跨域一致性审计和首次设置编排，不得重新聚合已经分域完成的保存逻辑。
+
+WP-4-01 的 Memory 设置字段、`memory.manage`、`memory.curation`、`memory.embedding_model` 与
+`model.memory_curation_slot` feature、失败降级和独立回退由
+[`WP-4-01 Memory spec`](WP-4-01-memory-capability.md) 约束。
