@@ -32,6 +32,12 @@ generation 更换后废弃外观控制器、禁用全局“应用”和“保存
 Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器锁死。该路径与本次既有设置重绑定契约直接
 冲突，不是 Memory 数据或保存命令失败。
 
+同日继续检查真实 Windows 设置窗口，确认 Memory 从未完成首次加载时，footer 的首个异常为
+`TypeError: Cannot read properties of undefined (reading 'api_temperature')`。外观快照初始化及跨代重绑定会
+整体替换设置页共享 `request`，删除已由 Provider/模型域写入的 API limits，并可能同时删除 Memory 域
+状态；随后 Provider 脏状态计算同步抛错，中止后续 Memory 初始化。这是设置域共享前端状态的所有权
+缺陷，不是 Memory 存储为空、损坏或 Gateway 返回失败。
+
 ## 修订契约与修复门
 
 - 所有模型相关设置统一呈现在“模型”页：记忆整理 Provider/模型和固定 embedding 模型状态、导入、
@@ -61,12 +67,16 @@ Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器�
 - 外观控制器在 Core generation 更换后取消旧代预览并原位打开新代预览会话；同一角色的外观草稿继续
   保留并恢复预览。重绑定不再废弃设置会话、禁用全局应用/保存动作或要求关闭重开；保存和取消会等待
   当前重绑定完成，旧代预览错误不得覆盖新代页面状态。
+- 外观快照只合并其拥有的角色、主题和布局字段，不再整体替换设置页共享状态；Provider limits/API 与
+  Memory settings 在外观首次初始化和跨代重绑定后都必须继续存在，首屏 Memory 初始化不得被其他设置域
+  的脏状态计算打断。
 
 自动结果：
 
-- `node --test desktop/frontend/tests/*.test.js`：最新候选 117 passed、0 failed；新增用例覆盖
-  generation A→B 后外观草稿、全局应用/保存按钮和新代保存能力。
-- `runtime\python.exe -m harness run runtime-v2-shell`：最新候选 8/8 cases passed；其中前端 117、Provider/模型 25、
+- `node --test desktop/frontend/tests/*.test.js`：最新候选 118 passed、0 failed；新增用例覆盖
+  generation A→B 后外观草稿、全局应用/保存按钮、新代保存能力，以及外观重绑定不得删除 Provider limits
+  与 Memory 状态。
+- `runtime\python.exe -m harness run runtime-v2-shell`：最新候选 8/8 cases passed；其中前端 118、Provider/模型 25、
   Memory 10，以及角色、产品 Shell、窗口几何和交互 Rust 门全部通过。
 - `runtime\python.exe -m harness verify WP-4-01`：23 automated passed、0 failed、3 manual pending；报告为
   `temp/harness/20260803T161746Z-WP-4-01.json`。首次执行只因外层 120 秒命令时限中止，重新执行在

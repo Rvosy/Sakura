@@ -129,6 +129,13 @@ test("programmatic settings navigation synchronizes the native hidden state", ()
   assert.match(showPage, /element\.hidden\s*=\s*key !== page/);
 });
 
+test("appearance rebinding preserves provider limits and Memory state owned by other settings domains", () => {
+  const prepareAppearance = settingsEntry.match(
+    /function prepareRuntimeAppearance\(snapshot, themeFields\) \{[\s\S]*?\n\}/,
+  )?.[0] || "";
+  assert.match(prepareAppearance, /request = \{\s*\.\.\.\(request \|\| \{\}\),\s*character:/);
+});
+
 test("DeepSeek provider preset references a packaged SVG icon", () => {
   assert.match(settingsEntry, /iconUrl:\s*"\.\/assets\/providers\/deepseek\.svg"/);
   assert.match(deepSeekIcon, /<title>DeepSeek<\/title>/);

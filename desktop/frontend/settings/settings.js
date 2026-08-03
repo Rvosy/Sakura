@@ -238,6 +238,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     themeFields.map(([field, legacyField]) => [legacyField, snapshot.presentation.themeTokens[field]]),
   );
   request = {
+    ...(request || {}),
     character: {
       current_character_id: snapshot.presentation.characterId,
       characters: [{
