@@ -9,10 +9,23 @@ const LAYERS = Object.freeze([
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const stable = (value) => JSON.stringify(value);
+const GENERATION_TRANSITION_CODES = [
+  "GENERATION_INVALIDATED",
+  "SETTINGS_CORE_GENERATION_MISMATCH",
+  "SETTINGS_CORE_UNAVAILABLE",
+  "MEMORY_OPERATION_INVALIDATED",
+  "Router closed",
+];
 
 function object(value, message) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
   return value;
+}
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function validateIdentity(snapshot) {
@@ -77,6 +90,17 @@ export function normalizeMemoryRecord(input) {
   });
 }
 
+export function isMemoryGenerationTransitionError(error) {
+  const message = String(error?.message || error || "");
+  return GENERATION_TRANSITION_CODES.some((code) => message.includes(code));
+}
+
+function isSafePreDispatchIdentityError(error) {
+  const message = String(error?.message || error || "");
+  return message.includes("SETTINGS_CORE_GENERATION_MISMATCH")
+    || message.includes("SETTINGS_CORE_UNAVAILABLE");
+}
+
 export function createMemoryController({
   document,
   invoke,
@@ -85,11 +109,16 @@ export function createMemoryController({
   onDirty,
   onError,
   onModelEvent = () => {},
+  onRebindState = () => {},
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
   let snapshot = null;
   let baseline = null;
   let disposed = false;
   let unlistenModel = null;
+  let rebindPromise = null;
+  let rebinding = false;
+  let generationRevision = 0;
 
   const provider = () => document.getElementById("memoryCurationProvider");
   const model = () => document.getElementById("memoryCurationModel");
@@ -126,10 +155,20 @@ export function createMemoryController({
     model().value = selected;
   }
 
-  function fillSettings() {
+  function settingsFromSnapshot() {
+    return {
+      triggerTurns: snapshot.curation.triggerTurns,
+      curationModelSlot: {
+        profileId: snapshot.curationModelSlot.profileId,
+        model: snapshot.curationModelSlot.model,
+      },
+    };
+  }
+
+  function fillSettings(settings = settingsFromSnapshot()) {
     trigger().min = "1";
     trigger().max = "50";
-    trigger().value = String(snapshot.curation.triggerTurns);
+    trigger().value = String(settings.triggerTurns);
     provider().textContent = "";
     const empty = document.createElement("option");
     empty.value = "";
@@ -141,19 +180,29 @@ export function createMemoryController({
       option.textContent = choice.alias;
       provider().append(option);
     }
-    provider().value = snapshot.curationModelSlot.profileId;
-    refillModels(snapshot.curationModelSlot.model);
+    provider().value = settings.curationModelSlot.profileId;
+    refillModels(settings.curationModelSlot.model);
   }
 
-  async function initialize(input, { preserveEditor = true } = {}) {
+  async function initialize(input, { preserveEditor = true, preserveSettings = false } = {}) {
+    let settingsDraft = null;
+    if (preserveSettings && snapshot) {
+      try {
+        settingsDraft = clone(readSettings());
+      } catch {
+        settingsDraft = null;
+      }
+    }
     snapshot = validateMemorySnapshot(input);
+    generationRevision += 1;
     if (listen && !unlistenModel) {
       unlistenModel = await listen("sakura://memory-model-event", ({ payload }) => {
         receiveModelEvent(payload);
       });
     }
-    fillSettings();
+    fillSettings(settingsFromSnapshot());
     baseline = clone(readSettings());
+    if (settingsDraft) fillSettings(settingsDraft);
     applySnapshot(snapshot, { layers: LAYERS, preserveEditor });
     onDirty();
   }
@@ -203,29 +252,85 @@ export function createMemoryController({
 
   async function call(command, args = {}) {
     if (!snapshot) throw new Error("Memory settings are not initialized");
-    return invoke(command, {
+    if (rebindPromise) await rebindPromise;
+    if (!snapshot || disposed) throw new Error("Memory settings are not initialized");
+    const boundGeneration = snapshot.coreGenerationId;
+    const boundRevision = generationRevision;
+    const result = await invoke(command, {
       windowGeneration: snapshot.windowGeneration,
-      coreGenerationId: snapshot.coreGenerationId,
+      coreGenerationId: boundGeneration,
       ...args,
     });
+    if (
+      !snapshot
+      || snapshot.coreGenerationId !== boundGeneration
+      || generationRevision !== boundRevision
+    ) {
+      throw new Error("MEMORY_OPERATION_INVALIDATED");
+    }
+    return result;
   }
 
-  async function rebind(previousGeneration) {
+  async function bindCurrent(previousGeneration, requireGenerationChange) {
+    if (rebindPromise) return rebindPromise;
+    const previous = previousGeneration || snapshot?.coreGenerationId || "";
     const deadline = Date.now() + 10_000;
-    let lastError = null;
-    while (!disposed && Date.now() < deadline) {
-      try {
-        const next = validateMemorySnapshot(await invoke("settings_memory_get"));
-        if (next.coreGenerationId !== previousGeneration) {
-          await initialize(next, { preserveEditor: true });
-          return;
+    rebinding = true;
+    onRebindState(true);
+    rebindPromise = (async () => {
+      let lastError = null;
+      while (!disposed && Date.now() < deadline) {
+        try {
+          const next = validateMemorySnapshot(await invoke("settings_memory_get"));
+          if (!requireGenerationChange || !previous || next.coreGenerationId !== previous) {
+            await initialize(next, { preserveEditor: true, preserveSettings: true });
+            return next;
+          }
+        } catch (error) {
+          lastError = error;
         }
-      } catch (error) {
-        lastError = error;
+        await wait(100);
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      throw new Error(`MEMORY_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+    })().finally(() => {
+      rebindPromise = null;
+      rebinding = false;
+      onRebindState(false);
+    });
+    return rebindPromise;
+  }
+
+  const rebind = (previousGeneration) => bindCurrent(previousGeneration, true);
+
+  async function write(command, args) {
+    const previous = snapshot?.coreGenerationId || "";
+    try {
+      return await call(command, args);
+    } catch (error) {
+      if (isSafePreDispatchIdentityError(error)) {
+        try {
+          await rebind(previous);
+          return await call(command, args);
+        } catch (retryError) {
+          error = retryError;
+        }
+      }
+      if (rebindPromise || isMemoryGenerationTransitionError(error)) {
+        try {
+          await rebind(previous);
+        } catch {
+          throw codedError(
+            "MEMORY_REBIND_FAILED",
+            "记忆连接暂未恢复，请保留当前草稿并稍后重试。",
+          );
+        }
+        throw codedError(
+          "MEMORY_WRITE_OUTCOME_UNCERTAIN",
+          "Core 已恢复；已安全刷新记忆列表，请确认后重试本次操作。",
+        );
+      }
+      throw error;
     }
-    throw new Error(`MEMORY_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
   }
 
   provider().addEventListener("change", () => {
@@ -245,14 +350,23 @@ export function createMemoryController({
       }
     },
     async search({ query, limit, layer = "" }) {
-      const result = await call("settings_memory_search", { query, limit, layer: layer || null });
-      return {
-        ...result,
-        memories: Array.isArray(result.memories) ? result.memories.map(normalizeMemoryRecord) : [],
-      };
+      const previous = snapshot?.coreGenerationId || "";
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const result = await call("settings_memory_search", { query, limit, layer: layer || null });
+          return {
+            ...result,
+            memories: Array.isArray(result.memories) ? result.memories.map(normalizeMemoryRecord) : [],
+          };
+        } catch (error) {
+          if (attempt > 0 || (!rebindPromise && !isMemoryGenerationTransitionError(error))) throw error;
+          await rebind(previous);
+        }
+      }
+      throw new Error("记忆连接暂未恢复，请稍后刷新。");
     },
-    upsert: (memory) => call("settings_memory_upsert", { memory }),
-    delete: (id) => call("settings_memory_delete", { id }),
+    upsert: (memory) => write("settings_memory_upsert", { memory }),
+    delete: (id) => write("settings_memory_delete", { id }),
     async save() {
       const previous = snapshot.coreGenerationId;
       const result = await call("settings_memory_save", { settings: readSettings() });
@@ -264,6 +378,8 @@ export function createMemoryController({
       }
       return result;
     },
+    refreshCurrent: () => bindCurrent(snapshot?.coreGenerationId || "", false),
+    isRebinding: () => rebinding,
     async downloadModel() {
       const result = await call("settings_memory_model_download");
       snapshot = Object.freeze({
@@ -308,6 +424,8 @@ export function createMemoryController({
       }
       if (typeof unlistenModel === "function") unlistenModel();
       unlistenModel = null;
+      rebindPromise = null;
+      rebinding = false;
       snapshot = null;
       baseline = null;
     },

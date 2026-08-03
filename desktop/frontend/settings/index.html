@@ -348,6 +348,30 @@
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
+          <fieldset class="settings-group" id="memoryModelSettings">
+            <legend>记忆模型</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="memoryCurationProvider">
+                <span class="setting-title">记忆整理 Provider</span>
+                <span class="setting-desc">从已配置的供应商中选择自动整理长期记忆所用的服务。</span>
+              </label>
+              <select id="memoryCurationProvider" data-settings-feature="model.memory_curation_slot"></select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="memoryCurationModel">
+                <span class="setting-title">记忆整理模型</span>
+                <span class="setting-desc">留空会停用自动整理，不影响手工管理和已有记忆召回。</span>
+              </label>
+              <select id="memoryCurationModel" data-settings-feature="model.memory_curation_slot"></select>
+            </div>
+            <details class="resource-foldout" data-settings-feature="memory.embedding_model">
+              <summary>
+                <span>本地记忆模型</span>
+              </summary>
+              <div id="memoryModelResourceCard" class="resource-card"></div>
+            </details>
+          </fieldset>
+
           <details class="settings-group advanced-section">
             <summary>高级参数</summary>
             <div class="setting-row">
@@ -627,26 +651,12 @@
             <div id="memoryStatusStrip" class="admin-strip"></div>
             <div class="admin-mini-panel">
               <label class="compact-number" for="memoryTriggerTurns">
-                <span>自动整理频率</span>
-                <input id="memoryTriggerTurns" type="number" step="1" />
+                <span>自动整理轮次</span>
+                <input id="memoryTriggerTurns" type="number" step="1" data-settings-feature="memory.curation" />
                 <span class="unit">轮</span>
-              </label>
-              <label>
-                <span>整理 Provider</span>
-                <select id="memoryCurationProvider" data-settings-feature="model.memory_curation_slot"></select>
-              </label>
-              <label>
-                <span>整理模型</span>
-                <select id="memoryCurationModel" data-settings-feature="model.memory_curation_slot"></select>
               </label>
             </div>
           </div>
-          <details class="resource-foldout">
-            <summary>
-              <span>记忆模型</span>
-            </summary>
-            <div id="memoryModelResourceCard" class="resource-card"></div>
-          </details>
           <div class="admin-toolbar">
             <input id="memorySearch" class="admin-search" type="text" placeholder="搜索内容、ID、分类、来源" />
             <select id="memoryLayerFilter"></select>

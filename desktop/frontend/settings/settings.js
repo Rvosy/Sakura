@@ -175,7 +175,10 @@ const memoryState = {
   message: "",
   draft: null,
   editorDrafts: new Map(),
+  rebinding: false,
+  composing: false,
 };
+let memoryLoadRevision = 0;
 const pluginState = {
   selectedId: "",
   enabledById: {},
@@ -2681,6 +2684,12 @@ function resourcesSnapshot() {
   return resourceState.snapshot || request?.resources || {};
 }
 
+function runtimeFeatureAvailable(feature) {
+  if (!runtimeSettingsHost) return true;
+  return Object.values(runtimeCapabilityManifest?.sections || {})
+    .some((section) => section?.features?.[feature] === "available");
+}
+
 function taskFor(kind) {
   const snapshot = resourcesSnapshot();
   if (kind === "tts") {
@@ -3117,7 +3126,9 @@ function renderMemoryModelResourceCard() {
   if (runtimeMemoryController) {
     const embedding = runtimeMemoryController.embedding() || {};
     const memoryRuntimeStatus = runtimeMemoryController.status();
-    const actionsDisabled = ["read_only", "failed", "stopped", "unavailable"].includes(memoryRuntimeStatus);
+    const actionsDisabled = runtimeMemoryController.isRebinding()
+      || !runtimeFeatureAvailable("memory.embedding_model")
+      || ["read_only", "failed", "stopped", "unavailable"].includes(memoryRuntimeStatus);
     const task = embedding.task;
     const running = Boolean(task?.accepted);
     const failedMessage = task?.error?.message || "";
@@ -3426,19 +3437,47 @@ function selectedMemory() {
   if (memoryState.selectedId === "__draft__") {
     return memoryState.draft;
   }
-  return memoryState.entries.find((entry) => entry.id === memoryState.selectedId) || null;
+  const entry = memoryState.entries.find((item) => item.id === memoryState.selectedId);
+  if (entry) return entry;
+  const editorDraft = memoryState.editorDrafts.get(memoryState.selectedId);
+  return editorDraft ? { id: memoryState.selectedId, ...editorDraft } : null;
+}
+
+function syncRuntimeMemorySettingsAvailability() {
+  const settingsReadOnly = memoryState.rebinding
+    || ["read_only", "failed", "stopped"].includes(memoryState.status);
+  fields.memoryTriggerTurns.disabled = settingsReadOnly
+    || !runtimeFeatureAvailable("memory.curation");
+  document.getElementById("memoryCurationProvider").disabled = settingsReadOnly
+    || !runtimeFeatureAvailable("model.memory_curation_slot");
+  document.getElementById("memoryCurationModel").disabled = settingsReadOnly
+    || !runtimeFeatureAvailable("model.memory_curation_slot");
 }
 
 function captureMemoryEditorDraft() {
   if (!memoryState.selectedId) return;
-  memoryState.editorDrafts.set(memoryState.selectedId, {
+  const draft = {
     content: fields.memoryContent.value,
     layer: fields.memoryLayer.value,
     category: fields.memoryCategory.value,
     source: fields.memorySource.value,
     importance: fields.memoryImportance.value,
     confidence: fields.memoryConfidence.value,
-  });
+  };
+  const committed = memoryState.entries.find((entry) => entry.id === memoryState.selectedId);
+  const unchanged = committed
+    && draft.content === memoryContent(committed)
+    && draft.layer === (committed.layer || memoryDefaults().layer)
+    && draft.category === (committed.category || "")
+    && draft.source === (committed.source || memoryDefaults().source)
+    && Number(draft.importance) === Number(committed.importance ?? memoryDefaults().importance)
+    && Number(draft.confidence) === Number(committed.confidence ?? memoryDefaults().confidence);
+  if (unchanged) {
+    memoryState.editorDrafts.delete(memoryState.selectedId);
+  } else {
+    memoryState.editorDrafts.set(memoryState.selectedId, draft);
+  }
+  refreshDirty();
 }
 
 function sortedMemories() {
@@ -3464,7 +3503,7 @@ function sortedMemories() {
   return entries;
 }
 
-function setMemoryEditorDisabled(disabled) {
+function setMemoryEditorDisabled(editorDisabled, actionsDisabled = editorDisabled) {
   [
     fields.memoryContent,
     fields.memoryLayer,
@@ -3472,17 +3511,18 @@ function setMemoryEditorDisabled(disabled) {
     fields.memorySource,
     fields.memoryImportance,
     fields.memoryConfidence,
-    fields.memorySaveButton,
-    fields.memoryRevertButton,
-    fields.memoryDeleteButton,
   ].forEach((field) => {
-    field.disabled = disabled;
+    field.disabled = editorDisabled;
   });
+  fields.memorySaveButton.disabled = actionsDisabled;
+  fields.memoryRevertButton.disabled = actionsDisabled;
+  fields.memoryDeleteButton.disabled = actionsDisabled;
   refreshSelect(fields.memoryLayer);
 }
 
 function fillMemoryEditor(record) {
-  const readOnly = ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
+  const readOnly = ["degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
+  const actionsDisabled = readOnly || memoryState.loading || memoryState.rebinding;
   if (!record) {
     fields.memoryContent.value = "";
     fields.memoryCategory.value = "";
@@ -3494,7 +3534,9 @@ function fillMemoryEditor(record) {
     return;
   }
   const editorDraft = memoryState.editorDrafts.get(memoryState.selectedId);
-  fields.memoryContent.value = editorDraft?.content ?? memoryContent(record);
+  if (!memoryState.composing) {
+    fields.memoryContent.value = editorDraft?.content ?? memoryContent(record);
+  }
   fields.memoryLayer.value = editorDraft?.layer || record.layer || memoryDefaults().layer;
   fields.memoryCategory.value = editorDraft?.category ?? record.category ?? "";
   fields.memorySource.value = editorDraft?.source ?? record.source ?? memoryDefaults().source;
@@ -3513,9 +3555,9 @@ function fillMemoryEditor(record) {
     dd.textContent = value;
     fields.memoryMeta.append(dt, dd);
   });
-  setMemoryEditorDisabled(readOnly);
-  fields.memoryDeleteButton.disabled = readOnly || memoryState.selectedId === "__draft__";
-  fields.memoryRevertButton.disabled = readOnly || memoryState.selectedId === "__draft__";
+  setMemoryEditorDisabled(readOnly, actionsDisabled);
+  fields.memoryDeleteButton.disabled = actionsDisabled || memoryState.selectedId === "__draft__";
+  fields.memoryRevertButton.disabled = actionsDisabled || memoryState.selectedId === "__draft__";
 }
 
 function renderMemoryStatus() {
@@ -3545,7 +3587,7 @@ function renderMemoryStatus() {
 
 function renderMemoryList() {
   fields.memoryList.textContent = "";
-  if (memoryState.loading) {
+  if (memoryState.loading && memoryState.entries.length === 0) {
     const item = document.createElement("p");
     item.className = "empty-state";
     item.textContent = "记忆系统正在加载。";
@@ -3617,8 +3659,9 @@ function renderMemoryPage() {
   renderMemoryStatus();
   renderMemoryList();
   fillMemoryEditor(selectedMemory());
-  fields.memoryAddButton.disabled = ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
-  fields.memoryRefreshButton.disabled = memoryState.loading;
+  fields.memoryAddButton.disabled = memoryState.rebinding
+    || ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
+  fields.memoryRefreshButton.disabled = memoryState.loading || memoryState.rebinding;
   renderMemoryModelResourceCard();
 }
 
@@ -3628,6 +3671,7 @@ async function loadMemories() {
   }
   clearMemoryRetry();
   captureMemoryEditorDraft();
+  const loadRevision = ++memoryLoadRevision;
   memoryState.loading = true;
   memoryState.status = "loading";
   memoryState.message = "记忆系统正在加载。";
@@ -3644,6 +3688,7 @@ async function loadMemories() {
     const result = runtimeMemoryController
       ? await runtimeMemoryController.search(params)
       : await hostCall("memory.search", params);
+    if (loadRevision !== memoryLoadRevision) return;
     memoryState.status = result.status || "ready";
     memoryState.message = result.message || result.error || "";
     shouldRetry = memoryState.status === "loading";
@@ -3651,13 +3696,19 @@ async function loadMemories() {
       ? result.memories.filter((entry) => entry && entry.id)
       : [];
     memoryState.loaded = true;
-    if (!memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
+    const preserveSelection = memoryState.selectedId === "__draft__"
+      || memoryState.editorDrafts.has(memoryState.selectedId);
+    if (!preserveSelection && !memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
       memoryState.selectedId = memoryState.entries[0]?.id || "";
     }
   } catch (error) {
+    if (loadRevision !== memoryLoadRevision) return;
     memoryState.status = "degraded";
-    memoryState.message = String(error);
+    memoryState.message = runtimeMemoryController
+      ? "记忆连接暂不可用；已有内容和草稿已保留，请稍后刷新。"
+      : String(error);
   } finally {
+    if (loadRevision !== memoryLoadRevision) return;
     memoryState.loading = false;
     renderMemoryPage();
     if (shouldRetry) {
@@ -3719,6 +3770,9 @@ async function saveMemoryEditor() {
     await loadMemories();
     notify("已保存记忆。", "success");
   } catch (error) {
+    if (runtimeMemoryController && error?.code === "MEMORY_WRITE_OUTCOME_UNCERTAIN") {
+      await loadMemories();
+    }
     setError(String(error));
   }
 }
@@ -3750,6 +3804,9 @@ async function deleteSelectedMemory() {
     await loadMemories();
     notify("已删除记忆。", "success");
   } catch (error) {
+    if (runtimeMemoryController && error?.code === "MEMORY_WRITE_OUTCOME_UNCERTAIN") {
+      await loadMemories();
+    }
     setError(String(error));
   }
 }
@@ -4537,12 +4594,14 @@ async function saveRuntimeSettings() {
     });
     renderProviderPage();
     runtimeProviderModelController.rebase();
+    await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
   }
   if (runtimeMemoryController?.isDirty()) {
     result = await runtimeMemoryController.save();
+    await loadMemories();
   }
   return result;
 }
@@ -4916,9 +4975,17 @@ fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
 fields.memoryRevertButton.addEventListener("click", () => {
   memoryState.editorDrafts.delete(memoryState.selectedId);
   fillMemoryEditor(selectedMemory());
+  refreshDirty();
 });
 fields.memoryDeleteButton.addEventListener("click", deleteSelectedMemory);
 fields.memoryTriggerTurns.addEventListener("input", renderMemoryStatus);
+fields.memoryContent.addEventListener("compositionstart", () => {
+  memoryState.composing = true;
+});
+fields.memoryContent.addEventListener("compositionend", () => {
+  memoryState.composing = false;
+  captureMemoryEditorDraft();
+});
 [
   fields.memoryContent,
   fields.memoryLayer,
@@ -4929,8 +4996,6 @@ fields.memoryTriggerTurns.addEventListener("input", renderMemoryStatus);
 ].forEach((field) => {
   field.addEventListener("input", captureMemoryEditorDraft);
   field.addEventListener("change", captureMemoryEditorDraft);
-  field.addEventListener("compositionupdate", captureMemoryEditorDraft);
-  field.addEventListener("compositionend", captureMemoryEditorDraft);
 });
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
@@ -5165,6 +5230,16 @@ async function startSettingsFrontend() {
         if (task.status === "cancelled") notify("记忆模型任务已取消。", "info");
         if (task.status === "failed") setError(task.error?.message || "记忆模型任务失败。");
       },
+      onRebindState: (active) => {
+        memoryState.rebinding = active;
+        if (active) {
+          captureMemoryEditorDraft();
+          memoryState.status = "loading";
+          memoryState.message = "Core 正在重新连接；已有内容和草稿会保留。";
+        }
+        syncRuntimeMemorySettingsAvailability();
+        renderMemoryPage();
+      },
       applySnapshot: (snapshot, { layers }) => {
         request = request || {};
         request.limits = { ...(request.limits || {}), memory_trigger_turns: [1, 50] };
@@ -5180,10 +5255,7 @@ async function startSettingsFrontend() {
         renderMemoryControls();
         memoryState.status = snapshot.status;
         memoryState.message = snapshot.message || "";
-        const settingsReadOnly = ["read_only", "failed", "stopped"].includes(snapshot.status);
-        fields.memoryTriggerTurns.disabled = settingsReadOnly;
-        document.getElementById("memoryCurationProvider").disabled = settingsReadOnly;
-        document.getElementById("memoryCurationModel").disabled = settingsReadOnly;
+        syncRuntimeMemorySettingsAvailability();
       },
     });
     await runtimeMemoryController.initialize(await invoke("settings_memory_get"));

@@ -28,3 +28,4 @@ updated: 2026-08-03
 - [WP-3V-01 headless oracle 隔离导入缺陷记录](WP-3V-01-CI-ISOLATED-IMPORT-DEFECT.md)
 - [WP-3V-01 项目负责人验收声明](WP-3V-01-OWNER-ACCEPTANCE.md)
 - [WP-4-01 本地自动验证记录](WP-4-01-AUTOMATED-VALIDATION.md)
+- [WP-4-01 设置布局与 generation 重绑定缺陷记录](WP-4-01-SETTINGS-LAYOUT-AND-GENERATION-DEFECT.md)

@@ -1534,10 +1534,6 @@ input[type="checkbox"]:disabled + span {
   min-height: 0;
 }
 
-#page-memory {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-}
-
 .admin-topline {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1581,6 +1577,7 @@ input[type="checkbox"]:disabled + span {
 .admin-mini-panel {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 12px;
   padding: 8px 10px;
   border: 1px solid var(--hairline);
@@ -2691,6 +2688,18 @@ input.is-invalid:hover,
 
   .admin-toolbar {
     gap: 8px;
+  }
+
+  .admin-topline {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .admin-strip {
+    gap: 6px;
+  }
+
+  .status-chip {
+    padding-inline: 7px;
   }
 
 }
