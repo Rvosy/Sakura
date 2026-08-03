@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-03
+updated: 2026-08-04
 ---
 
 # Sakura 安装与配置指南
@@ -159,6 +159,12 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 不会在普通聊天或启动时隐式联网；请在“模型”页明确点击“在线安装”。下载期间普通聊天仍可使用，但会暂时
 按“无记忆命中”继续，不会自动重发消息。页面会显示当前阶段和进度；需要中止时点击“取消”，任务会以
 已取消状态结束，不能继续使用旧 Core generation 的取消句柄。
+
+模型已经安装后，首次打开“记忆”页仍可能需要几十秒加载本地推理运行时。页面会显示“正在初始化”，
+期间偶发的 Core generation、transport 或 deadline 瞬时错误不会提前显示为加载失败，也不会清空已有
+列表和编辑草稿；不需要反复点击刷新或重启应用，完成后会自动恢复搜索、新增和保存。如果状态长期
+变为“暂时不可用”而不是“正在初始化”，请正常退出再启动并保留原
+`data/memory/`，不要结束系统中其他 Python 进程或删除锁文件。
 
 如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动下载 `models--sentence-transformers--all-MiniLM-L6-v2.zip`，然后在软件内导入。
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -18,7 +19,6 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from app.core.resource_manager import (
-    DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
     ResourceRegistry,
     ThreadGroupResource,
 )
@@ -35,13 +35,16 @@ logger = logging.getLogger(__name__)
 
 
 def _prepare_memory_background_imports() -> None:
-    """在线程启动前完成 mem0/OpenAI 共享的 anyio 导入。
+    """在 Core 路由启动前完成 mem0/OpenAI 共享的 anyio 导入。
 
     Memory preload 与 MCP deferred startup 会并行触发 OpenAI/anyio 依赖；让
-    首次 anyio 初始化发生在 UI 主线程，避免两个后台线程观察到 partially
-    initialized module 并把启动链卡在 import lock 上。
+    首次 anyio 初始化发生在 Core 启动线程，避免 Router 请求线程和后台线程
+    同时观察到 partially initialized module 并把 Memory RPC 卡在 import lock 上。
     """
     import anyio  # noqa: F401
+
+
+_prepare_memory_background_imports()
 
 
 MEM0_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "mem0"
@@ -98,6 +101,7 @@ DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
     "vocab.txt",
 )
 _MEM0_CREATE_LOCK = threading.Lock()
+_EMBEDDER_OWNER = threading.local()
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
@@ -106,6 +110,194 @@ DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
     "技术名词、代码标识符、专有名词、路径、ID 和品牌名可保留原文。"
     "输出 JSON 结构不变，只改变 memory/text 字段的自然语言内容。"
 )
+
+
+class ProcessIsolatedHuggingFaceEmbedding:
+    """Run SentenceTransformer/PyTorch outside the Core control process.
+
+    Importing PyTorch can retain the GIL for longer than the Shell health
+    deadline.  A thread therefore cannot protect Router, chat, settings or
+    shutdown responsiveness during first load.  This proxy preserves mem0's
+    local HuggingFace contract while keeping that import and inference in one
+    generation-owned child process.
+    """
+
+    STARTUP_TIMEOUT_SECONDS = 120.0
+    REQUEST_TIMEOUT_SECONDS = 30.0
+
+    def __init__(self, config: Any) -> None:
+        self.config = config
+        self._lock = threading.Lock()
+        self._closed = False
+        self._ready = False
+        context = multiprocessing.get_context("spawn")
+        parent, child = context.Pipe(duplex=True)
+        process = context.Process(
+            target=_run_process_isolated_huggingface_embedding,
+            args=(
+                child,
+                {
+                    "model": str(config.model or DEFAULT_EMBEDDING_MODEL),
+                    "model_kwargs": dict(config.model_kwargs or {}),
+                },
+            ),
+            name="sakura-memory-embedding",
+            daemon=True,
+        )
+        try:
+            process.start()
+        except BaseException:
+            parent.close()
+            child.close()
+            raise
+        child.close()
+        self._connection = parent
+        self._process = process
+        owner = getattr(_EMBEDDER_OWNER, "register", None)
+        if callable(owner):
+            owner(self)
+
+    def wait_ready(
+        self,
+        *,
+        cancel: Callable[[], bool] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        deadline = time.monotonic() + (
+            self.STARTUP_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
+        )
+        while not self._ready:
+            if cancel is not None and cancel():
+                self.close()
+                raise RuntimeError("记忆嵌入模型初始化已取消。")
+            if self._closed:
+                raise RuntimeError("记忆嵌入模型进程已关闭。")
+            if not self._process.is_alive():
+                self.close()
+                raise RuntimeError("记忆嵌入模型进程启动失败。")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise RuntimeError("记忆嵌入模型初始化超时。")
+            if not self._connection.poll(min(0.1, remaining)):
+                continue
+            try:
+                kind, payload = self._connection.recv()
+            except (EOFError, OSError) as exc:
+                self.close()
+                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
+            if kind == "ready":
+                self._ready = True
+                return
+            self.close()
+            raise RuntimeError("记忆嵌入模型初始化失败。")
+
+    def embed(self, text: object, memory_action: str | None = None) -> list[float]:
+        result = self._request("embed", str(text), memory_action)
+        if not isinstance(result, list):
+            raise RuntimeError("记忆嵌入模型响应无效。")
+        return [float(item) for item in result]
+
+    def embed_batch(
+        self,
+        texts: Iterable[object],
+        memory_action: str = "add",
+    ) -> list[list[float]]:
+        result = self._request("embed_batch", [str(item) for item in texts], memory_action)
+        if not isinstance(result, list):
+            raise RuntimeError("记忆嵌入模型响应无效。")
+        return [[float(value) for value in row] for row in result]
+
+    def _request(self, kind: str, payload: object, memory_action: str | None) -> object:
+        with self._lock:
+            self.wait_ready()
+            try:
+                self._connection.send((kind, payload, memory_action))
+            except (BrokenPipeError, EOFError, OSError) as exc:
+                self.close()
+                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
+            if not self._connection.poll(self.REQUEST_TIMEOUT_SECONDS):
+                self.close()
+                raise RuntimeError("记忆嵌入模型请求超时。")
+            try:
+                response_kind, result = self._connection.recv()
+            except (EOFError, OSError) as exc:
+                self.close()
+                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
+            if response_kind != "result":
+                raise RuntimeError("记忆嵌入模型请求失败。")
+            return result
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        connection = getattr(self, "_connection", None)
+        process = getattr(self, "_process", None)
+        if connection is not None:
+            try:
+                connection.send(("close", None, None))
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+            try:
+                connection.close()
+            except OSError:
+                pass
+        if process is not None:
+            process.join(timeout=0.05)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=0.25)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=0.25)
+            try:
+                process.close()
+            except ValueError:
+                pass
+
+
+def _run_process_isolated_huggingface_embedding(
+    connection: Any,
+    config: dict[str, object],
+) -> None:
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(
+            str(config["model"]),
+            **dict(config.get("model_kwargs") or {}),
+        )
+        connection.send(("ready", None))
+        while True:
+            kind, payload, _memory_action = connection.recv()
+            if kind == "close":
+                return
+            try:
+                if kind == "embed":
+                    result = model.encode(str(payload), convert_to_numpy=True).tolist()
+                elif kind == "embed_batch" and isinstance(payload, list):
+                    result = model.encode(
+                        [str(item) for item in payload],
+                        convert_to_numpy=True,
+                    ).tolist()
+                else:
+                    raise ValueError("invalid embedding request")
+                connection.send(("result", result))
+            except Exception:
+                connection.send(("error", None))
+    except EOFError:
+        return
+    except BaseException:
+        try:
+            connection.send(("startup_error", None))
+        except Exception:
+            pass
+    finally:
+        try:
+            connection.close()
+        except OSError:
+            pass
 
 
 def install_mem0_vendor() -> Path:
@@ -245,6 +437,8 @@ class MemoryStore:
         repr=False,
     )
     _closed: bool = field(default=False, init=False, repr=False)
+    _load_cancel: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _active_embedder: Any | None = field(default=None, init=False, repr=False)
     _thread_group: ThreadGroupResource = field(init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -253,6 +447,7 @@ class MemoryStore:
         self.scope_id = _normalize_scope_id(self.scope_id)
         self.resource_registry = self.resource_registry or ResourceRegistry()
         self._thread_group = self.resource_registry.track_thread_group(
+            cancel=self._cancel_memory_load,
             label="memory_store",
             shutdown_order=1000,
         )
@@ -322,6 +517,7 @@ class MemoryStore:
 
     def close(self) -> None:
         """关闭长期记忆运行时并阻止迟到的后台加载结果重新写回。"""
+        self._cancel_memory_load()
         old_memory: Any | None = None
         with self._lock:
             if self._closed:
@@ -337,8 +533,27 @@ class MemoryStore:
             self._reload_error = ""
             self._status = "stopped"
             self._status_message = "长期记忆系统已关闭。"
-        self._thread_group.stop(DEFAULT_THREAD_SHUTDOWN_WAIT_MS)
+        # Import machinery cannot be interrupted safely.  The loader is a
+        # daemon and generation invalidation prevents any late result from
+        # being published; never spend the Core's one-second close budget
+        # waiting for an in-flight module import.
+        self._thread_group.stop(0)
         _close_memory_client(old_memory)
+
+    def _register_active_embedder(self, embedder: Any) -> None:
+        with self._lock:
+            self._active_embedder = embedder
+
+    def _cancel_memory_load(self) -> None:
+        self._load_cancel.set()
+        with self._lock:
+            embedder = self._active_embedder
+        close = getattr(embedder, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                logger.debug("取消记忆嵌入模型初始化失败", exc_info=True)
 
     def is_ready(self) -> bool:
         """返回长期记忆运行时是否已经可直接使用。"""
@@ -401,7 +616,6 @@ class MemoryStore:
                 return
             if self._load_error:
                 self._load_error = ""
-            _prepare_memory_background_imports()
             status_event = self._start_loading_locked()
         self._notify_status_event(status_event)
 
@@ -1084,8 +1298,7 @@ class MemoryStore:
                     if generation == self._reload_generation:
                         self._load_error = error_message
                         self._loading = False
-                if report_dependency_loading:
-                    self._publish_status("failed", error_message)
+                self._publish_status("failed", error_message)
                 return
             stale_mem: Any | None = None
             with self._lock:
@@ -1115,8 +1328,28 @@ class MemoryStore:
         with _MEM0_CREATE_LOCK:
             install_mem0_vendor()
             from mem0 import Memory
+            from mem0.utils.factory import EmbedderFactory
 
-            return Memory.from_config(self.build_mem0_config(api_settings))
+            EmbedderFactory.provider_to_class["huggingface"] = (
+                "app.agent.memory.ProcessIsolatedHuggingFaceEmbedding"
+            )
+            previous_owner = getattr(_EMBEDDER_OWNER, "register", None)
+            _EMBEDDER_OWNER.register = self._register_active_embedder
+            try:
+                memory = Memory.from_config(self.build_mem0_config(api_settings))
+            finally:
+                if previous_owner is None:
+                    try:
+                        del _EMBEDDER_OWNER.register
+                    except AttributeError:
+                        pass
+                else:
+                    _EMBEDDER_OWNER.register = previous_owner
+            embedder = getattr(memory, "embedding_model", None)
+            wait_ready = getattr(embedder, "wait_ready", None)
+            if callable(wait_ready):
+                wait_ready(cancel=lambda: self._closed or self._load_cancel.is_set())
+            return memory
 
     def _supports_memory_llm_reload(self, memory: Any | None) -> bool:
         if memory is None:
@@ -1717,6 +1950,13 @@ def _close_memory_client(memory: Any | None) -> None:
             close()
         except Exception:  # noqa: BLE001
             logger.debug("关闭 mem0 运行时失败", exc_info=True)
+    embedder = getattr(memory, "embedding_model", None)
+    embedder_close = getattr(embedder, "close", None)
+    if callable(embedder_close):
+        try:
+            embedder_close()
+        except Exception:  # noqa: BLE001
+            logger.debug("关闭记忆嵌入模型进程失败", exc_info=True)
     vector_store = getattr(memory, "vector_store", None)
     client = getattr(vector_store, "client", None)
     client_close = getattr(client, "close", None)

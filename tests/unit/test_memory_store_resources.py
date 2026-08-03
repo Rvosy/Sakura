@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import app.agent.memory as memory_module
-from app.agent.memory import MemoryStore
+from app.agent.memory import MemoryStore, ProcessIsolatedHuggingFaceEmbedding
 from app.core.resource_manager import ResourceRegistry
 
 
@@ -34,6 +36,75 @@ class _BlockingMemoryStore(MemoryStore):
         return mem
 
 
+class _FailingMemoryStore(MemoryStore):
+    def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("injected embedding startup failure")
+
+
+class _FakeEmbeddingConnection:
+    def __init__(self) -> None:
+        self.responses = deque([("ready", None)])
+        self.sent: list[tuple[object, ...]] = []
+        self.closed = False
+
+    def poll(self, _timeout: float | None = None) -> bool:
+        return bool(self.responses)
+
+    def recv(self):  # type: ignore[no-untyped-def]
+        return self.responses.popleft()
+
+    def send(self, message):  # type: ignore[no-untyped-def]
+        self.sent.append(message)
+        if message[0] == "embed":
+            self.responses.append(("result", [0.25, 0.75]))
+        elif message[0] == "embed_batch":
+            self.responses.append(("result", [[0.25, 0.75] for _ in message[1]]))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeEmbeddingProcess:
+    def __init__(self) -> None:
+        self.alive = True
+        self.started = False
+        self.terminated = False
+        self.closed = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout=None) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.alive = False
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeEmbeddingContext:
+    def __init__(self) -> None:
+        self.parent = _FakeEmbeddingConnection()
+        self.child = _FakeEmbeddingConnection()
+        self.process = _FakeEmbeddingProcess()
+
+    def Pipe(self, *, duplex=True):  # type: ignore[no-untyped-def, no-untyped-call]
+        assert duplex is True
+        return self.parent, self.child
+
+    def Process(self, **_kwargs):  # type: ignore[no-untyped-def, no-untyped-call]
+        return self.process
+
+
 @pytest.mark.allow_memory_preload
 def test_memory_preload_thread_group_tracks_loader(tmp_path: Path) -> None:
     registry = ResourceRegistry()
@@ -51,25 +122,74 @@ def test_memory_preload_thread_group_tracks_loader(tmp_path: Path) -> None:
 
 
 @pytest.mark.allow_memory_preload
-def test_memory_preload_prepares_shared_imports_before_worker(
+def test_memory_preload_never_imports_shared_dependencies_on_request_thread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = threading.Event()
+    import_attempted = threading.Event()
+
+    def fail_late_import() -> None:
+        import_attempted.set()
+        raise AssertionError("shared dependencies must be ready before Memory RPC")
+
     monkeypatch.setattr(
         memory_module,
         "_prepare_memory_background_imports",
-        prepared.set,
+        fail_late_import,
     )
     store = _BlockingMemoryStore(base_dir=tmp_path, resource_registry=ResourceRegistry())
 
     store.preload(wait=False)
 
-    assert prepared.is_set()
+    assert import_attempted.is_set() is False
     assert store.create_started.wait(1)
     store.allow_return.set()
     assert _wait_until(lambda: not store._thread_group.is_running())
     store.close()
+
+
+@pytest.mark.allow_memory_preload
+def test_memory_preload_publishes_cached_model_startup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *_args: True)
+    store = _FailingMemoryStore(base_dir=tmp_path, resource_registry=ResourceRegistry())
+    statuses: list[tuple[str, str]] = []
+    store.add_status_listener(lambda status, message: statuses.append((status, message)))
+
+    store.preload(wait=False)
+
+    assert _wait_until(lambda: not store._loading)
+    assert statuses
+    assert statuses[-1][0] == "failed"
+    store.close()
+
+
+def test_process_isolated_embedding_keeps_torch_protocol_out_of_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _FakeEmbeddingContext()
+    monkeypatch.setattr(memory_module.multiprocessing, "get_context", lambda _method: context)
+    config = SimpleNamespace(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"local_files_only": True},
+    )
+
+    embedding = ProcessIsolatedHuggingFaceEmbedding(config)
+    embedding.wait_ready(timeout=1)
+
+    assert embedding.embed("中文", "search") == [0.25, 0.75]
+    assert embedding.embed_batch(["中文", "日本語"], "add") == [
+        [0.25, 0.75],
+        [0.25, 0.75],
+    ]
+    embedding.close()
+
+    assert context.process.started is True
+    assert context.process.terminated is True
+    assert context.process.closed is True
+    assert context.parent.closed is True
 
 
 @pytest.mark.allow_memory_preload

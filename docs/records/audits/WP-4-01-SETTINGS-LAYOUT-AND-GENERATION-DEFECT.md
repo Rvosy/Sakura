@@ -38,6 +38,18 @@ Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器�
 状态；随后 Provider 脏状态计算同步抛错，中止后续 Memory 初始化。这是设置域共享前端状态的所有权
 缺陷，不是 Memory 存储为空、损坏或 Gateway 返回失败。
 
+前端异常修复后，真实 EXE 暴露了最终的加载根因：`memory.settings.get` 首次调用会让 `MemoryStore`
+在线程中创建 mem0；固定 HuggingFace embedder 随后在同一 Core 解释器导入 `openai`、
+`sentence_transformers` 和 PyTorch。线程栈证明 PyTorch 冷导入会连续持有 GIL 超过 10 秒，使
+`memory.settings.get`/`memory.search` 与 Shell 每 100ms 发起、3 秒 deadline 的 `core.snapshot` 同时失去
+响应。Supervisor 因此按连接丢失回收 generation，前端最终只看到
+`SETTINGS_CORE_GENERATION_MISMATCH`；每个新 generation 又重复同一冷导入，Memory 永远无法就绪。
+
+这不是 Qdrant/SQLite 或用户 Memory 数据损坏。修复保持 `MemoryStore`、数据、scope 和 CRUD 位于唯一
+Core owner，只把固定 SentenceTransformer/PyTorch embedder 放入 generation 管理的窄子进程。Core 通过
+私有 Pipe 获取 384 维向量；加载期间继续响应 Snapshot、设置和聊天，失败进入降级而非永久 loading；
+加载中退出会立即取消并回收精确子进程，不扫描或结束其他 Python。
+
 ## 修订契约与修复门
 
 - 所有模型相关设置统一呈现在“模型”页：记忆整理 Provider/模型和固定 embedding 模型状态、导入、
@@ -48,8 +60,10 @@ Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器�
   覆盖新代状态，不得自动提交、清空或重发用户操作。
 - 修复必须覆盖窄窗口、模型槽保存后继续搜索/CRUD、旧代迟到响应和重绑定失败的稳定可重试状态。
 
-本次是 UI 归属与既有 generation 生命周期契约的收紧，不改变 Python Memory 数据所有权、配置 schema、
-协议 major、依赖或 Legacy Qt 的仅参考边界，因此不新增 ADR。
+UI 归属与 generation 重绑定部分只是既有契约收紧，不改变配置 schema、协议 major 或 Legacy Qt 的仅
+参考边界。后续发现的 PyTorch GIL 问题改变了 Memory 依赖的进程隔离方式，因此同步在
+[`ADR-0005`](../../adr/0005-runtime-v2-headless-assistant-adapter.md) 中澄清：仍只有一个 Assistant/Core
+生命周期根，embedding 子进程不拥有 Memory 数据、公共协议或独立恢复语义。
 
 ## 修复候选与自动验证
 
@@ -70,6 +84,13 @@ Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器�
 - 外观快照只合并其拥有的角色、主题和布局字段，不再整体替换设置页共享状态；Provider limits/API 与
   Memory settings 在外观首次初始化和跨代重绑定后都必须继续存在，首屏 Memory 初始化不得被其他设置域
   的脏状态计算打断。
+- 固定 HuggingFace embedder 由 `ProcessIsolatedHuggingFaceEmbedding` 在 generation 子进程中加载；Core
+  内的 mem0/Qdrant/SQLite 仍为唯一数据 owner。加载线程只等待 Pipe，PyTorch 导入不再阻塞 Router GIL；
+  cached-model 初始化失败会公开为 degraded，不再永久显示 loading。加载取消直接终止精确子进程，Core
+  不等待不可中断的模块导入线程耗尽一秒关闭预算。
+- 设置页把 `loading` 以及 generation/transport/deadline 的瞬时只读搜索错误纳入两分钟有界恢复预算，
+  每 1.5 秒自动重试并保持初始化文案、已有列表、选中项和编辑草稿；`ready` 后自动刷新列表，明确的
+  `degraded/read_only/failed/stopped` 或预算耗尽才显示手工刷新状态。该重试不适用于任何写操作。
 
 自动结果：
 
@@ -85,6 +106,16 @@ Memory 控制器已成功原位重绑定，设置窗口仍会被外观控制器�
   3 个 WP-3-06 单实例测试因人工验收窗口 `sakura-runtime-v2-shell.exe` 仍在运行并持有生产锁而失败，
   报告为 `temp/harness/20260803T164111Z-WP-4-01.json`。该次结果不作为自动门通过证据，须正常退出真实
   应用后重跑；未强杀验收窗口或修改 Legacy 参考测试来规避锁。
+- 2026-08-04 隔离 embedder 候选的真实生产根协议诊断：冷加载 33.9 秒期间持续执行
+  `core.snapshot` 与 `memory.settings.get`，没有一次 Snapshot 超过 1 秒，没有 Router deadline 或
+  generation replacement；状态由 loading 原位进入 ready，真实搜索返回 5 条既有记录。随后
+  `system.shutdown` 返回成功且 Core exit 0。独立“加载中立即退出”诊断为 0.187 秒、exit 0；修复前同一
+  路径为约 1.265 秒、exit 74（`SHUTDOWN_DURING_INITIALIZE`）。诊断只读既有 Memory，没有新增、编辑、
+  删除、迁移或修复数据。
+- 2026-08-04 前端冷加载恢复定向回归：`node --test desktop/frontend/tests/*.test.js` 为 120/120 通过；
+  `tests/unit/test_memory_store_resources.py`、`tests/unit/test_core_host_memory.py` 和
+  `tests/integration/test_wp_4_01_memory_capability.py` 合计 17/17 通过。覆盖瞬时读取错误分类、有界自动
+  重试、loading 时不替换已有列表，以及 generation 不确定时写操作不自动重发。
 
 本记录不填写人工验收。真实 Windows EXE 的页面排版、Core 强杀/恢复、IME 操作和退出清场仍由项目
 负责人按修订后的清单亲自确认；WP-4-01 在确认前不得标记 `accepted`。

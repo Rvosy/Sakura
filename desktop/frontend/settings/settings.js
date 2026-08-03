@@ -144,6 +144,10 @@ let settingsBaseline = null;
 // 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
 let bypassCloseGuard = false;
 let memoryRetryTimer = null;
+let memoryRetryStartedAt = 0;
+let memoryReadErrorRetryable = () => false;
+const MEMORY_LOADING_RETRY_DELAY_MS = 1500;
+const MEMORY_LOADING_RETRY_BUDGET_MS = 120_000;
 let characterArchiveBusy = false;
 let onboardingStep = "character";
 const characterExportOptions = [
@@ -543,7 +547,17 @@ function scheduleMemoryRetry() {
   if (!fields.pages.memory.classList.contains("is-active")) {
     return;
   }
-  memoryRetryTimer = window.setTimeout(loadMemories, 1500);
+  memoryRetryTimer = window.setTimeout(
+    () => loadMemories({ continueRetry: true }),
+    MEMORY_LOADING_RETRY_DELAY_MS,
+  );
+}
+
+function memoryRetryBudgetAvailable() {
+  if (!memoryRetryStartedAt) {
+    memoryRetryStartedAt = Date.now();
+  }
+  return Date.now() - memoryRetryStartedAt < MEMORY_LOADING_RETRY_BUDGET_MS;
 }
 
 function confirmAction(
@@ -970,6 +984,7 @@ function showPage(page) {
   );
   if (page !== "memory") {
     clearMemoryRetry();
+    memoryRetryStartedAt = 0;
   }
   const meta = pageMeta[page];
   if (meta) {
@@ -3666,11 +3681,14 @@ function renderMemoryPage() {
   renderMemoryModelResourceCard();
 }
 
-async function loadMemories() {
+async function loadMemories({ continueRetry = false } = {}) {
   if (!request) {
     return;
   }
   clearMemoryRetry();
+  if (!continueRetry || !memoryRetryStartedAt) {
+    memoryRetryStartedAt = Date.now();
+  }
   captureMemoryEditorDraft();
   const loadRevision = ++memoryLoadRevision;
   memoryState.loading = true;
@@ -3690,24 +3708,43 @@ async function loadMemories() {
       ? await runtimeMemoryController.search(params)
       : await hostCall("memory.search", params);
     if (loadRevision !== memoryLoadRevision) return;
-    memoryState.status = result.status || "ready";
-    memoryState.message = result.message || result.error || "";
-    shouldRetry = memoryState.status === "loading";
-    memoryState.entries = Array.isArray(result.memories)
-      ? result.memories.filter((entry) => entry && entry.id)
-      : [];
-    memoryState.loaded = true;
-    const preserveSelection = memoryState.selectedId === "__draft__"
-      || memoryState.editorDrafts.has(memoryState.selectedId);
-    if (!preserveSelection && !memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
-      memoryState.selectedId = memoryState.entries[0]?.id || "";
+    const status = result.status || "ready";
+    if (status === "loading") {
+      shouldRetry = memoryRetryBudgetAvailable();
+      memoryState.status = shouldRetry ? "loading" : "degraded";
+      memoryState.message = shouldRetry
+        ? (result.message || "本地记忆模型正在初始化，完成后会自动显示。")
+        : "本地记忆模型初始化超过两分钟，请点击刷新重试。";
+    } else {
+      memoryRetryStartedAt = 0;
+      memoryState.status = status;
+      memoryState.message = result.message || result.error || "";
+      memoryState.entries = Array.isArray(result.memories)
+        ? result.memories.filter((entry) => entry && entry.id)
+        : [];
+      memoryState.loaded = true;
+      const preserveSelection = memoryState.selectedId === "__draft__"
+        || memoryState.editorDrafts.has(memoryState.selectedId);
+      if (!preserveSelection && !memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
+        memoryState.selectedId = memoryState.entries[0]?.id || "";
+      }
     }
   } catch (error) {
     if (loadRevision !== memoryLoadRevision) return;
-    memoryState.status = "degraded";
-    memoryState.message = runtimeMemoryController
-      ? "记忆连接暂不可用；已有内容和草稿已保留，请稍后刷新。"
-      : String(error);
+    const retryable = runtimeMemoryController
+      && memoryReadErrorRetryable(error)
+      && memoryRetryBudgetAvailable();
+    if (retryable) {
+      memoryState.status = "loading";
+      memoryState.message = "本地记忆模型正在初始化，完成后会自动显示。";
+      shouldRetry = true;
+    } else {
+      memoryRetryStartedAt = 0;
+      memoryState.status = "degraded";
+      memoryState.message = runtimeMemoryController
+        ? "记忆连接暂不可用；已有内容和草稿已保留，请点击刷新重试。"
+        : String(error);
+    }
   } finally {
     if (loadRevision !== memoryLoadRevision) return;
     memoryState.loading = false;
@@ -4971,7 +5008,7 @@ fields.memorySearch.addEventListener("input", () => {
 fields.memoryLayerFilter.addEventListener("change", loadMemories);
 fields.memorySort.addEventListener("change", renderMemoryPage);
 fields.memoryAddButton.addEventListener("click", newMemoryDraft);
-fields.memoryRefreshButton.addEventListener("click", loadMemories);
+fields.memoryRefreshButton.addEventListener("click", () => loadMemories());
 fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
 fields.memoryRevertButton.addEventListener("click", () => {
   memoryState.editorDrafts.delete(memoryState.selectedId);
@@ -5218,7 +5255,9 @@ async function startSettingsFrontend() {
     runtimeChatTimingController.initialize(snapshot);
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
-    const { createMemoryController } = await import("./memory-runtime.js");
+    const memoryRuntime = await import("./memory-runtime.js");
+    const { createMemoryController } = memoryRuntime;
+    memoryReadErrorRetryable = memoryRuntime.isRetryableMemoryReadError;
     runtimeMemoryController = createMemoryController({
       document,
       invoke,

@@ -16,6 +16,13 @@ const GENERATION_TRANSITION_CODES = [
   "MEMORY_OPERATION_INVALIDATED",
   "Router closed",
 ];
+const RETRYABLE_MEMORY_READ_CODES = [
+  ...GENERATION_TRANSITION_CODES,
+  "SETTINGS_TRANSPORT_UNAVAILABLE",
+  "REQUEST_DEADLINE_EXCEEDED",
+  "MEMORY_REBIND_FAILED",
+  "MEMORY_CORE_RESTART_NOT_READY",
+];
 
 function object(value, message) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
@@ -93,6 +100,11 @@ export function normalizeMemoryRecord(input) {
 export function isMemoryGenerationTransitionError(error) {
   const message = String(error?.message || error || "");
   return GENERATION_TRANSITION_CODES.some((code) => message.includes(code));
+}
+
+export function isRetryableMemoryReadError(error) {
+  const identity = `${String(error?.code || "")} ${String(error?.message || error || "")}`;
+  return RETRYABLE_MEMORY_READ_CODES.some((code) => identity.includes(code));
 }
 
 function isSafePreDispatchIdentityError(error) {

@@ -28,6 +28,10 @@
   自动重发。
 - 修复记忆模型设置触发 Core 重启后设置窗口继续使用旧 generation 的问题；窗口现在原位重绑定并保留
   列表、筛选、选中项、草稿与中文/日文输入法组合文本，不再要求关闭重开，也不会让旧代错误覆盖页面。
+- 修复本地记忆模型首次加载 PyTorch 时阻塞 Python Core、引发连续 generation 重启和
+  `SETTINGS_CORE_GENERATION_MISMATCH` 的问题；固定 embedding 推理改由 Core 管理的隔离子进程执行，
+  加载期间聊天与设置保持响应。设置页会在两分钟有界预算内保持“正在初始化”并自动重试只读搜索，
+  不清空列表或草稿；完成后自动显示记忆，加载中退出也会有界清场。
 - Runtime v2 只在 Core 协商 `assistant.memory` 后打开 Memory 存储；手工新增、编辑、幂等删除与完成回复
   后的自动整理均绑定当前角色和 Core generation，Core 恢复期间保留设置页中的中文/日文 IME 草稿。
 - Runtime v2 的 Python Core 意外退出后会在原桌宠窗口内自动恢复：旧代请求和资源立即失效，活动回复

@@ -724,7 +724,7 @@ class MemoryBoundary:
             self._message = "记忆能力已停止。"
         self._curation_cancel.set()
         self._model_task_cancel.set()
-        self._resources.stop_all(timeout_ms=500)
+        self._resources.stop_all(timeout_ms=0)
         self._store.remove_status_listener(self._on_store_status)
         self._store.close()
 

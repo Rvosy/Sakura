@@ -5,6 +5,7 @@ import fs from "node:fs";
 import {
   createMemoryController,
   isMemoryGenerationTransitionError,
+  isRetryableMemoryReadError,
   normalizeMemoryRecord,
   validateMemorySnapshot,
 } from "../settings/memory-runtime.js";
@@ -114,6 +115,24 @@ test("generation transition errors are recognized without treating ordinary vali
   assert.equal(isMemoryGenerationTransitionError(new Error("SETTINGS_CORE_GENERATION_MISMATCH")), true);
   assert.equal(isMemoryGenerationTransitionError("GENERATION_INVALIDATED: Router closed"), true);
   assert.equal(isMemoryGenerationTransitionError(new Error("记忆内容不能为空")), false);
+});
+
+test("Memory read recovery recognizes transient startup failures without retrying validation errors", () => {
+  assert.equal(isRetryableMemoryReadError({ code: "MEMORY_REBIND_FAILED" }), true);
+  assert.equal(isRetryableMemoryReadError(new Error("REQUEST_DEADLINE_EXCEEDED")), true);
+  assert.equal(isRetryableMemoryReadError(new Error("SETTINGS_TRANSPORT_UNAVAILABLE")), true);
+  assert.equal(isRetryableMemoryReadError(new Error("Router closed during startup")), true);
+  assert.equal(isRetryableMemoryReadError(new Error("记忆内容不能为空")), false);
+});
+
+test("Memory cold loading stays visible, retries only reads, and preserves the current list", () => {
+  const source = fs.readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
+  assert.match(source, /MEMORY_LOADING_RETRY_BUDGET_MS = 120_000/);
+  assert.match(source, /loadMemories\(\{ continueRetry: true \}\)/);
+  assert.match(source, /memoryReadErrorRetryable\(error\)/);
+  assert.match(source, /本地记忆模型正在初始化，完成后会自动显示/);
+  assert.match(source, /if \(status === "loading"\)[\s\S]*?else \{[\s\S]*?memoryState\.entries =/);
+  assert.doesNotMatch(source, /memoryState\.status = "degraded";\s*memoryState\.message = runtimeMemoryController\s*\? "记忆连接暂不可用；已有内容和草稿已保留，请稍后刷新。"/);
 });
 
 test("search rebinds once, preserves settings draft, and discards the stale generation", async () => {
