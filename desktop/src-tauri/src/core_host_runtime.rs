@@ -2177,14 +2177,21 @@ fn hello_payload() -> Value {
 }
 
 fn memory_capability_enabled_for_launch() -> bool {
-    #[cfg(debug_assertions)]
+    #[cfg(test)]
+    {
+        // Rust lifecycle tests exercise accepted pre-Memory work packages
+        // against the platform CI's minimal staged Runtime. WP-4-01 covers
+        // Memory through its dedicated Core, gateway, and frontend contracts.
+        return false;
+    }
+    #[cfg(all(debug_assertions, not(test)))]
     {
         // WP-3V-01 freezes the pre-Memory Assistant slice. Keep that accepted
         // debug-only acceptance independent from capabilities added later.
         return std::env::var_os(crate::wp_3v_01_assistant_architecture_acceptance::DIRECTORY_ENV)
             .is_none();
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(not(debug_assertions), not(test)))]
     {
         true
     }
