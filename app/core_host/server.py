@@ -25,6 +25,18 @@ CAPABILITIES = (
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
 MEMORY_CAPABILITY = "assistant.memory"
+MEMORY_REQUEST_NAMES = frozenset(
+    {
+        "memory.search",
+        "memory.upsert",
+        "memory.delete",
+        "memory.settings.get",
+        "memory.settings.save",
+        "memory.model.import",
+        "memory.model.download",
+        "memory.model.cancel",
+    }
+)
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
@@ -867,7 +879,6 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
-    from .memory_boundary import MEMORY_REQUEST_NAMES, MemoryBoundaryError
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
@@ -912,12 +923,20 @@ def run_host(
                 if request.get("name") == "chat.send":
                     return chat_boundary.handle_send(request)
                 if request.get("name") in MEMORY_REQUEST_NAMES:
-                    try:
-                        if MEMORY_CAPABILITY not in dispatcher._negotiated_capabilities:
-                            raise MemoryBoundaryError(
+                    if MEMORY_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(
                                 "CAPABILITY_NEGOTIATION_FAILED",
                                 "记忆能力未协商。",
-                            )
+                            ),
+                        )
+                    from .memory_boundary import MemoryBoundaryError
+
+                    try:
                         session = dispatcher.published_session()
                         boundary = getattr(session, "memory_boundary", None)
                         if boundary is None:

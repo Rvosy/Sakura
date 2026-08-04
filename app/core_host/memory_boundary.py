@@ -35,20 +35,7 @@ from app.storage.atomic import atomic_write_text
 from app.storage.chat_history import ChatHistoryStore
 from app.storage.paths import StoragePaths
 from app.core_host.protocol import event
-
-
-MEMORY_REQUEST_NAMES = frozenset(
-    {
-        "memory.search",
-        "memory.upsert",
-        "memory.delete",
-        "memory.settings.get",
-        "memory.settings.save",
-        "memory.model.import",
-        "memory.model.download",
-        "memory.model.cancel",
-    }
-)
+from app.core_host.server import MEMORY_REQUEST_NAMES
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
 MAX_MEMORY_CONTENT = 16_384
 MAX_MEMORY_QUERY = 4_000
