@@ -2158,6 +2158,13 @@ fn core_host_process_request(
 }
 
 fn hello_payload() -> Value {
+    let optional_capabilities = OPTIONAL_CAPABILITIES
+        .into_iter()
+        .filter(|capability| {
+            *capability != crate::memory_gateway::MEMORY_CAPABILITY
+                || memory_capability_enabled_for_launch()
+        })
+        .collect::<Vec<_>>();
     json!({
         "protocol": {
             "major": PROTOCOL_MAJOR,
@@ -2165,8 +2172,22 @@ fn hello_payload() -> Value {
             "maxMinor": PROTOCOL_MINOR,
         },
         "requiredCapabilities": REQUIRED_CAPABILITIES,
-        "optionalCapabilities": OPTIONAL_CAPABILITIES,
+        "optionalCapabilities": optional_capabilities,
     })
+}
+
+fn memory_capability_enabled_for_launch() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        // WP-3V-01 freezes the pre-Memory Assistant slice. Keep that accepted
+        // debug-only acceptance independent from capabilities added later.
+        return std::env::var_os(crate::wp_3v_01_assistant_architecture_acceptance::DIRECTORY_ENV)
+            .is_none();
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        true
+    }
 }
 
 fn parse_negotiation(response: &Value) -> Result<ProtocolNegotiation, String> {

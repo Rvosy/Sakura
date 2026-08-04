@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import threading
 import time
 from collections import deque
@@ -11,6 +12,21 @@ import pytest
 import app.agent.memory as memory_module
 from app.agent.memory import MemoryStore, ProcessIsolatedHuggingFaceEmbedding
 from app.core.resource_manager import ResourceRegistry
+
+
+def test_optional_background_import_absence_degrades_without_blocking_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def reject_anyio(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "anyio":
+            raise ModuleNotFoundError("No module named 'anyio'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_anyio)
+
+    assert memory_module._prepare_memory_background_imports() is False
 
 
 class _FakeMemory:

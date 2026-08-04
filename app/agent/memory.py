@@ -34,14 +34,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _prepare_memory_background_imports() -> None:
+def _prepare_memory_background_imports() -> bool:
     """在 Core 路由启动前完成 mem0/OpenAI 共享的 anyio 导入。
 
     Memory preload 与 MCP deferred startup 会并行触发 OpenAI/anyio 依赖；让
     首次 anyio 初始化发生在 Core 启动线程，避免 Router 请求线程和后台线程
     同时观察到 partially initialized module 并把 Memory RPC 卡在 import lock 上。
     """
-    import anyio  # noqa: F401
+    try:
+        import anyio  # noqa: F401
+    except ImportError:
+        # Runtime v2 的最小 staged Python 只保证 Core 基础依赖。Memory 是
+        # 可选能力；缺少其后台依赖时必须由 Memory 自身降级，不能阻断 Core
+        # 握手、旧能力验收或普通聊天。
+        return False
+    return True
 
 
 _prepare_memory_background_imports()
