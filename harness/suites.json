@@ -192,7 +192,7 @@
         "pytest",
         "tests/integration",
         "-k",
-        "core_host or wp_3v_01_assistant_architecture or wp_4_01_memory_capability",
+        "core_host or wp_3v_01_assistant_architecture or wp_4_01_memory_capability or runtime_v2_current_product_topology",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -272,6 +272,8 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
+        "tests/unit/test_runtime_resources.py",
+        "tests/integration/test_runtime_v2_current_product_topology.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "-q"
       ],

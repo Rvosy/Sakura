@@ -115,6 +115,19 @@ def test_legacy_qt_resource_facades_are_removed() -> None:
     assert "_retain_qobject_wrappers_until_deleted" not in pet_window_source
 
 
+def test_resource_manager_reexports_pure_resource_symbols() -> None:
+    from app.core import runtime_resources
+
+    assert ResourceRegistry is runtime_resources.ResourceRegistry
+    assert ResourceState is runtime_resources.ResourceState
+    assert ThreadResource is runtime_resources.ThreadResource
+    assert ThreadGroupResource is runtime_resources.ThreadGroupResource
+    assert ProcessResource is runtime_resources.ProcessResource
+    assert ServiceResource is runtime_resources.ServiceResource
+    assert AsyncLoopResource is runtime_resources.AsyncLoopResource
+    assert AsyncSubmitTimeout is runtime_resources.AsyncSubmitTimeout
+
+
 # --- QtWorkerResource.stop ------------------------------------------------
 
 

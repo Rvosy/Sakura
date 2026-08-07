@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
-from app.core.resource_manager import (
+from app.core.runtime_resources import (
     ResourceRegistry,
     ThreadGroupResource,
 )

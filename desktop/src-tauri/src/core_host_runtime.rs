@@ -2177,21 +2177,14 @@ fn hello_payload() -> Value {
 }
 
 fn memory_capability_enabled_for_launch() -> bool {
-    #[cfg(test)]
+    #[cfg(debug_assertions)]
     {
-        // Rust lifecycle tests exercise accepted pre-Memory work packages
-        // against the platform CI's minimal staged Runtime. WP-4-01 covers
-        // Memory through its dedicated Core, gateway, and frontend contracts.
-        return false;
-    }
-    #[cfg(all(debug_assertions, not(test)))]
-    {
-        // WP-3V-01 freezes the pre-Memory Assistant slice. Keep that accepted
-        // debug-only acceptance independent from capabilities added later.
+        // The frozen WP-3V-01 executable is an explicit predecessor profile.
+        // Normal debug and test launches keep the current product capability set.
         return std::env::var_os(crate::wp_3v_01_assistant_architecture_acceptance::DIRECTORY_ENV)
             .is_none();
     }
-    #[cfg(all(not(debug_assertions), not(test)))]
+    #[cfg(not(debug_assertions))]
     {
         true
     }
@@ -2348,14 +2341,55 @@ mod tests {
     };
 
     use super::{
-        core_host_process_request, drain_stderr, lifecycle_test_lock, CoreHostRuntime,
-        CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats, StderrDrainer,
-        StderrRedactor, PRODUCTION_SHUTDOWN_POLICY, STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, hello_payload, lifecycle_test_lock,
+        CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats,
+        StderrDrainer, StderrRedactor, MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES,
+        PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR, PROTOCOL_MINOR, REQUIRED_CAPABILITIES,
+        STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
     const WP_1C_04_LIFECYCLE_GOLDEN: &str =
         include_str!("../../../tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json");
+
+    fn predecessor_hello_payload() -> Value {
+        json!({
+            "protocol": {
+                "major": PROTOCOL_MAJOR,
+                "minMinor": MIN_PROTOCOL_MINOR,
+                "maxMinor": PROTOCOL_MINOR,
+            },
+            "requiredCapabilities": REQUIRED_CAPABILITIES,
+            "optionalCapabilities": [OPTIONAL_CAPABILITIES[0], OPTIONAL_CAPABILITIES[1]],
+        })
+    }
+
+    fn request_predecessor_hello(
+        host: &mut CoreHostRuntime,
+        request_id: &str,
+        deadline: Duration,
+    ) -> Result<Value, String> {
+        host.request_with_payload(
+            request_id,
+            "system.hello",
+            predecessor_hello_payload(),
+            deadline,
+        )
+    }
+
+    #[test]
+    fn default_hello_payload_contains_the_current_product_capabilities() {
+        let payload = hello_payload();
+
+        assert_eq!(
+            payload["optionalCapabilities"],
+            json!([
+                "transport.concurrent-router",
+                "settings.provider-model",
+                "assistant.memory"
+            ])
+        );
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3614,7 +3648,7 @@ mod tests {
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stderr flood fixture launches");
         let credential = host.generation_credential.clone();
-        host.request("hello-flood", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello-flood", Duration::from_secs(3))
             .expect("stderr flood must not block hello");
         let exit = host.shutdown().expect("stderr flood fixture stops cleanly");
         assert!(exit.stderr_stats.eof);
@@ -3639,7 +3673,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("slow shutdown fixture launches");
-        host.request("hello-slow", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello-slow", Duration::from_secs(3))
             .expect("slow fixture hello negotiates");
         let shutdown_written_at = Arc::new(Mutex::new(None));
         host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
@@ -3676,8 +3710,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stderr crash fixture launches");
-        let error = host
-            .request("hello-crash", "system.hello", Duration::from_secs(3))
+        let error = request_predecessor_hello(&mut host, "hello-crash", Duration::from_secs(3))
             .expect_err("crashed Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let exit = host
@@ -3696,8 +3729,7 @@ mod tests {
             .expect("real Core Host should launch in a managed Job");
         assert!(host.pid() > 0);
 
-        let hello = host
-            .request("hello", "system.hello", Duration::from_secs(3))
+        let hello = request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
             .expect("hello should respond");
         assert_eq!(hello["ok"], true);
         assert_eq!(hello["payload"]["hostState"], "transport_ready");
@@ -3795,8 +3827,7 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        let hello = host
-            .request("router-hello", "system.hello", Duration::from_secs(3))
+        let hello = request_predecessor_hello(&mut host, "router-hello", Duration::from_secs(3))
             .expect("router hello should negotiate");
         assert_eq!(hello["protocolMinor"], 2);
         assert!(hello["payload"]["capabilities"]
@@ -3869,8 +3900,7 @@ mod tests {
             .expect("provider fixture should resolve");
         let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real provider settings Core should launch");
-        let hello = host
-            .request("settings-hello", "system.hello", Duration::from_secs(3))
+        let hello = request_predecessor_hello(&mut host, "settings-hello", Duration::from_secs(3))
             .expect("settings hello should negotiate");
         assert!(hello["payload"]["capabilities"]
             .as_array()
@@ -3936,7 +3966,7 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        host.request("chat-hello", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "chat-hello", Duration::from_secs(3))
             .expect("router hello should negotiate");
         let gateway = host
             .chat_gateway()
@@ -3989,7 +4019,7 @@ mod tests {
         let generation = "00000000-0000-4000-8000-000000003002";
         let mut host =
             CoreHostRuntime::launch(&layout, generation).expect("real Core should launch");
-        host.request("real-chat-hello", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
             .expect("real chat hello");
         host.request_with_payload(
             "real-chat-initialize",
@@ -4066,8 +4096,7 @@ mod tests {
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("first Host launches");
         let first_credential = first.generation_credential.clone();
         assert!(!format!("{first:?}").contains(&first_credential));
-        first
-            .request("hello-first", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut first, "hello-first", Duration::from_secs(3))
             .expect("first hello");
         let snapshot = first
             .refresh_snapshot("snapshot-first", Duration::from_secs(3))
@@ -4095,8 +4124,7 @@ mod tests {
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stale response fixture launches");
         let credential = host.generation_credential.clone();
-        let error = host
-            .request("hello-stale", "system.hello", Duration::from_secs(3))
+        let error = request_predecessor_hello(&mut host, "hello-stale", Duration::from_secs(3))
             .expect_err("stale credential response must fail");
         assert!(error.starts_with("GENERATION_CREDENTIAL_MISMATCH:"));
         assert!(!error.contains(&credential));
@@ -4152,8 +4180,7 @@ mod tests {
         let mut host = CoreHostRuntime::launch(layout, generation_id)
             .expect("bundled Python Core Host should launch");
         let credential = host.generation_credential.clone();
-        let hello = host
-            .request("hello", "system.hello", golden_deadline(golden, "hello"))
+        let hello = request_predecessor_hello(&mut host, "hello", golden_deadline(golden, "hello"))
             .expect("hello should negotiate");
         assert_eq!(hello["ok"], true);
         let initialize = host
@@ -4284,13 +4311,12 @@ mod tests {
         let mut final_readiness =
             CoreHostRuntime::launch(&layout, "00000000-0000-4000-8000-000000004003")
                 .expect("final-readiness generation launches");
-        final_readiness
-            .request(
-                "hello-final",
-                "system.hello",
-                golden_deadline(&golden, "hello"),
-            )
-            .expect("final-readiness hello negotiates");
+        request_predecessor_hello(
+            &mut final_readiness,
+            "hello-final",
+            golden_deadline(&golden, "hello"),
+        )
+        .expect("final-readiness hello negotiates");
         final_readiness
             .request_with_payload(
                 "initialize-final",
@@ -4324,13 +4350,12 @@ mod tests {
             "00000000-0000-4000-8000-000000004004",
         )
         .expect("bundled Python crash fixture launches");
-        let error = crashed
-            .request(
-                "hello-crash",
-                "system.hello",
-                golden_deadline(&golden, "hello"),
-            )
-            .expect_err("crashed bundled Core cannot answer hello");
+        let error = request_predecessor_hello(
+            &mut crashed,
+            "hello-crash",
+            golden_deadline(&golden, "hello"),
+        )
+        .expect_err("crashed bundled Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let crash_exit = crashed
             .close_stdin_and_wait()
@@ -4368,7 +4393,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("trailing stdout fixture launches");
-        host.request("hello-trailing", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello-trailing", Duration::from_secs(3))
             .expect("fixture hello negotiates");
         let error = host
             .shutdown()
@@ -4503,7 +4528,7 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        host.request("hello", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
             .expect("hello should negotiate");
         let initialize = host
             .request_with_payload(
@@ -4541,7 +4566,7 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        host.request("hello", "system.hello", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
             .expect("hello should negotiate");
         host.request_with_payload(
             "initialize",

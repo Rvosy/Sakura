@@ -252,7 +252,9 @@ jobs:
         run: >-
           PYTHONDONTWRITEBYTECODE=1 python -m pytest
           tests/unit/test_core_host_*.py
+          tests/unit/test_runtime_resources.py
           tests/integration/test_core_host_*.py
+          tests/integration/test_runtime_v2_current_product_topology.py
           tests/unit/test_hardening_regressions.py
           tests/integration/test_wp_4_01_memory_capability.py
 

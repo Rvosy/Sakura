@@ -29,7 +29,7 @@ from app.agent.memory import (
 )
 from app.agent.memory_curator import MemoryCurationState, MemoryCurator
 from app.config.models import MODEL_SLOT_MEMORY_CURATION
-from app.core.resource_manager import ResourceRegistry
+from app.core.runtime_resources import ResourceRegistry
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.storage.atomic import atomic_write_text
 from app.storage.chat_history import ChatHistoryStore

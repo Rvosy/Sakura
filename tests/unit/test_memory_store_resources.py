@@ -11,7 +11,7 @@ import pytest
 
 import app.agent.memory as memory_module
 from app.agent.memory import MemoryStore, ProcessIsolatedHuggingFaceEmbedding
-from app.core.resource_manager import ResourceRegistry
+from app.core.runtime_resources import ResourceRegistry
 
 
 def test_optional_background_import_absence_degrades_without_blocking_core(

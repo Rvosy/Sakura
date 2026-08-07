@@ -4,7 +4,7 @@ status: recorded
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-03
+updated: 2026-08-07
 ---
 
 # WP-4-01 本地自动验证记录
@@ -58,3 +58,42 @@ Windows 可见 UI 验收入口为：
 恢复、模型任务取消、Core 强杀与新 generation 恢复，并审查同一最终候选 SHA 的 Windows x64、macOS
 arm64、Linux x64 workflow、脱敏 manifest/log 和 Memory-only 回退边界。远端三平台同 SHA 证据和人工
 操作在本记录创建时尚未发生，因此不能据此标记 `accepted`。
+
+## 2026-08-07 最终契约修正复验
+
+独立审查确认两项缺口后，以提交 `cf164dc` 冻结唯一最终契约修订 `0006`，随后执行
+`python3 -m harness preflight WP-4-01`，范围、依赖、受保护路径、dependency policy 和 activation 历史
+全部通过。实现只拆分 Qt-free 资源边界、修正默认能力测试拓扑并增加当前产品拓扑门；未启动 WP-4-02，
+未修改 IPC、Memory 数据格式、Runtime manifest、依赖锁、userdoc、CHANGELOG 或 CAP-008 状态。
+
+修正候选的定向结果如下：
+
+- `runtime/bin/python3 -m pytest` 运行 ResourceManager 兼容、纯资源导入、Memory 资源/Core 和两项真实进程
+  集成测试：56 passed。当前产品拓扑测试在独立进程拒绝全部 `PySide6` import 后，同时完成 Chat、
+  Provider Settings、Memory 设置/搜索和正常 shutdown。
+- `cargo test ... core_host_runtime::tests:: -- --test-threads=1`：42 passed、1 个仅正式 packaged Runtime
+  可运行的测试 ignored；历史生命周期测试均发送显式 predecessor hello payload。
+- 默认 hello 能力集合定向测试：1 passed；Memory Gateway：4 passed；`cargo fmt --check` 通过。
+- Appearance、Provider、Memory 前端定向回归：26 passed；各领域 dirty、draft 和 generation rebind
+  回归保持通过。
+- `runtime/bin/python3 -m harness run docs`：2/2 case 通过；
+  `runtime/bin/python3 -m harness check WP-4-01`：通过且无范围外、禁止或受保护文件变更。
+
+首次直接运行 `verify` 时，`python-full` 的两项既有 WP-3-06 测试把本机系统临时目录中的
+`/var -> /private/var` 识别为不安全路径，报告为
+`temp/harness/20260807T120342Z-WP-4-01.json`。未修改 WP-3-06 代码或契约；把 `TMPDIR` 指向仓库内隔离
+临时根后，两项测试单独复跑为 2 passed。随后在相同隔离环境执行：
+
+```text
+TMPDIR=<repo>/temp/harness-runtime-tmp runtime/bin/python3 -m harness verify WP-4-01
+```
+
+结果为 exit code 3 / `manual_pending`，报告
+`temp/harness/20260807T120524Z-WP-4-01.json`：docs、smoke、core-host、runtime-v2-shell、python-full 五个
+required profile 全部通过，自动条目 8/8 passed，人工条目 3 项 pending。其中完整 Python unit 为
+600 passed、1 skipped，integration 为 48 passed，Legacy Qt 参考回归为 24 passed。
+
+该结果只能表述为“自动门通过，等待验收”。同一最终提交的远端 Test 与 Windows/macOS/Linux platform
+workflow、Windows EXE 人工步骤和 packaged Runtime 依赖审查尚未在本次本地复验中发生；WP-4-01 继续
+保持 `active`，CAP-008 不在本记录中更新为 `architecture-validated`、`platform-verified` 或
+`parity-accepted`。
