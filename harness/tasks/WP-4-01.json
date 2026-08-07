@@ -37,6 +37,8 @@
     "app/config/core_config_reader.py",
     "app/config/provider_model_settings.py",
     "app/config/settings_service.py",
+    "app/core/resource_manager.py",
+    "app/core/runtime_resources.py",
     "app/core_host/assistant_adapter.py",
     "app/core_host/memory_boundary.py",
     "app/core_host/real_chat.py",
@@ -80,6 +82,7 @@
     "harness/suites.json",
     "harness/tasks/WP-4-01.json",
     "tests/fixtures/runtime_v2/wp_4_01/**",
+    "tests/integration/test_runtime_v2_current_product_topology.py",
     "tests/integration/test_wp_4_01_memory_capability.py",
     "tests/unit/test_agent_runtime.py",
     "tests/unit/test_core_host_config_reader.py",
@@ -88,6 +91,8 @@
     "tests/unit/test_memory_curator.py",
     "tests/unit/test_memory_store_resources.py",
     "tests/unit/test_provider_model_settings.py",
+    "tests/unit/test_resource_manager.py",
+    "tests/unit/test_runtime_resources.py",
     "tests/unit/test_settings_service.py"
   ],
   "forbidden_paths": [
@@ -124,6 +129,8 @@
       "Memory settings and management feature DTOs, validation, atomic save, model-slot restart plan, fixed embedding import and explicit download complete through the authorized settings window without path or secret disclosure",
       "future or corrupt data, lock conflict, read-only storage, interrupted atomic replacement, invalid archive, download failure and stale generation handles preserve the previous readable data and stable UI state",
       "normal exit, settings close, task cancel, forced Core termination and Shell exit reclaim every Memory thread, waiter, Qdrant and SQLite resource, lock, pipe and temporary root within the bounded shutdown policy",
+      "Memory and Core import the pure runtime resource boundary directly, and a fresh process that rejects every PySide6 import can negotiate Memory, read settings, search and shut down while the legacy ResourceManager import surface remains compatible",
+      "the default hello capability set is identical in product and test builds and the non-historical current-product-topology gate runs Chat, Provider Settings and Memory together; frozen predecessor tests request their historical capability set explicitly",
       "isolated headless reference-to-Runtime-v2-to-reference data compatibility, sanitized manifests, locked required profiles and same-candidate Windows x64, macOS arm64 and Linux x64 workflow pass without legacy memory.json, protected-data, dependency or out-of-scope changes"
     ],
     "manual": [

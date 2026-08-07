@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-04
+updated: 2026-08-07
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -37,6 +37,10 @@ updated: 2026-08-04
   不能在 Core Router 进程的 Python 线程内运行。
 - `AgentRuntime` 与 `MemoryRecallService` 保留 Memory 业务语义；`RealChatBoundary` 只协调已完成聊天与
   整理调度，不成为 Memory 或历史真相源。
+- `app/core/runtime_resources.py` 是 Core/Memory 可直接依赖的纯 Python 资源边界，承载 registry、线程组、
+  进程、服务、异步循环与资源状态；该模块及其传递导入不得导入 `PySide6`。`app/core/resource_manager.py`
+  只保留 Qt worker/`ResourceManager` adapter，并为既有调用方重新导出旧资源符号；Core/Memory 不得经该
+  兼容入口取得资源类型。
 - 禁止复用 `app/core/bootstrap.py`、`AppContext`、`app/ui/tauri_settings.py`、
   `MemoryCurationWorker` 或任何 PySide6 对象。Core hello、health、shutdown 和未协商 Memory 的启动路径
   必须保持无 Qt。
@@ -83,6 +87,10 @@ retryable 和无敏感 details。
 
 Memory 是可选协商能力 `assistant.memory`。未协商时 Core 不打开 Memory 外部存储，Rust 不注册 Memory
 命令，设置 feature 保持 `unavailable`。不为本能力新增 transport、stdout writer 或公共协议 major。
+正常产品 hello 在 product/test build 中都必须声明 Router、Provider Settings 与 Memory 当前能力集合；
+冻结的历史 WP 若需 predecessor 拓扑，必须在测试请求中显式发送旧 optional capability 集合，不得依赖
+`cfg(test)`、debug build 或其他编译模式隐式关闭 Memory。非历史“当前产品拓扑”门必须同时运行真实
+Chat、Provider Settings 与 Memory；后续能力只向该门追加，历史 profile 不得替代该门。
 
 Core 请求名和 payload 精确冻结如下；所有请求继续使用现有 generation credential 和 envelope：
 
@@ -160,6 +168,10 @@ Rust 负责设置窗口授权和 generation identity。保存 `trigger_turns` �
 变更返回 `core_restart_required` 并由现有 Supervisor 受控重建，失败时旧文件、旧 Core 和当前草稿保持。
 不建立跨 Provider、Memory、外观或其他设置域的“保存全部”事务。
 
+各领域 controller 独占自己的 snapshot、draft、dirty 与 generation rebind；Shell 只聚合 dirty 状态和
+保存顺序。共享 `request` 仅作为兼容视图保留，任何 controller 都不得整体替换它或借此覆盖其他领域的
+草稿、请求与重绑定状态。完整 Settings 清理留给 WP-5-01。
+
 Core 受控重建或意外更换 generation 时，已打开的设置窗口必须原位重新绑定新 Core identity，不关闭、
 重建或要求用户重新打开窗口。重绑定期间保存、搜索、CRUD 和模型动作必须稳定禁用或排队；新 generation
 完成 `memory.settings.get` 后自动恢复可用并刷新服务端数据。筛选、选中项、编辑草稿及中文/日文 IME
@@ -173,6 +185,10 @@ composition 保留；未提交内容不得自动保存、提交或清空。旧 g
 
 - 有/无命中检索、层过滤、去重、过期、scope 隔离和记忆注入；Memory loading/failed/锁冲突/损坏
   存储/embedding 缺失时聊天仍完成且不自动重发。
+- 独立进程安装 `PySide6` import blocker 后仍能启动真实 Core、协商 Memory、读取设置、搜索并正常
+  shutdown；`ResourceManager` 旧导入面保持兼容，Core/Memory 物理导入链不经过 Qt adapter。
+- 默认 hello 在测试编译与产品编译中包含 Router、Provider Settings、Memory；非历史当前产品拓扑门
+  同时完成真实 Chat、Provider Settings 读取与 Memory 设置/搜索，历史 WP 仅使用显式 predecessor payload。
 - CRUD 校验、敏感内容、并发 CRUD/整理、幂等删除、未知字段、未来/损坏配置、只读目录、磁盘满、
   原子 replace 中断以及旧 generation response/event/handle 丢弃。
 - 自动整理阈值、仅完成回复计数、Provider/格式/写回失败、取消与 Core 强杀、游标恢复和不重复整理。
@@ -187,6 +203,8 @@ composition 保留；未提交内容不得自动保存、提交或清空。旧 g
   fixture manifest 不变，`memory.json` 字节不变；同一 SHA 三平台 locked workflow 通过。
 - capability、窗口权限、IME composition、草稿保持、重复点击、关窗/Core crash/重启和重新打开状态
   一致；日志、Snapshot 与证据 secret scan 为零。
+- Appearance、Provider 与 Memory controller 的 snapshot、draft、dirty 和 rebind 相互隔离；任一领域
+  保存、失败或重绑定均不得整体替换共享兼容 request 或清除其他领域状态。
 - 整理槽保存触发 Core restart 后，原设置窗口自动取得新 generation，并可继续搜索、新增、编辑、删除
   和保存；旧代迟到成功、`REQUEST_DEADLINE_EXCEEDED`、`GENERATION_INVALIDATED` 与
   `SETTINGS_CORE_GENERATION_MISMATCH` 不覆盖新代列表、状态或草稿，也不要求关闭重开设置。

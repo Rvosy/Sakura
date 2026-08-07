@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: WP-4-01
-updated: 2026-08-03
+updated: 2026-08-07
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -2667,7 +2667,10 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、python-full
 设置生命周期：模型槽保存触发 Core restart 后，原设置窗口必须自动重绑定新 generation，保留列表、筛选、选中项、草稿与 IME composition；旧代超时、Router 关闭和 identity mismatch 不得覆盖稳定 UI，也不得要求关闭重开设置
 布局基线：沿用既有设置页面的信息层级；记忆统计/筛选紧凑，列表与编辑器稳定双栏，窄窗口不得出现逐字竖排、遮挡或主要编辑区被模型控件挤压
 验收缺陷：首次人工验收发现模型控件页面归属、窄窗口排版和 Core restart 后原位重绑定不符合契约；WP 保持 active，修复与复验见 docs/records/audits/WP-4-01-SETTINGS-LAYOUT-AND-GENERATION-DEFECT.md
-任务契约：harness/tasks/WP-4-01.json；activation：harness/activations/WP-4-01/0002.json（supersedes 0001）
+最终修正：Memory/Core 只直接依赖无 PySide6 的纯资源模块，Qt ResourceManager 仅作 adapter/兼容导出；product/test build 的默认 hello 都声明 Router、Provider Settings、Memory，历史 WP 通过显式 payload 请求 predecessor 拓扑
+当前产品拓扑门：非历史回归必须由真实 Core 同时完成 Chat、Provider Settings 与 Memory；后续能力只追加到该门，冻结 staged Runtime 的 predecessor profile 不得冒充当前产品拓扑
+Settings 边界：各领域 controller 独占 snapshot、draft、dirty、rebind；Shell 只聚合 dirty 与保存顺序，共享 request 仅为兼容视图且不得被任一 controller 整体替换；全面清理由 WP-5-01 承担
+任务契约：harness/tasks/WP-4-01.json；activation：harness/activations/WP-4-01/0006.json（supersedes 0005；最终契约修订）
 ```
 
 精确行为、DTO、字段上限、数据兼容、资源所有权、人工步骤与非目标见
