@@ -88,12 +88,19 @@ arm64、Linux x64 workflow、脱敏 manifest/log 和 Memory-only 回退边界。
 TMPDIR=<repo>/temp/harness-runtime-tmp runtime/bin/python3 -m harness verify WP-4-01
 ```
 
-结果为 exit code 3 / `manual_pending`，报告
-`temp/harness/20260807T120524Z-WP-4-01.json`：docs、smoke、core-host、runtime-v2-shell、python-full 五个
-required profile 全部通过，自动条目 8/8 passed，人工条目 3 项 pending。其中完整 Python unit 为
+结果为 exit code 3 / `manual_pending`。实现提交完成后又在干净工作树复跑，最终报告为
+`temp/harness/20260807T120821Z-WP-4-01.json`，`head_ref` 为
+`00279dc9cc432e9981ea6804b1de3197c3fde61e`：docs、smoke、core-host、runtime-v2-shell、python-full
+五个 required profile 全部通过，自动条目 8/8 passed，人工条目 3 项 pending。其中完整 Python unit 为
 600 passed、1 skipped，integration 为 48 passed，Legacy Qt 参考回归为 24 passed。
 
-该结果只能表述为“自动门通过，等待验收”。同一最终提交的远端 Test 与 Windows/macOS/Linux platform
-workflow、Windows EXE 人工步骤和 packaged Runtime 依赖审查尚未在本次本地复验中发生；WP-4-01 继续
-保持 `active`，CAP-008 不在本记录中更新为 `architecture-validated`、`platform-verified` 或
-`parity-accepted`。
+同一实现提交触发的远端 Test workflow run `31177084704` 全部通过；platform workflow run
+`31177084667` 中 macOS arm64 与 Linux x64 通过，Windows x64 两次都在历史 WP-3V-01 验收的
+`WP_3V_01_MAIN_WINDOW_TIMEOUT` 处退出。该错误发生在 Core readiness 和本轮新增当前产品拓扑门之前，
+且与此前 Windows 基线失败 `30899152439`、`30867285086` 的错误相同；对比实现前后 debug Tauri
+predecessor 分支没有语义变化，因此未借 WP-4-01 扩张范围修改历史窗口验收或产品窗口生命周期。后续
+文档收尾提交必须重新取得 Test 与三平台 workflow 结果，不能用本次部分通过冒充同 SHA 全绿。
+
+以上结果只能表述为“自动门通过，等待验收”。Windows EXE 人工步骤和 packaged Runtime 依赖审查仍未
+发生；WP-4-01 继续保持 `active`，CAP-008 不在本记录中更新为 `architecture-validated`、
+`platform-verified` 或 `parity-accepted`。
