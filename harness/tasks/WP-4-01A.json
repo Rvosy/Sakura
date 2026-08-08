@@ -12,6 +12,8 @@
     "desktop/frontend/tests/memory-runtime.test.js",
     "desktop/src-tauri/src/main.rs",
     "desktop/src-tauri/src/product_shell.rs",
+    "docs/adr/0011-runtime-v2-memory-process-isolation.md",
+    "docs/adr/README.md",
     "docs/plans/runtime-v2/README.md",
     "docs/plans/runtime-v2/WP-4-01A-memory-startup-settings-recovery.md",
     "docs/plans/runtime-v2/work-packages.md",
