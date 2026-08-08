@@ -90,7 +90,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
-| WP-H-02 | Harness 删除型减负 | WP-4-01 | active |
+| WP-H-02 | Harness 删除型减负 | WP-4-01 | stabilizing |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2691,6 +2691,11 @@ required profiles（最终 v2）：docs、unit；另按实施计划显式运行 
 `docs/adr/0009-lean-agent-development-harness.md`，实施与验证顺序见
 `docs/plans/agent-development-harness-v2-reduction.md`。自动门通过后只进入 `stabilizing`；负责人单独验收并
 标记 `accepted` 后，才可激活 WP-4-02。
+
+自动候选记录（2026-08-08）：实现候选 `eb36dc2262a5159c59a1af120cbe9cde74f2c237` 已完成本地
+required profiles、Core/Shell 回归和 GitHub Test；Harness Python 与对应测试净删除 372 行，最终
+`verify` 为 3 个唯一 case 全绿、13.769 秒、exit 3 / `manual_pending`。WP-H-02 据此进入
+`stabilizing`，等待负责人审查；完整事实见 `docs/records/audits/WP-H-02-AUTOMATED-VALIDATION.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
