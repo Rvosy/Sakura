@@ -1,25 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "WP-H-02",
-  "title": "Harness 删除型减负",
-  "status_source": "docs/plans/runtime-v2/work-packages.md",
-  "documents": {
-    "specs": [
-      "docs/specs/runtime-v2/README.md",
-      "docs/specs/runtime-v2/WP-H-02-lean-agent-development-harness.md"
-    ],
-    "adrs": [
-      "docs/adr/README.md",
-      "docs/adr/0009-lean-agent-development-harness.md"
-    ],
-    "plans": [
-      "docs/plans/README.md",
-      "docs/plans/agent-development-harness-v2-reduction.md",
-      "docs/plans/runtime-v2/README.md",
-      "docs/plans/runtime-v2/work-packages.md"
-    ]
-  },
-  "dependencies": ["WP-4-01"],
   "base_ref": "cd9faf8f828d97b076cca404abfe48119b876ee8",
   "allowed_paths": [
     ".github/workflows/test.yml",
@@ -33,34 +14,8 @@
     "harness/**",
     "tests/unit/test_docs_structure.py",
     "tests/unit/test_harness_agent_development.py",
-    "tests/unit/test_harness_runner.py"
+    "tests/unit/test_harness_runner.py",
+    "tools/check_docs.py"
   ],
-  "forbidden_paths": [
-    "app/**",
-    "desktop/**",
-    "legacy_qt_main.py",
-    "main.py",
-    "plugins/**",
-    "runtime/**",
-    "tools/mcp/**"
-  ],
-  "protected_paths": ["data/**", "characters/**", "third_party/**"],
-  "dependency_policy": {"mode": "forbidden", "allowed_files": []},
-  "required_profiles": ["docs", "smoke", "unit"],
-  "acceptance": {
-    "automated": [
-      "task v2, Git scope, global protection and exit-code tests pass",
-      "case de-duplication, stable ordering and isolated temporary-root tests pass",
-      "docs, unit, core-host and runtime-v2-shell profiles pass",
-      "Harness and corresponding tests have a net deletion of at least 250 lines"
-    ],
-    "manual": [
-      "maintainer reviews the deleted governance concepts, final v2 task/report and retained safety boundaries"
-    ]
-  },
-  "rollback": [
-    "revert the Harness refactor and its invocation documentation as one unit",
-    "restore the retained v1 loader against existing task and activation history",
-    "do not modify product code, user data, characters or WP-4-01 Memory implementation"
-  ]
+  "required_profiles": ["docs", "unit"]
 }

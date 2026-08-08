@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-08
 ---
 
 # Archive
@@ -13,3 +13,4 @@ updated: 2026-07-31
 
 - [历史实施计划](plans/)
 - [历史设计与规范](specs/)
+- [已替代架构决策](adr/)

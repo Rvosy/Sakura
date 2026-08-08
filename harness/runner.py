@@ -1,4 +1,4 @@
-"""Small, dependency-free runner for Sakura's repository verification profiles."""
+"""Small, dependency-free runner for Sakura repository verification profiles."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,12 +43,11 @@ def _required_string(value: Any, field: str) -> str:
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
-    """Load and validate the deliberately small v1 harness manifest."""
+    """Load and validate the deliberately small v1 suite manifest."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise HarnessError(f"cannot load manifest {path}: {error}") from error
-
     if not isinstance(raw, dict) or raw.get("schema_version") != 1:
         raise HarnessError("manifest schema_version must be 1")
     if not isinstance(raw.get("profiles"), dict) or not raw["profiles"]:
@@ -97,6 +97,8 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             or any(not isinstance(case_id, str) for case_id in selected)
         ):
             raise HarnessError(f"profile {profile_name}.cases must be a non-empty array")
+        if len(selected) != len(set(selected)):
+            raise HarnessError(f"profile {profile_name}.cases contains duplicates")
         unknown = [case_id for case_id in selected if case_id not in case_ids]
         if unknown:
             raise HarnessError(
@@ -115,18 +117,44 @@ def _case_from_dict(item: dict[str, Any]) -> Case:
     )
 
 
-def _resolve_argv(argv: Sequence[str]) -> list[str]:
-    replacements = {"{python}": sys.executable, "{repo}": str(REPO_ROOT)}
+def expand_profiles(
+    manifest: dict[str, Any], profile_names: Sequence[str]
+) -> tuple[dict[str, tuple[str, ...]], tuple[Case, ...]]:
+    """Expand profiles to one stable, globally de-duplicated case sequence."""
+    indexed = {item["id"]: _case_from_dict(item) for item in manifest["cases"]}
+    profile_cases: dict[str, tuple[str, ...]] = {}
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for profile_name in profile_names:
+        profile = manifest["profiles"].get(profile_name)
+        if profile is None:
+            raise HarnessError(f"unknown profile: {profile_name}")
+        ids = tuple(profile["cases"])
+        profile_cases[profile_name] = ids
+        for case_id in ids:
+            if case_id not in seen:
+                seen.add(case_id)
+                ordered_ids.append(case_id)
+    return profile_cases, tuple(indexed[case_id] for case_id in ordered_ids)
+
+
+def create_runtime_tmp_root(repo_root: Path = REPO_ROOT) -> Path:
+    run_id = (
+        datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+        + f"-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    )
+    path = repo_root / "temp" / "harness" / "runtime-tmp" / run_id
+    path.mkdir(parents=True, exist_ok=False)
+    return path.resolve()
+
+
+def _resolve_argv(argv: Sequence[str], repo_root: Path) -> list[str]:
+    replacements = {"{python}": sys.executable, "{repo}": str(repo_root)}
     return [replacements.get(token, token) for token in argv]
 
 
-def _default_report_path(profile_name: str) -> Path:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return DEFAULT_REPORT_ROOT / f"{stamp}-{profile_name}.json"
-
-
 def _write_captured_output(value: str, stream: Any) -> None:
-    """Write captured UTF-8 output even when the Windows console uses GBK."""
+    """Write UTF-8 output even when the Windows console uses a narrow encoding."""
     if not value:
         return
     encoding = getattr(stream, "encoding", None)
@@ -140,25 +168,24 @@ def _write_captured_output(value: str, stream: Any) -> None:
     )
 
 
-def run_profile(
-    manifest: dict[str, Any],
-    profile_name: str,
+def execute_cases(
+    cases: Sequence[Case],
     *,
-    report_path: Path | None = None,
-) -> tuple[int, dict[str, Any], Path]:
-    """Run a profile sequentially and persist a stable JSON report."""
-    profiles = manifest["profiles"]
-    if profile_name not in profiles:
-        raise HarnessError(f"unknown profile: {profile_name}")
-
-    indexed = {item["id"]: _case_from_dict(item) for item in manifest["cases"]}
-    cases = [indexed[case_id] for case_id in profiles[profile_name]["cases"]]
-    started_at = datetime.now(UTC)
+    repo_root: Path,
+    runtime_tmp_root: Path,
+    stop_on_failure: bool,
+) -> list[dict[str, Any]]:
+    """Execute cases sequentially using one invocation-scoped temporary root."""
     results: list[dict[str, Any]] = []
-
+    temporary_env = {
+        "TMPDIR": str(runtime_tmp_root),
+        "TMP": str(runtime_tmp_root),
+        "TEMP": str(runtime_tmp_root),
+    }
     for case in cases:
-        argv = _resolve_argv(case.argv)
+        argv = _resolve_argv(case.argv, repo_root)
         env = os.environ.copy()
+        env.update(temporary_env)
         env.update(case.env)
         print(f"[harness] RUN  {case.case_id}: {case.description}", flush=True)
         case_started = time.monotonic()
@@ -166,7 +193,7 @@ def run_profile(
         try:
             completed = subprocess.run(
                 argv,
-                cwd=REPO_ROOT,
+                cwd=repo_root,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -187,11 +214,13 @@ def run_profile(
                 stdout = stdout.decode("utf-8", errors="replace")
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
-
         duration = round(time.monotonic() - case_started, 3)
         passed = exit_code == 0 and not timed_out
-        label = "PASS" if passed else "FAIL"
-        print(f"[harness] {label} {case.case_id} ({duration:.3f}s)", flush=True)
+        print(
+            f"[harness] {'PASS' if passed else 'FAIL'} {case.case_id} "
+            f"({duration:.3f}s)",
+            flush=True,
+        )
         _write_captured_output(stdout, sys.stdout)
         _write_captured_output(stderr, sys.stderr)
         results.append(
@@ -208,7 +237,33 @@ def run_profile(
                 "stderr": stderr,
             }
         )
+        if not passed and stop_on_failure:
+            break
+    return results
 
+
+def _default_report_path(profile_name: str, repo_root: Path = REPO_ROOT) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    return repo_root / "temp" / "harness" / f"{stamp}-{profile_name}.json"
+
+
+def run_profile(
+    manifest: dict[str, Any],
+    profile_name: str,
+    *,
+    report_path: Path | None = None,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[int, dict[str, Any], Path]:
+    """Run one profile and persist a stable JSON report."""
+    _, cases = expand_profiles(manifest, [profile_name])
+    started_at = datetime.now(UTC)
+    runtime_tmp_root = create_runtime_tmp_root(repo_root)
+    results = execute_cases(
+        cases,
+        repo_root=repo_root,
+        runtime_tmp_root=runtime_tmp_root,
+        stop_on_failure=False,
+    )
     finished_at = datetime.now(UTC)
     passed_count = sum(result["status"] == "passed" for result in results)
     report = {
@@ -218,6 +273,7 @@ def run_profile(
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
+        "runtime_tmp_root": str(runtime_tmp_root),
         "summary": {
             "total": len(results),
             "passed": passed_count,
@@ -226,7 +282,7 @@ def run_profile(
         "cases": results,
     }
     destination = write_json_atomic(
-        report_path or _default_report_path(profile_name), report
+        report_path or _default_report_path(profile_name, repo_root), report
     )
     return (0 if report["status"] == "passed" else 1), report, destination
 
@@ -237,7 +293,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--manifest",
         type=Path,
         default=DEFAULT_MANIFEST,
-        help="path to a v1 harness manifest",
+        help="path to the harness suite manifest",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="list profiles and cases")
@@ -248,22 +304,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "current", help="show the active or stabilizing Work Package"
     )
     current_parser.add_argument("--json", action="store_true", help="emit JSON")
-    preflight_parser = subparsers.add_parser(
-        "preflight", help="validate a task before implementation"
-    )
-    preflight_parser.add_argument("task", nargs="?")
-    preflight_parser.add_argument("--active", action="store_true")
-    check_parser = subparsers.add_parser(
-        "check", help="check task scope, dependencies and frozen boundaries"
-    )
-    check_parser.add_argument("task", nargs="?")
-    check_parser.add_argument("--active", action="store_true")
-    verify_parser = subparsers.add_parser(
-        "verify", help="run full task verification"
-    )
-    verify_parser.add_argument("task", nargs="?")
-    verify_parser.add_argument("--active", action="store_true")
-    verify_parser.add_argument("--report", type=Path, help="write JSON report to this path")
+    for command, help_text in (
+        ("check", "check current task scope and dependencies"),
+        ("verify", "run the current task's unique required cases"),
+    ):
+        task_parser = subparsers.add_parser(command, help=help_text)
+        task_parser.add_argument("task", nargs="?")
+        task_parser.add_argument("--active", action="store_true")
+        if command == "verify":
+            task_parser.add_argument(
+                "--report", type=Path, help="write JSON report to this path"
+            )
     return parser
 
 
@@ -282,28 +333,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"source={result['status_source']}"
                 )
             return 0
-        if args.command in {"preflight", "check", "verify"}:
-            from .git_state import GitStateError
-            from .task_contract import ContractError
+        if args.command in {"check", "verify"}:
             from .task_runner import (
                 _default_task_report,
                 check_task,
                 current_task,
-                preflight_task,
                 verify_task,
             )
-            from .work_packages import WorkPackageError
 
             if bool(args.task) == bool(args.active):
                 raise HarnessError(
                     f"{args.command} requires exactly one task argument or --active"
                 )
             task_id = current_task()["task"] if args.active else args.task
-            if args.command == "preflight":
-                exit_code, result = preflight_task(
-                    task_id, manifest_path=args.manifest
-                )
-            elif args.command == "check":
+            if args.command == "check":
                 exit_code, result = check_task(task_id, manifest_path=args.manifest)
             else:
                 destination = args.report or _default_task_report(REPO_ROOT, task_id)
@@ -325,9 +368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"  - {case_id}: {cases[case_id].get('description', '')}")
             return 0
         exit_code, report, destination = run_profile(
-            manifest,
-            args.profile,
-            report_path=args.report,
+            manifest, args.profile, report_path=args.report
         )
     except (HarnessError, ValueError) as error:
         print(f"harness error: {error}", file=sys.stderr)

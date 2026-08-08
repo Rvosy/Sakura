@@ -10,7 +10,7 @@ updated: 2026-08-08
 
 > 决策日期：2026-08-08  
 > 执行状态来源：[`work-packages.md`](../plans/runtime-v2/work-packages.md)  
-> 替代：[ADR-0008](0008-agent-development-harness.md)
+> 替代：[ADR-0008](../archive/adr/0008-agent-development-harness.md)
 
 ## 背景
 

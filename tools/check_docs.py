@@ -128,6 +128,7 @@ def _expected_kind(relative_path: str) -> str | None:
         if len(parts) == 3 and parts[2] == "README.md":
             return "index"
         return {
+            "adr": "adr",
             "plans": "plan",
             "specs": "spec",
             "records": "record",

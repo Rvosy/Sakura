@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from harness.git_state import collect_git_state, evaluate_scope
-from harness.report import write_json_atomic
-from harness.runner import _build_parser
+from harness.runner import _build_parser, main
 from harness.task_contract import ContractError, TaskContract, load_task_contract
 from harness.task_runner import (
     EXIT_MANUAL_PENDING,
     EXIT_VALIDATION_FAILED,
     check_task,
-    preflight_task,
+    current_task,
     verify_task,
 )
 from harness.work_packages import WorkPackageError, load_work_packages
@@ -48,7 +46,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: {current}
-updated: 2026-07-31
+updated: 2026-08-08
 ---
 
 # Work Packages
@@ -61,58 +59,60 @@ updated: 2026-07-31
 """
 
 
-def _manifest(exit_code: int = 0) -> dict[str, object]:
+def _manifest(failing_case: str | None = None) -> dict[str, object]:
+    profiles = {
+        "first": {"description": "first", "cases": ["a", "b"]},
+        "second": {"description": "second", "cases": ["b", "c"]},
+        "smoke": {"description": "smoke", "cases": ["a"]},
+        "core-host": {"description": "core", "cases": ["a"]},
+        "python-full": {"description": "full", "cases": ["a"]},
+    }
     return {
         "schema_version": 1,
-        "profiles": {
-            "task": {"description": "task profile", "cases": ["task-case"]}
-        },
+        "profiles": profiles,
         "cases": [
             {
-                "id": "task-case",
-                "description": "fixture",
+                "id": case_id,
+                "description": case_id,
                 "argv": [
                     "{python}",
                     "-c",
-                    f"print('task-profile'); raise SystemExit({exit_code})",
+                    f"print('{case_id}'); raise SystemExit({1 if failing_case == case_id else 0})",
                 ],
                 "timeout_seconds": 10,
             }
+            for case_id in ("a", "b", "c")
         ],
     }
 
 
-def _contract(base_ref: str) -> dict[str, object]:
+def _contract(
+    base_ref: str,
+    *,
+    required_profiles: list[str] | None = None,
+) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": "WP-T-01",
-        "title": "测试任务",
-        "status_source": "docs/plans/runtime-v2/work-packages.md",
-        "documents": {
-            "specs": ["docs/specs/task.md"],
-            "adrs": ["docs/adr/0001-task.md"],
-            "plans": ["docs/plans/task.md"],
-        },
-        "dependencies": ["WP-D-01"],
         "base_ref": base_ref,
         "allowed_paths": [
+            "data/**",
             "docs/plans/runtime-v2/work-packages.md",
-            "harness/activations/WP-T-01/0001.json",
-            "harness/tasks/WP-T-01.json",
+            "harness/**",
+            "requirements-dev.txt",
             "src/**",
             "tests/**",
         ],
-        "forbidden_paths": ["forbidden/**"],
-        "protected_paths": ["data/**", "characters/**", "third_party/**"],
-        "dependency_policy": {"mode": "forbidden", "allowed_files": []},
-        "required_profiles": ["task"],
-        "acceptance": {"automated": ["profile passes"], "manual": []},
-        "rollback": ["revert task"],
+        "required_profiles": required_profiles or ["first", "second"],
     }
 
 
 def _repo(
-    tmp_path: Path, *, profile_exit_code: int = 0, manual_acceptance: bool = False
+    tmp_path: Path,
+    *,
+    failing_case: str | None = None,
+    required_profiles: list[str] | None = None,
+    foreign_base: bool = False,
 ) -> Path:
     repo = tmp_path / "repo with 空格"
     repo.mkdir(parents=True)
@@ -120,34 +120,21 @@ def _repo(
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "Harness Tests")
     _write(repo / "docs/plans/runtime-v2/work-packages.md", _work_packages())
-    _write(repo / "docs/specs/task.md", "spec\n")
-    _write(repo / "docs/adr/0001-task.md", "adr\n")
-    _write(repo / "docs/plans/task.md", "plan\n")
     _write(repo / "src/allowed.txt", "base\n")
     _write(repo / "tests/test_keep.py", "def test_keep(): pass\n")
-    _write(repo / "harness/suites.json", json.dumps(_manifest(profile_exit_code)))
+    _write(repo / "harness/suites.json", json.dumps(_manifest(failing_case)))
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "base")
     base_ref = _git(repo, "rev-parse", "HEAD")
-    contract = _contract(base_ref)
-    if manual_acceptance:
-        contract["acceptance"]["manual"] = ["负责人验收"]
-    _write(repo / "harness/tasks/WP-T-01.json", json.dumps(contract))
+    if foreign_base:
+        tree = _git(repo, "rev-parse", "HEAD^{tree}")
+        base_ref = _git(repo, "commit-tree", tree, "-m", "foreign")
     _write(
-        repo / "harness/activations/WP-T-01/0001.json",
-        json.dumps(
-            {
-                "schema_version": 1,
-                "sequence": 1,
-                "task_id": "WP-T-01",
-                "kind": "activation",
-                "base_ref": base_ref,
-                "supersedes": None,
-            }
-        ),
+        repo / "harness/tasks/WP-T-01.json",
+        json.dumps(_contract(base_ref, required_profiles=required_profiles)),
     )
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "activate task")
+    _git(repo, "add", "harness/tasks/WP-T-01.json")
+    _git(repo, "commit", "-m", "add task")
     return repo
 
 
@@ -159,90 +146,47 @@ def _load(repo: Path) -> TaskContract:
     )
 
 
-def test_valid_contract_loads_and_resolves_base_ref(tmp_path: Path) -> None:
+def test_v2_contract_is_small_and_resolves_first_committed_base(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-
     contract = _load(repo)
-
-    assert contract.task_id == "WP-T-01"
-    assert len(contract.base_sha) == 40
-    assert len(contract.activation_sha) == 40
-    assert contract.activation_path == "harness/activations/WP-T-01/0001.json"
-    assert contract.required_profiles == ("task",)
-
-
-@pytest.mark.parametrize("command", ["preflight", "check", "verify"])
-def test_task_commands_accept_active_selector(command: str) -> None:
-    args = _build_parser().parse_args([command, "--active"])
-
-    assert args.active is True
-    assert args.task is None
-
-
-def test_repository_task_schema_is_strict_v1() -> None:
     schema = json.loads(
         (REPO_ROOT / "harness/tasks/schema.json").read_text(encoding="utf-8")
     )
 
-    assert schema["properties"]["schema_version"] == {"const": 1}
-    assert schema["properties"]["base_ref"] == {
-        "type": "string",
-        "pattern": "^[0-9a-fA-F]{40}$",
+    assert contract.task_id == "WP-T-01"
+    assert len(contract.base_sha) == 40
+    assert len(contract.initial_task_sha) == 40
+    assert contract.revision_fields == ()
+    assert schema["properties"]["schema_version"] == {"const": 2}
+    assert set(schema["required"]) == {
+        "schema_version",
+        "id",
+        "base_ref",
+        "allowed_paths",
+        "required_profiles",
     }
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["documents"]["additionalProperties"] is False
-    document_schema = schema["properties"]["documents"]
-    assert document_schema["properties"]["specs"] == {"$ref": "#/$defs/uniqueStrings"}
-    assert len(document_schema["anyOf"]) == 3
-
-
-def test_contract_allows_empty_document_categories_but_not_all_empty(
-    tmp_path: Path,
-) -> None:
-    repo = _repo(tmp_path)
-    path = repo / "harness/tasks/WP-T-01.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["documents"]["adrs"] = []
-    value["documents"]["plans"] = []
-    path.write_text(json.dumps(value), encoding="utf-8")
-
-    contract = _load(repo)
-
-    assert contract.documents["specs"] == ("docs/specs/task.md",)
-    assert contract.documents["adrs"] == ()
-    assert contract.documents["plans"] == ()
-
-    value["documents"]["specs"] = []
-    path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ContractError, match="CONTRACT_DOCUMENTS_EMPTY"):
-        _load(repo)
 
 
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value.pop("title"), "CONTRACT_REQUIRED"),
-        (lambda value: value.__setitem__("schema_version", 2), "CONTRACT_SCHEMA"),
+        (lambda value: value.pop("allowed_paths"), "CONTRACT_REQUIRED"),
+        (lambda value: value.__setitem__("schema_version", 1), "historical only"),
         (lambda value: value.__setitem__("unknown", True), "CONTRACT_UNKNOWN"),
+        (lambda value: value.__setitem__("base_ref", "HEAD"), "BASE_REF_FORMAT"),
+        (lambda value: value.__setitem__("id", "WP-X-01"), "does not match"),
+        (lambda value: value.__setitem__("allowed_paths", ["src/*.py"]), "CONTRACT_PATH"),
+        (lambda value: value.__setitem__("allowed_paths", ["../src/**"]), "CONTRACT_PATH"),
+        (lambda value: value.__setitem__("required_profiles", ["missing"]), "PROFILE_UNKNOWN"),
+        (lambda value: value.__setitem__("required_profiles", ["first", "first"]), "DUPLICATE"),
         (
-            lambda value: value.__setitem__("allowed_paths", ["src/**", "src/**"]),
-            "CONTRACT_DUPLICATE_PATH",
+            lambda value: value.__setitem__("required_profiles", ["core-host", "python-full"]),
+            "PROFILE_OVERLAP",
         ),
         (
-            lambda value: value.__setitem__("forbidden_paths", ["src/**"]),
-            "CONTRACT_PATH_CONFLICT",
-        ),
-        (
-            lambda value: value["acceptance"].__setitem__("automated", []),
-            "CONTRACT_ACCEPTANCE_EMPTY",
-        ),
-        (
-            lambda value: value.__setitem__("base_ref", "missing-ref"),
-            "CONTRACT_BASE_REF_FORMAT",
-        ),
-        (
-            lambda value: value.__setitem__("allowed_paths", ["src/*.py"]),
-            "CONTRACT_PATH_PATTERN",
+            lambda value: value.__setitem__("required_profiles", ["smoke", "python-full"]),
+            "PROFILE_OVERLAP",
         ),
     ],
 )
@@ -257,86 +201,64 @@ def test_invalid_contracts_fail_closed(tmp_path: Path, mutation, message: str) -
         _load(repo)
 
 
-@pytest.mark.parametrize(
-    ("field", "replacement", "message"),
-    [
-        ("specs", ["docs/specs/missing.md"], "CONTRACT_DOCUMENT_MISSING"),
-        ("profiles", ["missing"], "CONTRACT_PROFILE_UNKNOWN"),
-    ],
-)
-def test_contract_references_must_exist(
-    tmp_path: Path, field: str, replacement: list[str], message: str
-) -> None:
+def test_base_ref_cannot_move_after_the_task_first_commit(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     path = repo / "harness/tasks/WP-T-01.json"
     value = json.loads(path.read_text(encoding="utf-8"))
-    if field == "profiles":
-        value["required_profiles"] = replacement
-    else:
-        value["documents"][field] = replacement
+    value["base_ref"] = _git(repo, "rev-parse", "HEAD")
     path.write_text(json.dumps(value), encoding="utf-8")
 
-    with pytest.raises(ContractError, match=message):
+    with pytest.raises(ContractError, match="CONTRACT_BASE_REF_MOVED"):
         _load(repo)
 
 
-def test_work_package_parser_returns_current_and_dependencies(tmp_path: Path) -> None:
+def test_non_ancestor_base_is_a_hard_check_failure(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, foreign_base=True)
+
+    exit_code, report = check_task("WP-T-01", repo_root=repo)
+
+    assert exit_code == EXIT_VALIDATION_FAILED
+    assert report["status"] == "failed"
+    base_check = next(item for item in report["checks"] if item["code"] == "CHECK_BASE_ANCESTOR")
+    assert base_check["status"] == "failed"
+
+
+def test_work_package_parser_returns_current_and_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "work-packages.md"
     _write(path, _work_packages())
-
     registry = load_work_packages(path)
-
     assert registry.current.task_id == "WP-T-01"
-    assert registry.current.status == "active"
     assert registry.packages["WP-T-01"].dependencies == ("WP-D-01",)
 
+    path.write_text(_work_packages(status="planned"), encoding="utf-8")
+    with pytest.raises(WorkPackageError, match="WORK_PACKAGE_CURRENT_COUNT"):
+        load_work_packages(path)
 
-@pytest.mark.parametrize(
-    ("text", "message"),
-    [
-        (_work_packages(status="planned"), "WORK_PACKAGE_CURRENT_COUNT"),
-        (
-            _work_packages()
-            + "\n| WP-X-01 | duplicate current | 无 | stabilizing |\n",
-            "WORK_PACKAGE_CURRENT_COUNT",
-        ),
-        (
-            _work_packages(current="WP-N-01"),
-            "WORK_PACKAGE_METADATA_MISMATCH",
-        ),
-    ],
-)
-def test_work_package_parser_fails_closed(
-    tmp_path: Path, text: str, message: str
-) -> None:
-    path = tmp_path / "work-packages.md"
-    _write(path, text)
-
-    with pytest.raises(WorkPackageError, match=message):
+    path.write_text(_work_packages(current="WP-N-01"), encoding="utf-8")
+    with pytest.raises(WorkPackageError, match="WORK_PACKAGE_METADATA_MISMATCH"):
         load_work_packages(path)
 
 
-def test_scope_accepts_allowed_staged_unstaged_untracked_and_committed(
-    tmp_path: Path,
-) -> None:
+def test_scope_collects_all_four_git_origins(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     contract = _load(repo)
     _write(repo / "src/committed.txt", "committed\n")
     _git(repo, "add", "src/committed.txt")
-    _git(repo, "commit", "-m", "allowed commit")
+    _git(repo, "commit", "-m", "committed change")
     _write(repo / "src/staged.txt", "staged\n")
     _git(repo, "add", "src/staged.txt")
     _write(repo / "src/allowed.txt", "unstaged\n")
     _write(repo / "src/未跟踪.txt", "untracked\n")
 
-    result = evaluate_scope(
-        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
-    )
+    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract)
 
     assert result.status == "passed"
-    assert "src/committed.txt" in result.changed_files
-    assert "src/staged.txt" in result.changed_files
-    assert "src/allowed.txt" in result.changed_files
+    assert {change.origin for change in result.changes} == {
+        "committed",
+        "staged",
+        "unstaged",
+        "untracked",
+    }
     assert "src/未跟踪.txt" in result.untracked_files
 
 
@@ -344,260 +266,201 @@ def test_scope_accepts_allowed_staged_unstaged_untracked_and_committed(
     ("path", "bucket"),
     [
         ("outside.txt", "out_of_scope_files"),
-        ("forbidden/value.txt", "forbidden_files"),
-        ("data/value.txt", "protected_files"),
-        ("requirements-dev.txt", "dependency_files"),
+        ("data/secret.txt", "protected_files"),
     ],
 )
-def test_scope_rejects_outside_forbidden_protected_and_dependencies(
+def test_scope_rejects_outside_and_global_protected_paths(
     tmp_path: Path, path: str, bucket: str
 ) -> None:
     repo = _repo(tmp_path)
     contract = _load(repo)
     _write(repo / path, "change\n")
 
-    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
+    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract)
 
     assert result.status == "failed"
     assert path in getattr(result, bucket)
 
 
-def test_scope_detects_deleted_tests_and_renames(tmp_path: Path) -> None:
+def test_allowed_dependency_is_highlighted_and_tests_continue(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    contract = _load(repo)
+    _write(repo / "requirements-dev.txt", "pytest\n")
+
+    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract)
+    exit_code, report = check_task("WP-T-01", repo_root=repo)
+
+    assert result.status == "passed"
+    assert result.dependency_files == ("requirements-dev.txt",)
+    assert result.dependency_changes == (
+        {"path": "requirements-dev.txt", "status": "allowed"},
+    )
+    assert exit_code == 0
+    assert report["dependencies"]["status"] == "changed"
+
+
+def test_deleted_or_renamed_test_is_rejected(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     contract = _load(repo)
     _git(repo, "mv", "tests/test_keep.py", "src/renamed.py")
 
-    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
+    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract)
 
     assert result.deleted_tests == ("tests/test_keep.py",)
     assert {"tests/test_keep.py", "src/renamed.py"} <= set(result.changed_files)
     assert result.status == "failed"
 
 
-def test_scope_detects_contract_boundary_changes_as_owner_review_required(
+def test_wp_h_02_anchor_is_the_only_activation_change_still_allowed(
     tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    contract = _load(repo)
+    _write(repo / "harness/activations/WP-N-01/0001.json", "{}\n")
+
+    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract)
+
+    assert result.retired_activation_files == (
+        "harness/activations/WP-N-01/0001.json",
+    )
+    assert result.status == "failed"
+
+
+def test_committed_task_revision_is_reported_without_a_ledger(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/tasks/WP-T-01.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["allowed_paths"].append("outside/**")
+    value["required_profiles"] = ["second"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    _git(repo, "add", str(path.relative_to(repo)))
+    _git(repo, "commit", "-m", "revise task")
+
+    exit_code, report = check_task("WP-T-01", repo_root=repo)
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert report["contract"]["revision_fields"] == [
+        "allowed_paths",
+        "required_profiles",
+    ]
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_uncommitted_task_revision_requires_owner_review_and_skips_cases(
+    tmp_path: Path, staged: bool
 ) -> None:
     repo = _repo(tmp_path)
     path = repo / "harness/tasks/WP-T-01.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     value["allowed_paths"].append("outside/**")
     path.write_text(json.dumps(value), encoding="utf-8")
-    contract = _load(repo)
-    result = evaluate_scope(collect_git_state(repo, contract.base_sha), contract, repo_root=repo)
-    assert result.contract_files == ("harness/tasks/WP-T-01.json",)
-    assert result.owner_review_files == ("harness/tasks/WP-T-01.json",)
-    assert result.status == "owner_review_required"
+    if staged:
+        _git(repo, "add", str(path.relative_to(repo)))
 
-
-def test_base_ref_cannot_be_head_current_sha_or_later_sha(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    path = repo / "harness/tasks/WP-T-01.json"
-    original = json.loads(path.read_text(encoding="utf-8"))
-
-    for replacement, message in (
-        ("HEAD", "CONTRACT_BASE_REF_FORMAT"),
-        (_git(repo, "rev-parse", "HEAD"), "CONTRACT_ACTIVATION_BASE_REF"),
-    ):
-        value = dict(original)
-        value["base_ref"] = replacement
-        path.write_text(json.dumps(value), encoding="utf-8")
-        with pytest.raises(ContractError, match=message):
-            _load(repo)
-
-    path.write_text(json.dumps(original), encoding="utf-8")
-    _write(repo / "src/later.txt", "later\n")
-    _git(repo, "add", "src/later.txt")
-    _git(repo, "commit", "-m", "later implementation")
-    value = dict(original)
-    value["base_ref"] = _git(repo, "rev-parse", "HEAD")
-    path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_BASE_REF"):
-        _load(repo)
-
-
-def test_activation_anchor_cannot_share_commit_with_implementation(
-    tmp_path: Path,
-) -> None:
-    repo = _repo(tmp_path)
-    contract = _load(repo)
-    _write(
-        repo / "harness/activations/WP-T-01/0002.json",
-        json.dumps(
-            {
-                "schema_version": 1,
-                "sequence": 2,
-                "task_id": "WP-T-01",
-                "kind": "contract_revision",
-                "base_ref": contract.base_ref,
-                "supersedes": "0001",
-            }
-        ),
-    )
-    _write(repo / "src/hidden.txt", "implementation\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "invalid mixed anchor")
-
-    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_SCOPE"):
-        _load(repo)
-
-
-def test_committed_activation_anchor_is_immutable(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    path = repo / "harness/activations/WP-T-01/0001.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["kind"] = "contract_revision"
-    path.write_text(json.dumps(value), encoding="utf-8")
-
-    with pytest.raises(ContractError, match="CONTRACT_ACTIVATION_FROZEN"):
-        _load(repo)
-
-
-def test_status_source_change_requires_owner_review(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    contract = _load(repo)
-    status_source = repo / contract.status_source
-    status_source.write_text(
-        status_source.read_text(encoding="utf-8") + "\n<!-- lifecycle edit -->\n",
-        encoding="utf-8",
-    )
-
-    result = evaluate_scope(
-        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
-    )
-
-    assert result.status == "owner_review_required"
-    assert result.owner_review_files == (contract.status_source,)
-
-    preflight_exit, preflight = preflight_task("WP-T-01", repo_root=repo)
     check_exit, check = check_task("WP-T-01", repo_root=repo)
-    assert preflight_exit == EXIT_MANUAL_PENDING
-    assert preflight["status"] == "owner_review_required"
+    verify_exit, verify = verify_task(
+        "WP-T-01", repo_root=repo, report_path=repo / "temp/review.json"
+    )
+
     assert check_exit == EXIT_MANUAL_PENDING
     assert check["status"] == "owner_review_required"
-
-    verify_exit, verify = verify_task(
-        "WP-T-01", repo_root=repo, report_path=repo / "temp/owner-review.json"
-    )
     assert verify_exit == EXIT_MANUAL_PENDING
     assert verify["status"] == "owner_review_required"
-    assert verify["profiles"] == []
-    assert verify["acceptance"]["automated"][0]["status"] == "pending"
+    assert verify["cases"] == []
+    assert {item["status"] for item in verify["acceptance"]["automated"]} == {"pending"}
 
 
-def test_scope_ignores_checkout_line_endings_for_frozen_documents(
-    tmp_path: Path,
-) -> None:
+def test_current_and_dependency_checks_use_the_work_package_table(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    contract = _load(repo)
-    for references in contract.documents.values():
-        for reference in references:
-            path = repo / reference
-            lf_content = path.read_bytes().replace(b"\r\n", b"\n")
-            path.write_bytes(lf_content.replace(b"\n", b"\r\n"))
-
-    result = evaluate_scope(
-        collect_git_state(repo, contract.base_sha), contract, repo_root=repo
+    path = repo / "docs/plans/runtime-v2/work-packages.md"
+    next_current = (
+        _work_packages()
+        .replace("active_work_package: WP-T-01", "active_work_package: WP-N-01")
+        .replace("| WP-T-01 | task | WP-D-01 | active |", "| WP-T-01 | task | WP-D-01 | planned |")
+        .replace("| WP-N-01 | next | WP-T-01 | planned |", "| WP-N-01 | next | WP-T-01 | active |")
     )
-
-    assert result.contract_files == ()
-
-
-def test_preflight_rejects_unaccepted_dependency(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    work_packages = repo / "docs/plans/runtime-v2/work-packages.md"
-    work_packages.write_text(
-        _work_packages().replace(
-            "| WP-D-01 | dependency | 无 | accepted |",
-            "| WP-D-01 | dependency | 无 | planned |",
-        ),
-        encoding="utf-8",
-    )
-
-    exit_code, report = preflight_task("WP-T-01", repo_root=repo)
-
-    assert exit_code == EXIT_VALIDATION_FAILED
-    assert any(check["code"] == "PREFLIGHT_DEPENDENCY" for check in report["checks"])
-
-
-def test_check_fails_for_out_of_scope_change(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    _write(repo / "outside.txt", "change\n")
+    path.write_text(next_current, encoding="utf-8")
 
     exit_code, report = check_task("WP-T-01", repo_root=repo)
 
     assert exit_code == EXIT_VALIDATION_FAILED
-    assert report["scope"]["out_of_scope_files"] == ["outside.txt"]
+    assert report["status"] == "failed"
+    assert any(item["code"] == "CHECK_CURRENT" and item["status"] == "failed" for item in report["checks"])
+
+    path.write_text(_work_packages().replace("WP-D-01 | dependency | 无 | accepted", "WP-D-01 | dependency | 无 | planned"), encoding="utf-8")
+    exit_code, report = check_task("WP-T-01", repo_root=repo)
+    assert exit_code == EXIT_VALIDATION_FAILED
+    assert report["dependencies"]["status"] == "failed"
 
 
-def test_verify_propagates_profile_failure_and_writes_report(tmp_path: Path) -> None:
-    repo = _repo(tmp_path, profile_exit_code=9)
+def test_verify_runs_each_case_once_and_returns_manual_pending(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
     report_path = repo / "temp/report.json"
 
     exit_code, report = verify_task(
         "WP-T-01", repo_root=repo, report_path=report_path
     )
 
-    assert exit_code == EXIT_VALIDATION_FAILED
-    assert report["profiles"][0]["status"] == "failed"
-    assert json.loads(report_path.read_text(encoding="utf-8"))["status"] == "failed"
-
-
-def test_verify_preflight_failure_skips_expensive_profiles(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    _write(repo / "outside.txt", "change\n")
-    report_path = repo / "temp/report.json"
-
-    exit_code, report = verify_task(
-        "WP-T-01", repo_root=repo, report_path=report_path
-    )
-
-    assert exit_code == EXIT_VALIDATION_FAILED
-    assert report["profiles"] == []
-    assert report["acceptance"]["automated"][0]["status"] == "blocked"
-    assert report_path.is_file()
-
-
-def test_verify_success_and_manual_pending_exit_codes(tmp_path: Path) -> None:
-    repo = _repo(tmp_path)
-    report_path = repo / "temp/报告.json"
-
-    exit_code, report = verify_task(
-        "WP-T-01", repo_root=repo, report_path=report_path
-    )
-    assert exit_code == 0
-    assert report["status"] == "passed"
-    assert len(report["base_ref"]) == 40
-
-    repo = _repo(tmp_path / "manual case", manual_acceptance=True)
-    report_path = repo / "temp/报告.json"
-    exit_code, report = verify_task(
-        "WP-T-01", repo_root=repo, report_path=report_path
-    )
     assert exit_code == EXIT_MANUAL_PENDING
+    assert report["schema_version"] == 2
     assert report["status"] == "manual_pending"
+    assert [item["id"] for item in report["cases"]] == ["a", "b", "c"]
+    assert [item["case_id"] for item in report["acceptance"]["automated"]] == [
+        "a",
+        "b",
+        "c",
+    ]
+    assert all(item["status"] == "passed" for item in report["profiles"])
+    assert report["acceptance"]["manual"] == {
+        "status": "pending",
+        "source": "corresponding normative Spec",
+    }
+    assert Path(report["runtime_tmp_root"]).is_dir()
+    assert json.loads(report_path.read_text(encoding="utf-8"))["status"] == "manual_pending"
 
 
-def test_atomic_report_handles_unicode_and_leaves_no_temporary_file(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "有 空格" / "报告.json"
+def test_verify_stops_at_first_failure_and_propagates_shared_case(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, failing_case="b")
 
-    write_json_atomic(path, {"message": "中文", "argv": [sys.executable]})
+    exit_code, report = verify_task(
+        "WP-T-01", repo_root=repo, report_path=repo / "temp/failed.json"
+    )
 
-    assert json.loads(path.read_text(encoding="utf-8"))["message"] == "中文"
-    assert not list(path.parent.glob(".*.tmp"))
+    assert exit_code == EXIT_VALIDATION_FAILED
+    assert report["status"] == "failed"
+    assert [item["id"] for item in report["cases"]] == ["a", "b"]
+    assert [item["status"] for item in report["profiles"]] == ["failed", "failed"]
+    automated = {item["case_id"]: item["status"] for item in report["acceptance"]["automated"]}
+    assert automated == {"a": "passed", "b": "failed", "c": "blocked"}
+    assert report["acceptance"]["manual"]["status"] == "blocked"
 
 
-def test_atomic_report_cleans_temporary_file_when_replace_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "report.json"
+def test_verify_skips_all_cases_after_a_hard_scope_failure(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo / "outside.txt", "not allowed\n")
 
-    def fail_replace(source: Path, destination: Path) -> None:
-        raise OSError("replace failed")
+    exit_code, report = verify_task(
+        "WP-T-01", repo_root=repo, report_path=repo / "temp/scope-failed.json"
+    )
 
-    monkeypatch.setattr("harness.report.os.replace", fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
-        write_json_atomic(path, {"status": "failed"})
+    assert exit_code == EXIT_VALIDATION_FAILED
+    assert report["status"] == "failed"
+    assert report["cases"] == []
+    assert {item["status"] for item in report["acceptance"]["automated"]} == {
+        "blocked"
+    }
 
-    assert not list(tmp_path.glob(".*.tmp"))
+
+def test_current_check_verify_active_and_removed_preflight_cli(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    assert current_task(repo_root=repo)["schema_version"] == 2
+    for command in ("check", "verify"):
+        args = _build_parser().parse_args([command, "--active"])
+        assert args.active is True
+        assert args.task is None
+
+    with pytest.raises(SystemExit) as error:
+        _build_parser().parse_args(["preflight", "--active"])
+    assert error.value.code == 2
+    assert main(["check"]) == 2

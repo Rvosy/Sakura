@@ -44,29 +44,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 - 第二个真实消费者出现前，不冻结不必要的通用 Operation、资源、业务优先级、Snapshot component 或未来消费者抽象；方向性 ADR 内容不自动成为当前实现门禁。
 - 设置功能从 WP-3U-02 起按 `docs/specs/runtime-v2/settings-incremental-migration.md` 逐域纵向迁移；拥有用户可配置能力的后续 WP 必须同时声明对应设置 feature、保存/生效/回退边界，不再等待 WP-5-02 集中恢复全部页面。
 
-每个 Work Package 的激活记录至少包含：
-
-```text
-状态：active
-开始日期：
-允许目录：
-明确禁止目录：
-验收环境：
-关联 ADR：
-计划提交：
-```
-
-完成记录至少包含：
-
-```text
-状态：stabilizing / accepted
-自动测试：
-故障测试：
-真实应用验收：
-已知问题：
-回退步骤：
-关联提交：
-```
+从 WP-H-02 起，新的 Work Package 只创建五字段 task v2：固定 `base_ref`、允许路径和 required profiles；
+依赖继续只读本表，人工步骤只读对应 Spec。WP-H-02 `0001` 是最后一个 activation，后续不得新增或修订
+anchor。自动验证、故障和人工验收的实际事实写入 `docs/records/`，不在 task 或本计划复制验收散文。
 
 ## 2. Work Package 总览
 

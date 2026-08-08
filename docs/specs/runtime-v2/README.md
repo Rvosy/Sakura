@@ -32,7 +32,6 @@ updated: 2026-08-08
 - [Legacy 数据参考与 Tauri v2 兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)
 - [Memory 能力等价](WP-4-01-memory-capability.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
-- [Agent Development Harness](WP-H-01-agent-development-harness.md)
 - [Harness 删除型减负](WP-H-02-lean-agent-development-harness.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 

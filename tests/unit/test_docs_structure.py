@@ -29,6 +29,7 @@ def test_document_kind_follows_directory_role() -> None:
     assert _expected_kind("docs/userdocs/SETUP.md") == "userdoc"
     assert _expected_kind("docs/specs/runtime-v2/WP-2-01.md") == "spec"
     assert _expected_kind("docs/archive/plans/runtime-v2/old.md") == "plan"
+    assert _expected_kind("docs/archive/adr/0008-old.md") == "adr"
     assert _expected_kind("docs/adr/README.md") == "index"
 
 

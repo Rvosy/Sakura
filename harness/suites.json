@@ -9,8 +9,8 @@
         "core-host-protocol"
       ]
     },
-    "harness-v1": {
-      "description": "验证任务契约、Work Package、Git 范围和任务报告",
+    "harness": {
+      "description": "验证轻量任务契约、Work Package、Git 范围和任务报告",
       "cases": [
         "harness-self-test",
         "harness-agent-development-tests"
@@ -34,6 +34,7 @@
       "cases": [
         "core-host-unit-tests",
         "core-host-integration-tests",
+        "runtime-v2-provider-model-tests",
         "runtime-v2-memory-tests"
       ]
     },
@@ -55,8 +56,6 @@
       "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
       "cases": [
         "runtime-v2-frontend-tests",
-        "runtime-v2-provider-model-tests",
-        "runtime-v2-memory-tests",
         "runtime-v2-character-appearance-tests",
         "runtime-v2-character-presentation-tests",
         "runtime-v2-product-shell-tests",
@@ -192,7 +191,7 @@
         "pytest",
         "tests/integration",
         "-k",
-        "core_host or wp_3v_01_assistant_architecture or wp_4_01_memory_capability or runtime_v2_current_product_topology",
+        "core_host or wp_3v_01_assistant_architecture",
         "-q"
       ],
       "timeout_seconds": 180,

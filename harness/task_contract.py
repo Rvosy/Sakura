@@ -1,4 +1,4 @@
-"""Strict, dependency-free loader for Agent Development Harness task contracts."""
+"""Strict loader for the deliberately small Harness task contract v2."""
 
 from __future__ import annotations
 
@@ -14,174 +14,30 @@ WP_ID = re.compile(r"^WP-[A-Z0-9]+(?:-[A-Z0-9]+)+$")
 ROOT_FIELDS = {
     "schema_version",
     "id",
-    "title",
-    "status_source",
-    "documents",
-    "dependencies",
     "base_ref",
     "allowed_paths",
-    "forbidden_paths",
-    "protected_paths",
-    "dependency_policy",
     "required_profiles",
-    "acceptance",
-    "rollback",
 }
-DOCUMENT_FIELDS = {"specs", "adrs", "plans"}
-DEPENDENCY_POLICY_FIELDS = {"mode", "allowed_files"}
-ACCEPTANCE_FIELDS = {"automated", "manual"}
-ACTIVATION_FIELDS = {
-    "schema_version",
-    "sequence",
-    "task_id",
-    "kind",
-    "base_ref",
-    "supersedes",
-}
+REVISION_FIELDS = ("allowed_paths", "required_profiles")
 
 
 class ContractError(ValueError):
-    """Raised when a task contract is structurally or semantically invalid."""
+    """Raised when a task contract is invalid or its base was moved."""
 
 
 @dataclass(frozen=True)
 class TaskContract:
     task_id: str
-    title: str
-    status_source: str
-    documents: dict[str, tuple[str, ...]]
-    dependencies: tuple[str, ...]
     base_ref: str
     base_sha: str
-    activation_path: str
-    activation_sha: str
     allowed_paths: tuple[str, ...]
-    forbidden_paths: tuple[str, ...]
-    protected_paths: tuple[str, ...]
-    dependency_mode: str
-    dependency_allowed_files: tuple[str, ...]
     required_profiles: tuple[str, ...]
-    automated_acceptance: tuple[str, ...]
-    manual_acceptance: tuple[str, ...]
-    rollback: tuple[str, ...]
     task_path: str
+    initial_task_sha: str
+    revision_fields: tuple[str, ...]
 
 
-def _object(value: Any, field: str, allowed: set[str], errors: list[str]) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        errors.append(f"CONTRACT_TYPE: {field} must be an object")
-        return {}
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        errors.append(f"CONTRACT_UNKNOWN: {field} has unknown fields: {', '.join(unknown)}")
-    missing = sorted(allowed - set(value))
-    if missing:
-        errors.append(f"CONTRACT_REQUIRED: {field} is missing: {', '.join(missing)}")
-    return value
-
-
-def _string(value: Any, field: str, errors: list[str]) -> str:
-    if not isinstance(value, str) or not value.strip():
-        errors.append(f"CONTRACT_TYPE: {field} must be a non-empty string")
-        return ""
-    return value
-
-
-def _strings(
-    value: Any,
-    field: str,
-    errors: list[str],
-    *,
-    non_empty: bool,
-) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item.strip() for item in value
-    ):
-        errors.append(f"CONTRACT_TYPE: {field} must be a string array")
-        return ()
-    items = tuple(value)
-    if non_empty and not items:
-        errors.append(f"CONTRACT_REQUIRED: {field} must not be empty")
-    if len(set(items)) != len(items):
-        code = "CONTRACT_DUPLICATE_PATH" if "paths" in field else "CONTRACT_DUPLICATE"
-        errors.append(f"{code}: {field} contains duplicate values")
-    return items
-
-
-def _validate_path(pattern: str, field: str, errors: list[str]) -> None:
-    pure = PurePosixPath(pattern)
-    if (
-        "\\" in pattern
-        or pattern.startswith(("/", "./"))
-        or pure.is_absolute()
-        or ".." in pure.parts
-        or pattern.endswith("/")
-    ):
-        errors.append(
-            f"CONTRACT_PATH: {field} must contain repository-relative POSIX patterns: {pattern!r}"
-        )
-        return
-    recursive = pattern.endswith("/**")
-    prefix = pattern[:-3] if recursive else pattern
-    if not prefix or any(token in prefix for token in "*?[") or (
-        not recursive and any(token in pattern for token in "*?[")
-    ):
-        errors.append(
-            "CONTRACT_PATH_PATTERN: "
-            f"{field} only supports exact paths or directory/**: {pattern!r}"
-        )
-
-
-def _prefix(pattern: str) -> str | None:
-    if pattern.endswith("/**"):
-        return pattern[:-3].rstrip("/")
-    if not any(token in pattern for token in "*?["):
-        return pattern.rstrip("/")
-    return None
-
-
-def _patterns_conflict(left: str, right: str) -> bool:
-    if left == right:
-        return True
-    left_prefix = _prefix(left)
-    right_prefix = _prefix(right)
-    if left_prefix is None or right_prefix is None:
-        return False
-    return left_prefix == right_prefix or left_prefix.startswith(
-        right_prefix + "/"
-    ) or right_prefix.startswith(left_prefix + "/")
-
-
-def _resolve_base(repo_root: Path, base_ref: str, errors: list[str]) -> str:
-    if not base_ref:
-        return ""
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", base_ref):
-        errors.append(
-            "CONTRACT_BASE_REF_FORMAT: base_ref must be a full 40-character commit SHA"
-        )
-        return ""
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        errors.append(f"CONTRACT_BASE_REF: cannot resolve {base_ref!r}: {error}")
-        return ""
-    sha = completed.stdout.strip()
-    if completed.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-        errors.append(f"CONTRACT_BASE_REF: {base_ref!r} is not a commit")
-        return ""
-    return sha.lower()
-
-
-def _git_text(repo_root: Path, argv: list[str], error_code: str) -> str:
+def _git(repo_root: Path, argv: list[str]) -> str:
     try:
         completed = subprocess.run(
             ["git", *argv],
@@ -194,183 +50,74 @@ def _git_text(repo_root: Path, argv: list[str], error_code: str) -> str:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise ContractError(f"{error_code}: git {' '.join(argv)} failed: {error}") from error
+        raise ContractError(
+            f"CONTRACT_HISTORY: git {' '.join(argv)} failed: {error}"
+        ) from error
     if completed.returncode != 0:
         raise ContractError(
-            f"{error_code}: git {' '.join(argv)} exited {completed.returncode}: "
-            f"{completed.stderr.strip()}"
+            f"CONTRACT_HISTORY: git {' '.join(argv)} exited "
+            f"{completed.returncode}: {completed.stderr.strip()}"
         )
     return completed.stdout
 
 
-def _canonical_json(data: bytes) -> bytes | None:
+def _strings(value: Any, field: str, *, non_empty: bool = True) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ContractError(f"CONTRACT_TYPE: {field} must be a string array")
+    result = tuple(value)
+    if non_empty and not result:
+        raise ContractError(f"CONTRACT_REQUIRED: {field} must not be empty")
+    if len(result) != len(set(result)):
+        raise ContractError(f"CONTRACT_DUPLICATE: {field} contains duplicate values")
+    return result
+
+
+def _validate_path(pattern: str) -> None:
+    pure = PurePosixPath(pattern)
+    recursive = pattern.endswith("/**")
+    prefix = pattern[:-3] if recursive else pattern
+    if (
+        "\\" in pattern
+        or pattern.startswith(("/", "./"))
+        or pure.is_absolute()
+        or ".." in pure.parts
+        or pattern.endswith("/")
+        or not prefix
+        or any(token in prefix for token in "*?[")
+    ):
+        raise ContractError(
+            "CONTRACT_PATH: allowed_paths only accepts repository-relative exact "
+            f"paths or directory/**: {pattern!r}"
+        )
+
+
+def _json_from_git(repo_root: Path, revision: str, task_path: str) -> dict[str, Any]:
+    text = _git(repo_root, ["show", f"{revision}:{task_path}"])
     try:
-        value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-
-def _load_activation_anchor(
-    *,
-    repo_root: Path,
-    task_id: str,
-    task_path: str,
-    status_source: str,
-    documents: dict[str, tuple[str, ...]],
-    base_ref: str,
-) -> tuple[str, str]:
-    activation_root = repo_root / "harness" / "activations" / task_id
-    candidates = sorted(activation_root.glob("*.json")) if activation_root.is_dir() else []
-    if not candidates:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
         raise ContractError(
-            f"CONTRACT_ACTIVATION_MISSING: no activation anchor exists for {task_id}"
-        )
-    expected_names = [f"{index:04d}.json" for index in range(1, len(candidates) + 1)]
-    if [path.name for path in candidates] != expected_names:
+            f"CONTRACT_HISTORY: {revision}:{task_path} is not valid JSON"
+        ) from error
+    if not isinstance(value, dict):
         raise ContractError(
-            "CONTRACT_ACTIVATION_SEQUENCE: activation anchors must be contiguous from 0001"
+            f"CONTRACT_HISTORY: {revision}:{task_path} must be an object"
         )
+    return value
 
-    governance_paths = {task_path, status_source}
-    governance_paths.update(
-        reference for references in documents.values() for reference in references
-    )
-    governance_paths.update(
-        path.resolve().relative_to(repo_root.resolve()).as_posix() for path in candidates
-    )
-    latest_path = ""
-    latest_sha = ""
-    previous_anchor_sha = ""
-    for index, path in enumerate(candidates, start=1):
-        relative_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
-        try:
-            raw_bytes = path.read_bytes()
-            raw = json.loads(raw_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ContractError(
-                f"CONTRACT_ACTIVATION_LOAD: cannot load {relative_path}: {error}"
-            ) from error
-        errors: list[str] = []
-        record = _object(raw, "activation", ACTIVATION_FIELDS, errors)
-        if record.get("schema_version") != 1:
-            errors.append("CONTRACT_ACTIVATION_SCHEMA: schema_version must be 1")
-        if record.get("sequence") != index:
-            errors.append(
-                f"CONTRACT_ACTIVATION_SEQUENCE: {relative_path} must declare sequence {index}"
-            )
-        if record.get("task_id") != task_id:
-            errors.append(
-                f"CONTRACT_ACTIVATION_TASK: {relative_path} must target {task_id}"
-            )
-        if record.get("kind") not in {"activation", "contract_revision"}:
-            errors.append(
-                "CONTRACT_ACTIVATION_KIND: kind must be activation or contract_revision"
-            )
-        record_base = record.get("base_ref")
-        if not isinstance(record_base, str) or not re.fullmatch(
-            r"[0-9a-fA-F]{40}", record_base
-        ):
-            errors.append(
-                "CONTRACT_ACTIVATION_BASE_REF: base_ref must be a full 40-character commit SHA"
-            )
-        expected_supersedes = None if index == 1 else f"{index - 1:04d}"
-        if record.get("supersedes") != expected_supersedes:
-            errors.append(
-                "CONTRACT_ACTIVATION_SUPERSEDES: "
-                f"{relative_path} must supersede {expected_supersedes!r}"
-            )
-        if errors:
-            raise ContractError("\n".join(dict.fromkeys(errors)))
-        if index == len(candidates) and record_base.lower() != base_ref.lower():
-            raise ContractError(
-                "CONTRACT_ACTIVATION_BASE_REF: current contract base_ref differs "
-                "from the latest anchor"
-            )
 
-        additions = [
-            line
-            for line in _git_text(
-                repo_root,
-                ["log", "--format=%H", "--diff-filter=A", "--", relative_path],
-                "CONTRACT_ACTIVATION_HISTORY",
-            ).splitlines()
-            if line
-        ]
-        if len(additions) != 1:
-            raise ContractError(
-                "CONTRACT_ACTIVATION_HISTORY: "
-                f"{relative_path} must have exactly one committed addition"
-            )
-        anchor_sha = additions[0].lower()
-        ancestry_parent = previous_anchor_sha or base_ref.lower()
-        merge_base = _git_text(
-            repo_root,
-            ["merge-base", ancestry_parent, anchor_sha],
-            "CONTRACT_ACTIVATION_HISTORY",
-        ).strip().lower()
-        if merge_base != ancestry_parent:
-            raise ContractError(
-                "CONTRACT_ACTIVATION_HISTORY: activation anchors must follow base_ref "
-                "in sequence"
-            )
-        frozen = _git_text(
-            repo_root,
-            ["show", f"{anchor_sha}:{relative_path}"],
-            "CONTRACT_ACTIVATION_HISTORY",
-        ).encode("utf-8")
-        if _canonical_json(frozen) != _canonical_json(raw_bytes):
-            raise ContractError(
-                f"CONTRACT_ACTIVATION_FROZEN: {relative_path} differs from its addition commit"
-            )
-        changed = {
-            line
-            for line in _git_text(
-                repo_root,
-                [
-                    "diff-tree",
-                    "--root",
-                    "--no-commit-id",
-                    "--name-only",
-                    "-r",
-                    anchor_sha,
-                ],
-                "CONTRACT_ACTIVATION_HISTORY",
-            ).splitlines()
-            if line
-        }
-        implementation_files = sorted(changed - governance_paths)
-        if implementation_files:
-            raise ContractError(
-                "CONTRACT_ACTIVATION_SCOPE: anchor commit contains non-governance files: "
-                + ", ".join(implementation_files)
-            )
-        anchor_contract = json.loads(
-            _git_text(
-                repo_root,
-                ["show", f"{anchor_sha}:{task_path}"],
-                "CONTRACT_ACTIVATION_HISTORY",
-            )
+def _resolve_base(repo_root: Path, base_ref: Any) -> tuple[str, str]:
+    if not isinstance(base_ref, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", base_ref):
+        raise ContractError(
+            "CONTRACT_BASE_REF_FORMAT: base_ref must be a full 40-character commit SHA"
         )
-        anchor_contract_base = (
-            anchor_contract.get("base_ref")
-            if isinstance(anchor_contract, dict)
-            else None
-        )
-        if (
-            not isinstance(anchor_contract_base, str)
-            or anchor_contract_base.lower() != record_base.lower()
-        ):
-            raise ContractError(
-                "CONTRACT_ACTIVATION_BASE_REF: anchor contract and activation record differ"
-            )
-        latest_path = relative_path
-        latest_sha = anchor_sha
-        previous_anchor_sha = anchor_sha
-
-    return latest_path, latest_sha
+    try:
+        resolved = _git(repo_root, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"])
+    except ContractError as error:
+        raise ContractError(f"CONTRACT_BASE_REF: {base_ref!r} is not a commit") from error
+    return base_ref.lower(), resolved.strip().lower()
 
 
 def load_task_contract(
@@ -379,158 +126,94 @@ def load_task_contract(
     repo_root: Path,
     manifest: dict[str, Any],
 ) -> TaskContract:
-    """Load and semantically validate one v1 task contract."""
+    """Load one active v2 task and verify its immutable changed-set base."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ContractError(f"CONTRACT_LOAD: cannot load {path}: {error}") from error
-    errors: list[str] = []
-    root = _object(raw, "contract", ROOT_FIELDS, errors)
-    if root.get("schema_version") != 1:
-        errors.append("CONTRACT_SCHEMA: schema_version must be 1")
-    task_id = _string(root.get("id"), "id", errors)
-    if task_id and not WP_ID.fullmatch(task_id):
-        errors.append(f"CONTRACT_ID: invalid Work Package id {task_id!r}")
-    title = _string(root.get("title"), "title", errors)
-    status_source = _string(root.get("status_source"), "status_source", errors)
-    if status_source and status_source != "docs/plans/runtime-v2/work-packages.md":
-        errors.append("CONTRACT_STATUS_SOURCE: unsupported status source")
-
-    document_object = _object(
-        root.get("documents"), "documents", DOCUMENT_FIELDS, errors
-    )
-    documents = {
-        name: _strings(
-            document_object.get(name), f"documents.{name}", errors, non_empty=False
+    if not isinstance(raw, dict):
+        raise ContractError("CONTRACT_TYPE: contract must be an object")
+    if raw.get("schema_version") != 2:
+        version = raw.get("schema_version")
+        suffix = "; v1 tasks are historical only" if version == 1 else ""
+        raise ContractError(
+            f"CONTRACT_SCHEMA: schema_version must be 2 (got {version!r}){suffix}"
         )
-        for name in sorted(DOCUMENT_FIELDS)
-    }
-    if not any(documents.values()):
-        errors.append(
-            "CONTRACT_DOCUMENTS_EMPTY: documents must reference at least one "
-            "spec, ADR, or plan"
+    unknown = sorted(set(raw) - ROOT_FIELDS)
+    missing = sorted(ROOT_FIELDS - set(raw))
+    if unknown:
+        raise ContractError(
+            "CONTRACT_UNKNOWN: contract has unknown fields: " + ", ".join(unknown)
         )
-    dependencies = _strings(
-        root.get("dependencies"), "dependencies", errors, non_empty=False
-    )
-    if any(not WP_ID.fullmatch(item) for item in dependencies):
-        errors.append("CONTRACT_DEPENDENCY: dependencies must be Work Package IDs")
-    base_ref = _string(root.get("base_ref"), "base_ref", errors)
-
-    path_groups: dict[str, tuple[str, ...]] = {}
-    for name in ("allowed_paths", "forbidden_paths", "protected_paths"):
-        values = _strings(root.get(name), name, errors, non_empty=True)
-        for value in values:
-            _validate_path(value, name, errors)
-        path_groups[name] = values
-    group_names = tuple(path_groups)
-    for index, left_name in enumerate(group_names):
-        for right_name in group_names[index + 1 :]:
-            for left in path_groups[left_name]:
-                for right in path_groups[right_name]:
-                    if _patterns_conflict(left, right):
-                        errors.append(
-                            "CONTRACT_PATH_CONFLICT: "
-                            f"{left_name} {left!r} conflicts with {right_name} {right!r}"
-                        )
-
-    policy = _object(
-        root.get("dependency_policy"),
-        "dependency_policy",
-        DEPENDENCY_POLICY_FIELDS,
-        errors,
-    )
-    dependency_mode = policy.get("mode")
-    if dependency_mode not in {"forbidden", "allowlisted"}:
-        errors.append("CONTRACT_DEPENDENCY_POLICY: mode must be forbidden or allowlisted")
-        dependency_mode = "forbidden"
-    dependency_allowed = _strings(
-        policy.get("allowed_files"),
-        "dependency_policy.allowed_files",
-        errors,
-        non_empty=False,
-    )
-    if dependency_mode == "forbidden" and dependency_allowed:
-        errors.append(
-            "CONTRACT_DEPENDENCY_POLICY: forbidden mode cannot allow dependency files"
+    if missing:
+        raise ContractError(
+            "CONTRACT_REQUIRED: contract is missing: " + ", ".join(missing)
         )
-    for value in dependency_allowed:
-        _validate_path(value, "dependency_policy.allowed_files", errors)
 
-    profiles = _strings(
-        root.get("required_profiles"), "required_profiles", errors, non_empty=True
-    )
-    known_profiles = manifest.get("profiles", {}) if isinstance(manifest, dict) else {}
-    unknown_profiles = [profile for profile in profiles if profile not in known_profiles]
+    task_id = raw["id"]
+    if not isinstance(task_id, str) or not WP_ID.fullmatch(task_id):
+        raise ContractError(f"CONTRACT_ID: invalid Work Package id {task_id!r}")
+    if path.stem != task_id:
+        raise ContractError(
+            f"CONTRACT_ID: id {task_id!r} does not match task filename {path.stem!r}"
+        )
+    base_ref, base_sha = _resolve_base(repo_root, raw["base_ref"])
+    allowed_paths = _strings(raw["allowed_paths"], "allowed_paths")
+    for pattern in allowed_paths:
+        _validate_path(pattern)
+    profiles = _strings(raw["required_profiles"], "required_profiles")
+    known_profiles = manifest.get("profiles") if isinstance(manifest, dict) else None
+    known_profiles = known_profiles if isinstance(known_profiles, dict) else {}
+    unknown_profiles = [name for name in profiles if name not in known_profiles]
     if unknown_profiles:
-        errors.append(
+        raise ContractError(
             "CONTRACT_PROFILE_UNKNOWN: unknown profiles: " + ", ".join(unknown_profiles)
         )
+    if {"core-host", "python-full"} <= set(profiles):
+        raise ContractError(
+            "CONTRACT_PROFILE_OVERLAP: core-host and python-full cannot both be required"
+        )
+    if {"smoke", "python-full"} <= set(profiles):
+        raise ContractError(
+            "CONTRACT_PROFILE_OVERLAP: smoke and python-full cannot both be required"
+        )
 
-    acceptance = _object(
-        root.get("acceptance"), "acceptance", ACCEPTANCE_FIELDS, errors
-    )
-    automated = _strings(
-        acceptance.get("automated"),
-        "acceptance.automated",
-        errors,
-        non_empty=False,
-    )
-    manual = _strings(
-        acceptance.get("manual"), "acceptance.manual", errors, non_empty=False
-    )
-    if not automated:
-        errors.append("CONTRACT_ACCEPTANCE_EMPTY: automated acceptance must not be empty")
-    rollback = _strings(root.get("rollback"), "rollback", errors, non_empty=True)
-
-    expected_roots = {
-        "specs": "docs/specs/",
-        "adrs": "docs/adr/",
-        "plans": "docs/plans/",
-    }
-    for kind, references in documents.items():
-        for reference in references:
-            _validate_path(reference, f"documents.{kind}", errors)
-            candidate = repo_root / reference
-            if not reference.startswith(expected_roots[kind]) or not candidate.is_file():
-                errors.append(
-                    f"CONTRACT_DOCUMENT_MISSING: {kind} reference does not exist: {reference}"
-                )
-
-    base_sha = _resolve_base(repo_root, base_ref, errors)
     try:
         task_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
-    except ValueError:
-        errors.append("CONTRACT_PATH: task contract must be inside the repository")
-        task_path = path.as_posix()
-    if errors:
-        raise ContractError("\n".join(dict.fromkeys(errors)))
-    activation_path, activation_sha = _load_activation_anchor(
-        repo_root=repo_root,
-        task_id=task_id,
-        task_path=task_path,
-        status_source=status_source,
-        documents=documents,
-        base_ref=base_ref,
+    except ValueError as error:
+        raise ContractError(
+            "CONTRACT_PATH: task contract must be inside the repository"
+        ) from error
+    additions = [
+        line
+        for line in _git(
+            repo_root,
+            ["log", "--format=%H", "--diff-filter=A", "--", task_path],
+        ).splitlines()
+        if line
+    ]
+    if len(additions) != 1:
+        raise ContractError(
+            f"CONTRACT_HISTORY: {task_path} must have exactly one committed addition"
+        )
+    initial_task_sha = additions[0].lower()
+    initial = _json_from_git(repo_root, initial_task_sha, task_path)
+    initial_base = initial.get("base_ref")
+    if not isinstance(initial_base, str) or base_ref != initial_base.lower():
+        raise ContractError(
+            "CONTRACT_BASE_REF_MOVED: base_ref differs from the task file's first commit"
+        )
+    head = _json_from_git(repo_root, "HEAD", task_path)
+    revision_fields = tuple(
+        field for field in REVISION_FIELDS if head.get(field) != initial.get(field)
     )
     return TaskContract(
         task_id=task_id,
-        title=title,
-        status_source=status_source,
-        documents=documents,
-        dependencies=dependencies,
         base_ref=base_ref,
         base_sha=base_sha,
-        activation_path=activation_path,
-        activation_sha=activation_sha,
-        allowed_paths=path_groups["allowed_paths"],
-        forbidden_paths=path_groups["forbidden_paths"],
-        protected_paths=path_groups["protected_paths"],
-        dependency_mode=dependency_mode,
-        dependency_allowed_files=dependency_allowed,
+        allowed_paths=allowed_paths,
         required_profiles=profiles,
-        automated_acceptance=automated,
-        manual_acceptance=manual,
-        rollback=rollback,
         task_path=task_path,
+        initial_task_sha=initial_task_sha,
+        revision_fields=revision_fields,
     )

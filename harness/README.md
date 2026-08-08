@@ -1,25 +1,14 @@
 # Sakura Harness
 
-这是 Sakura 的仓库级验证入口，面向开发者、Codex 和 CI。它不替代 `pytest`；它把已有检查组织成稳定的 profile，并为每次运行生成统一 JSON 报告。
+Sakura 的仓库级验证入口。它不替代 `pytest`、Node 或 Rust 测试；它把已有检查组织成稳定 profile，
+执行 Work Package changed-set 门，并生成机器可读 JSON 报告。产品代码仍在 `app/`/`desktop/`，行为
+断言仍在各测试目录，`harness/` 只负责选择、执行和汇总。
 
-## 为什么放在这里
-
-`harness/` 与 `app/`、`tests/`、`scripts/` 同级：
-
-- `app/` 只保留产品代码；
-- `tests/` 继续保存测试实现；
-- `scripts/` 保存构建、安装和运维脚本；
-- `harness/` 只负责选择场景、执行检查和汇总证据。
-
-这样后续可以加入 Tauri、桌宠 UI、真实 Core lifecycle 或离线对话评测，而不需要改变现有测试布局。
-
-## 使用
-
-项目运行环境：
+## Profile
 
 ```powershell
 runtime\python.exe -m harness list
-runtime\python.exe -m harness run harness-v1
+runtime\python.exe -m harness run harness
 runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness run docs
 runtime\python.exe -m harness run unit
@@ -30,86 +19,67 @@ runtime\python.exe -m harness run runtime-v2-shell
 runtime\python.exe -m harness run runtime-v2-windows-interaction
 ```
 
-也可以指定报告位置：
+也可用 `--report temp\harness\name.json` 指定报告。profile 退出码：`0` 全部通过，`1` 至少一个 case
+失败，`2` 调用或 manifest 错误。
 
-```powershell
-runtime\python.exe -m harness run smoke --report temp\harness\smoke.json
-```
+- `smoke`：Harness 自测和核心协议的快速反馈。
+- `docs`：目录职责、元数据、本地链接、索引和 Runtime v2 状态真相源。
+- `unit`：完整 `tests/unit`。
+- `core-host`：Core Host unit/integration，以及 Provider/Memory Python 边界。
+- `legacy-qt-ui`：offscreen Qt 迁移参考回归，不是受支持产品入口。
+- `python-full`：完整 unit、integration 和迁移参考 UI。
+- `runtime-v2-shell`：Node 前端与 Rust 角色/产品窗口/原生交互检查，不再重复 Provider/Memory Python case。
+- `runtime-v2-windows-interaction`：Windows 真实透明点击穿透门，会短暂显示窗口并移动鼠标。
 
-默认报告写入 `temp/harness/`。进程退出码为 `0` 表示全部通过，`1` 表示至少一个 case 失败，`2` 表示调用或清单错误。
-
-`docs` 会检查 `docs/` 的职责目录、YAML 元数据、Markdown 本地链接、索引覆盖、废弃路径和
-Runtime v2 Work Package 真相源，并运行对应单元测试。
-
-`runtime-v2-shell` 会运行 `desktop/frontend` 的完整 Node 测试，以及近期桌面壳改动涉及的角色外观、角色表现、产品窗口、窗口几何和原生交互 Rust 模块测试。该 profile 保持离线，并避开会与正在运行的 Sakura 实例争用共享锁的完整 Rust 生命周期测试。
-
-`runtime-v2-windows-interaction` 是 Windows 专用实机门禁。它会先构建 debug 桌面壳，再启动桌宠和独立背景接收窗口，验证透明点不属于桌宠、可见立绘仍属于桌宠，并确认透明点击实际跨进程到达背景窗口。运行期间会短暂显示窗口并移动鼠标，证据写入 `temp/harness/windows-transparent-clickthrough/`。
-
-Python profile 按用途分层：
-
-- `unit`：完整 `tests/unit`，适合 Python 业务代码的常规回归；
-- `core-host`：Core Host 单元、真实本地子进程集成测试，以及 WP-3V-01 脱敏 manifest、Provider 消息
-  分类、headless 参考 oracle 基线和环境隔离行为测试；不访问公网或真实 Provider；
-- `legacy-qt-ui`：完整 `tests/ui`，在 offscreen Qt 平台冻结迁移期 Legacy Qt 行为参考；它不是受支持产品入口；
-- `python-full`：依次运行 unit、integration 和迁移参考 Qt UI，适合合并前完整回归。
-
-## Agent Development Harness v1
-
-任务级命令已经可用：
-
-- `run`：当前已可用，运行一个验证 profile。
-- `current`：从唯一真相源查询 active/stabilizing Work Package；`--json` 输出稳定 JSON。
-- `preflight`：修改前校验任务契约、当前状态、依赖、文档、profile、base ref 和工作树。
-- `check`：检查 committed、staged、unstaged、untracked 变化及依赖、受保护路径和冻结契约。
-- `verify`：按 preflight、scope、required profiles、自动验收、人工汇总顺序生成任务报告。
-
-Test 是单个行为断言；Test Harness 运行并汇总测试；Agent Development Harness 还约束任务、Git 范围和
-依赖。Task Contract 是 `harness/tasks/<WP-ID>.json` 的机器可读任务边界；Work Package 的当前状态仍只在
-`docs/plans/runtime-v2/work-packages.md`。自动验收由命令确定结果；人工验收由项目负责人执行，Harness
-只汇总状态，Agent 不得代填。
-
-完整示例：
+## Work Package 命令
 
 ```powershell
 runtime\python.exe -m harness current
-runtime\python.exe -m harness preflight --active
 runtime\python.exe -m harness check --active
-runtime\python.exe -m harness run smoke
 runtime\python.exe -m harness verify --active
 ```
 
-退出码设计为 `0` 自动门通过且没有人工待办，`1` 验证失败，`2` 调用/契约/清单错误，`3` 没有自动失败
-但仍需负责人处理。退出 3 的报告可能是 `manual_pending`，也可能是冻结治理文件变化导致的
-`owner_review_required`；后一种情况尚未完成 required profiles。两者都不表示 Work Package 已
-`accepted`，Agent 不得代填人工结果。
+- `current` 从 `docs/plans/runtime-v2/work-packages.md` 查询唯一当前任务。
+- `check` 一次检查当前 WP、表中依赖、固定 base、committed/staged/unstaged/untracked、重命名、allowlist、
+  依赖变化、测试删除和全局保护路径。
+- `verify` 只在硬门通过且 task 没有工作树修订时运行 required profiles；profile 先展开为有序唯一 case
+  集，同一 case ID 只运行一次，再派生各 profile 状态。
 
-`preflight/check/verify --active` 使用当前 Work Package；也可传 `<ID>` 显式指定任务。前置门
-失败时不会运行 required profiles。任务报告使用 UTF-8、UTC 时间和同目录临时文件原子替换；不会枚举
-环境变量或读取密钥。所有 Git 命令使用 argv、仓库根 cwd 和 10 秒 timeout。
+独立 `preflight` 已删除。`check/verify --active` 使用当前 WP，也可以传显式 `<ID>`。
 
-契约根对象和嵌套对象拒绝未知字段。路径只接受精确文件或 `directory/**`；相同或明确父子冲突的
-allowed/forbidden/protected 规则失败。依赖文件默认禁止，只有 `allowlisted` 契约中的显式文件可变化。
-`documents` 的 specs/adrs/plans 三类字段必须存在、各类可以为空，但合计至少引用一份权威文档，避免
-普通修复被迫机械创建三类文档。
-完整 40 位 `base_ref` 必须与最新独立激活锚点一致。契约、引用的 Spec/ADR/Plan 和状态源与锚点提交比较；
-实施中变化会进入 `owner_review_files`，不能由普通自动门直接通过。
+task v2 位于 `harness/tasks/<WP-ID>.json`，只包含：
 
-WP-3V-01 的真实 Windows 组合进程门不混入离线 profile。它直接构建并启动 debug Runtime v2 EXE，
-使用系统临时目录中的脱敏数据和本地 Provider，精确强杀该 EXE 进程树内的 bundled Python Core，随后
-运行独立 headless 参考 oracle 重新获取生产共享锁并回读兼容数据。该 oracle 只复用冻结的数据 parser
-和锁实现，不启动 `legacy_qt_main.py`、不导入 PySide6，也不创建窗口：
-
-```powershell
-.\desktop\tests\windows_wp_3v_01_assistant_architecture_acceptance.ps1
+```json
+{
+  "schema_version": 2,
+  "id": "WP-X-01",
+  "base_ref": "<full-40-character-sha>",
+  "allowed_paths": ["app/example/**", "tests/**"],
+  "required_profiles": ["docs", "unit"]
+}
 ```
 
-脚本的成功 JSON 必须报告回复/取消、新 generation 水合、headless oracle、敏感证据和进程残留结果；
-不能用普通 pytest 或静态源码断言替代这条真实进程证据。
+`base_ref` 与 task 第一次提交中的值一致，之后不得移动。已提交的 allowlist/profile 修订会在报告中列出；
+未提交或 staged 的 task 修订返回 `3`/`owner_review_required` 并跳过 case。历史 v1 task/activation 只作
+Git 证据，loader 不读取；WP-H-02 的 `0001` 是最后一个 activation。
 
-Harness 只注册可执行行为、协议或生命周期检查。仅依赖源码字符串、函数排列或历史实现 token 的检查不作为 profile 门禁；对应意图应由 Python 行为测试、Node 测试、Rust 测试或独立真实验收覆盖。
+未命中 allowlist 的路径直接失败。`data/**`、`characters/**`、`third_party/**` 是不可覆盖的全局保护
+边界；`tests/**` 删除继续失败。允许的 manifest/lock 变化会被突出显示并继续测试，未允许时按越界失败。
+
+task 退出码：`1` 自动失败，`2` 调用/契约/状态错误，`3` 自动全绿等待人工验收或 task 修订等待审查。
+只有状态 `manual_pending` 表示自动门已通过；人工步骤来自对应 Spec，Harness 不复制也不代填结果。
+
+## 报告与临时目录
+
+每次 `run` 或 `verify` 都创建唯一的
+`temp/harness/runtime-tmp/<run-id>`，默认注入 `TMPDIR`、`TMP`、`TEMP`；case 显式 `env` 可以覆盖。
+临时根写入报告，避免 macOS `/var` 与 `/private/var` 一类平台路径别名误判。
+
+报告使用 UTF-8、UTC 时间和同目录原子替换，不枚举环境变量或读取密钥。task report schema v2 保存
+scope、依赖变化、契约修订字段、case ID/结果和派生 profile，不复制人工验收散文。
 
 ## 扩展
 
-在 `suites.json` 的 `cases` 中增加命令，再把 case id 放进相应 `profiles` 即可。命令以 argv 数组执行，不经过 shell；`{python}` 会替换为当前 Python，`{repo}` 会替换为仓库绝对路径。
-
-最小版本刻意保持离线、无第三方依赖，也不会读取 API Key。需要真实模型或网络的评测应建立独立 profile，并显式标注和隔离数据目录。
+在 `suites.json` 的 `cases` 中注册窄命令，再把 case ID 放入 profile。命令使用 argv 数组执行，不经过
+shell；`{python}` 替换为当前 Python，`{repo}` 替换为仓库绝对路径。新增业务 WP 默认不修改 Harness
+Python；Journey 随真实产品能力渐进增加，且不得被 broad Python profile 重复收集。

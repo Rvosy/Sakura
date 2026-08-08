@@ -1,17 +1,17 @@
 ---
 kind: plan
-status: active
+status: archived
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+status_source: ../../plans/runtime-v2/work-packages.md
+updated: 2026-08-08
 ---
 
 # Agent Development Harness v1 实施计划
 
 ## 前置与治理门
 
-执行状态只见 [`Runtime v2 Work Package 总表`](runtime-v2/work-packages.md)。项目负责人已于
+执行状态只见 [`Runtime v2 Work Package 总表`](../../plans/runtime-v2/work-packages.md)。项目负责人已于
 2026-07-31 明确验收 WP-3S-01，WP-H-01 现按冻结契约激活；仍不得开始 `WP-3-04`。
 
 激活使用两步：准备提交 `642c1b005550e41e3b16838e086c8c5ff2d13e44` 已加入 `WP-H-01.json` 的
@@ -34,7 +34,7 @@ updated: 2026-07-31
 
 ## 退出条件与故障测试
 
-退出条件以 [`WP-H-01 spec`](../specs/runtime-v2/WP-H-01-agent-development-harness.md) 为准。除功能测试
+退出条件以 [`WP-H-01 spec`](../specs/runtime-v2/WP-H-01-agent-development-harness.md) 为历史依据。除功能测试
 外，必须注入 Git timeout/坏引用、畸形 Markdown 表、窄控制台编码、报告 replace 失败、profile 超时、
 契约自我放宽、`base_ref` 改为 `HEAD`/当前 HEAD/后移 SHA、状态源改写、非法 glob 和路径穿越。必须另有
 故障测试证明合法的一次性锚点通过。任何失败不得泄露环境或继续昂贵测试。

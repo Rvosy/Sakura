@@ -1,9 +1,8 @@
-"""Bounded Git state collection and task scope evaluation."""
+"""Bounded Git changed-set collection and v2 task scope checks."""
 
 from __future__ import annotations
 
 import fnmatch
-import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -11,6 +10,8 @@ from pathlib import Path, PurePosixPath
 from .task_contract import TaskContract
 
 
+GLOBAL_PROTECTED_PATHS = ("data/**", "characters/**", "third_party/**")
+FINAL_ACTIVATION = "harness/activations/WP-H-02/0001.json"
 DEPENDENCY_NAMES = {
     "pyproject.toml",
     "uv.lock",
@@ -33,6 +34,9 @@ class GitChange:
     status: str
     origin: str
 
+    def as_dict(self) -> dict[str, str]:
+        return {"path": self.path, "status": self.status, "origin": self.origin}
+
 
 @dataclass(frozen=True)
 class GitState:
@@ -48,38 +52,40 @@ class GitState:
 
     @property
     def has_worktree_changes(self) -> bool:
-        return bool(
-            self.untracked_files
-            or any(change.origin in {"staged", "unstaged"} for change in self.changes)
+        return any(
+            change.origin in {"staged", "unstaged", "untracked"}
+            for change in self.changes
         )
 
 
 @dataclass(frozen=True)
 class ScopeResult:
     status: str
+    changes: tuple[GitChange, ...]
     changed_files: tuple[str, ...]
     untracked_files: tuple[str, ...]
     out_of_scope_files: tuple[str, ...]
-    forbidden_files: tuple[str, ...]
     protected_files: tuple[str, ...]
+    retired_activation_files: tuple[str, ...]
     dependency_files: tuple[str, ...]
     dependency_changes: tuple[dict[str, str], ...]
     deleted_tests: tuple[str, ...]
-    contract_files: tuple[str, ...]
     owner_review_files: tuple[str, ...]
+    contract_revision_fields: tuple[str, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
             "status": self.status,
+            "changes": [change.as_dict() for change in self.changes],
             "changed_files": list(self.changed_files),
             "untracked_files": list(self.untracked_files),
             "out_of_scope_files": list(self.out_of_scope_files),
-            "forbidden_files": list(self.forbidden_files),
             "protected_files": list(self.protected_files),
+            "retired_activation_files": list(self.retired_activation_files),
             "dependency_files": list(self.dependency_files),
             "deleted_tests": list(self.deleted_tests),
-            "contract_files": list(self.contract_files),
             "owner_review_files": list(self.owner_review_files),
+            "contract_revision_fields": list(self.contract_revision_fields),
         }
 
 
@@ -104,7 +110,8 @@ def _run_git(repo_root: Path, argv: list[str], *, binary: bool = False) -> bytes
             else completed.stderr
         )
         raise GitStateError(
-            f"GIT_COMMAND: git {' '.join(argv)} exited {completed.returncode}: {stderr.strip()}"
+            f"GIT_COMMAND: git {' '.join(argv)} exited "
+            f"{completed.returncode}: {stderr.strip()}"
         )
     return completed.stdout
 
@@ -114,7 +121,11 @@ def _normalize_path(value: str) -> str:
 
 
 def _parse_name_status(data: bytes, origin: str) -> tuple[list[GitChange], list[str]]:
-    tokens = [token.decode("utf-8", errors="surrogateescape") for token in data.split(b"\0") if token]
+    tokens = [
+        token.decode("utf-8", errors="surrogateescape")
+        for token in data.split(b"\0")
+        if token
+    ]
     changes: list[GitChange] = []
     deleted: list[str] = []
     index = 0
@@ -159,14 +170,14 @@ def _diff(repo_root: Path, origin: str, *args: str) -> tuple[list[GitChange], li
 
 
 def collect_git_state(repo_root: Path, base_ref: str) -> GitState:
-    """Collect committed, staged, unstaged and untracked changes as one state."""
-    base_sha_value = _run_git(repo_root, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"])
-    head_sha_value = _run_git(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"])
-    assert isinstance(base_sha_value, str) and isinstance(head_sha_value, str)
+    """Merge committed, staged, unstaged and untracked changes."""
+    base = _run_git(repo_root, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"])
+    head = _run_git(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"])
+    assert isinstance(base, str) and isinstance(head, str)
     changes: list[GitChange] = []
     deleted: list[str] = []
     for origin, args in (
-        ("committed", (f"{base_sha_value.strip()}..HEAD",)),
+        ("committed", (f"{base.strip()}..HEAD",)),
         ("staged", ("--cached",)),
         ("unstaged", ()),
     ):
@@ -174,9 +185,7 @@ def collect_git_state(repo_root: Path, base_ref: str) -> GitState:
         changes.extend(source_changes)
         deleted.extend(source_deleted)
     untracked_data = _run_git(
-        repo_root,
-        ["ls-files", "--others", "--exclude-standard", "-z"],
-        binary=True,
+        repo_root, ["ls-files", "--others", "--exclude-standard", "-z"], binary=True
     )
     assert isinstance(untracked_data, bytes)
     untracked = tuple(
@@ -187,23 +196,21 @@ def collect_git_state(repo_root: Path, base_ref: str) -> GitState:
         )
     )
     changes.extend(GitChange(path, "?", "untracked") for path in untracked)
-    unique_changes = {
-        (change.path, change.status, change.origin): change for change in changes
-    }
+    unique = {(item.path, item.status, item.origin): item for item in changes}
+    ordered = tuple(
+        unique[key]
+        for key in sorted(unique, key=lambda item: (item[0], item[2], item[1]))
+    )
     return GitState(
-        base_sha=base_sha_value.strip().lower(),
-        head_sha=head_sha_value.strip().lower(),
-        changes=tuple(
-            unique_changes[key]
-            for key in sorted(unique_changes, key=lambda item: (item[0], item[2], item[1]))
-        ),
+        base_sha=base.strip().lower(),
+        head_sha=head.strip().lower(),
+        changes=ordered,
         untracked_files=untracked,
         deleted_paths=tuple(sorted(set(deleted))),
     )
 
 
 def is_ancestor(repo_root: Path, base_sha: str) -> bool:
-    """Return whether base_sha is an ancestor of HEAD; fail on Git errors."""
     try:
         completed = subprocess.run(
             ["git", "merge-base", "--is-ancestor", base_sha, "HEAD"],
@@ -245,123 +252,71 @@ def _is_dependency(path: str) -> bool:
     )
 
 
-def _git_file(repo_root: Path, revision: str, path: str) -> bytes | None:
-    try:
-        completed = subprocess.run(
-            ["git", "show", f"{revision}:{path}"],
-            cwd=repo_root,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise GitStateError(f"GIT_COMMAND: cannot read frozen file {path}: {error}") from error
-    return completed.stdout if completed.returncode == 0 else None
-
-
-def _normalized_contract(data: bytes | None) -> bytes | None:
-    if data is None:
-        return None
-    try:
-        value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-
-
-def _normalized_frozen_document(data: bytes | None) -> bytes | None:
-    """Ignore checkout-only CRLF conversion when comparing frozen Markdown."""
-    if data is None:
-        return None
-    return data.replace(b"\r\n", b"\n")
-
-
-def evaluate_scope(
-    state: GitState,
-    contract: TaskContract,
-    *,
-    repo_root: Path,
-) -> ScopeResult:
-    """Apply allow/deny/protection, dependency, deletion and freeze rules."""
+def evaluate_scope(state: GitState, contract: TaskContract) -> ScopeResult:
+    """Apply allowlist, global protection, dependency and test-deletion checks."""
     paths = set(state.changed_files)
-    out_of_scope = sorted(
-        path for path in paths if not _matches(path, contract.allowed_paths)
+    out_of_scope = tuple(
+        sorted(path for path in paths if not _matches(path, contract.allowed_paths))
     )
-    forbidden = sorted(path for path in paths if _matches(path, contract.forbidden_paths))
-    protected = sorted(path for path in paths if _matches(path, contract.protected_paths))
-    dependencies = sorted(path for path in paths if _is_dependency(path))
-    dependency_changes: list[dict[str, str]] = []
-    rejected_dependencies: list[str] = []
-    for path in dependencies:
-        allowed = contract.dependency_mode == "allowlisted" and _matches(
-            path, contract.dependency_allowed_files
+    protected = tuple(
+        sorted(path for path in paths if _matches(path, GLOBAL_PROTECTED_PATHS))
+    )
+    retired_activations = tuple(
+        sorted(
+            path
+            for path in paths
+            if path.startswith("harness/activations/") and path != FINAL_ACTIVATION
         )
-        dependency_changes.append(
-            {"path": path, "status": "allowed" if allowed else "forbidden"}
+    )
+    dependencies = tuple(sorted(path for path in paths if _is_dependency(path)))
+    dependency_changes = tuple(
+        {
+            "path": path,
+            "status": (
+                "allowed"
+                if path not in out_of_scope and path not in protected
+                else "out_of_scope"
+            ),
+        }
+        for path in dependencies
+    )
+    deleted_tests = tuple(
+        sorted(
+            path
+            for path in state.deleted_paths
+            if path == "tests" or path.startswith("tests/")
         )
-        if not allowed:
-            rejected_dependencies.append(path)
-
-    deleted_tests = sorted(
-        path for path in state.deleted_paths if path == "tests" or path.startswith("tests/")
     )
-    frozen_changes: list[str] = []
-    current_contract_path = repo_root / contract.task_path
-    try:
-        current_contract = current_contract_path.read_bytes()
-    except OSError:
-        current_contract = b""
-    frozen_contract = _git_file(repo_root, contract.activation_sha, contract.task_path)
-    if (
-        frozen_contract is None
-        or _normalized_contract(frozen_contract) != _normalized_contract(current_contract)
-    ):
-        frozen_changes.append(contract.task_path)
-    for references in contract.documents.values():
-        for reference in references:
-            frozen = _git_file(repo_root, contract.activation_sha, reference)
-            try:
-                current = (repo_root / reference).read_bytes()
-            except OSError:
-                current = None
-            if _normalized_frozen_document(current) != _normalized_frozen_document(
-                frozen
-            ):
-                frozen_changes.append(reference)
-
-    frozen_status_source = _git_file(
-        repo_root, contract.activation_sha, contract.status_source
+    owner_review = tuple(
+        [contract.task_path]
+        if any(
+            change.path == contract.task_path
+            and change.origin in {"staged", "unstaged", "untracked"}
+            for change in state.changes
+        )
+        else []
     )
-    try:
-        current_status_source = (repo_root / contract.status_source).read_bytes()
-    except OSError:
-        current_status_source = None
-    owner_review = list(frozen_changes)
-    if _normalized_frozen_document(current_status_source) != _normalized_frozen_document(
-        frozen_status_source
-    ):
-        owner_review.append(contract.status_source)
-
-    failed = bool(
-        out_of_scope
-        or forbidden
-        or protected
-        or rejected_dependencies
-        or deleted_tests
+    hard_failure = bool(
+        out_of_scope or protected or retired_activations or deleted_tests
     )
-    status = "failed" if failed else "owner_review_required" if owner_review else "passed"
+    status = (
+        "failed"
+        if hard_failure
+        else "owner_review_required"
+        if owner_review
+        else "passed"
+    )
     return ScopeResult(
         status=status,
-        changed_files=tuple(sorted(paths)),
+        changes=state.changes,
+        changed_files=state.changed_files,
         untracked_files=state.untracked_files,
-        out_of_scope_files=tuple(out_of_scope),
-        forbidden_files=tuple(forbidden),
-        protected_files=tuple(protected),
-        dependency_files=tuple(rejected_dependencies),
-        dependency_changes=tuple(dependency_changes),
-        deleted_tests=tuple(deleted_tests),
-        contract_files=tuple(sorted(set(frozen_changes))),
-        owner_review_files=tuple(sorted(set(owner_review))),
+        out_of_scope_files=out_of_scope,
+        protected_files=protected,
+        retired_activation_files=retired_activations,
+        dependency_files=dependencies,
+        dependency_changes=dependency_changes,
+        deleted_tests=deleted_tests,
+        owner_review_files=owner_review,
+        contract_revision_fields=contract.revision_fields,
     )

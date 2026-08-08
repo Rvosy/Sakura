@@ -39,16 +39,21 @@ python -m pytest tests/unit
 
 ### Agent Development Harness 强制流程
 
-`current`、`preflight`、`check`、`verify` 已可用。WP-H-01 的一次性 bootstrap 例外已经关闭；下列规则
-从当前 Work Package 起生效：
+`current`、`check`、`verify` 已可用。Harness 只负责测试执行、Git 范围和仓库安全边界，不承担
+activation 或项目审批账本；下列规则从当前 Work Package 起生效：
 
 - 所有非微小开发任务必须绑定 Work Package ID 和 `harness/tasks/<WP-ID>.json`。
-- 修改产品代码前运行 `runtime\python.exe -m harness preflight <WP-ID>`。
+- 修改前运行 `runtime\python.exe -m harness check <WP-ID>`；它一次检查当前 WP、表中依赖、固定 base、
+  committed/staged/unstaged/untracked、allowlist、全局保护路径、依赖变化和测试删除。
 - 开发中运行 `runtime\python.exe -m harness check <WP-ID>`。
 - 声称完成前运行 `runtime\python.exe -m harness verify <WP-ID>`；退出码 `1` 或 `2` 时不得声称实现完成。
-- 退出码 `3` 表示自动门已通过、等待项目负责人验收；此时只能声称“自动门通过，等待验收”，不得声称
-  Work Package 已 `accepted`，也不得由 Agent 填写人工验收结果。
-- 不得修改任务契约、Spec、ADR、测试或 Harness 来弱化当前门禁；契约变化必须独立审查并重新预检。
+- `verify` 自动门全绿后返回 `3`/`manual_pending`；此时只能声称“自动门通过，等待验收”，不得声称
+  Work Package 已 `accepted`，也不得由 Agent 填写人工验收结果。未提交或 staged 的 task 修订也返回
+  `3`，但状态为 `owner_review_required`，且不会运行 profile，不能冒充自动门通过。
+- task v2 只保存 `schema_version/id/base_ref/allowed_paths/required_profiles`。已提交的 allowlist/profile
+  修订会在报告中列出；`base_ref` 不得移动。不得新增 activation。
+- `data/**`、`characters/**`、`third_party/**` 是代码内全局保护边界，task allowlist 不能覆盖。
+- 不得修改任务契约、Spec、ADR、测试或 Harness 来弱化当前门禁；新增业务 WP 默认不修改 Harness Python。
 - 无法执行验证时明确报告未验证命令、环境限制和风险。
 - Agent 不得自动填写或伪造人工验收，不得擅自将 Work Package 标记为 `accepted`。
 
@@ -56,10 +61,9 @@ python -m pytest tests/unit
 
 ```powershell
 runtime\python.exe -m harness current
-runtime\python.exe -m harness preflight WP-3-04
-runtime\python.exe -m harness check WP-3-04
+runtime\python.exe -m harness check --active
 runtime\python.exe -m harness run smoke
-runtime\python.exe -m harness verify WP-3-04
+runtime\python.exe -m harness verify --active
 ```
 
 ## 文档治理与开发任务预检

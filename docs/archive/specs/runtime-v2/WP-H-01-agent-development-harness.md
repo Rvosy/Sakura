@@ -1,16 +1,18 @@
 ---
 kind: spec
-status: normative
+status: superseded
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+status_source: ../../../plans/runtime-v2/work-packages.md
+updated: 2026-08-08
 ---
 
 # WP-H-01：Agent Development Harness Foundation
 
-> 当前状态只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
+> 当前状态只以 [`work-packages.md`](../../../plans/runtime-v2/work-packages.md) 为准。
 > 架构依据：[ADR-0008](../../adr/0008-agent-development-harness.md)
+> 本规范已由 [`WP-H-02`](../../../specs/runtime-v2/WP-H-02-lean-agent-development-harness.md) 替代，
+> 仅保留 v1 历史行为。
 
 ## 范围与非目标
 
