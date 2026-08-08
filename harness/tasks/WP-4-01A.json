@@ -4,6 +4,7 @@
   "base_ref": "051ac908497ec361292431b31ec8a712be83893e",
   "allowed_paths": [
     "CHANGELOG.md",
+    "app/agent/memory.py",
     "app/core_host/memory_boundary.py",
     "desktop/frontend/settings/memory-runtime.js",
     "desktop/frontend/settings/settings.js",
@@ -19,7 +20,8 @@
     "docs/specs/runtime-v2/WP-4-01-memory-capability.md",
     "docs/userdocs/SETUP.md",
     "harness/tasks/WP-4-01A.json",
-    "tests/unit/test_core_host_memory.py"
+    "tests/unit/test_core_host_memory.py",
+    "tests/unit/test_memory_store_resources.py"
   ],
   "required_profiles": ["docs", "smoke", "core-host", "runtime-v2-shell"]
 }
