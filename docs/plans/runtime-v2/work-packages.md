@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-H-02
+active_work_package: WP-4-02
 updated: 2026-08-08
 ---
 
@@ -90,8 +90,8 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
-| WP-H-02 | Harness 删除型减负 | WP-4-01 | stabilizing |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
+| WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | active |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2689,13 +2689,37 @@ required profiles（最终 v2）：docs、unit；另按实施计划显式运行 
 
 规范见 `docs/specs/runtime-v2/WP-H-02-lean-agent-development-harness.md`，架构决策见
 `docs/adr/0009-lean-agent-development-harness.md`，实施与验证顺序见
-`docs/plans/agent-development-harness-v2-reduction.md`。自动门通过后只进入 `stabilizing`；负责人单独验收并
+`docs/archive/plans/agent-development-harness-v2-reduction.md`。自动门通过后只进入 `stabilizing`；负责人单独验收并
 标记 `accepted` 后，才可激活 WP-4-02。
 
 自动候选记录（2026-08-08）：实现候选 `eb36dc2262a5159c59a1af120cbe9cde74f2c237` 已完成本地
 required profiles、Core/Shell 回归和 GitHub Test；Harness Python 与对应测试净删除 372 行，最终
 `verify` 为 3 个唯一 case 全绿、13.769 秒、exit 3 / `manual_pending`。WP-H-02 据此进入
 `stabilizing`，等待负责人审查；完整事实见 `docs/records/audits/WP-H-02-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-08）：项目负责人明确声明“可以accepted了”，接受最终 HEAD
+`458437b8b212aba813826617d2f44a4d27cb8e84` 的删除结果、保留安全边界与 final-HEAD Test。WP-H-02
+据此标记 `accepted`；原始声明和验收边界见 `docs/records/audits/WP-H-02-OWNER-ACCEPTANCE.md`。
+
+#### WP-4-02：Tools、Operation 与 Action ID 确认
+
+Scope-only 激活（2026-08-08）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-H-02 已由项目负责人明确验收并标记 accepted
+base_ref：7bbfe39dd91bf2431741cd652189ea92cee93132
+当前允许范围：仅 ADR、Spec、Plan、audit 和 harness/tasks/WP-4-02.json
+required profiles：docs
+产品实现门：normative Spec、真实消费者、协议/Action ID、故障矩阵、Journey 和逐路径 allowlist 未冻结前，禁止修改 app、desktop、tests 或 Harness suite
+后续契约：scope 审查完成后，以一次已提交 task v2 修订加入产品路径和实际 profiles；base_ref 保持不动
+Journey：实现范围冻结时新增 journey-tools，且不得与 broad Python profile 重复收集
+任务契约：harness/tasks/WP-4-02.json；不创建 activation
+```
+
+本次激活只建立安全的规范准备窗口，不表示 CAP-009/010 已开始实现或任何 Tools 行为已获验收。下一步须
+先完成 WP-4-02 的文档预检和 normative Spec；若架构决策改变既有 Operation/Action ID 方向，再独立新增
+ADR。产品代码范围必须在已提交 task 修订和 `harness check WP-4-02` 通过后才开放。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

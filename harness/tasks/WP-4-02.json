@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "id": "WP-4-02",
+  "base_ref": "7bbfe39dd91bf2431741cd652189ea92cee93132",
+  "allowed_paths": [
+    "docs/adr/**",
+    "docs/archive/plans/**",
+    "docs/plans/**",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/**",
+    "harness/tasks/WP-4-02.json"
+  ],
+  "required_profiles": ["docs"]
+}

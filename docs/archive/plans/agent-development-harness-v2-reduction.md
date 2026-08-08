@@ -1,9 +1,9 @@
 ---
 kind: plan
-status: active
+status: archived
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
+status_source: ../../plans/runtime-v2/work-packages.md
 updated: 2026-08-08
 ---
 
@@ -11,7 +11,7 @@ updated: 2026-08-08
 
 ## 前置与提交边界
 
-执行状态只见 [`Runtime v2 Work Package 总表`](runtime-v2/work-packages.md)。WP-4-01 的最终候选
+执行状态只见 [`Runtime v2 Work Package 总表`](../../plans/runtime-v2/work-packages.md)。WP-4-01 的最终候选
 `bfa5edc6fdd1b921fce6d366096fa95192f9d878` 已取得本地自动门、Test、Windows/macOS/Linux 平台门和
 项目负责人人工验收；验收事实独立记录后，WP-H-02 才能激活。
 
